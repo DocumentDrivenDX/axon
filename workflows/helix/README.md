@@ -12,6 +12,23 @@ A test-driven development workflow with AI-assisted collaboration for building h
 
 HELIX enforces Test-Driven Development (TDD) through a structured phase approach where tests are written BEFORE implementation. This ensures quality is built-in from the start and specifications are executable. Human creativity and AI capabilities collaborate throughout, with tests serving as the contract between design and implementation.
 
+## Normative Contract
+
+Treat the following files as the canonical HELIX workflow contract:
+
+- [README.md](README.md) for the high-level workflow model and authority order
+- [EXECUTION.md](EXECUTION.md) for operator flow, queue control, and loop behavior
+- [BEADS.md](BEADS.md) for upstream `bd` mapping, labels, and execution tracking
+- [check.md](actions/check.md) for queue-drain decisions
+- [implementation.md](actions/implementation.md) for bounded execution work
+- [reconcile-alignment.md](actions/reconcile-alignment.md) for top-down reconciliation
+- [backfill-helix-docs.md](actions/backfill-helix-docs.md) for conservative documentation reconstruction
+- [alignment-review.md](templates/alignment-review.md) and [backfill-report.md](templates/backfill-report.md) for durable review outputs
+
+The rest of `workflows/helix/` is supporting guidance, templates, phase
+context, or examples. If a supporting document conflicts with the files above,
+follow the normative contract and update the supporting document.
+
 ```mermaid
 graph TB
     subgraph "The HELIX Spiral"

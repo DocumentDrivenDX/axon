@@ -14,6 +14,16 @@ for Codex or Claude Code.
 For upstream Beads integration, labels, `spec-id`, and raw `bd` conventions,
 see [BEADS.md](BEADS.md).
 
+## Scope
+
+This document owns HELIX execution behavior.
+
+- Follow this file for queue guards, loop shape, and `NEXT_ACTION` handling.
+- Follow the bounded action prompts under `workflows/helix/actions/` for
+  action-specific behavior.
+- Treat examples elsewhere in `workflows/helix/` as supportive summaries, not
+  alternate execution contracts.
+
 ## Core Actions
 
 HELIX uses four top-level execution actions:

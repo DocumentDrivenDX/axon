@@ -21,6 +21,15 @@ The workflow also supports a project-level **Parking Lot** registry at
 marked with `dun.parking_lot: true` to keep it out of dependency graphs and
 the main PRD flow while remaining in its normal directory.
 
+## Scope Boundary
+
+This document explains authority order, artifact relationships, naming, and
+traceability. It does not define ready-queue logic, loop control, or how to
+select execution work.
+
+For execution behavior, follow [EXECUTION.md](EXECUTION.md) and the bounded
+action prompts. For upstream Beads conventions, follow [BEADS.md](BEADS.md).
+
 ## Canonical Authority Order
 
 Artifact flow and artifact authority are related but not identical. When two

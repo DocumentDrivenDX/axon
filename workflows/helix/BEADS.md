@@ -16,6 +16,16 @@ Do not define a HELIX-specific bead file format. Use upstream `bd` issues,
 dependencies, labels, parents, and ready queues. HELIX adds conventions on top
 of `bd`; it does not replace `bd`.
 
+## Scope
+
+This document owns HELIX's mapping onto upstream Beads.
+
+- Follow this file for labels, issue types, `spec-id`, and queue-query
+  conventions.
+- Follow [EXECUTION.md](EXECUTION.md) for loop control and action sequencing.
+- If another HELIX document shows different `bd` semantics, prefer this file
+  and correct the drift there.
+
 ## Setup
 
 Initialize Beads once at the project root:

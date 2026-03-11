@@ -10,6 +10,19 @@ dun:
 
 This document defines conventions for projects using the HELIX workflow, ensuring consistency across implementations while allowing for project-specific needs.
 
+## Scope Boundary
+
+This document defines documentation layout, naming, and traceability
+conventions. It does not define queue control, execution-loop behavior, or
+upstream Beads semantics.
+
+When conventions and execution guidance disagree, follow:
+
+1. [README.md](README.md)
+2. [EXECUTION.md](EXECUTION.md)
+3. [BEADS.md](BEADS.md)
+4. the bounded action prompts under `workflows/helix/actions/`
+
 ## Documentation Structure
 
 ### Phase-Based Organization
