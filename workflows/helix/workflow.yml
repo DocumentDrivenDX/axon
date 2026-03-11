@@ -1,88 +1,77 @@
+# Metadata stub only.
+# The normative HELIX contract lives in:
+# - workflows/helix/README.md
+# - workflows/helix/EXECUTION.md
+# - workflows/helix/BEADS.md
+# - workflows/helix/actions/*.md bounded action prompts
+
 name: helix
-version: 1.0.0
-description: AI-assisted iterative development workflow with human-AI collaboration
+version: 2.0.0
+description: Metadata summary for the HELIX workflow
 author: DDX Team
 created: 2025-01-13
 tags:
-  - ai-assisted-development
-  - iterative
-  - human-ai-collaboration
-
-variables:
-  - name: project_name
-    description: Name of the project
-    prompt: What is your project name?
-    required: true
+  - test-driven-development
+  - beads
+  - bounded-execution
 
 phases:
+  - id: discover
+    order: 0
+    name: Discover
+    description: Optional opportunity validation before Frame.
+    contract_docs:
+      - workflows/helix/phases/00-discover/README.md
+      - workflows/helix/phases/00-discover/GATE.yaml
+
   - id: frame
     order: 1
-    name: Frame the Problem
-    description: Define and analyze the problem with AI assistance
-    required_role: architect
-    exit_criteria:
-      - Problem statement clearly documented
-      - Success metrics defined
-      - Constraints and requirements captured
-      - Context established for AI agents
-    estimated_duration: 1-2 days
+    name: Frame
+    description: Define the problem, requirements, and acceptance criteria.
+    contract_docs:
+      - workflows/helix/phases/01-frame/README.md
+      - workflows/helix/phases/01-frame/GATE.yaml
 
   - id: design
     order: 2
-    name: Design the Solution
-    description: Architect the solution with AI collaboration
-    required_role: architect
-    exit_criteria:
-      - System architecture documented
-      - Technology choices justified
-      - Design patterns selected
-      - Approach validated
-    estimated_duration: 1-2 days
+    name: Design
+    description: Define architecture, contracts, and technical designs.
+    contract_docs:
+      - workflows/helix/phases/02-design/README.md
+      - workflows/helix/phases/02-design/GATE.yaml
 
   - id: test
     order: 3
-    name: Write Tests First
-    description: Define system behavior through comprehensive test suites before implementation
-    required_role: test-engineer
-    exit_criteria:
-      - All contract tests written (failing)
-      - Integration tests defined (failing)
-      - Unit test stubs created (failing)
-      - Test coverage plan approved
-    estimated_duration: 2-3 days
+    name: Test
+    description: Write failing tests that define system behavior.
+    contract_docs:
+      - workflows/helix/phases/03-test/README.md
+      - workflows/helix/phases/03-test/GATE.yaml
 
   - id: build
     order: 4
-    name: Build to Pass Tests
-    description: Implement code using TDD to make all tests pass
-    required_role: developer
-    exit_criteria:
-      - All tests passing (green)
-      - Code coverage targets met
-      - Code reviewed and refactored
-      - Documentation generated
-    estimated_duration: variable
+    name: Build
+    description: Implement the minimum changes needed to satisfy tests.
+    contract_docs:
+      - workflows/helix/phases/04-build/README.md
+      - workflows/helix/phases/04-build/GATE.yaml
+      - workflows/helix/actions/implementation.md
 
   - id: deploy
     order: 5
-    name: Deploy the System
-    description: Deploy with AI-guided DevOps
-    required_role: devops-engineer
-    exit_criteria:
-      - Successfully deployed
-      - Monitoring configured
-      - Documentation published
-      - Deployment verified
-    estimated_duration: 1 day
+    name: Deploy
+    description: Release safely with monitoring and rollback readiness.
+    contract_docs:
+      - workflows/helix/phases/05-deploy/README.md
+      - workflows/helix/phases/05-deploy/GATE.yaml
 
   - id: iterate
     order: 6
-    name: Iterate the Process
-    description: Gather feedback and improve with AI analysis
-    required_role: analyst
-    exit_criteria:
-      - Feedback analyzed
-      - Improvements identified
-      - Next iteration planned
-      - Learnings captured
-    estimated_duration: ongoing
+    name: Iterate
+    description: Capture learnings, backlog follow-up work, and review outputs.
+    contract_docs:
+      - workflows/helix/phases/06-iterate/README.md
+      - workflows/helix/phases/06-iterate/GATE.yaml
+      - workflows/helix/actions/check.md
+      - workflows/helix/actions/reconcile-alignment.md
+      - workflows/helix/actions/backfill-helix-docs.md

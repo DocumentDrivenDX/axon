@@ -303,27 +303,27 @@ Story Level:
 Monday:   Create US-041-user-authentication.md (FRAME)
 Tuesday:  Create TD-041-user-authentication.md (DESIGN)
 Wednesday: Create TP-041-user-authentication.md (TEST)
-Thursday: Create IP-041-user-authentication.md (BUILD)
-Friday:   Create DP-041-user-authentication.md (DEPLOY)
+Thursday: Create build bead(s) for US-041 (BUILD)
+Friday:   Create deploy bead(s) for US-041 (DEPLOY)
 Next Week: Create IR-041-user-authentication.md (ITERATE)
 ```
 
 ## Commands
 
-DDX commands work with this hierarchy:
+Use the current HELIX queue controls with this hierarchy:
 
 ```bash
-# Check story state
-ddx workflow status --story US-036
+# Inspect the current queue
+bd ready --label helix --json
 
-# Advance to next phase
-ddx workflow advance US-036
+# Execute one ready bead
+ddx workflow helix execute implementation
 
-# Create next artifact
-ddx workflow create TD-036
+# Decide the next action when the queue drains
+ddx workflow helix execute check
 
-# Validate progression
-ddx workflow validate US-036
+# Run the wrapper loop
+helix run
 ```
 
 ---

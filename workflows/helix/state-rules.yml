@@ -193,21 +193,21 @@ metadata:
   test_driven: true
   documentation_first: true
 
-# Integration with DDX
-ddx_integration:
+# Integration with HELIX execution
+execution_integration:
   commands:
-    status:
-      description: "Show current workflow state"
-      detects: "Phase for stories, features, and project"
+    implementation:
+      description: "Execute one ready HELIX execution bead"
+      example: "ddx workflow helix execute implementation"
 
-    advance:
-      description: "Move artifact to next phase"
-      example: "ddx workflow advance US-001"
+    check:
+      description: "Decide whether to implement, align, backfill, wait, ask for guidance, or stop"
+      example: "ddx workflow helix execute check"
 
-    create:
-      description: "Create next artifact in sequence"
-      example: "ddx workflow create TD-001"
+    run:
+      description: "Run the bounded wrapper loop"
+      example: "helix run"
 
     validate:
-      description: "Check artifact progression rules"
+      description: "Check artifact progression and gate rules"
       example: "ddx workflow validate US-001"
