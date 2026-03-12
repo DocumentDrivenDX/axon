@@ -43,6 +43,26 @@ HELIX execution assumes a working repo-local Beads workspace already exists.
 If live `bd` access is missing or unhealthy, stop immediately. Do not run
 `bd init` or inspect alternate tracker sources from execution flows.
 
+## Working Database and Remotes
+
+The repository-local Beads database under `.beads/dolt` is the authoritative
+working database for a repo.
+
+- A Dolt remote is optional.
+- If a project uses a shared Dolt remote for coordination, it must be a real
+  shared remote, not a machine-local `file://` path.
+- Do not use machine-local or CIFS/SMB-backed `file://` remotes as a hot
+  coordination path.
+- A `file://` remote, if a project explicitly allows one at all, must be
+  documented as manual backup only, not routine agent sync.
+- If no proper shared remote exists, prefer local-only operation over a broken
+  `file://` remote.
+
+Push/pull failures, non-fast-forward races, or missing table-file / manifest
+errors do not automatically mean the local Beads DB is corrupted. A healthy
+local `.beads/dolt` paired with a bad remote topology is a different failure
+mode and should be treated differently.
+
 ## HELIX Mapping
 
 Use upstream Beads fields directly:
@@ -187,8 +207,48 @@ bd blocked
 bd epic status
 ```
 
+## Troubleshooting Local vs Remote Health
+
+When Beads looks broken, separate local DB health from remote topology health.
+
+Check the local repository state first:
+
+```bash
+bd doctor
+(cd .beads/dolt && dolt status && dolt fsck)
+```
+
+If those checks pass, the repo-local `.beads/dolt` database is likely healthy.
+
+Then inspect remote configuration separately:
+
+```bash
+(cd .beads/dolt && dolt remote -v)
+```
+
+Treat the remote as misconfigured or unsafe when it points at a machine-local
+`file://` path or a CIFS/SMB-backed filesystem that multiple agents are using
+as a hot coordination backend.
+
+If no proper shared remote exists, leave Dolt remote sync unset and keep using
+the local repository database.
+
+## Repairing a Stale or Bad Remote
+
+If a project needs a shared remote, repoint `origin` to a proper shared remote:
+
+```bash
+bd dolt remote remove origin
+bd dolt remote add origin <shared-dolt-remote>
+bd dolt pull
+```
+
+Do not replace one bad machine-local or CIFS/SMB-backed `file://` remote with
+another. If no proper shared remote exists yet, operate locally until one does.
+
 ## What Not To Do
 
 - Do not create `.beads/build/*.yaml`, `.beads/deploy/*.yaml`, or other HELIX-specific bead files.
 - Do not invent `BEAD-###` identifiers; use native `bd` issue IDs.
 - Do not invent a parallel status model when upstream status plus dependencies already models the work.
+- Do not tell agents that every session must push or pull an arbitrary local `file://` Dolt remote.

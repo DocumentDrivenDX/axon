@@ -101,6 +101,9 @@ Yegge instead of a HELIX-specific bead file format.
 - Upstream docs: <https://steveyegge.github.io/beads/>
 - Local usage help: `bd quickstart`, `bd human`, `bd --help`
 
+- The repo-local Beads DB under `.beads/dolt` is the authoritative working database.
+- A Dolt remote is optional.
+- If a shared remote is used, it must be a real shared remote, not a machine-local or CIFS/SMB-backed `file://` path used for hot coordination.
 - Beads are governed by the HELIX authority stack.
 - Beads must cite the canonical artifacts that authorize the work.
 - Closing a bead records completion of a task; it does not redefine

@@ -14,7 +14,8 @@ bd ready              # Find available work
 bd show <id>          # View issue details
 bd update <id> --claim  # Claim work atomically
 bd close <id>         # Complete work
-bd sync               # Sync with git
+bd doctor             # Check local Beads workspace health
+bd dolt remote -v     # Show configured Dolt remote, if any
 bash tests/helix-cli.sh  # Deterministic HELIX wrapper tests
 helix run             # Run bounded HELIX execution loop
 helix check           # Decide next HELIX action
@@ -186,13 +187,42 @@ bd close bd-42 --reason "Completed" --json
    - `bd create "Found bug" --description="Details about what was found" -p 1 --deps discovered-from:<parent-id>`
 5. **Complete**: `bd close <id> --reason "Done"`
 
-### Auto-Sync
+### Local DB and Dolt Remotes
 
-bd automatically syncs with git:
+- The repo-local Beads DB under `.beads/dolt` is the authoritative working database.
+- A Dolt remote is optional.
+- If a project uses a shared Dolt remote for coordination, it must be a real shared remote, not a machine-local `file://` path.
+- Do NOT use machine-local or CIFS/SMB-backed `file://` remotes as a hot coordination path.
+- A `file://` remote, if a project allows one at all, must be documented as manual backup only, not routine agent sync.
+- If no proper shared remote exists, prefer local-only operation over a broken `file://` remote.
+
+### Git Export / Import
+
+bd automatically exports and imports issue JSON for git workflows:
 
 - Exports to `.beads/issues.jsonl` after changes (5s debounce)
 - Imports from JSONL when newer (e.g., after `git pull`)
-- No manual export/import needed!
+- No manual export/import needed for the JSONL mirror.
+
+This JSONL mirror is not the same thing as Dolt remote sync.
+
+### Remote Health and Repair
+
+When Beads errors look like corruption, distinguish local DB health from remote topology:
+
+```bash
+bd doctor
+(cd .beads/dolt && dolt status && dolt fsck && dolt remote -v)
+```
+
+- If `.beads/dolt` is healthy but the configured remote is machine-local or on CIFS/SMB, fix or remove the remote instead of treating the local DB as corrupted.
+- To repair a stale or bad remote, repoint it to a proper shared remote or leave remote sync unset:
+
+```bash
+bd dolt remote remove origin
+bd dolt remote add origin <shared-dolt-remote>
+bd dolt pull
+```
 
 ### Important Rules
 
@@ -215,21 +245,28 @@ For more details, see README.md and docs/QUICKSTART.md.
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
+4. **PUSH TO GIT REMOTE** - This is MANDATORY:
    ```bash
    git pull --rebase
-   bd sync
    git push
    git status  # MUST show "up to date with origin"
    ```
-5. **Clean up** - Clear stashes, prune remote branches
-6. **Verify** - All changes committed AND pushed
-7. **Hand off** - Provide context for next session
+5. **OPTIONAL SHARED DOLT REMOTE SYNC** - Only if the project explicitly uses a proper shared Dolt remote:
+   ```bash
+   bd dolt remote -v
+   bd dolt pull
+   bd dolt push
+   ```
+   Skip this when no proper shared remote exists, and never use a machine-local or CIFS/SMB-backed `file://` path as the normal coordination backend.
+6. **Clean up** - Clear stashes, prune remote branches
+7. **Verify** - All changes committed AND pushed
+8. **Hand off** - Provide context for next session
 
 **CRITICAL RULES:**
 - Work is NOT complete until `git push` succeeds
 - NEVER stop before pushing - that leaves work stranded locally
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
+- Do not treat a machine-local or CIFS/SMB-backed `file://` Dolt remote as a normal shared coordination backend
 
 <!-- END BEADS INTEGRATION -->

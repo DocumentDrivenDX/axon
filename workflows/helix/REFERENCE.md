@@ -78,7 +78,13 @@ bd show <id>
 bd dep tree <id>
 bd blocked --json
 bd close <id>
+bd doctor
+(cd .beads/dolt && dolt status && dolt fsck && dolt remote -v)
 ```
+
+`.beads/dolt` is the authoritative working database. A Dolt remote is
+optional; if one exists, it should be a proper shared remote, not a
+machine-local or CIFS/SMB-backed `file://` coordination path.
 
 ## Beads Labeling
 
