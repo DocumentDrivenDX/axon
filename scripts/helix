@@ -59,7 +59,7 @@ Environment:
   HELIX_LIBRARY_ROOT  Override the library root that contains workflows/helix/
 
 Notes:
-  Codex sandbox and approval behavior come from your Codex config/profile.
+  Codex runs as `codex --dangerously-bypass-approvals-and-sandbox exec`.
 EOF
 }
 
@@ -121,12 +121,12 @@ run_agent_prompt() {
       need_cmd codex
       if (( dry_run )); then
         if (( beads_sandbox )); then
-          printf 'env BEADS_DOLT_SERVER_MODE=0 codex exec -C %q --ephemeral %q\n' "$target_root" "$prompt"
+          printf 'env BEADS_DOLT_SERVER_MODE=0 codex --dangerously-bypass-approvals-and-sandbox exec -C %q --ephemeral %q\n' "$target_root" "$prompt"
         else
-          printf 'codex exec -C %q --ephemeral %q\n' "$target_root" "$prompt"
+          printf 'codex --dangerously-bypass-approvals-and-sandbox exec -C %q --ephemeral %q\n' "$target_root" "$prompt"
         fi
       else
-        run_with_beads_env codex exec -C "$target_root" --ephemeral "$prompt"
+        run_with_beads_env codex --dangerously-bypass-approvals-and-sandbox exec -C "$target_root" --ephemeral "$prompt"
       fi
       ;;
     claude)

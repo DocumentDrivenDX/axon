@@ -97,7 +97,7 @@ Interpret `check` as follows:
 
 The examples below assume a trusted local repository.
 
-- Let your agent config or profile choose sandbox and approval behavior.
+- Codex is intentionally run with `--dangerously-bypass-approvals-and-sandbox`.
 - If the agent runtime cannot reach localhost Dolt sockets, force Beads direct
   mode with `BEADS_DOLT_SERVER_MODE=0`.
 
@@ -105,14 +105,14 @@ The examples below assume a trusted local repository.
 
 ```bash
 while [ "$(helix_ready_count)" -gt 0 ]; do
-  codex exec -C "$PWD" --ephemeral <<'EOF'
+  codex --dangerously-bypass-approvals-and-sandbox exec -C "$PWD" --ephemeral <<'EOF'
 Use the HELIX implementation action at workflows/helix/actions/implementation.md.
 Execute one ready HELIX execution bead end-to-end.
 Follow the action exactly.
 EOF
 done
 
-codex exec -C "$PWD" --ephemeral <<'EOF'
+codex --dangerously-bypass-approvals-and-sandbox exec -C "$PWD" --ephemeral <<'EOF'
 Use the HELIX check action at workflows/helix/actions/check.md.
 Return the required NEXT_ACTION line and the exact next command.
 Follow the action exactly.
@@ -171,7 +171,8 @@ Main commands:
 - can trigger `reconcile-alignment` every `N` cycles or when `check` returns
   `ALIGN`
 - stops on `WAIT`, `GUIDANCE`, or `STOP`
-- respects your configured Codex sandbox and approval defaults
+- uses `codex --dangerously-bypass-approvals-and-sandbox exec` when
+  `--agent codex` is selected
 - keeps wrapper and child Beads calls in direct mode when
   `BEADS_DOLT_SERVER_MODE=0` is set
 
