@@ -163,6 +163,10 @@ case "$payload" in
     echo "Recommended Command: mock"
     ;;
   *"alignment action"*)
+    if [[ "${MOCK_ALIGN_FAIL:-0}" == "1" ]]; then
+      echo "mock alignment failure" >&2
+      exit 1
+    fi
     record align
     echo "alignment complete"
     ;;
@@ -328,11 +332,13 @@ test_run_stops_after_queue_drains() {
   printf '1\n1\n0\n' > "$root/state/ready-seq"
   printf 'STOP\n' > "$root/state/next-actions"
 
-  run_helix "$root" run >/dev/null
+  local output
+  output="$(run_helix "$root" run 2>&1)"
 
   local calls
   calls="$(cat "$root/state/calls.log")"
   assert_eq $'implement\nimplement\ncheck' "$calls" "run should implement until drained, then check once"
+  assert_contains "$output" "helix: stopping after check returned STOP" "run should report why it stopped after the queue drained"
   rm -rf "$root"
 }
 
@@ -361,6 +367,21 @@ test_run_auto_aligns_once() {
   local calls
   calls="$(cat "$root/state/calls.log")"
   assert_eq $'check\nalign\ncheck' "$calls" "run should auto-align once when check returns ALIGN"
+  rm -rf "$root"
+}
+
+test_run_reports_periodic_alignment_failure() {
+  local root
+  root="$(make_workspace)"
+  printf '1\n' > "$root/state/ready-seq"
+
+  local output
+  if output="$(MOCK_ALIGN_FAIL=1 run_helix "$root" run --review-every 1 2>&1)"; then
+    fail "run should fail when periodic alignment fails"
+  fi
+
+  assert_contains "$output" "mock alignment failure" "run should surface the alignment failure"
+  assert_contains "$output" "helix: periodic alignment failed after 1 cycles" "run should report why the loop exited on periodic alignment failure"
   rm -rf "$root"
 }
 
@@ -442,6 +463,7 @@ run_test "implement fails on unhealthy beads" test_implement_fails_when_beads_is
 run_test "run stops after drain" test_run_stops_after_queue_drains
 run_test "periodic alignment" test_run_periodic_alignment
 run_test "auto-align" test_run_auto_aligns_once
+run_test "periodic alignment failure reason" test_run_reports_periodic_alignment_failure
 run_test "run beads direct mode" test_run_uses_beads_direct_mode_for_wrapper_and_agent
 run_test "backfill requires report marker" test_backfill_requires_report_marker
 run_test "backfill creates report" test_backfill_creates_report

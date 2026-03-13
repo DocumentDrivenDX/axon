@@ -353,13 +353,19 @@ run_loop() {
 
     if (( ready_count > 0 )); then
       printf 'helix: ready=%s, cycle=%s\n' "$ready_count" "$((cycles + 1))" >&2
-      run_implementation
+      if ! run_implementation; then
+        printf 'helix: implementation failed during cycle %s\n' "$((cycles + 1))" >&2
+        return 1
+      fi
       cycles=$((cycles + 1))
       post_drain_alignment_ran=0
 
       if (( review_every > 0 )) && (( cycles % review_every == 0 )); then
         printf 'helix: periodic alignment after %s cycles\n' "$cycles" >&2
-        run_alignment repo
+        if ! run_alignment repo; then
+          printf 'helix: periodic alignment failed after %s cycles\n' "$cycles" >&2
+          return 1
+        fi
       fi
 
       if (( max_cycles > 0 )) && (( cycles >= max_cycles )); then
@@ -371,7 +377,10 @@ run_loop() {
     fi
 
     local check_output
-    check_output="$(run_check repo)"
+    if ! check_output="$(run_check repo)"; then
+      echo "helix: check failed after queue drain" >&2
+      return 1
+    fi
     printf '%s\n' "$check_output"
 
     local next_action
@@ -384,13 +393,18 @@ run_loop() {
       ALIGN)
         if (( auto_align )) && (( post_drain_alignment_ran == 0 )); then
           printf 'helix: queue drained, running alignment\n' >&2
-          run_alignment repo
+          if ! run_alignment repo; then
+            echo "helix: post-drain alignment failed" >&2
+            return 1
+          fi
           post_drain_alignment_ran=1
           continue
         fi
+        echo "helix: stopping after check returned ALIGN" >&2
         return 0
         ;;
       BACKFILL|WAIT|GUIDANCE|STOP)
+        printf 'helix: stopping after check returned %s\n' "$next_action" >&2
         return 0
         ;;
       *)
