@@ -63,13 +63,83 @@ HELIX uses upstream Beads (`bd`) for execution tracking.
 - Typical labels: `helix`, plus one of `phase:build`, `phase:deploy`,
   `phase:iterate`, or `phase:review`.
 
-If the repo vendors DDx HELIX, read:
+Reference docs (read as needed):
 
 - `workflows/helix/README.md`
 - `workflows/helix/BEADS.md`
 - `workflows/helix/actions/check.md` when the user wants queue health or the next action
 - `workflows/helix/actions/implementation.md` when the user wants ready work executed
 - relevant phase README and artifact prompts/templates
+
+## On Invocation
+
+When this skill is invoked, **execute work immediately** — do not just report
+status, do not just describe what you would do, do not ask for confirmation.
+Start doing real work right now.
+
+### Step 1 — Find ready beads
+
+Run this command:
+
+```bash
+bd ready --label helix --label-any phase:build --label-any phase:deploy --label-any phase:iterate --json
+```
+
+If no ready beads exist, skip to Step 6 (Queue Drain).
+
+### Step 2 — Select and claim one bead
+
+Pick the best ready bead (smallest unblocked bead with clear governing
+artifacts). Inspect it:
+
+```bash
+bd show <id>
+bd dep tree <id>
+```
+
+Then claim it:
+
+```bash
+bd update <id> --claim
+```
+
+### Step 3 — Load context and implement
+
+1. Read the bead's `spec-id`, parent, labels, and acceptance criteria.
+2. Read the governing artifacts (requirements, design, tests) referenced by
+   the bead.
+3. Read `workflows/helix/actions/implementation.md` for full phase-specific
+   rules (build, deploy, iterate).
+4. Implement the work: write code, update docs, create follow-on beads for
+   any out-of-scope work discovered.
+
+### Step 4 — Verify
+
+Run all project verification: tests, lint, type checks, format checks. If
+verification fails, fix within scope or leave the bead open with a status note.
+
+### Step 5 — Commit and close
+
+1. Commit with the bead ID in the message.
+2. Close the bead: `bd close <id>`
+3. Go back to Step 1 for the next ready bead.
+
+### Step 6 — Queue drain
+
+When no ready beads remain, read and execute
+`workflows/helix/actions/check.md` to decide what happens next. That action
+produces a `NEXT_ACTION` code:
+
+- `IMPLEMENT` → go to Step 1
+- `ALIGN` → read and execute `workflows/helix/actions/reconcile-alignment.md`
+- `BACKFILL` → read and execute `workflows/helix/actions/backfill-helix-docs.md`
+- `WAIT` / `GUIDANCE` → report what is blocking and stop
+- `STOP` → report that no actionable work remains
+
+### Scope narrowing
+
+If the user provides a scope or selector (e.g., a bead ID, feature name, or
+phase), narrow all steps to that scope.
 
 ## How To Work
 

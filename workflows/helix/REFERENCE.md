@@ -44,29 +44,19 @@ dun:
 ### Bootstrap
 
 ```bash
-ddx workflow apply helix
 bd init
 scripts/install-local-skills.sh
 ```
 
-### Queue Control
+### Commands
 
 ```bash
 helix run
 helix implement
+helix implement bd-abc123
 helix check repo
 helix align repo
 helix backfill repo
-```
-
-### Direct Actions
-
-```bash
-ddx workflow helix execute implementation
-ddx workflow helix execute implementation bd-abc123
-ddx workflow helix execute check
-ddx workflow helix execute reconcile-alignment repo
-ddx workflow helix execute backfill-helix-docs repo
 ```
 
 ### Beads

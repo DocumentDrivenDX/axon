@@ -27,7 +27,6 @@ Use the bounded action prompts only when you are doing the corresponding work:
 ## Bootstrap A Repo
 
 ```bash
-ddx workflow apply helix
 bd init
 scripts/install-local-skills.sh
 ```
@@ -87,13 +86,13 @@ helix align repo
 helix backfill repo
 ```
 
-Direct action commands:
+These are equivalent to direct action commands:
 
 ```bash
-ddx workflow helix execute implementation
-ddx workflow helix execute check
-ddx workflow helix execute reconcile-alignment repo
-ddx workflow helix execute backfill-helix-docs repo
+helix implement
+helix check
+helix align repo
+helix backfill repo
 ```
 
 Execution rules:
@@ -111,10 +110,10 @@ If you are not using `helix run`, use the bounded manual loop from
 
 ```bash
 while [ "$(bd ready --label helix --label-any phase:build --label-any phase:deploy --label-any phase:iterate --json | jq 'length')" -gt 0 ]; do
-  ddx workflow helix execute implementation
+  helix implement
 done
 
-ddx workflow helix execute check
+helix check
 ```
 
 ## Common Next Steps

@@ -24,10 +24,10 @@ You may receive:
 
 Examples:
 
-- `ddx workflow helix execute implementation`
-- `ddx workflow helix execute implementation bd-abc123`
-- `ddx workflow helix execute implementation US-042`
-- `ddx workflow helix execute implementation area:auth`
+- `helix implement`
+- `helix implement bd-abc123`
+- `helix implement US-042`
+- `helix implement area:auth`
 
 If no argument is given, choose the best ready HELIX execution bead.
 

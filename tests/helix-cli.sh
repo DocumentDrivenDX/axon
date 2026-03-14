@@ -221,7 +221,84 @@ EOF
   cat >"$root/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf 'claude mock %s\n' "$*"
+
+state_root="${MOCK_STATE_ROOT:?}"
+
+if [[ "$*" != *"--dangerously-skip-permissions"* ]]; then
+  echo "mock claude expected --dangerously-skip-permissions" >&2
+  exit 1
+fi
+
+if [[ "$*" != *"--no-session-persistence"* ]]; then
+  echo "mock claude expected --no-session-persistence" >&2
+  exit 1
+fi
+
+if [[ "${MOCK_EXPECT_BEADS_DIRECT:-0}" == "1" && "${BEADS_DOLT_SERVER_MODE:-}" != "0" ]]; then
+  echo "mock claude expected BEADS_DOLT_SERVER_MODE=0" >&2
+  exit 1
+fi
+
+payload="$*"
+mode="${MOCK_BACKFILL_MODE:-complete}"
+
+record() {
+  printf '%s\n' "$1" >> "$state_root/calls.log"
+}
+
+next_action() {
+  local file="$state_root/next-actions"
+  if [[ ! -s "$file" ]]; then
+    echo STOP
+    return
+  fi
+  head -n1 "$file"
+  tail -n +2 "$file" > "$file.tmp" || true
+  mv "$file.tmp" "$file"
+}
+
+case "$payload" in
+  *"implementation action"*)
+    record implement
+    echo "implementation complete"
+    ;;
+  *"check action"*)
+    record check
+    action="$(next_action)"
+    printf 'NEXT_ACTION: %s\n' "$action"
+    echo "Recommended Command: mock"
+    ;;
+  *"alignment action"*)
+    if [[ "${MOCK_ALIGN_FAIL:-0}" == "1" ]]; then
+      echo "mock alignment failure" >&2
+      exit 1
+    fi
+    record align
+    echo "alignment complete"
+    ;;
+  *"backfill action"*)
+    record backfill
+    case "$mode" in
+      complete)
+        mkdir -p docs/helix/06-iterate/backfill-reports
+        report="docs/helix/06-iterate/backfill-reports/BF-2099-01-01-repo.md"
+        printf '# mock backfill report\n' > "$report"
+        echo "Backfill Metadata"
+        echo "BACKFILL_STATUS: COMPLETE"
+        echo "BACKFILL_REPORT: $report"
+        echo "RESEARCH_EPIC: bd-mock-backfill"
+        ;;
+      *)
+        echo "unsupported mock backfill mode: $mode" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  *)
+    record other
+    echo "mock claude"
+    ;;
+esac
 EOF
 
   chmod +x "$root/bin/bd" "$root/bin/codex" "$root/bin/claude"
@@ -446,6 +523,135 @@ test_installer_creates_launcher() {
   rm -rf "$root"
 }
 
+test_claude_run_stops_after_queue_drains() {
+  local root
+  root="$(make_workspace)"
+  printf '1\n1\n0\n' > "$root/state/ready-seq"
+  printf 'STOP\n' > "$root/state/next-actions"
+
+  local output
+  output="$(run_helix "$root" run --claude 2>&1)"
+
+  local calls
+  calls="$(cat "$root/state/calls.log")"
+  assert_eq $'implement\nimplement\ncheck' "$calls" "claude run should implement until drained, then check once"
+  assert_contains "$output" "helix: stopping after check returned STOP" "claude run should report why it stopped"
+  rm -rf "$root"
+}
+
+test_claude_run_auto_aligns() {
+  local root
+  root="$(make_workspace)"
+  printf '0\n0\n' > "$root/state/ready-seq"
+  printf 'ALIGN\nSTOP\n' > "$root/state/next-actions"
+
+  run_helix "$root" run --claude >/dev/null
+
+  local calls
+  calls="$(cat "$root/state/calls.log")"
+  assert_eq $'check\nalign\ncheck' "$calls" "claude run should auto-align when check returns ALIGN"
+  rm -rf "$root"
+}
+
+test_claude_check_dry_run() {
+  local root
+  root="$(make_workspace)"
+  local output
+  output="$(run_helix "$root" check --claude --dry-run repo)"
+  assert_contains "$output" "claude -p --permission-mode bypassPermissions" "claude dry-run should print claude command"
+  assert_contains "$output" "check action" "claude dry-run should reference check action"
+  rm -rf "$root"
+}
+
+test_claude_run_beads_direct_mode() {
+  local root
+  root="$(make_workspace)"
+  printf '0\n' > "$root/state/ready-seq"
+  printf 'STOP\n' > "$root/state/next-actions"
+
+  BEADS_DOLT_SERVER_MODE=0 \
+  MOCK_REQUIRE_SANDBOX=1 \
+  MOCK_EXPECT_BEADS_DIRECT=1 \
+    run_helix "$root" run --claude >/dev/null
+
+  local calls
+  calls="$(cat "$root/state/calls.log")"
+  assert_eq $'check' "$calls" "claude run should keep Beads direct mode on"
+  rm -rf "$root"
+}
+
+test_run_auto_unblock_on_wait() {
+  local root
+  root="$(make_workspace)"
+  printf '0\n0\n' > "$root/state/ready-seq"
+  # First check returns WAIT, unblock attempt runs, second check returns STOP
+  printf 'WAIT\nSTOP\n' > "$root/state/next-actions"
+
+  local output
+  output="$(run_helix "$root" run 2>&1)"
+
+  local calls
+  calls="$(cat "$root/state/calls.log")"
+  assert_eq $'check\nimplement\ncheck' "$calls" "run should attempt implementation when check returns WAIT, then re-check"
+  assert_contains "$output" "attempting to unblock" "run should report unblock attempt"
+  rm -rf "$root"
+}
+
+test_run_no_auto_unblock_flag() {
+  local root
+  root="$(make_workspace)"
+  printf '0\n' > "$root/state/ready-seq"
+  printf 'WAIT\n' > "$root/state/next-actions"
+
+  local output
+  output="$(run_helix "$root" run --no-auto-unblock 2>&1)"
+
+  local calls
+  calls="$(cat "$root/state/calls.log")"
+  assert_eq $'check' "$calls" "run --no-auto-unblock should not attempt implementation on WAIT"
+  assert_contains "$output" "stopping after check returned WAIT" "run should stop on WAIT with --no-auto-unblock"
+  rm -rf "$root"
+}
+
+test_extract_next_action_from_claude_output() {
+  extract_next_action() {
+    local stripped
+    stripped="$(printf '%s\n' "$1" | sed 's/[*`]//g')"
+    local result
+    result="$(printf '%s\n' "$stripped" | grep -oE 'NEXT_ACTION: *(IMPLEMENT|ALIGN|BACKFILL|WAIT|GUIDANCE|STOP)' | head -n1 | sed 's/^NEXT_ACTION: *//')"
+    printf '%s' "$result"
+  }
+
+  # Plain text mid-output
+  local result
+  result="$(extract_next_action "## Queue Health
+NEXT_ACTION: IMPLEMENT
+Target bead: adt.2.1")"
+  assert_eq "IMPLEMENT" "$result" "extract plain NEXT_ACTION"
+
+  # Bold-wrapped: **NEXT_ACTION: WAIT**
+  result="$(extract_next_action "**NEXT_ACTION: WAIT**")"
+  assert_eq "WAIT" "$result" "extract bold-wrapped NEXT_ACTION"
+
+  # Backtick-wrapped: \`NEXT_ACTION: STOP\`
+  result="$(extract_next_action '`NEXT_ACTION: STOP`')"
+  assert_eq "STOP" "$result" "extract backtick-wrapped NEXT_ACTION"
+
+  # Bold code split: **NEXT_ACTION:** GUIDANCE
+  result="$(extract_next_action '**NEXT_ACTION:** GUIDANCE')"
+  assert_eq "GUIDANCE" "$result" "extract bold-key NEXT_ACTION"
+
+  # Bold value: NEXT_ACTION: **ALIGN**
+  result="$(extract_next_action 'NEXT_ACTION: **ALIGN**')"
+  assert_eq "ALIGN" "$result" "extract bold-value NEXT_ACTION"
+
+  # Code block line: \`NEXT_ACTION: BACKFILL\`
+  result="$(extract_next_action 'Some preamble
+\`NEXT_ACTION: BACKFILL\`
+Some epilogue')"
+  assert_eq "BACKFILL" "$result" "extract code-inline NEXT_ACTION"
+}
+
 run_test() {
   local name="$1"
   shift
@@ -468,5 +674,12 @@ run_test "run beads direct mode" test_run_uses_beads_direct_mode_for_wrapper_and
 run_test "backfill requires report marker" test_backfill_requires_report_marker
 run_test "backfill creates report" test_backfill_creates_report
 run_test "installer launcher" test_installer_creates_launcher
+run_test "claude run stops after drain" test_claude_run_stops_after_queue_drains
+run_test "claude auto-align" test_claude_run_auto_aligns
+run_test "claude check dry-run" test_claude_check_dry_run
+run_test "claude beads direct mode" test_claude_run_beads_direct_mode
+run_test "auto-unblock on WAIT" test_run_auto_unblock_on_wait
+run_test "no-auto-unblock flag" test_run_no_auto_unblock_flag
+run_test "extract NEXT_ACTION from claude output" test_extract_next_action_from_claude_output
 
 echo "PASS: ${test_count} helix wrapper tests"

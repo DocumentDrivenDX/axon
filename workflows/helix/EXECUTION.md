@@ -28,14 +28,14 @@ This document owns HELIX execution behavior.
 
 HELIX uses four top-level execution actions:
 
-- `ddx workflow helix execute implementation`
+- `helix implement`
   Executes one ready execution bead end-to-end, then exits.
-- `ddx workflow helix execute check`
+- `helix check`
   Determines whether the next step is implementation, alignment, backfill,
   waiting, guidance, or stopping.
-- `ddx workflow helix execute reconcile-alignment <scope>`
+- `helix align <scope>`
   Runs a top-down reconciliation review and can emit follow-up execution beads.
-- `ddx workflow helix execute backfill-helix-docs <scope>`
+- `helix backfill <scope>`
   Reconstructs missing HELIX docs conservatively from current evidence.
 
 ## Execution Model
@@ -72,10 +72,10 @@ This is the minimal safe operator loop:
 
 ```bash
 while [ "$(helix_ready_count)" -gt 0 ]; do
-  ddx workflow helix execute implementation
+  helix implement
 done
 
-ddx workflow helix execute check
+helix check
 ```
 
 Interpret `check` as follows:

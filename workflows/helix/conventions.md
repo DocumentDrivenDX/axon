@@ -421,11 +421,8 @@ Addresses bugs discovered during implementation phase.
 
 Use the standard refinement template for consistency:
 ```bash
-# Apply refinement template
-ddx apply workflows/helix/templates/refinement-log.md docs/helix/06-iterate/refinements/US-001-refinement-001.md
-
-# Fill template variables
-STORY_ID=US-001 REFINEMENT_NUMBER=001 REFINEMENT_TYPE=bugs ddx apply ...
+# Copy and fill the refinement template
+cp workflows/helix/templates/refinement-log.md docs/helix/06-iterate/refinements/US-001-refinement-001.md
 ```
 
 ## Evolution

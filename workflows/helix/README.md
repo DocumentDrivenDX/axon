@@ -223,7 +223,7 @@ HELIX may not be suitable for:
 
 ```bash
 # Quick start - initialize HELIX in your project
-ddx workflow apply helix
+helix run
 
 # Or follow the comprehensive guide
 open workflows/helix/QUICKSTART.md
@@ -312,4 +312,4 @@ HELIX is continuously improving based on practitioner feedback. To contribute:
 
 ---
 
-*Start your HELIX journey today with `ddx workflow apply helix`*
+*Start your HELIX journey today with `helix run`*

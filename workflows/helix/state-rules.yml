@@ -198,16 +198,12 @@ execution_integration:
   commands:
     implementation:
       description: "Execute one ready HELIX execution bead"
-      example: "ddx workflow helix execute implementation"
+      example: "helix implement"
 
     check:
       description: "Decide whether to implement, align, backfill, wait, ask for guidance, or stop"
-      example: "ddx workflow helix execute check"
+      example: "helix check"
 
     run:
       description: "Run the bounded wrapper loop"
       example: "helix run"
-
-    validate:
-      description: "Check artifact progression and gate rules"
-      example: "ddx workflow validate US-001"

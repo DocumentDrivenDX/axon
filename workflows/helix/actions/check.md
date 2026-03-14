@@ -19,10 +19,10 @@ You may receive:
 
 Examples:
 
-- `ddx workflow helix execute check`
-- `ddx workflow helix execute check repo`
-- `ddx workflow helix execute check FEAT-003`
-- `ddx workflow helix execute check area:auth`
+- `helix check`
+- `helix check repo`
+- `helix check FEAT-003`
+- `helix check area:auth`
 
 If no scope is given, default to the repository.
 
@@ -42,7 +42,7 @@ Use them precisely:
 - `IMPLEMENT`: one or more ready HELIX execution beads exist and should be worked now
 - `ALIGN`: no safe ready execution bead exists, but reconciliation should create or refine the next work set
 - `BACKFILL`: the canonical HELIX stack is too incomplete to continue safely
-- `WAIT`: there is open work, but it is currently claimed elsewhere or blocked by external dependencies
+- `WAIT`: there is open work, but it is claimed by another agent or blocked by a truly external dependency that code changes cannot resolve
 - `GUIDANCE`: user or stakeholder input is required before safe work can continue
 - `STOP`: there is no actionable work remaining for the scope right now
 
@@ -117,11 +117,18 @@ Apply these rules in order:
    - the canonical HELIX stack is missing or too incomplete to continue safely
 3. Recommend `ALIGN` when:
    - the planning stack exists, but no safe ready execution bead exists and a reconciliation pass is likely to expose or refine the next work
-4. Recommend `WAIT` when:
-   - work exists, but it is already in progress, deferred, or externally blocked
-5. Recommend `GUIDANCE` when:
+4. Recommend `IMPLEMENT` (not `WAIT`) when:
+   - work is blocked, but the blocking beads themselves are actionable
+     (e.g., config changes, migrations, infrastructure-as-code fixes)
+   - in this case, recommend implementing the blocker bead directly
+5. Recommend `WAIT` when:
+   - work exists, but is claimed by another agent or blocked on a truly
+     external dependency that cannot be resolved by code changes (e.g.,
+     waiting for a third-party service, hardware provisioning, or human
+     approval)
+6. Recommend `GUIDANCE` when:
    - a user or stakeholder decision is the real blocker
-6. Recommend `STOP` when:
+7. Recommend `STOP` when:
    - there are no ready execution beads
    - no missing planning work is indicated
    - no blocked or in-progress scope requires action
@@ -134,11 +141,11 @@ exhaustion from planning gaps.
 Provide the exact next command for the recommended action where possible:
 
 - `IMPLEMENT`:
-  - `ddx workflow helix execute implementation`
+  - `helix implement`
 - `ALIGN`:
-  - `ddx workflow helix execute reconcile-alignment <scope>`
+  - `helix align <scope>`
 - `BACKFILL`:
-  - `ddx workflow helix execute backfill-helix-docs <scope>`
+  - `helix backfill <scope>`
 
 For `WAIT`, `GUIDANCE`, or `STOP`, provide the exact reason and the condition
 that would change the result.

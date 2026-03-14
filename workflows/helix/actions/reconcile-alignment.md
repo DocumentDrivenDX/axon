@@ -19,10 +19,10 @@ make fixes. It may create or update:
 
 You will receive a review scope as an argument, for example:
 
-- `ddx workflow helix execute reconcile-alignment repo`
-- `ddx workflow helix execute reconcile-alignment auth`
-- `ddx workflow helix execute reconcile-alignment FEAT-003`
-- `ddx workflow helix execute reconcile-alignment US-042`
+- `helix align repo`
+- `helix align auth`
+- `helix align FEAT-003`
+- `helix align US-042`
 
 If no scope is given, default to the repository.
 

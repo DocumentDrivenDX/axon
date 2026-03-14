@@ -317,10 +317,10 @@ Use the current HELIX queue controls with this hierarchy:
 bd ready --label helix --json
 
 # Execute one ready bead
-ddx workflow helix execute implementation
+helix implement
 
 # Decide the next action when the queue drains
-ddx workflow helix execute check
+helix check
 
 # Run the wrapper loop
 helix run

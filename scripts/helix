@@ -21,6 +21,7 @@ agent="${HELIX_AGENT:-codex}"
 review_every=0
 max_cycles=0
 auto_align=1
+auto_unblock=1
 dry_run=0
 beads_sandbox=0
 
@@ -47,9 +48,12 @@ Commands:
 
 Options:
   --agent           Agent to use: codex or claude (default: ${agent})
+  --claude          Shorthand for --agent claude
+  --codex           Shorthand for --agent codex
   --review-every    Run alignment every N completed implementation cycles
   --max-cycles      Stop after N completed implementation cycles
   --no-auto-align   Do not auto-run alignment when check returns ALIGN
+  --no-auto-unblock Do not attempt implementation when check returns WAIT
   --dry-run         Print the agent command instead of executing it
 
 Environment:
@@ -133,16 +137,16 @@ run_agent_prompt() {
       need_cmd claude
       if (( dry_run )); then
         if (( beads_sandbox )); then
-          printf 'env BEADS_DOLT_SERVER_MODE=0 claude -p --permission-mode bypassPermissions --dangerously-skip-permissions --no-session-persistence %q\n' "$prompt"
+          printf 'cd %q && env BEADS_DOLT_SERVER_MODE=0 claude -p --permission-mode bypassPermissions --dangerously-skip-permissions --no-session-persistence %q\n' "$target_root" "$prompt"
         else
-          printf 'claude -p --permission-mode bypassPermissions --dangerously-skip-permissions --no-session-persistence %q\n' "$prompt"
+          printf 'cd %q && claude -p --permission-mode bypassPermissions --dangerously-skip-permissions --no-session-persistence %q\n' "$target_root" "$prompt"
         fi
       else
-        run_with_beads_env claude -p \
+        (cd "$target_root" && run_with_beads_env claude -p \
           --permission-mode bypassPermissions \
           --dangerously-skip-permissions \
           --no-session-persistence \
-          "$prompt"
+          "$prompt")
       fi
       ;;
     *)
@@ -152,17 +156,29 @@ run_agent_prompt() {
   esac
 }
 
+inline_action() {
+  local action_file="$1"
+  if [[ "$agent" == "claude" ]] && [[ -f "$action_file" ]]; then
+    printf '\n<action>\n'
+    cat "$action_file"
+    printf '\n</action>\n'
+  else
+    printf 'Use the action at %s.\n' "$action_file"
+  fi
+}
+
 implementation_prompt() {
   local selector="${1:-}"
   local sandbox_note
   sandbox_note="$(beads_prompt_note)"
   cat <<EOF
-Use the HELIX implementation action at ${helix_docs_root}/actions/implementation.md.
+Execute the following HELIX implementation action.
+$(inline_action "${helix_docs_root}/actions/implementation.md")
 Use supporting references at ${helix_docs_root}/BEADS.md, ${helix_docs_root}/README.md, and ${helix_docs_root}/phases/04-build/enforcer.md as needed.
 Execute in the current repository rooted at ${target_root}.
 ${sandbox_note}
 ${selector:+Implementation target: ${selector}.}
-Follow the action exactly.
+Follow the action exactly. Do the work — do not just describe what you would do.
 EOF
 }
 
@@ -171,13 +187,14 @@ check_prompt() {
   local sandbox_note
   sandbox_note="$(beads_prompt_note)"
   cat <<EOF
-Use the HELIX check action at ${helix_docs_root}/actions/check.md.
+Execute the following HELIX check action.
+$(inline_action "${helix_docs_root}/actions/check.md")
 Use supporting references at ${helix_docs_root}/BEADS.md and ${helix_docs_root}/README.md as needed.
 Execute in the current repository rooted at ${target_root}.
 ${sandbox_note}
 Review scope: ${scope}.
-Return the required NEXT_ACTION line and the exact next command.
-Follow the action exactly.
+CRITICAL: Your output MUST contain the line "NEXT_ACTION: CODE" where CODE is one of IMPLEMENT, ALIGN, BACKFILL, WAIT, GUIDANCE, or STOP. This line must appear on its own, not inside a code block or backticks. Without this line the automation cannot continue. Output this line FIRST, before any other analysis.
+Follow the action exactly. Do the work — do not just describe what you would do.
 EOF
 }
 
@@ -186,12 +203,13 @@ alignment_prompt() {
   local sandbox_note
   sandbox_note="$(beads_prompt_note)"
   cat <<EOF
-Use the HELIX alignment action at ${helix_docs_root}/actions/reconcile-alignment.md.
+Execute the following HELIX alignment action.
+$(inline_action "${helix_docs_root}/actions/reconcile-alignment.md")
 Use supporting references at ${helix_docs_root}/BEADS.md, ${helix_docs_root}/README.md, and ${helix_docs_root}/templates/alignment-review.md as needed.
 Execute in the current repository rooted at ${target_root}.
 ${sandbox_note}
 Review scope: ${scope}.
-Follow the action exactly.
+Follow the action exactly. Do the work — do not just describe what you would do.
 EOF
 }
 
@@ -200,14 +218,15 @@ backfill_prompt() {
   local sandbox_note
   sandbox_note="$(beads_prompt_note)"
   cat <<EOF
-Use the HELIX backfill action at ${helix_docs_root}/actions/backfill-helix-docs.md.
+Execute the following HELIX backfill action.
+$(inline_action "${helix_docs_root}/actions/backfill-helix-docs.md")
 Use supporting references at ${helix_docs_root}/BEADS.md, ${helix_docs_root}/README.md, and ${helix_docs_root}/templates/backfill-report.md as needed.
 Execute in the current repository rooted at ${target_root}.
 ${sandbox_note}
 This is a writable live session: run real bd commands, update docs/helix/, and do not claim that you need another session unless a concrete command actually fails.
 Backfill scope: ${scope}.
 Return the required BACKFILL_STATUS, BACKFILL_REPORT, and RESEARCH_EPIC trailer lines exactly.
-Follow the action exactly.
+Follow the action exactly. Do the work — do not just describe what you would do.
 EOF
 }
 
@@ -223,19 +242,24 @@ helix_ready_count() {
 }
 
 extract_next_action() {
-  printf '%s\n' "$1" | grep -E '^NEXT_ACTION: ' | head -n1 | sed 's/^NEXT_ACTION: //'
+  local stripped
+  # Strip markdown bold/backtick formatting but preserve underscores
+  stripped="$(printf '%s\n' "$1" | sed 's/[*`]//g')"
+  local result
+  result="$(printf '%s\n' "$stripped" | grep -oE 'NEXT_ACTION: *(IMPLEMENT|ALIGN|BACKFILL|WAIT|GUIDANCE|STOP)' | head -n1 | sed 's/^NEXT_ACTION: *//')"
+  printf '%s' "$result"
 }
 
 extract_backfill_status() {
-  printf '%s\n' "$1" | grep -E '^BACKFILL_STATUS: ' | head -n1 | sed 's/^BACKFILL_STATUS: //'
+  printf '%s\n' "$1" | grep -oE 'BACKFILL_STATUS: *(COMPLETE|GUIDANCE_NEEDED|BLOCKED)' | head -n1 | sed 's/^BACKFILL_STATUS: *//'
 }
 
 extract_backfill_report() {
-  printf '%s\n' "$1" | grep -E '^BACKFILL_REPORT: ' | head -n1 | sed 's/^BACKFILL_REPORT: //'
+  printf '%s\n' "$1" | grep -oE 'BACKFILL_REPORT: *[^ ]+' | head -n1 | sed 's/^BACKFILL_REPORT: *//'
 }
 
 extract_research_epic() {
-  printf '%s\n' "$1" | grep -E '^RESEARCH_EPIC: ' | head -n1 | sed 's/^RESEARCH_EPIC: //'
+  printf '%s\n' "$1" | grep -oE 'RESEARCH_EPIC: *[^ ]+' | head -n1 | sed 's/^RESEARCH_EPIC: *//'
 }
 
 parse_common_flags() {
@@ -244,6 +268,14 @@ parse_common_flags() {
       --agent)
         agent="$2"
         shift 2
+        ;;
+      --claude)
+        agent="claude"
+        shift
+        ;;
+      --codex)
+        agent="codex"
+        shift
         ;;
       --dry-run)
         dry_run=1
@@ -343,6 +375,7 @@ run_backfill() {
 run_loop() {
   local cycles=0
   local post_drain_alignment_ran=0
+  local unblock_attempts=0
 
   need_cmd jq
   require_live_beads
@@ -403,7 +436,20 @@ run_loop() {
         echo "helix: stopping after check returned ALIGN" >&2
         return 0
         ;;
-      BACKFILL|WAIT|GUIDANCE|STOP)
+      WAIT)
+        if (( auto_unblock )) && (( unblock_attempts == 0 )); then
+          unblock_attempts=1
+          printf 'helix: check returned WAIT, attempting to unblock\n' >&2
+          if run_implementation; then
+            continue
+          fi
+          printf 'helix: unblock attempt failed, stopping\n' >&2
+        else
+          printf 'helix: stopping after check returned WAIT\n' >&2
+        fi
+        return 0
+        ;;
+      BACKFILL|GUIDANCE|STOP)
         printf 'helix: stopping after check returned %s\n' "$next_action" >&2
         return 0
         ;;
@@ -439,6 +485,10 @@ main() {
             ;;
           --no-auto-align)
             auto_align=0
+            shift
+            ;;
+          --no-auto-unblock)
+            auto_unblock=0
             shift
             ;;
           *)

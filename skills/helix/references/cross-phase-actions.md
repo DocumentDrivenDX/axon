@@ -11,7 +11,7 @@ Use when:
 - the ready queue has drained and the next step is unclear
 - the user wants an operational answer such as implement, align, backfill, wait, ask for guidance, or stop
 
-If the repo vendors DDx HELIX, read:
+Reference docs:
 
 - `workflows/helix/actions/check.md`
 - `workflows/helix/BEADS.md`
@@ -32,7 +32,7 @@ Use when:
 - the codebase exists but the planning stack does not
 - the user wants HELIX docs reconstructed from current evidence
 
-If the repo vendors DDx HELIX, read:
+Reference docs:
 
 - `workflows/helix/actions/backfill-helix-docs.md`
 - `workflows/helix/templates/backfill-report.md`
@@ -54,7 +54,7 @@ Use when:
 - the planning stack already exists and needs reconciliation against implementation
 - the user wants drift classification, traceability auditing, or remediation planning
 
-If the repo vendors DDx HELIX, read:
+Reference docs:
 
 - `workflows/helix/actions/reconcile-alignment.md`
 - `workflows/helix/templates/alignment-review.md`

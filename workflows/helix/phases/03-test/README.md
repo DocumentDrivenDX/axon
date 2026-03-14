@@ -28,7 +28,7 @@ Prerequisites to enter this phase (defined in `input-gates.yml`):
 
 1. **Design documents complete and approved**
    - Requirement: Architecture and API contracts fully specified
-   - Validation: `ddx validate design-docs` or manual review checklist
+   - Validation: manual review checklist or manual review checklist
    - Source: 02-design phase
 
 2. **User stories have clear acceptance criteria**

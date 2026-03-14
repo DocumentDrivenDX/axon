@@ -16,13 +16,11 @@ Use this skill for repo-wide or area-scoped reconciliation reviews.
 
 ## Startup
 
-If the repo vendors DDx HELIX, read:
+Reference docs:
 
 - `workflows/helix/actions/reconcile-alignment.md`
 - `workflows/helix/templates/alignment-review.md`
 - `workflows/helix/BEADS.md`
-
-Otherwise, use the bundled references in this skill.
 
 ## Core Rules
 

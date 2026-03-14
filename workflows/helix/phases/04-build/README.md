@@ -51,9 +51,9 @@ per-story markdown plans. Build beads:
 The canonical execution entry point for ready work is:
 
 ```bash
-ddx workflow helix execute implementation
-ddx workflow helix execute implementation bd-abc123
-ddx workflow helix execute implementation US-042
+helix implement
+helix implement bd-abc123
+helix implement US-042
 ```
 
 This action handles one bead per run: it selects or loads a ready execution
@@ -69,7 +69,7 @@ When the ready queue drains, do not switch to an unconditional loop. Run the
 cross-phase queue-health action instead:
 
 ```bash
-ddx workflow helix execute check
+helix check
 ```
 
 That action determines whether the next step is more implementation,

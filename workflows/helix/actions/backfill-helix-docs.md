@@ -18,10 +18,10 @@ This action may create or update:
 
 You will receive a backfill scope as an argument, for example:
 
-- `ddx workflow helix execute backfill-helix-docs repo`
-- `ddx workflow helix execute backfill-helix-docs payments`
-- `ddx workflow helix execute backfill-helix-docs FEAT-003`
-- `ddx workflow helix execute backfill-helix-docs auth`
+- `helix backfill repo`
+- `helix backfill payments`
+- `helix backfill FEAT-003`
+- `helix backfill auth`
 
 If no scope is given, default to the repository.
 
