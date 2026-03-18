@@ -40,6 +40,10 @@ Key rules:
 - Keep alignment and backfill as separate cross-phase actions:
   - `workflows/helix/actions/reconcile-alignment.md`
   - `workflows/helix/actions/backfill-helix-docs.md`
+- Quality ratchets are documented in `workflows/helix/ratchets.md`. Ratchet
+  enforcement scripts and floor fixtures belong in adopting projects, not in
+  this repo. This repo defines the pattern and the integration points in
+  action prompts and enforcers.
 
 ## HELIX CLI
 
