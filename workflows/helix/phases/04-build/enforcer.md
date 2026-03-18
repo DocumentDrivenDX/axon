@@ -82,11 +82,12 @@ When implementing:
 - [ ] Code review completed
 - [ ] Documentation updated
 - [ ] No critical issues
-- [ ] Coverage targets met
+- [ ] Coverage targets met (enforced by coverage ratchet when adopted — see `workflows/helix/ratchets.md`)
 - [ ] Build artifacts created
 - [ ] Integration tests passing
-- [ ] Performance targets met
+- [ ] Performance targets met (enforced by performance ratchet when adopted — see `workflows/helix/ratchets.md`)
 - [ ] Security scans passed
+- [ ] Ratchet floors maintained or auto-bumped (no ratchet regression without override protocol)
 
 ## Common Anti-Patterns to Prevent
 

@@ -159,6 +159,10 @@ For each user story and feature spec in the reviewed scope:
    - **UNIMPLEMENTED** — no implementation addresses this criterion
 4. Record results in the Gap Register with the governing artifact as planning
    evidence and the test or code file as implementation evidence.
+5. If the project has adopted an acceptance criteria ratchet
+   (see `workflows/helix/ratchets.md`), compare the current satisfaction
+   count against the committed floor. Flag any regression — a decrease in
+   SATISFIED criteria that was not accompanied by a floor override.
 
 ## PHASE 4 - Gap Classification
 
@@ -255,6 +259,11 @@ After creating execution beads, verify completeness:
 If coverage gaps remain, create the missing execution beads before proceeding.
 The bead set must fully represent the work required to move from current state
 to the end state defined by the planning stack.
+
+If a ratchet regression was detected in Phase 3, create a regression bead that
+references the specific criteria or metrics that dropped below the floor. The
+bead must include the previous floor value, the current measured value, and the
+governing artifact where the regression is visible.
 
 ## PHASE 8 - Execution Order
 

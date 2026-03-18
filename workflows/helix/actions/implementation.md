@@ -93,6 +93,9 @@ scope, or missing verification must be refined before implementation.
 3. Load project quality and completeness gates.
    - Read relevant HELIX guidance such as `workflows/helix/phases/04-build/enforcer.md`
      and any repo-specific CI, lint, test, security, or release rules.
+   - Load ratchet floor fixtures if the project has adopted quality ratchets
+     (see `workflows/helix/ratchets.md`). Note the current floors so Phase 7
+     can compare against them.
 
 ## PHASE 1 - Candidate Discovery
 
@@ -233,6 +236,9 @@ At minimum, verify:
 - lint, type, format, or static analysis gates pass if defined by the project
 - docs/config/runbooks are updated where required
 - any build, deploy, or iterate phase exit conditions touched by the work are still valid
+- ratchet enforcement commands pass if the project has adopted quality ratchets
+  (see `workflows/helix/ratchets.md`). If a ratchet auto-bump is triggered,
+  include the updated floor fixture in the bead commit.
 
 If the repository defines canonical verification wrappers or proof lanes, use
 those wrappers for closure evidence. Narrower package or file commands are for

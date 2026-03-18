@@ -88,6 +88,7 @@ When documenting learnings:
 - [ ] Next iteration planned
 - [ ] Stakeholders informed
 - [ ] Decisions documented
+- [ ] Ratchet floor trends reviewed (compare current floors to cycle start — see `workflows/helix/ratchets.md`)
 
 ## Common Anti-Patterns to Prevent
 
@@ -262,6 +263,10 @@ Track iteration-over-iteration:
 - **Satisfaction**: Users happier?
 - **Efficiency**: Less rework?
 - **Learning**: Better predictions?
+- **Ratchet Trends**: Are floors advancing? A stagnant coverage floor suggests
+  the test strategy needs attention. A stagnant acceptance satisfaction floor
+  suggests requirements are outpacing implementation. Include floor deltas in
+  iteration reports and use them to prioritize next-cycle work.
 
 ## Stakeholder Communication
 
