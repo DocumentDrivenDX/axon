@@ -314,7 +314,7 @@ Use the current HELIX queue controls with this hierarchy:
 
 ```bash
 # Inspect the current queue
-bd ready --label helix --json
+bd ready --json
 
 # Execute one ready bead
 helix implement

@@ -96,9 +96,12 @@ them as the closure surface for the corresponding bead.
 
 ## HELIX Label Conventions
 
-Every HELIX bead should have:
+Labels are organizational conventions for triage and traceability. The
+execution loop queue guard does not filter by label — it uses all ready beads.
 
-- `helix`
+Recommended labels:
+
+- `helix` — identifies HELIX-managed beads; useful for triage and cross-repo queries
 - one phase label: `phase:build`, `phase:deploy`, `phase:iterate`, or `phase:review`
 
 Add labels as needed for traceability:
@@ -187,8 +190,8 @@ manually.
 Find ready work:
 
 ```bash
-bd ready --label helix --label phase:build
-bd ready --label helix --label phase:iterate --label kind:backlog
+bd ready --json
+bd ready                # human-readable summary
 ```
 
 Claim, inspect, and close work:
@@ -206,6 +209,47 @@ Check blocked work or epic progress:
 bd blocked
 bd epic status
 ```
+
+## Alternative: br (Beads Rust)
+
+[br](https://github.com/Dicklesworthstone/beads_rust) is a Rust port of beads
+that uses SQLite + JSONL instead of Dolt. It is a lighter-weight alternative
+for projects that do not need Dolt-based distributed sync.
+
+Install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/beads_rust/main/install.sh | bash
+```
+
+The core workflow commands map directly:
+
+| Operation | bd | br |
+|---|---|---|
+| Initialize | `bd init` | `br init` |
+| Find ready work | `bd ready --json` | `br ready --json` |
+| Create issue | `bd create "title" --labels helix,phase:build` | `br create "title"` then `br label add <id> helix phase:build` |
+| Claim work | `bd update <id> --claim` | `br update <id> --status in_progress` |
+| Show issue | `bd show <id>` | `br show <id>` |
+| Close issue | `bd close <id>` | `br close <id>` |
+| Add dependency | `bd dep add <child> <parent>` | `br dep add <child> <parent>` |
+| Blocked work | `bd blocked` | `br list --status blocked` |
+| Export for git | automatic (JSONL mirror) | `br sync --flush-only` |
+
+Key differences:
+
+- **Storage**: bd uses Dolt (version-controlled SQL); br uses SQLite with JSONL
+  export for git collaboration.
+- **Sync**: bd supports Dolt remotes for multi-agent coordination; br uses
+  explicit `br sync` to import/export JSONL through git.
+- **Hooks**: bd auto-installs git hooks; br never touches git automatically.
+- **Labels on create**: bd supports `--labels` inline; br requires a separate
+  `br label add` call after creation.
+- **Claiming**: bd uses `--claim`; br uses `--status in_progress`.
+
+Both support `--json` output on all commands. The HELIX execution loop works
+with either — the queue guard uses `ready --json | jq 'length'` which is
+identical across both tools.
 
 ## Troubleshooting Local vs Remote Health
 

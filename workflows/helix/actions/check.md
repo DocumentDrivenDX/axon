@@ -65,7 +65,7 @@ Rules:
 - Tests govern build execution but do not override requirements or design.
 - Source code reflects current state but does not redefine the plan.
 - Do not treat open implementation work as proof that the plan is complete.
-- Prefer a real `bd ready` view over status-only heuristics such as `bd list --ready`.
+- Prefer a real `bd ready` (or `br ready`) view over status-only heuristics such as `bd list --ready`.
 
 ## PHASE 0 - Bootstrap
 
@@ -84,14 +84,9 @@ Inspect the current execution queue using blocker-aware Beads commands.
 At minimum, inspect:
 
 - `bd status --json` for global queue health
-- `bd ready --json` filtered to HELIX execution beads
+- `bd ready --json` (or `br ready --json`)
 - `bd list --status in_progress --label helix --json` for active claimed work
 - `bd blocked --json` and open HELIX beads for blocked work when relevant
-
-Preferred ready-work filter:
-
-- label `helix`
-- any of `phase:build`, `phase:deploy`, or `phase:iterate`
 
 Do not use review beads as evidence that implementation should continue.
 

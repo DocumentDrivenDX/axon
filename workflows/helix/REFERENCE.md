@@ -62,29 +62,27 @@ helix backfill repo
 ### Beads
 
 ```bash
-bd ready --label helix --json
-bd update <id> --claim
-bd show <id>
-bd dep tree <id>
+bd ready --json              # or: br ready --json
+bd update <id> --claim       # or: br update <id> --status in_progress
+bd show <id>                 # or: br show <id>
+bd dep tree <id>             # or: br dep add/remove/list
 bd blocked --json
-bd close <id>
+bd close <id>                # or: br close <id>
 bd doctor
-(cd .beads/dolt && dolt status && dolt fsck && dolt remote -v)
 ```
 
-`.beads/dolt` is the authoritative working database. A Dolt remote is
-optional; if one exists, it should be a proper shared remote, not a
-machine-local or CIFS/SMB-backed `file://` coordination path.
+See [BEADS.md](BEADS.md) for the full bd/br comparison and setup guidance.
 
 ## Beads Labeling
 
-- Always add `helix`.
-- Add exactly one phase label:
-  `phase:build`, `phase:deploy`, `phase:iterate`, or `phase:review`.
-- Add kind labels when useful:
-  `kind:build`, `kind:deploy`, `kind:backlog`, `kind:review`.
-- Add traceability labels when useful:
-  `story:US-XXX`, `feature:FEAT-XXX`, `area:<name>`, `source:metrics`.
+Labels are organizational conventions for triage and traceability. They are
+not required by the execution loop queue guard.
+
+Recommended labels:
+- `helix` — identifies HELIX-managed beads (recommended, not required by the queue guard).
+- Phase labels: `phase:build`, `phase:deploy`, `phase:iterate`, `phase:review`.
+- Kind labels: `kind:build`, `kind:deploy`, `kind:backlog`, `kind:review`.
+- Traceability labels: `story:US-XXX`, `feature:FEAT-XXX`, `area:<name>`, `source:metrics`.
 
 ## Decision Guide
 

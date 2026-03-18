@@ -65,11 +65,8 @@ Do not create custom HELIX bead files.
 
 This action works only on execution beads. Exclude review beads by default.
 
-Eligible beads typically have:
-
-- `helix`
-- one of `phase:build`, `phase:deploy`, or `phase:iterate`
-- no unresolved blockers in `bd`
+Eligible beads are ready (no unresolved blockers) and represent execution work
+rather than review work.
 
 Do not claim or implement `phase:review` beads with this action.
 
@@ -110,7 +107,7 @@ Determine the candidate set:
 
 Use upstream commands such as:
 
-- `bd ready`
+- `bd ready` (or `br ready`)
 - `bd show <id>`
 - `bd dep tree <id>`
 

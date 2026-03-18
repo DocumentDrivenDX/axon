@@ -109,7 +109,7 @@ If you are not using `helix run`, use the bounded manual loop from
 [EXECUTION.md](EXECUTION.md):
 
 ```bash
-while [ "$(bd ready --label helix --label-any phase:build --label-any phase:deploy --label-any phase:iterate --json | jq 'length')" -gt 0 ]; do
+while [ "$(bd ready --json | jq 'length')" -gt 0 ]; do
   helix implement
 done
 

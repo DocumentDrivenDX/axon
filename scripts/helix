@@ -233,12 +233,7 @@ EOF
 helix_ready_count() {
   need_cmd jq
 
-  bd_cmd ready \
-    --label helix \
-    --label-any phase:build \
-    --label-any phase:deploy \
-    --label-any phase:iterate \
-    --json | jq 'length'
+  bd_cmd ready --json | jq 'length'
 }
 
 extract_next_action() {

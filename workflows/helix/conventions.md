@@ -166,8 +166,8 @@ Every bead should:
 
 ### Label Conventions
 
-- Always add `helix`
-- Add exactly one phase label: `phase:build`, `phase:deploy`, `phase:iterate`, or `phase:review`
+- Add `helix` for discoverability (recommended, not required by the queue guard)
+- Add a phase label when applicable: `phase:build`, `phase:deploy`, `phase:iterate`, or `phase:review`
 - Add `kind:build`, `kind:deploy`, `kind:backlog`, or `kind:review` when helpful
 - Add traceability labels such as `story:US-XXX`, `feature:FEAT-XXX`, `source:metrics`, or `area:auth`
 - Use `bd ready`, `bd blocked`, and `bd dep tree` instead of relying on custom HELIX status fields

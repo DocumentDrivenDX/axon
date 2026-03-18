@@ -57,12 +57,7 @@ These examples assume `jq` is available.
 
 ```bash
 helix_ready_count() {
-  bd ready \
-    --label helix \
-    --label-any phase:build \
-    --label-any phase:deploy \
-    --label-any phase:iterate \
-    --json | jq 'length'
+  bd ready --json | jq 'length'
 }
 ```
 
