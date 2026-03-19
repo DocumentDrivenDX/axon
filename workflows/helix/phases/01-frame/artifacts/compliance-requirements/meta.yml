@@ -1,101 +1,133 @@
-name: Compliance Requirements
-description: Comprehensive regulatory and compliance requirements analysis
-category: compliance
-phase: 01-frame
-priority: high
-type: template
+# Metadata for Compliance Requirements
+
+artifact:
+  name: Compliance Requirements
+  id: compliance-requirements
+  type: document
+  phase: frame
+
+description: |
+  Comprehensive regulatory and compliance requirements analysis.
+  Identifies applicable regulations, maps requirements to implementation
+  controls, and defines a compliance validation plan.
 
 dependencies:
-  artifacts:
-    - prd
-    - security-requirements
-    - stakeholder-map
-  external:
-    - business_context
-    - regulatory_landscape
-    - legal_counsel_input
+  requires:
+    - input: Product Requirements Document
+      type: artifact
+      path: prd
+      required: true
+    - input: Security Requirements
+      type: artifact
+      path: security-requirements
+      required: true
+    - input: Stakeholder Map
+      type: artifact
+      path: stakeholder-map
+      required: false
+    - input: Business context
+      type: external
+      required: true
+    - input: Regulatory landscape
+      type: external
+      required: true
+    - input: Legal counsel input
+      type: external
+      required: true
+
+  enables:
+    - output: Compliance Design Constraints
+      type: artifact
+      phase: design
+    - output: Security Controls Requirements
+      type: artifact
+      phase: design
+    - output: Audit Requirements
+      type: artifact
+      phase: deploy
 
 output:
   location: docs/helix/01-frame/compliance-requirements.md
   format: markdown
+  naming: compliance-requirements.md
 
-variables:
-  required:
-    - business_sector
-    - operating_jurisdictions
-    - data_types_processed
-    - customer_types
-    - deployment_locations
-  optional:
-    - company_size
-    - public_private_status
-    - existing_compliance_obligations
-    - risk_tolerance
-
-validation_rules:
+validation:
   required_sections:
     - regulatory_landscape_analysis
     - compliance_requirements_matrix
     - data_classification
     - implementation_plan
+
   quality_checks:
-    - all_applicable_regulations_identified
-    - requirements_mapped_to_implementation
-    - risk_assessment_completed
-    - timeline_defined
+    - check: all_applicable_regulations_identified
+      description: All regulations relevant to the project must be listed
+      severity: blocking
+    - check: requirements_mapped_to_implementation
+      description: Each compliance requirement must map to an implementation control
+      severity: blocking
+    - check: risk_assessment_completed
+      description: Compliance risk assessment must be completed
+      severity: warning
+    - check: timeline_defined
+      description: Implementation and audit timelines must be defined
+      severity: warning
 
-automation:
-  triggers:
-    - business_context_defined
-    - data_flows_documented
-  tools:
-    - compliance_scanning
-    - regulatory_update_monitoring
+variables:
+  - name: business_sector
+    description: Business sector for regulatory context
+    required: true
+  - name: operating_jurisdictions
+    description: Jurisdictions where the system will operate
+    required: true
+  - name: data_types_processed
+    description: Types of data the system processes
+    required: true
+  - name: customer_types
+    description: Types of customers (B2B, B2C, government, etc.)
+    required: true
+  - name: deployment_locations
+    description: Geographic locations of deployment infrastructure
+    required: true
+  - name: company_size
+    description: Company size for regulatory threshold determination
+    required: false
+  - name: public_private_status
+    description: Whether the company is publicly traded
+    required: false
+  - name: existing_compliance_obligations
+    description: Compliance frameworks already in place
+    required: false
+  - name: risk_tolerance
+    description: Organization's risk tolerance level
+    required: false
 
-workflow_integration:
-  input_gates:
-    - business_requirements_defined
-    - data_classification_complete
-  exit_gates:
-    - compliance_requirements_approved
-    - legal_review_complete
-    - implementation_plan_approved
-  next_phase_inputs:
-    - compliance_design_constraints
-    - security_controls_requirements
-    - audit_requirements
+prompts:
+  generation: prompt.md
 
-ai_assistance:
-  prompt_file: prompt.md
-  capabilities:
-    - regulatory_applicability_analysis
-    - requirements_mapping
-    - risk_assessment
-    - implementation_planning
-  specialization: compliance_specialist
+template:
+  file: template.md
 
-collaboration:
-  stakeholders:
-    - compliance_officer
-    - legal_counsel
-    - product_owner
-    - security_champion
-  approval_required:
-    - compliance_officer
-    - legal_counsel
-  review_cycle: iterative
+workflow:
+  creation_order: 4
+  review_cycles: 2
+  approval_required: true
+  approvers:
+    - Compliance Officer
+    - Legal Counsel
 
-documentation:
-  template_file: template.md
-  examples_available: true
-  regulatory_guides: ../../../docs/compliance-guides/
+relationships:
+  informs:
+    - security-architecture
+    - data-protection-design
+  referenced_by:
+    - audit-checklist
+    - compliance-monitoring
 
-metrics:
-  completeness:
-    - regulations_identified_count
-    - requirements_mapped_percentage
-    - implementation_plan_coverage
-  quality:
-    - legal_review_score
-    - implementation_feasibility_score
-    - risk_coverage_completeness
+tags:
+  - compliance
+  - regulatory
+  - legal
+  - risk
+
+version: 1.0.0
+last_updated: 2024-01-14

@@ -1,99 +1,128 @@
-name: Security Requirements
-description: Comprehensive security requirements definition for the project
-category: security
-phase: 01-frame
-priority: high
-type: template
+# Metadata for Security Requirements
+
+artifact:
+  name: Security Requirements
+  id: security-requirements
+  type: document
+  phase: frame
+
+description: |
+  Comprehensive security requirements definition for the project.
+  Covers security user stories, compliance mapping, risk assessment,
+  and testable acceptance criteria for security controls.
 
 dependencies:
-  artifacts:
-    - prd
-    - user-stories
-  external:
-    - business_requirements
-    - compliance_policies
+  requires:
+    - input: Product Requirements Document
+      type: artifact
+      path: prd
+      required: true
+    - input: User Stories
+      type: artifact
+      path: user-stories
+      required: true
+    - input: Business requirements
+      type: external
+      required: true
+    - input: Compliance policies
+      type: external
+      required: true
+
+  enables:
+    - output: Security Architecture
+      type: artifact
+      path: security-architecture
+      phase: design
+    - output: Security Design Constraints
+      type: artifact
+      phase: design
+    - output: Security Testing Strategy
+      type: artifact
+      phase: test
 
 output:
   location: docs/helix/01-frame/security-requirements.md
   format: markdown
+  naming: security-requirements.md
 
-variables:
-  required:
-    - project_name
-    - project_type
-    - data_types
-    - compliance_requirements
-    - deployment_environment
-  optional:
-    - industry_sector
-    - geographic_scope
-    - risk_tolerance
-    - existing_security_controls
-
-validation_rules:
+validation:
   required_sections:
     - security_user_stories
     - compliance_requirements
     - risk_assessment
     - acceptance_criteria
+
   quality_checks:
-    - all_requirements_have_acceptance_criteria
-    - compliance_requirements_mapped
-    - risk_levels_defined
-    - testable_criteria_specified
+    - check: all_requirements_have_acceptance_criteria
+      description: Every security requirement must have testable acceptance criteria
+      severity: blocking
+    - check: compliance_requirements_mapped
+      description: All applicable compliance requirements must be mapped to controls
+      severity: blocking
+    - check: risk_levels_defined
+      description: Risk levels must be defined for each threat area
+      severity: warning
+    - check: testable_criteria_specified
+      description: Acceptance criteria must be verifiable through testing
+      severity: warning
 
-automation:
-  triggers:
-    - prd_completed
-    - user_stories_defined
-  tools:
-    - security_scanning_setup
-    - compliance_checking
+variables:
+  - name: project_name
+    description: Name of the project
+    required: true
+  - name: project_type
+    description: Type of project (web app, API, mobile, etc.)
+    required: true
+  - name: data_types
+    description: Types of data the system will handle
+    required: true
+  - name: compliance_requirements
+    description: Applicable regulatory and compliance frameworks
+    required: true
+  - name: deployment_environment
+    description: Target deployment environment
+    required: true
+  - name: industry_sector
+    description: Industry sector for threat context
+    required: false
+  - name: geographic_scope
+    description: Geographic regions of operation
+    required: false
+  - name: risk_tolerance
+    description: Organization's risk tolerance level
+    required: false
+  - name: existing_security_controls
+    description: Security controls already in place
+    required: false
 
-workflow_integration:
-  input_gates:
-    - business_requirements_defined
-    - stakeholder_alignment_complete
-  exit_gates:
-    - security_requirements_approved
-    - compliance_mapping_complete
-    - security_champion_signoff
-  next_phase_inputs:
-    - security_architecture_requirements
-    - security_design_constraints
-    - security_testing_strategy
+prompts:
+  generation: prompt.md
 
-ai_assistance:
-  prompt_file: prompt.md
-  capabilities:
-    - requirement_generation
-    - compliance_mapping
-    - risk_analysis
-    - requirement_validation
-  specialization: security_requirements_analyst
+template:
+  file: template.md
 
-collaboration:
-  stakeholders:
-    - product_owner
-    - security_champion
-    - compliance_officer
-    - technical_lead
-  approval_required:
-    - product_owner
-    - security_champion
-  review_cycle: iterative
+workflow:
+  creation_order: 3
+  review_cycles: 2
+  approval_required: true
+  approvers:
+    - Product Owner
+    - Security Champion
 
-documentation:
-  template_file: template.md
-  examples_available: true
-  best_practices_guide: ../../../docs/security-integration-guide.md
+relationships:
+  informs:
+    - security-architecture
+    - threat-model
+    - compliance-requirements
+  referenced_by:
+    - security-test-plan
+    - security-monitoring
 
-metrics:
-  completeness:
-    - requirements_coverage_percentage
-    - compliance_requirements_mapped
-    - acceptance_criteria_defined
-  quality:
-    - requirements_testability_score
-    - business_alignment_score
-    - implementation_feasibility_score
+tags:
+  - security
+  - requirements
+  - compliance
+  - risk
+
+version: 1.0.0
+last_updated: 2024-01-14

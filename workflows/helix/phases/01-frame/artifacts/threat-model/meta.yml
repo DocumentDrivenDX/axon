@@ -1,100 +1,130 @@
-name: Threat Model
-description: Systematic identification and analysis of security threats using STRIDE methodology
-category: security
-phase: 01-frame
-priority: high
-type: template
+# Metadata for Threat Model
+
+artifact:
+  name: Threat Model
+  id: threat-model
+  type: document
+  phase: frame
+
+description: |
+  Systematic identification and analysis of security threats using
+  STRIDE methodology. Maps threats to system components, assesses
+  risk, and defines mitigation strategies.
 
 dependencies:
-  artifacts:
-    - prd
-    - security-requirements
-    - user-stories
-  external:
-    - system_architecture
-    - data_flow_diagrams
+  requires:
+    - input: Product Requirements Document
+      type: artifact
+      path: prd
+      required: true
+    - input: Security Requirements
+      type: artifact
+      path: security-requirements
+      required: true
+    - input: User Stories
+      type: artifact
+      path: user-stories
+      required: true
+    - input: System architecture
+      type: external
+      required: true
+    - input: Data flow diagrams
+      type: external
+      required: true
+
+  enables:
+    - output: Security Design Requirements
+      type: artifact
+      phase: design
+    - output: Security Controls Specification
+      type: artifact
+      phase: design
+    - output: Security Test Scenarios
+      type: artifact
+      phase: test
 
 output:
   location: docs/helix/01-frame/threat-model.md
   format: markdown
+  naming: threat-model.md
 
-variables:
-  required:
-    - project_name
-    - system_components
-    - data_flows
-    - trust_boundaries
-    - external_interfaces
-  optional:
-    - threat_actors
-    - existing_security_controls
-    - risk_tolerance
-    - compliance_requirements
-
-validation_rules:
+validation:
   required_sections:
     - system_description
     - stride_analysis
     - risk_assessment
     - mitigation_strategies
+
   quality_checks:
-    - all_components_analyzed
-    - stride_categories_complete
-    - risk_scores_calculated
-    - mitigations_defined
+    - check: all_components_analyzed
+      description: Every system component must be included in the threat analysis
+      severity: blocking
+    - check: stride_categories_complete
+      description: All six STRIDE categories must be evaluated per component
+      severity: blocking
+    - check: risk_scores_calculated
+      description: Risk scores must be calculated for each identified threat
+      severity: warning
+    - check: mitigations_defined
+      description: Mitigation strategies must be defined for high and critical risks
+      severity: warning
 
-automation:
-  triggers:
-    - system_architecture_defined
-    - security_requirements_complete
-  tools:
-    - threat_modeling_tools
-    - risk_assessment_calculators
+variables:
+  - name: project_name
+    description: Name of the project being threat-modeled
+    required: true
+  - name: system_components
+    description: List of system components to analyze
+    required: true
+  - name: data_flows
+    description: Data flow descriptions between components
+    required: true
+  - name: trust_boundaries
+    description: Trust boundary definitions
+    required: true
+  - name: external_interfaces
+    description: External system interfaces
+    required: true
+  - name: threat_actors
+    description: Known or anticipated threat actors
+    required: false
+  - name: existing_security_controls
+    description: Security controls already in place
+    required: false
+  - name: risk_tolerance
+    description: Organization's risk tolerance level
+    required: false
+  - name: compliance_requirements
+    description: Applicable compliance requirements
+    required: false
 
-workflow_integration:
-  input_gates:
-    - system_boundaries_defined
-    - security_requirements_approved
-  exit_gates:
-    - threat_model_reviewed
-    - critical_threats_mitigated
-    - security_champion_approval
-  next_phase_inputs:
-    - security_design_requirements
-    - security_controls_specification
-    - security_test_scenarios
+prompts:
+  generation: prompt.md
 
-ai_assistance:
-  prompt_file: prompt.md
-  capabilities:
-    - stride_analysis
-    - risk_assessment
-    - threat_scenario_generation
-    - mitigation_strategy_development
-  specialization: cybersecurity_analyst
+template:
+  file: template.md
 
-collaboration:
-  stakeholders:
-    - security_champion
-    - technical_lead
-    - product_owner
-    - security_architect
-  approval_required:
-    - security_champion
-    - technical_lead
-  review_cycle: collaborative
+workflow:
+  creation_order: 5
+  review_cycles: 2
+  approval_required: true
+  approvers:
+    - Security Champion
+    - Technical Lead
 
-documentation:
-  template_file: template.md
-  examples_available: true
-  methodology_guide: stride_methodology.md
+relationships:
+  informs:
+    - security-architecture
+    - security-test-plan
+  referenced_by:
+    - security-design
+    - penetration-test-plan
 
-metrics:
-  completeness:
-    - components_analyzed_percentage
-    - stride_categories_covered
-    - threats_identified_count
-  quality:
-    - risk_assessment_accuracy
-    - mitigation_feasibility_score
-    - business_alignment_score
+tags:
+  - security
+  - threat-modeling
+  - stride
+  - risk
+
+version: 1.0.0
+last_updated: 2024-01-14
