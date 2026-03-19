@@ -6,7 +6,7 @@ This repository contains the DDx (Document-Driven Development eXperience) librar
 
 Full TDD cycle — from empty repo to passing tests — driven by Claude with the HELIX workflow:
 
-[![asciicast](https://asciinema.org/a/Rt0DAXqMDV1brH1M.svg)](https://asciinema.org/a/Rt0DAXqMDV1brH1M)
+[![asciicast](https://asciinema.org/a/5Rkox27li0nWS9uY.svg)](https://asciinema.org/a/5Rkox27li0nWS9uY)
 
 > Planning stack (PRD, user story, design, failing tests) → beads-tracked execution → implementation to green → alignment check. [Run it yourself](docs/demos/helix-quickstart/).
 
