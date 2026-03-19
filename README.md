@@ -8,7 +8,7 @@ Full TDD cycle — from empty repo to passing tests — driven by Claude with th
 
 ![HELIX Quickstart Demo](docs/demos/helix-quickstart/recordings/helix-quickstart.gif)
 
-> Planning stack → Red phase → Bead-driven implementation → Green phase → Critical review → Queue triage. [Run it yourself](docs/demos/helix-quickstart/) · [asciinema](https://asciinema.org/a/O5dwBFfBBqORnAhi).
+> Planning stack → Red phase → Bead-driven implementation → Green phase → Critical review → Queue triage. [Run it yourself](docs/demos/helix-quickstart/) · [asciinema](https://asciinema.org/a/12zustljbjnrygad).
 
 ## Installation
 

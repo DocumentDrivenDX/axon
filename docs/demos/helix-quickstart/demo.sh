@@ -50,31 +50,35 @@ show_file() {
   sleep 2
 }
 
-# Run claude with retries. Accepts prompt as argument or via stdin.
-# Captures stdin first so retries can re-send it.
-# Detects success by: (1) meaningful output text, or (2) new files in
-# the working directory — Claude often writes files but returns an error.
+# Run claude -p with the prompt shown as a visible command, output
+# streaming to the terminal in real time. Retries on failure using
+# file-change detection (Claude often writes files but returns an error).
 claude_run() {
-  local prompt="" output=""
+  local prompt=""
   if [[ $# -gt 0 ]]; then
     prompt="$*"
   else
     prompt="$(cat)"
   fi
 
-  local attempt files_before files_after
+  # Show the prompt as a CLI command the viewer can read
+  echo '$ claude -p "'"${prompt}"'"'
+  echo ""
+
+  local attempt output
   for attempt in $(seq 1 "$MAX_RETRIES"); do
-    files_before=$(find . -not -path './.git/*' -not -path './.beads/*' -newer /tmp/claude_ts 2>/dev/null | wc -l || echo 0)
     touch /tmp/claude_ts
-    output=$(printf '%s' "$prompt" | claude -p --no-session-persistence 2>/dev/null) || true
-    files_after=$(find . -not -path './.git/*' -not -path './.beads/*' -newer /tmp/claude_ts 2>/dev/null | wc -l || echo 0)
+    # Stream output to terminal via tee, also capture for retry logic
+    output=$(claude -p --no-session-persistence "$prompt" 2>/dev/null | tee /dev/stderr) 2>&1 || true
 
     # Success: got real output text
     if [[ -n "$output" && "$output" != "Execution error" ]]; then
       break
     fi
     # Success: Claude wrote files even though output was an error
-    if [[ "$files_after" -gt 0 ]]; then
+    local new_files
+    new_files=$(find . -not -path './.git/*' -not -path './.beads/*' -newer /tmp/claude_ts 2>/dev/null | wc -l || echo 0)
+    if [[ "$new_files" -gt 0 ]]; then
       break
     fi
     if [[ $attempt -lt $MAX_RETRIES ]]; then
@@ -83,17 +87,12 @@ claude_run() {
     fi
   done
 
-  # Show output if meaningful; suppress bare error messages
-  if [[ -n "$output" && "$output" != "Execution error" ]]; then
-    printf '%s\n' "$output"
-  fi
-
+  echo ""
   # Cooldown between calls to avoid rate limits
   sleep "$COOLDOWN"
 }
 
 # Require a file to exist — abort the demo if it doesn't.
-# This catches Claude failures early instead of cascading silently.
 require_file() {
   local file="$1"
   local label="${2:-$file}"
@@ -123,20 +122,20 @@ demo_body() {
   }
 }
 SETTINGS
-  run claude_run "List the available skills. Show just their names and one-line descriptions. Be brief."
+  claude_run "List the available skills. Show just their names and one-line descriptions. Be brief."
 
   # ── ACT 2: Planning Stack ────────────────────────────────
   narrate "ACT 2: Build the Planning Stack"
 
   # Step 1: PRD
   narrate "Step 1: Create the PRD"
-  claude_run 'Create a minimal PRD for "hello-helix", a Node.js CLI tool that converts temperatures between Fahrenheit and Celsius. Features: (1) `convert --to-celsius <temp>` converts Fahrenheit to Celsius, (2) `convert --to-fahrenheit <temp>` converts Celsius to Fahrenheit, (3) prints the result to stdout with one decimal place. Write the PRD to docs/helix/01-frame/prd.md. Create the directory structure. Keep it short — this is a demo project.'
+  claude_run 'Create a minimal PRD for "hello-helix", a Node.js CLI tool that converts temperatures between Fahrenheit and Celsius. Features: (1) convert --to-celsius <temp> converts Fahrenheit to Celsius, (2) convert --to-fahrenheit <temp> converts Celsius to Fahrenheit, (3) prints the result to stdout with one decimal place. Write the PRD to docs/helix/01-frame/prd.md. Create the directory structure. Keep it short — this is a demo project.'
   require_file docs/helix/01-frame/prd.md "the PRD"
   show_file docs/helix/01-frame/prd.md
 
   # Step 2: User story
   narrate "Step 2: Create a user story"
-  claude_run 'Read docs/helix/01-frame/prd.md, then create a user story at docs/helix/01-frame/user-stories/US-001-temperature-conversion.md. Include two acceptance criteria: (1) `convert --to-celsius 212` prints `100.0`, (2) `convert --to-fahrenheit 0` prints `32.0`. Keep it concise.'
+  claude_run 'Read docs/helix/01-frame/prd.md, then create a user story at docs/helix/01-frame/user-stories/US-001-temperature-conversion.md. Include two acceptance criteria: (1) convert --to-celsius 212 prints 100.0, (2) convert --to-fahrenheit 0 prints 32.0. Keep it concise.'
   require_file docs/helix/01-frame/user-stories/US-001-temperature-conversion.md "the user story"
   show_file docs/helix/01-frame/user-stories/US-001-temperature-conversion.md
 
@@ -148,10 +147,9 @@ SETTINGS
 
   # Step 4: Tests (Red phase)
   narrate "Step 4: Create failing tests (Red phase)"
-  claude_run 'Read the user story at docs/helix/01-frame/user-stories/US-001-temperature-conversion.md and the technical design at docs/helix/02-design/technical-designs/TD-001-temperature-conversion.md. You MUST create ALL of the following files: (1) docs/helix/03-test/test-plans/TP-001-temperature-conversion.md — the test plan, (2) package.json with contents: {"name":"hello-helix","version":"0.1.0","scripts":{"test":"node --test"}}, (3) tests/convert.test.js using node:test and node:assert that requires ../bin/convert.js for toFahrenheit and toCelsius functions, tests toFahrenheit(0) === 32.0, toCelsius(212) === 100.0, and toCelsius(98.6) is approximately 37.0. Do NOT create bin/convert.js — the tests MUST fail because the implementation does not exist yet.'
+  claude_run 'Read the user story at docs/helix/01-frame/user-stories/US-001-temperature-conversion.md and the technical design at docs/helix/02-design/technical-designs/TD-001-temperature-conversion.md. You MUST create ALL of the following files: (1) docs/helix/03-test/test-plans/TP-001-temperature-conversion.md, (2) package.json with contents: {"name":"hello-helix","version":"0.1.0","scripts":{"test":"node --test"}}, (3) tests/convert.test.js using node:test and node:assert that requires ../bin/convert.js for toFahrenheit and toCelsius functions, tests toFahrenheit(0) === 32.0, toCelsius(212) === 100.0, and toCelsius(98.6) is approximately 37.0. Do NOT create bin/convert.js — the tests MUST fail.'
 
   # package.json is the only safety net — Claude sometimes skips it
-  # because it's trivial, but npm test needs it
   if [[ ! -f package.json ]]; then
     echo '{"name":"hello-helix","version":"0.1.0","scripts":{"test":"node --test"}}' > package.json
   fi
@@ -175,7 +173,7 @@ SETTINGS
   run br ready
 
   narrate "Implement — make the tests pass"
-  claude_run "Read the governing artifacts: docs/helix/01-frame/user-stories/US-001-temperature-conversion.md, docs/helix/02-design/technical-designs/TD-001-temperature-conversion.md, and tests/convert.test.js. Write ONLY the implementation code in bin/convert.js to make the tests pass. The module must export toFahrenheit(c) and toCelsius(f). Also add CLI handling that parses --to-celsius and --to-fahrenheit from process.argv and prints the result with one decimal place. Follow the technical design. Do not modify the tests. Run 'npm test' to verify all tests pass."
+  claude_run "Read the governing artifacts: docs/helix/01-frame/user-stories/US-001-temperature-conversion.md, docs/helix/02-design/technical-designs/TD-001-temperature-conversion.md, and tests/convert.test.js. Write ONLY the implementation code in bin/convert.js to make the tests pass. The module must export toFahrenheit(c) and toCelsius(f). Also add CLI handling that parses --to-celsius and --to-fahrenheit from process.argv and prints the result with one decimal place. Follow the technical design. Do not modify the tests. Run npm test to verify all tests pass."
   require_file bin/convert.js "the implementation"
   show_file bin/convert.js 25
 
