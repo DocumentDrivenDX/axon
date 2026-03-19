@@ -25,7 +25,7 @@ Install as a Claude Code plugin in two steps:
 ```
 
 This gives you:
-- **Slash commands**: `/ddx:prd`, `/ddx:code-review`, `/ddx:commit-hooks`, `/ddx:github-actions`, `/ddx:docs`, `/ddx:gitignore`, `/ddx:create-workflow`
+- **Slash commands**: `/ddx:review`, `/ddx:grind`, `/ddx:execute`, `/ddx:triage`, `/ddx:handoff`, `/ddx:prd`, `/ddx:code-review`, `/ddx:commit-hooks`, `/ddx:github-actions`, `/ddx:docs`, `/ddx:gitignore`, `/ddx:create-workflow`
 - **HELIX skill**: Auto-invoked TDD workflow guidance during development
 - **Agents**: Systems architect, TDD test engineer, strict code reviewer
 
