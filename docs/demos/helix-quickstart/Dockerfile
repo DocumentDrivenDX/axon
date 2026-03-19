@@ -28,6 +28,9 @@ RUN git config --global user.name "HELIX Demo" \
     && git config --global user.email "demo@helix.dev" \
     && git config --global init.defaultBranch main
 
+# Env for asciinema recording metadata
+ENV SHELL=/bin/bash TERM=xterm-256color
+
 # Working directory for the demo project
 WORKDIR /workspace
 

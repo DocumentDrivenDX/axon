@@ -6,9 +6,9 @@ This repository contains the DDx (Document-Driven Development eXperience) librar
 
 Full TDD cycle — from empty repo to passing tests — driven by Claude with the HELIX workflow:
 
-[![asciicast](https://asciinema.org/a/cPWQIJHw9mH0ryEm.svg)](https://asciinema.org/a/cPWQIJHw9mH0ryEm)
+[![asciicast](https://asciinema.org/a/tmz0Uol2ZQukZWtS.svg)](https://asciinema.org/a/tmz0Uol2ZQukZWtS)
 
-> Planning stack → Red phase → `/ddx:execute` → Green phase → `/ddx:review` → `/ddx:triage`. [Run it yourself](docs/demos/helix-quickstart/).
+> Planning stack → Red phase → Bead-driven implementation → Green phase → Critical review → Queue triage. [Run it yourself](docs/demos/helix-quickstart/).
 
 ## Installation
 

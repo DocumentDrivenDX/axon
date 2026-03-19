@@ -1,4 +1,4 @@
-{"version": 2, "width": 100, "height": 30, "timestamp": 1773901332, "env": {"SHELL": null, "TERM": null}, "title": "HELIX Quickstart: Temperature Converter"}
+{"version": 2, "width": 100, "height": 30, "timestamp": 1773901332, "env": {"SHELL": "/bin/bash", "TERM": "xterm-256color"}, "title": "HELIX Quickstart: Temperature Converter"}
 [0.005581, "o", "\r\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n  ACT 1: Project Setup\r\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\r\n\r\n"]
 [2.006982, "o", "$ git init hello-helix\r\n"]
 [2.017009, "o", "Initialized empty Git repository in /workspace/hello-helix/.git/\r\n"]
