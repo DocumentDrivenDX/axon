@@ -62,9 +62,8 @@ impl EsfDocument {
     pub fn parse(input: &str) -> Result<Self, AxonError> {
         let value: Value = serde_yaml::from_str(input)
             .map_err(|e| AxonError::SchemaValidation(format!("ESF parse error: {e}")))?;
-        serde_json::from_value(value).map_err(|e| {
-            AxonError::SchemaValidation(format!("ESF structure error: {e}"))
-        })
+        serde_json::from_value(value)
+            .map_err(|e| AxonError::SchemaValidation(format!("ESF structure error: {e}")))
     }
 
     /// Convert this ESF document into a [`CollectionSchema`] using the collection
@@ -136,7 +135,10 @@ entity_schema:
         let doc = EsfDocument::parse(INVOICE_ESF).unwrap();
         assert_eq!(doc.esf_version, "1.0");
         assert_eq!(doc.collection, "invoices");
-        assert!(doc.entity_schema.is_some(), "entity_schema should be present");
+        assert!(
+            doc.entity_schema.is_some(),
+            "entity_schema should be present"
+        );
         let schema = doc.entity_schema.as_ref().unwrap();
         let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v == "vendor_id"));

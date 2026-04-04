@@ -26,9 +26,7 @@ impl SimRng {
     ///
     /// Seed `0` is bumped to `1` to avoid the degenerate all-zeros state.
     pub fn new(seed: u64) -> Self {
-        Self {
-            state: seed.max(1),
-        }
+        Self { state: seed.max(1) }
     }
 
     /// Return the next pseudorandom `u64`.

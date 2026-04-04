@@ -88,10 +88,7 @@ enum EntityCmd {
         actor: Option<String>,
     },
     /// Retrieve an entity.
-    Get {
-        collection: String,
-        id: String,
-    },
+    Get { collection: String, id: String },
     /// Update an entity (optimistic concurrency control).
     Update {
         collection: String,
@@ -241,9 +238,14 @@ fn run_entity(
     handler: &mut AxonHandler<SqliteStorageAdapter>,
 ) -> Result<()> {
     match cmd {
-        EntityCmd::Create { collection, id, data, actor } => {
-            let data: Value = serde_json::from_str(&data)
-                .with_context(|| "data must be valid JSON")?;
+        EntityCmd::Create {
+            collection,
+            id,
+            data,
+            actor,
+        } => {
+            let data: Value =
+                serde_json::from_str(&data).with_context(|| "data must be valid JSON")?;
             let resp = handler
                 .create_entity(CreateEntityRequest {
                     collection: CollectionId::new(&collection),
@@ -263,9 +265,15 @@ fn run_entity(
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_entity(entity_to_json(&resp.entity), format);
         }
-        EntityCmd::Update { collection, id, data, expected_version, actor } => {
-            let data: Value = serde_json::from_str(&data)
-                .with_context(|| "data must be valid JSON")?;
+        EntityCmd::Update {
+            collection,
+            id,
+            data,
+            expected_version,
+            actor,
+        } => {
+            let data: Value =
+                serde_json::from_str(&data).with_context(|| "data must be valid JSON")?;
             let resp = handler
                 .update_entity(UpdateEntityRequest {
                     collection: CollectionId::new(&collection),
@@ -277,7 +285,11 @@ fn run_entity(
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_entity(entity_to_json(&resp.entity), format);
         }
-        EntityCmd::Delete { collection, id, actor } => {
+        EntityCmd::Delete {
+            collection,
+            id,
+            actor,
+        } => {
             let resp = handler
                 .delete_entity(DeleteEntityRequest {
                     collection: CollectionId::new(&collection),
@@ -338,13 +350,20 @@ fn run_link(
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
                 OutputFormat::Table => println!(
                     "link {}/{} --[{}]--> {}/{}",
-                    link.source_collection, link.source_id,
+                    link.source_collection,
+                    link.source_id,
                     link.link_type,
-                    link.target_collection, link.target_id,
+                    link.target_collection,
+                    link.target_id,
                 ),
             }
         }
-        LinkCmd::Traverse { collection, id, link_type, max_depth } => {
+        LinkCmd::Traverse {
+            collection,
+            id,
+            link_type,
+            max_depth,
+        } => {
             let resp = handler
                 .traverse(TraverseRequest {
                     collection: CollectionId::new(&collection),
@@ -366,13 +385,13 @@ fn run_audit(
     handler: &AxonHandler<SqliteStorageAdapter>,
 ) -> Result<()> {
     match cmd {
-        AuditCmd::List { collection, entity_id } => {
+        AuditCmd::List {
+            collection,
+            entity_id,
+        } => {
             let entries = handler
                 .audit_log()
-                .query_by_entity(
-                    &CollectionId::new(&collection),
-                    &EntityId::new(&entity_id),
-                )
+                .query_by_entity(&CollectionId::new(&collection), &EntityId::new(&entity_id))
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
                 OutputFormat::Json => {
@@ -399,12 +418,7 @@ fn run_audit(
                         for e in &entries {
                             println!(
                                 "[{}] {:?} {}/{} v{} actor={}",
-                                e.id,
-                                e.mutation,
-                                e.collection,
-                                e.entity_id,
-                                e.version,
-                                e.actor,
+                                e.id, e.mutation, e.collection, e.entity_id, e.version, e.actor,
                             );
                         }
                     }
@@ -471,13 +485,21 @@ mod tests {
         let cli = make_cli(
             &db,
             &[
-                "--output", "json",
-                "entity", "create", "tasks", "t-001", r#"{"title":"hello"}"#,
+                "--output",
+                "json",
+                "entity",
+                "create",
+                "tasks",
+                "t-001",
+                r#"{"title":"hello"}"#,
             ],
         );
         run(cli).unwrap();
 
-        let cli = make_cli(&db, &["--output", "json", "entity", "get", "tasks", "t-001"]);
+        let cli = make_cli(
+            &db,
+            &["--output", "json", "entity", "get", "tasks", "t-001"],
+        );
         run(cli).unwrap();
     }
 

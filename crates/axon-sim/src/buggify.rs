@@ -38,12 +38,10 @@ impl Fault {
     /// the caller should continue normally after the simulated delay.
     pub fn to_error(&self) -> Option<AxonError> {
         match self {
-            Fault::TransactionAbort { expected, actual } => {
-                Some(AxonError::ConflictingVersion {
-                    expected: *expected,
-                    actual: *actual,
-                })
-            }
+            Fault::TransactionAbort { expected, actual } => Some(AxonError::ConflictingVersion {
+                expected: *expected,
+                actual: *actual,
+            }),
             Fault::StorageError(msg) => Some(AxonError::Storage(msg.clone())),
             Fault::WriteDelay { .. } => None,
         }

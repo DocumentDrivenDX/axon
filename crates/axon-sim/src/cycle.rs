@@ -385,6 +385,9 @@ mod tests {
             result.swaps_attempted >= result.swaps_committed,
             "attempted >= committed always"
         );
-        assert!(result.is_correct(), "ring should be intact after BUGGIFY faults");
+        assert!(
+            result.is_correct(),
+            "ring should be intact after BUGGIFY faults"
+        );
     }
 }

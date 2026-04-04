@@ -25,8 +25,7 @@ pub struct SqliteStorageAdapter {
 impl SqliteStorageAdapter {
     /// Opens (or creates) a SQLite database at the given path.
     pub fn open(path: &str) -> Result<Self, AxonError> {
-        let conn = Connection::open(path)
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let conn = Connection::open(path).map_err(|e| AxonError::Storage(e.to_string()))?;
         let adapter = Self { conn };
         adapter.init_schema()?;
         Ok(adapter)
@@ -34,8 +33,7 @@ impl SqliteStorageAdapter {
 
     /// Opens an in-memory SQLite database (useful for testing).
     pub fn open_in_memory() -> Result<Self, AxonError> {
-        let conn = Connection::open_in_memory()
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let conn = Connection::open_in_memory().map_err(|e| AxonError::Storage(e.to_string()))?;
         let adapter = Self { conn };
         adapter.init_schema()?;
         Ok(adapter)
@@ -96,7 +94,8 @@ impl StorageAdapter for SqliteStorageAdapter {
             let entity = Self::row_to_entity(
                 row.get(0).map_err(|e| AxonError::Storage(e.to_string()))?,
                 row.get(1).map_err(|e| AxonError::Storage(e.to_string()))?,
-                row.get::<_, i64>(2).map_err(|e| AxonError::Storage(e.to_string()))? as u64,
+                row.get::<_, i64>(2)
+                    .map_err(|e| AxonError::Storage(e.to_string()))? as u64,
                 row.get(3).map_err(|e| AxonError::Storage(e.to_string()))?,
             )?;
             Ok(Some(entity))
@@ -306,7 +305,9 @@ mod tests {
         }
         let start = EntityId::new("t-002");
         let end = EntityId::new("t-004");
-        let results = s.range_scan(&tasks(), Some(&start), Some(&end), Some(2)).unwrap();
+        let results = s
+            .range_scan(&tasks(), Some(&start), Some(&end), Some(2))
+            .unwrap();
         let ids: Vec<_> = results.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["t-002", "t-003"]);
     }
@@ -327,7 +328,13 @@ mod tests {
         s.put(entity("t-001")).unwrap();
         let err = s.compare_and_swap(entity("t-001"), 99).unwrap_err();
         assert!(
-            matches!(err, AxonError::ConflictingVersion { expected: 99, actual: 1 }),
+            matches!(
+                err,
+                AxonError::ConflictingVersion {
+                    expected: 99,
+                    actual: 1
+                }
+            ),
             "unexpected error: {err}"
         );
     }
@@ -337,7 +344,13 @@ mod tests {
         let mut s = store();
         let err = s.compare_and_swap(entity("ghost"), 1).unwrap_err();
         assert!(
-            matches!(err, AxonError::ConflictingVersion { expected: 1, actual: 0 }),
+            matches!(
+                err,
+                AxonError::ConflictingVersion {
+                    expected: 1,
+                    actual: 0
+                }
+            ),
             "unexpected error: {err}"
         );
     }

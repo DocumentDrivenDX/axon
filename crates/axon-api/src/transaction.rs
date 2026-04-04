@@ -176,7 +176,8 @@ impl Transaction {
                     written.push(op.entity);
                 }
                 MutationType::Update => {
-                    let updated = storage.compare_and_swap(op.entity.clone(), op.expected_version)?;
+                    let updated =
+                        storage.compare_and_swap(op.entity.clone(), op.expected_version)?;
                     let after = updated.data.clone();
                     let mut entry = AuditEntry::new(
                         updated.collection.clone(),
@@ -232,11 +233,7 @@ mod tests {
     }
 
     fn account(id: &str, balance: i64) -> Entity {
-        Entity::new(
-            accounts(),
-            EntityId::new(id),
-            json!({"balance": balance}),
-        )
+        Entity::new(accounts(), EntityId::new(id), json!({"balance": balance}))
     }
 
     #[test]
@@ -250,8 +247,14 @@ mod tests {
 
         // Transaction: debit A by 30, credit B by 30.
         let mut tx = Transaction::new();
-        let a_before = storage.get(&accounts(), &EntityId::new("A")).unwrap().unwrap();
-        let b_before = storage.get(&accounts(), &EntityId::new("B")).unwrap().unwrap();
+        let a_before = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .unwrap()
+            .unwrap();
+        let b_before = storage
+            .get(&accounts(), &EntityId::new("B"))
+            .unwrap()
+            .unwrap();
 
         tx.update(
             account("A", 70),
@@ -264,11 +267,19 @@ mod tests {
             Some(b_before.data.clone()),
         );
 
-        let written = tx.commit(&mut storage, &mut audit, Some("system".into())).unwrap();
+        let written = tx
+            .commit(&mut storage, &mut audit, Some("system".into()))
+            .unwrap();
         assert_eq!(written.len(), 2);
 
-        let a = storage.get(&accounts(), &EntityId::new("A")).unwrap().unwrap();
-        let b = storage.get(&accounts(), &EntityId::new("B")).unwrap().unwrap();
+        let a = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .unwrap()
+            .unwrap();
+        let b = storage
+            .get(&accounts(), &EntityId::new("B"))
+            .unwrap()
+            .unwrap();
         assert_eq!(a.data["balance"], 70);
         assert_eq!(b.data["balance"], 80);
     }
@@ -287,13 +298,25 @@ mod tests {
 
         let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
         assert!(
-            matches!(err, AxonError::ConflictingVersion { expected: 99, actual: 1 }),
+            matches!(
+                err,
+                AxonError::ConflictingVersion {
+                    expected: 99,
+                    actual: 1
+                }
+            ),
             "unexpected error: {err}"
         );
 
         // Neither entity should have been modified.
-        let a = storage.get(&accounts(), &EntityId::new("A")).unwrap().unwrap();
-        let b = storage.get(&accounts(), &EntityId::new("B")).unwrap().unwrap();
+        let a = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .unwrap()
+            .unwrap();
+        let b = storage
+            .get(&accounts(), &EntityId::new("B"))
+            .unwrap()
+            .unwrap();
         assert_eq!(a.data["balance"], 100, "A should be unchanged after abort");
         assert_eq!(b.data["balance"], 50, "B should be unchanged after abort");
         assert_eq!(audit.len(), 0, "no audit entries on abort");
@@ -316,7 +339,10 @@ mod tests {
         assert!(matches!(err, AxonError::ConflictingVersion { .. }));
 
         // A must be unchanged.
-        let a = storage.get(&accounts(), &EntityId::new("A")).unwrap().unwrap();
+        let a = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .unwrap()
+            .unwrap();
         assert_eq!(a.data["balance"], 100);
     }
 
@@ -328,8 +354,14 @@ mod tests {
         storage.put(account("A", 100)).unwrap();
         storage.put(account("B", 50)).unwrap();
 
-        let a = storage.get(&accounts(), &EntityId::new("A")).unwrap().unwrap();
-        let b = storage.get(&accounts(), &EntityId::new("B")).unwrap().unwrap();
+        let a = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .unwrap()
+            .unwrap();
+        let b = storage
+            .get(&accounts(), &EntityId::new("B"))
+            .unwrap()
+            .unwrap();
 
         let mut tx = Transaction::new();
         let tx_id = tx.id.clone();

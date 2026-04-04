@@ -34,5 +34,5 @@ pub mod cycle;
 pub mod rng;
 
 pub use buggify::Buggify;
-pub use cycle::{CycleConfig, CycleResult, run_cycle_test};
+pub use cycle::{run_cycle_test, CycleConfig, CycleResult};
 pub use rng::SimRng;

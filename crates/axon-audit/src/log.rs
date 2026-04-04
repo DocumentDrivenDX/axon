@@ -31,11 +31,8 @@ pub trait AuditLog: Send + Sync {
     ) -> Result<Vec<AuditEntry>, AxonError>;
 
     /// Returns all entries whose `timestamp_ns` falls within `[start_ns, end_ns]`.
-    fn query_by_time_range(
-        &self,
-        start_ns: u64,
-        end_ns: u64,
-    ) -> Result<Vec<AuditEntry>, AxonError>;
+    fn query_by_time_range(&self, start_ns: u64, end_ns: u64)
+        -> Result<Vec<AuditEntry>, AxonError>;
 }
 
 /// In-memory audit log for testing and embedded mode.

@@ -15,12 +15,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
-use axon_audit::AuditLog;
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, GetEntityRequest, TraverseRequest,
     UpdateEntityRequest,
 };
+use axon_audit::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_storage::memory::MemoryStorageAdapter;
@@ -47,11 +47,9 @@ impl ApiError {
 
 fn axon_error_response(err: AxonError) -> Response {
     match err {
-        AxonError::NotFound(msg) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError::new("not_found", msg)),
-        )
-            .into_response(),
+        AxonError::NotFound(msg) => {
+            (StatusCode::NOT_FOUND, Json(ApiError::new("not_found", msg))).into_response()
+        }
         AxonError::ConflictingVersion { expected, actual } => (
             StatusCode::CONFLICT,
             Json(ApiError::new(
@@ -123,14 +121,18 @@ async fn create_entity(
         data: body.data,
         actor: body.actor,
     }) {
-        Ok(resp) => (StatusCode::CREATED, Json(json!({
-            "entity": {
-                "collection": resp.entity.collection.to_string(),
-                "id": resp.entity.id.to_string(),
-                "version": resp.entity.version,
-                "data": resp.entity.data,
-            }
-        }))).into_response(),
+        Ok(resp) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "entity": {
+                    "collection": resp.entity.collection.to_string(),
+                    "id": resp.entity.id.to_string(),
+                    "version": resp.entity.version,
+                    "data": resp.entity.data,
+                }
+            })),
+        )
+            .into_response(),
         Err(e) => axon_error_response(e),
     }
 }
@@ -150,7 +152,8 @@ async fn get_entity(
                 "version": resp.entity.version,
                 "data": resp.entity.data,
             }
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => axon_error_response(e),
     }
 }
@@ -174,7 +177,8 @@ async fn update_entity(
                 "version": resp.entity.version,
                 "data": resp.entity.data,
             }
-        })).into_response(),
+        }))
+        .into_response(),
         Err(e) => axon_error_response(e),
     }
 }
@@ -210,16 +214,20 @@ async fn create_link(
     }) {
         Ok(resp) => {
             let link = resp.link;
-            (StatusCode::CREATED, Json(json!({
-                "link": {
-                    "source_collection": link.source_collection.to_string(),
-                    "source_id": link.source_id.to_string(),
-                    "target_collection": link.target_collection.to_string(),
-                    "target_id": link.target_id.to_string(),
-                    "link_type": link.link_type,
-                    "metadata": link.metadata,
-                }
-            }))).into_response()
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "link": {
+                        "source_collection": link.source_collection.to_string(),
+                        "source_id": link.source_id.to_string(),
+                        "target_collection": link.target_collection.to_string(),
+                        "target_id": link.target_id.to_string(),
+                        "link_type": link.link_type,
+                        "metadata": link.metadata,
+                    }
+                })),
+            )
+                .into_response()
         }
         Err(e) => axon_error_response(e),
     }
@@ -263,10 +271,10 @@ async fn query_audit_by_entity(
     Path((collection, entity_id)): Path<(String, String)>,
 ) -> Response {
     let handler = handler.lock().await;
-    match handler.audit_log().query_by_entity(
-        &CollectionId::new(&collection),
-        &EntityId::new(&entity_id),
-    ) {
+    match handler
+        .audit_log()
+        .query_by_entity(&CollectionId::new(&collection), &EntityId::new(&entity_id))
+    {
         Ok(entries) => {
             let proto: Vec<Value> = entries
                 .iter()
@@ -302,7 +310,10 @@ pub fn build_router(handler: SharedHandler) -> Router {
         .route("/entities/{collection}/{id}", delete(delete_entity))
         .route("/links", post(create_link))
         .route("/traverse/{collection}/{id}", get(traverse))
-        .route("/audit/entity/{collection}/{id}", get(query_audit_by_entity))
+        .route(
+            "/audit/entity/{collection}/{id}",
+            get(query_audit_by_entity),
+        )
         .with_state(handler)
 }
 
@@ -313,7 +324,9 @@ mod tests {
     use serde_json::json;
 
     fn test_server() -> TestServer {
-        let handler = Arc::new(Mutex::new(AxonHandler::new(MemoryStorageAdapter::default())));
+        let handler = Arc::new(Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ));
         let app = build_router(handler);
         TestServer::new(app)
     }
@@ -396,7 +409,10 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
 
-        server.delete("/entities/tasks/t-001").await.assert_status_ok();
+        server
+            .delete("/entities/tasks/t-001")
+            .await
+            .assert_status_ok();
 
         server
             .get("/entities/tasks/t-001")
@@ -434,9 +450,7 @@ mod tests {
         resp.assert_status(StatusCode::CREATED);
 
         // Traverse.
-        let resp = server
-            .get("/traverse/users/u-001?link_type=owns")
-            .await;
+        let resp = server.get("/traverse/users/u-001?link_type=owns").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entities"].as_array().unwrap().len(), 1);

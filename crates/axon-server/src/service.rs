@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use axon_audit::log::AuditLog;
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, GetEntityRequest, TraverseRequest,
     UpdateEntityRequest,
 };
+use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_storage::memory::MemoryStorageAdapter;
@@ -34,11 +34,9 @@ pub use proto::{
 fn axon_to_status(err: AxonError) -> Status {
     match &err {
         AxonError::NotFound(msg) => Status::not_found(msg.clone()),
-        AxonError::ConflictingVersion { expected, actual } => Status::failed_precondition(
-            format!(
-                "{{\"code\":\"version_conflict\",\"expected\":{expected},\"actual\":{actual}}}"
-            ),
-        ),
+        AxonError::ConflictingVersion { expected, actual } => Status::failed_precondition(format!(
+            "{{\"code\":\"version_conflict\",\"expected\":{expected},\"actual\":{actual}}}"
+        )),
         AxonError::SchemaValidation(detail) => Status::invalid_argument(format!(
             "{{\"code\":\"schema_validation\",\"detail\":{detail:?}}}"
         )),
@@ -71,7 +69,9 @@ impl AxonServiceImpl {
     /// Create a service backed by an in-memory storage adapter.
     pub fn new_in_memory() -> Self {
         Self {
-            handler: Arc::new(Mutex::new(AxonHandler::new(MemoryStorageAdapter::default()))),
+            handler: Arc::new(Mutex::new(
+                AxonHandler::new(MemoryStorageAdapter::default()),
+            )),
         }
     }
 

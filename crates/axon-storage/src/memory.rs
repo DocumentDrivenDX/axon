@@ -186,11 +186,12 @@ mod tests {
     fn compare_and_swap_increments_version() {
         let mut store = MemoryStorageAdapter::default();
         store.put(entity("t-001")).unwrap();
-        let updated = store
-            .compare_and_swap(entity("t-001"), 1)
-            .unwrap();
+        let updated = store.compare_and_swap(entity("t-001"), 1).unwrap();
         assert_eq!(updated.version, 2);
-        let stored = store.get(&tasks(), &EntityId::new("t-001")).unwrap().unwrap();
+        let stored = store
+            .get(&tasks(), &EntityId::new("t-001"))
+            .unwrap()
+            .unwrap();
         assert_eq!(stored.version, 2);
     }
 
@@ -200,7 +201,13 @@ mod tests {
         store.put(entity("t-001")).unwrap();
         let err = store.compare_and_swap(entity("t-001"), 99).unwrap_err();
         assert!(
-            matches!(err, AxonError::ConflictingVersion { expected: 99, actual: 1 }),
+            matches!(
+                err,
+                AxonError::ConflictingVersion {
+                    expected: 99,
+                    actual: 1
+                }
+            ),
             "unexpected error: {err}"
         );
     }
@@ -210,7 +217,13 @@ mod tests {
         let mut store = MemoryStorageAdapter::default();
         let err = store.compare_and_swap(entity("ghost"), 1).unwrap_err();
         assert!(
-            matches!(err, AxonError::ConflictingVersion { expected: 1, actual: 0 }),
+            matches!(
+                err,
+                AxonError::ConflictingVersion {
+                    expected: 1,
+                    actual: 0
+                }
+            ),
             "unexpected error: {err}"
         );
     }

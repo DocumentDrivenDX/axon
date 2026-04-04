@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use axon_audit::log::{AuditLog, MemoryAuditLog};
 use axon_audit::entry::{AuditEntry, MutationType};
+use axon_audit::log::{AuditLog, MemoryAuditLog};
 use axon_core::error::AxonError;
 use axon_core::id::CollectionId;
 use axon_core::types::{Entity, Link};
@@ -10,8 +10,8 @@ use axon_schema::validation::validate;
 use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
-    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, GetEntityRequest,
-    TraverseRequest, UpdateEntityRequest,
+    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, GetEntityRequest, TraverseRequest,
+    UpdateEntityRequest,
 };
 use crate::response::{
     CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse, GetEntityResponse,
@@ -126,7 +126,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
             version: req.expected_version, // compare_and_swap bumps this to +1
             data: req.data,
         };
-        let updated = self.storage.compare_and_swap(candidate, req.expected_version)?;
+        let updated = self
+            .storage
+            .compare_and_swap(candidate, req.expected_version)?;
 
         // Audit.
         self.audit.append(AuditEntry::new(
@@ -185,10 +187,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ///
     /// Both source and target must exist in storage; if either is missing,
     /// [`AxonError::NotFound`] is returned.
-    pub fn create_link(
-        &mut self,
-        req: CreateLinkRequest,
-    ) -> Result<CreateLinkResponse, AxonError> {
+    pub fn create_link(&mut self, req: CreateLinkRequest) -> Result<CreateLinkResponse, AxonError> {
         // Verify source and target exist.
         if self
             .storage
@@ -231,16 +230,16 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Returns all reachable entities (excluding the starting entity itself)
     /// in BFS order. Cycles are detected and each entity is visited at most once.
     pub fn traverse(&self, req: TraverseRequest) -> Result<TraverseResponse, AxonError> {
-        let max_depth = req.max_depth.unwrap_or(DEFAULT_MAX_DEPTH).min(MAX_DEPTH_CAP);
+        let max_depth = req
+            .max_depth
+            .unwrap_or(DEFAULT_MAX_DEPTH)
+            .min(MAX_DEPTH_CAP);
 
         // Load all links once and index them by (source_collection, source_id).
         let all_links = self.load_all_links()?;
 
         let mut visited: HashSet<(String, String)> = HashSet::new();
-        let start_key = (
-            req.collection.to_string(),
-            req.id.to_string(),
-        );
+        let start_key = (req.collection.to_string(), req.id.to_string());
         visited.insert(start_key);
 
         // Queue entries: (collection, id, current_depth)
@@ -259,7 +258,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 .filter(|l| {
                     l.source_collection == col
                         && l.source_id == id
-                        && req.link_type.as_deref().map_or(true, |lt| l.link_type == lt)
+                        && req
+                            .link_type
+                            .as_deref()
+                            .map_or(true, |lt| l.link_type == lt)
                 })
                 .collect::<Vec<_>>();
 
@@ -273,10 +275,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 }
                 visited.insert(neighbor_key);
 
-                if let Some(entity) = self
-                    .storage
-                    .get(&link.target_collection, &link.target_id)?
-                {
+                if let Some(entity) = self.storage.get(&link.target_collection, &link.target_id)? {
                     result.push(entity);
                     queue.push_back((
                         link.target_collection.clone(),
@@ -293,13 +292,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Load all stored links from the internal links collection.
     fn load_all_links(&self) -> Result<Vec<Link>, AxonError> {
         let links_col = Link::links_collection();
-        let entities = self
-            .storage
-            .range_scan(&links_col, None, None, None)?;
-        Ok(entities
-            .iter()
-            .filter_map(Link::from_entity)
-            .collect())
+        let entities = self.storage.range_scan(&links_col, None, None, None)?;
+        Ok(entities.iter().filter_map(Link::from_entity).collect())
     }
 }
 
@@ -405,7 +399,13 @@ mod tests {
             .unwrap_err();
 
         assert!(
-            matches!(err, AxonError::ConflictingVersion { expected: 99, actual: 1 }),
+            matches!(
+                err,
+                AxonError::ConflictingVersion {
+                    expected: 99,
+                    actual: 1
+                }
+            ),
             "unexpected error: {err}"
         );
     }
@@ -468,7 +468,11 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(h.audit_log().len(), 3, "expected 3 audit entries (create/update/delete)");
+        assert_eq!(
+            h.audit_log().len(),
+            3,
+            "expected 3 audit entries (create/update/delete)"
+        );
     }
 
     // ── Schema validation ────────────────────────────────────────────────────

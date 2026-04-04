@@ -193,10 +193,7 @@ entity_schema:
         let errs = validate_entity(&schema, &entity).unwrap_err();
         assert!(!errs.is_empty());
         // At least one error should reference the currency field.
-        let has_currency_error = errs
-            .0
-            .iter()
-            .any(|e| e.field_path.contains("currency"));
+        let has_currency_error = errs.0.iter().any(|e| e.field_path.contains("currency"));
         assert!(
             has_currency_error,
             "expected error for currency field, got: {errs}"
@@ -212,9 +209,6 @@ entity_schema:
             "status": "unknown_status"
         });
         let errs = validate_entity(&schema, &entity).unwrap_err();
-        assert!(
-            errs.len() >= 2,
-            "expected at least 2 errors, got: {errs}"
-        );
+        assert!(errs.len() >= 2, "expected at least 2 errors, got: {errs}");
     }
 }
