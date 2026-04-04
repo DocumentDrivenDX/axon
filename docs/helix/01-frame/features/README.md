@@ -15,6 +15,8 @@
 | FEAT-006 | Bead Storage Adapter | P1 | Draft |
 | FEAT-007 | Entity-Graph-Relational Data Model | P0 | Draft |
 | FEAT-008 | ACID Transactions | P0 | Draft |
+| FEAT-009 | Graph Traversal Queries | P1 | Draft |
+| FEAT-010 | Workflow State Machines | P2 | Draft |
 
 ## Conventions
 

@@ -11,6 +11,7 @@ This directory captures product framing and context for Axon.
 
 - [Product Requirements](prd.md)
 - [Principles](principles.md)
+- [Technical Requirements](technical-requirements.md)
 - [Competitive Analysis](competitive-analysis.md)
 - [Feature Specs](features/README.md)
 
