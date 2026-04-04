@@ -1,0 +1,22 @@
+[package]
+name = "axon-api"
+description = "HTTP/gRPC API surface for Axon server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axon-core = { path = "../axon-core" }
+axon-schema = { path = "../axon-schema" }
+axon-audit = { path = "../axon-audit" }
+axon-storage = { path = "../axon-storage" }
+thiserror.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true

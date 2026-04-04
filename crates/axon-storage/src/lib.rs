@@ -1,0 +1,10 @@
+//! Storage adapter trait and in-memory implementation for Axon.
+//!
+//! `axon-storage` defines the `StorageAdapter` trait that abstracts over
+//! backing stores (SQLite, PostgreSQL, FoundationDB, etc.) and provides
+//! an in-memory implementation for testing and development.
+
+pub mod adapter;
+pub mod memory;
+
+pub use adapter::StorageAdapter;

@@ -1,0 +1,36 @@
+[workspace]
+members = [
+    "crates/axon-core",
+    "crates/axon-schema",
+    "crates/axon-audit",
+    "crates/axon-storage",
+    "crates/axon-api",
+    "crates/axon-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/easylabz/axon"
+rust-version = "1.75"
+
+[workspace.dependencies]
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Async
+tokio = { version = "1", features = ["full"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Testing
+pretty_assertions = "1"
