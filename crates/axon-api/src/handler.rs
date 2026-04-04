@@ -51,6 +51,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self.audit
     }
 
+    /// Mutable access to the underlying storage adapter (used by simulation framework).
+    pub fn storage_mut(&mut self) -> &mut S {
+        &mut self.storage
+    }
+
+    /// Commits a [`Transaction`] through this handler's storage and audit log.
+    pub fn commit_transaction(
+        &mut self,
+        tx: crate::transaction::Transaction,
+        actor: Option<String>,
+    ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
+        tx.commit(&mut self.storage, &mut self.audit, actor)
+    }
+
     // ── Entity operations ────────────────────────────────────────────────────
 
     pub fn create_entity(

@@ -6,6 +6,7 @@ members = [
     "crates/axon-storage",
     "crates/axon-api",
     "crates/axon-cli",
+    "crates/axon-sim",
 ]
 resolver = "2"
 

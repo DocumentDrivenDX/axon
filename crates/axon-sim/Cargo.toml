@@ -1,0 +1,18 @@
+[package]
+name = "axon-sim"
+description = "Deterministic simulation testing framework for Axon correctness verification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axon-core = { path = "../axon-core" }
+axon-api = { path = "../axon-api" }
+axon-storage = { path = "../axon-storage" }
+serde_json.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
