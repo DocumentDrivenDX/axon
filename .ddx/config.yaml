@@ -1,0 +1,9 @@
+version: "1.0"
+library:
+    path: .ddx/library
+    repository:
+        url: https://github.com/easel/ddx-library
+        branch: main
+update_check:
+    enabled: true
+    frequency: 24h
