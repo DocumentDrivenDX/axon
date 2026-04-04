@@ -47,5 +47,9 @@ tonic-build = "0.13"
 prost = "0.13"
 axum = "0.8"
 
+# CLI
+clap = { version = "4", features = ["derive"] }
+
 # Testing
 pretty_assertions = "1"
+tempfile = "3"
