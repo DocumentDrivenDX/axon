@@ -41,6 +41,11 @@ pub struct AuditEntry {
     pub actor: String,
     /// Optional caller-supplied key-value metadata (reason, correlation ID, etc.).
     pub metadata: HashMap<String, String>,
+    /// If this mutation was part of a multi-entity transaction, this field
+    /// holds the shared transaction identifier. All entries in the same
+    /// transaction share the same `transaction_id`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transaction_id: Option<String>,
 }
 
 impl AuditEntry {
@@ -66,6 +71,7 @@ impl AuditEntry {
             data_after,
             actor: actor.unwrap_or_else(|| "anonymous".into()),
             metadata: HashMap::new(),
+            transaction_id: None,
         }
     }
 }

@@ -7,3 +7,6 @@
 pub mod handler;
 pub mod request;
 pub mod response;
+pub mod transaction;
+
+pub use transaction::Transaction;

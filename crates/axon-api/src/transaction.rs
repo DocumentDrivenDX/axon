@@ -1,0 +1,351 @@
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use axon_audit::entry::{AuditEntry, MutationType};
+use axon_audit::log::AuditLog;
+use axon_core::error::AxonError;
+use axon_core::id::{CollectionId, EntityId};
+use axon_core::types::Entity;
+use axon_storage::adapter::StorageAdapter;
+use serde_json::Value;
+
+/// Global counter for generating unique transaction IDs.
+static TX_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_tx_id() -> String {
+    format!("tx-{}", TX_COUNTER.fetch_add(1, Ordering::SeqCst))
+}
+
+/// A buffered write within a transaction.
+#[derive(Debug)]
+struct WriteOp {
+    entity: Entity,
+    /// Version that must be current in storage for the write to succeed.
+    /// `0` means "entity must not exist" (create).
+    expected_version: u64,
+    /// State before this write (for audit).
+    data_before: Option<Value>,
+    mutation: MutationType,
+}
+
+/// A multi-entity atomic transaction using optimistic concurrency control (OCC).
+///
+/// Operations are buffered and applied atomically on [`commit`](Transaction::commit).
+/// If any entity's version does not match, **the entire transaction is aborted**
+/// and no changes are persisted.
+///
+/// Audit entries produced by a committed transaction all share the same
+/// `transaction_id`.
+pub struct Transaction {
+    /// Unique identifier for this transaction.
+    pub id: String,
+    ops: Vec<WriteOp>,
+}
+
+impl Transaction {
+    /// Create a new transaction with an auto-generated ID.
+    pub fn new() -> Self {
+        Self {
+            id: next_tx_id(),
+            ops: Vec::new(),
+        }
+    }
+
+    /// Stage a create operation for `entity`.
+    ///
+    /// The entity must not exist in storage at commit time (`expected_version = 0`
+    /// is a sentinel that means "does not exist").
+    ///
+    /// In practice, callers pass `expected_version = 0` for creates because the
+    /// entity starts at version 1.  The commit phase checks that no entity with
+    /// that ID already exists (stored version 0 → entity absent).
+    pub fn create(&mut self, entity: Entity) {
+        self.ops.push(WriteOp {
+            entity,
+            expected_version: 0,
+            data_before: None,
+            mutation: MutationType::Create,
+        });
+    }
+
+    /// Stage an update operation for `entity`.
+    ///
+    /// `expected_version` must equal the version currently in storage, otherwise
+    /// the entire transaction aborts with [`AxonError::ConflictingVersion`].
+    pub fn update(&mut self, entity: Entity, expected_version: u64, data_before: Option<Value>) {
+        self.ops.push(WriteOp {
+            entity,
+            expected_version,
+            data_before,
+            mutation: MutationType::Update,
+        });
+    }
+
+    /// Stage a delete operation.
+    ///
+    /// `expected_version` is the version the caller observed; the entity must
+    /// still be at that version at commit time.
+    pub fn delete(
+        &mut self,
+        collection: CollectionId,
+        id: EntityId,
+        expected_version: u64,
+        data_before: Option<Value>,
+    ) {
+        // We store a sentinel entity with empty data for the delete op.
+        let sentinel = Entity {
+            collection,
+            id,
+            version: expected_version,
+            data: serde_json::Value::Null,
+        };
+        self.ops.push(WriteOp {
+            entity: sentinel,
+            expected_version,
+            data_before,
+            mutation: MutationType::Delete,
+        });
+    }
+
+    /// Atomically commit all staged operations.
+    ///
+    /// ## Phase 1 — Version check
+    /// For every staged write, verify that `expected_version` equals the current
+    /// stored version (or that the entity is absent for creates).
+    /// If any check fails, **no writes are applied** and the error is returned.
+    ///
+    /// ## Phase 2 — Apply writes
+    /// All writes are applied sequentially. For creates and updates, the entity
+    /// version is set / incremented appropriately. Deletes remove the entity.
+    ///
+    /// ## Audit
+    /// Each written entity produces an [`AuditEntry`] with `transaction_id` set
+    /// to `self.id` so callers can correlate the entire transaction in the log.
+    ///
+    /// Returns the list of written entities (deletes produce an entry with the
+    /// sentinel entity; callers may ignore it).
+    pub fn commit<S: StorageAdapter, L: AuditLog>(
+        self,
+        storage: &mut S,
+        audit: &mut L,
+        actor: Option<String>,
+    ) -> Result<Vec<Entity>, AxonError> {
+        let tx_id = self.id.clone();
+        let actor_str = actor.as_deref().unwrap_or("anonymous");
+
+        // ── Phase 1: Version check ───────────────────────────────────────────
+        for op in &self.ops {
+            let current_version = storage
+                .get(&op.entity.collection, &op.entity.id)?
+                .map(|e| e.version)
+                .unwrap_or(0);
+
+            let ok = match op.mutation {
+                MutationType::Create => current_version == 0, // must not exist
+                MutationType::Update | MutationType::Delete => {
+                    current_version == op.expected_version
+                }
+            };
+
+            if !ok {
+                return Err(AxonError::ConflictingVersion {
+                    expected: op.expected_version,
+                    actual: current_version,
+                });
+            }
+        }
+
+        // ── Phase 2: Apply writes ────────────────────────────────────────────
+        let mut written = Vec::new();
+
+        for op in self.ops {
+            match op.mutation {
+                MutationType::Create => {
+                    storage.put(op.entity.clone())?;
+                    let after = op.entity.data.clone();
+                    let mut entry = AuditEntry::new(
+                        op.entity.collection.clone(),
+                        op.entity.id.clone(),
+                        op.entity.version,
+                        MutationType::Create,
+                        None,
+                        Some(after),
+                        Some(actor_str.into()),
+                    );
+                    entry.transaction_id = Some(tx_id.clone());
+                    audit.append(entry)?;
+                    written.push(op.entity);
+                }
+                MutationType::Update => {
+                    let updated = storage.compare_and_swap(op.entity.clone(), op.expected_version)?;
+                    let after = updated.data.clone();
+                    let mut entry = AuditEntry::new(
+                        updated.collection.clone(),
+                        updated.id.clone(),
+                        updated.version,
+                        MutationType::Update,
+                        op.data_before,
+                        Some(after),
+                        Some(actor_str.into()),
+                    );
+                    entry.transaction_id = Some(tx_id.clone());
+                    audit.append(entry)?;
+                    written.push(updated);
+                }
+                MutationType::Delete => {
+                    storage.delete(&op.entity.collection, &op.entity.id)?;
+                    let mut entry = AuditEntry::new(
+                        op.entity.collection.clone(),
+                        op.entity.id.clone(),
+                        op.entity.version,
+                        MutationType::Delete,
+                        op.data_before,
+                        None,
+                        Some(actor_str.into()),
+                    );
+                    entry.transaction_id = Some(tx_id.clone());
+                    audit.append(entry)?;
+                    written.push(op.entity);
+                }
+            }
+        }
+
+        Ok(written)
+    }
+}
+
+impl Default for Transaction {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axon_audit::log::MemoryAuditLog;
+    use axon_core::id::{CollectionId, EntityId};
+    use axon_storage::memory::MemoryStorageAdapter;
+    use serde_json::json;
+
+    fn accounts() -> CollectionId {
+        CollectionId::new("accounts")
+    }
+
+    fn account(id: &str, balance: i64) -> Entity {
+        Entity::new(
+            accounts(),
+            EntityId::new(id),
+            json!({"balance": balance}),
+        )
+    }
+
+    #[test]
+    fn atomic_debit_credit_succeeds() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+
+        // Seed two accounts.
+        storage.put(account("A", 100)).unwrap();
+        storage.put(account("B", 50)).unwrap();
+
+        // Transaction: debit A by 30, credit B by 30.
+        let mut tx = Transaction::new();
+        let a_before = storage.get(&accounts(), &EntityId::new("A")).unwrap().unwrap();
+        let b_before = storage.get(&accounts(), &EntityId::new("B")).unwrap().unwrap();
+
+        tx.update(
+            account("A", 70),
+            a_before.version,
+            Some(a_before.data.clone()),
+        );
+        tx.update(
+            account("B", 80),
+            b_before.version,
+            Some(b_before.data.clone()),
+        );
+
+        let written = tx.commit(&mut storage, &mut audit, Some("system".into())).unwrap();
+        assert_eq!(written.len(), 2);
+
+        let a = storage.get(&accounts(), &EntityId::new("A")).unwrap().unwrap();
+        let b = storage.get(&accounts(), &EntityId::new("B")).unwrap().unwrap();
+        assert_eq!(a.data["balance"], 70);
+        assert_eq!(b.data["balance"], 80);
+    }
+
+    #[test]
+    fn version_conflict_aborts_entire_transaction() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+
+        storage.put(account("A", 100)).unwrap();
+        storage.put(account("B", 50)).unwrap();
+
+        let mut tx = Transaction::new();
+        tx.update(account("A", 70), 1, None); // correct version
+        tx.update(account("B", 80), 99, None); // WRONG version — should abort all
+
+        let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
+        assert!(
+            matches!(err, AxonError::ConflictingVersion { expected: 99, actual: 1 }),
+            "unexpected error: {err}"
+        );
+
+        // Neither entity should have been modified.
+        let a = storage.get(&accounts(), &EntityId::new("A")).unwrap().unwrap();
+        let b = storage.get(&accounts(), &EntityId::new("B")).unwrap().unwrap();
+        assert_eq!(a.data["balance"], 100, "A should be unchanged after abort");
+        assert_eq!(b.data["balance"], 50, "B should be unchanged after abort");
+        assert_eq!(audit.len(), 0, "no audit entries on abort");
+    }
+
+    #[test]
+    fn partial_failure_rolls_back_all_changes() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+
+        storage.put(account("A", 100)).unwrap();
+        // B does not exist — create will succeed, but C check will fail.
+        storage.put(account("C", 200)).unwrap();
+
+        let mut tx = Transaction::new();
+        tx.update(account("A", 70), 1, None); // OK
+        tx.update(account("C", 190), 99, None); // WRONG version — triggers abort
+
+        let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
+        assert!(matches!(err, AxonError::ConflictingVersion { .. }));
+
+        // A must be unchanged.
+        let a = storage.get(&accounts(), &EntityId::new("A")).unwrap().unwrap();
+        assert_eq!(a.data["balance"], 100);
+    }
+
+    #[test]
+    fn audit_entries_share_transaction_id() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+
+        storage.put(account("A", 100)).unwrap();
+        storage.put(account("B", 50)).unwrap();
+
+        let a = storage.get(&accounts(), &EntityId::new("A")).unwrap().unwrap();
+        let b = storage.get(&accounts(), &EntityId::new("B")).unwrap().unwrap();
+
+        let mut tx = Transaction::new();
+        let tx_id = tx.id.clone();
+        tx.update(account("A", 70), a.version, None);
+        tx.update(account("B", 80), b.version, None);
+
+        tx.commit(&mut storage, &mut audit, None).unwrap();
+
+        let entries = audit.entries();
+        assert_eq!(entries.len(), 2);
+        for entry in entries {
+            assert_eq!(
+                entry.transaction_id.as_deref(),
+                Some(tx_id.as_str()),
+                "all entries must share the transaction ID"
+            );
+        }
+    }
+}
