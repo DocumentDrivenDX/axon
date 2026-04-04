@@ -6,5 +6,8 @@
 
 pub mod adapter;
 pub mod memory;
+pub mod sqlite;
 
 pub use adapter::StorageAdapter;
+pub use memory::MemoryStorageAdapter;
+pub use sqlite::SqliteStorageAdapter;

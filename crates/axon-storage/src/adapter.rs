@@ -12,6 +12,7 @@ pub trait StorageAdapter: Send + Sync {
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError>;
 
     /// Stores an entity, overwriting any existing entity with the same ID.
+    /// Use this for initial inserts. For versioned updates, use [`compare_and_swap`].
     fn put(&mut self, entity: Entity) -> Result<(), AxonError>;
 
     /// Deletes an entity. Returns `Ok(())` whether or not the entity existed.
@@ -19,4 +20,31 @@ pub trait StorageAdapter: Send + Sync {
 
     /// Returns the number of entities in the given collection.
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError>;
+
+    /// Returns entities in a collection ordered by entity ID.
+    ///
+    /// - `start`: inclusive lower bound (no lower bound if `None`)
+    /// - `end`: inclusive upper bound (no upper bound if `None`)
+    /// - `limit`: maximum number of results (unlimited if `None`)
+    fn range_scan(
+        &self,
+        collection: &CollectionId,
+        start: Option<&EntityId>,
+        end: Option<&EntityId>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Entity>, AxonError>;
+
+    /// Atomically updates an entity using optimistic concurrency control (OCC).
+    ///
+    /// Writes `entity` only if the current stored version equals `expected_version`.
+    /// On success, the stored version is incremented to `expected_version + 1` and
+    /// the updated entity is returned.
+    ///
+    /// Returns [`AxonError::ConflictingVersion`] if the version does not match or
+    /// the entity does not exist.
+    fn compare_and_swap(
+        &mut self,
+        entity: Entity,
+        expected_version: u64,
+    ) -> Result<Entity, AxonError>;
 }
