@@ -10,3 +10,4 @@ pub mod types;
 
 pub use error::AxonError;
 pub use id::{CollectionId, EntityId, LinkId};
+pub use types::{Entity, Link, LINKS_COLLECTION};
