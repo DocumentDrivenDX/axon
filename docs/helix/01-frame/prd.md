@@ -20,7 +20,29 @@ Target users are developers building agentic applications (beads, research agent
 
 ---
 
-## 1. Problem Statement
+## 1. Key Value Propositions
+
+| # | Value Proposition | Customer Benefit |
+|---|-------------------|------------------|
+| 1 | **Entity-graph-relational model** — entities + typed links + SQL-like queries in one system | Model real-world relationships (dependencies, hierarchies, ownership) without joining across systems or sacrificing document richness |
+| 2 | **Audit-first architecture** — every mutation produces an immutable, queryable audit record | Full provenance chain: who/what changed what, when, and why. Agents and humans can verify, revert, and reason about state history |
+| 3 | **Schema-first collections** — define structure upfront, get validation, migration, and documentation for free | Agents work with well-typed data instead of guessing at shapes. Schema evolution is managed, not hoped for |
+| 4 | **ACID transactions** — multi-entity atomic operations with optimistic concurrency | Debit A and credit B atomically. Read-your-writes guarantee. No silent overwrites from stale state |
+| 5 | **Cloud-native abstraction** — Axon is Axon regardless of backing storage | Developers don't couple to storage engines. Axon can run embedded, on a server, or as a managed service — same API |
+| 6 | **Agent-native API surface** — designed for how agents consume and produce structured data | Agents get transactional batches, optimistic concurrency, change feeds, and structured queries — not raw SQL or file I/O |
+| 7 | **Local-first sync** — collections can sync between local and cloud instances with conflict resolution | Offline-capable UIs and agents. Edit locally, sync when connected. CRDTs or OT where appropriate |
+| 8 | **Workflow primitives** — state machines, transition guards, and lifecycle hooks built into the collection layer | Business processes (invoice approval, document review, bead lifecycle) get first-class state management without external orchestrators |
+
+---
+
+## 2. Strategic Fit
+
+- **Ecosystem alignment**: Axon complements niflheim (high-performance analytics/entity resolution), tablespec (schema definitions), and DDx (document management). Axon is the transactional layer; niflheim is the analytical layer. Tablespec's UMF format informs Axon's schema system
+- **Timing**: The agent era is creating massive demand for structured, auditable state management. Current solutions (Firebase, Supabase, PocketBase) were built for mobile/web apps, not agents. DoltDB and Turso add versioning but lack agent-native APIs and audit-first design. The window to define the category is open now
+
+---
+
+## 3. Problem Statement
 
 ### The Problem
 
@@ -55,7 +77,7 @@ Timing factors:
 
 ---
 
-## 2. Data Model: Entity-Graph-Relational
+## 4. Data Model: Entity-Graph-Relational
 
 ### Core Concepts
 
@@ -95,7 +117,7 @@ The query model targets **moderate scale** — thousands to low millions of enti
 
 ---
 
-## 3. Transaction Model
+## 5. Transaction Model
 
 ### ACID Guarantees
 
@@ -168,7 +190,7 @@ Each operation within the transaction is validated (schema, version) and the ent
 
 ---
 
-## 4. Goals and Objectives
+## 6. Goals and Objectives
 
 ### Business Goals
 
@@ -180,11 +202,12 @@ Each operation within the transaction is validated (schema, version) and the ent
 
 | Metric | Target | Measurement Method | Timeline |
 |--------|--------|-------------------|----------|
-| Internal project integrations | 3+ projects | Direct integration count | 6 months |
-| Audit completeness | 100% of mutations | Audit log gap detection | V1 launch |
-| Schema enforcement | 0 schema violations in production | Validation error rate | V1 launch |
-| API latency (p99) | <10ms for single-document operations | Benchmark suite | V1 launch |
-| External GitHub stars | 500+ | GitHub metrics | 12 months |
+| Internal project integrations | 3+ projects (beads, DDx, daily loop) | Direct integration count | 6 months |
+| Schema enforcement | 100% of production collections validated | Schema validation pass rate | V1 launch |
+| Audit completeness | 100% of mutations audited | Audit log gap detection | V1 launch |
+| API latency (p99) | <10ms for single-entity operations | Benchmark suite | V1 launch |
+| External early adopters | 10+ projects | GitHub stars, integration PRs | 12 months |
+| Agent framework integrations | 3+ (beads, LangChain state, CrewAI state) | Published integration packages | 18 months |
 
 ### Non-Goals
 
@@ -198,7 +221,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ---
 
-## 5. Users and Personas
+## 7. Users and Personas
 
 ### Primary Persona: Agent Developer ("Ava")
 
@@ -244,7 +267,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ---
 
-## 6. Requirements Overview
+## 8. Requirements Overview
 
 ### Must Have (P0) — V1
 
@@ -283,7 +306,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ---
 
-## 7. User Journey
+## 9. User Journey
 
 ### Primary Flow: Agent Storing a Bead
 
@@ -302,7 +325,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ---
 
-## 8. Constraints and Assumptions
+## 10. Constraints and Assumptions
 
 ### Constraints
 
@@ -327,7 +350,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ---
 
-## 9. Risks and Mitigation
+## 11. Risks and Mitigation
 
 | Risk | Probability | Impact | Mitigation Strategy |
 |------|------------|--------|-------------------|
@@ -343,7 +366,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ---
 
-## 10. Timeline and Milestones
+## 12. Timeline and Milestones
 
 ### Phase 1: Foundation (8 weeks)
 
@@ -381,7 +404,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ---
 
-## 11. Success Criteria
+## 13. Success Criteria
 
 ### Definition of Done
 

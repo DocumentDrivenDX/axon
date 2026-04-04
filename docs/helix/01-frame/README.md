@@ -10,6 +10,7 @@ This directory captures product framing and context for Axon.
 ## Contents
 
 - [Product Requirements](prd.md)
+- [Principles](principles.md)
 - [Competitive Analysis](competitive-analysis.md)
 - [Feature Specs](features/README.md)
 

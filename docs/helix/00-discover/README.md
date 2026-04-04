@@ -5,6 +5,7 @@ Discovery artifacts for Axon — a cloud-native, auditable, schema-first transac
 ## Artifacts
 
 - [Product Vision](product-vision.md) - Product vision and opportunity context
+- [FoundationDB DST Research](foundationdb-dst-research.md) - Research on deterministic simulation testing, BUGGIFY, and Rust applicability
 
 ## Status
 
