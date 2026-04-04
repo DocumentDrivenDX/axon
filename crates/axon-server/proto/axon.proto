@@ -1,0 +1,130 @@
+syntax = "proto3";
+
+package axon.v1;
+
+// ── Entity operations ─────────────────────────────────────────────────────────
+
+message CreateEntityRequest {
+  string collection = 1;
+  string id = 2;
+  string data_json = 3;
+  string actor = 4;
+}
+
+message CreateEntityResponse {
+  EntityProto entity = 1;
+}
+
+message GetEntityRequest {
+  string collection = 1;
+  string id = 2;
+}
+
+message GetEntityResponse {
+  EntityProto entity = 1;
+}
+
+message UpdateEntityRequest {
+  string collection = 1;
+  string id = 2;
+  string data_json = 3;
+  uint64 expected_version = 4;
+  string actor = 5;
+}
+
+message UpdateEntityResponse {
+  EntityProto entity = 1;
+}
+
+message DeleteEntityRequest {
+  string collection = 1;
+  string id = 2;
+  string actor = 3;
+}
+
+message DeleteEntityResponse {
+  string collection = 1;
+  string id = 2;
+}
+
+message EntityProto {
+  string collection = 1;
+  string id = 2;
+  uint64 version = 3;
+  string data_json = 4;
+}
+
+// ── Link operations ───────────────────────────────────────────────────────────
+
+message CreateLinkRequest {
+  string source_collection = 1;
+  string source_id = 2;
+  string target_collection = 3;
+  string target_id = 4;
+  string link_type = 5;
+  string metadata_json = 6;
+  string actor = 7;
+}
+
+message CreateLinkResponse {
+  LinkProto link = 1;
+}
+
+message TraverseRequest {
+  string collection = 1;
+  string id = 2;
+  string link_type = 3;
+  uint32 max_depth = 4;
+}
+
+message TraverseResponse {
+  repeated EntityProto entities = 1;
+}
+
+message LinkProto {
+  string source_collection = 1;
+  string source_id = 2;
+  string target_collection = 3;
+  string target_id = 4;
+  string link_type = 5;
+  string metadata_json = 6;
+}
+
+// ── Audit operations ──────────────────────────────────────────────────────────
+
+message QueryAuditByEntityRequest {
+  string collection = 1;
+  string entity_id = 2;
+}
+
+message QueryAuditByEntityResponse {
+  repeated AuditEntryProto entries = 1;
+}
+
+message AuditEntryProto {
+  uint64 id = 1;
+  uint64 timestamp_ns = 2;
+  string collection = 3;
+  string entity_id = 4;
+  uint64 version = 5;
+  string mutation = 6;
+  string data_before_json = 7;
+  string data_after_json = 8;
+  string actor = 9;
+  string transaction_id = 10;
+}
+
+// ── Service definition ────────────────────────────────────────────────────────
+
+service AxonService {
+  // Entity CRUD
+  rpc CreateEntity(CreateEntityRequest) returns (CreateEntityResponse);
+  rpc GetEntity(GetEntityRequest) returns (GetEntityResponse);
+  rpc UpdateEntity(UpdateEntityRequest) returns (UpdateEntityResponse);
+  rpc DeleteEntity(DeleteEntityRequest) returns (DeleteEntityResponse);
+  // Link operations
+  rpc CreateLink(CreateLinkRequest) returns (CreateLinkResponse);
+  rpc Traverse(TraverseRequest) returns (TraverseResponse);
+  // Audit
+  rpc QueryAuditByEntity(QueryAuditByEntityRequest) returns (QueryAuditByEntityResponse);
+}

@@ -7,6 +7,7 @@ members = [
     "crates/axon-api",
     "crates/axon-cli",
     "crates/axon-sim",
+    "crates/axon-server",
 ]
 resolver = "2"
 
@@ -39,6 +40,12 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Schema validation
 jsonschema = "0.28"
 serde_yaml = "0.9"
+
+# gRPC / HTTP
+tonic = { version = "0.13", features = ["transport"] }
+tonic-build = "0.13"
+prost = "0.13"
+axum = "0.8"
 
 # Testing
 pretty_assertions = "1"
