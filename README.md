@@ -26,6 +26,7 @@ Agents and humans share a trustworthy substrate for structured, interconnected s
 | [ADR-001: Rust](docs/helix/02-design/adr/ADR-001-implementation-language.md) | Implementation language decision |
 | [ADR-002: Schema Format](docs/helix/02-design/adr/ADR-002-schema-format.md) | Hybrid JSON Schema + Axon vocabulary |
 | [SPIKE-001: Backing Stores](docs/helix/02-design/spikes/SPIKE-001-backing-store-evaluation.md) | PostgreSQL, SQLite, FoundationDB, fjall evaluation |
+| [Test Plan](docs/helix/03-test/test-plan.md) | Correctness invariants, business scenarios, property tests, benchmarks |
 
 ## Related Projects
 
