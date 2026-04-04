@@ -7,4 +7,5 @@
 pub mod entry;
 pub mod log;
 
-pub use entry::AuditEntry;
+pub use entry::{AuditEntry, MutationType};
+pub use log::{AuditLog, MemoryAuditLog};
