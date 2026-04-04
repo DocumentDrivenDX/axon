@@ -8,15 +8,9 @@
 
 Axon provides a cloud-native, auditable, schema-first transactional data store built on an entity-graph-relational data model — serving as the central nervous system for agentic applications and business workflows. Entities are the atoms; typed links are the bonds; transactions, audit trails, and schemas are the guarantees. Agents and humans share a trustworthy substrate for structured, interconnected state.
 
-## 3-5 Year Vision
+## Vision
 
-| Timeframe | Position | Key Milestones |
-|-----------|----------|----------------|
-| Year 1 | Go-to data layer for internal agentic projects (beads, DDx, daily loop); usable by early adopters building agent-driven apps | Core API stable, collection CRUD with schema validation, audit log queryable, bead storage working end-to-end, local-first sync protocol proven |
-| Year 3 | Standard infrastructure layer for agentic state management, analogous to what Firebase was for mobile apps — but audit-first and agent-native | Ecosystem of agent frameworks storing state in Axon, workflow engine primitives, multi-tenant cloud service, community-contributed schemas |
-| Year 5 | Foundational platform for the agent era — the default answer to "where does agent state live?" | Industry-standard audit and provenance protocol, broad agent framework integrations, enterprise compliance certifications, federated Axon instances |
-
-**North Star**: Every agentic application has an Axon — a place where structured state is created, audited, queried, and trusted by both agents and humans.
+Every agentic application has an Axon — the place where structured state is created, audited, queried, and trusted by both agents and humans. Axon is the standard infrastructure layer for agent state management: what Firebase was for mobile apps, but audit-first, schema-first, and agent-native.
 
 ## Target Market
 
