@@ -7,4 +7,5 @@
 pub mod schema;
 pub mod validation;
 
-pub use schema::CollectionSchema;
+pub use schema::{CollectionSchema, EsfDocument};
+pub use validation::{validate, validate_entity, SchemaValidationError, SchemaValidationErrors};
