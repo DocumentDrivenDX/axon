@@ -509,7 +509,7 @@ pub fn build_router(handler: SharedHandler) -> Router {
         .route("/entities/{collection}/{id}", get(get_entity))
         .route("/entities/{collection}/{id}", put(update_entity))
         .route("/entities/{collection}/{id}", delete(delete_entity))
-        .route("/entities/{collection}/query", post(query_entities))
+        .route("/collections/{collection}/query", post(query_entities))
         .route("/links", post(create_link))
         .route("/links", delete(delete_link))
         .route("/traverse/{collection}/{id}", get(traverse))
@@ -852,7 +852,7 @@ mod tests {
 
         // Filter: status = "open"
         let resp = server
-            .post("/entities/tasks/query")
+            .post("/collections/tasks/query")
             .json(&json!({
                 "filter": {
                     "type": "field",
@@ -869,7 +869,7 @@ mod tests {
 
         // count_only
         let resp2 = server
-            .post("/entities/tasks/query")
+            .post("/collections/tasks/query")
             .json(&json!({
                 "filter": {
                     "type": "field",
@@ -902,7 +902,7 @@ mod tests {
             .assert_status(StatusCode::CREATED);
 
         let resp = server
-            .post("/entities/tasks/query")
+            .post("/collections/tasks/query")
             .json(&json!({
                 "filter": {
                     "type": "and",
@@ -910,6 +910,56 @@ mod tests {
                         {"type": "field", "field": "status", "op": "eq", "value": "open"},
                         {"type": "field", "field": "assignee", "op": "eq", "value": "alice"}
                     ]
+                }
+            }))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["total_count"], 1);
+    }
+
+    // Regression tests for route conflict: literal "query" segment must not shadow
+    // the {id} capture in /entities/{collection}/{id}.
+    #[tokio::test]
+    async fn http_entity_with_id_query_create_and_get() {
+        let server = test_server();
+
+        // POST /entities/tasks/query must create an entity with ID "query".
+        let resp = server
+            .post("/entities/tasks/query")
+            .json(&json!({"data": {"title": "reserved-id"}}))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        assert_eq!(body["entity"]["id"], "query");
+
+        // GET /entities/tasks/query must retrieve the entity with ID "query".
+        let resp = server.get("/entities/tasks/query").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["entity"]["id"], "query");
+        assert_eq!(body["entity"]["data"]["title"], "reserved-id");
+    }
+
+    #[tokio::test]
+    async fn http_query_endpoint_accessible_at_collections_path() {
+        let server = test_server();
+
+        server
+            .post("/entities/tasks/t-1")
+            .json(&json!({"data": {"status": "open"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // POST /collections/{collection}/query is the non-conflicting query endpoint.
+        let resp = server
+            .post("/collections/tasks/query")
+            .json(&json!({
+                "filter": {
+                    "type": "field",
+                    "field": "status",
+                    "op": "eq",
+                    "value": "open"
                 }
             }))
             .await;
