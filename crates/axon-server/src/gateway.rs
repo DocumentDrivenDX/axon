@@ -187,6 +187,37 @@ pub struct PutSchemaBody {
     pub actor: Option<String>,
 }
 
+// ── Transaction request body ─────────────────────────────────────────────────
+
+/// A single operation within a batch transaction.
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum TransactionOp {
+    Create {
+        collection: String,
+        id: String,
+        data: Value,
+    },
+    Update {
+        collection: String,
+        id: String,
+        data: Value,
+        expected_version: u64,
+    },
+    Delete {
+        collection: String,
+        id: String,
+        expected_version: u64,
+    },
+}
+
+/// Request body for `POST /transactions`.
+#[derive(Deserialize)]
+pub struct TransactionBody {
+    pub operations: Vec<TransactionOp>,
+    pub actor: Option<String>,
+}
+
 // ── Route handlers ────────────────────────────────────────────────────────────
 
 async fn create_entity(
@@ -623,6 +654,107 @@ async fn get_schema(
     }
 }
 
+// ── Transaction endpoint ─────────────────────────────────────────────────────
+
+async fn commit_transaction(
+    State(handler): State<SharedHandler>,
+    Json(body): Json<TransactionBody>,
+) -> Response {
+    use axon_api::transaction::Transaction;
+    use axon_core::types::Entity;
+
+    let mut tx = Transaction::new();
+
+    // Stage all operations.
+    for op in body.operations {
+        let result = match op {
+            TransactionOp::Create {
+                collection,
+                id,
+                data,
+            } => tx.create(Entity::new(
+                CollectionId::new(&collection),
+                EntityId::new(&id),
+                data,
+            )),
+            TransactionOp::Update {
+                collection,
+                id,
+                data,
+                expected_version,
+            } => {
+                // Read current state for audit before-snapshot.
+                let h = handler.lock().await;
+                let data_before = h
+                    .get_entity(GetEntityRequest {
+                        collection: CollectionId::new(&collection),
+                        id: EntityId::new(&id),
+                    })
+                    .ok()
+                    .map(|r| r.entity.data);
+                drop(h);
+                tx.update(
+                    Entity::new(CollectionId::new(&collection), EntityId::new(&id), data),
+                    expected_version,
+                    data_before,
+                )
+            }
+            TransactionOp::Delete {
+                collection,
+                id,
+                expected_version,
+            } => {
+                let h = handler.lock().await;
+                let data_before = h
+                    .get_entity(GetEntityRequest {
+                        collection: CollectionId::new(&collection),
+                        id: EntityId::new(&id),
+                    })
+                    .ok()
+                    .map(|r| r.entity.data);
+                drop(h);
+                tx.delete(
+                    CollectionId::new(&collection),
+                    EntityId::new(&id),
+                    expected_version,
+                    data_before,
+                )
+            }
+        };
+        if let Err(e) = result {
+            return axon_error_response(e);
+        }
+    }
+
+    // Commit atomically.
+    let tx_id = tx.id.clone();
+    let mut h = handler.lock().await;
+    let (storage, audit) = h.storage_and_audit_mut();
+    match tx.commit(storage, audit, body.actor) {
+        Ok(written) => {
+            let entities: Vec<Value> = written
+                .iter()
+                .map(|e| {
+                    json!({
+                        "collection": e.collection.to_string(),
+                        "id": e.id.to_string(),
+                        "version": e.version,
+                    })
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "transaction_id": tx_id,
+                    "entities": entities,
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => axon_error_response(e),
+    }
+}
+
 // ── Router construction ───────────────────────────────────────────────────────
 
 /// Build the axum router for the HTTP gateway.
@@ -648,6 +780,7 @@ pub fn build_router(handler: SharedHandler) -> Router {
         .route("/collections/{name}", delete(drop_collection))
         .route("/collections/{name}/schema", put(put_schema))
         .route("/collections/{name}/schema", get(get_schema))
+        .route("/transactions", post(commit_transaction))
         .with_state(handler)
 }
 
@@ -1313,5 +1446,108 @@ mod tests {
         // Field-level details: expected and actual versions.
         assert!(body["detail"]["expected"].is_number());
         assert!(body["detail"]["actual"].is_number());
+    }
+
+    // ── Transaction endpoint ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn http_transaction_commits_atomically() {
+        let server = test_server();
+
+        // Create two entities first.
+        server
+            .post("/entities/accounts/A")
+            .json(&json!({"data": {"balance": 100}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/entities/accounts/B")
+            .json(&json!({"data": {"balance": 50}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // Commit a transaction: debit A, credit B.
+        let resp = server
+            .post("/transactions")
+            .json(&json!({
+                "operations": [
+                    {"op": "update", "collection": "accounts", "id": "A", "data": {"balance": 70}, "expected_version": 1},
+                    {"op": "update", "collection": "accounts", "id": "B", "data": {"balance": 80}, "expected_version": 1}
+                ],
+                "actor": "transfer-agent"
+            }))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert!(body["transaction_id"].is_string());
+        assert_eq!(body["entities"].as_array().unwrap().len(), 2);
+
+        // Verify updates applied.
+        let resp = server.get("/entities/accounts/A").await;
+        let body: Value = resp.json();
+        assert_eq!(body["entity"]["data"]["balance"], 70);
+        assert_eq!(body["entity"]["version"], 2);
+    }
+
+    #[tokio::test]
+    async fn http_transaction_rolls_back_on_conflict() {
+        let server = test_server();
+
+        server
+            .post("/entities/accounts/X")
+            .json(&json!({"data": {"balance": 100}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // Transaction with wrong expected_version.
+        let resp = server
+            .post("/transactions")
+            .json(&json!({
+                "operations": [
+                    {"op": "update", "collection": "accounts", "id": "X", "data": {"balance": 0}, "expected_version": 99}
+                ]
+            }))
+            .await;
+        resp.assert_status(StatusCode::CONFLICT);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "version_conflict");
+
+        // Entity must be unchanged.
+        let resp = server.get("/entities/accounts/X").await;
+        let body: Value = resp.json();
+        assert_eq!(body["entity"]["data"]["balance"], 100);
+    }
+
+    #[tokio::test]
+    async fn http_transaction_creates_and_deletes() {
+        let server = test_server();
+
+        // Seed an entity to delete.
+        server
+            .post("/entities/temp/d-001")
+            .json(&json!({"data": {"x": 1}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // Transaction: create one entity, delete another.
+        let resp = server
+            .post("/transactions")
+            .json(&json!({
+                "operations": [
+                    {"op": "create", "collection": "temp", "id": "c-001", "data": {"y": 2}},
+                    {"op": "delete", "collection": "temp", "id": "d-001", "expected_version": 1}
+                ],
+                "actor": "batch-agent"
+            }))
+            .await;
+        resp.assert_status_ok();
+
+        // c-001 should exist.
+        server.get("/entities/temp/c-001").await.assert_status_ok();
+        // d-001 should be gone.
+        server
+            .get("/entities/temp/d-001")
+            .await
+            .assert_status_not_found();
     }
 }
