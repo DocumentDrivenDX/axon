@@ -25,6 +25,7 @@ use axon_core::id::{CollectionId, EntityId};
 use axon_storage::memory::MemoryStorageAdapter;
 use serde_json::{json, Value};
 
+use crate::invariants::check_version_monotonicity;
 use crate::rng::SimRng;
 
 const COL_A: &str = "sim_audit_a";
@@ -266,34 +267,6 @@ fn reconstruct_state(entries: &[&axon_audit::entry::AuditEntry]) -> Option<Value
         }
     }
     state
-}
-
-/// INV-007: verify that create/update/revert audit entries have strictly
-/// increasing versions starting at 1, and that any delete entry records the
-/// last non-delete version.
-fn check_version_monotonicity(entries: &[&axon_audit::entry::AuditEntry]) -> bool {
-    let mut expected = 1u64;
-    for entry in entries {
-        match entry.mutation {
-            MutationType::EntityCreate
-            | MutationType::EntityUpdate
-            | MutationType::EntityRevert => {
-                if entry.version != expected {
-                    return false;
-                }
-                expected += 1;
-            }
-            MutationType::EntityDelete => {
-                // Delete records the version at deletion — must equal the last
-                // non-delete version (expected - 1 after at least one write).
-                if expected == 1 || entry.version != expected - 1 {
-                    return false;
-                }
-            }
-            _ => {}
-        }
-    }
-    true
 }
 
 #[cfg(test)]

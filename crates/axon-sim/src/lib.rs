@@ -34,6 +34,7 @@ pub mod audit_immutability;
 pub mod buggify;
 pub mod concurrent_writer;
 pub mod cycle;
+pub mod invariants;
 pub mod link_integrity;
 pub mod rng;
 pub mod schema_enforcement;

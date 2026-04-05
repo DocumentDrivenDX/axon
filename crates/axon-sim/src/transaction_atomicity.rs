@@ -18,7 +18,6 @@
 use axon_api::handler::AxonHandler;
 use axon_api::request::{CreateEntityRequest, GetEntityRequest};
 use axon_api::transaction::Transaction;
-use axon_audit::entry::MutationType;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
@@ -26,6 +25,7 @@ use axon_storage::memory::MemoryStorageAdapter;
 use serde_json::json;
 
 use crate::buggify::Buggify;
+use crate::invariants::check_version_monotonicity;
 use crate::rng::SimRng;
 
 const COL: &str = "sim_accounts";
@@ -244,7 +244,7 @@ pub fn run_transaction_atomicity_workload(
             .iter()
             .filter(|e| e.collection == col && e.entity_id.as_str() == *name)
             .collect();
-        check_entity_version_monotonicity(&entries)
+        check_version_monotonicity(&entries)
     });
 
     TransactionAtomicityResult {
@@ -255,30 +255,6 @@ pub fn run_transaction_atomicity_workload(
         atomicity_correct,
         versions_correct,
     }
-}
-
-/// INV-007 helper: verify create/update/revert entries have versions 1, 2, 3…
-fn check_entity_version_monotonicity(entries: &[&axon_audit::entry::AuditEntry]) -> bool {
-    let mut expected = 1u64;
-    for entry in entries {
-        match entry.mutation {
-            MutationType::EntityCreate
-            | MutationType::EntityUpdate
-            | MutationType::EntityRevert => {
-                if entry.version != expected {
-                    return false;
-                }
-                expected += 1;
-            }
-            MutationType::EntityDelete => {
-                if expected == 1 || entry.version != expected - 1 {
-                    return false;
-                }
-            }
-            _ => {}
-        }
-    }
-    true
 }
 
 #[cfg(test)]
