@@ -149,6 +149,7 @@ pub struct CreateCollectionSchemaBody {
     #[serde(default = "default_schema_version")]
     pub version: u32,
     pub entity_schema: Option<Value>,
+    pub link_types: Option<std::collections::HashMap<String, axon_schema::LinkTypeDef>>,
 }
 
 fn default_schema_version() -> u32 {
@@ -182,6 +183,7 @@ pub struct PutSchemaBody {
     pub description: Option<String>,
     pub version: u32,
     pub entity_schema: Option<Value>,
+    pub link_types: Option<std::collections::HashMap<String, axon_schema::LinkTypeDef>>,
     pub actor: Option<String>,
 }
 
@@ -520,6 +522,7 @@ async fn create_collection(
         description: schema_body.description,
         version: schema_body.version,
         entity_schema: schema_body.entity_schema,
+        link_types: schema_body.link_types.unwrap_or_default(),
     };
     match handler
         .lock()
@@ -595,6 +598,7 @@ async fn put_schema(
         description: body.description,
         version: body.version,
         entity_schema: body.entity_schema,
+        link_types: body.link_types.unwrap_or_default(),
     };
     match handler.lock().await.handle_put_schema(PutSchemaRequest {
         schema,

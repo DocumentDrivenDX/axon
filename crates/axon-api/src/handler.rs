@@ -6,7 +6,7 @@ use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::CollectionSchema;
-use axon_schema::validation::{compile_entity_schema, validate};
+use axon_schema::validation::{compile_entity_schema, validate, validate_link_metadata};
 use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
@@ -700,6 +700,54 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
+        // Enforce link-type definitions from source collection schema (ADR-002).
+        if let Some(schema) = self.storage.get_schema(&req.source_collection)? {
+            if !schema.link_types.is_empty() {
+                let link_def = schema.link_types.get(&req.link_type).ok_or_else(|| {
+                    AxonError::SchemaValidation(format!(
+                        "link type '{}' is not declared in collection '{}' schema",
+                        req.link_type, req.source_collection
+                    ))
+                })?;
+
+                // Verify target collection matches the declaration.
+                if req.target_collection.as_str() != link_def.target_collection {
+                    return Err(AxonError::SchemaValidation(format!(
+                        "link type '{}' requires target collection '{}', got '{}'",
+                        req.link_type, link_def.target_collection, req.target_collection
+                    )));
+                }
+
+                // Validate link metadata against metadata_schema if declared.
+                if let Some(metadata_schema) = &link_def.metadata_schema {
+                    validate_link_metadata(metadata_schema, &req.metadata)?;
+                }
+            }
+        }
+
+        // Reject duplicate (source, target, link_type) triples.
+        let link_id = Link::storage_id(
+            &req.source_collection,
+            &req.source_id,
+            &req.link_type,
+            &req.target_collection,
+            &req.target_id,
+        );
+        if self
+            .storage
+            .get(&Link::links_collection(), &link_id)?
+            .is_some()
+        {
+            return Err(AxonError::AlreadyExists(format!(
+                "link {}/{}/{}/{}/{}",
+                req.source_collection,
+                req.source_id,
+                req.link_type,
+                req.target_collection,
+                req.target_id
+            )));
+        }
+
         let link = Link {
             source_collection: req.source_collection,
             source_id: req.source_id,
@@ -1177,7 +1225,8 @@ entity_schema:
         let mut h = handler();
         let schema = EsfDocument::parse(TASK_ESF)
             .unwrap()
-            .into_collection_schema();
+            .into_collection_schema()
+            .unwrap();
         h.register_schema(schema);
 
         // Missing required "title" field.
@@ -1201,7 +1250,8 @@ entity_schema:
         let mut h = handler();
         let schema = EsfDocument::parse(TASK_ESF)
             .unwrap()
-            .into_collection_schema();
+            .into_collection_schema()
+            .unwrap();
         h.register_schema(schema);
 
         let result = h.create_entity(CreateEntityRequest {
@@ -1519,7 +1569,7 @@ entity_schema:
         for i in 0..5u32 {
             h.create_entity(CreateEntityRequest {
                 collection: col.clone(),
-                id: EntityId::new(&format!("t-{i:03}")),
+                id: EntityId::new(format!("t-{i:03}")),
                 data: json!({"title": format!("task {i}")}),
                 actor: None,
             })
@@ -1671,7 +1721,7 @@ entity_schema:
         for i in 0..3u32 {
             h.create_entity(CreateEntityRequest {
                 collection: CollectionId::new("widgets"),
-                id: EntityId::new(&format!("w-{i:03}")),
+                id: EntityId::new(format!("w-{i:03}")),
                 data: json!({"name": format!("widget {i}")}),
                 actor: None,
             })
@@ -1746,6 +1796,7 @@ entity_schema:
             description: Some("a typed collection".into()),
             version: 1,
             entity_schema: Some(json!({"type": "object"})),
+            link_types: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -1852,6 +1903,7 @@ entity_schema:
             description: None,
             version: 1,
             entity_schema: Some(json!({"type": "bogus"})),
+            link_types: Default::default(),
         };
 
         let err = h
@@ -1901,7 +1953,7 @@ entity_schema:
         for i in 0..2u32 {
             h.create_entity(CreateEntityRequest {
                 collection: CollectionId::new("bananas"),
-                id: EntityId::new(&format!("b-{i}")),
+                id: EntityId::new(format!("b-{i}")),
                 data: json!({"name": format!("b-{i}")}),
                 actor: None,
             })
@@ -1935,6 +1987,7 @@ entity_schema:
             description: None,
             version: 5,
             entity_schema: None,
+            link_types: Default::default(),
         })
         .unwrap();
 
@@ -1959,6 +2012,7 @@ entity_schema:
             description: Some("a thing".into()),
             version: 2,
             entity_schema: None,
+            link_types: Default::default(),
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -2130,6 +2184,242 @@ entity_schema:
             .unwrap_err();
 
         assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    // ── Link-type enforcement (axon-f48352d5) ────────────────────────────────
+
+    const USERS_ESF_WITH_LINKS: &str = r#"
+esf_version: "1.0"
+collection: users
+entity_schema:
+  type: object
+  required: [name]
+  properties:
+    name:
+      type: string
+link_types:
+  assigned-to:
+    target_collection: tasks
+    cardinality: many-to-many
+  mentor:
+    target_collection: users
+    cardinality: many-to-one
+    metadata_schema:
+      type: object
+      required: [since]
+      properties:
+        since:
+          type: string
+"#;
+
+    fn setup_linked_collections(h: &mut AxonHandler<MemoryStorageAdapter>) {
+        let schema = EsfDocument::parse(USERS_ESF_WITH_LINKS)
+            .unwrap()
+            .into_collection_schema()
+            .unwrap();
+        h.register_schema(schema);
+
+        // Also register a tasks schema (no link_types needed for this test).
+        let tasks_schema = CollectionSchema::new(CollectionId::new("tasks"));
+        h.register_schema(tasks_schema);
+    }
+
+    #[test]
+    fn create_link_rejects_undeclared_link_type() {
+        let mut h = handler();
+        setup_linked_collections(&mut h);
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "tasks", "t-001");
+
+        let err = h
+            .create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-001"),
+                target_collection: CollectionId::new("tasks"),
+                target_id: EntityId::new("t-001"),
+                link_type: "undeclared-type".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(err, AxonError::SchemaValidation(_)),
+            "expected SchemaValidation for undeclared link type, got: {err}"
+        );
+    }
+
+    #[test]
+    fn create_link_rejects_wrong_target_collection() {
+        let mut h = handler();
+        setup_linked_collections(&mut h);
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "users", "u-002");
+
+        // "assigned-to" declares target_collection=tasks, but we target users.
+        let err = h
+            .create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-001"),
+                target_collection: CollectionId::new("users"),
+                target_id: EntityId::new("u-002"),
+                link_type: "assigned-to".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(err, AxonError::SchemaValidation(_)),
+            "expected SchemaValidation for wrong target collection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn create_link_validates_metadata_against_schema() {
+        let mut h = handler();
+        setup_linked_collections(&mut h);
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "users", "u-002");
+
+        // "mentor" requires metadata with a "since" field.
+        let err = h
+            .create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-001"),
+                target_collection: CollectionId::new("users"),
+                target_id: EntityId::new("u-002"),
+                link_type: "mentor".into(),
+                metadata: json!({}), // missing required "since"
+                actor: None,
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(err, AxonError::SchemaValidation(_)),
+            "expected SchemaValidation for invalid metadata, got: {err}"
+        );
+    }
+
+    #[test]
+    fn create_link_accepts_valid_metadata() {
+        let mut h = handler();
+        setup_linked_collections(&mut h);
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "users", "u-002");
+
+        let resp = h
+            .create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-001"),
+                target_collection: CollectionId::new("users"),
+                target_id: EntityId::new("u-002"),
+                link_type: "mentor".into(),
+                metadata: json!({"since": "2026-01-01"}),
+                actor: None,
+            })
+            .unwrap();
+
+        assert_eq!(resp.link.link_type, "mentor");
+    }
+
+    #[test]
+    fn create_link_rejects_duplicate_triple() {
+        let mut h = handler();
+        setup_linked_collections(&mut h);
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "tasks", "t-001");
+
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("users"),
+            source_id: EntityId::new("u-001"),
+            target_collection: CollectionId::new("tasks"),
+            target_id: EntityId::new("t-001"),
+            link_type: "assigned-to".into(),
+            metadata: json!(null),
+            actor: None,
+        })
+        .unwrap();
+
+        // Same triple again should fail.
+        let err = h
+            .create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-001"),
+                target_collection: CollectionId::new("tasks"),
+                target_id: EntityId::new("t-001"),
+                link_type: "assigned-to".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(err, AxonError::AlreadyExists(_)),
+            "expected AlreadyExists for duplicate link triple, got: {err}"
+        );
+    }
+
+    #[test]
+    fn create_link_allows_untyped_collections() {
+        // Collections without schemas should still allow links (no enforcement).
+        let mut h = handler();
+        make_entity(&mut h, "loose", "a");
+        make_entity(&mut h, "loose", "b");
+
+        let resp = h
+            .create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("loose"),
+                source_id: EntityId::new("a"),
+                target_collection: CollectionId::new("loose"),
+                target_id: EntityId::new("b"),
+                link_type: "anything".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap();
+
+        assert_eq!(resp.link.link_type, "anything");
+    }
+
+    #[test]
+    fn create_link_allows_schema_without_link_types() {
+        // Collections with a schema but no link_types should allow any link.
+        let mut h = handler();
+        let schema = EsfDocument::parse(TASK_ESF)
+            .unwrap()
+            .into_collection_schema()
+            .unwrap();
+        h.register_schema(schema);
+        // Create entities that match the tasks schema (requires "title").
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("tasks"),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "Task 1"}),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("tasks"),
+            id: EntityId::new("t-002"),
+            data: json!({"title": "Task 2"}),
+            actor: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("tasks"),
+                source_id: EntityId::new("t-001"),
+                target_collection: CollectionId::new("tasks"),
+                target_id: EntityId::new("t-002"),
+                link_type: "depends-on".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap();
+
+        assert_eq!(resp.link.link_type, "depends-on");
     }
 
     // ── Entity query / filter (US-011) ────────────────────────────────────────
@@ -2705,6 +2995,7 @@ entity_schema:
             description: Some("Invoice collection".into()),
             version: 1,
             entity_schema: Some(json!({"type": "object"})),
+            link_types: Default::default(),
         };
 
         h.put_schema(schema.clone()).unwrap();
@@ -2748,6 +3039,7 @@ entity_schema:
             description: None,
             version: 1,
             entity_schema: None,
+            link_types: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -2772,7 +3064,8 @@ entity_schema:
         let col = CollectionId::new("tasks");
         let schema = EsfDocument::parse(TASK_ESF)
             .unwrap()
-            .into_collection_schema();
+            .into_collection_schema()
+            .unwrap();
 
         h.put_schema(schema).unwrap();
 
@@ -2806,6 +3099,7 @@ entity_schema:
             description: None,
             version: 1,
             entity_schema: Some(json!({"type": "bogus"})),
+            link_types: Default::default(),
         };
 
         let err = h.put_schema(schema).unwrap_err();
@@ -2824,6 +3118,7 @@ entity_schema:
             description: None,
             version: 1,
             entity_schema: Some(json!({"type": "bogus"})),
+            link_types: Default::default(),
         };
 
         let err = h
@@ -2849,6 +3144,7 @@ entity_schema:
             entity_schema: Some(
                 json!({"type": "object", "properties": {"title": {"type": "string"}}}),
             ),
+            link_types: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {

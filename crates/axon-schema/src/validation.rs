@@ -101,6 +101,37 @@ pub fn validate(schema: &CollectionSchema, data: &Value) -> Result<(), AxonError
     validate_entity(schema, data).map_err(Into::into)
 }
 
+/// Validate link metadata against a JSON Schema document.
+///
+/// Returns `Ok(())` if the metadata conforms. Returns
+/// `Err(AxonError::SchemaValidation)` listing every violation.
+pub fn validate_link_metadata(metadata_schema: &Value, metadata: &Value) -> Result<(), AxonError> {
+    let validator = jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(metadata_schema)
+        .map_err(|e| AxonError::SchemaValidation(format!("invalid metadata_schema: {e}")))?;
+
+    let errors: Vec<String> = validator
+        .iter_errors(metadata)
+        .map(|e| {
+            if e.instance_path.as_str().is_empty() {
+                e.to_string()
+            } else {
+                format!("{}: {}", e.instance_path, e)
+            }
+        })
+        .collect();
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(AxonError::SchemaValidation(format!(
+            "link metadata validation failed: {}",
+            errors.join("; ")
+        )))
+    }
+}
+
 /// Compile a raw JSON Schema value to check it is well-formed.
 ///
 /// Returns `AxonError::SchemaValidation` if the value cannot be compiled as a
@@ -151,6 +182,7 @@ entity_schema:
         EsfDocument::parse(INVOICE_ESF)
             .unwrap()
             .into_collection_schema()
+            .unwrap()
     }
 
     #[test]

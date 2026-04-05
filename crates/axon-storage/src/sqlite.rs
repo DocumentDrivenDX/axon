@@ -559,6 +559,7 @@ mod tests {
             description: Some("test schema".into()),
             version: 2,
             entity_schema: Some(json!({"type": "object"})),
+            link_types: Default::default(),
         };
 
         s.put_schema(&schema).unwrap();
@@ -588,12 +589,14 @@ mod tests {
             description: None,
             version: 1,
             entity_schema: None,
+            link_types: Default::default(),
         };
         let v2 = CollectionSchema {
             collection: col.clone(),
             description: Some("v2".into()),
             version: 2,
             entity_schema: None,
+            link_types: Default::default(),
         };
 
         s.put_schema(&v1).unwrap();
@@ -616,6 +619,7 @@ mod tests {
             description: None,
             version: 1,
             entity_schema: None,
+            link_types: Default::default(),
         };
 
         s.put_schema(&schema).unwrap();

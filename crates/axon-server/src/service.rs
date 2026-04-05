@@ -403,10 +403,14 @@ mod tests {
             .await
             .expect_err("should fail with version conflict");
 
-        assert_eq!(err.code(), Code::FailedPrecondition, "wrong gRPC status code");
+        assert_eq!(
+            err.code(),
+            Code::FailedPrecondition,
+            "wrong gRPC status code"
+        );
 
-        let msg: serde_json::Value = serde_json::from_str(err.message())
-            .expect("status message must be valid JSON");
+        let msg: serde_json::Value =
+            serde_json::from_str(err.message()).expect("status message must be valid JSON");
 
         assert_eq!(msg["code"], "version_conflict");
         assert_eq!(msg["expected"], 99_u64);
@@ -436,8 +440,8 @@ mod tests {
 
         assert_eq!(status.code(), Code::FailedPrecondition);
 
-        let msg: serde_json::Value = serde_json::from_str(status.message())
-            .expect("status message must be valid JSON");
+        let msg: serde_json::Value =
+            serde_json::from_str(status.message()).expect("status message must be valid JSON");
 
         assert_eq!(msg["code"], "version_conflict");
         assert!(msg["current_entity"].is_null());

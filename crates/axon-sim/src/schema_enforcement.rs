@@ -128,6 +128,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         description: Some("sim_schema for INV-005".into()),
         version: 1,
         entity_schema: Some(schema_value.clone()),
+        link_types: Default::default(),
     };
     handler.register_schema(schema);
 
@@ -193,6 +194,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         description: None,
         version: 1,
         entity_schema: Some(schema_value),
+        link_types: Default::default(),
     };
 
     let all_entities = handler

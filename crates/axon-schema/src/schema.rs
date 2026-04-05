@@ -1,8 +1,34 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use axon_core::error::AxonError;
 use axon_core::id::CollectionId;
+
+/// Cardinality constraint for a link type (ADR-002).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Cardinality {
+    OneToOne,
+    OneToMany,
+    ManyToOne,
+    ManyToMany,
+}
+
+/// Definition of a single link type within a collection schema (ADR-002, Layer 2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkTypeDef {
+    /// The collection that target entities must belong to.
+    pub target_collection: String,
+    /// Cardinality constraint for this link type.
+    pub cardinality: Cardinality,
+    /// Whether at least one link of this type must exist for every entity.
+    #[serde(default)]
+    pub required: bool,
+    /// Optional JSON Schema 2020-12 for validating link metadata.
+    pub metadata_schema: Option<Value>,
+}
 
 /// Defines the structure and constraints for entities in a collection.
 ///
@@ -19,6 +45,9 @@ pub struct CollectionSchema {
     /// The JSON Schema 2020-12 document for entity body validation (Layer 1 of ESF).
     /// When `None`, no structural validation is enforced (all entities are accepted).
     pub entity_schema: Option<Value>,
+    /// Link-type definitions (Layer 2 of ESF). Keys are link-type names.
+    #[serde(default)]
+    pub link_types: HashMap<String, LinkTypeDef>,
 }
 
 impl CollectionSchema {
@@ -28,6 +57,7 @@ impl CollectionSchema {
             description: None,
             version: 1,
             entity_schema: None,
+            link_types: HashMap::new(),
         }
     }
 }
@@ -67,14 +97,22 @@ impl EsfDocument {
     }
 
     /// Convert this ESF document into a [`CollectionSchema`] using the collection
-    /// name from the document and the Layer 1 JSON Schema.
-    pub fn into_collection_schema(self) -> CollectionSchema {
-        CollectionSchema {
+    /// name from the document, the Layer 1 JSON Schema, and Layer 2 link-type
+    /// definitions.
+    pub fn into_collection_schema(self) -> Result<CollectionSchema, AxonError> {
+        let link_types: HashMap<String, LinkTypeDef> = match self.link_types {
+            Some(val) => serde_json::from_value(val).map_err(|e| {
+                AxonError::SchemaValidation(format!("invalid link_types definition: {e}"))
+            })?,
+            None => HashMap::new(),
+        };
+        Ok(CollectionSchema {
             collection: CollectionId::new(self.collection),
             description: None,
             version: 1,
             entity_schema: self.entity_schema,
-        }
+            link_types,
+        })
     }
 }
 
@@ -149,7 +187,7 @@ entity_schema:
     #[test]
     fn esf_into_collection_schema() {
         let doc = EsfDocument::parse(INVOICE_ESF).unwrap();
-        let schema = doc.into_collection_schema();
+        let schema = doc.into_collection_schema().unwrap();
         assert_eq!(schema.collection.as_str(), "invoices");
         assert_eq!(schema.version, 1);
         assert!(schema.entity_schema.is_some());

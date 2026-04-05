@@ -7,7 +7,8 @@
 pub mod schema;
 pub mod validation;
 
-pub use schema::{CollectionSchema, EsfDocument};
+pub use schema::{Cardinality, CollectionSchema, EsfDocument, LinkTypeDef};
 pub use validation::{
-    compile_entity_schema, validate, validate_entity, SchemaValidationError, SchemaValidationErrors,
+    compile_entity_schema, validate, validate_entity, validate_link_metadata,
+    SchemaValidationError, SchemaValidationErrors,
 };

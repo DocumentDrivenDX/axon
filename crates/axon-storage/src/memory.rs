@@ -395,6 +395,7 @@ mod tests {
             description: Some("my schema".into()),
             version: 3,
             entity_schema: None,
+            link_types: Default::default(),
         };
 
         store.put_schema(&schema).unwrap();
@@ -421,6 +422,7 @@ mod tests {
                 description: None,
                 version: 1,
                 entity_schema: None,
+                link_types: Default::default(),
             })
             .unwrap();
         store
@@ -429,6 +431,7 @@ mod tests {
                 description: None,
                 version: 2,
                 entity_schema: None,
+                link_types: Default::default(),
             })
             .unwrap();
 
@@ -445,6 +448,7 @@ mod tests {
             description: Some("v1".into()),
             version: 1,
             entity_schema: None,
+            link_types: Default::default(),
         };
 
         // Persist a schema before the transaction.
@@ -458,6 +462,7 @@ mod tests {
                 description: Some("v2".into()),
                 version: 2,
                 entity_schema: None,
+                link_types: Default::default(),
             })
             .unwrap();
         // Also add a schema for a second collection.
@@ -468,6 +473,7 @@ mod tests {
                 description: None,
                 version: 1,
                 entity_schema: None,
+                link_types: Default::default(),
             })
             .unwrap();
         store.abort_tx().unwrap();
@@ -496,6 +502,7 @@ mod tests {
                 description: None,
                 version: 1,
                 entity_schema: None,
+                link_types: Default::default(),
             })
             .unwrap();
         assert!(store.get_schema(&col).unwrap().is_some());
