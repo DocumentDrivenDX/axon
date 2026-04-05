@@ -30,5 +30,7 @@ tonic-build.workspace = true
 pretty_assertions.workspace = true
 tokio = { version = "1", features = ["full"] }
 tonic = { version = "0.13", features = ["transport"] }
+tokio-stream = "0.1"
 axum-test = "20"
+axum = { version = "0.8", features = [] }
 serde_json.workspace = true
