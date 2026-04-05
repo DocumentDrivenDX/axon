@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use axon_audit::entry::AuditEntry;
 use axon_core::types::{Entity, Link};
+use axon_schema::schema::CollectionSchema;
 
 /// Response containing a retrieved entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,4 +101,18 @@ pub struct DropCollectionResponse {
     pub name: String,
     /// Number of entities that were removed.
     pub entities_removed: usize,
+}
+
+// ── Schema responses ─────────────────────────────────────────────────────────
+
+/// Response after storing or updating a collection schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutSchemaResponse {
+    pub schema: CollectionSchema,
+}
+
+/// Response after retrieving a collection schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSchemaResponse {
+    pub schema: CollectionSchema,
 }

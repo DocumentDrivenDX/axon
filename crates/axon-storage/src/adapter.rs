@@ -1,6 +1,8 @@
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::CollectionId;
+use axon_core::id::EntityId;
 use axon_core::types::Entity;
+use axon_schema::schema::CollectionSchema;
 
 /// Abstraction over Axon's backing storage.
 ///
@@ -74,6 +76,36 @@ pub trait StorageAdapter: Send + Sync {
     /// Idempotent: calling `abort_tx` when no transaction is active is not an error.
     /// The default implementation is a no-op.
     fn abort_tx(&mut self) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    // ── Schema persistence ───────────────────────────────────────────────────
+
+    /// Persist a [`CollectionSchema`], replacing any previously stored schema for
+    /// the same collection.
+    ///
+    /// The default implementation is a no-op that returns `Ok(())`.
+    /// Concrete adapters should override this to provide durable schema storage.
+    fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+        let _ = schema;
+        Ok(())
+    }
+
+    /// Retrieve the [`CollectionSchema`] for a collection, if one exists.
+    ///
+    /// Returns `Ok(None)` when no schema has been stored for the collection.
+    /// The default implementation always returns `Ok(None)`.
+    fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
+        let _ = collection;
+        Ok(None)
+    }
+
+    /// Delete the schema for a collection. Returns `Ok(())` whether or not a
+    /// schema existed.
+    ///
+    /// The default implementation is a no-op.
+    fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let _ = collection;
         Ok(())
     }
 }

@@ -18,12 +18,14 @@ use tokio::sync::Mutex;
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DeleteLinkRequest, DropCollectionRequest, GetEntityRequest, QueryAuditRequest,
-    QueryEntitiesRequest, RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
+    DeleteLinkRequest, DropCollectionRequest, GetEntityRequest, GetSchemaRequest, PutSchemaRequest,
+    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, TraverseRequest,
+    UpdateEntityRequest,
 };
 use axon_audit::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
+use axon_schema::schema::CollectionSchema;
 use axon_storage::memory::MemoryStorageAdapter;
 
 type SharedHandler = Arc<Mutex<AxonHandler<MemoryStorageAdapter>>>;
@@ -500,6 +502,38 @@ async fn drop_collection(
     }
 }
 
+async fn put_schema(
+    State(handler): State<SharedHandler>,
+    Path(collection): Path<String>,
+    Json(body): Json<CollectionSchema>,
+) -> Response {
+    // Override the collection field from the path to prevent mismatch.
+    let schema = CollectionSchema {
+        collection: axon_core::id::CollectionId::new(&collection),
+        ..body
+    };
+    match handler
+        .lock()
+        .await
+        .handle_put_schema(PutSchemaRequest { schema })
+    {
+        Ok(resp) => (StatusCode::OK, Json(json!({ "schema": resp.schema }))).into_response(),
+        Err(e) => axon_error_response(e),
+    }
+}
+
+async fn get_schema(
+    State(handler): State<SharedHandler>,
+    Path(collection): Path<String>,
+) -> Response {
+    match handler.lock().await.handle_get_schema(GetSchemaRequest {
+        collection: axon_core::id::CollectionId::new(&collection),
+    }) {
+        Ok(resp) => Json(json!({ "schema": resp.schema })).into_response(),
+        Err(e) => axon_error_response(e),
+    }
+}
+
 // ── Router construction ───────────────────────────────────────────────────────
 
 /// Build the axum router for the HTTP gateway.
@@ -521,6 +555,8 @@ pub fn build_router(handler: SharedHandler) -> Router {
         .route("/audit/revert", post(revert_entity))
         .route("/collections/{name}", post(create_collection))
         .route("/collections/{name}", delete(drop_collection))
+        .route("/collections/{name}/schema", put(put_schema))
+        .route("/collections/{name}/schema", get(get_schema))
         .with_state(handler)
 }
 
@@ -884,6 +920,87 @@ mod tests {
         let body2: Value = resp2.json();
         assert_eq!(body2["total_count"], 2);
         assert_eq!(body2["entities"].as_array().unwrap().len(), 0);
+    }
+
+    // ── Schema endpoints ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn http_put_and_get_schema() {
+        let server = test_server();
+
+        // PUT schema.
+        let resp = server
+            .put("/collections/invoices/schema")
+            .json(&json!({
+                "collection": "invoices",
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "required": ["amount"],
+                    "properties": {
+                        "amount": {"type": "number"}
+                    }
+                }
+            }))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["schema"]["collection"], "invoices");
+
+        // GET schema — must return what was stored.
+        let resp = server.get("/collections/invoices/schema").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["schema"]["collection"], "invoices");
+        assert_eq!(body["schema"]["version"], 1);
+        assert!(body["schema"]["entity_schema"]["required"].is_array());
+    }
+
+    #[tokio::test]
+    async fn http_get_schema_missing_returns_404() {
+        let server = test_server();
+        let resp = server.get("/collections/nonexistent/schema").await;
+        resp.assert_status_not_found();
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn http_schema_enforced_on_entity_create() {
+        let server = test_server();
+
+        // Register a schema requiring "amount" field.
+        server
+            .put("/collections/payments/schema")
+            .json(&json!({
+                "collection": "payments",
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "required": ["amount"],
+                    "properties": {
+                        "amount": {"type": "number"}
+                    }
+                }
+            }))
+            .await
+            .assert_status_ok();
+
+        // Entity without "amount" must be rejected.
+        let resp = server
+            .post("/entities/payments/p-001")
+            .json(&json!({"data": {"note": "oops"}}))
+            .await;
+        resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "schema_validation");
+
+        // Entity with "amount" must succeed.
+        let resp = server
+            .post("/entities/payments/p-001")
+            .json(&json!({"data": {"amount": 42.0}}))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
     }
 
     #[tokio::test]

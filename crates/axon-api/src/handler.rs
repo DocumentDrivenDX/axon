@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 use axon_audit::entry::{AuditEntry, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
@@ -12,13 +12,14 @@ use axon_storage::adapter::StorageAdapter;
 use crate::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
     DeleteLinkRequest, DropCollectionRequest, FieldFilter, FilterNode, FilterOp, GetEntityRequest,
-    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, SortDirection, TraverseRequest,
-    UpdateEntityRequest,
+    GetSchemaRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
+    RevertEntityRequest, SortDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse,
-    DeleteLinkResponse, DropCollectionResponse, GetEntityResponse, QueryAuditResponse,
-    QueryEntitiesResponse, RevertEntityResponse, TraverseResponse, UpdateEntityResponse,
+    DeleteLinkResponse, DropCollectionResponse, GetEntityResponse, GetSchemaResponse,
+    PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse, RevertEntityResponse,
+    TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -26,12 +27,11 @@ const MAX_DEPTH_CAP: usize = 10;
 
 /// Core API handler: coordinates storage, schema validation, and audit.
 ///
-/// Holds an in-memory audit log and a per-collection schema registry.
-/// Swap `S` for any [`StorageAdapter`] implementation (in-memory or SQLite).
+/// Schemas are persisted via the `StorageAdapter`; there is no separate
+/// in-memory schema map. Swap `S` for any [`StorageAdapter`] implementation.
 pub struct AxonHandler<S: StorageAdapter> {
     storage: S,
     audit: MemoryAuditLog,
-    schemas: HashMap<CollectionId, CollectionSchema>,
     /// Tracks which collections have been explicitly created via the collection API.
     collections: HashSet<CollectionId>,
 }
@@ -41,15 +41,35 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Self {
             storage,
             audit: MemoryAuditLog::default(),
-            schemas: HashMap::new(),
             collections: HashSet::new(),
         }
     }
 
+    /// Persist a schema for a collection via the storage adapter.
+    ///
+    /// Subsequent creates and updates for that collection are validated
+    /// against this schema. Replaces any previously stored schema.
+    pub fn put_schema(&mut self, schema: CollectionSchema) -> Result<(), AxonError> {
+        self.storage.put_schema(&schema)
+    }
+
+    /// Retrieve the persisted schema for a collection, if one exists.
+    pub fn get_schema(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Option<CollectionSchema>, AxonError> {
+        self.storage.get_schema(collection)
+    }
+
     /// Register a schema for a collection. Subsequent creates and updates
     /// for that collection will be validated against this schema.
+    ///
+    /// Deprecated in favour of [`put_schema`]; kept for backwards compatibility
+    /// in tests and simulation harness code. Panics on storage errors.
     pub fn register_schema(&mut self, schema: CollectionSchema) {
-        self.schemas.insert(schema.collection.clone(), schema);
+        self.storage
+            .put_schema(&schema)
+            .expect("register_schema: storage error");
     }
 
     /// Returns a reference to the internal audit log (useful in tests).
@@ -78,8 +98,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: CreateEntityRequest,
     ) -> Result<CreateEntityResponse, AxonError> {
         // Schema validation.
-        if let Some(schema) = self.schemas.get(&req.collection) {
-            validate(schema, &req.data)?;
+        if let Some(schema) = self.storage.get_schema(&req.collection)? {
+            validate(&schema, &req.data)?;
         }
 
         let entity = Entity::new(req.collection, req.id, req.data);
@@ -115,8 +135,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: UpdateEntityRequest,
     ) -> Result<UpdateEntityResponse, AxonError> {
         // Schema validation.
-        if let Some(schema) = self.schemas.get(&req.collection) {
-            validate(schema, &req.data)?;
+        if let Some(schema) = self.storage.get_schema(&req.collection)? {
+            validate(&schema, &req.data)?;
         }
 
         // Read current state for the audit `before` snapshot.
@@ -366,8 +386,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // Validate against current schema unless force=true.
         if !req.force {
-            if let Some(schema) = self.schemas.get(&source.collection) {
-                validate(schema, &before_data).map_err(|e| {
+            if let Some(schema) = self.storage.get_schema(&source.collection)? {
+                validate(&schema, &before_data).map_err(|e| {
                     AxonError::SchemaValidation(format!(
                         "before state from audit entry {} does not validate against current schema: {}",
                         req.audit_entry_id, e
@@ -470,7 +490,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         for entity in &entities {
             self.storage.delete(&req.name, &entity.id)?;
         }
-        self.schemas.remove(&req.name);
+        self.storage.delete_schema(&req.name)?;
         self.collections.remove(&req.name);
 
         self.audit.append(AuditEntry::new(
@@ -487,6 +507,33 @@ impl<S: StorageAdapter> AxonHandler<S> {
             name: req.name.to_string(),
             entities_removed: count,
         })
+    }
+
+    // ── Schema operations ────────────────────────────────────────────────────
+
+    /// Persist or replace the schema for a collection.
+    ///
+    /// The `schema.collection` field must match the collection name in the
+    /// request. Subsequent entity creates and updates will be validated against
+    /// this schema.
+    pub fn handle_put_schema(
+        &mut self,
+        req: PutSchemaRequest,
+    ) -> Result<PutSchemaResponse, AxonError> {
+        self.storage.put_schema(&req.schema)?;
+        Ok(PutSchemaResponse { schema: req.schema })
+    }
+
+    /// Retrieve the schema for a collection.
+    ///
+    /// Returns [`AxonError::NotFound`] if no schema has been stored.
+    pub fn handle_get_schema(&self, req: GetSchemaRequest) -> Result<GetSchemaResponse, AxonError> {
+        self.storage
+            .get_schema(&req.collection)?
+            .map(|schema| GetSchemaResponse { schema })
+            .ok_or_else(|| {
+                AxonError::NotFound(format!("schema for collection '{}'", req.collection))
+            })
     }
 
     // ── Link operations ──────────────────────────────────────────────────────
@@ -2125,7 +2172,10 @@ entity_schema:
 
         match result {
             Err(AxonError::InvalidArgument(msg)) => {
-                assert!(msg.contains("depth"), "error message should mention depth: {msg}");
+                assert!(
+                    msg.contains("depth"),
+                    "error message should mention depth: {msg}"
+                );
             }
             other => panic!("expected InvalidArgument, got {other:?}"),
         }
@@ -2170,6 +2220,119 @@ entity_schema:
         // Avoid recursive Drop stack overflow on the deep tree; the tree is
         // intentionally leaked here — this is test-only and the process exits anyway.
         std::mem::forget(node);
-        assert_eq!(depth, 100_000, "iterative filter_depth must return exact depth for deep tree");
+        assert_eq!(
+            depth, 100_000,
+            "iterative filter_depth must return exact depth for deep tree"
+        );
+    }
+
+    // ── Schema persistence ───────────────────────────────────────────────────
+
+    #[test]
+    fn put_schema_then_get_schema_roundtrip() {
+        let mut h = handler();
+        let col = CollectionId::new("invoices");
+        let schema = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: Some("Invoice collection".into()),
+            version: 1,
+            entity_schema: Some(json!({"type": "object"})),
+        };
+
+        h.put_schema(schema.clone()).unwrap();
+
+        let retrieved = h
+            .get_schema(&col)
+            .unwrap()
+            .expect("schema should be retrievable after put_schema");
+        assert_eq!(retrieved.collection, col);
+        assert_eq!(retrieved.version, 1);
+        assert_eq!(retrieved.description.as_deref(), Some("Invoice collection"));
+    }
+
+    #[test]
+    fn get_schema_missing_returns_none() {
+        let h = handler();
+        let result = h.get_schema(&CollectionId::new("nonexistent")).unwrap();
+        assert!(result.is_none(), "missing schema should return None");
+    }
+
+    #[test]
+    fn handle_get_schema_missing_returns_not_found() {
+        let h = handler();
+        let err = h
+            .handle_get_schema(GetSchemaRequest {
+                collection: CollectionId::new("nope"),
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, AxonError::NotFound(_)),
+            "expected NotFound, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn put_schema_persists_across_handler_method_calls() {
+        // Verify that schema written via put_schema is visible to create_entity validation.
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let schema = EsfDocument::parse(TASK_ESF)
+            .unwrap()
+            .into_collection_schema();
+
+        h.put_schema(schema).unwrap();
+
+        // Invalid entity should be rejected.
+        let err = h
+            .create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("t-bad"),
+                data: json!({"done": false}), // missing required "title"
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::SchemaValidation(_)));
+
+        // Valid entity should be accepted.
+        h.create_entity(CreateEntityRequest {
+            collection: col,
+            id: EntityId::new("t-good"),
+            data: json!({"title": "ok", "done": false}),
+            actor: None,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn drop_collection_removes_schema() {
+        let mut h = handler();
+        let col = CollectionId::new("invoices");
+
+        // Explicit collection create so drop_collection can find it.
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            actor: None,
+        })
+        .unwrap();
+
+        let schema = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: None,
+        };
+        h.put_schema(schema).unwrap();
+        assert!(h.get_schema(&col).unwrap().is_some());
+
+        h.drop_collection(DropCollectionRequest {
+            name: col.clone(),
+            actor: None,
+        })
+        .unwrap();
+
+        assert!(
+            h.get_schema(&col).unwrap().is_none(),
+            "schema must be removed when collection is dropped"
+        );
     }
 }

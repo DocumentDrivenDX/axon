@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use axon_core::id::{CollectionId, EntityId};
+use axon_schema::schema::CollectionSchema;
 
 /// Request to create a new entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,4 +225,19 @@ pub struct CreateCollectionRequest {
 pub struct DropCollectionRequest {
     pub name: CollectionId,
     pub actor: Option<String>,
+}
+
+// ── Schema requests ──────────────────────────────────────────────────────────
+
+/// Request to store or replace the schema for a collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutSchemaRequest {
+    /// The schema to persist. `schema.collection` must match the target collection.
+    pub schema: CollectionSchema,
+}
+
+/// Request to retrieve the schema for a collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetSchemaRequest {
+    pub collection: CollectionId,
 }

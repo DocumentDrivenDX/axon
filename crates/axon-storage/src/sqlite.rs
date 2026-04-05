@@ -3,6 +3,7 @@ use rusqlite::{params, Connection};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
+use axon_schema::schema::CollectionSchema;
 
 use crate::adapter::StorageAdapter;
 
@@ -55,6 +56,11 @@ impl SqliteStorageAdapter {
                     version    INTEGER NOT NULL,
                     data       TEXT NOT NULL,
                     PRIMARY KEY (collection, id)
+                );
+                CREATE TABLE IF NOT EXISTS schemas (
+                    collection  TEXT NOT NULL PRIMARY KEY,
+                    version     INTEGER NOT NULL,
+                    schema_json TEXT NOT NULL
                 );",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))
@@ -282,6 +288,51 @@ impl StorageAdapter for SqliteStorageAdapter {
         self.in_tx = false;
         Ok(())
     }
+
+    fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+        let schema_json = serde_json::to_string(schema)?;
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO schemas (collection, version, schema_json)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    schema.collection.as_str(),
+                    schema.version as i64,
+                    schema_json
+                ],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT schema_json FROM schemas WHERE collection = ?1")
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let mut rows = stmt
+            .query(params![collection.as_str()])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
+            let json: String = row.get(0).map_err(|e| AxonError::Storage(e.to_string()))?;
+            let schema: CollectionSchema = serde_json::from_str(&json)?;
+            Ok(Some(schema))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.conn
+            .execute(
+                "DELETE FROM schemas WHERE collection = ?1",
+                params![collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -439,5 +490,83 @@ mod tests {
     fn abort_tx_without_active_tx_is_noop() {
         let mut s = store();
         s.abort_tx().unwrap();
+    }
+
+    // ── Schema persistence ───────────────────────────────────────────────────
+
+    #[test]
+    fn put_get_schema_roundtrip() {
+        use axon_schema::schema::CollectionSchema;
+        let mut s = store();
+        let col = tasks();
+        let schema = CollectionSchema {
+            collection: col.clone(),
+            description: Some("test schema".into()),
+            version: 2,
+            entity_schema: Some(json!({"type": "object"})),
+        };
+
+        s.put_schema(&schema).unwrap();
+
+        let retrieved = s.get_schema(&col).unwrap();
+        assert!(retrieved.is_some());
+        let retrieved = retrieved.unwrap();
+        assert_eq!(retrieved.collection, col);
+        assert_eq!(retrieved.version, 2);
+        assert_eq!(retrieved.description.as_deref(), Some("test schema"));
+    }
+
+    #[test]
+    fn get_schema_missing_returns_none() {
+        let s = store();
+        assert!(s.get_schema(&tasks()).unwrap().is_none());
+    }
+
+    #[test]
+    fn put_schema_overwrites_previous() {
+        use axon_schema::schema::CollectionSchema;
+        let mut s = store();
+        let col = tasks();
+
+        let v1 = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: None,
+        };
+        let v2 = CollectionSchema {
+            collection: col.clone(),
+            description: Some("v2".into()),
+            version: 2,
+            entity_schema: None,
+        };
+
+        s.put_schema(&v1).unwrap();
+        s.put_schema(&v2).unwrap();
+
+        let retrieved = s.get_schema(&col).unwrap().unwrap();
+        assert_eq!(
+            retrieved.version, 2,
+            "second put_schema must overwrite the first"
+        );
+    }
+
+    #[test]
+    fn delete_schema_removes_it() {
+        use axon_schema::schema::CollectionSchema;
+        let mut s = store();
+        let col = tasks();
+        let schema = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: None,
+        };
+
+        s.put_schema(&schema).unwrap();
+        assert!(s.get_schema(&col).unwrap().is_some());
+
+        s.delete_schema(&col).unwrap();
+        assert!(s.get_schema(&col).unwrap().is_none());
     }
 }

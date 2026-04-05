@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
+use axon_schema::schema::CollectionSchema;
 
 use crate::adapter::StorageAdapter;
 
@@ -22,6 +23,8 @@ pub struct MemoryStorageAdapter {
     data: HashMap<CollectionId, CollectionMap>,
     /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
     tx_snapshot: Option<HashMap<CollectionId, CollectionMap>>,
+    /// Persisted schemas keyed by collection.
+    schemas: HashMap<CollectionId, CollectionSchema>,
 }
 
 impl StorageAdapter for MemoryStorageAdapter {
@@ -140,6 +143,21 @@ impl StorageAdapter for MemoryStorageAdapter {
         if let Some(snapshot) = self.tx_snapshot.take() {
             self.data = snapshot;
         }
+        Ok(())
+    }
+
+    fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+        self.schemas
+            .insert(schema.collection.clone(), schema.clone());
+        Ok(())
+    }
+
+    fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
+        Ok(self.schemas.get(collection).cloned())
+    }
+
+    fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.schemas.remove(collection);
         Ok(())
     }
 }
@@ -314,5 +332,77 @@ mod tests {
         let mut store = MemoryStorageAdapter::default();
         // Should not error.
         store.abort_tx().unwrap();
+    }
+
+    // ── Schema persistence ───────────────────────────────────────────────────
+
+    #[test]
+    fn put_get_schema_roundtrip() {
+        use axon_schema::schema::CollectionSchema;
+        let mut store = MemoryStorageAdapter::default();
+        let col = tasks();
+        let schema = CollectionSchema {
+            collection: col.clone(),
+            description: Some("my schema".into()),
+            version: 3,
+            entity_schema: None,
+        };
+
+        store.put_schema(&schema).unwrap();
+        let retrieved = store.get_schema(&col).unwrap().unwrap();
+        assert_eq!(retrieved.version, 3);
+        assert_eq!(retrieved.description.as_deref(), Some("my schema"));
+    }
+
+    #[test]
+    fn get_schema_missing_returns_none() {
+        let store = MemoryStorageAdapter::default();
+        assert!(store.get_schema(&tasks()).unwrap().is_none());
+    }
+
+    #[test]
+    fn put_schema_overwrites_previous() {
+        use axon_schema::schema::CollectionSchema;
+        let mut store = MemoryStorageAdapter::default();
+        let col = tasks();
+
+        store
+            .put_schema(&CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 1,
+                entity_schema: None,
+            })
+            .unwrap();
+        store
+            .put_schema(&CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 2,
+                entity_schema: None,
+            })
+            .unwrap();
+
+        assert_eq!(store.get_schema(&col).unwrap().unwrap().version, 2);
+    }
+
+    #[test]
+    fn delete_schema_removes_it() {
+        use axon_schema::schema::CollectionSchema;
+        let mut store = MemoryStorageAdapter::default();
+        let col = tasks();
+
+        store
+            .put_schema(&CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 1,
+                entity_schema: None,
+            })
+            .unwrap();
+        assert!(store.get_schema(&col).unwrap().is_some());
+
+        store.delete_schema(&col).unwrap();
+        assert!(store.get_schema(&col).unwrap().is_none());
     }
 }
