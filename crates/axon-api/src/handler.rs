@@ -518,6 +518,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
+        // Validate entity_schema before any mutations so a bad schema never
+        // leaves an orphan (schemaless) collection registration.
+        if let Some(entity_schema) = &req.schema.entity_schema {
+            compile_entity_schema(entity_schema)?;
+        }
+
         let existing = self.storage.list_collections()?;
         if existing.contains(&req.name) {
             return Err(AxonError::AlreadyExists(req.name.to_string()));
@@ -1829,6 +1835,40 @@ entity_schema:
             })
             .unwrap_or_else(|e| panic!("valid name '{}' rejected: {}", name, e));
         }
+    }
+
+    #[test]
+    fn create_collection_invalid_entity_schema_leaves_no_orphan() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let schema = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({"type": "bogus"})),
+        };
+
+        let err = h
+            .create_collection(CreateCollectionRequest {
+                name: col,
+                schema,
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, AxonError::SchemaValidation(_)),
+            "expected SchemaValidation error, got: {err}"
+        );
+
+        // No orphan: the collection must not appear in the registry.
+        let resp = h
+            .list_collections(ListCollectionsRequest {})
+            .unwrap();
+        assert!(
+            resp.collections.is_empty(),
+            "orphan collection registered despite invalid schema: {:?}",
+            resp.collections
+        );
     }
 
     // ── list_collections ─────────────────────────────────────────────────────
