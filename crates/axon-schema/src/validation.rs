@@ -101,6 +101,19 @@ pub fn validate(schema: &CollectionSchema, data: &Value) -> Result<(), AxonError
     validate_entity(schema, data).map_err(Into::into)
 }
 
+/// Compile a raw JSON Schema value to check it is well-formed.
+///
+/// Returns `AxonError::SchemaValidation` if the value cannot be compiled as a
+/// valid JSON Schema 2020-12 document. Returns `Ok(())` if it compiles
+/// successfully.
+pub fn compile_entity_schema(json_schema: &Value) -> Result<(), AxonError> {
+    jsonschema::options()
+        .with_draft(jsonschema::Draft::Draft202012)
+        .build(json_schema)
+        .map(|_| ())
+        .map_err(|e| AxonError::SchemaValidation(format!("invalid schema: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -8,4 +8,6 @@ pub mod schema;
 pub mod validation;
 
 pub use schema::{CollectionSchema, EsfDocument};
-pub use validation::{validate, validate_entity, SchemaValidationError, SchemaValidationErrors};
+pub use validation::{
+    compile_entity_schema, validate, validate_entity, SchemaValidationError, SchemaValidationErrors,
+};

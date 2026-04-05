@@ -6,7 +6,7 @@ use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::CollectionSchema;
-use axon_schema::validation::validate;
+use axon_schema::validation::{compile_entity_schema, validate};
 use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
@@ -520,6 +520,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: PutSchemaRequest,
     ) -> Result<PutSchemaResponse, AxonError> {
+        if let Some(entity_schema) = &req.schema.entity_schema {
+            compile_entity_schema(entity_schema)?;
+        }
         let collection = req.schema.collection.clone();
         self.storage.put_schema(&req.schema)?;
         self.audit.append(AuditEntry::new(
@@ -2334,6 +2337,47 @@ entity_schema:
             collection: col,
             id: EntityId::new("t-good"),
             data: json!({"title": "ok", "done": false}),
+            actor: None,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn handle_put_schema_rejects_invalid_json_schema() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let schema = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({"type": "bogus"})),
+        };
+
+        let err = h
+            .handle_put_schema(PutSchemaRequest {
+                schema,
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, AxonError::SchemaValidation(_)),
+            "expected SchemaValidation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn handle_put_schema_accepts_valid_json_schema() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let schema = axon_schema::schema::CollectionSchema {
+            collection: col,
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({"type": "object", "properties": {"title": {"type": "string"}}})),
+        };
+
+        h.handle_put_schema(PutSchemaRequest {
+            schema,
             actor: None,
         })
         .unwrap();
