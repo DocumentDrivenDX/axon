@@ -65,16 +65,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.storage.get_schema(collection)
     }
 
-    /// Register a schema for a collection. Subsequent creates and updates
-    /// for that collection will be validated against this schema.
-    ///
-    /// Deprecated in favour of [`put_schema`]; kept for backwards compatibility
-    /// in tests and simulation harness code. Panics on storage or validation errors.
-    pub fn register_schema(&mut self, schema: CollectionSchema) {
-        self.put_schema(schema)
-            .expect("register_schema: storage or validation error");
-    }
-
     /// Returns a reference to the internal audit log (useful in tests).
     pub fn audit_log(&self) -> &MemoryAuditLog {
         &self.audit
@@ -1320,7 +1310,7 @@ entity_schema:
             .unwrap()
             .into_collection_schema()
             .unwrap();
-        h.register_schema(schema);
+        h.put_schema(schema).unwrap();
 
         // Missing required "title" field.
         let err = h
@@ -1345,7 +1335,7 @@ entity_schema:
             .unwrap()
             .into_collection_schema()
             .unwrap();
-        h.register_schema(schema);
+        h.put_schema(schema).unwrap();
 
         let result = h.create_entity(CreateEntityRequest {
             collection: CollectionId::new("tasks"),
@@ -2326,11 +2316,11 @@ link_types:
             .unwrap()
             .into_collection_schema()
             .unwrap();
-        h.register_schema(schema);
+        h.put_schema(schema).unwrap();
 
         // Also register a tasks schema (no link_types needed for this test).
         let tasks_schema = CollectionSchema::new(CollectionId::new("tasks"));
-        h.register_schema(tasks_schema);
+        h.put_schema(tasks_schema).unwrap();
     }
 
     #[test]
@@ -2499,7 +2489,7 @@ link_types:
             .unwrap()
             .into_collection_schema()
             .unwrap();
-        h.register_schema(schema);
+        h.put_schema(schema).unwrap();
         // Create entities that match the tasks schema (requires "title").
         h.create_entity(CreateEntityRequest {
             collection: CollectionId::new("tasks"),

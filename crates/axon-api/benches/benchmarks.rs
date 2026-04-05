@@ -89,7 +89,7 @@ entity_schema:
         .unwrap()
         .into_collection_schema()
         .unwrap();
-    h.register_schema(schema);
+    h.put_schema(schema).unwrap();
 
     let mut i = 0_u64;
     c.bench_function("BM-002: single entity write", |b| {

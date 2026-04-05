@@ -130,7 +130,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         entity_schema: Some(schema_value.clone()),
         link_types: Default::default(),
     };
-    handler.register_schema(schema);
+    handler.put_schema(schema).unwrap();
 
     let attempts = write_attempts();
     let valid_attempted = attempts.iter().filter(|a| a.should_succeed).count();
