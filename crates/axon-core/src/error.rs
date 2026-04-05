@@ -12,6 +12,12 @@ pub enum AxonError {
     #[error("optimistic concurrency conflict: expected version {expected}, got {actual}")]
     ConflictingVersion { expected: u64, actual: u64 },
 
+    #[error("already exists: {0}")]
+    AlreadyExists(String),
+
+    #[error("invalid operation: {0}")]
+    InvalidOperation(String),
+
     #[error("storage error: {0}")]
     Storage(String),
 

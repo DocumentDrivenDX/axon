@@ -1,20 +1,22 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use axon_audit::entry::{AuditEntry, MutationType};
-use axon_audit::log::{AuditLog, MemoryAuditLog};
+use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::error::AxonError;
-use axon_core::id::CollectionId;
+use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::CollectionSchema;
 use axon_schema::validation::validate;
 use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
-    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, GetEntityRequest, TraverseRequest,
-    UpdateEntityRequest,
+    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
+    DropCollectionRequest, GetEntityRequest, QueryAuditRequest, RevertEntityRequest,
+    TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
-    CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse, GetEntityResponse,
+    CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse,
+    DropCollectionResponse, GetEntityResponse, QueryAuditResponse, RevertEntityResponse,
     TraverseResponse, UpdateEntityResponse,
 };
 
@@ -29,6 +31,8 @@ pub struct AxonHandler<S: StorageAdapter> {
     storage: S,
     audit: MemoryAuditLog,
     schemas: HashMap<CollectionId, CollectionSchema>,
+    /// Tracks which collections have been explicitly created via the collection API.
+    collections: HashSet<CollectionId>,
 }
 
 impl<S: StorageAdapter> AxonHandler<S> {
@@ -37,6 +41,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             storage,
             audit: MemoryAuditLog::default(),
             schemas: HashMap::new(),
+            collections: HashSet::new(),
         }
     }
 
@@ -84,7 +89,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entity.collection.clone(),
             entity.id.clone(),
             entity.version,
-            MutationType::Create,
+            MutationType::EntityCreate,
             None,
             Some(entity.data.clone()),
             req.actor,
@@ -135,7 +140,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             updated.collection.clone(),
             updated.id.clone(),
             updated.version,
-            MutationType::Update,
+            MutationType::EntityUpdate,
             before,
             Some(updated.data.clone()),
             req.actor,
@@ -168,7 +173,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 req.collection.clone(),
                 req.id.clone(),
                 version,
-                MutationType::Delete,
+                MutationType::EntityDelete,
                 before,
                 None,
                 req.actor,
@@ -178,6 +183,191 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(DeleteEntityResponse {
             collection: req.collection.to_string(),
             id: req.id.to_string(),
+        })
+    }
+
+    // ── Audit operations ─────────────────────────────────────────────────────
+
+    /// Query the audit log with optional filters and cursor-based pagination.
+    pub fn query_audit(&self, req: QueryAuditRequest) -> Result<QueryAuditResponse, AxonError> {
+        use axon_audit::entry::MutationType as MT;
+
+        let operation: Option<MT> = match req.operation.as_deref() {
+            None => None,
+            Some("entity_create") => Some(MT::EntityCreate),
+            Some("entity_update") => Some(MT::EntityUpdate),
+            Some("entity_delete") => Some(MT::EntityDelete),
+            Some("entity_revert") => Some(MT::EntityRevert),
+            Some("collection_create") => Some(MT::CollectionCreate),
+            Some("collection_drop") => Some(MT::CollectionDrop),
+            Some("schema_update") => Some(MT::SchemaUpdate),
+            Some(unknown) => {
+                return Err(AxonError::InvalidOperation(format!(
+                    "unknown operation type: {unknown}"
+                )))
+            }
+        };
+
+        let query = AuditQuery {
+            collection: req.collection,
+            entity_id: req.entity_id,
+            actor: req.actor,
+            operation,
+            since_ns: req.since_ns,
+            until_ns: req.until_ns,
+            after_id: req.after_id,
+            limit: req.limit,
+        };
+
+        let page: AuditPage = self.audit.query_paginated(query)?;
+        Ok(QueryAuditResponse {
+            entries: page.entries,
+            next_cursor: page.next_cursor,
+        })
+    }
+
+    /// Revert an entity to the `before` state recorded in the given audit entry.
+    ///
+    /// The revert itself produces a new audit entry tagged `EntityRevert` so
+    /// the audit log never loses information.
+    pub fn revert_entity_to_audit_entry(
+        &mut self,
+        req: RevertEntityRequest,
+    ) -> Result<RevertEntityResponse, AxonError> {
+        let source = self
+            .audit
+            .find_by_id(req.audit_entry_id)?
+            .ok_or_else(|| AxonError::NotFound(format!("audit entry {}", req.audit_entry_id)))?;
+
+        let before_data = source.data_before.clone().ok_or_else(|| {
+            AxonError::InvalidOperation(format!(
+                "audit entry {} has no before state (cannot revert a create)",
+                req.audit_entry_id
+            ))
+        })?;
+
+        // Validate against current schema unless force=true.
+        if !req.force {
+            if let Some(schema) = self.schemas.get(&source.collection) {
+                validate(schema, &before_data).map_err(|e| {
+                    AxonError::SchemaValidation(format!(
+                        "before state from audit entry {} does not validate against current schema: {}",
+                        req.audit_entry_id, e
+                    ))
+                })?;
+            }
+        }
+
+        // Apply the revert: update if entity still exists, recreate if deleted.
+        let current = self.storage.get(&source.collection, &source.entity_id)?;
+        let data_before_revert = current.as_ref().map(|e| e.data.clone());
+        let restored = match current {
+            Some(existing) => {
+                let candidate = Entity {
+                    collection: source.collection.clone(),
+                    id: source.entity_id.clone(),
+                    version: existing.version,
+                    data: before_data.clone(),
+                };
+                self.storage
+                    .compare_and_swap(candidate, existing.version)?
+            }
+            None => {
+                let entity = Entity::new(
+                    source.collection.clone(),
+                    source.entity_id.clone(),
+                    before_data.clone(),
+                );
+                self.storage.put(entity.clone())?;
+                entity
+            }
+        };
+
+        // Audit the revert.
+        let mut revert_entry = AuditEntry::new(
+            restored.collection.clone(),
+            restored.id.clone(),
+            restored.version,
+            MutationType::EntityRevert,
+            data_before_revert,
+            Some(before_data),
+            req.actor,
+        );
+        revert_entry
+            .metadata
+            .insert("reverted_from_entry_id".into(), req.audit_entry_id.to_string());
+
+        let appended = self.audit.append(revert_entry)?;
+
+        Ok(RevertEntityResponse {
+            entity: restored,
+            audit_entry: appended,
+        })
+    }
+
+    // ── Collection lifecycle ─────────────────────────────────────────────────
+
+    /// Explicitly register a named collection and record the event in the audit log.
+    ///
+    /// Returns [`AxonError::AlreadyExists`] if the collection has already been created.
+    pub fn create_collection(
+        &mut self,
+        req: CreateCollectionRequest,
+    ) -> Result<CreateCollectionResponse, AxonError> {
+        if self.collections.contains(&req.name) {
+            return Err(AxonError::AlreadyExists(req.name.to_string()));
+        }
+        self.collections.insert(req.name.clone());
+
+        self.audit.append(AuditEntry::new(
+            req.name.clone(),
+            EntityId::new(""),
+            0,
+            MutationType::CollectionCreate,
+            None,
+            None,
+            req.actor,
+        ))?;
+
+        Ok(CreateCollectionResponse {
+            name: req.name.to_string(),
+        })
+    }
+
+    /// Drop a collection, removing all its entities, and record the event in the audit log.
+    ///
+    /// Returns [`AxonError::NotFound`] if the collection was never created via
+    /// [`create_collection`].
+    pub fn drop_collection(
+        &mut self,
+        req: DropCollectionRequest,
+    ) -> Result<DropCollectionResponse, AxonError> {
+        if !self.collections.contains(&req.name) {
+            return Err(AxonError::NotFound(req.name.to_string()));
+        }
+
+        // Remove all entities in the collection.
+        let entities = self.storage.range_scan(&req.name, None, None, None)?;
+        let count = entities.len();
+        for entity in &entities {
+            self.storage.delete(&req.name, &entity.id)?;
+        }
+        self.schemas.remove(&req.name);
+        self.collections.remove(&req.name);
+
+        self.audit.append(AuditEntry::new(
+            req.name.clone(),
+            EntityId::new(""),
+            0,
+            MutationType::CollectionDrop,
+            None,
+            None,
+            req.actor,
+        ))?;
+
+        Ok(DropCollectionResponse {
+            name: req.name.to_string(),
+            entities_removed: count,
         })
     }
 
@@ -652,5 +842,288 @@ entity_schema:
         // Should only see "b" (not "a" again, not infinite loop)
         assert_eq!(resp.entities.len(), 1);
         assert_eq!(resp.entities[0].id.as_str(), "b");
+    }
+
+    // ── Audit query ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn update_audit_entry_has_diff() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v1", "done": false}),
+            actor: None,
+        })
+        .unwrap();
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v2", "done": false}),
+            expected_version: 1,
+            actor: None,
+        })
+        .unwrap();
+
+        let entries = h
+            .audit_log()
+            .query_by_entity(&col, &id)
+            .unwrap();
+        let update_entry = entries.iter().find(|e| e.mutation == axon_audit::entry::MutationType::EntityUpdate).unwrap();
+        let diff = update_entry.diff.as_ref().expect("diff should be present on update");
+        assert!(diff.contains_key("title"), "title field should appear in diff");
+        assert_eq!(diff["title"].before, Some(json!("v1")));
+        assert_eq!(diff["title"].after, Some(json!("v2")));
+    }
+
+    #[test]
+    fn query_audit_filters_by_actor() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "by alice"}),
+            actor: Some("alice".into()),
+        })
+        .unwrap();
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-002"),
+            data: json!({"title": "by bob"}),
+            actor: Some("bob".into()),
+        })
+        .unwrap();
+
+        let resp = h
+            .query_audit(QueryAuditRequest {
+                actor: Some("alice".into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(resp.entries.len(), 1);
+        assert_eq!(resp.entries[0].actor, "alice");
+    }
+
+    #[test]
+    fn query_audit_pagination() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+
+        for i in 0..5u32 {
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new(&format!("t-{i:03}")),
+                data: json!({"title": format!("task {i}")}),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        let page1 = h
+            .query_audit(QueryAuditRequest {
+                limit: Some(2),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(page1.entries.len(), 2);
+        assert!(page1.next_cursor.is_some());
+
+        let page2 = h
+            .query_audit(QueryAuditRequest {
+                limit: Some(2),
+                after_id: page1.next_cursor,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(page2.entries.len(), 2);
+
+        let page3 = h
+            .query_audit(QueryAuditRequest {
+                limit: Some(2),
+                after_id: page2.next_cursor,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(page3.entries.len(), 1);
+        assert!(page3.next_cursor.is_none());
+    }
+
+    // ── Revert ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn revert_restores_entity_to_before_state() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v1"}),
+            actor: None,
+        })
+        .unwrap();
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v2"}),
+            expected_version: 1,
+            actor: None,
+        })
+        .unwrap();
+
+        // Find the update audit entry.
+        let entries = h.audit_log().query_by_entity(&col, &id).unwrap();
+        let update_entry = entries
+            .iter()
+            .find(|e| e.mutation == axon_audit::entry::MutationType::EntityUpdate)
+            .unwrap();
+
+        let resp = h
+            .revert_entity_to_audit_entry(RevertEntityRequest {
+                audit_entry_id: update_entry.id,
+                actor: Some("admin".into()),
+                force: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entity.data["title"], "v1", "entity should be restored to v1");
+        assert_eq!(
+            resp.audit_entry.mutation,
+            axon_audit::entry::MutationType::EntityRevert
+        );
+        assert_eq!(
+            resp.audit_entry.metadata.get("reverted_from_entry_id").map(String::as_str),
+            Some(&update_entry.id.to_string() as &str)
+        );
+        // Audit log should have 4 entries: create, update, revert
+        assert_eq!(h.audit_log().len(), 3);
+    }
+
+    #[test]
+    fn revert_missing_audit_entry_returns_not_found() {
+        let mut h = handler();
+        let err = h
+            .revert_entity_to_audit_entry(RevertEntityRequest {
+                audit_entry_id: 9999,
+                actor: None,
+                force: false,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn revert_create_entry_fails_no_before() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v1"}),
+            actor: None,
+        })
+        .unwrap();
+
+        let entries = h.audit_log().query_by_entity(&col, &id).unwrap();
+        let create_entry = &entries[0];
+
+        let err = h
+            .revert_entity_to_audit_entry(RevertEntityRequest {
+                audit_entry_id: create_entry.id,
+                actor: None,
+                force: false,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::InvalidOperation(_)));
+    }
+
+    // ── Collection lifecycle ─────────────────────────────────────────────────
+
+    #[test]
+    fn create_and_drop_collection_produce_audit_entries() {
+        let mut h = handler();
+
+        h.create_collection(CreateCollectionRequest {
+            name: CollectionId::new("widgets"),
+            actor: Some("admin".into()),
+        })
+        .unwrap();
+
+        // Populate with some entities.
+        for i in 0..3u32 {
+            h.create_entity(CreateEntityRequest {
+                collection: CollectionId::new("widgets"),
+                id: EntityId::new(&format!("w-{i:03}")),
+                data: json!({"name": format!("widget {i}")}),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        let drop_resp = h
+            .drop_collection(DropCollectionRequest {
+                name: CollectionId::new("widgets"),
+                actor: Some("admin".into()),
+            })
+            .unwrap();
+
+        assert_eq!(drop_resp.entities_removed, 3);
+
+        // Audit log: 1 CollectionCreate + 3 EntityCreate + 1 CollectionDrop = 5.
+        assert_eq!(h.audit_log().len(), 5);
+
+        let col_creates = h
+            .audit_log()
+            .query_by_operation(&axon_audit::entry::MutationType::CollectionCreate)
+            .unwrap();
+        assert_eq!(col_creates.len(), 1);
+
+        let col_drops = h
+            .audit_log()
+            .query_by_operation(&axon_audit::entry::MutationType::CollectionDrop)
+            .unwrap();
+        assert_eq!(col_drops.len(), 1);
+    }
+
+    #[test]
+    fn create_duplicate_collection_returns_already_exists() {
+        let mut h = handler();
+        h.create_collection(CreateCollectionRequest {
+            name: CollectionId::new("dup"),
+            actor: None,
+        })
+        .unwrap();
+
+        let err = h
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("dup"),
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::AlreadyExists(_)));
+    }
+
+    #[test]
+    fn drop_unknown_collection_returns_not_found() {
+        let mut h = handler();
+        let err = h
+            .drop_collection(DropCollectionRequest {
+                name: CollectionId::new("ghost"),
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::NotFound(_)));
     }
 }

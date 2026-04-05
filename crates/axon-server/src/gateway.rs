@@ -63,6 +63,16 @@ fn axon_error_response(err: AxonError) -> Response {
             Json(ApiError::new("schema_validation", detail)),
         )
             .into_response(),
+        AxonError::AlreadyExists(msg) => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new("already_exists", msg)),
+        )
+            .into_response(),
+        AxonError::InvalidOperation(msg) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new("invalid_operation", msg)),
+        )
+            .into_response(),
         AxonError::Storage(msg) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError::new("storage_error", msg)),

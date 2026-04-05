@@ -69,3 +69,55 @@ pub struct TraverseRequest {
     /// Maximum hop depth (default: 3, capped at 10).
     pub max_depth: Option<usize>,
 }
+
+// ── Audit requests ───────────────────────────────────────────────────────────
+
+/// Request to query the audit log with optional filters and cursor-based pagination.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QueryAuditRequest {
+    /// Restrict to entries for this collection.
+    pub collection: Option<CollectionId>,
+    /// Restrict to entries for this entity.
+    pub entity_id: Option<EntityId>,
+    /// Restrict to entries produced by this actor.
+    pub actor: Option<String>,
+    /// Restrict to entries of this operation type (e.g. `"entity_create"`).
+    pub operation: Option<String>,
+    /// Inclusive start of the time range (nanoseconds since Unix epoch).
+    pub since_ns: Option<u64>,
+    /// Inclusive end of the time range (nanoseconds since Unix epoch).
+    pub until_ns: Option<u64>,
+    /// Pagination cursor: last entry ID seen. Omit to start from the beginning.
+    pub after_id: Option<u64>,
+    /// Maximum number of entries to return per page.
+    pub limit: Option<usize>,
+}
+
+/// Request to revert an entity to the `before` state recorded in an audit entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RevertEntityRequest {
+    /// The audit entry whose `before` state should be restored.
+    pub audit_entry_id: u64,
+    /// Actor performing the revert.
+    pub actor: Option<String>,
+    /// When `true`, bypass schema validation for the restored state.
+    /// Use only when the schema has changed since the audit entry was recorded.
+    #[serde(default)]
+    pub force: bool,
+}
+
+// ── Collection lifecycle requests ────────────────────────────────────────────
+
+/// Request to explicitly create a named collection and record the event in the audit log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateCollectionRequest {
+    pub name: CollectionId,
+    pub actor: Option<String>,
+}
+
+/// Request to drop a collection and all its entities, recording the event in the audit log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DropCollectionRequest {
+    pub name: CollectionId,
+    pub actor: Option<String>,
+}

@@ -7,5 +7,5 @@
 pub mod entry;
 pub mod log;
 
-pub use entry::{AuditEntry, MutationType};
-pub use log::{AuditLog, MemoryAuditLog};
+pub use entry::{compute_diff, AuditEntry, FieldDiff, MutationType};
+pub use log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};

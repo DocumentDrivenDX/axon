@@ -63,7 +63,7 @@ impl Transaction {
             entity,
             expected_version: 0,
             data_before: None,
-            mutation: MutationType::Create,
+            mutation: MutationType::EntityCreate,
         });
     }
 
@@ -76,7 +76,7 @@ impl Transaction {
             entity,
             expected_version,
             data_before,
-            mutation: MutationType::Update,
+            mutation: MutationType::EntityUpdate,
         });
     }
 
@@ -102,7 +102,7 @@ impl Transaction {
             entity: sentinel,
             expected_version,
             data_before,
-            mutation: MutationType::Delete,
+            mutation: MutationType::EntityDelete,
         });
     }
 
@@ -191,10 +191,12 @@ impl Transaction {
                 .unwrap_or(0);
 
             let ok = match op.mutation {
-                MutationType::Create => current_version == 0, // must not exist
-                MutationType::Update | MutationType::Delete => {
+                MutationType::EntityCreate => current_version == 0, // must not exist
+                MutationType::EntityUpdate | MutationType::EntityDelete => {
                     current_version == op.expected_version
                 }
+                // Collection/schema mutations are not staged via Transaction.
+                _ => true,
             };
 
             if !ok {
@@ -211,14 +213,14 @@ impl Transaction {
 
         for op in self.ops {
             match op.mutation {
-                MutationType::Create => {
+                MutationType::EntityCreate => {
                     storage.put(op.entity.clone())?;
                     let after = op.entity.data.clone();
                     let mut entry = AuditEntry::new(
                         op.entity.collection.clone(),
                         op.entity.id.clone(),
                         op.entity.version,
-                        MutationType::Create,
+                        MutationType::EntityCreate,
                         None,
                         Some(after),
                         Some(actor_str.into()),
@@ -227,7 +229,7 @@ impl Transaction {
                     pending_entries.push(entry);
                     written.push(op.entity);
                 }
-                MutationType::Update => {
+                MutationType::EntityUpdate => {
                     let updated =
                         storage.compare_and_swap(op.entity.clone(), op.expected_version)?;
                     let after = updated.data.clone();
@@ -235,7 +237,7 @@ impl Transaction {
                         updated.collection.clone(),
                         updated.id.clone(),
                         updated.version,
-                        MutationType::Update,
+                        MutationType::EntityUpdate,
                         op.data_before,
                         Some(after),
                         Some(actor_str.into()),
@@ -244,13 +246,13 @@ impl Transaction {
                     pending_entries.push(entry);
                     written.push(updated);
                 }
-                MutationType::Delete => {
+                MutationType::EntityDelete => {
                     storage.delete(&op.entity.collection, &op.entity.id)?;
                     let mut entry = AuditEntry::new(
                         op.entity.collection.clone(),
                         op.entity.id.clone(),
                         op.entity.version,
-                        MutationType::Delete,
+                        MutationType::EntityDelete,
                         op.data_before,
                         None,
                         Some(actor_str.into()),
@@ -259,6 +261,8 @@ impl Transaction {
                     pending_entries.push(entry);
                     written.push(op.entity);
                 }
+                // Collection/schema mutations are not staged via Transaction.
+                _ => {}
             }
         }
 

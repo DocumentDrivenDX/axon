@@ -40,6 +40,8 @@ fn axon_to_status(err: AxonError) -> Status {
         AxonError::SchemaValidation(detail) => Status::invalid_argument(format!(
             "{{\"code\":\"schema_validation\",\"detail\":{detail:?}}}"
         )),
+        AxonError::AlreadyExists(msg) => Status::already_exists(msg.clone()),
+        AxonError::InvalidOperation(msg) => Status::invalid_argument(msg.clone()),
         AxonError::Storage(msg) => {
             Status::internal(format!("{{\"code\":\"storage_error\",\"detail\":{msg:?}}}"))
         }
