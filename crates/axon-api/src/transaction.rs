@@ -126,6 +126,9 @@ impl Transaction {
     /// ## Audit
     /// Each written entity produces an [`AuditEntry`] with `transaction_id` set
     /// to `self.id` so callers can correlate the entire transaction in the log.
+    /// Audit entries are buffered and only flushed to the log **after**
+    /// [`commit_tx`] succeeds. This guarantees that the audit log never contains
+    /// entries for mutations that were ultimately rolled back.
     ///
     /// Returns the list of written entities (deletes produce an entry with the
     /// sentinel entity; callers may ignore it).
@@ -137,12 +140,22 @@ impl Transaction {
     ) -> Result<Vec<Entity>, AxonError> {
         storage.begin_tx()?;
 
-        match self.execute(storage, audit, actor) {
-            Ok(written) => match storage.commit_tx() {
-                Ok(()) => Ok(written),
+        match self.execute(storage, actor) {
+            Ok((written, pending_entries)) => match storage.commit_tx() {
+                Ok(()) => {
+                    // Storage is committed — now flush buffered audit entries.
+                    // If audit append fails for any entry, propagate the error.
+                    // The storage transaction is already durable at this point,
+                    // so audit failures do not undo the committed data.
+                    for entry in pending_entries {
+                        audit.append(entry)?;
+                    }
+                    Ok(written)
+                }
                 Err(e) => {
                     // commit_tx failed — best-effort abort so the adapter is not
-                    // left wedged with an open transaction.
+                    // left wedged with an open transaction. Pending audit entries
+                    // are discarded; no rolled-back mutations reach the audit log.
                     let _ = storage.abort_tx();
                     Err(e)
                 }
@@ -156,12 +169,17 @@ impl Transaction {
         }
     }
 
-    fn execute<S: StorageAdapter, L: AuditLog>(
+    /// Applies all staged writes to storage and returns the written entities
+    /// together with buffered [`AuditEntry`] values.
+    ///
+    /// Audit entries are **not** appended to the log here; the caller
+    /// (`commit`) is responsible for flushing them only after the storage
+    /// transaction has been durably committed.
+    fn execute<S: StorageAdapter>(
         self,
         storage: &mut S,
-        audit: &mut L,
         actor: Option<String>,
-    ) -> Result<Vec<Entity>, AxonError> {
+    ) -> Result<(Vec<Entity>, Vec<AuditEntry>), AxonError> {
         let tx_id = self.id.clone();
         let actor_str = actor.as_deref().unwrap_or("anonymous");
 
@@ -189,6 +207,7 @@ impl Transaction {
 
         // ── Phase 2: Apply writes ────────────────────────────────────────────
         let mut written = Vec::new();
+        let mut pending_entries = Vec::new();
 
         for op in self.ops {
             match op.mutation {
@@ -205,7 +224,7 @@ impl Transaction {
                         Some(actor_str.into()),
                     );
                     entry.transaction_id = Some(tx_id.clone());
-                    audit.append(entry)?;
+                    pending_entries.push(entry);
                     written.push(op.entity);
                 }
                 MutationType::Update => {
@@ -222,7 +241,7 @@ impl Transaction {
                         Some(actor_str.into()),
                     );
                     entry.transaction_id = Some(tx_id.clone());
-                    audit.append(entry)?;
+                    pending_entries.push(entry);
                     written.push(updated);
                 }
                 MutationType::Delete => {
@@ -237,13 +256,13 @@ impl Transaction {
                         Some(actor_str.into()),
                     );
                     entry.transaction_id = Some(tx_id.clone());
-                    audit.append(entry)?;
+                    pending_entries.push(entry);
                     written.push(op.entity);
                 }
             }
         }
 
-        Ok(written)
+        Ok((written, pending_entries))
     }
 }
 
@@ -484,6 +503,35 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(a.data["balance"], 100, "data must be unchanged after failed commit");
+
+        // No audit entries must be written when commit_tx fails — the audit log
+        // must only record mutations that were actually committed to storage.
+        assert_eq!(
+            audit.len(),
+            0,
+            "audit log must be empty after a rolled-back transaction"
+        );
+    }
+
+    #[test]
+    fn audit_entries_not_written_on_version_conflict() {
+        // When the version check fails (Phase 1), no writes happen and therefore
+        // no audit entries should be produced.
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+
+        storage.put(account("A", 100)).unwrap();
+
+        let mut tx = Transaction::new();
+        tx.update(account("A", 70), 99, None); // WRONG version
+
+        let _ = tx.commit(&mut storage, &mut audit, None);
+
+        assert_eq!(
+            audit.len(),
+            0,
+            "no audit entries on version-conflict abort"
+        );
     }
 
     #[test]
