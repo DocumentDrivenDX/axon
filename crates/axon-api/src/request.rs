@@ -214,9 +214,14 @@ pub struct QueryEntitiesRequest {
 // ── Collection lifecycle requests ────────────────────────────────────────────
 
 /// Request to explicitly create a named collection and record the event in the audit log.
+///
+/// A schema is required at creation time — schemaless collections are not supported (FEAT-001).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateCollectionRequest {
     pub name: CollectionId,
+    /// The schema that governs entities in this collection.
+    /// `schema.collection` must match `name`.
+    pub schema: CollectionSchema,
     pub actor: Option<String>,
 }
 

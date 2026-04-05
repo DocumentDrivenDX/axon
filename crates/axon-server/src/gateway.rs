@@ -127,6 +127,30 @@ pub struct CollectionActorBody {
     pub actor: Option<String>,
 }
 
+/// Request body for `POST /collections/{name}`.
+///
+/// A `schema` field is required; schemaless collections are not supported (FEAT-001).
+#[derive(Deserialize)]
+pub struct CreateCollectionBody {
+    /// Schema fields (excluding `collection`, which is taken from the path).
+    /// Must be present — omitting this field returns a 400 error.
+    pub schema: Option<CreateCollectionSchemaBody>,
+    pub actor: Option<String>,
+}
+
+/// The schema portion of a `CreateCollectionBody`.
+#[derive(Deserialize)]
+pub struct CreateCollectionSchemaBody {
+    pub description: Option<String>,
+    #[serde(default = "default_schema_version")]
+    pub version: u32,
+    pub entity_schema: Option<Value>,
+}
+
+fn default_schema_version() -> u32 {
+    1
+}
+
 #[derive(Deserialize)]
 pub struct CreateLinkBody {
     pub source_collection: String,
@@ -476,14 +500,29 @@ async fn revert_entity(
 async fn create_collection(
     State(handler): State<SharedHandler>,
     Path(name): Path<String>,
-    body: Option<Json<CollectionActorBody>>,
+    body: Option<Json<CreateCollectionBody>>,
 ) -> Response {
-    let actor = body.and_then(|b| b.0.actor);
+    let (actor, schema_body) = match body.and_then(|Json(b)| b.schema.map(|s| (b.actor, s))) {
+        Some((actor, schema_body)) => (actor, schema_body),
+        None => {
+            return axon_error_response(AxonError::InvalidArgument(
+                "'schema' field is required to create a collection".into(),
+            ));
+        }
+    };
+    let collection_id = CollectionId::new(&name);
+    let schema = CollectionSchema {
+        collection: collection_id.clone(),
+        description: schema_body.description,
+        version: schema_body.version,
+        entity_schema: schema_body.entity_schema,
+    };
     match handler
         .lock()
         .await
         .create_collection(CreateCollectionRequest {
-            name: CollectionId::new(&name),
+            name: collection_id,
+            schema,
             actor,
         }) {
         Ok(resp) => (StatusCode::CREATED, Json(json!({ "name": resp.name }))).into_response(),
@@ -893,7 +932,7 @@ mod tests {
         // Create collection.
         let resp = server
             .post("/collections/my-col")
-            .json(&json!({"actor": "admin"}))
+            .json(&json!({"schema": {}, "actor": "admin"}))
             .await;
         resp.assert_status(StatusCode::CREATED);
         let body: Value = resp.json();
@@ -902,7 +941,7 @@ mod tests {
         // Duplicate create returns 409.
         let resp = server
             .post("/collections/my-col")
-            .json(&json!({"actor": "admin"}))
+            .json(&json!({"schema": {}, "actor": "admin"}))
             .await;
         resp.assert_status(StatusCode::CONFLICT);
         let body: Value = resp.json();
@@ -982,12 +1021,12 @@ mod tests {
         // Create two collections.
         server
             .post("/collections/apples")
-            .json(&json!({}))
+            .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
             .post("/collections/bananas")
-            .json(&json!({}))
+            .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
 
@@ -1029,7 +1068,19 @@ mod tests {
     #[tokio::test]
     async fn http_create_collection_with_invalid_name_returns_400() {
         let server = test_server();
-        let resp = server.post("/collections/BadName").json(&json!({})).await;
+        let resp = server
+            .post("/collections/BadName")
+            .json(&json!({"schema": {}}))
+            .await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "invalid_argument");
+    }
+
+    #[tokio::test]
+    async fn http_create_collection_without_schema_returns_400() {
+        let server = test_server();
+        let resp = server.post("/collections/good-name").json(&json!({})).await;
         resp.assert_status(StatusCode::BAD_REQUEST);
         let body: Value = resp.json();
         assert_eq!(body["code"], "invalid_argument");

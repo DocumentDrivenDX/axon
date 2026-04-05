@@ -500,7 +500,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     /// Explicitly register a named collection and record the event in the audit log.
     ///
-    /// Returns [`AxonError::InvalidArgument`] if the name violates naming rules.
+    /// A schema must be provided at creation time; schemaless collections are not supported.
+    ///
+    /// Returns [`AxonError::InvalidArgument`] if the name violates naming rules or the schema's
+    /// `collection` field does not match `req.name`.
     /// Returns [`AxonError::AlreadyExists`] if the collection has already been created.
     pub fn create_collection(
         &mut self,
@@ -508,11 +511,19 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<CreateCollectionResponse, AxonError> {
         Self::validate_collection_name(&req.name)?;
 
+        if req.schema.collection != req.name {
+            return Err(AxonError::InvalidArgument(format!(
+                "schema.collection '{}' does not match collection name '{}'",
+                req.schema.collection, req.name
+            )));
+        }
+
         let existing = self.storage.list_collections()?;
         if existing.contains(&req.name) {
             return Err(AxonError::AlreadyExists(req.name.to_string()));
         }
         self.storage.register_collection(&req.name)?;
+        self.put_schema(req.schema)?;
 
         self.audit.append(AuditEntry::new(
             req.name.clone(),
@@ -1639,6 +1650,7 @@ entity_schema:
 
         h.create_collection(CreateCollectionRequest {
             name: CollectionId::new("widgets"),
+            schema: CollectionSchema::new(CollectionId::new("widgets")),
             actor: Some("admin".into()),
         })
         .unwrap();
@@ -1684,6 +1696,7 @@ entity_schema:
         let mut h = handler();
         h.create_collection(CreateCollectionRequest {
             name: CollectionId::new("dup"),
+            schema: CollectionSchema::new(CollectionId::new("dup")),
             actor: None,
         })
         .unwrap();
@@ -1691,6 +1704,7 @@ entity_schema:
         let err = h
             .create_collection(CreateCollectionRequest {
                 name: CollectionId::new("dup"),
+                schema: CollectionSchema::new(CollectionId::new("dup")),
                 actor: None,
             })
             .unwrap_err();
@@ -1709,6 +1723,47 @@ entity_schema:
         assert!(matches!(err, AxonError::NotFound(_)));
     }
 
+    // ── Schema binding at collection creation (FEAT-001) ─────────────────────
+
+    #[test]
+    fn create_collection_persists_schema() {
+        let mut h = handler();
+        let col = CollectionId::new("typed-col");
+        let schema = CollectionSchema {
+            collection: col.clone(),
+            description: Some("a typed collection".into()),
+            version: 1,
+            entity_schema: Some(json!({"type": "object"})),
+        };
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: schema.clone(),
+            actor: None,
+        })
+        .unwrap();
+
+        let stored = h
+            .get_schema(&col)
+            .unwrap()
+            .expect("schema must be stored at creation");
+        assert_eq!(stored.version, 1);
+        assert_eq!(stored.description.as_deref(), Some("a typed collection"));
+        assert_eq!(stored.entity_schema, Some(json!({"type": "object"})));
+    }
+
+    #[test]
+    fn create_collection_rejects_schema_collection_mismatch() {
+        let mut h = handler();
+        let err = h
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("foo"),
+                schema: CollectionSchema::new(CollectionId::new("bar")),
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::InvalidArgument(_)));
+    }
+
     // ── Collection name validation ───────────────────────────────────────────
 
     #[test]
@@ -1717,6 +1772,7 @@ entity_schema:
         let err = h
             .create_collection(CreateCollectionRequest {
                 name: CollectionId::new(""),
+                schema: CollectionSchema::new(CollectionId::new("")),
                 actor: None,
             })
             .unwrap_err();
@@ -1729,6 +1785,7 @@ entity_schema:
         let err = h
             .create_collection(CreateCollectionRequest {
                 name: CollectionId::new("1bad"),
+                schema: CollectionSchema::new(CollectionId::new("1bad")),
                 actor: None,
             })
             .unwrap_err();
@@ -1741,6 +1798,7 @@ entity_schema:
         let err = h
             .create_collection(CreateCollectionRequest {
                 name: CollectionId::new("Bad-Name"),
+                schema: CollectionSchema::new(CollectionId::new("Bad-Name")),
                 actor: None,
             })
             .unwrap_err();
@@ -1753,6 +1811,7 @@ entity_schema:
         let err = h
             .create_collection(CreateCollectionRequest {
                 name: CollectionId::new("bad name"),
+                schema: CollectionSchema::new(CollectionId::new("bad name")),
                 actor: None,
             })
             .unwrap_err();
@@ -1765,6 +1824,7 @@ entity_schema:
         for name in &["tasks", "my-tasks", "my_tasks", "tasks2", "a"] {
             h.create_collection(CreateCollectionRequest {
                 name: CollectionId::new(*name),
+                schema: CollectionSchema::new(CollectionId::new(*name)),
                 actor: None,
             })
             .unwrap_or_else(|e| panic!("valid name '{}' rejected: {}", name, e));
@@ -1787,6 +1847,7 @@ entity_schema:
         for name in &["apples", "bananas", "cherries"] {
             h.create_collection(CreateCollectionRequest {
                 name: CollectionId::new(*name),
+                schema: CollectionSchema::new(CollectionId::new(*name)),
                 actor: None,
             })
             .unwrap();
@@ -1821,10 +1882,11 @@ entity_schema:
 
         h.create_collection(CreateCollectionRequest {
             name: CollectionId::new("items"),
+            schema: CollectionSchema::new(CollectionId::new("items")),
             actor: None,
         })
         .unwrap();
-        h.put_schema(axon_schema::schema::CollectionSchema {
+        h.put_schema(CollectionSchema {
             collection: CollectionId::new("items"),
             description: None,
             version: 5,
@@ -1844,10 +1906,11 @@ entity_schema:
 
         h.create_collection(CreateCollectionRequest {
             name: CollectionId::new("things"),
+            schema: CollectionSchema::new(CollectionId::new("things")),
             actor: None,
         })
         .unwrap();
-        h.put_schema(axon_schema::schema::CollectionSchema {
+        h.put_schema(CollectionSchema {
             collection: CollectionId::new("things"),
             description: Some("a thing".into()),
             version: 2,
@@ -1905,10 +1968,12 @@ entity_schema:
             .unwrap();
 
         let h = AxonHandler::new(storage);
-        let resp = h
-            .list_collections(ListCollectionsRequest {})
-            .unwrap();
-        assert_eq!(resp.collections.len(), 1, "list_collections should see pre-populated collection");
+        let resp = h.list_collections(ListCollectionsRequest {}).unwrap();
+        assert_eq!(
+            resp.collections.len(),
+            1,
+            "list_collections should see pre-populated collection"
+        );
         assert_eq!(resp.collections[0].name, "tasks");
 
         // describe_collection must not return NotFound.
@@ -1926,6 +1991,7 @@ entity_schema:
         let mut h1 = handler();
         h1.create_collection(CreateCollectionRequest {
             name: CollectionId::new("widgets"),
+            schema: CollectionSchema::new(CollectionId::new("widgets")),
             actor: None,
         })
         .unwrap();
@@ -1935,10 +2001,12 @@ entity_schema:
 
         // Reconstruct a new handler from the same storage.
         let h2 = AxonHandler::new(storage);
-        let resp = h2
-            .list_collections(ListCollectionsRequest {})
-            .unwrap();
-        assert_eq!(resp.collections.len(), 1, "collection must survive handler reconstruction");
+        let resp = h2.list_collections(ListCollectionsRequest {}).unwrap();
+        assert_eq!(
+            resp.collections.len(),
+            1,
+            "collection must survive handler reconstruction"
+        );
         assert_eq!(resp.collections[0].name, "widgets");
 
         h2.describe_collection(DescribeCollectionRequest {
@@ -2752,19 +2820,13 @@ entity_schema:
         let col = CollectionId::new("invoices");
 
         // Explicit collection create so drop_collection can find it.
+        // Schema version 1 is persisted as part of create_collection.
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
             actor: None,
         })
         .unwrap();
-
-        let schema = axon_schema::schema::CollectionSchema {
-            collection: col.clone(),
-            description: None,
-            version: 1,
-            entity_schema: None,
-        };
-        h.put_schema(schema).unwrap();
         assert!(h.get_schema(&col).unwrap().is_some());
 
         h.drop_collection(DropCollectionRequest {
