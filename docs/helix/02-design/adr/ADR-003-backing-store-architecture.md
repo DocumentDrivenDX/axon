@@ -64,7 +64,7 @@ Both backends implement the same `StorageAdapter` trait. Both pass the identical
 - **Before/after state**: full entity state, not a SQL diff
 - **Structured diff**: which fields changed, with old and new values
 - **Metadata**: reason, correlation ID, agent session, transaction ID
-- **Atomicity**: audit entry is written in the same transaction as the mutation — no gaps, no eventual consistency
+- **No-orphan guarantee**: audit entries are flushed post-commit — rolled-back transactions never produce audit entries, and audit entries are never written for uncommitted mutations
 
 #### Audit write path
 
@@ -75,18 +75,18 @@ Agent/Client
 Transaction (application layer)
     │
     ├── 1. Validate entity against schema
-    ├── 2. Check version (OCC — Phase 1 of commit)
-    ├── 3. Apply entity writes (Phase 2 of commit)
-    ├── 4. Build AuditEntry (actor, operation, before, after, tx_id) — buffered
+    ├── 2. Build AuditEntry (actor, operation, before, after, tx_id) — buffered
     │
     ▼
 StorageAdapter.begin_tx()
-    ├── 5. Write entity
-    └── 6. commit_tx()  ← entity write is durable here
+    │
+    ├── 3. Check version (OCC — Phase 1 of commit)
+    ├── 4. Apply entity writes (Phase 2 of commit)
+    └── 5. commit_tx()  ← entity write is durable here
     │
     ▼  (post-commit)
 AuditLog.append()  ← audit entries flushed after storage commit
-    └── 7. Write audit entry
+    └── 6. Write audit entry
 ```
 
 The audit entry is constructed at the application layer where all semantic context
@@ -166,7 +166,7 @@ Key design points:
 - SQLite: maps to `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`
 - PostgreSQL: maps to `BEGIN` / `COMMIT` / `ROLLBACK` with serializable isolation
 - Memory: maps to mutex-guarded batch apply
-- Entity writes and audit writes go through the same transaction handle
+- Entity writes commit via `StorageAdapter`; audit entries are appended post-commit (post-commit audit strategy, see ADR-004)
 
 ### Data Layout
 
@@ -249,7 +249,7 @@ For SQLite: `JSONB` becomes `TEXT` (JSON stored as text), `BIGSERIAL` becomes `I
 | Type | Impact |
 |------|--------|
 | Positive | Audit entries carry full semantic context (actor, operation, diff, metadata) regardless of backend. CDC comes free as audit log reads. Embedded mode works with zero external dependencies. Same test suite validates both backends |
-| Negative | Two storage backends to maintain and test. Application-layer audit adds ~2ms overhead per write (append to audit table in same transaction). Must ensure audit write never silently fails |
+| Negative | Two storage backends to maintain and test. Application-layer audit adds ~2ms overhead per write (post-commit append). Must ensure audit write never silently fails; narrow crash window between commit and audit flush |
 | Neutral | FoundationDB and fjall remain viable future backends behind the same trait |
 
 ## Implementation Impact
@@ -264,7 +264,7 @@ For SQLite: `JSONB` becomes `TEXT` (JSON stored as text), `BIGSERIAL` becomes `I
 
 | Risk | Prob | Impact | Mitigation |
 |------|------|--------|------------|
-| Audit write fails silently, leaving gap | Low | Critical | Audit and entity writes share a transaction. If commit succeeds, both are durable. INV-003 (audit completeness) runs in CI |
+| Audit write fails silently, leaving gap | Low | Critical | Post-commit audit strategy: audit entries are flushed only after `commit_tx()` succeeds, so no audit entry is written for a rolled-back mutation. For durable backends, INV-003 (audit completeness) recovery invariant must be implemented (intent record or same-transaction audit). INV-003 runs in CI |
 | SQLite single-writer bottleneck in embedded mode | Medium | Low | Embedded mode is single-user by design. WAL mode enables concurrent reads |
 | PostgreSQL connection pool exhaustion under load | Medium | Medium | `sqlx` pool with configurable max connections. Health check endpoint monitors pool utilization |
 | Backend behavior divergence | Medium | Medium | L4 backend conformance: identical parameterized test suite. Any divergence is a bug |
