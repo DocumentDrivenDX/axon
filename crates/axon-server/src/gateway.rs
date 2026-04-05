@@ -17,8 +17,9 @@ use tokio::sync::Mutex;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, GetEntityRequest, TraverseRequest,
-    UpdateEntityRequest,
+    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
+    DropCollectionRequest, GetEntityRequest, QueryAuditRequest, RevertEntityRequest,
+    TraverseRequest, UpdateEntityRequest,
 };
 use axon_audit::AuditLog;
 use axon_core::error::AxonError;
@@ -103,6 +104,19 @@ pub struct UpdateEntityBody {
 
 #[derive(Deserialize)]
 pub struct DeleteEntityBody {
+    pub actor: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct RevertEntityBody {
+    pub audit_entry_id: u64,
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Deserialize)]
+pub struct CollectionActorBody {
     pub actor: Option<String>,
 }
 
@@ -309,6 +323,114 @@ async fn query_audit_by_entity(
     }
 }
 
+async fn query_audit(
+    State(handler): State<SharedHandler>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let req = QueryAuditRequest {
+        collection: params.get("collection").map(CollectionId::new),
+        entity_id: params.get("entity_id").map(EntityId::new),
+        actor: params.get("actor").cloned(),
+        operation: params.get("operation").cloned(),
+        since_ns: params.get("since_ns").and_then(|s| s.parse().ok()),
+        until_ns: params.get("until_ns").and_then(|s| s.parse().ok()),
+        after_id: params.get("after_id").and_then(|s| s.parse().ok()),
+        limit: params.get("limit").and_then(|s| s.parse().ok()),
+    };
+    match handler.lock().await.query_audit(req) {
+        Ok(resp) => {
+            let entries: Vec<Value> = resp
+                .entries
+                .iter()
+                .map(|e: &axon_audit::AuditEntry| {
+                    json!({
+                        "id": e.id,
+                        "timestamp_ns": e.timestamp_ns,
+                        "collection": e.collection.to_string(),
+                        "entity_id": e.entity_id.to_string(),
+                        "version": e.version,
+                        "mutation": format!("{:?}", e.mutation),
+                        "data_before": e.data_before,
+                        "data_after": e.data_after,
+                        "actor": e.actor,
+                        "transaction_id": e.transaction_id,
+                    })
+                })
+                .collect();
+            Json(json!({ "entries": entries, "next_cursor": resp.next_cursor })).into_response()
+        }
+        Err(e) => axon_error_response(e),
+    }
+}
+
+async fn revert_entity(
+    State(handler): State<SharedHandler>,
+    Json(body): Json<RevertEntityBody>,
+) -> Response {
+    match handler
+        .lock()
+        .await
+        .revert_entity_to_audit_entry(RevertEntityRequest {
+            audit_entry_id: body.audit_entry_id,
+            actor: body.actor,
+            force: body.force,
+        }) {
+        Ok(resp) => Json(json!({
+            "entity": {
+                "collection": resp.entity.collection.to_string(),
+                "id": resp.entity.id.to_string(),
+                "version": resp.entity.version,
+                "data": resp.entity.data,
+            },
+            "audit_entry_id": resp.audit_entry.id,
+        }))
+        .into_response(),
+        Err(e) => axon_error_response(e),
+    }
+}
+
+async fn create_collection(
+    State(handler): State<SharedHandler>,
+    Path(name): Path<String>,
+    body: Option<Json<CollectionActorBody>>,
+) -> Response {
+    let actor = body.and_then(|b| b.0.actor);
+    match handler
+        .lock()
+        .await
+        .create_collection(CreateCollectionRequest {
+            name: CollectionId::new(&name),
+            actor,
+        }) {
+        Ok(resp) => {
+            (StatusCode::CREATED, Json(json!({ "name": resp.name }))).into_response()
+        }
+        Err(e) => axon_error_response(e),
+    }
+}
+
+async fn drop_collection(
+    State(handler): State<SharedHandler>,
+    Path(name): Path<String>,
+    body: Option<Json<CollectionActorBody>>,
+) -> Response {
+    let actor = body.and_then(|b| b.0.actor);
+    match handler
+        .lock()
+        .await
+        .drop_collection(DropCollectionRequest {
+            name: CollectionId::new(&name),
+            actor,
+        }) {
+        Ok(resp) => Json(json!({
+            "name": resp.name,
+            "entities_removed": resp.entities_removed,
+        }))
+        .into_response(),
+        Err(e) => axon_error_response(e),
+    }
+}
+
 // ── Router construction ───────────────────────────────────────────────────────
 
 /// Build the axum router for the HTTP gateway.
@@ -324,6 +446,10 @@ pub fn build_router(handler: SharedHandler) -> Router {
             "/audit/entity/{collection}/{id}",
             get(query_audit_by_entity),
         )
+        .route("/audit/query", get(query_audit))
+        .route("/audit/revert", post(revert_entity))
+        .route("/collections/{name}", post(create_collection))
+        .route("/collections/{name}", delete(drop_collection))
         .with_state(handler)
 }
 
@@ -483,6 +609,101 @@ mod tests {
         let entries = body["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["actor"], "agent-1");
+    }
+
+    #[tokio::test]
+    async fn http_query_audit_filtered() {
+        let server = test_server();
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1"}, "actor": "alice"}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/entities/tasks/t-002")
+            .json(&json!({"data": {"title": "v2"}, "actor": "bob"}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // Filter by actor.
+        let resp = server.get("/audit/query?actor=alice").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["actor"], "alice");
+
+        // Filter by collection.
+        let resp = server.get("/audit/query?collection=tasks").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["entries"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn http_revert_entity() {
+        let server = test_server();
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1"}, "actor": "alice"}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .put("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v2"}, "expected_version": 1, "actor": "alice"}))
+            .await
+            .assert_status_ok();
+
+        // Get audit entries to find the entry_id for the create.
+        let resp = server.get("/audit/query?entity_id=t-001&collection=tasks").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let entries = body["entries"].as_array().unwrap();
+        // First entry is the create (data_before is null, data_after has v1).
+        let create_entry_id = entries[0]["id"].as_u64().unwrap();
+
+        // Revert back to v1 state — but entry 0 is a create (no before), so use entry 1 (update).
+        let update_entry_id = entries[1]["id"].as_u64().unwrap();
+        let resp = server
+            .post("/audit/revert")
+            .json(&json!({"audit_entry_id": update_entry_id, "actor": "admin"}))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["entity"]["data"]["title"], "v1");
+        // Silence unused variable warning.
+        let _ = create_entry_id;
+    }
+
+    #[tokio::test]
+    async fn http_create_and_drop_collection() {
+        let server = test_server();
+
+        // Create collection.
+        let resp = server
+            .post("/collections/my-col")
+            .json(&json!({"actor": "admin"}))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        assert_eq!(body["name"], "my-col");
+
+        // Duplicate create returns 409.
+        let resp = server
+            .post("/collections/my-col")
+            .json(&json!({"actor": "admin"}))
+            .await;
+        resp.assert_status(StatusCode::CONFLICT);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "already_exists");
+
+        // Drop collection.
+        let resp = server.delete("/collections/my-col").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["name"], "my-col");
     }
 
     #[tokio::test]
