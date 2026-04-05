@@ -46,13 +46,15 @@ Stage (create / update / delete):
   - No storage access at stage time
 
 Commit:
+  - begin_tx() on StorageAdapter
   - For each write op, verify stored version == expected_version
-  - If any mismatch: abort entire transaction, return ConflictError with
+  - If any mismatch: abort_tx(), return ConflictingVersion with
     the conflicting entity's current state
   - If all versions match:
       - Apply all entity writes (version + 1)
-      - Write all audit entries (shared transaction_id)
-      - Commit storage transaction (atomic via StorageAdapter)
+      - commit_tx() (makes entity writes durable)
+      - Flush buffered audit entries (shared transaction_id)
+  (See Audit Integration below for rationale on post-commit audit writes.)
 ```
 
 ### Version Semantics
@@ -64,13 +66,14 @@ Commit:
 
 ### Conflict Response
 
-On version conflict, Axon returns `AxonError::Conflict` containing:
-- The entity ID and collection that caused the conflict
-- The current version in storage
-- The current entity state (so the caller can merge and retry)
-- A `retryable: true` flag (version conflict is always retryable)
+On version conflict, Axon returns `AxonError::ConflictingVersion` containing:
+- `expected`: the version the caller passed
+- `actual`: the current version in storage
+- `current_entity`: the entity's current state (so the caller can merge and retry)
 
-Schema violations return `AxonError::SchemaViolation` with `retryable: false`.
+Version conflicts are always retryable. Schema violations return
+`AxonError::SchemaValidation` with a human-readable message listing all
+field-path violations.
 
 ### Isolation Guarantees
 
@@ -112,15 +115,17 @@ database transaction as entity mutations, or by implementing a write-ahead inten
 log that is replayed on startup to close any gap left by a crash between commit
 and audit flush.
 
-### Limits and Timeouts
+### Limits and Timeouts (Not Yet Implemented)
 
-Per FEAT-008:
-- **Maximum 100 operations per transaction** — the 101st `stage_*` call returns
-  `InvalidArgument`. This prevents unbounded write buffers and forces callers to
-  batch appropriately.
-- **30-second timeout** (configurable) — transactions open beyond the timeout are
-  aborted. The `Transaction` struct carries a creation timestamp; the commit path
-  checks elapsed time before entering the version-check loop.
+Per FEAT-008, the following limits are planned but not yet enforced:
+- **Maximum 100 operations per transaction** — the 101st `stage_*` call should
+  return `InvalidArgument`. This prevents unbounded write buffers and forces
+  callers to batch appropriately.
+- **30-second timeout** (configurable) — transactions open beyond the timeout
+  should be aborted. This requires a creation timestamp on the `Transaction`
+  struct and a timeout check in the commit path.
+
+Implementation tracked by: `hx-b189dfa9`.
 
 ## Alternatives Considered
 
@@ -218,7 +223,8 @@ and maps cleanly onto all three StorageAdapter backends.
 - Audit entries produced within the transaction share `transaction_id = tx.id`
 - Version increment (`entity.version += 1`) happens inside the commit loop,
   not at stage time
-- The 100-op limit and 30s timeout are checked in the commit path per FEAT-008
+- The 100-op limit and 30s timeout are planned per FEAT-008 but not yet
+  implemented (see Limits and Timeouts section; tracked by `hx-b189dfa9`)
 
 ## Validation
 
