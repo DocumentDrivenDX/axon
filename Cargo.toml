@@ -53,3 +53,4 @@ clap = { version = "4", features = ["derive"] }
 # Testing
 pretty_assertions = "1"
 tempfile = "3"
+proptest = "1"

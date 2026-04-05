@@ -10,3 +10,6 @@ pub mod response;
 pub mod transaction;
 
 pub use transaction::Transaction;
+
+#[cfg(test)]
+mod proptest_api;

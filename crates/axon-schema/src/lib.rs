@@ -7,6 +7,9 @@
 pub mod schema;
 pub mod validation;
 
+#[cfg(test)]
+mod proptest_schema;
+
 pub use schema::{Cardinality, CollectionSchema, EsfDocument, LinkTypeDef};
 pub use validation::{
     compile_entity_schema, validate, validate_entity, validate_link_metadata,

@@ -5,8 +5,12 @@
 //! an in-memory implementation for testing and development.
 
 pub mod adapter;
+pub mod conformance;
 pub mod memory;
 pub mod sqlite;
+
+#[cfg(test)]
+mod proptest_storage;
 
 pub use adapter::StorageAdapter;
 pub use memory::MemoryStorageAdapter;
