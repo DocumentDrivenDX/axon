@@ -33,19 +33,27 @@ pub use proto::{
 
 /// Convert an [`AxonError`] to a gRPC [`Status`] with a structured message.
 fn axon_to_status(err: AxonError) -> Status {
-    match &err {
-        AxonError::NotFound(msg) => Status::not_found(msg.clone()),
+    match err {
+        AxonError::NotFound(msg) => Status::not_found(msg),
         AxonError::ConflictingVersion {
-            expected, actual, ..
-        } => Status::failed_precondition(format!(
-            "{{\"code\":\"version_conflict\",\"expected\":{expected},\"actual\":{actual}}}"
-        )),
+            expected,
+            actual,
+            current_entity,
+        } => {
+            let current_entity_json = match &current_entity {
+                Some(e) => serde_json::to_string(e).unwrap_or_else(|_| "null".to_string()),
+                None => "null".to_string(),
+            };
+            Status::failed_precondition(format!(
+                "{{\"code\":\"version_conflict\",\"expected\":{expected},\"actual\":{actual},\"current_entity\":{current_entity_json}}}"
+            ))
+        }
         AxonError::SchemaValidation(detail) => Status::invalid_argument(format!(
             "{{\"code\":\"schema_validation\",\"detail\":{detail:?}}}"
         )),
-        AxonError::AlreadyExists(msg) => Status::already_exists(msg.clone()),
-        AxonError::InvalidArgument(msg) => Status::invalid_argument(msg.clone()),
-        AxonError::InvalidOperation(msg) => Status::invalid_argument(msg.clone()),
+        AxonError::AlreadyExists(msg) => Status::already_exists(msg),
+        AxonError::InvalidArgument(msg) => Status::invalid_argument(msg),
+        AxonError::InvalidOperation(msg) => Status::invalid_argument(msg),
         AxonError::Storage(msg) => {
             Status::internal(format!("{{\"code\":\"storage_error\",\"detail\":{msg:?}}}"))
         }
@@ -353,5 +361,85 @@ impl AxonService for AxonServiceImpl {
         Ok(Response::new(QueryAuditByEntityResponse {
             entries: proto_entries,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    use tonic::Code;
+
+    /// Build a service instance and create one entity in collection `col` with id `id`.
+    async fn make_service_with_entity(col: &str, id: &str) -> AxonServiceImpl {
+        let svc = AxonServiceImpl::new_in_memory();
+        svc.create_entity(Request::new(ProtoCreateEntityReq {
+            collection: col.to_string(),
+            id: id.to_string(),
+            data_json: json!({"x": 1}).to_string(),
+            actor: String::new(),
+        }))
+        .await
+        .expect("create should succeed");
+        svc
+    }
+
+    /// FEAT-004 US-010 AC4 / FEAT-008 US-021 AC2:
+    /// A version-conflict gRPC response must include the current entity state so
+    /// the caller can merge and retry without a separate GetEntity round-trip.
+    #[tokio::test]
+    async fn grpc_version_conflict_includes_current_entity() {
+        let svc = make_service_with_entity("tasks", "t-001").await;
+
+        // Attempt update with a wrong expected_version.
+        let err = svc
+            .update_entity(Request::new(ProtoUpdateEntityReq {
+                collection: "tasks".to_string(),
+                id: "t-001".to_string(),
+                data_json: json!({"x": 2}).to_string(),
+                expected_version: 99, // wrong — actual is 1
+                actor: String::new(),
+            }))
+            .await
+            .expect_err("should fail with version conflict");
+
+        assert_eq!(err.code(), Code::FailedPrecondition, "wrong gRPC status code");
+
+        let msg: serde_json::Value = serde_json::from_str(err.message())
+            .expect("status message must be valid JSON");
+
+        assert_eq!(msg["code"], "version_conflict");
+        assert_eq!(msg["expected"], 99_u64);
+        assert_eq!(msg["actual"], 1_u64);
+
+        // current_entity must be present and non-null (FEAT-004 US-010 AC4).
+        let current = &msg["current_entity"];
+        assert!(
+            !current.is_null(),
+            "current_entity must not be null in a conflict response; got: {msg}"
+        );
+        assert_eq!(current["id"], "t-001", "current_entity.id mismatch");
+        assert_eq!(current["version"], 1_u64, "current_entity.version mismatch");
+        assert_eq!(current["data"]["x"], 1, "current_entity.data mismatch");
+    }
+
+    /// Verify that a version conflict with no surviving entity yields current_entity: null.
+    #[tokio::test]
+    async fn grpc_version_conflict_null_current_entity_when_missing() {
+        // We can trigger a null current_entity by injecting an AxonError directly
+        // through axon_to_status (the private function under test).
+        let status = axon_to_status(AxonError::ConflictingVersion {
+            expected: 5,
+            actual: 3,
+            current_entity: None,
+        });
+
+        assert_eq!(status.code(), Code::FailedPrecondition);
+
+        let msg: serde_json::Value = serde_json::from_str(status.message())
+            .expect("status message must be valid JSON");
+
+        assert_eq!(msg["code"], "version_conflict");
+        assert!(msg["current_entity"].is_null());
     }
 }
