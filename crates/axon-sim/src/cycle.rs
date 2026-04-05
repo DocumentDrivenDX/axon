@@ -242,6 +242,8 @@ fn check_ring_integrity(
             id: current.clone(),
             link_type: Some(LINK_TYPE.into()),
             max_depth: Some(1),
+            direction: Default::default(),
+            hop_filter: None,
         }) {
             Ok(r) => r,
             Err(_) => return hops,

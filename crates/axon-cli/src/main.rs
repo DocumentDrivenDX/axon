@@ -370,6 +370,8 @@ fn run_link(
                     id: EntityId::new(&id),
                     link_type,
                     max_depth,
+                    direction: Default::default(),
+                    hop_filter: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             let entities: Vec<Value> = resp.entities.iter().map(entity_to_json).collect();

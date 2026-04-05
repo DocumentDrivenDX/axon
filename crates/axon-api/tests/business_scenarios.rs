@@ -112,6 +112,8 @@ fn traverse(
         id: eid(id),
         link_type: link_type.map(String::from),
         max_depth,
+        direction: Default::default(),
+        hop_filter: None,
     })
     .unwrap()
     .entities

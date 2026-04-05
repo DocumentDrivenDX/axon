@@ -21,15 +21,15 @@ use crate::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
     DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode,
     FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest,
-    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, SortDirection, TraverseRequest,
-    UpdateEntityRequest,
+    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevertEntityRequest, SortDirection,
+    TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     CollectionMetadata, CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse,
     DeleteEntityResponse, DeleteLinkResponse, DescribeCollectionResponse, DropCollectionResponse,
     GetEntityResponse, GetSchemaResponse, ListCollectionsResponse, PutSchemaResponse,
-    QueryAuditResponse, QueryEntitiesResponse, RevertEntityResponse, TraverseResponse,
-    UpdateEntityResponse,
+    QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevertEntityResponse,
+    TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -942,65 +942,198 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Traverse links from a starting entity using BFS up to `max_depth` hops.
     ///
     /// Returns all reachable entities (excluding the starting entity itself)
-    /// in BFS order. Cycles are detected and each entity is visited at most once.
+    /// in BFS order. Supports forward (outbound) and reverse (inbound) traversal,
+    /// per-hop entity filtering, and path/link metadata reporting.
     pub fn traverse(&self, req: TraverseRequest) -> Result<TraverseResponse, AxonError> {
         let max_depth = req
             .max_depth
             .unwrap_or(DEFAULT_MAX_DEPTH)
             .min(MAX_DEPTH_CAP);
 
-        // Load all links once and index them by (source_collection, source_id).
         let all_links = self.load_all_links()?;
+        let reverse = req.direction == TraverseDirection::Reverse;
 
         let mut visited: HashSet<(String, String)> = HashSet::new();
         let start_key = (req.collection.to_string(), req.id.to_string());
         visited.insert(start_key);
 
-        // Queue entries: (collection, id, current_depth)
-        let mut queue: VecDeque<(CollectionId, axon_core::id::EntityId, usize)> = VecDeque::new();
-        queue.push_back((req.collection, req.id, 0));
+        // Queue entries: (collection, id, current_depth, path_so_far)
+        let mut queue: VecDeque<(CollectionId, EntityId, usize, Vec<TraverseHop>)> =
+            VecDeque::new();
+        queue.push_back((req.collection, req.id, 0, Vec::new()));
 
-        let mut result = Vec::new();
+        let mut entities = Vec::new();
+        let mut paths = Vec::new();
+        let mut links_traversed = Vec::new();
+
+        while let Some((col, id, depth, path)) = queue.pop_front() {
+            if depth >= max_depth {
+                continue;
+            }
+
+            let neighbors: Vec<&Link> = if reverse {
+                all_links
+                    .iter()
+                    .filter(|l| {
+                        l.target_collection == col
+                            && l.target_id == id
+                            && req
+                                .link_type
+                                .as_deref()
+                                .map_or(true, |lt| l.link_type == lt)
+                    })
+                    .collect()
+            } else {
+                all_links
+                    .iter()
+                    .filter(|l| {
+                        l.source_collection == col
+                            && l.source_id == id
+                            && req
+                                .link_type
+                                .as_deref()
+                                .map_or(true, |lt| l.link_type == lt)
+                    })
+                    .collect()
+            };
+
+            for link in neighbors {
+                let (next_col, next_id) = if reverse {
+                    (&link.source_collection, &link.source_id)
+                } else {
+                    (&link.target_collection, &link.target_id)
+                };
+
+                let neighbor_key = (next_col.to_string(), next_id.to_string());
+                if visited.contains(&neighbor_key) {
+                    continue;
+                }
+
+                if let Some(entity) = self.storage.get(next_col, next_id)? {
+                    // Apply hop filter if present.
+                    if let Some(ref filter) = req.hop_filter {
+                        if !apply_filter(filter, &entity.data) {
+                            continue;
+                        }
+                    }
+
+                    visited.insert(neighbor_key);
+                    links_traversed.push(link.clone());
+
+                    let mut hop_path = path.clone();
+                    hop_path.push(TraverseHop {
+                        link: link.clone(),
+                        entity: entity.clone(),
+                    });
+
+                    paths.push(TraversePath {
+                        hops: hop_path.clone(),
+                    });
+                    entities.push(entity);
+                    queue.push_back((next_col.clone(), next_id.clone(), depth + 1, hop_path));
+                }
+            }
+        }
+
+        Ok(TraverseResponse {
+            entities,
+            paths,
+            links: links_traversed,
+        })
+    }
+
+    /// Check whether a target entity is reachable from a source entity.
+    ///
+    /// Short-circuits BFS as soon as the target is found, returning `true`
+    /// and the hop depth. More efficient than a full `traverse()` when only
+    /// connectivity matters.
+    pub fn reachable(&self, req: ReachableRequest) -> Result<ReachableResponse, AxonError> {
+        let max_depth = req
+            .max_depth
+            .unwrap_or(DEFAULT_MAX_DEPTH)
+            .min(MAX_DEPTH_CAP);
+
+        let all_links = self.load_all_links()?;
+        let reverse = req.direction == TraverseDirection::Reverse;
+        let target_key = (req.target_collection.to_string(), req.target_id.to_string());
+
+        let mut visited: HashSet<(String, String)> = HashSet::new();
+        let start_key = (req.source_collection.to_string(), req.source_id.to_string());
+
+        // Check trivial case: source == target.
+        if start_key == target_key {
+            return Ok(ReachableResponse {
+                reachable: true,
+                depth: Some(0),
+            });
+        }
+
+        visited.insert(start_key);
+
+        let mut queue: VecDeque<(CollectionId, EntityId, usize)> = VecDeque::new();
+        queue.push_back((req.source_collection, req.source_id, 0));
 
         while let Some((col, id, depth)) = queue.pop_front() {
             if depth >= max_depth {
                 continue;
             }
 
-            let neighbors = all_links
-                .iter()
-                .filter(|l| {
-                    l.source_collection == col
-                        && l.source_id == id
-                        && req
-                            .link_type
-                            .as_deref()
-                            .map_or(true, |lt| l.link_type == lt)
-                })
-                .collect::<Vec<_>>();
+            let neighbors: Vec<&Link> = if reverse {
+                all_links
+                    .iter()
+                    .filter(|l| {
+                        l.target_collection == col
+                            && l.target_id == id
+                            && req
+                                .link_type
+                                .as_deref()
+                                .map_or(true, |lt| l.link_type == lt)
+                    })
+                    .collect()
+            } else {
+                all_links
+                    .iter()
+                    .filter(|l| {
+                        l.source_collection == col
+                            && l.source_id == id
+                            && req
+                                .link_type
+                                .as_deref()
+                                .map_or(true, |lt| l.link_type == lt)
+                    })
+                    .collect()
+            };
 
             for link in neighbors {
-                let neighbor_key = (
-                    link.target_collection.to_string(),
-                    link.target_id.to_string(),
-                );
+                let (next_col, next_id) = if reverse {
+                    (&link.source_collection, &link.source_id)
+                } else {
+                    (&link.target_collection, &link.target_id)
+                };
+
+                let neighbor_key = (next_col.to_string(), next_id.to_string());
                 if visited.contains(&neighbor_key) {
                     continue;
                 }
+
+                // Short-circuit: found the target (check before consuming the key).
+                if neighbor_key == target_key {
+                    return Ok(ReachableResponse {
+                        reachable: true,
+                        depth: Some(depth + 1),
+                    });
+                }
+
                 visited.insert(neighbor_key);
 
-                if let Some(entity) = self.storage.get(&link.target_collection, &link.target_id)? {
-                    result.push(entity);
-                    queue.push_back((
-                        link.target_collection.clone(),
-                        link.target_id.clone(),
-                        depth + 1,
-                    ));
-                }
+                queue.push_back((next_col.clone(), next_id.clone(), depth + 1));
             }
         }
 
-        Ok(TraverseResponse { entities: result })
+        Ok(ReachableResponse {
+            reachable: false,
+            depth: None,
+        })
     }
 
     /// Load all stored links from the internal links collection.
@@ -1546,6 +1679,8 @@ entity_schema:
                 id: EntityId::new("a"),
                 link_type: Some("next".into()),
                 max_depth: Some(3),
+                direction: TraverseDirection::Forward,
+                hop_filter: None,
             })
             .unwrap();
 
@@ -1581,12 +1716,290 @@ entity_schema:
                 id: EntityId::new("a"),
                 link_type: None,
                 max_depth: Some(5),
+                direction: TraverseDirection::Forward,
+                hop_filter: None,
             })
             .unwrap();
 
         // Should only see "b" (not "a" again, not infinite loop)
         assert_eq!(resp.entities.len(), 1);
         assert_eq!(resp.entities[0].id.as_str(), "b");
+    }
+
+    #[test]
+    fn traversal_reverse_follows_inbound_links() {
+        let mut h = handler();
+        // Chain: a -> b -> c. Reverse from c should reach b, then a.
+        for name in ["a", "b", "c"] {
+            make_entity(&mut h, "nodes", name);
+        }
+        for (src, tgt) in [("a", "b"), ("b", "c")] {
+            h.create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("nodes"),
+                source_id: EntityId::new(src),
+                target_collection: CollectionId::new("nodes"),
+                target_id: EntityId::new(tgt),
+                link_type: "next".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        let resp = h
+            .traverse(TraverseRequest {
+                collection: CollectionId::new("nodes"),
+                id: EntityId::new("c"),
+                link_type: Some("next".into()),
+                max_depth: Some(3),
+                direction: TraverseDirection::Reverse,
+                hop_filter: None,
+            })
+            .unwrap();
+
+        let ids: Vec<_> = resp.entities.iter().map(|e| e.id.as_str()).collect();
+        assert!(ids.contains(&"b"), "reverse from c should reach b");
+        assert!(ids.contains(&"a"), "reverse from c should reach a");
+        assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn traversal_returns_paths_and_links() {
+        let mut h = handler();
+        // Chain: a -> b -> c
+        for name in ["a", "b", "c"] {
+            make_entity(&mut h, "nodes", name);
+        }
+        for (src, tgt) in [("a", "b"), ("b", "c")] {
+            h.create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("nodes"),
+                source_id: EntityId::new(src),
+                target_collection: CollectionId::new("nodes"),
+                target_id: EntityId::new(tgt),
+                link_type: "next".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        let resp = h
+            .traverse(TraverseRequest {
+                collection: CollectionId::new("nodes"),
+                id: EntityId::new("a"),
+                link_type: Some("next".into()),
+                max_depth: Some(3),
+                direction: TraverseDirection::Forward,
+                hop_filter: None,
+            })
+            .unwrap();
+
+        // Two entities reachable, two links traversed, two paths.
+        assert_eq!(resp.entities.len(), 2);
+        assert_eq!(resp.links.len(), 2);
+        assert_eq!(resp.paths.len(), 2);
+
+        // Path to b has 1 hop, path to c has 2 hops.
+        let path_to_b = resp
+            .paths
+            .iter()
+            .find(|p| p.hops.last().unwrap().entity.id.as_str() == "b")
+            .expect("path to b");
+        assert_eq!(path_to_b.hops.len(), 1);
+
+        let path_to_c = resp
+            .paths
+            .iter()
+            .find(|p| p.hops.last().unwrap().entity.id.as_str() == "c")
+            .expect("path to c");
+        assert_eq!(path_to_c.hops.len(), 2);
+
+        // Each hop carries the link that was traversed.
+        assert_eq!(path_to_c.hops[0].link.link_type, "next");
+        assert_eq!(path_to_c.hops[0].entity.id.as_str(), "b");
+        assert_eq!(path_to_c.hops[1].entity.id.as_str(), "c");
+    }
+
+    #[test]
+    fn traversal_hop_filter_excludes_entities() {
+        let mut h = handler();
+        // Chain: a -> b -> c. b has status "inactive", c has "active".
+        make_entity(&mut h, "nodes", "a");
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("nodes"),
+            id: EntityId::new("b"),
+            data: json!({"status": "inactive"}),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("nodes"),
+            id: EntityId::new("c"),
+            data: json!({"status": "active"}),
+            actor: None,
+        })
+        .unwrap();
+
+        for (src, tgt) in [("a", "b"), ("b", "c")] {
+            h.create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("nodes"),
+                source_id: EntityId::new(src),
+                target_collection: CollectionId::new("nodes"),
+                target_id: EntityId::new(tgt),
+                link_type: "next".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        // Filter: only entities where status == "active".
+        let resp = h
+            .traverse(TraverseRequest {
+                collection: CollectionId::new("nodes"),
+                id: EntityId::new("a"),
+                link_type: None,
+                max_depth: Some(5),
+                direction: TraverseDirection::Forward,
+                hop_filter: Some(FilterNode::Field(FieldFilter {
+                    field: "status".into(),
+                    op: FilterOp::Eq,
+                    value: json!("active"),
+                })),
+            })
+            .unwrap();
+
+        // b is excluded by hop_filter, so traversal stops at b and never reaches c.
+        assert!(
+            resp.entities.is_empty(),
+            "no entities match the hop filter at depth 1"
+        );
+    }
+
+    #[test]
+    fn reachable_returns_true_when_path_exists() {
+        let mut h = handler();
+        for name in ["a", "b", "c"] {
+            make_entity(&mut h, "nodes", name);
+        }
+        for (src, tgt) in [("a", "b"), ("b", "c")] {
+            h.create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("nodes"),
+                source_id: EntityId::new(src),
+                target_collection: CollectionId::new("nodes"),
+                target_id: EntityId::new(tgt),
+                link_type: "next".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        let resp = h
+            .reachable(ReachableRequest {
+                source_collection: CollectionId::new("nodes"),
+                source_id: EntityId::new("a"),
+                target_collection: CollectionId::new("nodes"),
+                target_id: EntityId::new("c"),
+                link_type: Some("next".into()),
+                max_depth: Some(5),
+                direction: TraverseDirection::Forward,
+            })
+            .unwrap();
+
+        assert!(resp.reachable);
+        assert_eq!(resp.depth, Some(2));
+    }
+
+    #[test]
+    fn reachable_returns_false_when_no_path() {
+        let mut h = handler();
+        for name in ["a", "b", "c"] {
+            make_entity(&mut h, "nodes", name);
+        }
+        // Only a -> b, no path from a to c.
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("nodes"),
+            source_id: EntityId::new("a"),
+            target_collection: CollectionId::new("nodes"),
+            target_id: EntityId::new("b"),
+            link_type: "next".into(),
+            metadata: json!(null),
+            actor: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .reachable(ReachableRequest {
+                source_collection: CollectionId::new("nodes"),
+                source_id: EntityId::new("a"),
+                target_collection: CollectionId::new("nodes"),
+                target_id: EntityId::new("c"),
+                link_type: Some("next".into()),
+                max_depth: Some(5),
+                direction: TraverseDirection::Forward,
+            })
+            .unwrap();
+
+        assert!(!resp.reachable);
+        assert_eq!(resp.depth, None);
+    }
+
+    #[test]
+    fn reachable_same_entity_returns_depth_zero() {
+        let mut h = handler();
+        make_entity(&mut h, "nodes", "a");
+
+        let resp = h
+            .reachable(ReachableRequest {
+                source_collection: CollectionId::new("nodes"),
+                source_id: EntityId::new("a"),
+                target_collection: CollectionId::new("nodes"),
+                target_id: EntityId::new("a"),
+                link_type: None,
+                max_depth: Some(5),
+                direction: TraverseDirection::Forward,
+            })
+            .unwrap();
+
+        assert!(resp.reachable);
+        assert_eq!(resp.depth, Some(0));
+    }
+
+    #[test]
+    fn reachable_reverse_finds_inbound_path() {
+        let mut h = handler();
+        for name in ["a", "b", "c"] {
+            make_entity(&mut h, "nodes", name);
+        }
+        for (src, tgt) in [("a", "b"), ("b", "c")] {
+            h.create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("nodes"),
+                source_id: EntityId::new(src),
+                target_collection: CollectionId::new("nodes"),
+                target_id: EntityId::new(tgt),
+                link_type: "next".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        // Reverse from c should reach a in 2 hops.
+        let resp = h
+            .reachable(ReachableRequest {
+                source_collection: CollectionId::new("nodes"),
+                source_id: EntityId::new("c"),
+                target_collection: CollectionId::new("nodes"),
+                target_id: EntityId::new("a"),
+                link_type: Some("next".into()),
+                max_depth: Some(5),
+                direction: TraverseDirection::Reverse,
+            })
+            .unwrap();
+
+        assert!(resp.reachable);
+        assert_eq!(resp.depth, Some(2));
     }
 
     // ── Audit query ──────────────────────────────────────────────────────────
@@ -2268,6 +2681,8 @@ entity_schema:
                 id: EntityId::new("u-001"),
                 link_type: Some("assigned-to".into()),
                 max_depth: Some(1),
+                direction: TraverseDirection::Forward,
+                hop_filter: None,
             })
             .unwrap();
         assert!(trav.entities.is_empty(), "forward link must be removed");

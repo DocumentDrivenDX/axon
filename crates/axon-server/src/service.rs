@@ -312,6 +312,8 @@ impl AxonService for AxonServiceImpl {
                 id: EntityId::new(&req.id),
                 link_type,
                 max_depth,
+                direction: Default::default(),
+                hop_filter: None,
             })
             .map_err(axon_to_status)?;
 

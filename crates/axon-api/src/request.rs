@@ -71,6 +71,17 @@ pub struct DeleteLinkRequest {
     pub actor: Option<String>,
 }
 
+/// Direction for link traversal.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TraverseDirection {
+    /// Follow outbound links (source → target). Default.
+    #[default]
+    Forward,
+    /// Follow inbound links (target ← source).
+    Reverse,
+}
+
 /// Request to traverse links from a starting entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraverseRequest {
@@ -81,6 +92,32 @@ pub struct TraverseRequest {
     pub link_type: Option<String>,
     /// Maximum hop depth (default: 3, capped at 10).
     pub max_depth: Option<usize>,
+    /// Direction of traversal: follow outbound or inbound links.
+    #[serde(default)]
+    pub direction: TraverseDirection,
+    /// Optional filter applied to each candidate entity at every hop.
+    /// Entities that do not match are excluded (and not traversed further).
+    pub hop_filter: Option<FilterNode>,
+}
+
+/// Request to check whether a target entity is reachable from a source entity.
+///
+/// Short-circuits as soon as the target is found, avoiding a full BFS expansion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReachableRequest {
+    /// Starting entity.
+    pub source_collection: CollectionId,
+    pub source_id: EntityId,
+    /// Target entity to search for.
+    pub target_collection: CollectionId,
+    pub target_id: EntityId,
+    /// Filter traversal to this link type. If `None`, follow all link types.
+    pub link_type: Option<String>,
+    /// Maximum hop depth (default: 3, capped at 10).
+    pub max_depth: Option<usize>,
+    /// Direction of traversal.
+    #[serde(default)]
+    pub direction: TraverseDirection,
 }
 
 // ── Audit requests ───────────────────────────────────────────────────────────

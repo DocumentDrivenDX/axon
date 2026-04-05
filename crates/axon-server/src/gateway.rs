@@ -415,6 +415,8 @@ async fn traverse(
         id: EntityId::new(&id),
         link_type,
         max_depth,
+        direction: Default::default(),
+        hop_filter: None,
     }) {
         Ok(resp) => {
             let entities: Vec<Value> = resp

@@ -303,6 +303,8 @@ fn bm_006_link_traversal(c: &mut Criterion) {
                     id: eid("root"),
                     link_type: Some("contains".into()),
                     max_depth: Some(3),
+                    direction: Default::default(),
+                    hop_filter: None,
                 })
                 .unwrap(),
             );

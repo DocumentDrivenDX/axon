@@ -46,12 +46,46 @@ pub struct DeleteLinkResponse {
     pub link_type: String,
 }
 
+/// A single hop in a traversal path, recording the link that was followed
+/// and the entity that was reached.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraverseHop {
+    /// The link that was traversed to reach this entity.
+    pub link: Link,
+    /// The entity reached at this hop.
+    pub entity: Entity,
+}
+
+/// A full path from the starting entity to a discovered entity.
+///
+/// Each path contains one or more hops; the last hop's entity is the
+/// terminal node of that path.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraversePath {
+    pub hops: Vec<TraverseHop>,
+}
+
 /// Response from a link-traversal query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraverseResponse {
     /// Entities reached from the starting entity, in BFS order.
     /// Does not include the starting entity itself.
     pub entities: Vec<Entity>,
+    /// All traversal paths discovered. Each path traces one route from
+    /// the starting entity to a reachable entity. An entity may appear
+    /// at the end of multiple paths if it is reachable via different routes.
+    pub paths: Vec<TraversePath>,
+    /// All links that were traversed, in BFS order.
+    pub links: Vec<Link>,
+}
+
+/// Response from a reachability check.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReachableResponse {
+    /// `true` if the target entity is reachable from the source.
+    pub reachable: bool,
+    /// The number of hops in the shortest path, if reachable.
+    pub depth: Option<usize>,
 }
 
 // ── Audit responses ──────────────────────────────────────────────────────────
