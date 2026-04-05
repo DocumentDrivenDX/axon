@@ -48,7 +48,7 @@ prost = "0.13"
 axum = "0.8"
 
 # CLI
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 
 # Testing
 pretty_assertions = "1"
