@@ -9,6 +9,9 @@ use axon_core::id::{CollectionId, EntityId};
 ///
 /// Entity operations cover individual entity CRUD; collection and schema
 /// operations cover infrastructure-level lifecycle events.
+///
+/// The `Display` impl produces the FEAT-003 dot-notation format used in API
+/// responses and query filters (e.g. `entity.create`, `collection.drop`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MutationType {
@@ -23,6 +26,21 @@ pub enum MutationType {
     CollectionDrop,
     // ── Schema operations ────────────────────────────────────────────────────
     SchemaUpdate,
+}
+
+impl std::fmt::Display for MutationType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            MutationType::EntityCreate => "entity.create",
+            MutationType::EntityUpdate => "entity.update",
+            MutationType::EntityDelete => "entity.delete",
+            MutationType::EntityRevert => "entity.revert",
+            MutationType::CollectionCreate => "collection.create",
+            MutationType::CollectionDrop => "collection.drop",
+            MutationType::SchemaUpdate => "schema.update",
+        };
+        f.write_str(s)
+    }
 }
 
 /// A per-field diff: captures the before and after value for a single key.
@@ -156,6 +174,17 @@ impl AuditEntry {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn mutation_type_display_dot_notation() {
+        assert_eq!(MutationType::EntityCreate.to_string(), "entity.create");
+        assert_eq!(MutationType::EntityUpdate.to_string(), "entity.update");
+        assert_eq!(MutationType::EntityDelete.to_string(), "entity.delete");
+        assert_eq!(MutationType::EntityRevert.to_string(), "entity.revert");
+        assert_eq!(MutationType::CollectionCreate.to_string(), "collection.create");
+        assert_eq!(MutationType::CollectionDrop.to_string(), "collection.drop");
+        assert_eq!(MutationType::SchemaUpdate.to_string(), "schema.update");
+    }
 
     #[test]
     fn audit_entry_create() {

@@ -194,13 +194,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         let operation: Option<MT> = match req.operation.as_deref() {
             None => None,
-            Some("entity_create") => Some(MT::EntityCreate),
-            Some("entity_update") => Some(MT::EntityUpdate),
-            Some("entity_delete") => Some(MT::EntityDelete),
-            Some("entity_revert") => Some(MT::EntityRevert),
-            Some("collection_create") => Some(MT::CollectionCreate),
-            Some("collection_drop") => Some(MT::CollectionDrop),
-            Some("schema_update") => Some(MT::SchemaUpdate),
+            Some("entity.create") => Some(MT::EntityCreate),
+            Some("entity.update") => Some(MT::EntityUpdate),
+            Some("entity.delete") => Some(MT::EntityDelete),
+            Some("entity.revert") => Some(MT::EntityRevert),
+            Some("collection.create") => Some(MT::CollectionCreate),
+            Some("collection.drop") => Some(MT::CollectionDrop),
+            Some("schema.update") => Some(MT::SchemaUpdate),
             Some(unknown) => {
                 return Err(AxonError::InvalidOperation(format!(
                     "unknown operation type: {unknown}"

@@ -81,7 +81,7 @@ pub struct QueryAuditRequest {
     pub entity_id: Option<EntityId>,
     /// Restrict to entries produced by this actor.
     pub actor: Option<String>,
-    /// Restrict to entries of this operation type (e.g. `"entity_create"`).
+    /// Restrict to entries of this operation type (e.g. `"entity.create"`).
     pub operation: Option<String>,
     /// Inclusive start of the time range (nanoseconds since Unix epoch).
     pub since_ns: Option<u64>,

@@ -404,7 +404,7 @@ fn run_audit(
                                 "collection": e.collection.to_string(),
                                 "entity_id": e.entity_id.to_string(),
                                 "version": e.version,
-                                "mutation": format!("{:?}", e.mutation),
+                                "mutation": e.mutation.to_string(),
                                 "actor": e.actor,
                             })
                         })
