@@ -19,7 +19,7 @@ use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
     DeleteLinkRequest, DropCollectionRequest, GetEntityRequest, QueryAuditRequest,
-    RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
+    QueryEntitiesRequest, RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_audit::AuditLog;
 use axon_core::error::AxonError;
@@ -229,6 +229,41 @@ async fn delete_entity(
         actor,
     }) {
         Ok(resp) => Json(json!({"collection": resp.collection, "id": resp.id})).into_response(),
+        Err(e) => axon_error_response(e),
+    }
+}
+
+async fn query_entities(
+    State(handler): State<SharedHandler>,
+    Path(collection): Path<String>,
+    Json(body): Json<QueryEntitiesRequest>,
+) -> Response {
+    // Allow the caller to omit the collection field in the body; the path wins.
+    let req = QueryEntitiesRequest {
+        collection: axon_core::id::CollectionId::new(&collection),
+        ..body
+    };
+    match handler.lock().await.query_entities(req) {
+        Ok(resp) => {
+            let entities: Vec<Value> = resp
+                .entities
+                .iter()
+                .map(|e| {
+                    json!({
+                        "collection": e.collection.to_string(),
+                        "id": e.id.to_string(),
+                        "version": e.version,
+                        "data": e.data,
+                    })
+                })
+                .collect();
+            Json(json!({
+                "entities": entities,
+                "total_count": resp.total_count,
+                "next_cursor": resp.next_cursor,
+            }))
+            .into_response()
+        }
         Err(e) => axon_error_response(e),
     }
 }
@@ -469,6 +504,7 @@ pub fn build_router(handler: SharedHandler) -> Router {
         .route("/entities/{collection}/{id}", get(get_entity))
         .route("/entities/{collection}/{id}", put(update_entity))
         .route("/entities/{collection}/{id}", delete(delete_entity))
+        .route("/entities/{collection}/query", post(query_entities))
         .route("/links", post(create_link))
         .route("/links", delete(delete_link))
         .route("/traverse/{collection}/{id}", get(traverse))
@@ -794,6 +830,87 @@ mod tests {
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["name"], "my-col");
+    }
+
+    #[tokio::test]
+    async fn http_query_entities_filter_and_count() {
+        let server = test_server();
+
+        // Seed three tasks.
+        for (id, status) in [("t-1", "open"), ("t-2", "done"), ("t-3", "open")] {
+            server
+                .post(&format!("/entities/tasks/{id}"))
+                .json(&json!({"data": {"status": status}}))
+                .await
+                .assert_status(StatusCode::CREATED);
+        }
+
+        // Filter: status = "open"
+        let resp = server
+            .post("/entities/tasks/query")
+            .json(&json!({
+                "filter": {
+                    "type": "field",
+                    "field": "status",
+                    "op": "eq",
+                    "value": "open"
+                }
+            }))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["total_count"], 2);
+        assert_eq!(body["entities"].as_array().unwrap().len(), 2);
+
+        // count_only
+        let resp2 = server
+            .post("/entities/tasks/query")
+            .json(&json!({
+                "filter": {
+                    "type": "field",
+                    "field": "status",
+                    "op": "eq",
+                    "value": "open"
+                },
+                "count_only": true
+            }))
+            .await;
+        resp2.assert_status_ok();
+        let body2: Value = resp2.json();
+        assert_eq!(body2["total_count"], 2);
+        assert_eq!(body2["entities"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn http_query_entities_and_combinator() {
+        let server = test_server();
+
+        server
+            .post("/entities/tasks/t-1")
+            .json(&json!({"data": {"status": "open", "assignee": "alice"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/entities/tasks/t-2")
+            .json(&json!({"data": {"status": "open", "assignee": "bob"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let resp = server
+            .post("/entities/tasks/query")
+            .json(&json!({
+                "filter": {
+                    "type": "and",
+                    "filters": [
+                        {"type": "field", "field": "status", "op": "eq", "value": "open"},
+                        {"type": "field", "field": "assignee", "op": "eq", "value": "alice"}
+                    ]
+                }
+            }))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["total_count"], 1);
     }
 
     #[tokio::test]

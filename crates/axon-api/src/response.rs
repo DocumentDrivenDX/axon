@@ -72,6 +72,20 @@ pub struct RevertEntityResponse {
     pub audit_entry: AuditEntry,
 }
 
+// ── Entity query response ─────────────────────────────────────────────────────
+
+/// Response from a filtered entity query (US-011 / FEAT-004).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryEntitiesResponse {
+    /// Matching entities. Empty when `count_only` was requested.
+    pub entities: Vec<Entity>,
+    /// Total number of entities that matched the filter (before pagination).
+    /// Always populated regardless of `count_only`.
+    pub total_count: usize,
+    /// Cursor for the next page. `None` when the result set is exhausted.
+    pub next_cursor: Option<String>,
+}
+
 // ── Collection lifecycle responses ───────────────────────────────────────────
 
 /// Response after creating a collection.

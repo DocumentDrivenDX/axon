@@ -118,6 +118,98 @@ pub struct RevertEntityRequest {
     pub force: bool,
 }
 
+// ── Entity query requests ─────────────────────────────────────────────────────
+
+/// Comparison operator for a field filter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterOp {
+    /// Field value equals the given value.
+    Eq,
+    /// Field value does not equal the given value.
+    Ne,
+    /// Field value is greater than the given value.
+    Gt,
+    /// Field value is greater than or equal to the given value.
+    Gte,
+    /// Field value is less than the given value.
+    Lt,
+    /// Field value is less than or equal to the given value.
+    Lte,
+    /// Field value is contained in the given array of values.
+    In,
+    /// String field value contains the given substring (case-sensitive).
+    Contains,
+}
+
+/// A leaf filter that tests a single field against a value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FieldFilter {
+    /// Dot-separated field path within the entity data (e.g. `"status"`, `"address.city"`).
+    pub field: String,
+    pub op: FilterOp,
+    pub value: serde_json::Value,
+}
+
+/// A composable filter node: either a single field test or a boolean combinator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum FilterNode {
+    /// Test a single field.
+    Field(FieldFilter),
+    /// All child filters must match (logical AND).
+    And { filters: Vec<FilterNode> },
+    /// At least one child filter must match (logical OR).
+    Or { filters: Vec<FilterNode> },
+}
+
+/// Sort direction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortDirection {
+    Asc,
+    Desc,
+}
+
+/// Sort by a single field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SortField {
+    /// Dot-separated field path within entity data.
+    pub field: String,
+    #[serde(default = "SortDirection::default_asc")]
+    pub direction: SortDirection,
+}
+
+impl SortDirection {
+    fn default_asc() -> Self {
+        SortDirection::Asc
+    }
+}
+
+/// Request to query entities in a collection with optional filtering, sorting,
+/// and cursor-based pagination.
+///
+/// Corresponds to US-011 (FEAT-004): filter, sort, paginate, count.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct QueryEntitiesRequest {
+    #[serde(default)]
+    pub collection: CollectionId,
+    /// Optional filter tree. When absent, all entities are returned.
+    pub filter: Option<FilterNode>,
+    /// Sort order. When empty, entities are returned in entity-ID order.
+    #[serde(default)]
+    pub sort: Vec<SortField>,
+    /// Maximum number of entities to return.
+    pub limit: Option<usize>,
+    /// Pagination cursor: the last entity ID seen on the previous page.
+    /// Omit to start from the beginning.
+    pub after_id: Option<EntityId>,
+    /// When `true`, return only the count of matching entities without
+    /// fetching their full data.
+    #[serde(default)]
+    pub count_only: bool,
+}
+
 // ── Collection lifecycle requests ────────────────────────────────────────────
 
 /// Request to explicitly create a named collection and record the event in the audit log.

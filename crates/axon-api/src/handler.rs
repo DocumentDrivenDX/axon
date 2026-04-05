@@ -11,13 +11,14 @@ use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DeleteLinkRequest, DropCollectionRequest, GetEntityRequest, QueryAuditRequest,
-    RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
+    DeleteLinkRequest, DropCollectionRequest, FieldFilter, FilterNode, FilterOp, GetEntityRequest,
+    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, SortDirection, TraverseRequest,
+    UpdateEntityRequest,
 };
 use crate::response::{
     CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse,
     DeleteLinkResponse, DropCollectionResponse, GetEntityResponse, QueryAuditResponse,
-    RevertEntityResponse, TraverseResponse, UpdateEntityResponse,
+    QueryEntitiesResponse, RevertEntityResponse, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -207,6 +208,82 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(DeleteEntityResponse {
             collection: req.collection.to_string(),
             id: req.id.to_string(),
+        })
+    }
+
+    // ── Entity query ─────────────────────────────────────────────────────────
+
+    /// Query entities in a collection with optional filtering, sorting, and
+    /// cursor-based pagination (US-011, FEAT-004).
+    ///
+    /// V1 uses a full sequential scan; secondary indexes are P1.
+    pub fn query_entities(
+        &self,
+        req: QueryEntitiesRequest,
+    ) -> Result<QueryEntitiesResponse, AxonError> {
+        // Full scan — FEAT-004 notes secondary indexes are P1 for V1.
+        let all = self.storage.range_scan(&req.collection, None, None, None)?;
+
+        // Apply filter.
+        let mut matched: Vec<Entity> = all
+            .into_iter()
+            .filter(|e| {
+                req.filter
+                    .as_ref()
+                    .map_or(true, |f| apply_filter(f, &e.data))
+            })
+            .collect();
+
+        // Sort before pagination so cursors are stable.
+        if !req.sort.is_empty() {
+            matched.sort_by(|a, b| {
+                for sf in &req.sort {
+                    let va = get_field_value(&a.data, &sf.field);
+                    let vb = get_field_value(&b.data, &sf.field);
+                    let cmp = compare_values(va, vb);
+                    if cmp != std::cmp::Ordering::Equal {
+                        return if sf.direction == SortDirection::Asc {
+                            cmp
+                        } else {
+                            cmp.reverse()
+                        };
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+
+        let total_count = matched.len();
+
+        // Cursor-based pagination: skip everything up to and including after_id.
+        if let Some(ref cursor_id) = req.after_id {
+            let pos = matched
+                .iter()
+                .position(|e| &e.id == cursor_id)
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            matched = matched.split_off(pos);
+        }
+
+        // Apply limit.
+        let limit = req.limit.unwrap_or(usize::MAX);
+        let has_more = matched.len() > limit;
+        if has_more {
+            matched.truncate(limit);
+        }
+
+        let next_cursor = if has_more {
+            matched.last().map(|e| e.id.to_string())
+        } else {
+            None
+        };
+
+        let entities = if req.count_only { vec![] } else { matched };
+
+        Ok(QueryEntitiesResponse {
+            entities,
+            total_count,
+            next_cursor,
         })
     }
 
@@ -584,6 +661,92 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let links_col = Link::links_collection();
         let entities = self.storage.range_scan(&links_col, None, None, None)?;
         Ok(entities.iter().filter_map(Link::from_entity).collect())
+    }
+}
+
+// ── Query filter helpers ──────────────────────────────────────────────────────
+
+/// Evaluate a [`FilterNode`] against the entity's JSON data.
+fn apply_filter(node: &FilterNode, data: &serde_json::Value) -> bool {
+    match node {
+        FilterNode::Field(f) => apply_field_filter(f, data),
+        FilterNode::And { filters } => filters.iter().all(|f| apply_filter(f, data)),
+        FilterNode::Or { filters } => filters.iter().any(|f| apply_filter(f, data)),
+    }
+}
+
+fn apply_field_filter(f: &FieldFilter, data: &serde_json::Value) -> bool {
+    let field_val = get_field_value(data, &f.field);
+    match &f.op {
+        FilterOp::Eq => values_eq(field_val, Some(&f.value)),
+        FilterOp::Ne => !values_eq(field_val, Some(&f.value)),
+        FilterOp::Gt => compare_values(field_val, Some(&f.value)) == std::cmp::Ordering::Greater,
+        FilterOp::Gte => {
+            let ord = compare_values(field_val, Some(&f.value));
+            ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
+        }
+        FilterOp::Lt => compare_values(field_val, Some(&f.value)) == std::cmp::Ordering::Less,
+        FilterOp::Lte => {
+            let ord = compare_values(field_val, Some(&f.value));
+            ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal
+        }
+        FilterOp::In => {
+            if let serde_json::Value::Array(arr) = &f.value {
+                arr.iter().any(|v| values_eq(field_val, Some(v)))
+            } else {
+                false
+            }
+        }
+        FilterOp::Contains => match (field_val, &f.value) {
+            (Some(serde_json::Value::String(s)), serde_json::Value::String(sub)) => {
+                s.contains(sub.as_str())
+            }
+            _ => false,
+        },
+    }
+}
+
+/// Resolve a dot-separated field path into a JSON value, returning `None` if missing.
+fn get_field_value<'a>(data: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    let mut cur = data;
+    for segment in path.split('.') {
+        cur = cur.get(segment)?;
+    }
+    Some(cur)
+}
+
+fn values_eq(a: Option<&serde_json::Value>, b: Option<&serde_json::Value>) -> bool {
+    match (a, b) {
+        (Some(av), Some(bv)) => av == bv,
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Total ordering for JSON values (numbers, strings, booleans, null).
+/// Incomparable types (e.g. object vs number) are treated as equal.
+fn compare_values(
+    a: Option<&serde_json::Value>,
+    b: Option<&serde_json::Value>,
+) -> std::cmp::Ordering {
+    use serde_json::Value;
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(Value::Number(an)), Some(Value::Number(bn))) => {
+            let af = an.as_f64().unwrap_or(f64::NAN);
+            let bf = bn.as_f64().unwrap_or(f64::NAN);
+            af.partial_cmp(&bf).unwrap_or(Ordering::Equal)
+        }
+        (Some(Value::String(as_)), Some(Value::String(bs))) => as_.cmp(bs),
+        (Some(Value::Bool(ab)), Some(Value::Bool(bb))) => ab.cmp(bb),
+        (Some(Value::Null), Some(Value::Null)) => Ordering::Equal,
+        // Null sorts before everything else.
+        (Some(Value::Null), Some(_)) => Ordering::Less,
+        (Some(_), Some(Value::Null)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+        _ => Ordering::Equal,
     }
 }
 
@@ -1411,5 +1574,441 @@ entity_schema:
             .unwrap_err();
 
         assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    // ── Entity query / filter (US-011) ────────────────────────────────────────
+
+    fn make_entity_with_data(
+        h: &mut AxonHandler<MemoryStorageAdapter>,
+        collection: &str,
+        id: &str,
+        data: serde_json::Value,
+    ) {
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new(collection),
+            id: EntityId::new(id),
+            data,
+            actor: None,
+        })
+        .unwrap();
+    }
+
+    use crate::request::{
+        FieldFilter, FilterNode, FilterOp, QueryEntitiesRequest, SortDirection, SortField,
+    };
+
+    #[test]
+    fn query_no_filter_returns_all() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "tasks", "t-1", json!({"status": "open"}));
+        make_entity_with_data(&mut h, "tasks", "t-2", json!({"status": "done"}));
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: None,
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 2);
+        assert_eq!(resp.entities.len(), 2);
+    }
+
+    #[test]
+    fn query_filter_eq() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "tasks", "t-1", json!({"status": "open"}));
+        make_entity_with_data(&mut h, "tasks", "t-2", json!({"status": "done"}));
+        make_entity_with_data(&mut h, "tasks", "t-3", json!({"status": "open"}));
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "status".into(),
+                    op: FilterOp::Eq,
+                    value: json!("open"),
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 2);
+        assert!(resp.entities.iter().all(|e| e.data["status"] == "open"));
+    }
+
+    #[test]
+    fn query_filter_ne() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "tasks", "t-1", json!({"status": "open"}));
+        make_entity_with_data(&mut h, "tasks", "t-2", json!({"status": "done"}));
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "status".into(),
+                    op: FilterOp::Ne,
+                    value: json!("done"),
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].data["status"], "open");
+    }
+
+    #[test]
+    fn query_filter_gt_and_lte() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "issues", "i-1", json!({"priority": 1}));
+        make_entity_with_data(&mut h, "issues", "i-2", json!({"priority": 3}));
+        make_entity_with_data(&mut h, "issues", "i-3", json!({"priority": 5}));
+
+        // priority > 2
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("issues"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "priority".into(),
+                    op: FilterOp::Gt,
+                    value: json!(2),
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+        assert_eq!(resp.total_count, 2);
+
+        // priority <= 3
+        let resp2 = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("issues"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "priority".into(),
+                    op: FilterOp::Lte,
+                    value: json!(3),
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+        assert_eq!(resp2.total_count, 2);
+    }
+
+    #[test]
+    fn query_filter_in() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "tasks", "t-1", json!({"status": "open"}));
+        make_entity_with_data(&mut h, "tasks", "t-2", json!({"status": "done"}));
+        make_entity_with_data(&mut h, "tasks", "t-3", json!({"status": "in_progress"}));
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "status".into(),
+                    op: FilterOp::In,
+                    value: json!(["open", "in_progress"]),
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 2);
+    }
+
+    #[test]
+    fn query_filter_contains() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "docs", "d-1", json!({"title": "Hello World"}));
+        make_entity_with_data(&mut h, "docs", "d-2", json!({"title": "Goodbye World"}));
+        make_entity_with_data(&mut h, "docs", "d-3", json!({"title": "Nothing here"}));
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("docs"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "title".into(),
+                    op: FilterOp::Contains,
+                    value: json!("World"),
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 2);
+    }
+
+    #[test]
+    fn query_filter_and_combinator() {
+        let mut h = handler();
+        make_entity_with_data(
+            &mut h,
+            "tasks",
+            "t-1",
+            json!({"status": "open", "assignee": "alice"}),
+        );
+        make_entity_with_data(
+            &mut h,
+            "tasks",
+            "t-2",
+            json!({"status": "open", "assignee": "bob"}),
+        );
+        make_entity_with_data(
+            &mut h,
+            "tasks",
+            "t-3",
+            json!({"status": "done", "assignee": "alice"}),
+        );
+
+        // status = "open" AND assignee = "alice"
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::And {
+                    filters: vec![
+                        FilterNode::Field(FieldFilter {
+                            field: "status".into(),
+                            op: FilterOp::Eq,
+                            value: json!("open"),
+                        }),
+                        FilterNode::Field(FieldFilter {
+                            field: "assignee".into(),
+                            op: FilterOp::Eq,
+                            value: json!("alice"),
+                        }),
+                    ],
+                }),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].data["assignee"], "alice");
+        assert_eq!(resp.entities[0].data["status"], "open");
+    }
+
+    #[test]
+    fn query_filter_or_combinator() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "tasks", "t-1", json!({"status": "open"}));
+        make_entity_with_data(&mut h, "tasks", "t-2", json!({"status": "done"}));
+        make_entity_with_data(&mut h, "tasks", "t-3", json!({"status": "archived"}));
+
+        // status = "open" OR status = "done"
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::Or {
+                    filters: vec![
+                        FilterNode::Field(FieldFilter {
+                            field: "status".into(),
+                            op: FilterOp::Eq,
+                            value: json!("open"),
+                        }),
+                        FilterNode::Field(FieldFilter {
+                            field: "status".into(),
+                            op: FilterOp::Eq,
+                            value: json!("done"),
+                        }),
+                    ],
+                }),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 2);
+    }
+
+    #[test]
+    fn query_sort_asc_and_desc() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "items", "i-1", json!({"priority": 3}));
+        make_entity_with_data(&mut h, "items", "i-2", json!({"priority": 1}));
+        make_entity_with_data(&mut h, "items", "i-3", json!({"priority": 2}));
+
+        // Sort ascending
+        let asc = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("items"),
+                filter: None,
+                sort: vec![SortField {
+                    field: "priority".into(),
+                    direction: SortDirection::Asc,
+                }],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+        let priorities_asc: Vec<i64> = asc
+            .entities
+            .iter()
+            .map(|e| e.data["priority"].as_i64().unwrap())
+            .collect();
+        assert_eq!(priorities_asc, vec![1, 2, 3]);
+
+        // Sort descending
+        let desc = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("items"),
+                filter: None,
+                sort: vec![SortField {
+                    field: "priority".into(),
+                    direction: SortDirection::Desc,
+                }],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+        let priorities_desc: Vec<i64> = desc
+            .entities
+            .iter()
+            .map(|e| e.data["priority"].as_i64().unwrap())
+            .collect();
+        assert_eq!(priorities_desc, vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn query_cursor_pagination() {
+        let mut h = handler();
+        // Insert 5 entities in a predictable order.
+        for i in 1..=5 {
+            make_entity_with_data(&mut h, "items", &format!("i-{i:03}"), json!({"n": i}));
+        }
+
+        // Page 1: limit=2, no cursor → returns i-001, i-002; next_cursor = "i-002"
+        let page1 = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("items"),
+                filter: None,
+                sort: vec![],
+                limit: Some(2),
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+        assert_eq!(page1.entities.len(), 2);
+        assert_eq!(page1.total_count, 5);
+        assert!(page1.next_cursor.is_some());
+
+        // Page 2: pick up after cursor from page 1.
+        let cursor_id = EntityId::new(page1.next_cursor.as_deref().unwrap());
+        let page2 = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("items"),
+                filter: None,
+                sort: vec![],
+                limit: Some(2),
+                after_id: Some(cursor_id),
+                count_only: false,
+            })
+            .unwrap();
+        assert_eq!(page2.entities.len(), 2);
+
+        // Last page: no further results.
+        let cursor_id2 = EntityId::new(page2.next_cursor.as_deref().unwrap());
+        let page3 = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("items"),
+                filter: None,
+                sort: vec![],
+                limit: Some(2),
+                after_id: Some(cursor_id2),
+                count_only: false,
+            })
+            .unwrap();
+        assert_eq!(page3.entities.len(), 1);
+        assert!(page3.next_cursor.is_none());
+    }
+
+    #[test]
+    fn query_count_only() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "tasks", "t-1", json!({"status": "open"}));
+        make_entity_with_data(&mut h, "tasks", "t-2", json!({"status": "open"}));
+        make_entity_with_data(&mut h, "tasks", "t-3", json!({"status": "done"}));
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "status".into(),
+                    op: FilterOp::Eq,
+                    value: json!("open"),
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: true,
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 2);
+        assert!(resp.entities.is_empty());
+    }
+
+    #[test]
+    fn query_dot_path_field() {
+        let mut h = handler();
+        make_entity_with_data(
+            &mut h,
+            "contacts",
+            "c-1",
+            json!({"address": {"city": "Berlin"}}),
+        );
+        make_entity_with_data(
+            &mut h,
+            "contacts",
+            "c-2",
+            json!({"address": {"city": "Paris"}}),
+        );
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("contacts"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "address.city".into(),
+                    op: FilterOp::Eq,
+                    value: json!("Berlin"),
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].data["address"]["city"], "Berlin");
     }
 }
