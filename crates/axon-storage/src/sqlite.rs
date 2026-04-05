@@ -220,6 +220,7 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::ConflictingVersion {
                 expected: expected_version,
                 actual: actual_version,
+                current_entity: current,
             });
         }
 
@@ -243,13 +244,12 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         if changed == 0 {
             // A concurrent writer changed the version between our read and write.
-            let actual = self
-                .get(&entity.collection, &entity.id)?
-                .map(|e| e.version)
-                .unwrap_or(0);
+            let current_after_race = self.get(&entity.collection, &entity.id)?;
+            let actual = current_after_race.as_ref().map(|e| e.version).unwrap_or(0);
             return Err(AxonError::ConflictingVersion {
                 expected: expected_version,
                 actual,
+                current_entity: current_after_race,
             });
         }
 
@@ -465,11 +465,17 @@ mod tests {
                 err,
                 AxonError::ConflictingVersion {
                     expected: 99,
-                    actual: 1
+                    actual: 1,
+                    ..
                 }
             ),
             "unexpected error: {err}"
         );
+        if let AxonError::ConflictingVersion { current_entity, .. } = err {
+            let ce =
+                current_entity.expect("current_entity must be present on wrong-version conflict");
+            assert_eq!(ce.version, 1);
+        }
     }
 
     #[test]
@@ -481,11 +487,18 @@ mod tests {
                 err,
                 AxonError::ConflictingVersion {
                     expected: 1,
-                    actual: 0
+                    actual: 0,
+                    ..
                 }
             ),
             "unexpected error: {err}"
         );
+        if let AxonError::ConflictingVersion { current_entity, .. } = err {
+            assert!(
+                current_entity.is_none(),
+                "no entity for missing-entity conflict"
+            );
+        }
     }
 
     #[test]

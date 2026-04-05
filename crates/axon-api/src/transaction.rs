@@ -185,10 +185,8 @@ impl Transaction {
 
         // ── Phase 1: Version check ───────────────────────────────────────────
         for op in &self.ops {
-            let current_version = storage
-                .get(&op.entity.collection, &op.entity.id)?
-                .map(|e| e.version)
-                .unwrap_or(0);
+            let current = storage.get(&op.entity.collection, &op.entity.id)?;
+            let current_version = current.as_ref().map(|e| e.version).unwrap_or(0);
 
             let ok = match op.mutation {
                 MutationType::EntityCreate => current_version == 0, // must not exist
@@ -208,6 +206,7 @@ impl Transaction {
                 return Err(AxonError::ConflictingVersion {
                     expected: op.expected_version,
                     actual: current_version,
+                    current_entity: current,
                 });
             }
         }
@@ -430,11 +429,20 @@ mod tests {
                 err,
                 AxonError::ConflictingVersion {
                     expected: 99,
-                    actual: 1
+                    actual: 1,
+                    ..
                 }
             ),
             "unexpected error: {err}"
         );
+        // current_entity must carry the stored state so callers can merge and retry (FEAT-004, FEAT-008).
+        if let AxonError::ConflictingVersion { current_entity, .. } = err {
+            let ce = current_entity.expect("current_entity must be Some when the entity exists");
+            assert_eq!(
+                ce.version, 1,
+                "current_entity should reflect actual stored version"
+            );
+        }
 
         // Neither entity should have been modified.
         let a = storage

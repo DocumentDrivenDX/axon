@@ -98,24 +98,26 @@ impl StorageAdapter for MemoryStorageAdapter {
         entity: Entity,
         expected_version: u64,
     ) -> Result<Entity, AxonError> {
-        let current_version = self
+        let current = self
             .data
             .get(&entity.collection)
             .and_then(|col| col.get(&entity.id))
-            .map(|e| e.version);
+            .cloned();
 
-        match current_version {
+        match current.as_ref().map(|e| e.version) {
             Some(v) if v == expected_version => {}
             Some(actual) => {
                 return Err(AxonError::ConflictingVersion {
                     expected: expected_version,
                     actual,
+                    current_entity: current,
                 });
             }
             None => {
                 return Err(AxonError::ConflictingVersion {
                     expected: expected_version,
                     actual: 0,
+                    current_entity: None,
                 });
             }
         }
@@ -286,11 +288,18 @@ mod tests {
                 err,
                 AxonError::ConflictingVersion {
                     expected: 99,
-                    actual: 1
+                    actual: 1,
+                    ..
                 }
             ),
             "unexpected error: {err}"
         );
+        // current_entity must contain the stored state so callers can merge
+        if let AxonError::ConflictingVersion { current_entity, .. } = err {
+            let ce =
+                current_entity.expect("current_entity must be present on wrong-version conflict");
+            assert_eq!(ce.version, 1);
+        }
     }
 
     #[test]
@@ -302,11 +311,19 @@ mod tests {
                 err,
                 AxonError::ConflictingVersion {
                     expected: 1,
-                    actual: 0
+                    actual: 0,
+                    ..
                 }
             ),
             "unexpected error: {err}"
         );
+        // No entity exists, so current_entity must be None.
+        if let AxonError::ConflictingVersion { current_entity, .. } = err {
+            assert!(
+                current_entity.is_none(),
+                "no entity should be present for missing-entity conflict"
+            );
+        }
     }
 
     #[test]

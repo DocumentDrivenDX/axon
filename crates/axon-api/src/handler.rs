@@ -1079,11 +1079,17 @@ mod tests {
                 err,
                 AxonError::ConflictingVersion {
                     expected: 99,
-                    actual: 1
+                    actual: 1,
+                    ..
                 }
             ),
             "unexpected error: {err}"
         );
+        // current_entity must carry the stored state so callers can merge and retry (FEAT-004, FEAT-008).
+        if let AxonError::ConflictingVersion { current_entity, .. } = err {
+            let ce = current_entity.expect("current_entity must be present in conflict response");
+            assert_eq!(ce.version, 1);
+        }
     }
 
     #[test]
@@ -1861,9 +1867,7 @@ entity_schema:
         );
 
         // No orphan: the collection must not appear in the registry.
-        let resp = h
-            .list_collections(ListCollectionsRequest {})
-            .unwrap();
+        let resp = h.list_collections(ListCollectionsRequest {}).unwrap();
         assert!(
             resp.collections.is_empty(),
             "orphan collection registered despite invalid schema: {:?}",

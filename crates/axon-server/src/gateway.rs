@@ -53,11 +53,15 @@ fn axon_error_response(err: AxonError) -> Response {
         AxonError::NotFound(msg) => {
             (StatusCode::NOT_FOUND, Json(ApiError::new("not_found", msg))).into_response()
         }
-        AxonError::ConflictingVersion { expected, actual } => (
+        AxonError::ConflictingVersion {
+            expected,
+            actual,
+            current_entity,
+        } => (
             StatusCode::CONFLICT,
             Json(ApiError::new(
                 "version_conflict",
-                json!({"expected": expected, "actual": actual}),
+                json!({"expected": expected, "actual": actual, "current_entity": current_entity}),
             )),
         )
             .into_response(),

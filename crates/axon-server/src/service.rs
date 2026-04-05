@@ -35,7 +35,9 @@ pub use proto::{
 fn axon_to_status(err: AxonError) -> Status {
     match &err {
         AxonError::NotFound(msg) => Status::not_found(msg.clone()),
-        AxonError::ConflictingVersion { expected, actual } => Status::failed_precondition(format!(
+        AxonError::ConflictingVersion {
+            expected, actual, ..
+        } => Status::failed_precondition(format!(
             "{{\"code\":\"version_conflict\",\"expected\":{expected},\"actual\":{actual}}}"
         )),
         AxonError::SchemaValidation(detail) => Status::invalid_argument(format!(

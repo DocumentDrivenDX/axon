@@ -41,6 +41,7 @@ impl Fault {
             Fault::TransactionAbort { expected, actual } => Some(AxonError::ConflictingVersion {
                 expected: *expected,
                 actual: *actual,
+                current_entity: None,
             }),
             Fault::StorageError(msg) => Some(AxonError::Storage(msg.clone())),
             Fault::WriteDelay { .. } => None,
