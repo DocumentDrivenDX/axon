@@ -14,7 +14,9 @@ use axon_storage::adapter::StorageAdapter;
 use axon_storage::memory::MemoryStorageAdapter;
 
 use crate::handler::AxonHandler;
-use crate::request::{CreateEntityRequest, CreateLinkRequest, GetEntityRequest, UpdateEntityRequest};
+use crate::request::{
+    CreateEntityRequest, CreateLinkRequest, GetEntityRequest, UpdateEntityRequest,
+};
 use crate::transaction::Transaction;
 
 proptest! {
@@ -116,7 +118,7 @@ proptest! {
         for i in 0..n_entities {
             storage.put(Entity::new(
                 col.clone(),
-                EntityId::new(&format!("e-{i}")),
+                EntityId::new(format!("e-{i}")),
                 json!({"balance": 100 + i}),
             )).unwrap();
         }
@@ -126,7 +128,7 @@ proptest! {
 
         let mut tx = Transaction::new();
         for i in 0..n_entities {
-            let id = EntityId::new(&format!("e-{i}"));
+            let id = EntityId::new(format!("e-{i}"));
             let expected_version = if bad_entity == Some(i) { 99 } else { 1 };
             tx.update(
                 Entity::new(col.clone(), id, json!({"balance": 200 + i})),
@@ -145,7 +147,7 @@ proptest! {
 
             for i in 0..n_entities {
                 let stored = storage
-                    .get(&col, &EntityId::new(&format!("e-{i}")))
+                    .get(&col, &EntityId::new(format!("e-{i}")))
                     .unwrap()
                     .unwrap();
                 prop_assert_eq!(&stored.data["balance"], &json!(100 + i),
@@ -161,7 +163,7 @@ proptest! {
 
             for i in 0..n_entities {
                 let stored = storage
-                    .get(&col, &EntityId::new(&format!("e-{i}")))
+                    .get(&col, &EntityId::new(format!("e-{i}")))
                     .unwrap()
                     .unwrap();
                 prop_assert_eq!(&stored.data["balance"], &json!(200 + i),
@@ -195,7 +197,7 @@ proptest! {
         for i in 0..n_entities {
             handler.create_entity(CreateEntityRequest {
                 collection: col.clone(),
-                id:         EntityId::new(&format!("e-{i}")),
+                id:         EntityId::new(format!("e-{i}")),
                 data:       json!({"i": i}),
                 actor:      None,
             }).unwrap();
@@ -212,9 +214,9 @@ proptest! {
             }
             handler.create_link(CreateLinkRequest {
                 source_collection: col.clone(),
-                source_id:         EntityId::new(&format!("e-{src}")),
+                source_id:         EntityId::new(format!("e-{src}")),
                 target_collection: col.clone(),
-                target_id:         EntityId::new(&format!("e-{tgt}")),
+                target_id:         EntityId::new(format!("e-{tgt}")),
                 link_type:         "connects".into(),
                 metadata:          serde_json::Value::Null,
                 actor:             None,

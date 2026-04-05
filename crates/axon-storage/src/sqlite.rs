@@ -629,3 +629,9 @@ mod tests {
         assert!(s.get_schema(&col).unwrap().is_none());
     }
 }
+
+// L4 conformance test suite for SqliteStorageAdapter.
+crate::storage_conformance_tests!(
+    sqlite_conformance,
+    SqliteStorageAdapter::open_in_memory().unwrap()
+);

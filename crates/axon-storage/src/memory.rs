@@ -511,3 +511,6 @@ mod tests {
         assert!(store.get_schema(&col).unwrap().is_none());
     }
 }
+
+// L4 conformance test suite for MemoryStorageAdapter.
+crate::storage_conformance_tests!(memory_conformance, MemoryStorageAdapter::default());
