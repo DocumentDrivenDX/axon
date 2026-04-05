@@ -29,13 +29,12 @@ const MAX_DEPTH_CAP: usize = 10;
 
 /// Core API handler: coordinates storage, schema validation, and audit.
 ///
-/// Schemas are persisted via the `StorageAdapter`; there is no separate
-/// in-memory schema map. Swap `S` for any [`StorageAdapter`] implementation.
+/// Schemas and collection registrations are persisted via the `StorageAdapter`;
+/// there is no separate in-memory state. Swap `S` for any [`StorageAdapter`]
+/// implementation.
 pub struct AxonHandler<S: StorageAdapter> {
     storage: S,
     audit: MemoryAuditLog,
-    /// Tracks which collections have been explicitly created via the collection API.
-    collections: HashSet<CollectionId>,
 }
 
 impl<S: StorageAdapter> AxonHandler<S> {
@@ -43,7 +42,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Self {
             storage,
             audit: MemoryAuditLog::default(),
-            collections: HashSet::new(),
         }
     }
 
@@ -85,6 +83,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// Mutable access to the underlying storage adapter (used by simulation framework).
     pub fn storage_mut(&mut self) -> &mut S {
         &mut self.storage
+    }
+
+    /// Consume this handler, returning the underlying storage adapter.
+    ///
+    /// Useful in tests that need to reconstruct a handler from the same storage
+    /// to verify that persisted state (e.g. collection registrations) survives.
+    pub fn into_storage(self) -> S {
+        self.storage
     }
 
     /// Commits a [`Transaction`] through this handler's storage and audit log.
@@ -502,10 +508,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<CreateCollectionResponse, AxonError> {
         Self::validate_collection_name(&req.name)?;
 
-        if self.collections.contains(&req.name) {
+        let existing = self.storage.list_collections()?;
+        if existing.contains(&req.name) {
             return Err(AxonError::AlreadyExists(req.name.to_string()));
         }
-        self.collections.insert(req.name.clone());
+        self.storage.register_collection(&req.name)?;
 
         self.audit.append(AuditEntry::new(
             req.name.clone(),
@@ -530,7 +537,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: DropCollectionRequest,
     ) -> Result<DropCollectionResponse, AxonError> {
-        if !self.collections.contains(&req.name) {
+        let existing = self.storage.list_collections()?;
+        if !existing.contains(&req.name) {
             return Err(AxonError::NotFound(req.name.to_string()));
         }
 
@@ -541,7 +549,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             self.storage.delete(&req.name, &entity.id)?;
         }
         self.storage.delete_schema(&req.name)?;
-        self.collections.remove(&req.name);
+        self.storage.unregister_collection(&req.name)?;
 
         self.audit.append(AuditEntry::new(
             req.name.clone(),
@@ -564,8 +572,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         _req: ListCollectionsRequest,
     ) -> Result<ListCollectionsResponse, AxonError> {
-        let mut collections: Vec<CollectionMetadata> = self
-            .collections
+        // Storage returns names already sorted ascending.
+        let names = self.storage.list_collections()?;
+        let collections: Vec<CollectionMetadata> = names
             .iter()
             .map(|name| {
                 let entity_count = self.storage.count(name).unwrap_or(0);
@@ -583,9 +592,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
             })
             .collect();
 
-        // Return in stable (sorted) order.
-        collections.sort_by(|a, b| a.name.cmp(&b.name));
-
         Ok(ListCollectionsResponse { collections })
     }
 
@@ -596,7 +602,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: DescribeCollectionRequest,
     ) -> Result<DescribeCollectionResponse, AxonError> {
-        if !self.collections.contains(&req.name) {
+        let existing = self.storage.list_collections()?;
+        if !existing.contains(&req.name) {
             return Err(AxonError::NotFound(req.name.to_string()));
         }
 
@@ -1876,6 +1883,68 @@ entity_schema:
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    // ── Collection durability (hx-31638e63) ──────────────────────────────────
+
+    /// A handler constructed from storage that already has registered
+    /// collections correctly reports them via list_collections and
+    /// describe_collection — no re-creation required.
+    ///
+    /// This is the analogue of a SQLite process-restart: the adapter is
+    /// durable; only the AxonHandler is freshly constructed.
+    #[test]
+    fn pre_populated_storage_reports_collections_on_new_handler() {
+        use axon_storage::adapter::StorageAdapter as _;
+        let mut storage = MemoryStorageAdapter::default();
+
+        // Directly register a collection into storage (simulates a durable
+        // backend that was populated before this handler was constructed).
+        storage
+            .register_collection(&CollectionId::new("tasks"))
+            .unwrap();
+
+        let h = AxonHandler::new(storage);
+        let resp = h
+            .list_collections(ListCollectionsRequest {})
+            .unwrap();
+        assert_eq!(resp.collections.len(), 1, "list_collections should see pre-populated collection");
+        assert_eq!(resp.collections[0].name, "tasks");
+
+        // describe_collection must not return NotFound.
+        h.describe_collection(DescribeCollectionRequest {
+            name: CollectionId::new("tasks"),
+        })
+        .unwrap();
+    }
+
+    /// After creating a collection and extracting the storage adapter, a brand-
+    /// new AxonHandler built from that same adapter still sees the collection.
+    #[test]
+    fn collection_survives_handler_reconstruction() {
+        // Build the first handler, create a collection, then recover the storage.
+        let mut h1 = handler();
+        h1.create_collection(CreateCollectionRequest {
+            name: CollectionId::new("widgets"),
+            actor: None,
+        })
+        .unwrap();
+
+        // Extract storage by consuming the first handler.
+        let storage = h1.into_storage();
+
+        // Reconstruct a new handler from the same storage.
+        let h2 = AxonHandler::new(storage);
+        let resp = h2
+            .list_collections(ListCollectionsRequest {})
+            .unwrap();
+        assert_eq!(resp.collections.len(), 1, "collection must survive handler reconstruction");
+        assert_eq!(resp.collections[0].name, "widgets");
+
+        h2.describe_collection(DescribeCollectionRequest {
+            name: CollectionId::new("widgets"),
+        })
+        .unwrap();
     }
 
     // ── Link deletion ────────────────────────────────────────────────────────

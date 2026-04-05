@@ -108,4 +108,32 @@ pub trait StorageAdapter: Send + Sync {
         let _ = collection;
         Ok(())
     }
+
+    // ── Collection registry ──────────────────────────────────────────────────
+
+    /// Record that a named collection has been explicitly created.
+    ///
+    /// Implementations must persist this so the collection survives process
+    /// restart. The default implementation is a no-op.
+    fn register_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let _ = collection;
+        Ok(())
+    }
+
+    /// Remove a collection from the registry.
+    ///
+    /// Returns `Ok(())` whether or not the collection was registered.
+    /// The default implementation is a no-op.
+    fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let _ = collection;
+        Ok(())
+    }
+
+    /// Return all explicitly-registered collection names, in ascending order.
+    ///
+    /// The default implementation returns an empty list (suitable for adapters
+    /// that do not implement persistent collection registration).
+    fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
+        Ok(vec![])
+    }
 }

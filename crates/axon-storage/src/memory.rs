@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
@@ -14,6 +14,7 @@ type CollectionMap = HashMap<EntityId, Entity>;
 struct TxSnapshot {
     data: HashMap<CollectionId, CollectionMap>,
     schemas: HashMap<CollectionId, CollectionSchema>,
+    collections: HashSet<CollectionId>,
 }
 
 /// In-memory storage adapter for testing and development.
@@ -30,6 +31,8 @@ pub struct MemoryStorageAdapter {
     data: HashMap<CollectionId, CollectionMap>,
     /// Persisted schemas keyed by collection.
     schemas: HashMap<CollectionId, CollectionSchema>,
+    /// Explicitly registered collections.
+    collections: HashSet<CollectionId>,
     /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
     tx_snapshot: Option<TxSnapshot>,
 }
@@ -137,6 +140,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         self.tx_snapshot = Some(TxSnapshot {
             data: self.data.clone(),
             schemas: self.schemas.clone(),
+            collections: self.collections.clone(),
         });
         Ok(())
     }
@@ -153,6 +157,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         if let Some(snapshot) = self.tx_snapshot.take() {
             self.data = snapshot.data;
             self.schemas = snapshot.schemas;
+            self.collections = snapshot.collections;
         }
         Ok(())
     }
@@ -170,6 +175,22 @@ impl StorageAdapter for MemoryStorageAdapter {
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         self.schemas.remove(collection);
         Ok(())
+    }
+
+    fn register_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.collections.insert(collection.clone());
+        Ok(())
+    }
+
+    fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.collections.remove(collection);
+        Ok(())
+    }
+
+    fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
+        let mut names: Vec<CollectionId> = self.collections.iter().cloned().collect();
+        names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        Ok(names)
     }
 }
 

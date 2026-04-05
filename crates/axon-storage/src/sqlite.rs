@@ -61,6 +61,9 @@ impl SqliteStorageAdapter {
                     collection  TEXT NOT NULL PRIMARY KEY,
                     version     INTEGER NOT NULL,
                     schema_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS collections (
+                    name TEXT NOT NULL PRIMARY KEY
                 );",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))
@@ -332,6 +335,45 @@ impl StorageAdapter for SqliteStorageAdapter {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    fn register_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO collections (name) VALUES (?1)",
+                params![collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.conn
+            .execute(
+                "DELETE FROM collections WHERE name = ?1",
+                params![collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT name FROM collections ORDER BY name ASC")
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let mut names = Vec::new();
+        for row in rows {
+            names.push(CollectionId::new(
+                row.map_err(|e| AxonError::Storage(e.to_string()))?,
+            ));
+        }
+        Ok(names)
     }
 }
 
