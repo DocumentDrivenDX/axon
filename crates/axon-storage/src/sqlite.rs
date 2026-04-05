@@ -107,7 +107,9 @@ impl SqliteStorageAdapter {
 // `send_sync` feature. For now we mark the adapter Send + Sync manually
 // since callers are expected to use it from a single thread (embedded mode).
 // A production multi-threaded adapter would use a connection pool.
+#[allow(unsafe_code)]
 unsafe impl Send for SqliteStorageAdapter {}
+#[allow(unsafe_code)]
 unsafe impl Sync for SqliteStorageAdapter {}
 
 impl StorageAdapter for SqliteStorageAdapter {

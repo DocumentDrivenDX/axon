@@ -95,7 +95,9 @@ impl PostgresStorageAdapter {
 // PostgreSQL's Client is not Send (it holds a TcpStream), but the StorageAdapter
 // trait requires Send + Sync. We use unsafe impl because a single adapter
 // instance is only accessed from one thread at a time behind a Mutex.
+#[allow(unsafe_code)]
 unsafe impl Send for PostgresStorageAdapter {}
+#[allow(unsafe_code)]
 unsafe impl Sync for PostgresStorageAdapter {}
 
 impl StorageAdapter for PostgresStorageAdapter {
