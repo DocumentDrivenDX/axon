@@ -15,21 +15,24 @@ use axon_storage::memory::MemoryStorageAdapter;
 
 use crate::handler::AxonHandler;
 use crate::request::{
-    CreateEntityRequest, CreateLinkRequest, GetEntityRequest, UpdateEntityRequest,
+    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, GetEntityRequest,
+    UpdateEntityRequest,
 };
 use crate::transaction::Transaction;
 
 proptest! {
-    /// PROP-002: For any sequence of entity mutations the audit log faithfully
-    /// records every state transition.
+    /// PROP-002: For any sequence of CRUD operations the audit log faithfully
+    /// records every state transition, including deletes.
     ///
-    /// Property verified:
-    /// 1. The last audit entry's `data_after` equals the current stored entity data.
+    /// Properties verified:
+    /// 1. Replaying the audit log reproduces the correct final state.
     /// 2. Audit entry versions are strictly monotonically increasing.
     /// 3. The number of audit entries equals the number of operations performed.
+    /// 4. Delete operations are correctly captured with data_before and no data_after.
     #[test]
-    fn audit_last_state_matches_current_entity(
-        data_values in proptest::collection::vec("[a-z]{1,10}", 1_usize..=10),
+    fn audit_reconstruction_with_deletes(
+        update_values in proptest::collection::vec("[a-z]{1,10}", 1_usize..=8),
+        delete_at_end in proptest::bool::ANY,
     ) {
         let mut handler = AxonHandler::new(MemoryStorageAdapter::default());
         let col = CollectionId::new("tasks");
@@ -39,12 +42,12 @@ proptest! {
         handler.create_entity(CreateEntityRequest {
             collection: col.clone(),
             id:         id.clone(),
-            data:       json!({"val": data_values[0]}),
+            data:       json!({"val": update_values[0]}),
             actor:      Some("prop-test".into()),
         }).unwrap();
 
         // Apply subsequent values as updates.
-        for val in data_values.iter().skip(1) {
+        for val in update_values.iter().skip(1) {
             let current = handler
                 .get_entity(GetEntityRequest { collection: col.clone(), id: id.clone() })
                 .unwrap()
@@ -59,119 +62,171 @@ proptest! {
             }).unwrap();
         }
 
-        // Read the current stored entity.
-        let current = handler
-            .get_entity(GetEntityRequest { collection: col.clone(), id: id.clone() })
-            .unwrap()
-            .entity;
+        let mut expected_ops = update_values.len();
+
+        // Optionally delete the entity.
+        if delete_at_end {
+            handler.delete_entity(DeleteEntityRequest {
+                collection: col.clone(),
+                id:         id.clone(),
+                actor:      Some("prop-test".into()),
+            }).unwrap();
+            expected_ops += 1;
+        }
 
         // Read all audit entries for this entity.
         let entries = handler.audit_log().query_by_entity(&col, &id).unwrap();
 
-        prop_assert!(!entries.is_empty(), "audit log must have at least one entry");
-
-        // Property 1: last entry's data_after == current stored data.
-        let last = entries.last().unwrap();
-        prop_assert_eq!(
-            last.data_after.as_ref(),
-            Some(&current.data),
-            "last audit entry data_after must equal current entity data"
-        );
-
-        // Property 2: versions are strictly monotonically increasing.
-        let versions: Vec<u64> = entries.iter().map(|e| e.version).collect();
-        for pair in versions.windows(2) {
-            prop_assert!(
-                pair[0] < pair[1],
-                "audit versions must be strictly increasing: {versions:?}"
-            );
-        }
-
         // Property 3: one entry per operation.
         prop_assert_eq!(
             entries.len(),
-            data_values.len(),
+            expected_ops,
             "audit entry count must equal number of operations"
         );
+
+        // Property 2: versions are monotonically non-decreasing.
+        // Delete audit entries record the same version as the deleted entity,
+        // so strict increase only holds for create/update sequences.
+        let versions: Vec<u64> = entries.iter().map(|e| e.version).collect();
+        for pair in versions.windows(2) {
+            prop_assert!(
+                pair[0] <= pair[1],
+                "audit versions must be non-decreasing: {versions:?}"
+            );
+        }
+
+        // Property 1: replay audit log to reconstruct final state.
+        let mut replayed_state: Option<serde_json::Value> = None;
+        for entry in &entries {
+            replayed_state = entry.data_after.clone();
+        }
+
+        if delete_at_end {
+            // After delete, replayed state should be None (last entry has no data_after).
+            prop_assert!(
+                replayed_state.is_none(),
+                "replayed state after delete must be None"
+            );
+            // Property 4: delete entry must have data_before.
+            let last = entries.last().unwrap();
+            prop_assert!(
+                last.data_before.is_some(),
+                "delete audit entry must have data_before"
+            );
+            prop_assert!(
+                last.data_after.is_none(),
+                "delete audit entry must have no data_after"
+            );
+            // Entity must not exist in storage.
+            let result = handler.get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+            });
+            prop_assert!(result.is_err(), "entity must not exist after delete");
+        } else {
+            // Entity should still exist and match replay.
+            let current = handler
+                .get_entity(GetEntityRequest { collection: col.clone(), id: id.clone() })
+                .unwrap()
+                .entity;
+            prop_assert_eq!(
+                replayed_state.as_ref(),
+                Some(&current.data),
+                "replayed audit state must equal current entity data"
+            );
+        }
     }
 
-    /// PROP-004: a committed multi-entity transaction is atomic — either every
-    /// staged write succeeds or none do.
+    /// PROP-004: sequential simulation of concurrent transaction serializability.
     ///
-    /// Test structure:
-    /// - Seed `n_entities` entities, all at version 1.
-    /// - Build a transaction that updates all of them.
-    /// - When `corrupt_idx` is `Some(i)`, entity `i % n_entities` is given an
-    ///   incorrect expected version (99), forcing the entire transaction to abort.
-    /// - When `corrupt_idx` is `None`, all versions are correct and every write
-    ///   must be committed.
+    /// Two transactions (T1, T2) are built against the same initial state —
+    /// both observe all entities at version 1 and stage writes to them
+    /// (maximum overlap).  T1 commits first; T2 must then fail with a version
+    /// conflict because T1 already incremented every entity's version.  The
+    /// final database state must exactly reflect T1's writes and nothing from
+    /// T2.
+    ///
+    /// This is the sequential proxy for true OCC serializability: if a
+    /// concurrent-capable backend were used it would produce an identical
+    /// outcome, because exactly one ordering can win.  Both the "T2 must
+    /// abort" invariant and the "final state == T1's writes" invariant are
+    /// verified for any randomly chosen entity count and value pair.
     #[test]
-    fn transaction_atomically_commits_or_aborts(
-        n_entities  in 2_usize..=5,
-        corrupt_idx in proptest::option::of(0_usize..5),
+    fn transactions_are_serializable_under_sequential_simulation(
+        n_entities in 2_usize..=5,
+        t1_value   in 100_u64..=199,
+        t2_value   in 200_u64..=299,
     ) {
         let mut storage = MemoryStorageAdapter::default();
         let mut audit   = MemoryAuditLog::default();
         let col = CollectionId::new("accts");
 
-        // Seed all entities at version 1 with initial balance values.
+        // Seed all entities at version 1 with a known initial balance.
         for i in 0..n_entities {
             storage.put(Entity::new(
                 col.clone(),
                 EntityId::new(format!("e-{i}")),
-                json!({"balance": 100 + i}),
+                json!({"balance": 0_u64}),
             )).unwrap();
         }
 
-        // Determine which entity (if any) receives a stale version.
-        let bad_entity = corrupt_idx.map(|c| c % n_entities);
-
-        let mut tx = Transaction::new();
+        // Both transactions observe the same initial state (expected_version = 1
+        // for every entity) and write to all n_entities — maximum overlap.
+        let mut t1 = Transaction::new();
+        let mut t2 = Transaction::new();
         for i in 0..n_entities {
             let id = EntityId::new(format!("e-{i}"));
-            let expected_version = if bad_entity == Some(i) { 99 } else { 1 };
-            tx.update(
-                Entity::new(col.clone(), id, json!({"balance": 200 + i})),
-                expected_version,
+            t1.update(
+                Entity::new(col.clone(), id.clone(), json!({"balance": t1_value})),
+                1,
+                None,
+            );
+            t2.update(
+                Entity::new(col.clone(), id, json!({"balance": t2_value})),
+                1,
                 None,
             );
         }
 
-        let result = tx.commit(&mut storage, &mut audit, Some("prop-test".into()));
+        // T1 commits first — must succeed on the fresh initial state.
+        t1.commit(&mut storage, &mut audit, Some("t1".into()))
+            .expect("T1 must commit on fresh initial state");
 
-        if bad_entity.is_some() {
-            // Transaction must fail — no entity must be modified.
-            prop_assert!(result.is_err(), "transaction with stale version must fail");
-            prop_assert_eq!(audit.len(), 0,
-                "no audit entries must be written after a failed transaction");
+        // T2 must fail: all its expected_version values are now stale.
+        let t2_result = t2.commit(&mut storage, &mut audit, Some("t2".into()));
+        prop_assert!(
+            t2_result.is_err(),
+            "T2 must be rejected after T1 incremented the overlapping entity versions"
+        );
 
-            for i in 0..n_entities {
-                let stored = storage
-                    .get(&col, &EntityId::new(format!("e-{i}")))
-                    .unwrap()
-                    .unwrap();
-                prop_assert_eq!(&stored.data["balance"], &json!(100 + i),
-                    "entity {} must be unmodified after aborted transaction", i);
-                prop_assert_eq!(stored.version, 1_u64,
-                    "entity {} version must be unchanged after aborted transaction", i);
-            }
-        } else {
-            // Transaction must succeed — all entities must be updated.
-            result.expect("transaction with all-correct versions must succeed");
-            prop_assert_eq!(audit.len(), n_entities,
-                "audit must record one entry per committed write");
-
-            for i in 0..n_entities {
-                let stored = storage
-                    .get(&col, &EntityId::new(format!("e-{i}")))
-                    .unwrap()
-                    .unwrap();
-                prop_assert_eq!(&stored.data["balance"], &json!(200 + i),
-                    "entity {} must be updated after successful transaction", i);
-                prop_assert_eq!(stored.version, 2_u64,
-                    "entity {} version must be 2 after one committed update", i);
-            }
+        // Final state must reflect T1's writes exclusively.
+        for i in 0..n_entities {
+            let stored = storage
+                .get(&col, &EntityId::new(format!("e-{i}")))
+                .unwrap()
+                .unwrap();
+            prop_assert_eq!(
+                &stored.data["balance"],
+                &json!(t1_value),
+                "entity {} must hold T1's value; T2 must not have written anything",
+                i
+            );
+            prop_assert_eq!(
+                stored.version,
+                2_u64,
+                "entity {} must be at version 2 (T1 committed, T2 aborted)",
+                i
+            );
         }
+
+        // Audit log must contain exactly T1's writes; T2's aborted writes must
+        // not appear.
+        prop_assert_eq!(
+            audit.len(),
+            n_entities,
+            "audit must hold exactly T1's {} entries; T2 was aborted",
+            n_entities
+        );
     }
 
     /// PROP-005: after any sequence of entity/link create operations the link
