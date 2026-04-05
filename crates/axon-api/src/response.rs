@@ -103,6 +103,31 @@ pub struct DropCollectionResponse {
     pub entities_removed: usize,
 }
 
+/// Summary metadata for a single collection returned by `list_collections`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectionMetadata {
+    pub name: String,
+    /// Number of entities currently stored in the collection.
+    pub entity_count: usize,
+    /// Schema version, if a schema has been registered.
+    pub schema_version: Option<u32>,
+}
+
+/// Response from listing all explicitly created collections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListCollectionsResponse {
+    pub collections: Vec<CollectionMetadata>,
+}
+
+/// Response from describing a single collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DescribeCollectionResponse {
+    pub name: String,
+    pub entity_count: usize,
+    /// Full schema, if one has been registered.
+    pub schema: Option<CollectionSchema>,
+}
+
 // ── Schema responses ─────────────────────────────────────────────────────────
 
 /// Response after storing or updating a collection schema.

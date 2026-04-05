@@ -11,15 +11,17 @@ use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DeleteLinkRequest, DropCollectionRequest, FieldFilter, FilterNode, FilterOp, GetEntityRequest,
-    GetSchemaRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
-    RevertEntityRequest, SortDirection, TraverseRequest, UpdateEntityRequest,
+    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode,
+    FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest,
+    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, SortDirection, TraverseRequest,
+    UpdateEntityRequest,
 };
 use crate::response::{
-    CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse,
-    DeleteLinkResponse, DropCollectionResponse, GetEntityResponse, GetSchemaResponse,
-    PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse, RevertEntityResponse,
-    TraverseResponse, UpdateEntityResponse,
+    CollectionMetadata, CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse,
+    DeleteEntityResponse, DeleteLinkResponse, DescribeCollectionResponse, DropCollectionResponse,
+    GetEntityResponse, GetSchemaResponse, ListCollectionsResponse, PutSchemaResponse,
+    QueryAuditResponse, QueryEntitiesResponse, RevertEntityResponse, TraverseResponse,
+    UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -448,13 +450,58 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     // ── Collection lifecycle ─────────────────────────────────────────────────
 
+    /// Validate a collection name against naming rules.
+    ///
+    /// Names must be 1-128 characters, start with a lowercase letter, and
+    /// contain only lowercase letters, digits, hyphens, and underscores.
+    /// Internal pseudo-collections beginning with `__` are exempt.
+    fn validate_collection_name(name: &CollectionId) -> Result<(), AxonError> {
+        let s = name.as_str();
+
+        // Internal pseudo-collections are exempt from user-facing naming rules.
+        if s.starts_with("__") {
+            return Ok(());
+        }
+
+        if s.is_empty() || s.len() > 128 {
+            return Err(AxonError::InvalidArgument(format!(
+                "collection name '{}' must be 1-128 characters",
+                s
+            )));
+        }
+
+        let mut chars = s.chars();
+        let first = chars.next().unwrap();
+        if !first.is_ascii_lowercase() {
+            return Err(AxonError::InvalidArgument(format!(
+                "collection name '{}' must start with a lowercase letter",
+                s
+            )));
+        }
+
+        for c in chars {
+            if !matches!(c, 'a'..='z' | '0'..='9' | '-' | '_') {
+                return Err(AxonError::InvalidArgument(format!(
+                    "collection name '{}' contains invalid character '{}'; \
+                     only lowercase letters, digits, hyphens, and underscores are allowed",
+                    s, c
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Explicitly register a named collection and record the event in the audit log.
     ///
+    /// Returns [`AxonError::InvalidArgument`] if the name violates naming rules.
     /// Returns [`AxonError::AlreadyExists`] if the collection has already been created.
     pub fn create_collection(
         &mut self,
         req: CreateCollectionRequest,
     ) -> Result<CreateCollectionResponse, AxonError> {
+        Self::validate_collection_name(&req.name)?;
+
         if self.collections.contains(&req.name) {
             return Err(AxonError::AlreadyExists(req.name.to_string()));
         }
@@ -509,6 +556,57 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(DropCollectionResponse {
             name: req.name.to_string(),
             entities_removed: count,
+        })
+    }
+
+    /// List all explicitly created collections with summary metadata.
+    pub fn list_collections(
+        &self,
+        _req: ListCollectionsRequest,
+    ) -> Result<ListCollectionsResponse, AxonError> {
+        let mut collections: Vec<CollectionMetadata> = self
+            .collections
+            .iter()
+            .map(|name| {
+                let entity_count = self.storage.count(name).unwrap_or(0);
+                let schema_version = self
+                    .storage
+                    .get_schema(name)
+                    .ok()
+                    .flatten()
+                    .map(|s| s.version);
+                CollectionMetadata {
+                    name: name.to_string(),
+                    entity_count,
+                    schema_version,
+                }
+            })
+            .collect();
+
+        // Return in stable (sorted) order.
+        collections.sort_by(|a, b| a.name.cmp(&b.name));
+
+        Ok(ListCollectionsResponse { collections })
+    }
+
+    /// Describe a single collection (entity count + full schema).
+    ///
+    /// Returns [`AxonError::NotFound`] if the collection was not explicitly created.
+    pub fn describe_collection(
+        &self,
+        req: DescribeCollectionRequest,
+    ) -> Result<DescribeCollectionResponse, AxonError> {
+        if !self.collections.contains(&req.name) {
+            return Err(AxonError::NotFound(req.name.to_string()));
+        }
+
+        let entity_count = self.storage.count(&req.name)?;
+        let schema = self.storage.get_schema(&req.name)?;
+
+        Ok(DescribeCollectionResponse {
+            name: req.name.to_string(),
+            entity_count,
+            schema,
         })
     }
 
@@ -1604,6 +1702,182 @@ entity_schema:
         assert!(matches!(err, AxonError::NotFound(_)));
     }
 
+    // ── Collection name validation ───────────────────────────────────────────
+
+    #[test]
+    fn create_collection_rejects_empty_name() {
+        let mut h = handler();
+        let err = h
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new(""),
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn create_collection_rejects_name_starting_with_digit() {
+        let mut h = handler();
+        let err = h
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("1bad"),
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn create_collection_rejects_name_with_uppercase() {
+        let mut h = handler();
+        let err = h
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("Bad-Name"),
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn create_collection_rejects_name_with_spaces() {
+        let mut h = handler();
+        let err = h
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("bad name"),
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn create_collection_accepts_valid_names() {
+        let mut h = handler();
+        for name in &["tasks", "my-tasks", "my_tasks", "tasks2", "a"] {
+            h.create_collection(CreateCollectionRequest {
+                name: CollectionId::new(*name),
+                actor: None,
+            })
+            .unwrap_or_else(|e| panic!("valid name '{}' rejected: {}", name, e));
+        }
+    }
+
+    // ── list_collections ─────────────────────────────────────────────────────
+
+    #[test]
+    fn list_collections_empty_when_none_created() {
+        let h = handler();
+        let resp = h.list_collections(ListCollectionsRequest {}).unwrap();
+        assert!(resp.collections.is_empty());
+    }
+
+    #[test]
+    fn list_collections_returns_created_collections() {
+        let mut h = handler();
+
+        for name in &["apples", "bananas", "cherries"] {
+            h.create_collection(CreateCollectionRequest {
+                name: CollectionId::new(*name),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        // Add two entities to "bananas".
+        for i in 0..2u32 {
+            h.create_entity(CreateEntityRequest {
+                collection: CollectionId::new("bananas"),
+                id: EntityId::new(&format!("b-{i}")),
+                data: json!({"name": format!("b-{i}")}),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        let resp = h.list_collections(ListCollectionsRequest {}).unwrap();
+        assert_eq!(resp.collections.len(), 3);
+
+        // Results are sorted by name.
+        assert_eq!(resp.collections[0].name, "apples");
+        assert_eq!(resp.collections[1].name, "bananas");
+        assert_eq!(resp.collections[2].name, "cherries");
+
+        assert_eq!(resp.collections[1].entity_count, 2);
+        assert_eq!(resp.collections[0].entity_count, 0);
+    }
+
+    #[test]
+    fn list_collections_schema_version_reflects_stored_schema() {
+        let mut h = handler();
+
+        h.create_collection(CreateCollectionRequest {
+            name: CollectionId::new("items"),
+            actor: None,
+        })
+        .unwrap();
+        h.put_schema(axon_schema::schema::CollectionSchema {
+            collection: CollectionId::new("items"),
+            description: None,
+            version: 5,
+            entity_schema: None,
+        })
+        .unwrap();
+
+        let resp = h.list_collections(ListCollectionsRequest {}).unwrap();
+        assert_eq!(resp.collections[0].schema_version, Some(5));
+    }
+
+    // ── describe_collection ──────────────────────────────────────────────────
+
+    #[test]
+    fn describe_collection_returns_metadata_and_schema() {
+        let mut h = handler();
+
+        h.create_collection(CreateCollectionRequest {
+            name: CollectionId::new("things"),
+            actor: None,
+        })
+        .unwrap();
+        h.put_schema(axon_schema::schema::CollectionSchema {
+            collection: CollectionId::new("things"),
+            description: Some("a thing".into()),
+            version: 2,
+            entity_schema: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("things"),
+            id: EntityId::new("t-001"),
+            data: json!({}),
+            actor: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .describe_collection(DescribeCollectionRequest {
+                name: CollectionId::new("things"),
+            })
+            .unwrap();
+
+        assert_eq!(resp.name, "things");
+        assert_eq!(resp.entity_count, 1);
+        assert!(resp.schema.is_some());
+        assert_eq!(resp.schema.unwrap().version, 2);
+    }
+
+    #[test]
+    fn describe_collection_not_found_for_unknown() {
+        let h = handler();
+        let err = h
+            .describe_collection(DescribeCollectionRequest {
+                name: CollectionId::new("nope"),
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
     // ── Link deletion ────────────────────────────────────────────────────────
 
     #[test]
@@ -2391,7 +2665,9 @@ entity_schema:
             collection: col,
             description: None,
             version: 1,
-            entity_schema: Some(json!({"type": "object", "properties": {"title": {"type": "string"}}})),
+            entity_schema: Some(
+                json!({"type": "object", "properties": {"title": {"type": "string"}}}),
+            ),
         };
 
         h.handle_put_schema(PutSchemaRequest {

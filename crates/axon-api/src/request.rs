@@ -227,6 +227,16 @@ pub struct DropCollectionRequest {
     pub actor: Option<String>,
 }
 
+/// Request to list all explicitly created collections.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ListCollectionsRequest {}
+
+/// Request to describe a single collection (entity count + schema).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DescribeCollectionRequest {
+    pub name: CollectionId,
+}
+
 // ── Schema requests ──────────────────────────────────────────────────────────
 
 /// Request to store or replace the schema for a collection.

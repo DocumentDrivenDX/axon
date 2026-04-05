@@ -18,9 +18,9 @@ use tokio::sync::Mutex;
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DeleteLinkRequest, DropCollectionRequest, GetEntityRequest, GetSchemaRequest, PutSchemaRequest,
-    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, TraverseRequest,
-    UpdateEntityRequest,
+    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, GetEntityRequest,
+    GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest, QueryAuditRequest,
+    QueryEntitiesRequest, RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_audit::AuditLog;
 use axon_core::error::AxonError;
@@ -510,6 +510,37 @@ async fn drop_collection(
     }
 }
 
+async fn list_collections(State(handler): State<SharedHandler>) -> Response {
+    match handler
+        .lock()
+        .await
+        .list_collections(ListCollectionsRequest {})
+    {
+        Ok(resp) => Json(json!({ "collections": resp.collections })).into_response(),
+        Err(e) => axon_error_response(e),
+    }
+}
+
+async fn describe_collection(
+    State(handler): State<SharedHandler>,
+    Path(name): Path<String>,
+) -> Response {
+    match handler
+        .lock()
+        .await
+        .describe_collection(DescribeCollectionRequest {
+            name: CollectionId::new(&name),
+        }) {
+        Ok(resp) => Json(json!({
+            "name": resp.name,
+            "entity_count": resp.entity_count,
+            "schema": resp.schema,
+        }))
+        .into_response(),
+        Err(e) => axon_error_response(e),
+    }
+}
+
 async fn put_schema(
     State(handler): State<SharedHandler>,
     Path(collection): Path<String>,
@@ -522,11 +553,10 @@ async fn put_schema(
         version: body.version,
         entity_schema: body.entity_schema,
     };
-    match handler
-        .lock()
-        .await
-        .handle_put_schema(PutSchemaRequest { schema, actor: body.actor })
-    {
+    match handler.lock().await.handle_put_schema(PutSchemaRequest {
+        schema,
+        actor: body.actor,
+    }) {
         Ok(resp) => (StatusCode::OK, Json(json!({ "schema": resp.schema }))).into_response(),
         Err(e) => axon_error_response(e),
     }
@@ -563,7 +593,9 @@ pub fn build_router(handler: SharedHandler) -> Router {
         )
         .route("/audit/query", get(query_audit))
         .route("/audit/revert", post(revert_entity))
+        .route("/collections", get(list_collections))
         .route("/collections/{name}", post(create_collection))
+        .route("/collections/{name}", get(describe_collection))
         .route("/collections/{name}", delete(drop_collection))
         .route("/collections/{name}/schema", put(put_schema))
         .route("/collections/{name}/schema", get(get_schema))
@@ -930,6 +962,77 @@ mod tests {
         let body2: Value = resp2.json();
         assert_eq!(body2["total_count"], 2);
         assert_eq!(body2["entities"].as_array().unwrap().len(), 0);
+    }
+
+    // ── Collection list / describe endpoints ─────────────────────────────────
+
+    #[tokio::test]
+    async fn http_list_collections_empty() {
+        let server = test_server();
+        let resp = server.get("/collections").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["collections"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn http_list_and_describe_collections() {
+        let server = test_server();
+
+        // Create two collections.
+        server
+            .post("/collections/apples")
+            .json(&json!({}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/collections/bananas")
+            .json(&json!({}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // Seed an entity into "bananas".
+        server
+            .post("/entities/bananas/b-001")
+            .json(&json!({"data": {"name": "cavendish"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // List.
+        let resp = server.get("/collections").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let cols = body["collections"].as_array().unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols[0]["name"], "apples");
+        assert_eq!(cols[0]["entity_count"], 0);
+        assert_eq!(cols[1]["name"], "bananas");
+        assert_eq!(cols[1]["entity_count"], 1);
+
+        // Describe "bananas".
+        let resp = server.get("/collections/bananas").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["name"], "bananas");
+        assert_eq!(body["entity_count"], 1);
+    }
+
+    #[tokio::test]
+    async fn http_describe_unknown_collection_returns_404() {
+        let server = test_server();
+        let resp = server.get("/collections/ghost").await;
+        resp.assert_status_not_found();
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn http_create_collection_with_invalid_name_returns_400() {
+        let server = test_server();
+        let resp = server.post("/collections/BadName").json(&json!({})).await;
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "invalid_argument");
     }
 
     // ── Schema endpoints ─────────────────────────────────────────────────────
