@@ -756,6 +756,65 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 if let Some(metadata_schema) = &link_def.metadata_schema {
                     validate_link_metadata(metadata_schema, &req.metadata)?;
                 }
+
+                // Enforce cardinality constraints.
+                use axon_schema::Cardinality;
+                match link_def.cardinality {
+                    Cardinality::OneToOne | Cardinality::ManyToOne => {
+                        // Source can have at most one outgoing link of this type.
+                        let prefix = format!(
+                            "{}/{}/{}/",
+                            req.source_collection, req.source_id, req.link_type
+                        );
+                        let start = EntityId::new(&prefix);
+                        let existing = self.storage.range_scan(
+                            &Link::links_collection(),
+                            Some(&start),
+                            None,
+                            Some(1),
+                        )?;
+                        let has_outgoing =
+                            existing.iter().any(|e| e.id.as_str().starts_with(&prefix));
+                        if has_outgoing {
+                            return Err(AxonError::SchemaValidation(format!(
+                                "cardinality violation: source {}/{} already has a '{}' link \
+                                 ({:?} allows at most one outgoing)",
+                                req.source_collection,
+                                req.source_id,
+                                req.link_type,
+                                link_def.cardinality
+                            )));
+                        }
+                    }
+                    Cardinality::OneToMany | Cardinality::ManyToMany => {}
+                }
+                match link_def.cardinality {
+                    Cardinality::OneToOne | Cardinality::OneToMany => {
+                        // Target can have at most one inbound link of this type.
+                        // Scan the reverse-index: {target_col}/{target_id}/.../{link_type}
+                        let rev_col = Link::links_rev_collection();
+                        let prefix = format!("{}/{}/", req.target_collection, req.target_id);
+                        let start = EntityId::new(&prefix);
+                        let candidates =
+                            self.storage
+                                .range_scan(&rev_col, Some(&start), None, None)?;
+                        let has_inbound = candidates.iter().any(|e| {
+                            let id = e.id.as_str();
+                            id.starts_with(&prefix) && id.ends_with(&format!("/{}", req.link_type))
+                        });
+                        if has_inbound {
+                            return Err(AxonError::SchemaValidation(format!(
+                                "cardinality violation: target {}/{} already has an inbound '{}' link \
+                                 ({:?} allows at most one inbound)",
+                                req.target_collection,
+                                req.target_id,
+                                req.link_type,
+                                link_def.cardinality
+                            )));
+                        }
+                    }
+                    Cardinality::ManyToOne | Cardinality::ManyToMany => {}
+                }
             }
         }
 
@@ -2257,6 +2316,9 @@ link_types:
       properties:
         since:
           type: string
+  manager:
+    target_collection: users
+    cardinality: one-to-one
 "#;
 
     fn setup_linked_collections(h: &mut AxonHandler<MemoryStorageAdapter>) {
@@ -2467,6 +2529,126 @@ link_types:
             .unwrap();
 
         assert_eq!(resp.link.link_type, "depends-on");
+    }
+
+    // ── Cardinality enforcement (axon-7ac24886) ──────────────────────────────
+
+    #[test]
+    fn create_link_enforces_many_to_one_source_limit() {
+        let mut h = handler();
+        setup_linked_collections(&mut h);
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "users", "u-002");
+        make_entity(&mut h, "users", "u-003");
+
+        // "mentor" is many-to-one: source can have at most one outgoing mentor link.
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("users"),
+            source_id: EntityId::new("u-001"),
+            target_collection: CollectionId::new("users"),
+            target_id: EntityId::new("u-002"),
+            link_type: "mentor".into(),
+            metadata: json!({"since": "2026-01-01"}),
+            actor: None,
+        })
+        .unwrap();
+
+        // Second mentor link from same source should fail.
+        let err = h
+            .create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-001"),
+                target_collection: CollectionId::new("users"),
+                target_id: EntityId::new("u-003"),
+                link_type: "mentor".into(),
+                metadata: json!({"since": "2026-02-01"}),
+                actor: None,
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(err, AxonError::SchemaValidation(_)),
+            "expected cardinality violation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn create_link_enforces_one_to_one_both_directions() {
+        let mut h = handler();
+        setup_linked_collections(&mut h);
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "users", "u-002");
+        make_entity(&mut h, "users", "u-003");
+
+        // "manager" is one-to-one: at most one outgoing AND one inbound.
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("users"),
+            source_id: EntityId::new("u-001"),
+            target_collection: CollectionId::new("users"),
+            target_id: EntityId::new("u-002"),
+            link_type: "manager".into(),
+            metadata: json!(null),
+            actor: None,
+        })
+        .unwrap();
+
+        // Second outgoing from u-001 should fail (source limit).
+        let err = h
+            .create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-001"),
+                target_collection: CollectionId::new("users"),
+                target_id: EntityId::new("u-003"),
+                link_type: "manager".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, AxonError::SchemaValidation(_)),
+            "expected source cardinality violation, got: {err}"
+        );
+
+        // Second inbound to u-002 from different source should fail (target limit).
+        let err = h
+            .create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-003"),
+                target_collection: CollectionId::new("users"),
+                target_id: EntityId::new("u-002"),
+                link_type: "manager".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, AxonError::SchemaValidation(_)),
+            "expected target cardinality violation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn create_link_allows_many_to_many_without_limit() {
+        let mut h = handler();
+        setup_linked_collections(&mut h);
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "tasks", "t-001");
+        make_entity(&mut h, "tasks", "t-002");
+        make_entity(&mut h, "tasks", "t-003");
+
+        // "assigned-to" is many-to-many: no limits.
+        for tid in ["t-001", "t-002", "t-003"] {
+            h.create_link(CreateLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-001"),
+                target_collection: CollectionId::new("tasks"),
+                target_id: EntityId::new(tid),
+                link_type: "assigned-to".into(),
+                metadata: json!(null),
+                actor: None,
+            })
+            .unwrap();
+        }
     }
 
     // ── Entity query / filter (US-011) ────────────────────────────────────────
