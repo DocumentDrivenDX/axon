@@ -661,4 +661,57 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn op_limit_rejects_101st_operation() {
+        let mut tx = Transaction::new();
+        for i in 0..100 {
+            tx.create(Entity::new(
+                accounts(),
+                EntityId::new(format!("e-{i}")),
+                json!({"i": i}),
+            ))
+            .unwrap();
+        }
+        // 101st should fail.
+        let err = tx
+            .create(Entity::new(
+                accounts(),
+                EntityId::new("e-100"),
+                json!({"i": 100}),
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(err, AxonError::InvalidArgument(_)),
+            "expected InvalidArgument for op limit, got: {err}"
+        );
+    }
+
+    #[test]
+    fn timeout_aborts_commit() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+
+        storage.put(account("A", 100)).unwrap();
+
+        // Create a transaction with zero timeout — it expires immediately.
+        let mut tx = Transaction::with_timeout(Duration::from_secs(0));
+        tx.update(account("A", 90), 1, None).unwrap();
+
+        // Small sleep to ensure timeout fires.
+        std::thread::sleep(Duration::from_millis(1));
+
+        let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
+        assert!(
+            matches!(err, AxonError::InvalidOperation(_)),
+            "expected timeout error, got: {err}"
+        );
+
+        // Entity must be unchanged.
+        let a = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.data["balance"], 100, "entity unchanged after timeout");
+    }
 }

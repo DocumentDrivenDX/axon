@@ -711,7 +711,7 @@ mod tests {
     #[test]
     fn audit_entry_rolled_back_with_entity_on_abort() {
         use axon_audit::entry::{AuditEntry, MutationType};
-        use axon_core::id::{CollectionId, EntityId};
+        use axon_core::id::EntityId;
         use serde_json::json;
 
         let mut s = store();
@@ -745,7 +745,7 @@ mod tests {
     #[test]
     fn audit_entry_persists_with_entity_on_commit() {
         use axon_audit::entry::{AuditEntry, MutationType};
-        use axon_core::id::{CollectionId, EntityId};
+        use axon_core::id::EntityId;
         use serde_json::json;
 
         let mut s = store();

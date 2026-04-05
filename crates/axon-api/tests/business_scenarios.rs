@@ -163,7 +163,8 @@ fn scn_001_payment_application_with_partial_payment() {
         ),
         inv030.version,
         Some(inv030.data.clone()),
-    );
+    )
+    .unwrap();
     // Apply $2,500 to INV-035 → partially_paid
     tx.update(
         Entity::new(
@@ -173,24 +174,28 @@ fn scn_001_payment_application_with_partial_payment() {
         ),
         inv035.version,
         Some(inv035.data.clone()),
-    );
+    )
+    .unwrap();
     // Create ledger entries
     tx.create(Entity::new(
         col("ledger"),
         eid("LE-001"),
         json!({"type": "debit", "account": "cash", "amount": 7500}),
-    ));
+    ))
+    .unwrap();
     tx.create(Entity::new(
         col("ledger"),
         eid("LE-002"),
         json!({"type": "credit", "account": "ar", "amount": 7500}),
-    ));
+    ))
+    .unwrap();
     // Update customer balance
     tx.update(
         Entity::new(col("customers"), eid("cust-001"), json!({"balance": 5500})),
         cust.version,
         Some(cust.data.clone()),
-    );
+    )
+    .unwrap();
 
     let (storage, audit) = h.storage_and_audit_mut();
     let written = tx
@@ -244,20 +249,24 @@ fn scn_001_payment_application_with_partial_payment() {
 
     // FAILURE SCENARIO: version conflict on customer balance rolls back everything.
     let mut bad_tx = Transaction::new();
-    bad_tx.update(
-        Entity::new(
-            col("invoices"),
-            eid("INV-040"),
-            json!({"amount": 3000, "status": "paid"}),
-        ),
-        1, // correct
-        None,
-    );
-    bad_tx.update(
-        Entity::new(col("customers"), eid("cust-001"), json!({"balance": 2500})),
-        99, // WRONG — triggers rollback
-        None,
-    );
+    bad_tx
+        .update(
+            Entity::new(
+                col("invoices"),
+                eid("INV-040"),
+                json!({"amount": 3000, "status": "paid"}),
+            ),
+            1, // correct
+            None,
+        )
+        .unwrap();
+    bad_tx
+        .update(
+            Entity::new(col("customers"), eid("cust-001"), json!({"balance": 2500})),
+            99, // WRONG — triggers rollback
+            None,
+        )
+        .unwrap();
     let (storage, audit) = h.storage_and_audit_mut();
     let err = bad_tx.commit(storage, audit, None).unwrap_err();
     assert!(matches!(err, AxonError::ConflictingVersion { .. }));
@@ -346,14 +355,15 @@ fn scn_002_contact_merge_duplicate_resolution() {
         ),
         contact_b.version,
         Some(contact_b.data.clone()),
-    );
+    ).unwrap();
     // Delete Contact-A
     tx.delete(
         col("contacts"),
         eid("contact-a"),
         contact_a.version,
         Some(contact_a.data.clone()),
-    );
+    )
+    .unwrap();
 
     let (storage, audit) = h.storage_and_audit_mut();
     tx.commit(storage, audit, Some("merge-agent".into()))
@@ -854,7 +864,8 @@ fn scn_007_bead_lifecycle_concurrent_agents() {
             ),
             bead.version,
             Some(bead.data.clone()),
-        );
+        )
+        .unwrap();
         tx.commit(&mut storage, &mut audit, Some((*agent).into()))
             .unwrap();
 
@@ -875,15 +886,17 @@ fn scn_007_bead_lifecycle_concurrent_agents() {
     // Agent-gamma tries to claim b-1 (already claimed by agent-alpha).
     let _b1 = storage.get(&col("beads"), &eid("b-1")).unwrap().unwrap();
     let mut dup_tx = Transaction::new();
-    dup_tx.update(
-        Entity::new(
-            col("beads"),
-            eid("b-1"),
-            json!({"title": "Bead 1", "status": "in_progress", "agent": "agent-gamma"}),
-        ),
-        1, // stale version — b-1 is now at version 2
-        None,
-    );
+    dup_tx
+        .update(
+            Entity::new(
+                col("beads"),
+                eid("b-1"),
+                json!({"title": "Bead 1", "status": "in_progress", "agent": "agent-gamma"}),
+            ),
+            1, // stale version — b-1 is now at version 2
+            None,
+        )
+        .unwrap();
     let err = dup_tx.commit(&mut storage, &mut audit, None).unwrap_err();
     assert!(
         matches!(err, AxonError::ConflictingVersion { .. }),
@@ -903,7 +916,8 @@ fn scn_007_bead_lifecycle_concurrent_agents() {
             ),
             bead.version,
             Some(bead.data.clone()),
-        );
+        )
+        .unwrap();
         tx.commit(&mut storage, &mut audit, None).unwrap();
     }
 
@@ -969,7 +983,8 @@ fn scn_008_golden_record_merge_with_survivorship() {
             "revenue": 5_000_000,                  // ERP (only source)
             "phone": "555-9999"                    // CRM (only source)
         }),
-    ));
+    ))
+    .unwrap();
     let (storage, audit) = h.storage_and_audit_mut();
     tx.commit(storage, audit, Some("mdm-engine".into()))
         .unwrap();

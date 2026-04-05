@@ -179,7 +179,8 @@ pub fn run_cycle_test(config: &CycleConfig) -> CycleResult {
             },
             node_i.version,
             Some(node_i.data.clone()),
-        );
+        )
+        .unwrap();
         tx.update(
             Entity {
                 collection: col.clone(),
@@ -189,7 +190,8 @@ pub fn run_cycle_test(config: &CycleConfig) -> CycleResult {
             },
             node_j.version,
             Some(node_j.data.clone()),
-        );
+        )
+        .unwrap();
 
         match handler.commit_transaction(tx, Some("sim".into())) {
             Ok(_) => swaps_committed += 1,

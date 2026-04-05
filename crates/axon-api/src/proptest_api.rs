@@ -180,12 +180,12 @@ proptest! {
                 Entity::new(col.clone(), id.clone(), json!({"balance": t1_value})),
                 1,
                 None,
-            );
+            ).unwrap();
             t2.update(
                 Entity::new(col.clone(), id, json!({"balance": t2_value})),
                 1,
                 None,
-            );
+            ).unwrap();
         }
 
         // T1 commits first — must succeed on the fresh initial state.

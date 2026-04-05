@@ -155,7 +155,8 @@ pub fn run_transaction_atomicity_workload(
             },
             a.version,
             Some(a.data.clone()),
-        );
+        )
+        .unwrap();
         tx.update(
             Entity {
                 collection: col.clone(),
@@ -165,7 +166,8 @@ pub fn run_transaction_atomicity_workload(
             },
             b.version,
             Some(b.data.clone()),
-        );
+        )
+        .unwrap();
 
         match handler.commit_transaction(tx, Some("sim".into())) {
             Ok(_) => {
