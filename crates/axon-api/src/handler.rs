@@ -271,9 +271,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
             let pos = matched
                 .iter()
                 .position(|e| &e.id == cursor_id)
-                .map(|i| i + 1)
-                .unwrap_or(0);
-            matched = matched.split_off(pos);
+                .ok_or_else(|| {
+                    AxonError::InvalidArgument(format!(
+                        "cursor entity '{}' not found in result set",
+                        cursor_id
+                    ))
+                })?;
+            matched = matched.split_off(pos + 1);
         }
 
         // Apply limit.
@@ -1986,6 +1990,28 @@ entity_schema:
             .unwrap();
         assert_eq!(page3.entities.len(), 1);
         assert!(page3.next_cursor.is_none());
+    }
+
+    #[test]
+    fn query_cursor_invalid_after_id_returns_error() {
+        let mut h = handler();
+        for i in 1..=3 {
+            make_entity_with_data(&mut h, "items", &format!("i-{i:03}"), json!({"n": i}));
+        }
+
+        let result = h.query_entities(QueryEntitiesRequest {
+            collection: CollectionId::new("items"),
+            filter: None,
+            sort: vec![],
+            limit: None,
+            after_id: Some(EntityId::new("nonexistent-id")),
+            count_only: false,
+        });
+
+        assert!(
+            matches!(result, Err(AxonError::InvalidArgument(_))),
+            "expected InvalidArgument for unknown cursor, got {result:?}"
+        );
     }
 
     #[test]
