@@ -9,6 +9,13 @@ use crate::adapter::StorageAdapter;
 
 type CollectionMap = HashMap<EntityId, Entity>;
 
+/// Combined snapshot of mutable state captured at transaction start.
+#[derive(Debug, Clone)]
+struct TxSnapshot {
+    data: HashMap<CollectionId, CollectionMap>,
+    schemas: HashMap<CollectionId, CollectionSchema>,
+}
+
 /// In-memory storage adapter for testing and development.
 ///
 /// All data is lost when the adapter is dropped.
@@ -21,10 +28,10 @@ type CollectionMap = HashMap<EntityId, Entity>;
 #[derive(Debug, Default)]
 pub struct MemoryStorageAdapter {
     data: HashMap<CollectionId, CollectionMap>,
-    /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
-    tx_snapshot: Option<HashMap<CollectionId, CollectionMap>>,
     /// Persisted schemas keyed by collection.
     schemas: HashMap<CollectionId, CollectionSchema>,
+    /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
+    tx_snapshot: Option<TxSnapshot>,
 }
 
 impl StorageAdapter for MemoryStorageAdapter {
@@ -127,7 +134,10 @@ impl StorageAdapter for MemoryStorageAdapter {
         if self.tx_snapshot.is_some() {
             return Err(AxonError::Storage("transaction already active".into()));
         }
-        self.tx_snapshot = Some(self.data.clone());
+        self.tx_snapshot = Some(TxSnapshot {
+            data: self.data.clone(),
+            schemas: self.schemas.clone(),
+        });
         Ok(())
     }
 
@@ -141,7 +151,8 @@ impl StorageAdapter for MemoryStorageAdapter {
 
     fn abort_tx(&mut self) -> Result<(), AxonError> {
         if let Some(snapshot) = self.tx_snapshot.take() {
-            self.data = snapshot;
+            self.data = snapshot.data;
+            self.schemas = snapshot.schemas;
         }
         Ok(())
     }
@@ -384,6 +395,55 @@ mod tests {
             .unwrap();
 
         assert_eq!(store.get_schema(&col).unwrap().unwrap().version, 2);
+    }
+
+    #[test]
+    fn abort_tx_rolls_back_schema_changes() {
+        use axon_schema::schema::CollectionSchema;
+        let mut store = MemoryStorageAdapter::default();
+        let col = tasks();
+        let original = CollectionSchema {
+            collection: col.clone(),
+            description: Some("v1".into()),
+            version: 1,
+            entity_schema: None,
+        };
+
+        // Persist a schema before the transaction.
+        store.put_schema(&original).unwrap();
+
+        store.begin_tx().unwrap();
+        // Overwrite the schema inside the transaction.
+        store
+            .put_schema(&CollectionSchema {
+                collection: col.clone(),
+                description: Some("v2".into()),
+                version: 2,
+                entity_schema: None,
+            })
+            .unwrap();
+        // Also add a schema for a second collection.
+        let other = CollectionId::new("other");
+        store
+            .put_schema(&CollectionSchema {
+                collection: other.clone(),
+                description: None,
+                version: 1,
+                entity_schema: None,
+            })
+            .unwrap();
+        store.abort_tx().unwrap();
+
+        // Schema for `tasks` must be restored to v1.
+        let retrieved = store.get_schema(&col).unwrap().unwrap();
+        assert_eq!(retrieved.version, 1, "schema should be rolled back to v1");
+        assert_eq!(retrieved.description.as_deref(), Some("v1"));
+
+        // Schema added inside the transaction must not persist.
+        assert!(
+            store.get_schema(&other).unwrap().is_none(),
+            "schema added in aborted transaction must not persist"
+        );
     }
 
     #[test]
