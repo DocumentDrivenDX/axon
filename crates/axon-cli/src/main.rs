@@ -7,11 +7,14 @@
 use anyhow::{Context, Result};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, GetEntityRequest, TraverseRequest,
+    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
+    DescribeCollectionRequest, DropCollectionRequest, GetEntityRequest, ListCollectionsRequest,
+    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, TraverseRequest,
     UpdateEntityRequest,
 };
 use axon_audit::AuditLog;
 use axon_core::id::{CollectionId, EntityId};
+use axon_schema::schema::CollectionSchema;
 use axon_storage::SqliteStorageAdapter;
 use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::Value;
@@ -65,13 +68,30 @@ enum Command {
 
 #[derive(Subcommand)]
 enum CollectionCmd {
-    /// Register a collection (no-op in embedded mode; collections are implicit).
+    /// Create a named collection with a schema.
     Create {
         /// Collection name.
         name: String,
+        /// Schema JSON (entity_schema). If omitted, creates a schemaless collection.
+        #[arg(long)]
+        schema: Option<String>,
+        #[arg(long)]
+        actor: Option<String>,
     },
-    /// List all collections that contain at least one entity.
+    /// List all registered collections.
     List,
+    /// Drop a collection and all its entities.
+    Drop {
+        /// Collection name.
+        name: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Describe a collection (entity count, schema, timestamps).
+    Describe {
+        /// Collection name.
+        name: String,
+    },
 }
 
 // ── Entity commands ────────────────────────────────────────────────────────────
@@ -89,6 +109,13 @@ enum EntityCmd {
     },
     /// Retrieve an entity.
     Get { collection: String, id: String },
+    /// List entities in a collection.
+    List {
+        collection: String,
+        /// Maximum number of entities to return.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Update an entity (optimistic concurrency control).
     Update {
         collection: String,
@@ -143,10 +170,35 @@ enum LinkCmd {
 
 #[derive(Subcommand)]
 enum AuditCmd {
-    /// List audit entries for an entity (current session only).
+    /// List audit entries with optional filters.
     List {
-        collection: String,
-        entity_id: String,
+        /// Filter to a specific collection.
+        #[arg(long)]
+        collection: Option<String>,
+        /// Filter to a specific entity.
+        #[arg(long)]
+        entity_id: Option<String>,
+        /// Filter to a specific actor.
+        #[arg(long)]
+        actor: Option<String>,
+        /// Maximum entries to return.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Show a single audit entry by ID.
+    Show {
+        /// Audit entry ID.
+        id: u64,
+    },
+    /// Revert an entity to the state recorded in an audit entry.
+    Revert {
+        /// The audit entry ID to revert to.
+        audit_entry_id: u64,
+        #[arg(long)]
+        actor: Option<String>,
+        /// Bypass schema validation for the restored state.
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -201,7 +253,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Collection(cmd) => run_collection(cmd, &cli.output, &mut handler),
         Command::Entity(cmd) => run_entity(cmd, &cli.output, &mut handler),
         Command::Link(cmd) => run_link(cmd, &cli.output, &mut handler),
-        Command::Audit(cmd) => run_audit(cmd, &cli.output, &handler),
+        Command::Audit(cmd) => run_audit(cmd, &cli.output, &mut handler),
     }
 }
 
@@ -211,22 +263,124 @@ fn run_collection(
     handler: &mut AxonHandler<SqliteStorageAdapter>,
 ) -> Result<()> {
     match cmd {
-        CollectionCmd::Create { name } => {
-            // Collections are implicit — no storage action required.
-            let result = serde_json::json!({ "collection": name, "status": "ok" });
+        CollectionCmd::Create {
+            name,
+            schema,
+            actor,
+        } => {
+            let entity_schema = match schema {
+                Some(s) => {
+                    let v: Value =
+                        serde_json::from_str(&s).with_context(|| "schema must be valid JSON")?;
+                    Some(v)
+                }
+                None => None,
+            };
+            let col_id = CollectionId::new(&name);
+            let collection_schema = CollectionSchema {
+                collection: col_id.clone(),
+                description: None,
+                version: 1,
+                entity_schema,
+                link_types: Default::default(),
+            };
+            handler
+                .create_collection(CreateCollectionRequest {
+                    name: col_id,
+                    schema: collection_schema,
+                    actor,
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let result = serde_json::json!({ "collection": name, "status": "created" });
             match format {
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                OutputFormat::Table => println!("collection '{}' ready", name),
+                OutputFormat::Table => println!("collection '{}' created", name),
             }
         }
         CollectionCmd::List => {
-            // Not implemented in V1 (requires range scan across all collections).
-            let result = serde_json::json!({ "collections": [] });
+            let resp = handler
+                .list_collections(ListCollectionsRequest {})
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            match format {
+                OutputFormat::Json => {
+                    let json: Vec<Value> = resp
+                        .collections
+                        .iter()
+                        .map(|c| {
+                            serde_json::json!({
+                                "name": c.name,
+                                "entity_count": c.entity_count,
+                                "schema_version": c.schema_version,
+                            })
+                        })
+                        .collect();
+                    println!("{}", serde_json::to_string_pretty(&json)?);
+                }
+                OutputFormat::Table => {
+                    if resp.collections.is_empty() {
+                        println!("(no collections)");
+                    } else {
+                        for c in &resp.collections {
+                            println!(
+                                "{} ({} entities, schema v{})",
+                                c.name,
+                                c.entity_count,
+                                c.schema_version
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "-".into()),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        CollectionCmd::Drop { name, actor } => {
+            let resp = handler
+                .drop_collection(DropCollectionRequest {
+                    name: CollectionId::new(&name),
+                    actor,
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let result = serde_json::json!({
+                "collection": resp.name,
+                "entities_removed": resp.entities_removed,
+                "status": "dropped"
+            });
             match format {
                 OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
-                OutputFormat::Table => println!("(no collections listed in this version)"),
+                OutputFormat::Table => println!(
+                    "dropped '{}' ({} entities removed)",
+                    resp.name, resp.entities_removed
+                ),
             }
-            let _ = handler; // suppress unused warning
+        }
+        CollectionCmd::Describe { name } => {
+            let resp = handler
+                .describe_collection(DescribeCollectionRequest {
+                    name: CollectionId::new(&name),
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            match format {
+                OutputFormat::Json => {
+                    let result = serde_json::json!({
+                        "name": resp.name,
+                        "entity_count": resp.entity_count,
+                        "schema": resp.schema,
+                        "created_at_ns": resp.created_at_ns,
+                        "updated_at_ns": resp.updated_at_ns,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
+                OutputFormat::Table => {
+                    println!("collection: {}", resp.name);
+                    println!("entities:   {}", resp.entity_count);
+                    if let Some(s) = &resp.schema {
+                        println!("schema v{}:  {}", s.version, s.collection);
+                    } else {
+                        println!("schema:     (none)");
+                    }
+                }
+            }
         }
     }
     Ok(())
@@ -264,6 +418,23 @@ fn run_entity(
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_entity(entity_to_json(&resp.entity), format);
+        }
+        EntityCmd::List { collection, limit } => {
+            let resp = handler
+                .query_entities(QueryEntitiesRequest {
+                    collection: CollectionId::new(&collection),
+                    limit,
+                    ..Default::default()
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let entities: Vec<Value> = resp.entities.iter().map(entity_to_json).collect();
+            match format {
+                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&entities)?),
+                OutputFormat::Table => {
+                    println!("{} entities (total: {})", entities.len(), resp.total_count);
+                    print_entities(&entities, format);
+                }
+            }
         }
         EntityCmd::Update {
             collection,
@@ -384,51 +555,124 @@ fn run_link(
 fn run_audit(
     cmd: AuditCmd,
     format: &OutputFormat,
-    handler: &AxonHandler<SqliteStorageAdapter>,
+    handler: &mut AxonHandler<SqliteStorageAdapter>,
 ) -> Result<()> {
     match cmd {
         AuditCmd::List {
             collection,
             entity_id,
+            actor,
+            limit,
         } => {
-            let entries = handler
+            let resp = handler
+                .query_audit(QueryAuditRequest {
+                    collection: collection.map(|c| CollectionId::new(&c)),
+                    entity_id: entity_id.map(|e| EntityId::new(&e)),
+                    actor,
+                    limit,
+                    ..Default::default()
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            print_audit_entries(&resp.entries, format);
+        }
+        AuditCmd::Show { id } => {
+            let entry = handler
                 .audit_log()
-                .query_by_entity(&CollectionId::new(&collection), &EntityId::new(&entity_id))
+                .find_by_id(id)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .ok_or_else(|| anyhow::anyhow!("audit entry {} not found", id))?;
+            match format {
+                OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&audit_entry_to_json(&entry))?
+                    );
+                }
+                OutputFormat::Table => {
+                    println!("id:         {}", entry.id);
+                    println!("timestamp:  {}", entry.timestamp_ns);
+                    println!("collection: {}", entry.collection);
+                    println!("entity_id:  {}", entry.entity_id);
+                    println!("version:    {}", entry.version);
+                    println!("mutation:   {}", entry.mutation);
+                    println!("actor:      {}", entry.actor);
+                    if let Some(ref before) = entry.data_before {
+                        println!("before:     {}", before);
+                    }
+                    if let Some(ref after) = entry.data_after {
+                        println!("after:      {}", after);
+                    }
+                }
+            }
+        }
+        AuditCmd::Revert {
+            audit_entry_id,
+            actor,
+            force,
+        } => {
+            let resp = handler
+                .revert_entity_to_audit_entry(RevertEntityRequest {
+                    audit_entry_id,
+                    actor,
+                    force,
+                })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
                 OutputFormat::Json => {
-                    let json_entries: Vec<Value> = entries
-                        .iter()
-                        .map(|e: &axon_audit::AuditEntry| {
-                            serde_json::json!({
-                                "id": e.id,
-                                "timestamp_ns": e.timestamp_ns,
-                                "collection": e.collection.to_string(),
-                                "entity_id": e.entity_id.to_string(),
-                                "version": e.version,
-                                "mutation": e.mutation.to_string(),
-                                "actor": e.actor,
-                            })
-                        })
-                        .collect();
-                    println!("{}", serde_json::to_string_pretty(&json_entries)?);
+                    let result = serde_json::json!({
+                        "entity": entity_to_json(&resp.entity),
+                        "audit_entry": audit_entry_to_json(&resp.audit_entry),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&result)?);
                 }
                 OutputFormat::Table => {
-                    if entries.is_empty() {
-                        println!("(no audit entries)");
-                    } else {
-                        for e in &entries {
-                            println!(
-                                "[{}] {:?} {}/{} v{} actor={}",
-                                e.id, e.mutation, e.collection, e.entity_id, e.version, e.actor,
-                            );
-                        }
-                    }
+                    println!(
+                        "reverted {}/{} to v{} (audit entry {})",
+                        resp.entity.collection,
+                        resp.entity.id,
+                        resp.entity.version,
+                        resp.audit_entry.id,
+                    );
                 }
             }
         }
     }
     Ok(())
+}
+
+fn audit_entry_to_json(e: &axon_audit::AuditEntry) -> Value {
+    serde_json::json!({
+        "id": e.id,
+        "timestamp_ns": e.timestamp_ns,
+        "collection": e.collection.to_string(),
+        "entity_id": e.entity_id.to_string(),
+        "version": e.version,
+        "mutation": e.mutation.to_string(),
+        "actor": e.actor,
+        "data_before": e.data_before,
+        "data_after": e.data_after,
+    })
+}
+
+fn print_audit_entries(entries: &[axon_audit::AuditEntry], format: &OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            let json_entries: Vec<Value> = entries.iter().map(audit_entry_to_json).collect();
+            println!("{}", serde_json::to_string_pretty(&json_entries).unwrap());
+        }
+        OutputFormat::Table => {
+            if entries.is_empty() {
+                println!("(no audit entries)");
+            } else {
+                for e in entries {
+                    println!(
+                        "[{}] {} {}/{} v{} actor={}",
+                        e.id, e.mutation, e.collection, e.entity_id, e.version, e.actor,
+                    );
+                }
+            }
+        }
+    }
 }
 
 fn entity_to_json(e: &axon_core::types::Entity) -> Value {
@@ -460,15 +704,33 @@ mod tests {
     }
 
     #[test]
-    fn collection_create_embedded_mode() {
+    fn collection_create_and_describe() {
         let (_f, db) = tmp_db();
         let cli = make_cli(&db, &["collection", "create", "tasks"]);
         run(cli).unwrap();
+
+        let cli = make_cli(&db, &["collection", "describe", "tasks"]);
+        run(cli).unwrap();
+    }
+
+    #[test]
+    fn collection_list_and_drop() {
+        let (_f, db) = tmp_db();
+        // Create two collections.
+        run(make_cli(&db, &["collection", "create", "tasks"])).unwrap();
+        run(make_cli(&db, &["collection", "create", "users"])).unwrap();
+
+        // List should show both.
+        run(make_cli(&db, &["--output", "json", "collection", "list"])).unwrap();
+
+        // Drop one.
+        run(make_cli(&db, &["collection", "drop", "users"])).unwrap();
     }
 
     #[test]
     fn entity_create_get_round_trip() {
         let (_f, db) = tmp_db();
+        run(make_cli(&db, &["collection", "create", "tasks"])).unwrap();
 
         let cli = make_cli(
             &db,
@@ -481,9 +743,32 @@ mod tests {
     }
 
     #[test]
-    fn entity_create_get_json_output() {
-        // Just verify it doesn't error; stdout capture not needed here.
+    fn entity_list_returns_entities() {
         let (_f, db) = tmp_db();
+        run(make_cli(&db, &["collection", "create", "tasks"])).unwrap();
+        run(make_cli(
+            &db,
+            &["entity", "create", "tasks", "t-001", r#"{"title":"a"}"#],
+        ))
+        .unwrap();
+        run(make_cli(
+            &db,
+            &["entity", "create", "tasks", "t-002", r#"{"title":"b"}"#],
+        ))
+        .unwrap();
+
+        run(make_cli(
+            &db,
+            &["--output", "json", "entity", "list", "tasks"],
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn entity_create_get_json_output() {
+        let (_f, db) = tmp_db();
+        run(make_cli(&db, &["collection", "create", "tasks"])).unwrap();
+
         let cli = make_cli(
             &db,
             &[
@@ -507,10 +792,24 @@ mod tests {
 
     #[test]
     fn audit_list_shows_mutations() {
-        // Create entity and audit list in the same handler (same session).
         let (_f, db) = tmp_db();
         let storage = SqliteStorageAdapter::open(&db).unwrap();
         let mut handler = AxonHandler::new(storage);
+
+        // Create collection first.
+        handler
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("tasks"),
+                schema: CollectionSchema {
+                    collection: CollectionId::new("tasks"),
+                    description: None,
+                    version: 1,
+                    entity_schema: None,
+                    link_types: Default::default(),
+                },
+                actor: None,
+            })
+            .unwrap();
 
         handler
             .create_entity(CreateEntityRequest {
@@ -531,12 +830,66 @@ mod tests {
     }
 
     #[test]
+    fn audit_show_displays_entry() {
+        let (_f, db) = tmp_db();
+        let storage = SqliteStorageAdapter::open(&db).unwrap();
+        let mut handler = AxonHandler::new(storage);
+
+        handler
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("tasks"),
+                schema: CollectionSchema {
+                    collection: CollectionId::new("tasks"),
+                    description: None,
+                    version: 1,
+                    entity_schema: None,
+                    link_types: Default::default(),
+                },
+                actor: None,
+            })
+            .unwrap();
+
+        handler
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                data: serde_json::json!({"title": "hi"}),
+                actor: Some("agent-1".into()),
+            })
+            .unwrap();
+
+        // Find the entry ID.
+        let entries = handler
+            .audit_log()
+            .query_by_entity(&CollectionId::new("tasks"), &EntityId::new("t-001"))
+            .unwrap();
+        assert!(!entries.is_empty());
+
+        let entry = handler.audit_log().find_by_id(entries[0].id).unwrap();
+        assert!(entry.is_some());
+    }
+
+    #[test]
     fn output_json_produces_valid_json() {
         let (_f, db) = tmp_db();
 
-        // Create via handler to avoid needing stdout capture.
         let storage = SqliteStorageAdapter::open(&db).unwrap();
         let mut handler = AxonHandler::new(storage);
+
+        handler
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("tasks"),
+                schema: CollectionSchema {
+                    collection: CollectionId::new("tasks"),
+                    description: None,
+                    version: 1,
+                    entity_schema: None,
+                    link_types: Default::default(),
+                },
+                actor: None,
+            })
+            .unwrap();
+
         let resp = handler
             .create_entity(CreateEntityRequest {
                 collection: CollectionId::new("tasks"),
@@ -547,7 +900,6 @@ mod tests {
             .unwrap();
 
         let json = entity_to_json(&resp.entity);
-        // Serialize and re-parse to verify it's valid JSON.
         let s = serde_json::to_string(&json).unwrap();
         let _: Value = serde_json::from_str(&s).unwrap();
     }
