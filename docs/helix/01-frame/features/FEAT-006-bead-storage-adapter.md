@@ -17,7 +17,7 @@ dun:
 
 ## Overview
 
-The bead storage adapter is a purpose-built collection schema and API layer for storing beads — the portable work items used by agentic frameworks like steveyegge/beads, br, and DDx. It provides a pre-defined schema, lifecycle state management, dependency tracking, and ready-queue queries. This is Axon's first "opinionated module" — a domain-specific layer built on the generic collection/document primitives.
+The bead storage adapter is a purpose-built collection schema and API layer for storing beads — the portable work items used by agentic frameworks like steveyegge/beads, br, and DDx. It provides a pre-defined schema, lifecycle state management, dependency tracking, and ready-queue queries. This is Axon's first "opinionated module" — a domain-specific layer built on the generic collection/entity primitives.
 
 ## Problem Statement
 
@@ -27,7 +27,7 @@ Every agentic framework that uses beads (or bead-like work items) reinvents stor
 
 ### Functional Requirements
 
-- **Pre-defined bead schema**: A built-in schema for bead documents covering: id, type, status, title, description, content, dependencies, dependents, metadata, tags, assignee, priority, timestamps
+- **Pre-defined bead schema**: A built-in schema for bead entities covering: id, type, status, title, description, content, dependencies, dependents, metadata, tags, assignee, priority, timestamps
 - **Lifecycle states**: Beads have a status lifecycle: `draft` -> `pending` -> `ready` -> `in_progress` -> `review` -> `done` (with `blocked` and `cancelled` as terminal/side states)
 - **Dependency tracking**: Beads can declare dependencies on other beads. The dependency graph is queryable
 - **Ready queue**: Query for beads that are `pending` with all dependencies satisfied (i.e., all deps are `done`). These are "ready" beads

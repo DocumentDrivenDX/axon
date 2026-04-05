@@ -412,7 +412,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 - [ ] Audit log captures 100% of mutations with actor, timestamp, operation, diff
 - [ ] Schema validation rejects all invalid writes with structured errors
 - [ ] Embedded and server modes pass identical test suites
-- [ ] API latency targets met (p99 <10ms single-doc operations)
+- [ ] API latency targets met (p99 <10ms single-entity operations)
 - [ ] CLI supports collection management, schema operations, data inspection, audit queries
 
 ### Launch Criteria

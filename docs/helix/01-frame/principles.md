@@ -72,7 +72,7 @@ Schemas must provide enough value — validation, migration, documentation, quer
 
 | Criterion | Test |
 |-----------|------|
-| Validation on every write | Invalid documents are rejected with structured, actionable errors |
+| Validation on every write | Invalid entities are rejected with structured, actionable errors |
 | Schema inspection | Agents can retrieve and reason about schemas programmatically |
 | Evolution support | Additive changes are automatic; breaking changes are detected and require migration |
 
