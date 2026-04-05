@@ -6,6 +6,13 @@ use crate::id::{CollectionId, EntityId};
 /// The name of the internal collection used to store links.
 pub const LINKS_COLLECTION: &str = "__axon_links__";
 
+/// The name of the reverse-index collection for efficient inbound-link queries.
+///
+/// Entries use IDs formatted as `{target_col}/{target_id}/{source_col}/{source_id}/{link_type}`,
+/// enabling a targeted prefix scan to find all links pointing at a given entity
+/// without a full table scan of the main links collection.
+pub const LINKS_REV_COLLECTION: &str = "__axon_links_rev__";
+
 /// A typed directional edge between two entities.
 ///
 /// Links are stored as entities in the [`LINKS_COLLECTION`] pseudo-collection
@@ -48,6 +55,48 @@ impl Link {
     /// Returns the internal collection that holds all links.
     pub fn links_collection() -> CollectionId {
         CollectionId::new(LINKS_COLLECTION)
+    }
+
+    /// Returns the reverse-index collection for inbound-link queries.
+    pub fn links_rev_collection() -> CollectionId {
+        CollectionId::new(LINKS_REV_COLLECTION)
+    }
+
+    /// Computes the reverse-index storage ID for an inbound-link entry.
+    ///
+    /// Format: `<target_col>/<target_id>/<source_col>/<source_id>/<link_type>`
+    ///
+    /// IDs with the same `target_col/target_id/` prefix can be found with a
+    /// bounded `range_scan`, avoiding a full table scan.
+    pub fn rev_storage_id(
+        target_col: &CollectionId,
+        target_id: &EntityId,
+        source_col: &CollectionId,
+        source_id: &EntityId,
+        link_type: &str,
+    ) -> EntityId {
+        EntityId::new(format!(
+            "{}/{}/{}/{}/{}",
+            target_col, target_id, source_col, source_id, link_type,
+        ))
+    }
+
+    /// Serializes this link into a reverse-index [`Entity`].
+    ///
+    /// The entity carries no data payload; only its ID is meaningful.
+    pub fn to_rev_entity(&self) -> Entity {
+        let rev_id = Self::rev_storage_id(
+            &self.target_collection,
+            &self.target_id,
+            &self.source_collection,
+            &self.source_id,
+            &self.link_type,
+        );
+        Entity::new(
+            Self::links_rev_collection(),
+            rev_id,
+            serde_json::Value::Null,
+        )
     }
 
     /// Serializes this link into a storage [`Entity`].

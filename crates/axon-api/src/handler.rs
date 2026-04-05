@@ -154,16 +154,25 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: DeleteEntityRequest,
     ) -> Result<DeleteEntityResponse, AxonError> {
         // Referential integrity: reject delete when inbound links exist.
-        let links_col = Link::links_collection();
-        let all_link_entities = self.storage.range_scan(&links_col, None, None, None)?;
-        let inbound_count = all_link_entities
+        //
+        // Use the reverse-index collection to avoid an O(N_total_links) full
+        // table scan.  Reverse-index IDs are formatted as
+        // `{target_col}/{target_id}/{source_col}/{source_id}/{link_type}`, so a
+        // prefix scan from `{target_col}/{target_id}/` with limit=1 is enough
+        // to determine whether any inbound link exists.
+        let links_rev_col = Link::links_rev_collection();
+        let rev_prefix = format!("{}/{}/", req.collection, req.id);
+        let rev_start = EntityId::new(&rev_prefix);
+        let rev_candidates = self
+            .storage
+            .range_scan(&links_rev_col, Some(&rev_start), None, Some(1))?;
+        let inbound_count = rev_candidates
             .iter()
-            .filter_map(Link::from_entity)
-            .filter(|l| l.target_collection == req.collection && l.target_id == req.id)
+            .filter(|e| e.id.as_str().starts_with(&rev_prefix))
             .count();
         if inbound_count > 0 {
             return Err(AxonError::InvalidOperation(format!(
-                "entity {}/{} has {inbound_count} inbound link(s); delete or re-target those links first",
+                "entity {}/{} has inbound link(s); delete or re-target those links first",
                 req.collection, req.id
             )));
         }
@@ -424,7 +433,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
             metadata: req.metadata,
         };
 
-        // Store the link as an entity in the internal links collection.
+        // Store the link and its reverse-index entry.
+        self.storage.put(link.to_rev_entity())?;
         self.storage.put(link.to_entity())?;
 
         Ok(CreateLinkResponse { link })
