@@ -611,10 +611,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     .ok()
                     .flatten()
                     .map(|s| s.version);
+                let (created_at_ns, updated_at_ns) =
+                    self.collection_timestamps(name).unwrap_or((None, None));
                 CollectionMetadata {
                     name: name.to_string(),
                     entity_count,
                     schema_version,
+                    created_at_ns,
+                    updated_at_ns,
                 }
             })
             .collect();
@@ -622,7 +626,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(ListCollectionsResponse { collections })
     }
 
-    /// Describe a single collection (entity count + full schema).
+    /// Describe a single collection (entity count + full schema + timestamps).
     ///
     /// Returns [`AxonError::NotFound`] if the collection was not explicitly created.
     pub fn describe_collection(
@@ -636,12 +640,32 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         let entity_count = self.storage.count(&req.name)?;
         let schema = self.storage.get_schema(&req.name)?;
+        let (created_at_ns, updated_at_ns) = self
+            .collection_timestamps(&req.name)
+            .unwrap_or((None, None));
 
         Ok(DescribeCollectionResponse {
             name: req.name.to_string(),
             entity_count,
             schema,
+            created_at_ns,
+            updated_at_ns,
         })
+    }
+
+    /// Derive created_at and updated_at timestamps for a collection from the
+    /// audit log. Returns `(created_at_ns, updated_at_ns)`.
+    fn collection_timestamps(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<(Option<u64>, Option<u64>), AxonError> {
+        let page = self.audit.query_paginated(AuditQuery {
+            collection: Some(collection.clone()),
+            ..Default::default()
+        })?;
+        let created_at_ns = page.entries.first().map(|e| e.timestamp_ns);
+        let updated_at_ns = page.entries.last().map(|e| e.timestamp_ns);
+        Ok((created_at_ns, updated_at_ns))
     }
 
     // ── Schema operations ────────────────────────────────────────────────────
@@ -2043,6 +2067,19 @@ entity_schema:
         assert_eq!(resp.entity_count, 1);
         assert!(resp.schema.is_some());
         assert_eq!(resp.schema.unwrap().version, 2);
+        // Timestamp fields populated from audit log (FEAT-001).
+        assert!(
+            resp.created_at_ns.is_some(),
+            "created_at_ns should be populated from audit log"
+        );
+        assert!(
+            resp.updated_at_ns.is_some(),
+            "updated_at_ns should be populated from audit log"
+        );
+        assert!(
+            resp.updated_at_ns.unwrap() >= resp.created_at_ns.unwrap(),
+            "updated_at_ns should be >= created_at_ns"
+        );
     }
 
     #[test]

@@ -111,6 +111,12 @@ pub struct CollectionMetadata {
     pub entity_count: usize,
     /// Schema version, if a schema has been registered.
     pub schema_version: Option<u32>,
+    /// Nanoseconds since Unix epoch when the collection was created (from audit log).
+    /// `None` if the audit log has no creation entry (e.g. pre-populated storage).
+    pub created_at_ns: Option<u64>,
+    /// Nanoseconds since Unix epoch of the most recent mutation in this collection.
+    /// `None` if the audit log has no entries for this collection.
+    pub updated_at_ns: Option<u64>,
 }
 
 /// Response from listing all explicitly created collections.
@@ -126,6 +132,10 @@ pub struct DescribeCollectionResponse {
     pub entity_count: usize,
     /// Full schema, if one has been registered.
     pub schema: Option<CollectionSchema>,
+    /// Nanoseconds since Unix epoch when the collection was created.
+    pub created_at_ns: Option<u64>,
+    /// Nanoseconds since Unix epoch of the most recent mutation.
+    pub updated_at_ns: Option<u64>,
 }
 
 // ── Schema responses ─────────────────────────────────────────────────────────

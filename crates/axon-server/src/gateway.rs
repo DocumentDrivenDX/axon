@@ -581,6 +581,8 @@ async fn describe_collection(
             "name": resp.name,
             "entity_count": resp.entity_count,
             "schema": resp.schema,
+            "created_at_ns": resp.created_at_ns,
+            "updated_at_ns": resp.updated_at_ns,
         }))
         .into_response(),
         Err(e) => axon_error_response(e),
