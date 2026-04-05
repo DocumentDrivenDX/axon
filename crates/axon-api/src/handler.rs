@@ -47,9 +47,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     /// Persist a schema for a collection via the storage adapter.
     ///
+    /// Validates the `entity_schema` (if present) before persisting.
     /// Subsequent creates and updates for that collection are validated
     /// against this schema. Replaces any previously stored schema.
     pub fn put_schema(&mut self, schema: CollectionSchema) -> Result<(), AxonError> {
+        if let Some(entity_schema) = &schema.entity_schema {
+            compile_entity_schema(entity_schema)?;
+        }
         self.storage.put_schema(&schema)
     }
 
@@ -65,11 +69,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// for that collection will be validated against this schema.
     ///
     /// Deprecated in favour of [`put_schema`]; kept for backwards compatibility
-    /// in tests and simulation harness code. Panics on storage errors.
+    /// in tests and simulation harness code. Panics on storage or validation errors.
     pub fn register_schema(&mut self, schema: CollectionSchema) {
-        self.storage
-            .put_schema(&schema)
-            .expect("register_schema: storage error");
+        self.put_schema(schema)
+            .expect("register_schema: storage or validation error");
     }
 
     /// Returns a reference to the internal audit log (useful in tests).
@@ -2340,6 +2343,24 @@ entity_schema:
             actor: None,
         })
         .unwrap();
+    }
+
+    #[test]
+    fn put_schema_rejects_invalid_entity_schema() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let schema = axon_schema::schema::CollectionSchema {
+            collection: col,
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({"type": "bogus"})),
+        };
+
+        let err = h.put_schema(schema).unwrap_err();
+        assert!(
+            matches!(err, AxonError::SchemaValidation(_)),
+            "expected SchemaValidation error, got: {err}"
+        );
     }
 
     #[test]
