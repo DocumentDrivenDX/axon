@@ -195,11 +195,13 @@ impl Transaction {
                 MutationType::EntityUpdate | MutationType::EntityDelete => {
                     current_version == op.expected_version
                 }
-                // Collection/schema mutations and entity reverts are not staged via Transaction.
+                // Collection/schema mutations, entity reverts, and link mutations are not staged via Transaction.
                 MutationType::CollectionCreate
                 | MutationType::CollectionDrop
                 | MutationType::SchemaUpdate
-                | MutationType::EntityRevert => true,
+                | MutationType::EntityRevert
+                | MutationType::LinkCreate
+                | MutationType::LinkDelete => true,
             };
 
             if !ok {
@@ -264,11 +266,13 @@ impl Transaction {
                     pending_entries.push(entry);
                     written.push(op.entity);
                 }
-                // Collection/schema mutations and entity reverts are not staged via Transaction.
+                // Collection/schema mutations, entity reverts, and link mutations are not staged via Transaction.
                 MutationType::CollectionCreate
                 | MutationType::CollectionDrop
                 | MutationType::SchemaUpdate
-                | MutationType::EntityRevert => {}
+                | MutationType::EntityRevert
+                | MutationType::LinkCreate
+                | MutationType::LinkDelete => {}
             }
         }
 

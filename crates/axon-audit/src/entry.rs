@@ -21,6 +21,9 @@ pub enum MutationType {
     EntityDelete,
     /// An entity was reverted to a previous state from an audit entry.
     EntityRevert,
+    // ── Link operations ─────────────────────────────────────────────────────
+    LinkCreate,
+    LinkDelete,
     // ── Collection lifecycle ─────────────────────────────────────────────────
     CollectionCreate,
     CollectionDrop,
@@ -35,6 +38,8 @@ impl std::fmt::Display for MutationType {
             MutationType::EntityUpdate => "entity.update",
             MutationType::EntityDelete => "entity.delete",
             MutationType::EntityRevert => "entity.revert",
+            MutationType::LinkCreate => "link.create",
+            MutationType::LinkDelete => "link.delete",
             MutationType::CollectionCreate => "collection.create",
             MutationType::CollectionDrop => "collection.drop",
             MutationType::SchemaUpdate => "schema.update",
@@ -185,6 +190,8 @@ mod tests {
         assert_eq!(MutationType::EntityUpdate.to_string(), "entity.update");
         assert_eq!(MutationType::EntityDelete.to_string(), "entity.delete");
         assert_eq!(MutationType::EntityRevert.to_string(), "entity.revert");
+        assert_eq!(MutationType::LinkCreate.to_string(), "link.create");
+        assert_eq!(MutationType::LinkDelete.to_string(), "link.delete");
         assert_eq!(
             MutationType::CollectionCreate.to_string(),
             "collection.create"

@@ -222,6 +222,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
             Some("entity.update") => Some(MT::EntityUpdate),
             Some("entity.delete") => Some(MT::EntityDelete),
             Some("entity.revert") => Some(MT::EntityRevert),
+            Some("link.create") => Some(MT::LinkCreate),
+            Some("link.delete") => Some(MT::LinkDelete),
             Some("collection.create") => Some(MT::CollectionCreate),
             Some("collection.drop") => Some(MT::CollectionDrop),
             Some("schema.update") => Some(MT::SchemaUpdate),
@@ -435,7 +437,19 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // Store the link and its reverse-index entry.
         self.storage.put(link.to_rev_entity())?;
-        self.storage.put(link.to_entity())?;
+        let link_entity = link.to_entity();
+        self.storage.put(link_entity.clone())?;
+
+        // Audit: record the link creation.
+        self.audit.append(AuditEntry::new(
+            link_entity.collection,
+            link_entity.id,
+            link_entity.version,
+            MutationType::LinkCreate,
+            None,
+            Some(link_entity.data),
+            req.actor,
+        ))?;
 
         Ok(CreateLinkResponse { link })
     }
@@ -454,21 +468,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
             &req.target_id,
         );
 
-        // Verify the link exists before attempting deletion.
-        if self
+        // Verify the link exists before attempting deletion; capture its data for the audit entry.
+        let link_entity = self
             .storage
             .get(&Link::links_collection(), &link_id)?
-            .is_none()
-        {
-            return Err(AxonError::NotFound(format!(
-                "link {}/{} --[{}]--> {}/{}",
-                req.source_collection,
-                req.source_id,
-                req.link_type,
-                req.target_collection,
-                req.target_id,
-            )));
-        }
+            .ok_or_else(|| {
+                AxonError::NotFound(format!(
+                    "link {}/{} --[{}]--> {}/{}",
+                    req.source_collection,
+                    req.source_id,
+                    req.link_type,
+                    req.target_collection,
+                    req.target_id,
+                ))
+            })?;
 
         // Delete the reverse-index entry first, then the forward link.
         let rev_id = Link::rev_storage_id(
@@ -481,6 +494,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.storage
             .delete(&Link::links_rev_collection(), &rev_id)?;
         self.storage.delete(&Link::links_collection(), &link_id)?;
+
+        // Audit: record the link deletion.
+        self.audit.append(AuditEntry::new(
+            link_entity.collection,
+            link_entity.id,
+            link_entity.version,
+            MutationType::LinkDelete,
+            Some(link_entity.data),
+            None,
+            req.actor,
+        ))?;
 
         Ok(DeleteLinkResponse {
             source_collection: req.source_collection.to_string(),
@@ -849,6 +873,107 @@ entity_schema:
             .unwrap_err();
 
         assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn create_link_produces_audit_entry() {
+        let mut h = handler();
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "tasks", "t-001");
+
+        // Two audit entries already exist from make_entity calls.
+        let before = h.audit_log().len();
+
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("users"),
+            source_id: EntityId::new("u-001"),
+            target_collection: CollectionId::new("tasks"),
+            target_id: EntityId::new("t-001"),
+            link_type: "assigned-to".into(),
+            metadata: json!(null),
+            actor: Some("agent-1".into()),
+        })
+        .unwrap();
+
+        assert_eq!(
+            h.audit_log().len(),
+            before + 1,
+            "create_link must produce exactly one audit entry"
+        );
+
+        let resp = h
+            .query_audit(QueryAuditRequest {
+                operation: Some("link.create".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(resp.entries.len(), 1, "exactly one link.create entry");
+        let entry = &resp.entries[0];
+        assert_eq!(entry.mutation, axon_audit::entry::MutationType::LinkCreate);
+        assert_eq!(entry.actor, "agent-1");
+        assert!(
+            entry.data_before.is_none(),
+            "link.create must have no before state"
+        );
+        assert!(
+            entry.data_after.is_some(),
+            "link.create must record after state"
+        );
+    }
+
+    #[test]
+    fn delete_link_produces_audit_entry() {
+        let mut h = handler();
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "tasks", "t-001");
+
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("users"),
+            source_id: EntityId::new("u-001"),
+            target_collection: CollectionId::new("tasks"),
+            target_id: EntityId::new("t-001"),
+            link_type: "assigned-to".into(),
+            metadata: json!(null),
+            actor: None,
+        })
+        .unwrap();
+
+        let before = h.audit_log().len();
+
+        h.delete_link(DeleteLinkRequest {
+            source_collection: CollectionId::new("users"),
+            source_id: EntityId::new("u-001"),
+            target_collection: CollectionId::new("tasks"),
+            target_id: EntityId::new("t-001"),
+            link_type: "assigned-to".into(),
+            actor: Some("agent-2".into()),
+        })
+        .unwrap();
+
+        assert_eq!(
+            h.audit_log().len(),
+            before + 1,
+            "delete_link must produce exactly one audit entry"
+        );
+
+        let resp = h
+            .query_audit(QueryAuditRequest {
+                operation: Some("link.delete".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(resp.entries.len(), 1, "exactly one link.delete entry");
+        let entry = &resp.entries[0];
+        assert_eq!(entry.mutation, axon_audit::entry::MutationType::LinkDelete);
+        assert_eq!(entry.actor, "agent-2");
+        assert!(
+            entry.data_before.is_some(),
+            "link.delete must record before state"
+        );
+        assert!(
+            entry.data_after.is_none(),
+            "link.delete must have no after state"
+        );
     }
 
     #[test]
