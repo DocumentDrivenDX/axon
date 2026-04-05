@@ -35,6 +35,16 @@ pub struct CreateLinkResponse {
     pub link: Link,
 }
 
+/// Response after successfully deleting a link.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteLinkResponse {
+    pub source_collection: String,
+    pub source_id: String,
+    pub target_collection: String,
+    pub target_id: String,
+    pub link_type: String,
+}
+
 /// Response from a link-traversal query.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraverseResponse {

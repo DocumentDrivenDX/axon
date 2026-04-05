@@ -11,13 +11,13 @@ use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DropCollectionRequest, GetEntityRequest, QueryAuditRequest, RevertEntityRequest,
-    TraverseRequest, UpdateEntityRequest,
+    DeleteLinkRequest, DropCollectionRequest, GetEntityRequest, QueryAuditRequest,
+    RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse,
-    DropCollectionResponse, GetEntityResponse, QueryAuditResponse, RevertEntityResponse,
-    TraverseResponse, UpdateEntityResponse,
+    DeleteLinkResponse, DropCollectionResponse, GetEntityResponse, QueryAuditResponse,
+    RevertEntityResponse, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -163,9 +163,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let links_rev_col = Link::links_rev_collection();
         let rev_prefix = format!("{}/{}/", req.collection, req.id);
         let rev_start = EntityId::new(&rev_prefix);
-        let rev_candidates = self
-            .storage
-            .range_scan(&links_rev_col, Some(&rev_start), None, Some(1))?;
+        let rev_candidates =
+            self.storage
+                .range_scan(&links_rev_col, Some(&rev_start), None, Some(1))?;
         let inbound_count = rev_candidates
             .iter()
             .filter(|e| e.id.as_str().starts_with(&rev_prefix))
@@ -438,6 +438,57 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.storage.put(link.to_entity())?;
 
         Ok(CreateLinkResponse { link })
+    }
+
+    /// Delete a typed link between two entities.
+    ///
+    /// Removes both the forward link from `__axon_links__` and the corresponding
+    /// reverse-index entry from `__axon_links_rev__`. If the link does not exist,
+    /// [`AxonError::NotFound`] is returned.
+    pub fn delete_link(&mut self, req: DeleteLinkRequest) -> Result<DeleteLinkResponse, AxonError> {
+        let link_id = Link::storage_id(
+            &req.source_collection,
+            &req.source_id,
+            &req.link_type,
+            &req.target_collection,
+            &req.target_id,
+        );
+
+        // Verify the link exists before attempting deletion.
+        if self
+            .storage
+            .get(&Link::links_collection(), &link_id)?
+            .is_none()
+        {
+            return Err(AxonError::NotFound(format!(
+                "link {}/{} --[{}]--> {}/{}",
+                req.source_collection,
+                req.source_id,
+                req.link_type,
+                req.target_collection,
+                req.target_id,
+            )));
+        }
+
+        // Delete the reverse-index entry first, then the forward link.
+        let rev_id = Link::rev_storage_id(
+            &req.target_collection,
+            &req.target_id,
+            &req.source_collection,
+            &req.source_id,
+            &req.link_type,
+        );
+        self.storage
+            .delete(&Link::links_rev_collection(), &rev_id)?;
+        self.storage.delete(&Link::links_collection(), &link_id)?;
+
+        Ok(DeleteLinkResponse {
+            source_collection: req.source_collection.to_string(),
+            source_id: req.source_id.to_string(),
+            target_collection: req.target_collection.to_string(),
+            target_id: req.target_id.to_string(),
+            link_type: req.link_type,
+        })
     }
 
     /// Traverse links from a starting entity using BFS up to `max_depth` hops.
@@ -1161,6 +1212,79 @@ entity_schema:
                 actor: None,
             })
             .unwrap_err();
+        assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    // ── Link deletion ────────────────────────────────────────────────────────
+
+    #[test]
+    fn delete_link_removes_forward_and_reverse_entries() {
+        let mut h = handler();
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "tasks", "t-001");
+
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("users"),
+            source_id: EntityId::new("u-001"),
+            target_collection: CollectionId::new("tasks"),
+            target_id: EntityId::new("t-001"),
+            link_type: "assigned-to".into(),
+            metadata: json!(null),
+            actor: None,
+        })
+        .unwrap();
+
+        // Delete the link.
+        let resp = h
+            .delete_link(DeleteLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-001"),
+                target_collection: CollectionId::new("tasks"),
+                target_id: EntityId::new("t-001"),
+                link_type: "assigned-to".into(),
+                actor: None,
+            })
+            .unwrap();
+
+        assert_eq!(resp.link_type, "assigned-to");
+
+        // Forward link must be gone — traversal from u-001 should return nothing.
+        let trav = h
+            .traverse(TraverseRequest {
+                collection: CollectionId::new("users"),
+                id: EntityId::new("u-001"),
+                link_type: Some("assigned-to".into()),
+                max_depth: Some(1),
+            })
+            .unwrap();
+        assert!(trav.entities.is_empty(), "forward link must be removed");
+
+        // Reverse-index must be gone — delete_entity on t-001 must now succeed.
+        h.delete_entity(DeleteEntityRequest {
+            collection: CollectionId::new("tasks"),
+            id: EntityId::new("t-001"),
+            actor: None,
+        })
+        .expect("delete_entity must succeed after reverse-index entry is removed");
+    }
+
+    #[test]
+    fn delete_link_missing_returns_not_found() {
+        let mut h = handler();
+        make_entity(&mut h, "users", "u-001");
+        make_entity(&mut h, "tasks", "t-001");
+
+        let err = h
+            .delete_link(DeleteLinkRequest {
+                source_collection: CollectionId::new("users"),
+                source_id: EntityId::new("u-001"),
+                target_collection: CollectionId::new("tasks"),
+                target_id: EntityId::new("t-001"),
+                link_type: "assigned-to".into(),
+                actor: None,
+            })
+            .unwrap_err();
+
         assert!(matches!(err, AxonError::NotFound(_)));
     }
 }

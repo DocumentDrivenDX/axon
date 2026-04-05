@@ -58,6 +58,18 @@ pub struct CreateLinkRequest {
     pub actor: Option<String>,
 }
 
+/// Request to delete a typed link between two entities.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteLinkRequest {
+    pub source_collection: CollectionId,
+    pub source_id: EntityId,
+    pub target_collection: CollectionId,
+    pub target_id: EntityId,
+    /// Semantic label for the edge (e.g., `"belongs-to"`, `"depends-on"`).
+    pub link_type: String,
+    pub actor: Option<String>,
+}
+
 /// Request to traverse links from a starting entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraverseRequest {

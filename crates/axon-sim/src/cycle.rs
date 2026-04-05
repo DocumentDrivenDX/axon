@@ -265,10 +265,15 @@ pub fn inject_isolation_violation(storage: &mut MemoryStorageAdapter, _ring_size
 
     let col = CollectionId::new(NODES_COL);
     // Remove the link node-0 → node-1 to break the ring.
+    // Delete both the forward link and its reverse-index entry to keep storage consistent.
     let link_entity_id = Link::storage_id(&col, &node_id(0), LINK_TYPE, &col, &node_id(1));
     storage
         .delete(&Link::links_collection(), &link_entity_id)
         .expect("delete should succeed");
+    let rev_id = Link::rev_storage_id(&col, &node_id(1), &col, &node_id(0), LINK_TYPE);
+    storage
+        .delete(&Link::links_rev_collection(), &rev_id)
+        .expect("reverse-index delete should succeed");
 }
 
 /// Build a fully set-up cycle handler (setup phase only, no execution).
