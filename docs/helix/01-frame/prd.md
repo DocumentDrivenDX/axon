@@ -311,9 +311,9 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 ### Primary Flow: Agent Storing a Bead
 
 1. **Setup**: Developer defines a `beads` collection with a schema describing bead structure (id, type, status, content, dependencies, metadata)
-2. **Create**: Agent creates a new bead document via API. Axon validates against schema, assigns version, writes audit record
+2. **Create**: Agent creates a new bead entity via API. Axon validates against schema, assigns version, writes audit record
 3. **Update**: Agent updates bead status from `pending` to `in_progress`. Axon validates transition, bumps version, writes audit record with before/after diff
-4. **Query**: Agent queries for all beads with `status=pending` and `type=code-review`. Axon returns matching documents
+4. **Query**: Agent queries for all beads with `status=pending` and `type=code-review`. Axon returns matching entities
 5. **Audit**: Developer inspects audit log to understand agent behavior: "show me all mutations to bead X in the last hour"
 6. **Revert**: Developer reverts bead X to a previous state using audit log reference
 
@@ -397,7 +397,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ### Key Milestones
 
-- **Week 4**: Embedded Axon storing and querying documents with schema validation
+- **Week 4**: Embedded Axon storing and querying entities with schema validation
 - **Week 8**: Audit log queryable; CLI operational
 - **Week 14**: Server mode with API; bead adapter working
 - **Week 18**: Production-ready V1; internal projects migrating
