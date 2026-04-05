@@ -1,3 +1,4 @@
+use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
 use axon_core::id::CollectionId;
 use axon_core::id::EntityId;
@@ -77,6 +78,26 @@ pub trait StorageAdapter: Send + Sync {
     /// The default implementation is a no-op.
     fn abort_tx(&mut self) -> Result<(), AxonError> {
         Ok(())
+    }
+
+    // ── Audit log (co-located writes) ────────────────────────────────────────
+
+    /// Append an audit entry within the current storage transaction.
+    ///
+    /// This is called **inside** `begin_tx` / `commit_tx` so that the audit
+    /// write is part of the same atomic database transaction as entity
+    /// mutations. If the storage transaction is later rolled back, the audit
+    /// entry is rolled back too.
+    ///
+    /// The implementation must assign `entry.id` (from the backing store's
+    /// sequence) and `entry.timestamp_ns` (current wall-clock time) if they
+    /// are still at their zero sentinel values, then persist the entry.
+    ///
+    /// The default implementation is a no-op that returns the entry unchanged.
+    /// Adapters that support co-located audit writes (e.g. SQLite) should
+    /// override this method.
+    fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+        Ok(entry)
     }
 
     // ── Schema persistence ───────────────────────────────────────────────────

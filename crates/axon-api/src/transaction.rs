@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use axon_audit::entry::{AuditEntry, MutationType};
 use axon_audit::log::AuditLog;
@@ -7,6 +8,12 @@ use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
 use axon_storage::adapter::StorageAdapter;
 use serde_json::Value;
+
+/// Maximum number of operations allowed per transaction (FEAT-008).
+const MAX_OPS: usize = 100;
+
+/// Default transaction timeout (FEAT-008).
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Global counter for generating unique transaction IDs.
 static TX_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -39,6 +46,8 @@ pub struct Transaction {
     /// Unique identifier for this transaction.
     pub id: String,
     ops: Vec<WriteOp>,
+    created_at: Instant,
+    timeout: Duration,
 }
 
 impl Transaction {
@@ -47,7 +56,26 @@ impl Transaction {
         Self {
             id: next_tx_id(),
             ops: Vec::new(),
+            created_at: Instant::now(),
+            timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Create a transaction with a custom timeout.
+    pub fn with_timeout(timeout: Duration) -> Self {
+        Self {
+            timeout,
+            ..Self::new()
+        }
+    }
+
+    fn check_op_limit(&self) -> Result<(), AxonError> {
+        if self.ops.len() >= MAX_OPS {
+            return Err(AxonError::InvalidArgument(format!(
+                "transaction exceeds maximum of {MAX_OPS} operations"
+            )));
+        }
+        Ok(())
     }
 
     /// Stage a create operation for `entity`.
@@ -58,39 +86,53 @@ impl Transaction {
     /// In practice, callers pass `expected_version = 0` for creates because the
     /// entity starts at version 1.  The commit phase checks that no entity with
     /// that ID already exists (stored version 0 → entity absent).
-    pub fn create(&mut self, entity: Entity) {
+    /// Returns `Err(InvalidArgument)` if the transaction already has [`MAX_OPS`] operations.
+    pub fn create(&mut self, entity: Entity) -> Result<(), AxonError> {
+        self.check_op_limit()?;
         self.ops.push(WriteOp {
             entity,
             expected_version: 0,
             data_before: None,
             mutation: MutationType::EntityCreate,
         });
+        Ok(())
     }
 
     /// Stage an update operation for `entity`.
     ///
     /// `expected_version` must equal the version currently in storage, otherwise
     /// the entire transaction aborts with [`AxonError::ConflictingVersion`].
-    pub fn update(&mut self, entity: Entity, expected_version: u64, data_before: Option<Value>) {
+    ///
+    /// Returns `Err(InvalidArgument)` if the transaction already has [`MAX_OPS`] operations.
+    pub fn update(
+        &mut self,
+        entity: Entity,
+        expected_version: u64,
+        data_before: Option<Value>,
+    ) -> Result<(), AxonError> {
+        self.check_op_limit()?;
         self.ops.push(WriteOp {
             entity,
             expected_version,
             data_before,
             mutation: MutationType::EntityUpdate,
         });
+        Ok(())
     }
 
     /// Stage a delete operation.
     ///
     /// `expected_version` is the version the caller observed; the entity must
     /// still be at that version at commit time.
+    ///
+    /// Returns `Err(InvalidArgument)` if the transaction already has [`MAX_OPS`] operations.
     pub fn delete(
         &mut self,
         collection: CollectionId,
         id: EntityId,
         expected_version: u64,
         data_before: Option<Value>,
-    ) {
+    ) -> Result<(), AxonError> {
         // We store a sentinel entity with empty data for the delete op.
         let sentinel = Entity {
             collection,
@@ -104,6 +146,7 @@ impl Transaction {
             data_before,
             mutation: MutationType::EntityDelete,
         });
+        Ok(())
     }
 
     /// Atomically commit all staged operations.
@@ -123,20 +166,18 @@ impl Transaction {
     /// All writes are applied sequentially. For creates and updates, the entity
     /// version is set / incremented appropriately. Deletes remove the entity.
     ///
-    /// ## Audit
+    /// ## Audit (co-located writes, Phase 3)
     /// Each written entity produces an [`AuditEntry`] with `transaction_id` set
     /// to `self.id` so callers can correlate the entire transaction in the log.
-    /// Audit entries are buffered and only flushed to the log **after**
-    /// [`commit_tx`] succeeds (post-commit audit strategy, see ADR-003/ADR-004).
-    /// This guarantees that the audit log never contains entries for mutations
-    /// that were ultimately rolled back.
     ///
-    /// **Crash-safety**: There is a narrow window between `commit_tx()` and the
-    /// completion of all `audit.append()` calls where a process crash would leave
-    /// committed mutations without audit entries. For V1 (in-memory), both entity
-    /// state and audit log are volatile — a crash loses both equally. Durable
-    /// backends must close this gap via same-transaction audit writes or a
-    /// startup reconciliation pass (see ADR-004 recovery invariant).
+    /// Audit entries are written **inside** the storage transaction via
+    /// [`StorageAdapter::append_audit_entry`] before `commit_tx` is called.
+    /// For adapters that implement durable audit storage (e.g. SQLite), entity
+    /// mutations and their audit entries are committed atomically — if the
+    /// transaction rolls back, neither the entity change nor its audit entry
+    /// persists. For adapters whose `append_audit_entry` is a no-op (e.g.
+    /// in-memory), entries are flushed to the standalone `audit` log after
+    /// `commit_tx` succeeds.
     ///
     /// Returns the list of written entities (deletes produce an entry with the
     /// sentinel entity; callers may ignore it).
@@ -146,31 +187,55 @@ impl Transaction {
         audit: &mut L,
         actor: Option<String>,
     ) -> Result<Vec<Entity>, AxonError> {
+        // Check timeout before entering the commit path (FEAT-008).
+        let elapsed = self.created_at.elapsed();
+        if elapsed > self.timeout {
+            return Err(AxonError::InvalidOperation(format!(
+                "transaction timed out after {:.1}s (limit: {}s)",
+                elapsed.as_secs_f64(),
+                self.timeout.as_secs()
+            )));
+        }
+
         storage.begin_tx()?;
 
         match self.execute(storage, actor) {
-            Ok((written, pending_entries)) => match storage.commit_tx() {
-                Ok(()) => {
-                    // Storage is committed — now flush buffered audit entries.
-                    // If audit append fails for any entry, propagate the error.
-                    // The storage transaction is already durable at this point,
-                    // so audit failures do not undo the committed data.
-                    for entry in pending_entries {
-                        audit.append(entry)?;
+            Ok((written, pending_entries)) => {
+                // ── Phase 3: co-located audit writes ────────────────────────
+                // Write audit entries inside the storage transaction so that
+                // entity mutations and their audit entries are committed
+                // atomically. For adapters with durable audit support (e.g.
+                // SQLite) a rollback undoes both. For adapters whose
+                // `append_audit_entry` is a no-op (e.g. in-memory) this is
+                // free and the post-commit path below handles persistence.
+                for entry in &pending_entries {
+                    if let Err(e) = storage.append_audit_entry(entry.clone()) {
+                        let _ = storage.abort_tx();
+                        return Err(e);
                     }
-                    Ok(written)
                 }
-                Err(e) => {
-                    // commit_tx failed — best-effort abort so the adapter is not
-                    // left wedged with an open transaction. Pending audit entries
-                    // are discarded; no rolled-back mutations reach the audit log.
-                    let _ = storage.abort_tx();
-                    Err(e)
+
+                match storage.commit_tx() {
+                    Ok(()) => {
+                        // Storage committed (entities + co-located audit entries
+                        // are now durable). Also flush to the standalone audit log
+                        // so callers that query via `AuditLog` see the entries.
+                        for entry in pending_entries {
+                            audit.append(entry)?;
+                        }
+                        Ok(written)
+                    }
+                    Err(e) => {
+                        // commit_tx failed — best-effort abort. Pending audit
+                        // entries are discarded; no rolled-back mutations reach
+                        // the audit log.
+                        let _ = storage.abort_tx();
+                        Err(e)
+                    }
                 }
-            },
+            }
             Err(e) => {
-                // Best-effort rollback; ignore secondary errors so the original
-                // error is always returned to the caller.
+                // Version check or write failed — best-effort rollback.
                 let _ = storage.abort_tx();
                 Err(e)
             }
@@ -395,12 +460,14 @@ mod tests {
             account("A", 70),
             a_before.version,
             Some(a_before.data.clone()),
-        );
+        )
+        .unwrap();
         tx.update(
             account("B", 80),
             b_before.version,
             Some(b_before.data.clone()),
-        );
+        )
+        .unwrap();
 
         let written = tx
             .commit(&mut storage, &mut audit, Some("system".into()))
@@ -428,8 +495,8 @@ mod tests {
         storage.put(account("B", 50)).unwrap();
 
         let mut tx = Transaction::new();
-        tx.update(account("A", 70), 1, None); // correct version
-        tx.update(account("B", 80), 99, None); // WRONG version — should abort all
+        tx.update(account("A", 70), 1, None).unwrap(); // correct version
+        tx.update(account("B", 80), 99, None).unwrap(); // WRONG version — should abort all
 
         let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
         assert!(
@@ -476,8 +543,8 @@ mod tests {
         storage.put(account("C", 200)).unwrap();
 
         let mut tx = Transaction::new();
-        tx.update(account("A", 70), 1, None); // OK
-        tx.update(account("C", 190), 99, None); // WRONG version — triggers abort
+        tx.update(account("A", 70), 1, None).unwrap(); // OK
+        tx.update(account("C", 190), 99, None).unwrap(); // WRONG version — triggers abort
 
         let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
         assert!(matches!(err, AxonError::ConflictingVersion { .. }));
@@ -503,7 +570,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let mut tx = Transaction::new();
-        tx.update(account("A", 90), a_before.version, Some(a_before.data));
+        tx.update(account("A", 90), a_before.version, Some(a_before.data))
+            .unwrap();
 
         let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
         assert!(
@@ -552,7 +620,7 @@ mod tests {
         storage.put(account("A", 100)).unwrap();
 
         let mut tx = Transaction::new();
-        tx.update(account("A", 70), 99, None); // WRONG version
+        tx.update(account("A", 70), 99, None).unwrap(); // WRONG version
 
         let _ = tx.commit(&mut storage, &mut audit, None);
 
@@ -578,8 +646,8 @@ mod tests {
 
         let mut tx = Transaction::new();
         let tx_id = tx.id.clone();
-        tx.update(account("A", 70), a.version, None);
-        tx.update(account("B", 80), b.version, None);
+        tx.update(account("A", 70), a.version, None).unwrap();
+        tx.update(account("B", 80), b.version, None).unwrap();
 
         tx.commit(&mut storage, &mut audit, None).unwrap();
 

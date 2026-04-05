@@ -1,5 +1,8 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use rusqlite::{params, Connection};
 
+use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
@@ -64,6 +67,17 @@ impl SqliteStorageAdapter {
                 );
                 CREATE TABLE IF NOT EXISTS collections (
                     name TEXT NOT NULL PRIMARY KEY
+                );
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp_ns   INTEGER NOT NULL,
+                    collection     TEXT NOT NULL,
+                    entity_id      TEXT NOT NULL,
+                    version        INTEGER NOT NULL,
+                    mutation       TEXT NOT NULL,
+                    actor          TEXT NOT NULL,
+                    transaction_id TEXT,
+                    entry_json     TEXT NOT NULL
                 );",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))
@@ -290,6 +304,45 @@ impl StorageAdapter for SqliteStorageAdapter {
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.in_tx = false;
         Ok(())
+    }
+
+    fn append_audit_entry(&mut self, mut entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+        // Assign timestamp if the caller left it at the zero sentinel.
+        if entry.timestamp_ns == 0 {
+            entry.timestamp_ns = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos() as u64)
+                .unwrap_or(0);
+        }
+
+        // Serialize the full entry. The `id` field will be 0 here; the
+        // canonical `id` is the SQLite AUTOINCREMENT rowid stored in the `id`
+        // column. Readers reconstruct the entry from `entry_json` and override
+        // `id` with the column value.
+        let entry_json =
+            serde_json::to_string(&entry).map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        self.conn
+            .execute(
+                "INSERT INTO audit_log
+                     (timestamp_ns, collection, entity_id, version, mutation, actor,
+                      transaction_id, entry_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    entry.timestamp_ns as i64,
+                    entry.collection.as_str(),
+                    entry.entity_id.as_str(),
+                    entry.version as i64,
+                    entry.mutation.to_string(),
+                    entry.actor,
+                    entry.transaction_id,
+                    entry_json,
+                ],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        entry.id = self.conn.last_insert_rowid() as u64;
+        Ok(entry)
     }
 
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
@@ -627,6 +680,102 @@ mod tests {
 
         s.delete_schema(&col).unwrap();
         assert!(s.get_schema(&col).unwrap().is_none());
+    }
+
+    // ── Audit co-location ────────────────────────────────────────────────────
+
+    #[test]
+    fn append_audit_entry_assigns_id_and_timestamp() {
+        use axon_audit::entry::{AuditEntry, MutationType};
+        use axon_core::id::{CollectionId, EntityId};
+        use serde_json::json;
+
+        let mut s = store();
+        let entry = AuditEntry::new(
+            CollectionId::new("tasks"),
+            EntityId::new("t-001"),
+            1,
+            MutationType::EntityCreate,
+            None,
+            Some(json!({"title": "hello"})),
+            Some("agent-1".into()),
+        );
+        assert_eq!(entry.id, 0);
+        assert_eq!(entry.timestamp_ns, 0);
+
+        let stored = s.append_audit_entry(entry).unwrap();
+        assert_eq!(stored.id, 1, "first entry gets id=1");
+        assert!(stored.timestamp_ns > 0, "timestamp_ns is assigned");
+    }
+
+    #[test]
+    fn audit_entry_rolled_back_with_entity_on_abort() {
+        use axon_audit::entry::{AuditEntry, MutationType};
+        use axon_core::id::{CollectionId, EntityId};
+        use serde_json::json;
+
+        let mut s = store();
+
+        // Begin a transaction, write an entity and an audit entry, then abort.
+        s.begin_tx().unwrap();
+        s.put(entity("t-001")).unwrap();
+        let entry = AuditEntry::new(
+            tasks(),
+            EntityId::new("t-001"),
+            1,
+            MutationType::EntityCreate,
+            None,
+            Some(json!({"title": "t-001"})),
+            None,
+        );
+        s.append_audit_entry(entry).unwrap();
+        s.abort_tx().unwrap();
+
+        // Entity must be absent.
+        assert!(s.get(&tasks(), &EntityId::new("t-001")).unwrap().is_none());
+
+        // Audit entry must also be absent (rolled back with the transaction).
+        let count: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "audit entry must be rolled back with the entity");
+    }
+
+    #[test]
+    fn audit_entry_persists_with_entity_on_commit() {
+        use axon_audit::entry::{AuditEntry, MutationType};
+        use axon_core::id::{CollectionId, EntityId};
+        use serde_json::json;
+
+        let mut s = store();
+
+        s.begin_tx().unwrap();
+        s.put(entity("t-001")).unwrap();
+        let entry = AuditEntry::new(
+            tasks(),
+            EntityId::new("t-001"),
+            1,
+            MutationType::EntityCreate,
+            None,
+            Some(json!({"title": "t-001"})),
+            Some("tester".into()),
+        );
+        s.append_audit_entry(entry).unwrap();
+        s.commit_tx().unwrap();
+
+        // Entity must be present.
+        assert!(s.get(&tasks(), &EntityId::new("t-001")).unwrap().is_some());
+
+        // Audit entry must also be present.
+        let count: i64 = s
+            .conn
+            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            count, 1,
+            "audit entry must persist when transaction commits"
+        );
     }
 }
 

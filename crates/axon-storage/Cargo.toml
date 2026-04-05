@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 axon-core = { path = "../axon-core" }
+axon-audit = { path = "../axon-audit" }
 axon-schema = { path = "../axon-schema" }
 thiserror.workspace = true
 serde.workspace = true
