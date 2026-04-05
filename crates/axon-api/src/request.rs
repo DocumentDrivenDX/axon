@@ -234,6 +234,8 @@ pub struct DropCollectionRequest {
 pub struct PutSchemaRequest {
     /// The schema to persist. `schema.collection` must match the target collection.
     pub schema: CollectionSchema,
+    /// Optional actor identifier for audit provenance.
+    pub actor: Option<String>,
 }
 
 /// Request to retrieve the schema for a collection.

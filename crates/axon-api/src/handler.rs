@@ -520,7 +520,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: PutSchemaRequest,
     ) -> Result<PutSchemaResponse, AxonError> {
+        let collection = req.schema.collection.clone();
         self.storage.put_schema(&req.schema)?;
+        self.audit.append(AuditEntry::new(
+            collection,
+            EntityId::new(""),
+            0,
+            MutationType::SchemaUpdate,
+            None,
+            None,
+            req.actor,
+        ))?;
         Ok(PutSchemaResponse { schema: req.schema })
     }
 
@@ -2269,6 +2279,32 @@ entity_schema:
             matches!(err, AxonError::NotFound(_)),
             "expected NotFound, got {err:?}"
         );
+    }
+
+    #[test]
+    fn handle_put_schema_creates_audit_entry() {
+        let mut h = handler();
+        let col = CollectionId::new("invoices");
+        let schema = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: None,
+        };
+
+        h.handle_put_schema(PutSchemaRequest {
+            schema,
+            actor: Some("alice".into()),
+        })
+        .unwrap();
+
+        let entries = h
+            .audit_log()
+            .query_by_operation(&axon_audit::entry::MutationType::SchemaUpdate)
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].collection, col);
+        assert_eq!(entries[0].actor, "alice");
     }
 
     #[test]
