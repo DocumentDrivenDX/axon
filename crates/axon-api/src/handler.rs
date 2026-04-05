@@ -683,13 +683,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
 const MAX_FILTER_DEPTH: usize = 32;
 
 /// Return the maximum nesting depth of a [`FilterNode`] tree (1-based).
-fn filter_depth(node: &FilterNode) -> usize {
-    match node {
-        FilterNode::Field(_) => 1,
-        FilterNode::And { filters } | FilterNode::Or { filters } => {
-            1 + filters.iter().map(filter_depth).max().unwrap_or(0)
+///
+/// Uses an explicit stack-based iterative traversal to avoid stack overflows
+/// on deeply nested client-supplied filter trees.
+fn filter_depth(root: &FilterNode) -> usize {
+    // Stack entries: (node, depth_of_this_node)
+    let mut stack: Vec<(&FilterNode, usize)> = vec![(root, 1)];
+    let mut max_depth = 0usize;
+    while let Some((node, depth)) = stack.pop() {
+        if depth > max_depth {
+            max_depth = depth;
+        }
+        if let FilterNode::And { filters } | FilterNode::Or { filters } = node {
+            for child in filters {
+                stack.push((child, depth + 1));
+            }
         }
     }
+    max_depth
 }
 
 /// Evaluate a [`FilterNode`] against the entity's JSON data.
@@ -2112,5 +2123,27 @@ entity_schema:
             matches!(result, Err(AxonError::InvalidArgument(_))),
             "deeply nested filter must return InvalidArgument, not stack overflow"
         );
+    }
+
+    #[test]
+    fn filter_depth_iterative_100k_deep_no_stack_overflow() {
+        // Build a linear chain of depth 100_000. The old recursive implementation
+        // would overflow the stack; the iterative implementation must not.
+        let leaf = FilterNode::Field(FieldFilter {
+            field: "x".to_string(),
+            op: FilterOp::Eq,
+            value: serde_json::json!(1),
+        });
+        let mut node = leaf;
+        for _ in 0..99_999 {
+            node = FilterNode::And {
+                filters: vec![node],
+            };
+        }
+        let depth = filter_depth(&node);
+        // Avoid recursive Drop stack overflow on the deep tree; the tree is
+        // intentionally leaked here — this is test-only and the process exits anyway.
+        std::mem::forget(node);
+        assert_eq!(depth, 100_000, "iterative filter_depth must return exact depth for deep tree");
     }
 }
