@@ -69,6 +69,11 @@ fn axon_error_response(err: AxonError) -> Response {
             Json(ApiError::new("already_exists", msg)),
         )
             .into_response(),
+        AxonError::InvalidArgument(msg) => (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new("invalid_argument", msg)),
+        )
+            .into_response(),
         AxonError::InvalidOperation(msg) => (
             StatusCode::BAD_REQUEST,
             Json(ApiError::new("invalid_operation", msg)),

@@ -15,6 +15,9 @@ pub enum AxonError {
     #[error("already exists: {0}")]
     AlreadyExists(String),
 
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+
     #[error("invalid operation: {0}")]
     InvalidOperation(String),
 

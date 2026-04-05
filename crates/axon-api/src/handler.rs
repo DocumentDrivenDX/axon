@@ -221,6 +221,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: QueryEntitiesRequest,
     ) -> Result<QueryEntitiesResponse, AxonError> {
+        // Reject excessively deep filter trees before any evaluation to prevent
+        // stack overflows from client-controlled recursion.
+        if let Some(ref f) = req.filter {
+            let depth = filter_depth(f);
+            if depth > MAX_FILTER_DEPTH {
+                return Err(AxonError::InvalidArgument(format!(
+                    "filter tree depth {depth} exceeds maximum allowed depth {MAX_FILTER_DEPTH}"
+                )));
+            }
+        }
+
         // Full scan — FEAT-004 notes secondary indexes are P1 for V1.
         let all = self.storage.range_scan(&req.collection, None, None, None)?;
 
@@ -665,6 +676,21 @@ impl<S: StorageAdapter> AxonHandler<S> {
 }
 
 // ── Query filter helpers ──────────────────────────────────────────────────────
+
+/// Maximum allowed nesting depth for a [`FilterNode`] tree.
+///
+/// Prevents stack overflows from deeply nested client-supplied filter trees.
+const MAX_FILTER_DEPTH: usize = 32;
+
+/// Return the maximum nesting depth of a [`FilterNode`] tree (1-based).
+fn filter_depth(node: &FilterNode) -> usize {
+    match node {
+        FilterNode::Field(_) => 1,
+        FilterNode::And { filters } | FilterNode::Or { filters } => {
+            1 + filters.iter().map(filter_depth).max().unwrap_or(0)
+        }
+    }
+}
 
 /// Evaluate a [`FilterNode`] against the entity's JSON data.
 fn apply_filter(node: &FilterNode, data: &serde_json::Value) -> bool {
@@ -2010,5 +2036,81 @@ entity_schema:
 
         assert_eq!(resp.total_count, 1);
         assert_eq!(resp.entities[0].data["address"]["city"], "Berlin");
+    }
+
+    // ── FilterNode depth limit tests ──────────────────────────────────────────
+
+    /// Build a left-spine And tree of the given depth.
+    fn nested_and(depth: usize) -> FilterNode {
+        let leaf = FilterNode::Field(FieldFilter {
+            field: "x".into(),
+            op: FilterOp::Eq,
+            value: json!(1),
+        });
+        if depth <= 1 {
+            return leaf;
+        }
+        FilterNode::And {
+            filters: vec![nested_and(depth - 1)],
+        }
+    }
+
+    #[test]
+    fn filter_depth_at_max_succeeds() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "items", "i-1", json!({"x": 1}));
+
+        let result = h.query_entities(QueryEntitiesRequest {
+            collection: CollectionId::new("items"),
+            filter: Some(nested_and(MAX_FILTER_DEPTH)),
+            sort: vec![],
+            limit: None,
+            after_id: None,
+            count_only: false,
+        });
+
+        assert!(result.is_ok(), "filter at max depth should succeed");
+    }
+
+    #[test]
+    fn filter_depth_exceeds_max_returns_invalid_argument() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "items", "i-1", json!({"x": 1}));
+
+        let result = h.query_entities(QueryEntitiesRequest {
+            collection: CollectionId::new("items"),
+            filter: Some(nested_and(MAX_FILTER_DEPTH + 1)),
+            sort: vec![],
+            limit: None,
+            after_id: None,
+            count_only: false,
+        });
+
+        match result {
+            Err(AxonError::InvalidArgument(msg)) => {
+                assert!(msg.contains("depth"), "error message should mention depth: {msg}");
+            }
+            other => panic!("expected InvalidArgument, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn filter_deeply_nested_no_stack_overflow() {
+        // 1000 levels deep — well beyond MAX_FILTER_DEPTH but should not
+        // overflow the stack; it must return InvalidArgument instead.
+        let h = handler();
+        let result = h.query_entities(QueryEntitiesRequest {
+            collection: CollectionId::new("items"),
+            filter: Some(nested_and(1000)),
+            sort: vec![],
+            limit: None,
+            after_id: None,
+            count_only: false,
+        });
+
+        assert!(
+            matches!(result, Err(AxonError::InvalidArgument(_))),
+            "deeply nested filter must return InvalidArgument, not stack overflow"
+        );
     }
 }
