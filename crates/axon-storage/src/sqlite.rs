@@ -18,15 +18,22 @@ use crate::adapter::StorageAdapter;
 ///     PRIMARY KEY (collection, id)
 /// );
 /// ```
+///
+/// Transactions use SQLite's `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK`
+/// statements. `BEGIN IMMEDIATE` acquires a write lock up-front, eliminating
+/// the TOCTOU window that exists when a read and write are issued as separate
+/// statements.
 pub struct SqliteStorageAdapter {
     conn: Connection,
+    /// `true` while a `BEGIN` has been issued but not yet committed or rolled back.
+    in_tx: bool,
 }
 
 impl SqliteStorageAdapter {
     /// Opens (or creates) a SQLite database at the given path.
     pub fn open(path: &str) -> Result<Self, AxonError> {
         let conn = Connection::open(path).map_err(|e| AxonError::Storage(e.to_string()))?;
-        let adapter = Self { conn };
+        let adapter = Self { conn, in_tx: false };
         adapter.init_schema()?;
         Ok(adapter)
     }
@@ -34,7 +41,7 @@ impl SqliteStorageAdapter {
     /// Opens an in-memory SQLite database (useful for testing).
     pub fn open_in_memory() -> Result<Self, AxonError> {
         let conn = Connection::open_in_memory().map_err(|e| AxonError::Storage(e.to_string()))?;
-        let adapter = Self { conn };
+        let adapter = Self { conn, in_tx: false };
         adapter.init_schema()?;
         Ok(adapter)
     }
@@ -242,6 +249,39 @@ impl StorageAdapter for SqliteStorageAdapter {
             ..entity
         })
     }
+
+    fn begin_tx(&mut self) -> Result<(), AxonError> {
+        if self.in_tx {
+            return Err(AxonError::Storage("transaction already active".into()));
+        }
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.in_tx = true;
+        Ok(())
+    }
+
+    fn commit_tx(&mut self) -> Result<(), AxonError> {
+        if !self.in_tx {
+            return Err(AxonError::Storage("no active transaction".into()));
+        }
+        self.conn
+            .execute_batch("COMMIT")
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.in_tx = false;
+        Ok(())
+    }
+
+    fn abort_tx(&mut self) -> Result<(), AxonError> {
+        if !self.in_tx {
+            return Ok(());
+        }
+        self.conn
+            .execute_batch("ROLLBACK")
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.in_tx = false;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -353,5 +393,51 @@ mod tests {
             ),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn begin_commit_tx_persists_writes() {
+        let mut s = store();
+        s.begin_tx().unwrap();
+        s.put(entity("t-001")).unwrap();
+        s.commit_tx().unwrap();
+        assert!(s.get(&tasks(), &EntityId::new("t-001")).unwrap().is_some());
+    }
+
+    #[test]
+    fn abort_tx_rolls_back_writes() {
+        let mut s = store();
+        s.put(entity("t-existing")).unwrap();
+
+        s.begin_tx().unwrap();
+        s.put(entity("t-new")).unwrap();
+        s.delete(&tasks(), &EntityId::new("t-existing")).unwrap();
+        s.abort_tx().unwrap();
+
+        assert!(s.get(&tasks(), &EntityId::new("t-new")).unwrap().is_none());
+        assert!(s
+            .get(&tasks(), &EntityId::new("t-existing"))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn begin_tx_rejects_nested_begin() {
+        let mut s = store();
+        s.begin_tx().unwrap();
+        assert!(s.begin_tx().is_err());
+        s.abort_tx().unwrap();
+    }
+
+    #[test]
+    fn commit_tx_requires_active_transaction() {
+        let mut s = store();
+        assert!(s.commit_tx().is_err());
+    }
+
+    #[test]
+    fn abort_tx_without_active_tx_is_noop() {
+        let mut s = store();
+        s.abort_tx().unwrap();
     }
 }

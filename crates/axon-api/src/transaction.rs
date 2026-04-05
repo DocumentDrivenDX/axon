@@ -108,6 +108,12 @@ impl Transaction {
 
     /// Atomically commit all staged operations.
     ///
+    /// Opens a storage-level transaction via [`StorageAdapter::begin_tx`] so
+    /// that the version check (Phase 1) and the writes (Phase 2) are protected
+    /// against concurrent modification. If any phase fails, [`abort_tx`] is
+    /// called to roll back all changes; on success, [`commit_tx`] makes them
+    /// durable.
+    ///
     /// ## Phase 1 — Version check
     /// For every staged write, verify that `expected_version` equals the current
     /// stored version (or that the entity is absent for creates).
@@ -124,6 +130,28 @@ impl Transaction {
     /// Returns the list of written entities (deletes produce an entry with the
     /// sentinel entity; callers may ignore it).
     pub fn commit<S: StorageAdapter, L: AuditLog>(
+        self,
+        storage: &mut S,
+        audit: &mut L,
+        actor: Option<String>,
+    ) -> Result<Vec<Entity>, AxonError> {
+        storage.begin_tx()?;
+
+        match self.execute(storage, audit, actor) {
+            Ok(written) => {
+                storage.commit_tx()?;
+                Ok(written)
+            }
+            Err(e) => {
+                // Best-effort rollback; ignore secondary errors so the original
+                // error is always returned to the caller.
+                let _ = storage.abort_tx();
+                Err(e)
+            }
+        }
+    }
+
+    fn execute<S: StorageAdapter, L: AuditLog>(
         self,
         storage: &mut S,
         audit: &mut L,

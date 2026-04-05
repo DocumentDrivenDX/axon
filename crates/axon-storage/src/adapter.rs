@@ -47,4 +47,33 @@ pub trait StorageAdapter: Send + Sync {
         entity: Entity,
         expected_version: u64,
     ) -> Result<Entity, AxonError>;
+
+    /// Begin a storage-level transaction.
+    ///
+    /// After this call, all writes are buffered or protected until [`commit_tx`]
+    /// or [`abort_tx`] is called. Callers must call exactly one of those to
+    /// end the transaction.
+    ///
+    /// The default implementation is a no-op (suitable for adapters whose
+    /// mutation methods are already atomic or whose concurrency model does
+    /// not require explicit transactions).
+    fn begin_tx(&mut self) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Commit the current transaction, making all buffered writes durable.
+    ///
+    /// Returns an error if no transaction is active.
+    /// The default implementation is a no-op.
+    fn commit_tx(&mut self) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Abort the current transaction, discarding all buffered writes.
+    ///
+    /// Idempotent: calling `abort_tx` when no transaction is active is not an error.
+    /// The default implementation is a no-op.
+    fn abort_tx(&mut self) -> Result<(), AxonError> {
+        Ok(())
+    }
 }

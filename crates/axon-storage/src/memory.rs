@@ -11,9 +11,17 @@ type CollectionMap = HashMap<EntityId, Entity>;
 /// In-memory storage adapter for testing and development.
 ///
 /// All data is lost when the adapter is dropped.
+///
+/// Transactions use a full-snapshot approach: [`begin_tx`] captures a clone of
+/// the current state; [`abort_tx`] restores it; [`commit_tx`] discards the
+/// snapshot. Because all mutations require `&mut self`, Rust's borrow checker
+/// already provides exclusive access, so no additional synchronisation is
+/// needed.
 #[derive(Debug, Default)]
 pub struct MemoryStorageAdapter {
     data: HashMap<CollectionId, CollectionMap>,
+    /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
+    tx_snapshot: Option<HashMap<CollectionId, CollectionMap>>,
 }
 
 impl StorageAdapter for MemoryStorageAdapter {
@@ -110,6 +118,29 @@ impl StorageAdapter for MemoryStorageAdapter {
             .insert(updated.id.clone(), updated.clone());
 
         Ok(updated)
+    }
+
+    fn begin_tx(&mut self) -> Result<(), AxonError> {
+        if self.tx_snapshot.is_some() {
+            return Err(AxonError::Storage("transaction already active".into()));
+        }
+        self.tx_snapshot = Some(self.data.clone());
+        Ok(())
+    }
+
+    fn commit_tx(&mut self) -> Result<(), AxonError> {
+        if self.tx_snapshot.is_none() {
+            return Err(AxonError::Storage("no active transaction".into()));
+        }
+        self.tx_snapshot = None;
+        Ok(())
+    }
+
+    fn abort_tx(&mut self) -> Result<(), AxonError> {
+        if let Some(snapshot) = self.tx_snapshot.take() {
+            self.data = snapshot;
+        }
+        Ok(())
     }
 }
 
@@ -226,5 +257,62 @@ mod tests {
             ),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn begin_commit_tx_persists_writes() {
+        let mut store = MemoryStorageAdapter::default();
+        store.begin_tx().unwrap();
+        store.put(entity("t-001")).unwrap();
+        store.commit_tx().unwrap();
+        assert!(store
+            .get(&tasks(), &EntityId::new("t-001"))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn abort_tx_rolls_back_writes() {
+        let mut store = MemoryStorageAdapter::default();
+        store.put(entity("t-existing")).unwrap();
+
+        store.begin_tx().unwrap();
+        store.put(entity("t-new")).unwrap();
+        store
+            .delete(&tasks(), &EntityId::new("t-existing"))
+            .unwrap();
+        store.abort_tx().unwrap();
+
+        // t-new must be gone, t-existing must be restored.
+        assert!(store
+            .get(&tasks(), &EntityId::new("t-new"))
+            .unwrap()
+            .is_none());
+        assert!(store
+            .get(&tasks(), &EntityId::new("t-existing"))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn begin_tx_rejects_nested_begin() {
+        let mut store = MemoryStorageAdapter::default();
+        store.begin_tx().unwrap();
+        assert!(store.begin_tx().is_err());
+        // Clean up.
+        store.abort_tx().unwrap();
+    }
+
+    #[test]
+    fn commit_tx_requires_active_transaction() {
+        let mut store = MemoryStorageAdapter::default();
+        assert!(store.commit_tx().is_err());
+    }
+
+    #[test]
+    fn abort_tx_without_active_tx_is_noop() {
+        let mut store = MemoryStorageAdapter::default();
+        // Should not error.
+        store.abort_tx().unwrap();
     }
 }
