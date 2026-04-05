@@ -15,7 +15,7 @@ dun:
 
 ## Overview
 
-The schema engine is Axon's type system. Every collection has a schema that defines the structure of its documents. The schema engine validates all writes, provides clear error messages on violations, and supports schema evolution over time. Schemas are defined in a portable format and provide enough value — validation, documentation, migration, query optimization — that defining them is obviously worthwhile.
+The schema engine is Axon's type system. Every collection has a schema that defines the structure of its entities. The schema engine validates all writes, provides clear error messages on violations, and supports schema evolution over time. Schemas are defined in a portable format and provide enough value — validation, documentation, migration, query optimization — that defining them is obviously worthwhile.
 
 ## Problem Statement
 
@@ -31,7 +31,7 @@ Agents and applications write malformed data, schemas drift silently between env
 
 - **Schema definition format**: Schemas are defined in a portable format (JSON Schema draft 2020-12 as the base, with Axon extensions). YAML and JSON input supported
 - **Type system**: Support for standard types — string, integer, float, boolean, datetime, array, object, enum, reference (foreign key to another collection)
-- **Validation on write**: Every create and update operation validates the document against the collection's schema before persisting. Invalid documents are rejected with structured error responses
+- **Validation on write**: Every create and update operation validates the entity against the collection's schema before persisting. Invalid entities are rejected with structured error responses
 - **Structured errors**: Validation errors include field path, expected type, actual value, and human-readable message. Agents can parse errors programmatically and self-correct
 - **Required/optional fields**: Fields can be marked required or optional with defaults
 - **Nested objects**: Schemas support nested object structures to arbitrary depth
@@ -44,11 +44,11 @@ Agents and applications write malformed data, schemas drift silently between env
 - **Additive changes**: Adding optional fields is always safe and automatic
 - **Breaking change detection**: Removing required fields, changing types, or narrowing constraints are flagged as breaking
 - **Migration support**: Breaking changes require explicit migration declarations
-- **Version tracking**: Each schema change increments a version. Documents carry the schema version they were validated against
+- **Version tracking**: Each schema change increments a version. Entities carry the schema version they were validated against
 
 ### Non-Functional Requirements
 
-- **Performance**: Schema validation < 1ms for typical documents (< 100 fields). Must not be the bottleneck on writes
+- **Performance**: Schema validation < 1ms for typical entities (< 100 fields). Must not be the bottleneck on writes
 - **Error clarity**: A developer or agent reading a validation error should understand what's wrong and how to fix it without reading the schema definition
 - **Portability**: Schema format is standard enough that external tools can consume it (JSON Schema compatibility)
 
@@ -58,7 +58,7 @@ Agents and applications write malformed data, schemas drift silently between env
 
 **As a** developer
 **I want** to define a schema for my collection in YAML or JSON
-**So that** Axon enforces the structure of documents my agents write
+**So that** Axon enforces the structure of entities my agents write
 
 **Acceptance Criteria:**
 - [ ] Schema defined in YAML or JSON is accepted at collection creation time
@@ -75,7 +75,7 @@ Agents and applications write malformed data, schemas drift silently between env
 
 **Acceptance Criteria:**
 - [ ] Validation errors include: field path, expected type, actual value, human-readable message
-- [ ] Multiple violations in a single document are all reported (not just the first one)
+- [ ] Multiple violations in a single entity are all reported (not just the first one)
 - [ ] Error response is machine-parseable (structured JSON, not just a string)
 - [ ] Error messages suggest the correction (e.g., "field 'status' expected one of [pending, active, done], got 'pendng'")
 
@@ -93,7 +93,7 @@ Agents and applications write malformed data, schemas drift silently between env
 ## Edge Cases and Error Handling
 
 - **Invalid schema definition**: Schema that doesn't parse or has internal contradictions is rejected at collection creation with specific errors
-- **Empty document**: Writing `{}` to a collection with required fields fails validation
+- **Empty entity**: Writing `{}` to a collection with required fields fails validation
 - **Extra fields**: By default, fields not in the schema are rejected. Flexible zones opt-in to extra fields
 - **Type coercion**: Axon does NOT silently coerce types (e.g., string "123" is not accepted for an integer field). Explicit types only
 - **Null handling**: Fields can be explicitly nullable via schema. Non-nullable fields reject null values
@@ -139,4 +139,4 @@ Agents and applications write malformed data, schemas drift silently between env
 
 ### Feature Dependencies
 - **Depends On**: None
-- **Depended By**: FEAT-001 (Collections), FEAT-004 (Document Operations)
+- **Depended By**: FEAT-001 (Collections), FEAT-004 (Entity Operations)

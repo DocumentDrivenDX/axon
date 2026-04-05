@@ -277,7 +277,7 @@ Quality metrics that can only improve:
 | Data shape limits | Section 4 (Data Model) | FEAT-007 (Entity-Graph Model) |
 | Schema system (ESF) | Section 4, 8 | FEAT-002 (Schema Engine) |
 | Correctness | Section 5 (Transactions) | FEAT-008 (ACID Transactions) |
-| Performance targets | Section 6 (Success Metrics) | FEAT-004 (Document Operations) |
+| Performance targets | Section 6 (Success Metrics) | FEAT-004 (Entity Operations) |
 
 ---
 

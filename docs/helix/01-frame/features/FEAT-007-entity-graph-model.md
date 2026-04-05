@@ -169,4 +169,4 @@ These queries operate at **moderate scale** — designed for thousands to low mi
 
 ### Feature Dependencies
 - **Depends On**: FEAT-002 (Schema Engine), FEAT-003 (Audit Log)
-- **Depended By**: FEAT-001 (Collections), FEAT-004 (Document Operations), FEAT-006 (Bead Adapter)
+- **Depended By**: FEAT-001 (Collections), FEAT-004 (Entity Operations), FEAT-006 (Bead Adapter)

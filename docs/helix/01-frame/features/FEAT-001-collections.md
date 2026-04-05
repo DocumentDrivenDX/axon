@@ -15,11 +15,11 @@ dun:
 
 ## Overview
 
-Collections are the foundational data container in Axon. A collection is a named, schema-bound container of documents within a database. Collections provide the organizational unit for data, schema enforcement, access control, and audit boundaries.
+Collections are the foundational data container in Axon. A collection is a named, schema-bound container of entities within a database. Collections provide the organizational unit for data, schema enforcement, access control, and audit boundaries.
 
 ## Problem Statement
 
-Agentic applications need a structured place to store groups of related documents with consistent schemas. Current approaches — raw database tables, JSON files, schemaless document stores — either lack structure enforcement or require too much boilerplate to set up correctly.
+Agentic applications need a structured place to store groups of related entities with consistent schemas. Current approaches — raw database tables, JSON files, schemaless document stores — either lack structure enforcement or require too much boilerplate to set up correctly.
 
 - Current situation: Agents dump data into whatever storage is convenient, with no consistency guarantees
 - Pain points: No naming conventions, no schema binding, no lifecycle management, no discovery
@@ -30,17 +30,17 @@ Agentic applications need a structured place to store groups of related document
 ### Functional Requirements
 
 - **Create collection**: Create a named collection bound to a schema. Collection names must be unique within a database
-- **Drop collection**: Remove a collection and all its documents (with confirmation). Audit records are retained
-- **List collections**: Enumerate all collections in a database with metadata (name, schema version, document count, created/updated timestamps)
+- **Drop collection**: Remove a collection and all its entities (with confirmation). Audit records are retained
+- **List collections**: Enumerate all collections in a database with metadata (name, schema version, entity count, created/updated timestamps)
 - **Describe collection**: Return full collection metadata including schema, indexes, statistics
 - **Collection namespacing**: Collections exist within a database. Database provides the isolation boundary
-- **Collection metadata**: Each collection tracks creation time, schema version, document count, last modified time
+- **Collection metadata**: Each collection tracks creation time, schema version, entity count, last modified time
 
 ### Non-Functional Requirements
 
 - **Performance**: Collection creation/drop < 100ms. List/describe < 50ms
 - **Naming**: Collection names are lowercase alphanumeric with hyphens and underscores. 1-128 characters. Must start with a letter
-- **Limits**: No hard limit on collections per database in V1. Document count per collection bounded only by storage
+- **Limits**: No hard limit on collections per database in V1. Entity count per collection bounded only by storage
 - **Durability**: Collection metadata is durable — survives process restart in both embedded and server modes
 
 ## User Stories
@@ -49,7 +49,7 @@ Agentic applications need a structured place to store groups of related document
 
 **As a** developer setting up an agentic application
 **I want** to create a named collection with a schema
-**So that** my agents have a structured place to store documents
+**So that** my agents have a structured place to store entities
 
 **Acceptance Criteria:**
 - [ ] `axon collection create <name> --schema <path>` creates a collection
@@ -65,7 +65,7 @@ Agentic applications need a structured place to store groups of related document
 **So that** I can discover what data is available and its structure
 
 **Acceptance Criteria:**
-- [ ] `axon collection list` returns all collections with name, schema version, doc count
+- [ ] `axon collection list` returns all collections with name, schema version, entity count
 - [ ] `axon collection describe <name>` returns full metadata including schema
 - [ ] API equivalents return the same information as CLI commands
 - [ ] Empty database returns empty list, not an error
@@ -77,11 +77,11 @@ Agentic applications need a structured place to store groups of related document
 **So that** I can clean up unused data structures
 
 **Acceptance Criteria:**
-- [ ] `axon collection drop <name>` removes the collection and its documents
+- [ ] `axon collection drop <name>` removes the collection and its entities
 - [ ] CLI requires `--confirm` flag for destructive operation
 - [ ] API requires explicit confirmation parameter
-- [ ] Drop operation is recorded in the audit log (including document count at time of drop)
-- [ ] Audit records for the dropped collection's documents are retained
+- [ ] Drop operation is recorded in the audit log (including entity count at time of drop)
+- [ ] Audit records for the dropped collection's entities are retained
 
 ## Edge Cases and Error Handling
 
@@ -130,4 +130,4 @@ Agentic applications need a structured place to store groups of related document
 
 ### Feature Dependencies
 - **Depends On**: FEAT-002 (Schema Engine)
-- **Depended By**: FEAT-004 (Document Operations), FEAT-006 (Bead Storage Adapter)
+- **Depended By**: FEAT-004 (Entity Operations), FEAT-006 (Bead Storage Adapter)

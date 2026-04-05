@@ -17,7 +17,7 @@ dun:
 
 ## Overview
 
-The API surface is how agents, applications, and humans interact with Axon. It provides a unified interface for collection management, document operations, schema inspection, and audit queries. The API is designed for programmatic consumption — structured requests, structured responses, structured errors — while also being usable via CLI for human operators.
+The API surface is how agents, applications, and humans interact with Axon. It provides a unified interface for collection management, entity operations, schema inspection, and audit queries. The API is designed for programmatic consumption — structured requests, structured responses, structured errors — while also being usable via CLI for human operators.
 
 ## Problem Statement
 

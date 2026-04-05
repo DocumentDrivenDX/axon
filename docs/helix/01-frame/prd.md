@@ -330,7 +330,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 ### Constraints
 
 - **Technical**: Must support embedded mode (in-process, no external dependencies) for development. Server mode for production. Same API for both
-- **Performance**: Single-document operations under 10ms p99. Audit log writes must not significantly degrade mutation throughput
+- **Performance**: Single-entity operations under 10ms p99. Audit log writes must not significantly degrade mutation throughput
 - **Storage**: Backing storage is an implementation detail. V1 may use SQLite (embedded) and Postgres (server), but the API must not leak storage semantics
 - **Compatibility**: Must integrate with Go and Rust ecosystems (internal projects use both). TypeScript client for UI consumption
 

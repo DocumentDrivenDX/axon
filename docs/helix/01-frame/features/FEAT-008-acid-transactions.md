@@ -147,4 +147,4 @@ Agents operating concurrently on shared state produce corrupt or inconsistent da
 
 ### Feature Dependencies
 - **Depends On**: FEAT-007 (Entity-Graph Model), FEAT-003 (Audit Log)
-- **Depended By**: FEAT-004 (Document Operations — uses transaction layer), FEAT-006 (Bead Adapter — atomic bead state transitions)
+- **Depended By**: FEAT-004 (Entity Operations — uses transaction layer), FEAT-006 (Bead Adapter — atomic bead state transitions)

@@ -69,7 +69,7 @@ Every agentic framework that uses beads (or bead-like work items) reinvents stor
 ## Dependencies
 
 - **FEAT-001** (Collections): Bead collection is a regular collection with a pre-defined schema
-- **FEAT-004** (Document Operations): Bead CRUD uses standard document operations
+- **FEAT-004** (Entity Operations): Bead CRUD uses standard entity operations
 - **FEAT-005** (API Surface): Bead-specific CLI commands and API endpoints
 
 ## Out of Scope

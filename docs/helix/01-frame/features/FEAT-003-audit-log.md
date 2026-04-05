@@ -15,7 +15,7 @@ dun:
 
 ## Overview
 
-The audit log is Axon's immutable record of everything that happened. Every mutation — document creates, updates, deletes, collection lifecycle events — produces an audit entry with actor, timestamp, operation type, and before/after state. The audit log is not a feature bolted onto Axon; it is the architecture. Writes go to the audit log first; the current state is a projection of the audit log.
+The audit log is Axon's immutable record of everything that happened. Every mutation — entity creates, updates, deletes, collection lifecycle events — produces an audit entry with actor, timestamp, operation type, and before/after state. The audit log is not a feature bolted onto Axon; it is the architecture. Writes go to the audit log first; the current state is a projection of the audit log.
 
 ## Problem Statement
 
@@ -34,22 +34,22 @@ When agents modify state, there is no trace of what happened, who/what did it, o
   - `id`: Unique, monotonically increasing audit entry ID
   - `timestamp`: Server-assigned UTC timestamp (nanosecond precision)
   - `actor`: Who/what performed the operation (user ID, agent ID, API key ID, or "system")
-  - `operation`: One of `document.create`, `document.update`, `document.delete`, `collection.create`, `collection.drop`, `schema.update`
+  - `operation`: One of `entity.create`, `entity.update`, `entity.delete`, `collection.create`, `collection.drop`, `schema.update`
   - `collection`: Collection name
-  - `document_id`: Document ID (for document operations)
-  - `before`: Full document state before the operation (null for creates)
-  - `after`: Full document state after the operation (null for deletes)
+  - `entity_id`: Entity ID (for entity operations)
+  - `before`: Full entity state before the operation (null for creates)
+  - `after`: Full entity state after the operation (null for deletes)
   - `diff`: Structured diff of changed fields (for updates)
   - `metadata`: Optional key-value metadata (e.g., reason, correlation ID, agent session)
 - **Immutability**: Audit entries cannot be modified or deleted through normal API operations. The audit log is append-only
-- **Query audit log**: Query audit entries by collection, document ID, actor, operation type, time range. Support pagination
-- **Revert from audit**: Given an audit entry, restore a document to its `before` state. The revert itself produces a new audit entry
+- **Query audit log**: Query audit entries by collection, entity ID, actor, operation type, time range. Support pagination
+- **Revert from audit**: Given an audit entry, restore an entity to its `before` state. The revert itself produces a new audit entry
 - **Audit log for collections**: Collection creation and drop events are also audited
 
 ### Non-Functional Requirements
 
 - **Performance**: Audit writes must not add more than 2ms to mutation latency. Append-only writes are inherently fast
-- **Storage**: Audit entries are stored durably. V1 stores in the same backend as documents. Tiered storage is P2
+- **Storage**: Audit entries are stored durably. V1 stores in the same backend as entities. Tiered storage is P2
 - **Retention**: V1 retains all audit entries. Configurable retention policies are P2
 - **Ordering**: Audit entries within a database are totally ordered by ID. Cross-database ordering is not guaranteed
 
@@ -58,24 +58,24 @@ When agents modify state, there is no trace of what happened, who/what did it, o
 ### Story US-007: Query the Audit Trail [FEAT-003]
 
 **As a** developer debugging agent behavior
-**I want** to query the audit log for a specific document or time range
+**I want** to query the audit log for a specific entity or time range
 **So that** I can understand what happened and reconstruct the sequence of events
 
 **Acceptance Criteria:**
-- [ ] `axon audit list --collection <name> --document <id>` shows all mutations for a document in chronological order
+- [ ] `axon audit list --collection <name> --entity <id>` shows all mutations for an entity in chronological order
 - [ ] `axon audit list --collection <name> --since <time> --until <time>` filters by time range
 - [ ] `axon audit list --actor <id>` filters by who/what made the change
 - [ ] Each entry shows operation, actor, timestamp, and diff
 - [ ] API returns paginated results with cursor-based pagination
 
-### Story US-008: Revert a Document to Previous State [FEAT-003]
+### Story US-008: Revert an Entity to Previous State [FEAT-003]
 
 **As a** developer who discovered an agent made a bad change
-**I want** to revert a document to a previous state using the audit log
+**I want** to revert an entity to a previous state using the audit log
 **So that** I can undo agent mistakes without manual data editing
 
 **Acceptance Criteria:**
-- [ ] `axon audit revert <entry-id>` restores the document to the `before` state of that audit entry
+- [ ] `axon audit revert <entry-id>` restores the entity to the `before` state of that audit entry
 - [ ] The revert itself produces a new audit entry (the audit log never loses information)
 - [ ] Revert validates the restored state against the current schema
 - [ ] If the schema has evolved since the audit entry, revert warns or fails with a clear message
@@ -94,16 +94,16 @@ When agents modify state, there is no trace of what happened, who/what did it, o
 
 ## Edge Cases and Error Handling
 
-- **Revert to incompatible schema**: Document state from an old audit entry may not validate against the current schema. Revert fails with a clear error. Force-revert option bypasses schema validation (with warning)
+- **Revert to incompatible schema**: Entity state from an old audit entry may not validate against the current schema. Revert fails with a clear error. Force-revert option bypasses schema validation (with warning)
 - **High-volume writes**: Under high write throughput, audit log must not become a bottleneck. Batch audit writes internally if needed
 - **Actor identification**: If no actor is provided (e.g., embedded mode with no auth), actor defaults to "anonymous" — but the entry is still created
-- **Large documents**: Before/after state for large documents may consume significant storage. V1 stores full state; compression and diff-only storage are P2 optimizations
+- **Large entities**: Before/after state for large entities may consume significant storage. V1 stores full state; compression and diff-only storage are P2 optimizations
 - **Clock skew**: In embedded mode, timestamps are local system time. Server mode uses server time. Cross-instance time ordering requires distributed timestamps (P2)
 
 ## Success Metrics
 
 - 100% of mutations have corresponding audit entries (zero gaps)
-- Audit queries return results in < 100ms for typical queries (single document, recent time range)
+- Audit queries return results in < 100ms for typical queries (single entity, recent time range)
 - Developers can trace any state change back to its cause within one CLI command
 
 ## Constraints and Assumptions
@@ -114,7 +114,7 @@ When agents modify state, there is no trace of what happened, who/what did it, o
 - Full before/after state stored in V1 (diff-only storage is a P2 optimization)
 
 ### Assumptions
-- Most audit queries are for a specific document or narrow time range
+- Most audit queries are for a specific entity or narrow time range
 - Audit log size will be manageable for V1 use cases (single-digit GB)
 - Developers value completeness over storage efficiency for audit trails
 
@@ -141,4 +141,4 @@ When agents modify state, there is no trace of what happened, who/what did it, o
 
 ### Feature Dependencies
 - **Depends On**: None
-- **Depended By**: FEAT-001 (Collections — lifecycle audit), FEAT-004 (Document Operations — mutation audit)
+- **Depended By**: FEAT-001 (Collections — lifecycle audit), FEAT-004 (Entity Operations — mutation audit)

@@ -10,7 +10,7 @@
 | FEAT-001 | Collections | P0 | Draft |
 | FEAT-002 | Schema Engine | P0 | Draft |
 | FEAT-003 | Audit Log | P0 | Draft |
-| FEAT-004 | Document Operations | P0 | Draft |
+| FEAT-004 | Entity Operations | P0 | Draft |
 | FEAT-005 | API Surface | P0 | Draft |
 | FEAT-006 | Bead Storage Adapter | P1 | Draft |
 | FEAT-007 | Entity-Graph-Relational Data Model | P0 | Draft |
