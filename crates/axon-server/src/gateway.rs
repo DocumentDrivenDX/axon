@@ -729,6 +729,16 @@ mod tests {
         let body: Value = resp.json();
         assert_eq!(body["code"], "version_conflict");
         assert_eq!(body["detail"]["expected"], 99);
+
+        // Verify current_entity is present with correct fields (hx-b2c2a758).
+        let current = &body["detail"]["current_entity"];
+        assert!(
+            !current.is_null(),
+            "409 conflict response must include current_entity"
+        );
+        assert_eq!(current["id"], "t-001");
+        assert_eq!(current["version"], 1);
+        assert_eq!(current["data"]["title"], "v1");
     }
 
     #[tokio::test]
