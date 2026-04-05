@@ -28,7 +28,7 @@ Agents need a well-defined, self-documenting API that they can call reliably. Ex
 ### Functional Requirements
 
 - **Protocol**: gRPC as primary protocol (strongly typed, streaming support, code generation). HTTP/JSON gateway for broad compatibility
-- **Operations**: Full coverage of collection, document, schema, and audit operations as defined in FEAT-001 through FEAT-004
+- **Operations**: Full coverage of collection, entity, schema, and audit operations as defined in FEAT-001 through FEAT-004
 - **Self-describing**: API schema (protobuf definitions) is the source of truth. Client SDKs are generated from protobuf
 - **Streaming**: Support server-streaming for change feeds (P1) and large query results
 - **Error model**: Structured errors with error code, message, field-level details, and suggested action. gRPC status codes map cleanly to HTTP status codes
@@ -38,11 +38,17 @@ Agents need a well-defined, self-documenting API that they can call reliably. Ex
 ### CLI Requirements
 
 - **Collection management**: `axon collection create|list|describe|drop`
-- **Document operations**: `axon doc create|get|update|delete|list|query`
+- **Entity operations**: `axon entity create|get|update|delete|list|query` (CLI subcommand is `entity` to match the data model; `doc` is not provided as an alias — see decision note below)
 - **Schema operations**: `axon schema show|validate`
 - **Audit operations**: `axon audit list|show|revert`
 - **Output formats**: Human-readable table (default), JSON, YAML
 - **Configuration**: `axon config` for connection settings, defaults
+
+#### CLI Subcommand Naming Decision
+
+**Decision**: The CLI subcommand for entity operations is `axon entity` (not `axon doc`).
+
+**Rationale**: The entire spec stack uses "entity" as the canonical term for Axon data records (established in commit 7d905a7 / FEAT-001 through FEAT-004). Using `axon doc` would create a permanent terminology split between the data model vocabulary ("entity") and the CLI vocabulary ("doc"). No `doc` alias is provided — a consistent name is clearer than a short alias that perpetuates the old terminology.
 
 ### Non-Functional Requirements
 
@@ -61,7 +67,7 @@ Agents need a well-defined, self-documenting API that they can call reliably. Ex
 
 **Acceptance Criteria:**
 - [ ] gRPC client SDK available for Go and TypeScript
-- [ ] Create, read, update, delete, query documents via SDK
+- [ ] Create, read, update, delete, query entities via SDK
 - [ ] Structured error types that agents can match on programmatically
 - [ ] SDK works identically against embedded and server modes
 
@@ -72,8 +78,8 @@ Agents need a well-defined, self-documenting API that they can call reliably. Ex
 **So that** I can inspect and manage data without writing code
 
 **Acceptance Criteria:**
-- [ ] `axon doc list <collection>` shows documents in a readable table
-- [ ] `axon doc query <collection> --filter "status=pending"` returns matching docs
+- [ ] `axon entity list <collection>` shows entities in a readable table
+- [ ] `axon entity query <collection> --filter "status=pending"` returns matching entities
 - [ ] `axon audit list --collection <name> --last 10` shows recent changes
 - [ ] `--output json` flag returns machine-parseable output
 - [ ] `axon` with no args shows help
