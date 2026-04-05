@@ -149,6 +149,14 @@ pub struct DeleteLinkBody {
     pub actor: Option<String>,
 }
 
+#[derive(Deserialize)]
+pub struct PutSchemaBody {
+    pub description: Option<String>,
+    pub version: u32,
+    pub entity_schema: Option<Value>,
+    pub actor: Option<String>,
+}
+
 // ── Route handlers ────────────────────────────────────────────────────────────
 
 async fn create_entity(
@@ -505,17 +513,19 @@ async fn drop_collection(
 async fn put_schema(
     State(handler): State<SharedHandler>,
     Path(collection): Path<String>,
-    Json(body): Json<CollectionSchema>,
+    Json(body): Json<PutSchemaBody>,
 ) -> Response {
-    // Override the collection field from the path to prevent mismatch.
+    // Populate schema from body; collection always comes from the path.
     let schema = CollectionSchema {
         collection: axon_core::id::CollectionId::new(&collection),
-        ..body
+        description: body.description,
+        version: body.version,
+        entity_schema: body.entity_schema,
     };
     match handler
         .lock()
         .await
-        .handle_put_schema(PutSchemaRequest { schema, actor: None })
+        .handle_put_schema(PutSchemaRequest { schema, actor: body.actor })
     {
         Ok(resp) => (StatusCode::OK, Json(json!({ "schema": resp.schema }))).into_response(),
         Err(e) => axon_error_response(e),
@@ -1001,6 +1011,30 @@ mod tests {
             .json(&json!({"data": {"amount": 42.0}}))
             .await;
         resp.assert_status(StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn http_put_schema_actor_recorded_in_audit() {
+        let server = test_server();
+
+        // PUT schema with an explicit actor.
+        server
+            .put("/collections/invoices/schema")
+            .json(&json!({
+                "version": 1,
+                "actor": "schema-admin"
+            }))
+            .await
+            .assert_status_ok();
+
+        // Audit log must contain a SchemaUpdate entry with the provided actor.
+        let resp = server.get("/audit/query?collection=invoices").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["actor"], "schema-admin");
+        assert_eq!(entries[0]["mutation"], "schema.update");
     }
 
     #[tokio::test]
