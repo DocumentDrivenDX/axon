@@ -138,10 +138,15 @@ impl Transaction {
         storage.begin_tx()?;
 
         match self.execute(storage, audit, actor) {
-            Ok(written) => {
-                storage.commit_tx()?;
-                Ok(written)
-            }
+            Ok(written) => match storage.commit_tx() {
+                Ok(()) => Ok(written),
+                Err(e) => {
+                    // commit_tx failed — best-effort abort so the adapter is not
+                    // left wedged with an open transaction.
+                    let _ = storage.abort_tx();
+                    Err(e)
+                }
+            },
             Err(e) => {
                 // Best-effort rollback; ignore secondary errors so the original
                 // error is always returned to the caller.
@@ -255,6 +260,72 @@ mod tests {
     use axon_core::id::{CollectionId, EntityId};
     use axon_storage::memory::MemoryStorageAdapter;
     use serde_json::json;
+
+    /// Wraps `MemoryStorageAdapter` and injects a `commit_tx` failure.
+    /// Used to verify that `Transaction::commit` calls `abort_tx` when
+    /// `commit_tx` fails, leaving the adapter in a usable state.
+    struct FailOnCommitAdapter {
+        inner: MemoryStorageAdapter,
+        abort_called: bool,
+    }
+
+    impl FailOnCommitAdapter {
+        fn new(inner: MemoryStorageAdapter) -> Self {
+            Self {
+                inner,
+                abort_called: false,
+            }
+        }
+    }
+
+    impl StorageAdapter for FailOnCommitAdapter {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
+            self.inner.get(collection, id)
+        }
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.inner.put(entity)
+        }
+        fn delete(
+            &mut self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<(), AxonError> {
+            self.inner.delete(collection, id)
+        }
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.inner.count(collection)
+        }
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.inner.range_scan(collection, start, end, limit)
+        }
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+        fn begin_tx(&mut self) -> Result<(), AxonError> {
+            self.inner.begin_tx()
+        }
+        fn commit_tx(&mut self) -> Result<(), AxonError> {
+            Err(AxonError::Storage("simulated commit failure".into()))
+        }
+        fn abort_tx(&mut self) -> Result<(), AxonError> {
+            self.abort_called = true;
+            self.inner.abort_tx()
+        }
+    }
 
     fn accounts() -> CollectionId {
         CollectionId::new("accounts")
@@ -372,6 +443,47 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(a.data["balance"], 100);
+    }
+
+    #[test]
+    fn commit_tx_failure_calls_abort_and_does_not_wedge_adapter() {
+        let mut inner = MemoryStorageAdapter::default();
+        inner.put(account("A", 100)).unwrap();
+
+        let mut storage = FailOnCommitAdapter::new(inner);
+        let mut audit = MemoryAuditLog::default();
+
+        let a_before = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .unwrap()
+            .unwrap();
+        let mut tx = Transaction::new();
+        tx.update(account("A", 90), a_before.version, Some(a_before.data));
+
+        let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
+        assert!(
+            matches!(err, AxonError::Storage(_)),
+            "expected storage error from simulated commit failure, got: {err}"
+        );
+
+        // abort_tx must have been called to clean up the open transaction.
+        assert!(
+            storage.abort_called,
+            "abort_tx must be called when commit_tx fails"
+        );
+
+        // The adapter must not be wedged — begin_tx must succeed again.
+        storage
+            .begin_tx()
+            .expect("adapter must not be wedged after a failed commit");
+        storage.abort_tx().unwrap();
+
+        // Data must be unchanged because the transaction was aborted.
+        let a = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.data["balance"], 100, "data must be unchanged after failed commit");
     }
 
     #[test]
