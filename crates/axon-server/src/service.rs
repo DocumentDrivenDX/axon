@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, GetEntityRequest, TraverseRequest,
-    UpdateEntityRequest,
+    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
+    GetEntityRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
@@ -23,9 +23,10 @@ pub use proto::{
     AuditEntryProto, CreateEntityRequest as ProtoCreateEntityReq,
     CreateEntityResponse as ProtoCreateEntityResp, CreateLinkRequest as ProtoCreateLinkReq,
     CreateLinkResponse as ProtoCreateLinkResp, DeleteEntityRequest as ProtoDeleteEntityReq,
-    DeleteEntityResponse as ProtoDeleteEntityResp, EntityProto,
-    GetEntityRequest as ProtoGetEntityReq, GetEntityResponse as ProtoGetEntityResp, LinkProto,
-    QueryAuditByEntityRequest, QueryAuditByEntityResponse, TraverseRequest as ProtoTraverseReq,
+    DeleteEntityResponse as ProtoDeleteEntityResp, DeleteLinkRequest as ProtoDeleteLinkReq,
+    DeleteLinkResponse as ProtoDeleteLinkResp, EntityProto, GetEntityRequest as ProtoGetEntityReq,
+    GetEntityResponse as ProtoGetEntityResp, LinkProto, QueryAuditByEntityRequest,
+    QueryAuditByEntityResponse, TraverseRequest as ProtoTraverseReq,
     TraverseResponse as ProtoTraverseResp, UpdateEntityRequest as ProtoUpdateEntityReq,
     UpdateEntityResponse as ProtoUpdateEntityResp,
 };
@@ -238,6 +239,40 @@ impl AxonService for AxonServiceImpl {
                 link_type: link.link_type,
                 metadata_json: link.metadata.to_string(),
             }),
+        }))
+    }
+
+    async fn delete_link(
+        &self,
+        request: Request<ProtoDeleteLinkReq>,
+    ) -> Result<Response<ProtoDeleteLinkResp>, Status> {
+        let req = request.into_inner();
+        let actor = if req.actor.is_empty() {
+            None
+        } else {
+            Some(req.actor.clone())
+        };
+
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .delete_link(DeleteLinkRequest {
+                source_collection: CollectionId::new(&req.source_collection),
+                source_id: EntityId::new(&req.source_id),
+                target_collection: CollectionId::new(&req.target_collection),
+                target_id: EntityId::new(&req.target_id),
+                link_type: req.link_type.clone(),
+                actor,
+            })
+            .map_err(axon_to_status)?;
+
+        Ok(Response::new(ProtoDeleteLinkResp {
+            source_collection: resp.source_collection,
+            source_id: resp.source_id,
+            target_collection: resp.target_collection,
+            target_id: resp.target_id,
+            link_type: resp.link_type,
         }))
     }
 

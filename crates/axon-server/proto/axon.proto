@@ -70,6 +70,23 @@ message CreateLinkResponse {
   LinkProto link = 1;
 }
 
+message DeleteLinkRequest {
+  string source_collection = 1;
+  string source_id = 2;
+  string target_collection = 3;
+  string target_id = 4;
+  string link_type = 5;
+  string actor = 6;
+}
+
+message DeleteLinkResponse {
+  string source_collection = 1;
+  string source_id = 2;
+  string target_collection = 3;
+  string target_id = 4;
+  string link_type = 5;
+}
+
 message TraverseRequest {
   string collection = 1;
   string id = 2;
@@ -124,6 +141,7 @@ service AxonService {
   rpc DeleteEntity(DeleteEntityRequest) returns (DeleteEntityResponse);
   // Link operations
   rpc CreateLink(CreateLinkRequest) returns (CreateLinkResponse);
+  rpc DeleteLink(DeleteLinkRequest) returns (DeleteLinkResponse);
   rpc Traverse(TraverseRequest) returns (TraverseResponse);
   // Audit
   rpc QueryAuditByEntity(QueryAuditByEntityRequest) returns (QueryAuditByEntityResponse);

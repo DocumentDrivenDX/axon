@@ -18,8 +18,8 @@ use tokio::sync::Mutex;
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DropCollectionRequest, GetEntityRequest, QueryAuditRequest, RevertEntityRequest,
-    TraverseRequest, UpdateEntityRequest,
+    DeleteLinkRequest, DropCollectionRequest, GetEntityRequest, QueryAuditRequest,
+    RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_audit::AuditLog;
 use axon_core::error::AxonError;
@@ -129,6 +129,16 @@ pub struct CreateLinkBody {
     pub link_type: String,
     #[serde(default)]
     pub metadata: Value,
+    pub actor: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct DeleteLinkBody {
+    pub source_collection: String,
+    pub source_id: String,
+    pub target_collection: String,
+    pub target_id: String,
+    pub link_type: String,
     pub actor: Option<String>,
 }
 
@@ -253,6 +263,30 @@ async fn create_link(
             )
                 .into_response()
         }
+        Err(e) => axon_error_response(e),
+    }
+}
+
+async fn delete_link(
+    State(handler): State<SharedHandler>,
+    Json(body): Json<DeleteLinkBody>,
+) -> Response {
+    match handler.lock().await.delete_link(DeleteLinkRequest {
+        source_collection: CollectionId::new(&body.source_collection),
+        source_id: EntityId::new(&body.source_id),
+        target_collection: CollectionId::new(&body.target_collection),
+        target_id: EntityId::new(&body.target_id),
+        link_type: body.link_type,
+        actor: body.actor,
+    }) {
+        Ok(resp) => Json(json!({
+            "source_collection": resp.source_collection,
+            "source_id": resp.source_id,
+            "target_collection": resp.target_collection,
+            "target_id": resp.target_id,
+            "link_type": resp.link_type,
+        }))
+        .into_response(),
         Err(e) => axon_error_response(e),
     }
 }
@@ -436,6 +470,7 @@ pub fn build_router(handler: SharedHandler) -> Router {
         .route("/entities/{collection}/{id}", put(update_entity))
         .route("/entities/{collection}/{id}", delete(delete_entity))
         .route("/links", post(create_link))
+        .route("/links", delete(delete_link))
         .route("/traverse/{collection}/{id}", get(traverse))
         .route(
             "/audit/entity/{collection}/{id}",
@@ -586,6 +621,64 @@ mod tests {
         let body: Value = resp.json();
         assert_eq!(body["entities"].as_array().unwrap().len(), 1);
         assert_eq!(body["entities"][0]["id"], "t-001");
+    }
+
+    #[tokio::test]
+    async fn http_create_then_delete_link() {
+        let server = test_server();
+
+        // Create two entities.
+        server
+            .post("/entities/users/u-001")
+            .json(&json!({"data": {"name": "Alice"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "Task 1"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // Create link.
+        server
+            .post("/links")
+            .json(&json!({
+                "source_collection": "users",
+                "source_id": "u-001",
+                "target_collection": "tasks",
+                "target_id": "t-001",
+                "link_type": "owns"
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // Verify traverse returns the linked entity.
+        let resp = server.get("/traverse/users/u-001?link_type=owns").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["entities"].as_array().unwrap().len(), 1);
+
+        // Delete the link.
+        let resp = server
+            .delete("/links")
+            .json(&json!({
+                "source_collection": "users",
+                "source_id": "u-001",
+                "target_collection": "tasks",
+                "target_id": "t-001",
+                "link_type": "owns",
+                "actor": "admin"
+            }))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["link_type"], "owns");
+
+        // Traverse now returns no entities.
+        let resp = server.get("/traverse/users/u-001?link_type=owns").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["entities"].as_array().unwrap().len(), 0);
     }
 
     #[tokio::test]
