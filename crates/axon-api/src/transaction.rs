@@ -133,6 +133,7 @@ impl Transaction {
         expected_version: u64,
         data_before: Option<Value>,
     ) -> Result<(), AxonError> {
+        self.check_op_limit()?;
         // We store a sentinel entity with empty data for the delete op.
         let sentinel = Entity {
             collection,
@@ -713,5 +714,22 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(a.data["balance"], 100, "entity unchanged after timeout");
+    }
+
+    #[test]
+    fn op_limit_applies_to_delete() {
+        let mut tx = Transaction::new();
+        for i in 0..100 {
+            tx.delete(accounts(), EntityId::new(format!("e-{i}")), 1, None)
+                .unwrap();
+        }
+        // 101st delete should fail.
+        let err = tx
+            .delete(accounts(), EntityId::new("e-100"), 1, None)
+            .unwrap_err();
+        assert!(
+            matches!(err, AxonError::InvalidArgument(_)),
+            "expected InvalidArgument for delete op limit, got: {err}"
+        );
     }
 }
