@@ -142,7 +142,11 @@ impl AuditEntry {
         let diff = match (&data_before, &data_after) {
             (Some(before), Some(after)) => {
                 let d = compute_diff(before, after);
-                if d.is_empty() { None } else { Some(d) }
+                if d.is_empty() {
+                    None
+                } else {
+                    Some(d)
+                }
             }
             _ => None,
         };
@@ -181,7 +185,10 @@ mod tests {
         assert_eq!(MutationType::EntityUpdate.to_string(), "entity.update");
         assert_eq!(MutationType::EntityDelete.to_string(), "entity.delete");
         assert_eq!(MutationType::EntityRevert.to_string(), "entity.revert");
-        assert_eq!(MutationType::CollectionCreate.to_string(), "collection.create");
+        assert_eq!(
+            MutationType::CollectionCreate.to_string(),
+            "collection.create"
+        );
         assert_eq!(MutationType::CollectionDrop.to_string(), "collection.drop");
         assert_eq!(MutationType::SchemaUpdate.to_string(), "schema.update");
     }
@@ -274,7 +281,9 @@ mod tests {
             Some(json!({"title": "new", "done": false})),
             None,
         );
-        let diff = entry.diff.expect("diff populated when before+after present");
+        let diff = entry
+            .diff
+            .expect("diff populated when before+after present");
         assert_eq!(diff.len(), 1, "only 'title' changed");
         assert_eq!(diff["title"].before, Some(json!("old")));
         assert_eq!(diff["title"].after, Some(json!("new")));

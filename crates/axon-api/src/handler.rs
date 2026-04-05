@@ -153,6 +153,21 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: DeleteEntityRequest,
     ) -> Result<DeleteEntityResponse, AxonError> {
+        // Referential integrity: reject delete when inbound links exist.
+        let links_col = Link::links_collection();
+        let all_link_entities = self.storage.range_scan(&links_col, None, None, None)?;
+        let inbound_count = all_link_entities
+            .iter()
+            .filter_map(Link::from_entity)
+            .filter(|l| l.target_collection == req.collection && l.target_id == req.id)
+            .count();
+        if inbound_count > 0 {
+            return Err(AxonError::InvalidOperation(format!(
+                "entity {}/{} has {inbound_count} inbound link(s); delete or re-target those links first",
+                req.collection, req.id
+            )));
+        }
+
         // Read current state for the audit `before` snapshot.
         let before = self
             .storage
@@ -269,8 +284,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     version: existing.version,
                     data: before_data.clone(),
                 };
-                self.storage
-                    .compare_and_swap(candidate, existing.version)?
+                self.storage.compare_and_swap(candidate, existing.version)?
             }
             None => {
                 let entity = Entity::new(
@@ -293,9 +307,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
             Some(before_data),
             req.actor,
         );
-        revert_entry
-            .metadata
-            .insert("reverted_from_entry_id".into(), req.audit_entry_id.to_string());
+        revert_entry.metadata.insert(
+            "reverted_from_entry_id".into(),
+            req.audit_entry_id.to_string(),
+        );
 
         let appended = self.audit.append(revert_entry)?;
 
@@ -869,13 +884,19 @@ entity_schema:
         })
         .unwrap();
 
-        let entries = h
-            .audit_log()
-            .query_by_entity(&col, &id)
+        let entries = h.audit_log().query_by_entity(&col, &id).unwrap();
+        let update_entry = entries
+            .iter()
+            .find(|e| e.mutation == axon_audit::entry::MutationType::EntityUpdate)
             .unwrap();
-        let update_entry = entries.iter().find(|e| e.mutation == axon_audit::entry::MutationType::EntityUpdate).unwrap();
-        let diff = update_entry.diff.as_ref().expect("diff should be present on update");
-        assert!(diff.contains_key("title"), "title field should appear in diff");
+        let diff = update_entry
+            .diff
+            .as_ref()
+            .expect("diff should be present on update");
+        assert!(
+            diff.contains_key("title"),
+            "title field should appear in diff"
+        );
         assert_eq!(diff["title"].before, Some(json!("v1")));
         assert_eq!(diff["title"].after, Some(json!("v2")));
     }
@@ -996,13 +1017,19 @@ entity_schema:
             })
             .unwrap();
 
-        assert_eq!(resp.entity.data["title"], "v1", "entity should be restored to v1");
+        assert_eq!(
+            resp.entity.data["title"], "v1",
+            "entity should be restored to v1"
+        );
         assert_eq!(
             resp.audit_entry.mutation,
             axon_audit::entry::MutationType::EntityRevert
         );
         assert_eq!(
-            resp.audit_entry.metadata.get("reverted_from_entry_id").map(String::as_str),
+            resp.audit_entry
+                .metadata
+                .get("reverted_from_entry_id")
+                .map(String::as_str),
             Some(&update_entry.id.to_string() as &str)
         );
         // Audit log should have 4 entries: create, update, revert

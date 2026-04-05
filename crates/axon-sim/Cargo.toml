@@ -10,6 +10,8 @@ rust-version.workspace = true
 [dependencies]
 axon-core = { path = "../axon-core" }
 axon-api = { path = "../axon-api" }
+axon-audit = { path = "../axon-audit" }
+axon-schema = { path = "../axon-schema" }
 axon-storage = { path = "../axon-storage" }
 serde_json.workspace = true
 tracing.workspace = true

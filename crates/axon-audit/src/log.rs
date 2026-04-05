@@ -76,10 +76,7 @@ pub trait AuditLog: Send + Sync {
     fn query_by_actor(&self, actor: &str) -> Result<Vec<AuditEntry>, AxonError>;
 
     /// Returns all entries with the given mutation type, in append order.
-    fn query_by_operation(
-        &self,
-        operation: &MutationType,
-    ) -> Result<Vec<AuditEntry>, AxonError>;
+    fn query_by_operation(&self, operation: &MutationType) -> Result<Vec<AuditEntry>, AxonError>;
 
     /// Looks up a single entry by its sequential ID.
     ///
@@ -163,10 +160,7 @@ impl AuditLog for MemoryAuditLog {
             .collect())
     }
 
-    fn query_by_operation(
-        &self,
-        operation: &MutationType,
-    ) -> Result<Vec<AuditEntry>, AxonError> {
+    fn query_by_operation(&self, operation: &MutationType) -> Result<Vec<AuditEntry>, AxonError> {
         Ok(self
             .entries
             .iter()
@@ -373,14 +367,10 @@ mod tests {
         log.append(sample_entry("t-001", MutationType::EntityDelete))
             .unwrap();
 
-        let creates = log
-            .query_by_operation(&MutationType::EntityCreate)
-            .unwrap();
+        let creates = log.query_by_operation(&MutationType::EntityCreate).unwrap();
         assert_eq!(creates.len(), 1);
 
-        let updates = log
-            .query_by_operation(&MutationType::EntityUpdate)
-            .unwrap();
+        let updates = log.query_by_operation(&MutationType::EntityUpdate).unwrap();
         assert_eq!(updates.len(), 1);
     }
 
@@ -408,8 +398,11 @@ mod tests {
     fn query_paginated_basic_cursor() {
         let mut log = MemoryAuditLog::default();
         for i in 0..5u32 {
-            log.append(sample_entry(&format!("t-{i:03}"), MutationType::EntityCreate))
-                .unwrap();
+            log.append(sample_entry(
+                &format!("t-{i:03}"),
+                MutationType::EntityCreate,
+            ))
+            .unwrap();
         }
 
         let page1 = log

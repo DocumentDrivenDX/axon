@@ -318,11 +318,7 @@ mod tests {
         fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
             self.inner.put(entity)
         }
-        fn delete(
-            &mut self,
-            collection: &CollectionId,
-            id: &EntityId,
-        ) -> Result<(), AxonError> {
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
             self.inner.delete(collection, id)
         }
         fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
@@ -512,7 +508,10 @@ mod tests {
             .get(&accounts(), &EntityId::new("A"))
             .unwrap()
             .unwrap();
-        assert_eq!(a.data["balance"], 100, "data must be unchanged after failed commit");
+        assert_eq!(
+            a.data["balance"], 100,
+            "data must be unchanged after failed commit"
+        );
 
         // No audit entries must be written when commit_tx fails — the audit log
         // must only record mutations that were actually committed to storage.
@@ -537,11 +536,7 @@ mod tests {
 
         let _ = tx.commit(&mut storage, &mut audit, None);
 
-        assert_eq!(
-            audit.len(),
-            0,
-            "no audit entries on version-conflict abort"
-        );
+        assert_eq!(audit.len(), 0, "no audit entries on version-conflict abort");
     }
 
     #[test]

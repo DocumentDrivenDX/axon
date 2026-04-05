@@ -402,9 +402,7 @@ async fn create_collection(
             name: CollectionId::new(&name),
             actor,
         }) {
-        Ok(resp) => {
-            (StatusCode::CREATED, Json(json!({ "name": resp.name }))).into_response()
-        }
+        Ok(resp) => (StatusCode::CREATED, Json(json!({ "name": resp.name }))).into_response(),
         Err(e) => axon_error_response(e),
     }
 }
@@ -415,13 +413,10 @@ async fn drop_collection(
     body: Option<Json<CollectionActorBody>>,
 ) -> Response {
     let actor = body.and_then(|b| b.0.actor);
-    match handler
-        .lock()
-        .await
-        .drop_collection(DropCollectionRequest {
-            name: CollectionId::new(&name),
-            actor,
-        }) {
+    match handler.lock().await.drop_collection(DropCollectionRequest {
+        name: CollectionId::new(&name),
+        actor,
+    }) {
         Ok(resp) => Json(json!({
             "name": resp.name,
             "entities_removed": resp.entities_removed,
@@ -657,7 +652,9 @@ mod tests {
             .assert_status_ok();
 
         // Get audit entries to find the entry_id for the create.
-        let resp = server.get("/audit/query?entity_id=t-001&collection=tasks").await;
+        let resp = server
+            .get("/audit/query?entity_id=t-001&collection=tasks")
+            .await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         let entries = body["entries"].as_array().unwrap();
