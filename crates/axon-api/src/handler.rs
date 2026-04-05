@@ -1,4 +1,12 @@
 use std::collections::{HashSet, VecDeque};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn now_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
 
 use axon_audit::entry::{AuditEntry, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
@@ -113,7 +121,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
             validate(&schema, &req.data)?;
         }
 
-        let entity = Entity::new(req.collection, req.id, req.data);
+        let now = now_ns();
+        let mut entity = Entity::new(req.collection, req.id, req.data);
+        entity.created_at_ns = Some(now);
+        entity.updated_at_ns = Some(now);
+        entity.created_by = req.actor.clone();
+        entity.updated_by = req.actor.clone();
         self.storage.put(entity.clone())?;
 
         // Audit.
@@ -150,18 +163,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
             validate(&schema, &req.data)?;
         }
 
-        // Read current state for the audit `before` snapshot.
-        let before = self
-            .storage
-            .get(&req.collection, &req.id)?
-            .map(|e| e.data.clone());
+        // Read current state for the audit `before` snapshot and metadata preservation.
+        let existing = self.storage.get(&req.collection, &req.id)?;
+        let before = existing.as_ref().map(|e| e.data.clone());
 
-        // OCC write.
+        // OCC write: preserve created_at/created_by, update updated_at/updated_by.
         let candidate = Entity {
             collection: req.collection,
             id: req.id,
             version: req.expected_version, // compare_and_swap bumps this to +1
             data: req.data,
+            created_at_ns: existing.as_ref().and_then(|e| e.created_at_ns),
+            updated_at_ns: Some(now_ns()),
+            created_by: existing.as_ref().and_then(|e| e.created_by.clone()),
+            updated_by: req.actor.clone(),
         };
         let updated = self
             .storage
@@ -417,6 +432,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     id: source.entity_id.clone(),
                     version: existing.version,
                     data: before_data.clone(),
+                    created_at_ns: existing.created_at_ns,
+                    updated_at_ns: Some(now_ns()),
+                    created_by: existing.created_by.clone(),
+                    updated_by: req.actor.clone(),
                 };
                 self.storage.compare_and_swap(candidate, existing.version)?
             }

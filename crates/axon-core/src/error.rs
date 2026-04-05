@@ -24,7 +24,7 @@ pub enum AxonError {
         /// `None` when the entity does not exist (create-on-existing conflicts)
         /// or when the entity state is not available at the layer that detected
         /// the conflict.
-        current_entity: Option<Entity>,
+        current_entity: Option<Box<Entity>>,
     },
 
     #[error("already exists: {0}")]

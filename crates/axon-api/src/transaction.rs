@@ -140,6 +140,10 @@ impl Transaction {
             id,
             version: expected_version,
             data: serde_json::Value::Null,
+            created_at_ns: None,
+            updated_at_ns: None,
+            created_by: None,
+            updated_by: None,
         };
         self.ops.push(WriteOp {
             entity: sentinel,
@@ -280,7 +284,7 @@ impl Transaction {
                 return Err(AxonError::ConflictingVersion {
                     expected: op.expected_version,
                     actual: current_version,
-                    current_entity: current,
+                    current_entity: current.map(Box::new),
                 });
             }
         }

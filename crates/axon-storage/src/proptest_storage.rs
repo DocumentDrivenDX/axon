@@ -49,6 +49,10 @@ proptest! {
                 id:         id.clone(),
                 version:    current.version,
                 data:       json!({"v": i}),
+            created_at_ns: None,
+            updated_at_ns: None,
+            created_by: None,
+            updated_by: None,
             };
             let updated = store.compare_and_swap(candidate, current.version)
                 .expect("CAS with correct version must always succeed");
@@ -85,6 +89,10 @@ proptest! {
             id:         id.clone(),
             version:    1,
             data:       json!({"tag": initial_tag}),
+        created_at_ns: None,
+        updated_at_ns: None,
+        created_by: None,
+        updated_by: None,
         }).unwrap();
 
         let wrong_version = 1 + version_delta; // always > 1
@@ -94,6 +102,10 @@ proptest! {
                 id:         id.clone(),
                 version:    wrong_version,
                 data:       json!({"tag": "should-not-persist"}),
+            created_at_ns: None,
+            updated_at_ns: None,
+            created_by: None,
+            updated_by: None,
             },
             wrong_version,
         );

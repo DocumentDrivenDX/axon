@@ -132,6 +132,18 @@ pub struct Entity {
     pub version: u64,
     /// The entity data as an arbitrary JSON object.
     pub data: Value,
+    /// Nanoseconds since Unix epoch when the entity was first created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_ns: Option<u64>,
+    /// Nanoseconds since Unix epoch when the entity was last updated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_ns: Option<u64>,
+    /// Actor that created this entity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<String>,
+    /// Actor that last updated this entity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
 }
 
 impl Entity {
@@ -141,6 +153,10 @@ impl Entity {
             id,
             version: 1,
             data,
+            created_at_ns: None,
+            updated_at_ns: None,
+            created_by: None,
+            updated_by: None,
         }
     }
 }

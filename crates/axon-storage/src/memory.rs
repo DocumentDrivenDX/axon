@@ -110,7 +110,7 @@ impl StorageAdapter for MemoryStorageAdapter {
                 return Err(AxonError::ConflictingVersion {
                     expected: expected_version,
                     actual,
-                    current_entity: current,
+                    current_entity: current.map(Box::new),
                 });
             }
             None => {

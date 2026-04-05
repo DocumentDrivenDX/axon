@@ -95,6 +95,10 @@ impl SqliteStorageAdapter {
             id: EntityId::new(id),
             version,
             data,
+            created_at_ns: None,
+            updated_at_ns: None,
+            created_by: None,
+            updated_by: None,
         })
     }
 }
@@ -234,7 +238,7 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::ConflictingVersion {
                 expected: expected_version,
                 actual: actual_version,
-                current_entity: current,
+                current_entity: current.map(Box::new),
             });
         }
 
@@ -263,7 +267,7 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::ConflictingVersion {
                 expected: expected_version,
                 actual,
-                current_entity: current_after_race,
+                current_entity: current_after_race.map(Box::new),
             });
         }
 
