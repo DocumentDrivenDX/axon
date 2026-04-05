@@ -523,11 +523,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: PutSchemaRequest,
     ) -> Result<PutSchemaResponse, AxonError> {
-        if let Some(entity_schema) = &req.schema.entity_schema {
-            compile_entity_schema(entity_schema)?;
-        }
         let collection = req.schema.collection.clone();
-        self.storage.put_schema(&req.schema)?;
+        self.put_schema(req.schema.clone())?;
         self.audit.append(AuditEntry::new(
             collection,
             EntityId::new(""),
