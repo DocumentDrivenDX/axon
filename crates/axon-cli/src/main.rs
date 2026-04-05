@@ -62,6 +62,10 @@ enum Command {
     /// Audit log queries.
     #[command(subcommand)]
     Audit(AuditCmd),
+
+    /// Bead (work item) management.
+    #[command(subcommand)]
+    Bead(BeadCmd),
 }
 
 // ── Collection commands ────────────────────────────────────────────────────────
@@ -202,6 +206,61 @@ enum AuditCmd {
     },
 }
 
+// ── Bead commands ─────────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum BeadCmd {
+    /// Initialize the bead collection (idempotent).
+    Init,
+    /// Create a new bead.
+    Create {
+        /// Bead ID.
+        id: String,
+        /// Bead title.
+        title: String,
+        /// Bead type (e.g. task, bug, feature).
+        #[arg(long, default_value = "task")]
+        r#type: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long, default_value = "0")]
+        priority: u32,
+        #[arg(long)]
+        assignee: Option<String>,
+        #[arg(long)]
+        acceptance: Option<String>,
+        /// Comma-separated tags.
+        #[arg(long)]
+        tags: Option<String>,
+    },
+    /// List beads, optionally filtered by status.
+    List {
+        #[arg(long)]
+        status: Option<String>,
+    },
+    /// Show the ready queue (pending beads with all deps satisfied).
+    Ready,
+    /// Transition a bead to a new status.
+    Transition {
+        /// Bead ID.
+        id: String,
+        /// Target status.
+        status: String,
+    },
+    /// Add a dependency: <id> depends-on <dep_id>.
+    Dep {
+        /// Bead ID.
+        id: String,
+        /// ID of the bead this one depends on.
+        dep_id: String,
+    },
+    /// Show the dependency tree for a bead.
+    Deps {
+        /// Bead ID.
+        id: String,
+    },
+}
+
 // ── Output helpers ─────────────────────────────────────────────────────────────
 
 fn print_entity(entity_json: Value, format: &OutputFormat) {
@@ -254,6 +313,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Entity(cmd) => run_entity(cmd, &cli.output, &mut handler),
         Command::Link(cmd) => run_link(cmd, &cli.output, &mut handler),
         Command::Audit(cmd) => run_audit(cmd, &cli.output, &mut handler),
+        Command::Bead(cmd) => run_bead(cmd, &cli.output, &mut handler),
     }
 }
 
@@ -682,6 +742,145 @@ fn entity_to_json(e: &axon_core::types::Entity) -> Value {
         "version": e.version,
         "data": e.data,
     })
+}
+
+fn run_bead(
+    cmd: BeadCmd,
+    format: &OutputFormat,
+    handler: &mut AxonHandler<SqliteStorageAdapter>,
+) -> Result<()> {
+    use axon_api::bead;
+
+    match cmd {
+        BeadCmd::Init => {
+            bead::init_beads(handler).map_err(|e| anyhow::anyhow!("{e}"))?;
+            match format {
+                OutputFormat::Json => println!(r#"{{"status":"initialized"}}"#),
+                OutputFormat::Table => println!("bead collection initialized"),
+            }
+        }
+        BeadCmd::Create {
+            id,
+            title,
+            r#type,
+            description,
+            priority,
+            assignee,
+            acceptance,
+            tags,
+        } => {
+            let tag_vec: Vec<String> = tags
+                .map(|t| t.split(',').map(|s| s.trim().to_string()).collect())
+                .unwrap_or_default();
+            let b = bead::create_bead(
+                handler,
+                bead::CreateBeadParams {
+                    id: &id,
+                    bead_type: &r#type,
+                    title: &title,
+                    description: description.as_deref(),
+                    priority,
+                    assignee: assignee.as_deref(),
+                    tags: &tag_vec,
+                    acceptance: acceptance.as_deref(),
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+            print_bead(&b, format);
+        }
+        BeadCmd::List { status } => {
+            let beads =
+                bead::list_beads(handler, status.as_deref()).map_err(|e| anyhow::anyhow!("{e}"))?;
+            print_beads(&beads, format);
+        }
+        BeadCmd::Ready => {
+            let beads = bead::ready_queue(handler).map_err(|e| anyhow::anyhow!("{e}"))?;
+            print_beads(&beads, format);
+        }
+        BeadCmd::Transition { id, status } => {
+            bead::transition_bead(handler, &id, &status).map_err(|e| anyhow::anyhow!("{e}"))?;
+            match format {
+                OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "id": id, "status": status
+                        }))?
+                    );
+                }
+                OutputFormat::Table => println!("{} -> {}", id, status),
+            }
+        }
+        BeadCmd::Dep { id, dep_id } => {
+            bead::add_dependency(handler, &id, &dep_id).map_err(|e| anyhow::anyhow!("{e}"))?;
+            match format {
+                OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({
+                            "id": id, "depends_on": dep_id
+                        }))?
+                    );
+                }
+                OutputFormat::Table => println!("{} depends-on {}", id, dep_id),
+            }
+        }
+        BeadCmd::Deps { id } => {
+            let deps = bead::dependency_tree(handler, &id).map_err(|e| anyhow::anyhow!("{e}"))?;
+            print_beads(&deps, format);
+        }
+    }
+    Ok(())
+}
+
+fn bead_to_json(b: &axon_api::bead::Bead) -> Value {
+    serde_json::json!({
+        "id": b.id,
+        "type": b.bead_type,
+        "status": b.status,
+        "title": b.title,
+        "priority": b.priority,
+        "assignee": b.assignee,
+        "tags": b.tags,
+        "description": b.description,
+        "acceptance": b.acceptance,
+    })
+}
+
+fn print_bead(b: &axon_api::bead::Bead, format: &OutputFormat) {
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&bead_to_json(b)).unwrap()
+        ),
+        OutputFormat::Table => {
+            println!(
+                "[{}] {} ({}) p{} {}",
+                b.status, b.title, b.bead_type, b.priority, b.id,
+            );
+        }
+    }
+}
+
+fn print_beads(beads: &[axon_api::bead::Bead], format: &OutputFormat) {
+    match format {
+        OutputFormat::Json => {
+            let json: Vec<Value> = beads.iter().map(bead_to_json).collect();
+            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+        }
+        OutputFormat::Table => {
+            if beads.is_empty() {
+                println!("(no beads)");
+            } else {
+                for b in beads {
+                    println!(
+                        "[{}] {} ({}) p{} {}",
+                        b.status, b.title, b.bead_type, b.priority, b.id,
+                    );
+                }
+            }
+        }
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

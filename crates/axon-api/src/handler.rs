@@ -83,6 +83,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self.audit
     }
 
+    /// Read-only access to the underlying storage adapter.
+    pub fn storage_ref(&self) -> &S {
+        &self.storage
+    }
+
     /// Mutable access to the underlying storage adapter (used by simulation framework).
     pub fn storage_mut(&mut self) -> &mut S {
         &mut self.storage

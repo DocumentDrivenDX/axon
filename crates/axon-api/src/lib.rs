@@ -4,6 +4,7 @@
 //! for the Axon server API. It sits above the storage, schema, and audit
 //! layers and coordinates transactional entity operations.
 
+pub mod bead;
 pub mod handler;
 pub mod request;
 pub mod response;
