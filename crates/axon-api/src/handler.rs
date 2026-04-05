@@ -80,9 +80,19 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self.audit
     }
 
+    /// Mutable reference to the internal audit log (used by transaction tests).
+    pub fn audit_log_mut(&mut self) -> &mut MemoryAuditLog {
+        &mut self.audit
+    }
+
     /// Mutable access to the underlying storage adapter (used by simulation framework).
     pub fn storage_mut(&mut self) -> &mut S {
         &mut self.storage
+    }
+
+    /// Mutable access to both storage and audit log for transaction commit.
+    pub fn storage_and_audit_mut(&mut self) -> (&mut S, &mut MemoryAuditLog) {
+        (&mut self.storage, &mut self.audit)
     }
 
     /// Consume this handler, returning the underlying storage adapter.
