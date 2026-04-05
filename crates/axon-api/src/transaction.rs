@@ -127,8 +127,16 @@ impl Transaction {
     /// Each written entity produces an [`AuditEntry`] with `transaction_id` set
     /// to `self.id` so callers can correlate the entire transaction in the log.
     /// Audit entries are buffered and only flushed to the log **after**
-    /// [`commit_tx`] succeeds. This guarantees that the audit log never contains
-    /// entries for mutations that were ultimately rolled back.
+    /// [`commit_tx`] succeeds (post-commit audit strategy, see ADR-003/ADR-004).
+    /// This guarantees that the audit log never contains entries for mutations
+    /// that were ultimately rolled back.
+    ///
+    /// **Crash-safety**: There is a narrow window between `commit_tx()` and the
+    /// completion of all `audit.append()` calls where a process crash would leave
+    /// committed mutations without audit entries. For V1 (in-memory), both entity
+    /// state and audit log are volatile — a crash loses both equally. Durable
+    /// backends must close this gap via same-transaction audit writes or a
+    /// startup reconciliation pass (see ADR-004 recovery invariant).
     ///
     /// Returns the list of written entities (deletes produce an entry with the
     /// sentinel entity; callers may ignore it).

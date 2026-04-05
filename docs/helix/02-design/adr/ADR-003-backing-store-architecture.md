@@ -72,25 +72,46 @@ Both backends implement the same `StorageAdapter` trait. Both pass the identical
 Agent/Client
     │
     ▼
-AxonHandler (application layer)
+Transaction (application layer)
     │
     ├── 1. Validate entity against schema
-    ├── 2. Check version (OCC)
-    ├── 3. Compute diff (before vs after)
-    ├── 4. Build AuditEntry (actor, operation, before, after, diff, metadata, tx_id)
+    ├── 2. Check version (OCC — Phase 1 of commit)
+    ├── 3. Apply entity writes (Phase 2 of commit)
+    ├── 4. Build AuditEntry (actor, operation, before, after, tx_id) — buffered
     │
     ▼
 StorageAdapter.begin_tx()
     ├── 5. Write entity
-    ├── 6. Write audit entry
-    └── 7. commit_tx()  ← atomic: both or neither
+    └── 6. commit_tx()  ← entity write is durable here
+    │
+    ▼  (post-commit)
+AuditLog.append()  ← audit entries flushed after storage commit
+    └── 7. Write audit entry
 ```
 
-The audit entry is constructed at the application layer where all semantic context is available, then written atomically with the mutation via the storage adapter's transaction. This guarantees:
-- **No gaps**: if the entity write commits, the audit entry commits
-- **No orphans**: if the audit write fails, the entity write rolls back
-- **Full semantics**: audit entries carry actor, operation type, structured diff, metadata
-- **Backend independence**: same audit behavior on SQLite, Postgres, FoundationDB
+The audit entry is constructed at the application layer where all semantic context
+is available. Entity mutations commit via `StorageAdapter` first; audit entries
+are flushed to the `AuditLog` immediately after `commit_tx()` succeeds.
+
+This **post-commit audit strategy** guarantees:
+- **No orphans**: rolled-back transactions never produce audit entries
+- **Full semantics**: audit entries carry actor, operation type, before/after state, metadata
+- **Backend independence**: same audit behavior on memory, SQLite, PostgreSQL
+
+**Trade-off and recovery**: There is a narrow crash-safety window between
+`commit_tx()` and the completion of `AuditLog.append()`. If the process dies in
+that window, the committed mutation has no audit trail. For V1 (in-memory), this
+is acceptable — both entity state and audit log are volatile.
+
+For durable backends (SQLite, PostgreSQL), implementations must close this gap by
+one of:
+- Writing audit entries to the same database transaction as entity mutations (requires
+  audit storage to be integrated into `StorageAdapter`)
+- Writing a pre-commit intent record inside the storage transaction; on startup,
+  scanning for committed intents without matching audit entries and replaying them
+
+Until a durable backend is implemented, INV-003 (audit completeness) holds for
+all mutations where the process remains alive — which covers all non-crash scenarios.
 
 #### CDC as audit log projection
 

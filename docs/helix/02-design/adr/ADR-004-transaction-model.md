@@ -88,9 +88,29 @@ OCC as implemented provides **serializable isolation** for write transactions:
 ### Audit Integration
 
 Every committed transaction assigns a single `transaction_id` to all audit
-entries it produces. Audit entries are written in the same storage transaction
-as the entity mutations (see ADR-003 audit write path). If the storage commit
-fails, both entity and audit writes roll back atomically.
+entries it produces.
+
+**Post-commit audit strategy**: Audit entries are buffered during `execute()` and
+flushed to the `AuditLog` only after `commit_tx()` succeeds. This two-phase
+approach is a deliberate trade-off:
+
+| Property | Guarantee |
+|----------|-----------|
+| No orphan entries | Audit entries for rolled-back or failed transactions are never written |
+| No phantom storage | Entity mutations that are rolled back leave no audit trace |
+| Crash-safety window | If the process dies between `commit_tx()` and the last `audit.append()`, committed mutations have no audit trail until recovery |
+
+The crash-safety window is acceptable for V1 (in-memory) because both entity state
+and audit log are volatile; a crash loses both equally. For durable backends
+(SQLite, PostgreSQL), the audit log should be integrated into the same backing
+store transaction so that both entity and audit writes commit atomically. This
+is a P1 follow-on tracked by the durable storage adapter implementation tasks.
+
+**Recovery invariant**: Any implementation targeting durable storage must ensure
+INV-003 holds after restart — either by writing audit entries inside the same
+database transaction as entity mutations, or by implementing a write-ahead intent
+log that is replayed on startup to close any gap left by a crash between commit
+and audit flush.
 
 ### Limits and Timeouts
 

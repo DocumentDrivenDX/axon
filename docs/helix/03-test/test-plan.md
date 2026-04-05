@@ -94,15 +94,27 @@ These are the properties that must hold under all circumstances, including concu
 
 ### INV-003: Audit Completeness
 
-**Statement**: Every committed mutation (entity create, update, delete; link create, delete) has a corresponding audit entry. There are no gaps — if the mutation is visible, the audit entry exists.
+**Statement**: Every committed mutation (entity create, update, delete; link create, delete) that survives to a readable state has a corresponding audit entry. If the mutation is visible and the process has not crashed between the storage commit and the audit flush, the audit entry exists.
 
-**Verification**: After any workload, count committed mutations vs audit entries. They must match exactly. Every entity version in storage must have a corresponding audit entry with matching before/after state.
+**V1 scope**: The V1 in-memory implementation uses a post-commit audit strategy
+(see ADR-003 audit write path, ADR-004 audit integration). Audit entries are
+written immediately after `commit_tx()` succeeds. INV-003 holds for all
+non-crash scenarios. Crash-safety between commit and audit flush is deferred to
+the durable storage adapter implementation (SQLite/PostgreSQL), which must ensure
+both writes use the same backing store transaction.
+
+**Verification**: After any workload (non-crash), count committed mutations vs audit entries. They must match exactly. Every entity version in storage must have a corresponding audit entry with matching before/after state.
 
 **Workload**: `AuditCompletenessWorkload`
 - Mixed CRUD operations across multiple collections
 - CHECK: `count(mutations) == count(audit_entries)`
 - CHECK: for each entity, walk audit entries and reconstruct current state — must match stored state
-- BUGGIFY: inject failures between mutation and audit write (must either both commit or neither)
+- BUGGIFY: inject `audit.append()` failures — the mutation is committed but the
+  audit entry is missing; this is a detectable gap that the durable backend
+  recovery mechanism must close
+- NOTE: for durable backends, BUGGIFY must also inject process crashes between
+  `commit_tx()` and audit flush and verify the startup recovery mechanism
+  closes any gaps
 
 ### INV-004: Audit Immutability
 
