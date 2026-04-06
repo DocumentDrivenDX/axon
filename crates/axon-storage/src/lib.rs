@@ -6,6 +6,7 @@
 
 pub mod adapter;
 pub mod conformance;
+pub mod index_builder;
 pub mod memory;
 pub mod postgres;
 pub mod sqlite;
