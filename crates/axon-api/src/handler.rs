@@ -3854,6 +3854,225 @@ link_types:
     }
 
     #[test]
+    fn put_schema_breaking_change_rejected_without_force() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let v1 = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "status": {"type": "string", "enum": ["draft", "active"]}
+                }
+            })),
+            link_types: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema: v1,
+            actor: None,
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        // Breaking change: add required field
+        let v2 = CollectionSchema {
+            collection: col,
+            description: None,
+            version: 2,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title", "assignee"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "status": {"type": "string", "enum": ["draft", "active"]},
+                    "assignee": {"type": "string"}
+                }
+            })),
+            link_types: Default::default(),
+        };
+        let err = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: v2,
+                actor: None,
+                force: false,
+                dry_run: false,
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, AxonError::InvalidOperation(_)),
+            "breaking change without force should be rejected, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn put_schema_breaking_change_accepted_with_force() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let v1 = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title"],
+                "properties": {"title": {"type": "string"}}
+            })),
+            link_types: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema: v1,
+            actor: None,
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        // Breaking: add required field, with force=true
+        let v2 = CollectionSchema {
+            collection: col,
+            description: None,
+            version: 2,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title", "priority"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "priority": {"type": "integer"}
+                }
+            })),
+            link_types: Default::default(),
+        };
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: v2,
+                actor: Some("admin".into()),
+                force: true,
+                dry_run: false,
+            })
+            .unwrap();
+        assert_eq!(
+            resp.compatibility,
+            Some(axon_schema::Compatibility::Breaking)
+        );
+        assert!(!resp.dry_run);
+    }
+
+    #[test]
+    fn put_schema_dry_run_does_not_apply() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let v1 = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title"],
+                "properties": {"title": {"type": "string"}}
+            })),
+            link_types: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema: v1,
+            actor: None,
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        // Dry-run breaking change
+        let v2 = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 2,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title", "owner"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "owner": {"type": "string"}
+                }
+            })),
+            link_types: Default::default(),
+        };
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: v2,
+                actor: None,
+                force: false,
+                dry_run: true,
+            })
+            .unwrap();
+        assert!(resp.dry_run);
+        assert_eq!(
+            resp.compatibility,
+            Some(axon_schema::Compatibility::Breaking)
+        );
+
+        // Schema should still be v1
+        let stored = h.get_schema(&col).unwrap().unwrap();
+        assert_eq!(stored.version, 1);
+    }
+
+    #[test]
+    fn put_schema_compatible_change_succeeds_without_force() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let v1 = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title"],
+                "properties": {"title": {"type": "string"}}
+            })),
+            link_types: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema: v1,
+            actor: None,
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        // Compatible: add optional field
+        let v2 = CollectionSchema {
+            collection: col,
+            description: None,
+            version: 2,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                    "title": {"type": "string"},
+                    "tags": {"type": "array", "items": {"type": "string"}}
+                }
+            })),
+            link_types: Default::default(),
+        };
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: v2,
+                actor: None,
+                force: false,
+                dry_run: false,
+            })
+            .unwrap();
+        assert_eq!(
+            resp.compatibility,
+            Some(axon_schema::Compatibility::Compatible)
+        );
+        assert!(!resp.dry_run);
+    }
+
+    #[test]
     fn drop_collection_removes_schema() {
         let mut h = handler();
         let col = CollectionId::new("invoices");
