@@ -287,6 +287,75 @@ pub fn build_query_tool() -> ToolDef {
     }
 }
 
+/// Build a `{collection}.aggregate` tool for MCP.
+///
+/// Accepts structured aggregation requests: function, field, optional filter and group_by.
+pub fn build_aggregate_tool(collection: &str) -> ToolDef {
+    let col = collection.to_string();
+    ToolDef {
+        name: format!("{col}.aggregate"),
+        description: format!("Run an aggregation query on the {col} collection"),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "function": {
+                    "type": "string",
+                    "enum": ["count", "sum", "avg", "min", "max"],
+                    "description": "Aggregation function"
+                },
+                "field": {
+                    "type": "string",
+                    "description": "Field to aggregate"
+                },
+                "filter": {
+                    "type": "object",
+                    "description": "Optional filter to restrict entities"
+                },
+                "group_by": {
+                    "type": "string",
+                    "description": "Optional field to group results by"
+                }
+            },
+            "required": ["function", "field"]
+        }),
+        handler: Box::new(move |args| {
+            let function = args
+                .get("function")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidArgument("missing 'function'".into()))?;
+            let field = args
+                .get("field")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidArgument("missing 'field'".into()))?;
+
+            // Validate function name.
+            match function {
+                "count" | "sum" | "avg" | "min" | "max" => {}
+                other => {
+                    return Err(ToolError::InvalidArgument(format!(
+                        "unknown aggregation function: {other}"
+                    )));
+                }
+            }
+
+            // Stub response — in full implementation, this would call
+            // AxonHandler::aggregate_entities.
+            Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::json!({
+                        "collection": col,
+                        "function": function,
+                        "field": field,
+                        "result": null,
+                        "info": "aggregation stub — handler integration pending"
+                    }).to_string()
+                }]
+            }))
+        }),
+    }
+}
+
 fn to_tool_error(err: axon_core::error::AxonError) -> ToolError {
     use axon_core::error::AxonError;
     match err {
@@ -498,5 +567,40 @@ mod tests {
         let text = result["content"][0]["text"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(text).unwrap();
         assert_eq!(parsed["variables"]["id"], "t-001");
+    }
+
+    // ── aggregate tool tests ───────────────────────────────────────────
+
+    #[test]
+    fn aggregate_tool_accepts_valid_request() {
+        let tool = build_aggregate_tool("tasks");
+        assert_eq!(tool.name, "tasks.aggregate");
+        let result = (tool.handler)(&serde_json::json!({
+            "function": "count",
+            "field": "status"
+        }))
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["function"], "count");
+        assert_eq!(parsed["collection"], "tasks");
+    }
+
+    #[test]
+    fn aggregate_tool_rejects_unknown_function() {
+        let tool = build_aggregate_tool("tasks");
+        let err = (tool.handler)(&serde_json::json!({
+            "function": "median",
+            "field": "x"
+        }))
+        .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn aggregate_tool_requires_function() {
+        let tool = build_aggregate_tool("tasks");
+        let err = (tool.handler)(&serde_json::json!({"field": "x"})).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 }
