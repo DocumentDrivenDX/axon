@@ -5,6 +5,7 @@
 //! JSON objects with appropriate HTTP status codes.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -761,6 +762,7 @@ async fn commit_transaction(
 
 /// Build the axum router for the HTTP gateway.
 pub fn build_router(handler: SharedHandler) -> Router {
+    let start = Instant::now();
     Router::new()
         .route("/entities/{collection}/{id}", post(create_entity))
         .route("/entities/{collection}/{id}", get(get_entity))
@@ -784,6 +786,21 @@ pub fn build_router(handler: SharedHandler) -> Router {
         .route("/collections/{name}/schema", get(get_schema))
         .route("/transactions", post(commit_transaction))
         .with_state(handler)
+        .route(
+            "/health",
+            get(move || async move {
+                let uptime = start.elapsed().as_secs();
+                (
+                    StatusCode::OK,
+                    Json(json!({
+                        "status": "ok",
+                        "version": env!("CARGO_PKG_VERSION"),
+                        "uptime_seconds": uptime,
+                    })),
+                )
+                    .into_response()
+            }),
+        )
 }
 
 #[cfg(test)]
@@ -1551,5 +1568,16 @@ mod tests {
             .get("/entities/temp/d-001")
             .await
             .assert_status_not_found();
+    }
+
+    #[tokio::test]
+    async fn http_health_returns_ok_with_version() {
+        let server = test_server();
+        let resp = server.get("/health").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["status"], "ok");
+        assert!(body["version"].is_string());
+        assert!(body["uptime_seconds"].is_number());
     }
 }
