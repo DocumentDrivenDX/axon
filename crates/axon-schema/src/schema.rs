@@ -49,6 +49,46 @@ pub struct GateDef {
     pub includes: Vec<String>,
 }
 
+/// Value type for an index field (ESF Layer 4).
+///
+/// Determines which EAV index table the value is stored in and how
+/// comparisons (equality, range) are performed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IndexType {
+    String,
+    Integer,
+    Float,
+    Datetime,
+    Boolean,
+}
+
+impl std::fmt::Display for IndexType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IndexType::String => write!(f, "string"),
+            IndexType::Integer => write!(f, "integer"),
+            IndexType::Float => write!(f, "float"),
+            IndexType::Datetime => write!(f, "datetime"),
+            IndexType::Boolean => write!(f, "boolean"),
+        }
+    }
+}
+
+/// A single-field secondary index declaration (ESF Layer 4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IndexDef {
+    /// JSON field path to index (e.g. `"status"`, `"address.city"`).
+    pub field: String,
+    /// Value type for this index.
+    #[serde(rename = "type")]
+    pub index_type: IndexType,
+    /// When `true`, the index enforces uniqueness: no two entities in
+    /// the same collection may share the same indexed value.
+    #[serde(default)]
+    pub unique: bool,
+}
+
 /// Defines the structure and constraints for entities in a collection.
 ///
 /// The `entity_schema` field holds a JSON Schema 2020-12 document (Layer 1 of ESF)
@@ -73,6 +113,9 @@ pub struct CollectionSchema {
     /// Validation rules (ESF Layer 5).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub validation_rules: Vec<ValidationRule>,
+    /// Secondary index declarations (ESF Layer 4).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indexes: Vec<IndexDef>,
 }
 
 impl CollectionSchema {
@@ -85,6 +128,7 @@ impl CollectionSchema {
             link_types: HashMap::new(),
             gates: HashMap::new(),
             validation_rules: Vec::new(),
+            indexes: Vec::new(),
         }
     }
 }
@@ -141,6 +185,7 @@ impl EsfDocument {
             link_types,
             gates: HashMap::new(),
             validation_rules: Vec::new(),
+            indexes: Vec::new(),
         })
     }
 }

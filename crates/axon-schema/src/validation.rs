@@ -642,6 +642,7 @@ entity_schema:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         let entity = json!({"count": "not-a-number"});
         let errs = validate_entity(&schema, &entity).unwrap_err();
@@ -688,6 +689,7 @@ entity_schema:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         let entity = json!({});
         let errs = validate_entity(&schema, &entity).unwrap_err();

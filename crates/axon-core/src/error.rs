@@ -30,6 +30,17 @@ pub enum AxonError {
     #[error("already exists: {0}")]
     AlreadyExists(String),
 
+    /// Unique index constraint violation.
+    ///
+    /// A write would produce a duplicate value on a unique index.
+    #[error("unique index violation on field `{field}`: value {value} already exists")]
+    UniqueViolation {
+        /// The indexed field path that was violated.
+        field: String,
+        /// String representation of the duplicate value.
+        value: String,
+    },
+
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 

@@ -62,6 +62,9 @@ fn axon_to_status(err: AxonError) -> Status {
         AxonError::Serialization(e) => {
             Status::internal(format!("{{\"code\":\"serialization\",\"detail\":\"{e}\"}}"))
         }
+        AxonError::UniqueViolation { field, value } => Status::already_exists(format!(
+            "{{\"code\":\"unique_violation\",\"field\":{field:?},\"value\":{value:?}}}"
+        )),
     }
 }
 

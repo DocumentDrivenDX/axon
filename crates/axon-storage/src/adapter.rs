@@ -1,9 +1,121 @@
+use std::ops::Bound;
+
 use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
 use axon_core::id::CollectionId;
 use axon_core::id::EntityId;
 use axon_core::types::Entity;
 use axon_schema::schema::CollectionSchema;
+
+/// A typed index value extracted from entity data.
+///
+/// Values are stored in EAV index tables, one variant per [`IndexType`].
+/// The `Ord` implementation provides the sort order used for range scans.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum IndexValue {
+    /// UTF-8 string value.
+    String(String),
+    /// Signed 64-bit integer.
+    Integer(i64),
+    /// IEEE 754 float, stored as ordered bits for BTreeMap compatibility.
+    Float(OrderedFloat),
+    /// Boolean value (false < true).
+    Boolean(bool),
+}
+
+impl std::fmt::Display for IndexValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IndexValue::String(s) => write!(f, "\"{s}\""),
+            IndexValue::Integer(n) => write!(f, "{n}"),
+            IndexValue::Float(OrderedFloat(bits)) => {
+                write!(f, "{}", f64::from_bits(*bits))
+            }
+            IndexValue::Boolean(b) => write!(f, "{b}"),
+        }
+    }
+}
+
+/// Wrapper for f64 that implements `Eq` and `Ord` via total ordering on bits.
+///
+/// NaN values are sorted after all other values. This enables use as a
+/// BTreeMap key.
+#[derive(Debug, Clone, Copy)]
+pub struct OrderedFloat(pub u64);
+
+impl OrderedFloat {
+    pub fn new(val: f64) -> Self {
+        Self(val.to_bits())
+    }
+
+    pub fn value(&self) -> f64 {
+        f64::from_bits(self.0)
+    }
+}
+
+impl PartialEq for OrderedFloat {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+impl Eq for OrderedFloat {}
+
+impl std::hash::Hash for OrderedFloat {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
+impl PartialOrd for OrderedFloat {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for OrderedFloat {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        let a = f64::from_bits(self.0);
+        let b = f64::from_bits(other.0);
+        a.total_cmp(&b)
+    }
+}
+
+/// Extract an [`IndexValue`] from a JSON value according to the declared index type.
+///
+/// Returns `None` if the value is null, missing, or has a type mismatch
+/// (per FEAT-013: mismatched types are not indexed, not errors).
+pub fn extract_index_value(
+    json_val: &serde_json::Value,
+    index_type: &axon_schema::schema::IndexType,
+) -> Option<IndexValue> {
+    use axon_schema::schema::IndexType;
+    match index_type {
+        IndexType::String => json_val.as_str().map(|s| IndexValue::String(s.to_string())),
+        IndexType::Integer => json_val.as_i64().map(IndexValue::Integer),
+        IndexType::Float => json_val.as_f64().map(|f| IndexValue::Float(OrderedFloat::new(f))),
+        IndexType::Boolean => json_val.as_bool().map(IndexValue::Boolean),
+        IndexType::Datetime => {
+            // Datetimes are stored as strings for ordering purposes.
+            json_val
+                .as_str()
+                .map(|s| IndexValue::String(s.to_string()))
+        }
+    }
+}
+
+/// Navigate a dotted field path in a JSON value.
+///
+/// E.g., `"address.city"` resolves `{"address": {"city": "NY"}}` to `"NY"`.
+pub fn resolve_field_path<'a>(
+    data: &'a serde_json::Value,
+    path: &str,
+) -> Option<&'a serde_json::Value> {
+    let mut current = data;
+    for segment in path.split('.') {
+        current = current.get(segment)?;
+    }
+    Some(current)
+}
 
 /// Abstraction over Axon's backing storage.
 ///
@@ -181,5 +293,89 @@ pub trait StorageAdapter: Send + Sync {
     /// that do not implement persistent collection registration).
     fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
         Ok(vec![])
+    }
+
+    // ── Secondary index operations (FEAT-013) ───────────────────────────
+
+    /// Update index entries for an entity.
+    ///
+    /// Removes any existing index entries for this entity, then inserts new
+    /// entries based on the entity's current data and the declared indexes.
+    /// Called automatically on every `put` and `compare_and_swap`.
+    ///
+    /// `old_data` is the previous entity data (for removing stale entries).
+    /// `None` if this is a new entity.
+    ///
+    /// The default implementation is a no-op.
+    fn update_indexes(
+        &mut self,
+        _collection: &CollectionId,
+        _entity_id: &EntityId,
+        _old_data: Option<&serde_json::Value>,
+        _new_data: &serde_json::Value,
+        _indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Remove all index entries for a deleted entity.
+    ///
+    /// The default implementation is a no-op.
+    fn remove_index_entries(
+        &mut self,
+        _collection: &CollectionId,
+        _entity_id: &EntityId,
+        _data: &serde_json::Value,
+        _indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Look up entity IDs by exact index value (equality query).
+    ///
+    /// Returns entity IDs in ascending order. Returns an empty vec if the
+    /// index does not exist or no entities match.
+    fn index_lookup(
+        &self,
+        _collection: &CollectionId,
+        _field: &str,
+        _value: &IndexValue,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        Ok(vec![])
+    }
+
+    /// Range scan on an index, returning entity IDs whose indexed value
+    /// falls within the given bounds.
+    ///
+    /// Returns entity IDs sorted by indexed value, then by entity ID.
+    fn index_range(
+        &self,
+        _collection: &CollectionId,
+        _field: &str,
+        _lower: Bound<&IndexValue>,
+        _upper: Bound<&IndexValue>,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        Ok(vec![])
+    }
+
+    /// Check if the given value already exists in a unique index for a
+    /// different entity (i.e., would violate a unique constraint).
+    ///
+    /// Returns `true` if the value is already taken by another entity.
+    fn index_unique_conflict(
+        &self,
+        _collection: &CollectionId,
+        _field: &str,
+        _value: &IndexValue,
+        _exclude_entity: &EntityId,
+    ) -> Result<bool, AxonError> {
+        Ok(false)
+    }
+
+    /// Drop all index entries for a collection (e.g. on collection drop).
+    ///
+    /// The default implementation is a no-op.
+    fn drop_indexes(&mut self, _collection: &CollectionId) -> Result<(), AxonError> {
+        Ok(())
     }
 }

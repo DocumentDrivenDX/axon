@@ -96,6 +96,14 @@ fn axon_error_response(err: AxonError) -> Response {
             Json(ApiError::new("serialization_error", e.to_string())),
         )
             .into_response(),
+        AxonError::UniqueViolation { field, value } => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new(
+                "unique_violation",
+                json!({"field": field, "value": value}),
+            )),
+        )
+            .into_response(),
     }
 }
 
@@ -560,6 +568,7 @@ async fn create_collection(
         link_types: schema_body.link_types.unwrap_or_default(),
         gates: Default::default(),
         validation_rules: Default::default(),
+        indexes: Default::default(),
     };
     match handler
         .lock()
@@ -640,6 +649,7 @@ async fn put_schema(
         link_types: body.link_types.unwrap_or_default(),
         gates: Default::default(),
         validation_rules: Default::default(),
+        indexes: Default::default(),
     };
     match handler.lock().await.handle_put_schema(PutSchemaRequest {
         schema,

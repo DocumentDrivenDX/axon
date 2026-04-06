@@ -75,6 +75,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
             compile_entity_schema(entity_schema)?;
         }
 
+        // Validate index declarations (FEAT-013).
+        for idx in &schema.indexes {
+            if idx.field.is_empty() {
+                return Err(AxonError::SchemaValidation(
+                    "index declaration has an empty field path".into(),
+                ));
+            }
+        }
+
         // Validate rule definitions (US-069).
         if !schema.validation_rules.is_empty() {
             let rule_errors = axon_schema::rules::validate_rule_definitions(
@@ -186,6 +195,19 @@ impl<S: StorageAdapter> AxonHandler<S> {
         entity.updated_by = req.actor.clone();
         self.storage.put(entity.clone())?;
 
+        // Index maintenance (FEAT-013).
+        if let Some(ref s) = schema {
+            if !s.indexes.is_empty() {
+                self.storage.update_indexes(
+                    &entity.collection,
+                    &entity.id,
+                    None,
+                    &entity.data,
+                    &s.indexes,
+                )?;
+            }
+        }
+
         // Audit.
         self.audit.append(AuditEntry::new(
             entity.collection.clone(),
@@ -271,6 +293,19 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .storage
             .compare_and_swap(candidate, req.expected_version)?;
 
+        // Index maintenance (FEAT-013).
+        if let Some(ref s) = schema {
+            if !s.indexes.is_empty() {
+                self.storage.update_indexes(
+                    &updated.collection,
+                    &updated.id,
+                    before.as_ref(),
+                    &updated.data,
+                    &s.indexes,
+                )?;
+            }
+        }
+
         // Audit.
         self.audit.append(AuditEntry::new(
             updated.collection.clone(),
@@ -330,6 +365,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .map(|e| e.version)
             .unwrap_or(0);
 
+        // Remove index entries before deleting (FEAT-013).
+        if let Some(ref data) = before {
+            if let Ok(Some(schema)) = self.storage.get_schema(&req.collection) {
+                if !schema.indexes.is_empty() {
+                    self.storage.remove_index_entries(
+                        &req.collection,
+                        &req.id,
+                        data,
+                        &schema.indexes,
+                    )?;
+                }
+            }
+        }
+
         self.storage.delete(&req.collection, &req.id)?;
 
         // Audit (only if the entity actually existed).
@@ -372,21 +421,32 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
         }
 
-        // Full scan — FEAT-004 notes secondary indexes are P1 for V1.
-        let all = self.storage.range_scan(&req.collection, None, None, None)?;
+        // Try index-accelerated lookup (FEAT-013) before falling back to scan.
+        let schema = self.storage.get_schema(&req.collection)?;
+        let index_candidates = try_index_lookup(&self.storage, &req.collection, req.filter.as_ref(), schema.as_ref());
+
+        let all = if let Some(entity_ids) = index_candidates {
+            // Fetch entities by ID from the index results.
+            let mut entities = Vec::with_capacity(entity_ids.len());
+            for eid in &entity_ids {
+                if let Some(e) = self.storage.get(&req.collection, eid)? {
+                    entities.push(e);
+                }
+            }
+            entities
+        } else {
+            // Fallback: full scan.
+            self.storage.range_scan(&req.collection, None, None, None)?
+        };
 
         // Pre-compute gate evaluations if any gate filters are present.
         let needs_gates = req
             .filter
             .as_ref()
             .is_some_and(has_gate_filter);
-        let schema = if needs_gates {
-            self.storage.get_schema(&req.collection)?
-        } else {
-            None
-        };
 
-        // Apply filter.
+        // Apply filter (even if we used an index, there may be additional
+        // filter predicates or gate filters that need post-filtering).
         let mut matched: Vec<Entity> = all
             .into_iter()
             .filter(|e| {
@@ -1592,6 +1652,96 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let links_col = Link::links_collection();
         let entities = self.storage.range_scan(&links_col, None, None, None)?;
         Ok(entities.iter().filter_map(Link::from_entity).collect())
+    }
+}
+
+// ── Index-accelerated query planner (FEAT-013) ─────────────────────────────────
+
+/// Attempt to use a secondary index to satisfy a filter.
+///
+/// Returns `Some(entity_ids)` if the filter can be satisfied by an index lookup.
+/// Returns `None` to indicate the caller should fall back to a full scan.
+///
+/// Currently handles:
+/// - Single `FieldFilter` with `Eq` op when the field has a declared index
+/// - Single `FieldFilter` with `Gt`/`Gte`/`Lt`/`Lte` op for range queries
+/// - `And` of equality filters where any single field has an index (picks first)
+fn try_index_lookup<S: StorageAdapter>(
+    storage: &S,
+    collection: &CollectionId,
+    filter: Option<&FilterNode>,
+    schema: Option<&CollectionSchema>,
+) -> Option<Vec<EntityId>> {
+    let filter = filter?;
+    let schema = schema?;
+    if schema.indexes.is_empty() {
+        return None;
+    }
+
+    match filter {
+        FilterNode::Field(f) => {
+            // Find an index matching this field.
+            let idx = schema.indexes.iter().find(|i| i.field == f.field)?;
+            let val = axon_storage::extract_index_value(&f.value, &idx.index_type)?;
+
+            match f.op {
+                FilterOp::Eq => storage.index_lookup(collection, &f.field, &val).ok(),
+                FilterOp::Gt => storage
+                    .index_range(
+                        collection,
+                        &f.field,
+                        std::ops::Bound::Excluded(&val),
+                        std::ops::Bound::Unbounded,
+                    )
+                    .ok(),
+                FilterOp::Gte => storage
+                    .index_range(
+                        collection,
+                        &f.field,
+                        std::ops::Bound::Included(&val),
+                        std::ops::Bound::Unbounded,
+                    )
+                    .ok(),
+                FilterOp::Lt => storage
+                    .index_range(
+                        collection,
+                        &f.field,
+                        std::ops::Bound::Unbounded,
+                        std::ops::Bound::Excluded(&val),
+                    )
+                    .ok(),
+                FilterOp::Lte => storage
+                    .index_range(
+                        collection,
+                        &f.field,
+                        std::ops::Bound::Unbounded,
+                        std::ops::Bound::Included(&val),
+                    )
+                    .ok(),
+                _ => None, // Ne, In, Contains — fall back to scan
+            }
+        }
+        FilterNode::And { filters } => {
+            // Try to find at least one equality sub-filter with an index.
+            for sub in filters {
+                if let FilterNode::Field(f) = sub {
+                    if f.op == FilterOp::Eq {
+                        if let Some(idx) = schema.indexes.iter().find(|i| i.field == f.field) {
+                            if let Some(val) =
+                                axon_storage::extract_index_value(&f.value, &idx.index_type)
+                            {
+                                // Use this index; remaining filters applied post-fetch.
+                                return storage
+                                    .index_lookup(collection, &f.field, &val)
+                                    .ok();
+                            }
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None, // Or, Gate — fall back to scan
     }
 }
 
@@ -2809,6 +2959,7 @@ entity_schema:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -2918,6 +3069,7 @@ entity_schema:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
 
         let err = h
@@ -3005,6 +3157,7 @@ entity_schema:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         })
         .unwrap();
 
@@ -3032,6 +3185,7 @@ entity_schema:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -4156,6 +4310,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
 
         h.put_schema(schema.clone()).unwrap();
@@ -4202,6 +4357,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -4266,6 +4422,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
 
         let err = h.put_schema(schema).unwrap_err();
@@ -4287,6 +4444,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
 
         let err = h
@@ -4317,6 +4475,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -4347,6 +4506,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -4373,6 +4533,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         let err = h
             .handle_put_schema(PutSchemaRequest {
@@ -4404,6 +4565,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -4429,6 +4591,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -4461,6 +4624,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -4486,6 +4650,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -4522,6 +4687,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -4547,6 +4713,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -4703,6 +4870,7 @@ link_types:
                     fix: Some("Add tags for categorization".into()),
                 },
             ],
+            indexes: Default::default(),
         };
         h.put_schema(schema).unwrap();
         h
@@ -5202,6 +5370,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -5271,6 +5440,7 @@ link_types:
                 link_types: Default::default(),
                 gates: Default::default(),
                 validation_rules: Default::default(),
+                indexes: Default::default(),
             },
             actor: None,
             force: true,
@@ -5306,6 +5476,7 @@ link_types:
                 link_types: Default::default(),
                 gates: Default::default(),
                 validation_rules: Default::default(),
+                indexes: Default::default(),
             },
             actor: None,
         })
@@ -5537,6 +5708,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -5560,6 +5732,7 @@ link_types:
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v2_schema,
@@ -5631,6 +5804,7 @@ link_types:
                 link_types: Default::default(),
                 gates: Default::default(),
                 validation_rules: Default::default(),
+                indexes: Default::default(),
             },
             actor: None,
         })
@@ -5652,6 +5826,7 @@ link_types:
                 link_types: Default::default(),
                 gates: Default::default(),
                 validation_rules: Default::default(),
+                indexes: Default::default(),
             },
             actor: None,
             force: false,
@@ -5676,6 +5851,7 @@ link_types:
                 link_types: Default::default(),
                 gates: Default::default(),
                 validation_rules: Default::default(),
+                indexes: Default::default(),
             },
             actor: None,
             force: false,
@@ -5844,5 +6020,264 @@ link_types:
         // Only 3 entities have priority: 1 + 2 + 1 = 4
         assert!((resp.results[0].value - 4.0).abs() < f64::EPSILON);
         assert_eq!(resp.results[0].count, 3);
+    }
+
+    // ── Secondary index tests (FEAT-013, US-031) ────────────────────────
+
+    fn setup_indexed_collection() -> AxonHandler<MemoryStorageAdapter> {
+        use axon_schema::schema::{IndexDef, IndexType};
+
+        let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+
+        let schema = CollectionSchema {
+            collection: CollectionId::new("tasks"),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "status": { "type": "string" },
+                    "priority": { "type": "integer" }
+                }
+            })),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: vec![
+                IndexDef {
+                    field: "status".into(),
+                    index_type: IndexType::String,
+                    unique: false,
+                },
+                IndexDef {
+                    field: "priority".into(),
+                    index_type: IndexType::Integer,
+                    unique: false,
+                },
+            ],
+        };
+
+        h.create_collection(CreateCollectionRequest {
+            name: CollectionId::new("tasks"),
+            schema,
+            actor: Some("test".into()),
+        })
+        .unwrap();
+
+        // Insert test entities.
+        for (id, status, priority) in &[
+            ("t-001", "pending", 1),
+            ("t-002", "pending", 2),
+            ("t-003", "done", 3),
+            ("t-004", "done", 1),
+            ("t-005", "in_progress", 2),
+        ] {
+            h.create_entity(CreateEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new(*id),
+                data: json!({"status": status, "priority": priority}),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        h
+    }
+
+    #[test]
+    fn index_equality_query_returns_matching_entities() {
+        let h = setup_indexed_collection();
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "status".into(),
+                    op: FilterOp::Eq,
+                    value: json!("pending"),
+                })),
+                sort: vec![],
+                after_id: None,
+                limit: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities.len(), 2);
+        let ids: Vec<&str> = resp.entities.iter().map(|e| e.id.as_str()).collect();
+        assert!(ids.contains(&"t-001"));
+        assert!(ids.contains(&"t-002"));
+    }
+
+    #[test]
+    fn index_range_query_gt() {
+        let h = setup_indexed_collection();
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "priority".into(),
+                    op: FilterOp::Gt,
+                    value: json!(1),
+                })),
+                sort: vec![],
+                after_id: None,
+                limit: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities.len(), 3);
+        // priority > 1: t-002 (2), t-003 (3), t-005 (2)
+    }
+
+    #[test]
+    fn non_indexed_field_falls_back_to_scan() {
+        let h = setup_indexed_collection();
+
+        // Filter on a field that has no index.
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "nonexistent".into(),
+                    op: FilterOp::Eq,
+                    value: json!("value"),
+                })),
+                sort: vec![],
+                after_id: None,
+                limit: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities.len(), 0);
+    }
+
+    #[test]
+    fn and_filter_uses_index_for_one_field() {
+        let h = setup_indexed_collection();
+
+        // AND filter: status=pending AND priority=2
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::And {
+                    filters: vec![
+                        FilterNode::Field(FieldFilter {
+                            field: "status".into(),
+                            op: FilterOp::Eq,
+                            value: json!("pending"),
+                        }),
+                        FilterNode::Field(FieldFilter {
+                            field: "priority".into(),
+                            op: FilterOp::Eq,
+                            value: json!(2),
+                        }),
+                    ],
+                }),
+                sort: vec![],
+                after_id: None,
+                limit: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities.len(), 1);
+        assert_eq!(resp.entities[0].id.as_str(), "t-002");
+    }
+
+    #[test]
+    fn index_maintenance_on_update() {
+        let mut h = setup_indexed_collection();
+
+        // Update t-001 status from pending to done.
+        h.update_entity(UpdateEntityRequest {
+            collection: CollectionId::new("tasks"),
+            id: EntityId::new("t-001"),
+            data: json!({"status": "done", "priority": 1}),
+            expected_version: 1,
+            actor: None,
+        })
+        .unwrap();
+
+        // Query for pending — should now only return t-002.
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "status".into(),
+                    op: FilterOp::Eq,
+                    value: json!("pending"),
+                })),
+                sort: vec![],
+                after_id: None,
+                limit: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities.len(), 1);
+        assert_eq!(resp.entities[0].id.as_str(), "t-002");
+    }
+
+    #[test]
+    fn index_maintenance_on_delete() {
+        let mut h = setup_indexed_collection();
+
+        h.delete_entity(DeleteEntityRequest {
+            collection: CollectionId::new("tasks"),
+            id: EntityId::new("t-001"),
+            actor: None,
+            force: false,
+        })
+        .unwrap();
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("tasks"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "status".into(),
+                    op: FilterOp::Eq,
+                    value: json!("pending"),
+                })),
+                sort: vec![],
+                after_id: None,
+                limit: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities.len(), 1);
+        assert_eq!(resp.entities[0].id.as_str(), "t-002");
+    }
+
+    #[test]
+    fn schema_rejects_empty_index_field() {
+        use axon_schema::schema::{IndexDef, IndexType};
+
+        let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+
+        let schema = CollectionSchema {
+            collection: CollectionId::new("bad"),
+            description: None,
+            version: 1,
+            entity_schema: None,
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: vec![IndexDef {
+                field: "".into(),
+                index_type: IndexType::String,
+                unique: false,
+            }],
+        };
+
+        let err = h.put_schema(schema).unwrap_err();
+        assert!(
+            matches!(err, AxonError::SchemaValidation(_)),
+            "expected SchemaValidation, got: {err}"
+        );
     }
 }

@@ -142,6 +142,7 @@ pub fn bead_schema() -> CollectionSchema {
         link_types: Default::default(),
         gates: Default::default(),
         validation_rules: Default::default(),
+        indexes: Default::default(),
     }
 }
 

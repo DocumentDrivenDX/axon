@@ -1,4 +1,5 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ops::Bound;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axon_core::error::AxonError;
@@ -6,12 +7,17 @@ use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
 use axon_schema::schema::CollectionSchema;
 
-use crate::adapter::StorageAdapter;
+use crate::adapter::{
+    extract_index_value, resolve_field_path, IndexValue, StorageAdapter,
+};
 
 type CollectionMap = HashMap<EntityId, Entity>;
 
 /// A schema version entry: (schema, created_at_ns).
 type SchemaVersionEntry = (CollectionSchema, u64);
+
+/// Key for the EAV index: (collection, field_name, indexed_value).
+type IndexKey = (CollectionId, String, IndexValue);
 
 /// Combined snapshot of mutable state captured at transaction start.
 #[derive(Debug, Clone)]
@@ -19,6 +25,8 @@ struct TxSnapshot {
     data: HashMap<CollectionId, CollectionMap>,
     schema_versions: HashMap<CollectionId, BTreeMap<u32, SchemaVersionEntry>>,
     collections: HashSet<CollectionId>,
+    /// Index snapshot for rollback.
+    indexes: BTreeMap<IndexKey, BTreeSet<EntityId>>,
 }
 
 /// In-memory storage adapter for testing and development.
@@ -39,6 +47,8 @@ pub struct MemoryStorageAdapter {
     collections: HashSet<CollectionId>,
     /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
     tx_snapshot: Option<TxSnapshot>,
+    /// EAV secondary index: (collection, field, value) → set of entity IDs.
+    indexes: BTreeMap<IndexKey, BTreeSet<EntityId>>,
 }
 
 fn now_ns() -> u64 {
@@ -154,6 +164,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             data: self.data.clone(),
             schema_versions: self.schema_versions.clone(),
             collections: self.collections.clone(),
+            indexes: self.indexes.clone(),
         });
         Ok(())
     }
@@ -171,6 +182,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             self.data = snapshot.data;
             self.schema_versions = snapshot.schema_versions;
             self.collections = snapshot.collections;
+            self.indexes = snapshot.indexes;
         }
         Ok(())
     }
@@ -242,6 +254,172 @@ impl StorageAdapter for MemoryStorageAdapter {
         let mut names: Vec<CollectionId> = self.collections.iter().cloned().collect();
         names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         Ok(names)
+    }
+
+    // ── Secondary index operations (FEAT-013) ───────────────────────────
+
+    fn update_indexes(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        old_data: Option<&serde_json::Value>,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        // Remove old entries.
+        if let Some(old) = old_data {
+            for idx in indexes {
+                if let Some(val) = resolve_field_path(old, &idx.field)
+                    .and_then(|v| extract_index_value(v, &idx.index_type))
+                {
+                    let key = (collection.clone(), idx.field.clone(), val);
+                    if let Some(set) = self.indexes.get_mut(&key) {
+                        set.remove(entity_id);
+                        if set.is_empty() {
+                            self.indexes.remove(&key);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Insert new entries (and check unique constraints).
+        for idx in indexes {
+            if let Some(val) = resolve_field_path(new_data, &idx.field)
+                .and_then(|v| extract_index_value(v, &idx.index_type))
+            {
+                if idx.unique {
+                    let key = (collection.clone(), idx.field.clone(), val.clone());
+                    if let Some(existing) = self.indexes.get(&key) {
+                        if existing.iter().any(|eid| eid != entity_id) {
+                            return Err(AxonError::UniqueViolation {
+                                field: idx.field.clone(),
+                                value: val.to_string(),
+                            });
+                        }
+                    }
+                }
+                let key = (collection.clone(), idx.field.clone(), val);
+                self.indexes
+                    .entry(key)
+                    .or_default()
+                    .insert(entity_id.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_index_entries(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        data: &serde_json::Value,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        for idx in indexes {
+            if let Some(val) = resolve_field_path(data, &idx.field)
+                .and_then(|v| extract_index_value(v, &idx.index_type))
+            {
+                let key = (collection.clone(), idx.field.clone(), val);
+                if let Some(set) = self.indexes.get_mut(&key) {
+                    set.remove(entity_id);
+                    if set.is_empty() {
+                        self.indexes.remove(&key);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn index_lookup(
+        &self,
+        collection: &CollectionId,
+        field: &str,
+        value: &IndexValue,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        let key = (collection.clone(), field.to_string(), value.clone());
+        Ok(self
+            .indexes
+            .get(&key)
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default())
+    }
+
+    fn index_range(
+        &self,
+        collection: &CollectionId,
+        field: &str,
+        lower: Bound<&IndexValue>,
+        upper: Bound<&IndexValue>,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        // Build range bounds for the BTreeMap key.
+        let lower_key = match lower {
+            Bound::Included(v) => {
+                Bound::Included((collection.clone(), field.to_string(), v.clone()))
+            }
+            Bound::Excluded(v) => {
+                Bound::Excluded((collection.clone(), field.to_string(), v.clone()))
+            }
+            Bound::Unbounded => {
+                // Start from (collection, field, min-possible-value).
+                // We use Included with a synthetic minimum key.
+                Bound::Included((
+                    collection.clone(),
+                    field.to_string(),
+                    IndexValue::Boolean(false),
+                ))
+            }
+        };
+        let upper_key = match upper {
+            Bound::Included(v) => {
+                Bound::Included((collection.clone(), field.to_string(), v.clone()))
+            }
+            Bound::Excluded(v) => {
+                Bound::Excluded((collection.clone(), field.to_string(), v.clone()))
+            }
+            Bound::Unbounded => {
+                // We need a key that is strictly after all values for this (collection, field).
+                // Since field is a String, we append a char that sorts after all values.
+                let mut upper_field = field.to_string();
+                upper_field.push('\x7f');
+                Bound::Excluded((
+                    collection.clone(),
+                    upper_field,
+                    IndexValue::Boolean(false),
+                ))
+            }
+        };
+
+        let mut result = Vec::new();
+        for ((_col, f, _val), ids) in self.indexes.range((lower_key, upper_key)) {
+            if f != field {
+                continue;
+            }
+            result.extend(ids.iter().cloned());
+        }
+        Ok(result)
+    }
+
+    fn index_unique_conflict(
+        &self,
+        collection: &CollectionId,
+        field: &str,
+        value: &IndexValue,
+        exclude_entity: &EntityId,
+    ) -> Result<bool, AxonError> {
+        let key = (collection.clone(), field.to_string(), value.clone());
+        Ok(self
+            .indexes
+            .get(&key)
+            .map(|set| set.iter().any(|eid| eid != exclude_entity))
+            .unwrap_or(false))
+    }
+
+    fn drop_indexes(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.indexes
+            .retain(|(col, _, _), _| col != collection);
+        Ok(())
     }
 }
 
@@ -447,6 +625,7 @@ mod tests {
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
 
         store.put_schema(&schema).unwrap();
@@ -476,6 +655,7 @@ mod tests {
                 link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
             })
             .unwrap();
         store
@@ -487,6 +667,7 @@ mod tests {
                 link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
             })
             .unwrap();
 
@@ -506,6 +687,7 @@ mod tests {
             link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
         };
 
         // Persist a schema before the transaction.
@@ -522,6 +704,7 @@ mod tests {
                 link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
             })
             .unwrap();
         // Also add a schema for a second collection.
@@ -535,6 +718,7 @@ mod tests {
                 link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
             })
             .unwrap();
         store.abort_tx().unwrap();
@@ -566,12 +750,356 @@ mod tests {
                 link_types: Default::default(),
             gates: Default::default(),
             validation_rules: Default::default(),
+            indexes: Default::default(),
             })
             .unwrap();
         assert!(store.get_schema(&col).unwrap().is_some());
 
         store.delete_schema(&col).unwrap();
         assert!(store.get_schema(&col).unwrap().is_none());
+    }
+
+    // ── Secondary index tests (FEAT-013, US-031) ────────────────────────
+
+    mod index_tests {
+        use super::*;
+        use crate::adapter::{extract_index_value, IndexValue};
+        use axon_schema::schema::{IndexDef, IndexType};
+
+        fn status_index() -> IndexDef {
+            IndexDef {
+                field: "status".into(),
+                index_type: IndexType::String,
+                unique: false,
+            }
+        }
+
+        fn priority_index() -> IndexDef {
+            IndexDef {
+                field: "priority".into(),
+                index_type: IndexType::Integer,
+                unique: false,
+            }
+        }
+
+        fn unique_email_index() -> IndexDef {
+            IndexDef {
+                field: "email".into(),
+                index_type: IndexType::String,
+                unique: true,
+            }
+        }
+
+        fn task_with_status(id: &str, status: &str) -> Entity {
+            Entity::new(
+                tasks(),
+                EntityId::new(id),
+                json!({"title": id, "status": status}),
+            )
+        }
+
+        fn task_with_priority(id: &str, priority: i64) -> Entity {
+            Entity::new(
+                tasks(),
+                EntityId::new(id),
+                json!({"title": id, "priority": priority}),
+            )
+        }
+
+        #[test]
+        fn update_indexes_populates_equality_lookup() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending"});
+            let indexes = vec![status_index()];
+
+            store
+                .update_indexes(&col, &eid, None, &data, &indexes)
+                .unwrap();
+
+            let results = store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .unwrap();
+            assert_eq!(results, vec![EntityId::new("t-001")]);
+        }
+
+        #[test]
+        fn update_indexes_removes_old_entries() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let eid = EntityId::new("t-001");
+            let old_data = json!({"status": "pending"});
+            let new_data = json!({"status": "done"});
+            let indexes = vec![status_index()];
+
+            store
+                .update_indexes(&col, &eid, None, &old_data, &indexes)
+                .unwrap();
+            store
+                .update_indexes(&col, &eid, Some(&old_data), &new_data, &indexes)
+                .unwrap();
+
+            // Old value should be gone.
+            let old_results = store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .unwrap();
+            assert!(old_results.is_empty());
+
+            // New value should be present.
+            let new_results = store
+                .index_lookup(&col, "status", &IndexValue::String("done".into()))
+                .unwrap();
+            assert_eq!(new_results, vec![EntityId::new("t-001")]);
+        }
+
+        #[test]
+        fn remove_index_entries_cleans_up() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending"});
+            let indexes = vec![status_index()];
+
+            store
+                .update_indexes(&col, &eid, None, &data, &indexes)
+                .unwrap();
+            store
+                .remove_index_entries(&col, &eid, &data, &indexes)
+                .unwrap();
+
+            let results = store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .unwrap();
+            assert!(results.is_empty());
+        }
+
+        #[test]
+        fn index_range_returns_matching_entities() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![priority_index()];
+
+            for i in 1..=5 {
+                let eid = EntityId::new(format!("t-{i:03}"));
+                let data = json!({"priority": i});
+                store
+                    .update_indexes(&col, &eid, None, &data, &indexes)
+                    .unwrap();
+            }
+
+            // Range: priority > 2 (i.e., 3, 4, 5)
+            let results = store
+                .index_range(
+                    &col,
+                    "priority",
+                    std::ops::Bound::Excluded(&IndexValue::Integer(2)),
+                    std::ops::Bound::Unbounded,
+                )
+                .unwrap();
+            assert_eq!(results.len(), 3);
+        }
+
+        #[test]
+        fn unique_index_rejects_duplicate() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![unique_email_index()];
+
+            let eid1 = EntityId::new("u-001");
+            let data1 = json!({"email": "alice@example.com"});
+            store
+                .update_indexes(&col, &eid1, None, &data1, &indexes)
+                .unwrap();
+
+            let eid2 = EntityId::new("u-002");
+            let data2 = json!({"email": "alice@example.com"});
+            let err = store
+                .update_indexes(&col, &eid2, None, &data2, &indexes)
+                .unwrap_err();
+            assert!(
+                matches!(err, AxonError::UniqueViolation { .. }),
+                "expected UniqueViolation, got: {err}"
+            );
+        }
+
+        #[test]
+        fn unique_index_allows_same_entity_update() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![unique_email_index()];
+
+            let eid = EntityId::new("u-001");
+            let data = json!({"email": "alice@example.com"});
+            store
+                .update_indexes(&col, &eid, None, &data, &indexes)
+                .unwrap();
+
+            // Updating same entity with same value should succeed.
+            let new_data = json!({"email": "alice@example.com", "name": "Alice"});
+            store
+                .update_indexes(&col, &eid, Some(&data), &new_data, &indexes)
+                .unwrap();
+        }
+
+        #[test]
+        fn null_values_are_not_indexed() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let eid = EntityId::new("t-001");
+            let data = json!({"title": "no status"});
+            let indexes = vec![status_index()];
+
+            store
+                .update_indexes(&col, &eid, None, &data, &indexes)
+                .unwrap();
+
+            // No entries should exist for missing fields.
+            let results = store
+                .index_lookup(&col, "status", &IndexValue::String("".into()))
+                .unwrap();
+            assert!(results.is_empty());
+        }
+
+        #[test]
+        fn drop_indexes_removes_all_entries() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![status_index()];
+
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending"});
+            store
+                .update_indexes(&col, &eid, None, &data, &indexes)
+                .unwrap();
+
+            store.drop_indexes(&col).unwrap();
+
+            let results = store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .unwrap();
+            assert!(results.is_empty());
+        }
+
+        #[test]
+        fn index_unique_conflict_check() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![unique_email_index()];
+
+            let eid1 = EntityId::new("u-001");
+            let data1 = json!({"email": "alice@example.com"});
+            store
+                .update_indexes(&col, &eid1, None, &data1, &indexes)
+                .unwrap();
+
+            let conflict = store
+                .index_unique_conflict(
+                    &col,
+                    "email",
+                    &IndexValue::String("alice@example.com".into()),
+                    &EntityId::new("u-002"),
+                )
+                .unwrap();
+            assert!(conflict, "should detect conflict for different entity");
+
+            let no_conflict = store
+                .index_unique_conflict(
+                    &col,
+                    "email",
+                    &IndexValue::String("alice@example.com".into()),
+                    &eid1,
+                )
+                .unwrap();
+            assert!(
+                !no_conflict,
+                "should not conflict when excluding the owning entity"
+            );
+        }
+
+        #[test]
+        fn abort_tx_rolls_back_index_changes() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![status_index()];
+
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending"});
+            store
+                .update_indexes(&col, &eid, None, &data, &indexes)
+                .unwrap();
+
+            store.begin_tx().unwrap();
+            let new_data = json!({"status": "done"});
+            store
+                .update_indexes(&col, &eid, Some(&data), &new_data, &indexes)
+                .unwrap();
+            store.abort_tx().unwrap();
+
+            // Index should still have the old value.
+            let results = store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .unwrap();
+            assert_eq!(results, vec![EntityId::new("t-001")]);
+
+            let done_results = store
+                .index_lookup(&col, "status", &IndexValue::String("done".into()))
+                .unwrap();
+            assert!(done_results.is_empty());
+        }
+
+        #[test]
+        fn nested_field_path_indexing() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let idx = IndexDef {
+                field: "address.city".into(),
+                index_type: IndexType::String,
+                unique: false,
+            };
+
+            let eid = EntityId::new("t-001");
+            let data = json!({"address": {"city": "NYC"}});
+            store
+                .update_indexes(&col, &eid, None, &data, &[idx])
+                .unwrap();
+
+            let results = store
+                .index_lookup(&col, "address.city", &IndexValue::String("NYC".into()))
+                .unwrap();
+            assert_eq!(results, vec![EntityId::new("t-001")]);
+        }
+
+        #[test]
+        fn extract_index_value_type_mismatch_returns_none() {
+            // String value for integer index — should not be indexed.
+            let val = json!("not a number");
+            assert!(extract_index_value(&val, &IndexType::Integer).is_none());
+
+            // Integer value for string index — should not be indexed.
+            let val = json!(42);
+            assert!(extract_index_value(&val, &IndexType::String).is_none());
+        }
+
+        #[test]
+        fn multiple_entities_same_non_unique_value() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![status_index()];
+
+            for i in 1..=3 {
+                let eid = EntityId::new(format!("t-{i:03}"));
+                let data = json!({"status": "pending"});
+                store
+                    .update_indexes(&col, &eid, None, &data, &indexes)
+                    .unwrap();
+            }
+
+            let results = store
+                .index_lookup(&col, "status", &IndexValue::String("pending".into()))
+                .unwrap();
+            assert_eq!(results.len(), 3);
+        }
     }
 }
 

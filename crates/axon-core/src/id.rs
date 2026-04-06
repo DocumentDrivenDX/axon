@@ -77,7 +77,7 @@ impl fmt::Display for Namespace {
 }
 
 /// Identifies a collection within an Axon instance.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CollectionId(String);
 
 impl CollectionId {
@@ -97,7 +97,7 @@ impl fmt::Display for CollectionId {
 }
 
 /// Identifies an entity within a collection.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct EntityId(String);
 
 impl EntityId {
