@@ -14,7 +14,7 @@ dun:
 **Priority**: P1
 **Owner**: Core Team
 **Created**: 2026-04-05
-**Updated**: 2026-04-05
+**Updated**: 2026-04-06
 
 ## Overview
 
@@ -46,13 +46,21 @@ change:
 
 | Classification | Definition | Example | Behavior |
 |---|---|---|---|
-| **Compatible** | All existing entities remain valid under the new schema | Add optional field, widen enum, relax constraint | Apply immediately |
+| **Compatible** | All existing entities remain valid under the new schema | Add optional field, widen enum, relax constraint | Apply immediately, zero downtime |
 | **Breaking** | Some existing entities may be invalid under the new schema | Add required field, remove field, narrow enum, tighten type | Require explicit confirmation or migration plan |
-| **Metadata-only** | No entity validation impact | Change description, reorder fields, add/remove index | Apply immediately |
+| **Metadata-only** | No entity validation impact | Change description, reorder fields, add/remove index | Apply immediately, zero downtime |
 
 - **Breaking change detection**: Before applying a breaking schema change,
   the system reports which fields changed, how many entities are
   potentially affected, and what the validation failures would be
+- **Required field defaults**: Adding a required field must require a
+  default value or a migration plan — the system will not accept a
+  required field addition without a path for existing entities
+- **Constraint tightening**: Narrowing a constraint (e.g., removing enum
+  values) must validate existing data and report violations. The system
+  must not silently allow data that violates the new constraint
+- **Schema version tracking per entity**: Entities track which schema
+  version they were created/last validated against
 - **Force flag**: Breaking changes can be applied with `--force` /
   `force: true`, accepting that some entities may be invalid until
   migrated

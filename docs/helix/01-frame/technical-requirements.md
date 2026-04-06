@@ -7,8 +7,9 @@ dun:
 ---
 # Technical Requirements
 
-**Version**: 0.1.0
+**Version**: 0.2.0
 **Date**: 2026-04-04
+**Revised**: 2026-04-06
 **Status**: Draft
 
 ---
@@ -39,6 +40,20 @@ Axon servers are **stateless**. They do not implement consensus protocols (Raft,
 - Backing store determines the durability and availability guarantees
 - Embedded mode = Axon library + embedded backing store (SQLite) in one process
 - Server mode = Axon server + external backing store (PostgreSQL, FoundationDB, etc.)
+
+---
+
+## 2a. EAV Storage Model
+
+Axon uses an **Entity-Attribute-Value (EAV)** pattern for **secondary indexes**, not for primary entity storage. Entity data is stored opaquely (JSONB/TEXT/raw bytes by backend) as a single blob per entity. The EAV pattern is used exclusively for the index tables that accelerate queries.
+
+This design enables:
+
+- **Flexible schema evolution** without database migrations (DDL changes) — entity storage is schema-agnostic.
+- **Uniform indexing** across all entity types — the same EAV index tables serve all collections.
+- **Clean separation** between entity storage and index structures, allowing new index types (vector, BM25) to be added without changing the storage layer or API.
+
+Users never interact with the EAV layer directly — it is an implementation detail of the indexing strategy. All structured query access goes through declared secondary indexes.
 
 ---
 
@@ -201,6 +216,17 @@ Indexes go through states: `building` → `ready` → `dropping`. The query
 planner only uses `ready` indexes. Background workers handle build and
 cleanup. A rebuild operation returns a `ready` index to `building` for
 reindexing.
+
+### Future Index Types (Not Scheduled)
+
+Because entity storage and indexing are decoupled, new index types can be added without changes to the storage layer or API:
+
+| Index Type | Use Case | Notes |
+|-----------|----------|-------|
+| **Vector** | Semantic search, embedding-based retrieval | Would surface as a `near` filter. Must maintain transactional guarantees |
+| **BM25 / full-text** | Full-text search with ranking and faceting | Tantivy-based. Significant integration effort |
+
+**Risk**: If vector/BM25 indexes are hosted as separate services (off-node), maintaining ACID guarantees across them becomes a distributed systems problem. Keep indexes co-located as long as possible.
 
 ### Query Planner
 
@@ -394,6 +420,28 @@ Quality metrics that can only improve:
 
 ---
 
+## 9. Control Plane (P2)
+
+A lightweight control plane for multi-tenant Axon deployments:
+
+- **Backing store**: PostgreSQL database for control plane metadata.
+- **Tenant lifecycle**: One Axon instance per tenant, managed centrally. Provisioning, deprovisioning, configuration.
+- **Tenant isolation**: Each tenant's data lives in its own storage. The control plane provides a single pane of glass without touching customer data.
+- **BYOC support**: Customer runs Axon in their infrastructure. Control plane provides management, monitoring, and operational visibility.
+- **Monitoring**: Health checks, capacity monitoring, latency dashboards across all managed instances.
+
+---
+
+## 10. Client-Side Validation
+
+The schema is the single source of truth for what data is valid. To eliminate the pattern where validation is maintained in three places (database, API, UI):
+
+- **TypeScript validator** generated from ESF schema, usable directly in browser UIs.
+- **Same rules** enforced server-side and client-side — no divergence.
+- **Schema queryable by agents** via MCP/GraphQL — agents can understand what's valid before attempting a write, reducing failed writes and retry loops.
+
+---
+
 ## Traceability
 
 | Requirement Area | PRD Section | Feature Specs | ADRs |
@@ -414,6 +462,12 @@ Quality metrics that can only improve:
 | Aggregation queries | Section 8 P1 #3 | FEAT-018 (Aggregation) | — |
 | GraphQL API | Section 8 P1 #12 | FEAT-015 (GraphQL) | ADR-012 |
 | MCP server | Section 8 P1 #13 | FEAT-016 (MCP) | ADR-013 |
+| Agent guardrails | Section 8 P1 #16 | FEAT-022 (Agent Guardrails) | — |
+| Rollback and recovery | Section 8 P1 #17 | FEAT-023 (Rollback/Recovery) | — |
+| Application substrate | Section 8 P2 #8 | FEAT-024 (Application Substrate) | — |
+| Control plane | Section 8 P2 #9, Section 9 | FEAT-025 (Control Plane) | — |
+| EAV storage model | Section 2a | FEAT-013 (Indexes), ADR-010 | ADR-010 |
+| Client-side validation | Section 10 | FEAT-002 (Schema Engine) | ADR-002 |
 
 ---
 

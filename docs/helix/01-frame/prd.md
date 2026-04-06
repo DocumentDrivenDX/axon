@@ -5,18 +5,19 @@ dun:
 ---
 # Product Requirements Document: Axon
 
-**Version**: 0.1.0
+**Version**: 0.2.0
 **Date**: 2026-04-04
+**Revised**: 2026-04-06
 **Status**: Draft
 **Author**: Erik LaBianca
 
 ## Executive Summary
 
-Axon is a cloud-native, auditable, schema-first transactional data store built on an entity-graph-relational data model, designed as the central nervous system for agentic applications and business workflows. Entities (deeply nested, schema-validated structures) are the atoms; typed links (directional relationships between entities) are the bonds; ACID transactions, immutable audit trails, and enforced schemas are the guarantees.
+Axon is an entity-first online transaction processing (OLTP) store designed for real-time human and agentic workflows. It provides a unified, schema-driven interface for storing, querying, validating, and auditing structured entities with graph relationships.
 
-The problem: agents and workflows need structured, trustworthy, interconnected state — but current options force a choice between document stores (rich but isolated), graph databases (connected but schema-loose), relational databases (structured but flat), and BaaS platforms (convenient but unaudited). None combine entity richness, relationship modeling, transactional correctness, and audit-first design. Axon eliminates this tradeoff.
+Axon combines entity richness (document stores), relationship modeling (graph databases), transactional correctness (relational databases), and audit-first design (unique value). Entity data is stored opaquely as JSON blobs; secondary indexes use an Entity-Attribute-Value (EAV) pattern for uniform, schema-agnostic query acceleration across all entity types. Users push JSON, get JSON back, and work with the schema — the EAV indexing strategy is an implementation detail.
 
-Target users are developers building agentic applications (beads, research agents, coding agents) and teams building business workflows (approval chains, document management, time tracking). V1 focuses on the core entity-graph data model, ACID transactions, audit system, schema engine, and API surface — enough to replace ad-hoc storage in internal projects and prove the agent-native value proposition.
+Target users are developers building agentic applications (beads, research agents, coding agents) and teams building business workflows (approval chains, document management, time tracking). Axon also serves as an application substrate for domain-specific systems (ERP, CDP, artifact management). V1 focuses on the core entity-graph data model, ACID transactions, audit system, schema engine, and API surface — enough to replace ad-hoc storage in internal projects and prove the agent-native value proposition.
 
 ---
 
@@ -38,6 +39,7 @@ Target users are developers building agentic applications (beads, research agent
 ## 2. Strategic Fit
 
 - **Ecosystem alignment**: Axon complements niflheim (high-performance analytics/entity resolution), tablespec (schema definitions), and DDx (document management). Axon is the transactional layer; niflheim is the analytical layer. Tablespec's UMF format informs Axon's schema system
+- **Application substrate**: Axon is designed to serve as the backend for lightweight domain applications (ERP, CDP, artifact management). Auto-generated TypeScript clients, admin UIs, and trivial deployment to Cloud Run or Workers lower the barrier to shipping Axon-backed apps
 - **Timing**: The agent era is creating massive demand for structured, auditable state management. Current solutions (Firebase, Supabase, PocketBase) were built for mobile/web apps, not agents. DoltDB and Turso add versioning but lack agent-native APIs and audit-first design. The window to define the category is open now
 
 ---
@@ -286,7 +288,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ### Should Have (P1)
 
-1. **Schema evolution** — breaking change detection, compatibility classification, entity revalidation, schema diff. Migration declarations deferred to V2. See FEAT-017, ADR-007
+1. **Schema evolution** — breaking change detection, compatibility classification, entity revalidation, schema diff. Adding optional fields must be zero-downtime. Adding required fields must require a default value or migration plan. Tightening constraints must validate existing data and report violations without silently corrupting. Schema versions tracked per entity. Migration tooling to scan entities against new schema versions and report/fix violations. Migration declarations deferred to V2. See FEAT-017, ADR-007
 2. **Change feeds** — Debezium-compatible CDC records on Kafka topics with Confluent-compatible Schema Registry. Multi-sink: Kafka (production), HTTP SSE (real-time clients), file (debugging/replay). Initial snapshot for bootstrapping consumers. At-least-once delivery with audit_id cursors. Real-time push also via GraphQL subscriptions (FEAT-015). See FEAT-021, ADR-014
 3. **Aggregation queries** — COUNT, SUM, AVG, MIN, MAX, GROUP BY across entities in a collection. Accelerated by secondary indexes. Exposed via structured API, GraphQL, and MCP. See FEAT-018
 4. **Graph traversal queries** — follow typed links with depth limits, filters, and path queries
@@ -301,6 +303,9 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 13. **MCP server** — Model Context Protocol server exposing Axon to AI agents. Tools (CRUD, query, traverse, transition) auto-generated from ESF schemas. Resources with URI scheme for entity/collection data. Subscriptions for change notification. GraphQL bridge via `axon.query` tool. Stdio and HTTP+SSE transports. See FEAT-016, ADR-013
 14. **Validation rules** — cross-field conditional validation (ESF Layer 5) with severity levels (error/warning/info). Actionable error messages with fix suggestions and "did you mean?" near-match detection. Enhanced JSON Schema errors. See FEAT-019
 15. **Link discovery and graph queries** — fast, indexed queries for finding link targets, listing entity neighbors, and exploring the entity graph. Powers autocomplete, relationship building, and graph exploration. Exposed via structured API, GraphQL relationship fields, and MCP tools. See FEAT-020
+16. **Agent guardrails** — preventive controls beyond audit trails. Scope constraints (agent can only modify entities within assigned scope), rate limiting (prevent bulk mutation without approval), semantic validation hooks (external validators examine proposed mutations in context before commit). See FEAT-022
+17. **Rollback and recovery** — point-in-time rollback (undo all changes after a timestamp), entity-level rollback (revert specific entity to previous state), transaction-level rollback (undo a specific transaction), dry-run rollback (show what would change without committing). Powered by the audit log. See FEAT-023
+18. **Control plane** — lightweight management plane (PostgreSQL-backed) for multi-tenant Axon deployments. One Axon instance per tenant, managed centrally. Single pane of glass for monitoring, operations, and tenant lifecycle. Supports BYOC (Bring Your Own Cloud) model. See FEAT-025
 
 ### Nice to Have (P2)
 
@@ -311,7 +316,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 5. **Niflheim bridge** — CDC export from Axon collections to niflheim for analytics
 6. **Tablespec/UMF integration** — import schemas from UMF format
 7. **Plugin system** — custom validators, transformers, and hooks
-
+8. **Application substrate** — Axon as a trivially deployable backend for lightweight applications. Cross-cutting template producing Axon-backed apps deployable to Cloud Run, Cloudflare Workers, or similar. Auto-generated TypeScript client from schema. Auto-generated admin UI from schema. See FEAT-024
 ### Not Scheduled
 
 The following capabilities have been discussed and are architecturally
@@ -319,8 +324,10 @@ compatible with Axon but are not prioritized for any release:
 
 - **Cypher subset (read-only)** — graph pattern matching query language. Valuable for complex multi-hop, cycle detection, and cross-link-type queries. Would compile to the same query planner as GraphQL
 - **SQL DML** — batch updates, bulk operations, data migration via SQL write syntax. Read-side SQL is better served by CDC → DuckDB
-- **Semantic search (vector indexes)** — vector similarity as an ESF index type. Eliminates need for a separate vector store. Would surface as a `near` filter in GraphQL
-- **Document search (Tantivy)** — full-text search with inverted indexes, BM25 ranking, faceting. Significant integration effort
+- **Semantic search (vector indexes)** — vector similarity as an ESF index type. Eliminates need for a separate vector store. Would surface as a `near` filter in GraphQL. Architecturally feasible because entity storage and indexing are decoupled
+- **Document search (Tantivy)** — full-text search with inverted indexes, BM25 ranking, faceting. Significant integration effort. Same decoupled index architecture applies
+- **PostgreSQL-compatible SQL** — relational-style structured queries and batch updates. SQL is well-suited for this; no reason to reinvent it. Deferred until a use case demands it
+- **Git backend** — entity model backed by Git for version history, branch-based experimentation, and merge/conflict resolution. Speculative but architecturally interesting for artifact graph use cases
 
 ---
 
@@ -381,6 +388,10 @@ compatible with Axon but are not prioritized for any release:
 | Entity-graph-relational model is unfamiliar | Medium | High | Provide clear documentation, examples, and migration guides from document/relational models. The model must feel natural, not academic |
 | Transaction overhead on every write | Medium | Medium | OCC has minimal overhead for low-contention workloads (typical for agents). Benchmark early. Single-entity fast path bypasses transaction machinery |
 | Name collision with Axon Framework (Java CQRS) | Low | Medium | Different domain (Java enterprise vs agent-native). SEO and naming will need attention |
+| EAV performance at scale | Medium | High | EAV requires joins for every property access. Mitigated by dedicated index tables, but complex queries (graph traversal, vector search) need careful benchmarking |
+| Transactional guarantees across heterogeneous indexes | Low | High | Adding vector/BM25 indexes as separate services creates distributed transaction problems. Keep indexes co-located as long as possible |
+| Agent semantic misuse | Medium | Medium | Agents can submit structurally valid but semantically wrong data. Schema validation catches structure, not intent. Agent guardrails (FEAT-022) help but this remains an open problem |
+| Backend abstraction leakage | Medium | High | If PostgreSQL-specific behaviors bleed through the API, future backend migration will be painful. Storage adapter trait must be rigorously tested across backends |
 
 ---
 
@@ -439,6 +450,14 @@ compatible with Axon but are not prioritized for any release:
 - [ ] Documentation covers getting started, schema definition, API reference, audit queries
 - [ ] Benchmark suite demonstrates performance characteristics
 - [ ] No known data corruption or audit gap bugs
+
+---
+
+## 14. Organizational and Licensing
+
+- **GitHub organization**: Separate from DocumentDrivenDX. Axon is a standalone product that does not require DDx to be useful. Bundling under the DDx namespace would limit perceived scope and complicate licensing.
+- **License**: Source-available with time-delayed transition to Apache. Protects against commoditization (the Elasticsearch/Amazon scenario) while allowing adoption. Hosting or operating Axon as a service requires a commercial license.
+- **BYOC model**: Primary commercial offering. Customer runs Axon in their cloud. Central control plane provides management and monitoring. Customer retains data sovereignty. Follows the Redpanda model.
 
 ---
 
