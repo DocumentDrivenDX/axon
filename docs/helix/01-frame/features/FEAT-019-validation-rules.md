@@ -21,13 +21,24 @@ dun:
 
 JSON Schema (ESF Layer 1) validates field types and basic constraints.
 Validation rules (ESF Layer 5) go further: cross-field conditions,
-conditional requirements, severity levels, and actionable error messages
-that tell agents exactly what's wrong and how to fix it.
+conditional requirements, **validation gates**, and actionable error
+messages that tell agents exactly what's wrong and how to fix it.
+
+Validation gates are named checkpoints that group rules by purpose.
+The `save` gate blocks persistence. Other gates (`complete`, `review`,
+`processing`) allow saves but track readiness — an entity can be
+saved in an incomplete state and progressively improved until it passes
+the required gate for a lifecycle transition or workflow step.
+
+Gate pass/fail state is materialized as indexed fields on each entity,
+making queries like "show me orders ready for processing" a fast
+index lookup.
 
 This is Axon's key differentiator over general-purpose databases. A SQL
 constraint violation says "CHECK constraint failed." An Axon validation
 error says "Field 'approver_id' is required when status is 'approved'.
-Current status: 'approved'. Set approver_id to a valid user ID."
+Current status: 'approved'. Set approver_id to a valid user ID." — and
+it tells you which workflow gates the entity passes and which it doesn't.
 
 ## Problem Statement
 
@@ -38,8 +49,16 @@ can't be expressed in JSON Schema alone.
 
 Current validation errors from JSON Schema libraries are technical and
 generic ("instance failed to match pattern"). Agents need errors that
-explain the business rule, identify the fix, and distinguish blocking
-errors from advisory warnings.
+explain the business rule, identify the fix, and distinguish hard
+constraints from soft readiness checks.
+
+In agentic workflows, the save-vs-validate distinction is critical.
+Agents create entities early (save a draft with minimal fields), then
+progressively fill in data. Hard validation that blocks saves on
+incomplete data is hostile to this workflow. But soft validation that
+tracks "what's still needed before this can proceed" is essential — the
+agent needs to know "I saved it, but 3 things are still needed before
+it can move to review."
 
 ## Requirements
 
@@ -58,87 +77,126 @@ entity_schema:
   # ... Layer 1 ...
 
 validation_rules:                                    # Layer 5 — NEW
-  # Cross-field: approved items need an approver
-  - name: approved-needs-approver
-    when:
-      field: status
-      eq: "approved"
-    require:
-      field: approver_id
-      not_null: true
-    severity: error
-    message: "Approved items must have an approver_id set"
-    fix: "Set approver_id to the user who approved this item"
 
-  # Conditional requirement: bugs need priority
-  - name: bugs-need-priority
-    when:
-      field: bead_type
-      eq: "bug"
-    require:
-      field: priority
-      not_null: true
-    severity: error
-    message: "Bugs must have a priority (0-4)"
-    fix: "Set priority to an integer between 0 and 4"
+  # ── Save gate: must pass to persist the entity ─────────────
 
-  # Warning: epics should have descriptions
-  - name: epics-should-have-description
-    when:
-      field: bead_type
-      eq: "epic"
-    require:
-      field: description
-      not_null: true
-    severity: warning
-    message: "Epics should have a description for planning purposes"
-    fix: "Add a description explaining the epic's scope and goals"
+  - name: valid-bead-type
+    gate: save
+    require: { field: bead_type, in: [task, bug, epic, chore, spike, feature] }
+    message: "bead_type must be a valid type"
 
-  # Info: resolution recommended for done items
-  - name: done-wants-resolution
-    when:
-      field: status
-      eq: "done"
-    require:
-      field: resolution
-      not_null: true
-    severity: info
-    message: "Consider adding a resolution note for completed items"
-    fix: "Set resolution to a summary of what was done"
-
-  # Cross-field comparison: due_date must be after created_date
   - name: due-after-created
-    when:
-      field: due_date
-      not_null: true
-    require:
-      field: due_date
-      gt_field: created_date
-    severity: error
+    gate: save
+    when: { field: due_date, not_null: true }
+    require: { field: due_date, gt_field: created_date }
     message: "Due date must be after creation date"
     fix: "Set due_date to a date after {created_date}"
 
-  # Multi-condition: high-priority bugs need assignee
+  # ── Complete gate: required before status → ready ──────────
+
+  - name: description-for-complete
+    gate: complete
+    require: { field: description, not_null: true }
+    message: "Description is required before marking as ready"
+    fix: "Add a description"
+
+  - name: priority-for-complete
+    gate: complete
+    require: { field: priority, not_null: true }
+    message: "Priority must be set before marking as ready"
+    fix: "Set priority (0-4)"
+
+  - name: assignee-for-complete
+    gate: complete
+    require: { field: assignee, not_null: true }
+    message: "An assignee is required before marking as ready"
+    fix: "Assign someone to this item"
+
+  - name: bugs-need-priority
+    gate: complete
+    when: { field: bead_type, eq: "bug" }
+    require: { field: priority, lte: 2 }
+    message: "Bugs must have priority P0-P2 before completion"
+    fix: "Set priority to 0, 1, or 2"
+
+  # ── Review gate: required before status → review ───────────
+
+  - name: acceptance-for-review
+    gate: review
+    require: { field: acceptance, not_null: true }
+    message: "Acceptance criteria must be defined before review"
+    fix: "Add acceptance criteria"
+
   - name: high-priority-bugs-need-assignee
+    gate: review
     when:
       all:
         - { field: bead_type, eq: "bug" }
         - { field: priority, lte: 1 }
-    require:
-      field: assignee
-      not_null: true
-    severity: error
-    message: "High-priority bugs (P0/P1) must have an assignee"
-    fix: "Set assignee to the person responsible for this bug"
+    require: { field: assignee, not_null: true }
+    message: "High-priority bugs (P0/P1) must have an assignee for review"
+    fix: "Set assignee to the person responsible"
 
-  # Unconditional: always validate
+  # ── Advisory: never blocks, always reports ─────────────────
+
   - name: title-not-placeholder
-    require:
-      field: title
-      not_match: "^(TODO|FIXME|untitled|test)$"
-    severity: warning
+    advisory: true
+    require: { field: title, not_match: "^(TODO|FIXME|untitled|test)$" }
     message: "Title appears to be a placeholder"
     fix: "Replace title with a descriptive name"
+
+  - name: description-recommended
+    advisory: true
+    require: { field: description, not_null: true }
+    message: "Consider adding a description"
+    fix: "Add a description for context"
+```
+
+#### Gate Integration with Lifecycles
+
+Gates compose with lifecycle transitions. A transition can require that
+a specific gate passes:
+
+```yaml
+lifecycles:
+  status:
+    field: status
+    initial: draft
+    transitions:
+      draft: [pending, cancelled]
+      pending:
+        - target: ready
+          requires_gate: complete
+        - target: cancelled
+      ready:
+        - target: in_progress
+        - target: cancelled
+      in_progress:
+        - target: review
+          requires_gate: review
+        - target: blocked
+        - target: done
+      review: [done, in_progress, cancelled]
+      done: []
+      blocked: [pending, cancelled]
+      cancelled: []
+```
+
+When a lifecycle transition specifies `requires_gate`, the transition
+is blocked if the entity fails any rule in that gate. The error response
+includes the gate name, failing rules, and fix suggestions.
+
+Gates are **inclusive**: the `review` gate implicitly includes all
+`complete` gate rules (you can't be ready for review if you're not
+complete). This is declared explicitly in the schema:
+
+```yaml
+gates:
+  complete:
+    description: "Entity has all required fields for processing"
+  review:
+    includes: [complete]
+    description: "Entity is ready for human review"
 ```
 
 #### Rule Structure
@@ -148,11 +206,14 @@ Each validation rule has:
 | Field | Required | Description |
 |---|---|---|
 | `name` | Yes | Unique identifier for the rule within the collection |
+| `gate` | No* | Gate this rule belongs to: `save`, or any custom gate name |
+| `advisory` | No* | If `true`, rule never blocks — always reports. Mutually exclusive with `gate` |
 | `when` | No | Condition that activates the rule. If omitted, rule always applies |
 | `require` | Yes | The constraint to enforce when the rule is active |
-| `severity` | Yes | `error` (reject write), `warning` (accept, flag in response), `info` (accept, log only) |
 | `message` | Yes | Human-readable explanation of the business rule |
 | `fix` | No | Actionable suggestion for how to resolve the violation. May include `{field}` placeholders substituted with current values |
+
+*Each rule must specify either `gate` or `advisory: true`.
 
 #### Condition Operators (`when`)
 
@@ -181,17 +242,198 @@ Each validation rule has:
 | `not_match` | Field must not match regex | `{field: title, not_match: "^TODO"}` |
 | `min_length` | String minimum length | `{field: description, min_length: 10}` |
 
-#### Severity Levels
+#### Gate Semantics
 
-| Severity | Write behavior | Response behavior |
-|---|---|---|
-| `error` | **Reject** the write | Error in response, entity not persisted |
-| `warning` | **Accept** the write | Warning in response, entity persisted. Warning recorded in audit entry |
-| `info` | **Accept** the write | Info in audit entry only. Not in response unless explicitly requested |
+| Gate type | Write behavior | Response behavior | Queryable |
+|---|---|---|---|
+| `save` | **Block** — entity cannot be persisted | Errors in response | N/A (entity doesn't exist) |
+| Custom gates (`complete`, `review`, etc.) | **Allow save** | Gate pass/fail + failures in response | Yes — via gate status table |
+| `advisory: true` | **Allow save** | Advisories in response | Yes — via gate status table |
 
-Warnings accumulate — a write with 3 warnings and 0 errors succeeds,
-and the response includes all 3 warnings. The agent can choose to fix
-them or ignore them.
+Custom gates allow progressive refinement: save early, validate
+incrementally, gate transitions on readiness. The agent always knows
+exactly what's still needed.
+
+#### Materialized Gate Status (1:M Table)
+
+On every entity write (create, update, patch), Axon evaluates all
+non-save gates and materializes the results in a dedicated gate status
+table:
+
+**Gate registry** — gate definitions are persisted when the schema is
+saved, so the system knows which gates exist for each collection:
+
+```
+gate_definitions:
+    PK: (collection_id, gate_name)
+    description:    text
+    includes:       text[]      -- gates this gate includes (e.g., review includes complete)
+    rule_count:     int         -- number of rules in this gate
+    created_at:     timestamp
+
+    FK: collection_id → collections
+```
+
+**PostgreSQL materialization:**
+```sql
+CREATE TABLE gate_definitions (
+    collection_id  INT   NOT NULL REFERENCES collections(id),
+    gate_name      TEXT  NOT NULL,
+    description    TEXT,
+    includes       TEXT[],
+    rule_count     INT   NOT NULL DEFAULT 0,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (collection_id, gate_name)
+);
+```
+
+When `put_schema` is called with validation rules, the handler:
+1. Extracts all unique gate names from the rules
+2. Reads the `gates` declaration from the schema for descriptions and
+   `includes` relationships
+3. Upserts `gate_definitions` — adding new gates, updating rule counts,
+   removing gates that no longer have any rules
+4. Triggers gate recomputation for entities if rules changed
+
+**Entity gate status** — materialized per-entity pass/fail for each
+registered gate:
+
+```
+entity_gates:
+    PK: (collection_id, entity_id, gate_name)
+    pass:           boolean
+    failure_count:  int
+    evaluated_at:   timestamp
+    failures_json:  bytes    -- serialized list of {rule, field, message, fix}
+
+    FK: (collection_id, entity_id) → entities  ON DELETE CASCADE
+    FK: (collection_id, gate_name) → gate_definitions
+
+    INDEX: (collection_id, gate_name, pass, entity_id)  -- "all entities passing gate X"
+```
+
+**PostgreSQL materialization:**
+```sql
+CREATE TABLE entity_gates (
+    collection_id  INT       NOT NULL,
+    entity_id      UUID      NOT NULL,
+    gate_name      TEXT      NOT NULL,
+    pass           BOOLEAN   NOT NULL,
+    failure_count  INT       NOT NULL DEFAULT 0,
+    evaluated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    failures_json  JSONB,
+    PRIMARY KEY (collection_id, entity_id, gate_name),
+    FOREIGN KEY (collection_id, entity_id)
+        REFERENCES entities(collection_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (collection_id, gate_name)
+        REFERENCES gate_definitions(collection_id, gate_name) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_gates_by_status
+    ON entity_gates (collection_id, gate_name, pass, entity_id);
+```
+
+**KV layout:**
+```
+gates/         {collection_id}/{entity_id}/{gate_name}         → {pass, failure_count, evaluated_at, failures_json}
+gates/bystate/ {collection_id}/{gate_name}/{0|1}/{entity_id}   → {}
+```
+
+The PK ordering `(collection_id, entity_id, gate_name)` is fast for
+the write path (update all gates for one entity). The secondary index
+`(collection_id, gate_name, pass, entity_id)` is fast for the query
+path ("all entities passing gate X").
+
+`ON DELETE CASCADE` ensures gate rows are cleaned up when entities are
+deleted.
+
+Advisory rules are materialized as a special gate named `_advisory`
+for queryability ("entities with advisory warnings").
+
+#### Querying by Gate Status
+
+Gate status is queryable via all interfaces:
+
+**Structured API:**
+```json
+{
+  "collection": "beads",
+  "filter": {
+    "and": [
+      { "gate": "complete", "pass": true },
+      { "field": "status", "op": "eq", "value": "pending" }
+    ]
+  }
+}
+```
+
+**GraphQL:**
+```graphql
+query {
+  beads(filter: {
+    gates: { complete: true }
+    status: { eq: PENDING }
+  }) {
+    edges { node { id title status } }
+  }
+}
+```
+
+**MCP:**
+```
+beads.query with filter: { _gate.complete: true, status: "pending" }
+```
+
+The query planner uses the `idx_gates_by_status` index for gate
+filters, then intersects with EAV secondary indexes for field filters.
+
+#### Gate Status in Entity Responses
+
+Every entity response includes the current gate status:
+
+```json
+{
+  "entity": { "id": "bead-42", "version": 4, ... },
+  "gates": {
+    "complete": {
+      "pass": false,
+      "failures": [
+        {
+          "rule": "assignee-for-complete",
+          "field": "assignee",
+          "message": "An assignee is required before marking as ready",
+          "fix": "Assign someone to this item"
+        }
+      ]
+    },
+    "review": {
+      "pass": false,
+      "failures": [
+        { "rule": "assignee-for-complete", ... },
+        { "rule": "acceptance-for-review", ... }
+      ]
+    }
+  },
+  "advisories": [
+    {
+      "rule": "description-recommended",
+      "field": "description",
+      "message": "Consider adding a description"
+    }
+  ]
+}
+```
+
+The agent knows immediately: "I saved the entity, but it won't pass
+the `complete` gate until I set an assignee." The agent can fix it now
+or come back later.
+
+#### Gate Recomputation
+
+When validation rules change (schema update), gate statuses for existing
+entities become stale. A background worker recomputes gates for all
+entities in the collection (same mechanism as FEAT-017 revalidation and
+FEAT-013 index rebuild).
 
 #### Actionable Error Responses
 
@@ -300,19 +542,38 @@ When a schema with validation rules is saved:
 - [ ] Rules with `gt_field` / `lt_field` correctly compare two fields in the same entity
 - [ ] Rules without a `when` condition always apply
 
-### Story US-067: Severity Levels [FEAT-019]
+### Story US-067: Validation Gates [FEAT-019]
 
-**As a** developer defining validation rules
-**I want** to distinguish errors, warnings, and info
-**So that** some rules block writes while others advise
+**As a** developer defining progressive validation
+**I want** to group rules into named gates (save, complete, review, etc.)
+**So that** entities can be saved early and validated incrementally as they mature
 
 **Acceptance Criteria:**
-- [ ] A rule with `severity: error` rejects the write — entity is not persisted
-- [ ] A rule with `severity: warning` accepts the write — entity is persisted, warning included in response
-- [ ] A rule with `severity: info` accepts the write — info recorded in audit entry only
-- [ ] A write with 0 errors and 3 warnings succeeds, response includes all 3 warnings
-- [ ] A write with 1 error and 2 warnings fails, response includes the error and both warnings
-- [ ] Warnings are recorded in the audit entry for the mutation
+- [ ] A rule with `gate: save` blocks persistence — entity is not saved if this rule fails
+- [ ] A rule with `gate: complete` allows the save — entity is persisted, gate failure reported in response
+- [ ] A rule with `advisory: true` allows the save — advisory reported in response, never blocks
+- [ ] Write response includes gate pass/fail status for all non-save gates
+- [ ] Write response includes failure details (rule name, field, message, fix) for each failing gate
+- [ ] Gate results are materialized in the `entity_gates` table on every write
+- [ ] Gate definitions are registered in `gate_definitions` when the schema is saved
+- [ ] A gate with `includes: [complete]` inherits all `complete` gate rules — failing a `complete` rule also fails the `review` gate
+- [ ] Lifecycle transition with `requires_gate: complete` is blocked if the entity fails the `complete` gate
+- [ ] Blocked transition error includes the gate name, failing rules, and fix suggestions
+
+### Story US-074b: Query by Gate Status [FEAT-019]
+
+**As an** agent or operator
+**I want** to find entities that pass or fail a specific validation gate
+**So that** I can find items ready for processing or items that need attention
+
+**Acceptance Criteria:**
+- [ ] Filter `{ _gate.complete: true }` returns only entities passing the `complete` gate
+- [ ] Filter `{ _gate.complete: false }` returns entities failing the `complete` gate
+- [ ] Gate filter combines with field filters: `{ _gate.complete: true, status: "pending" }` returns pending entities ready for completion
+- [ ] Gate filter works via GraphQL: `beads(filter: { gates: { complete: true } })`
+- [ ] Gate filter works via MCP: `beads.query` with gate filter
+- [ ] Gate filter uses the `idx_gates_by_status` index — query latency < 50ms on 100K entities
+- [ ] Entities with no gate rows (e.g., collections without validation rules) are not returned by gate filters
 
 ### Story US-068: Actionable Error Messages [FEAT-019]
 
@@ -374,15 +635,22 @@ pub struct ValidationRule {
     /// Unique name within the collection.
     pub name: String,
 
+    /// Gate this rule belongs to. "save" blocks persistence.
+    /// Custom gates (e.g., "complete", "review") allow save but track readiness.
+    /// None if advisory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
+
+    /// If true, rule never blocks — always reports. Mutually exclusive with gate.
+    #[serde(default)]
+    pub advisory: bool,
+
     /// Condition that activates the rule. None = always active.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<RuleCondition>,
 
     /// Constraint to enforce when active.
     pub require: RuleRequirement,
-
-    /// Error, warning, or info.
-    pub severity: RuleSeverity,
 
     /// Human-readable explanation of the business rule.
     pub message: String,
@@ -392,12 +660,18 @@ pub struct ValidationRule {
     pub fix: Option<String>,
 }
 
+/// Gate definition declared in the schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum RuleSeverity {
-    Error,
-    Warning,
-    Info,
+pub struct GateDef {
+    /// Human-readable description of what this gate means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Other gates whose rules are included in this gate.
+    /// e.g., "review" includes ["complete"] means all complete rules
+    /// must also pass for review to pass.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub includes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -438,7 +712,8 @@ pub struct CollectionSchema {
     pub link_types: HashMap<String, LinkTypeDef>,            // Layer 2
     pub lifecycles: HashMap<String, LifecycleDef>,           // Layer 3
     pub indexes: Vec<IndexDef>,                              // Layer 4
-    pub validation_rules: Vec<ValidationRule>,               // Layer 5 (NEW)
+    pub gates: HashMap<String, GateDef>,                     // Layer 5 gate definitions
+    pub validation_rules: Vec<ValidationRule>,               // Layer 5 rules
 }
 ```
 
@@ -464,11 +739,11 @@ pub struct CollectionSchema {
 ### Related Artifacts
 - **Parent PRD Section**: Requirements Overview > P0 #4 (Schema engine — validation)
 - **Technical Requirements**: Section 5 (Schema System — validation rules, severity levels)
-- **User Stories**: US-066, US-067, US-068, US-069
+- **User Stories**: US-066, US-067, US-068, US-069, US-074b
 - **Implementation**: `crates/axon-schema/` (rule evaluation),
   `crates/axon-api/` (error enhancement)
 
 ### Feature Dependencies
-- **Depends On**: FEAT-002, FEAT-004
+- **Depends On**: FEAT-002, FEAT-004, FEAT-013 (gate index queries)
 - **Depended By**: FEAT-015 (GraphQL surfaces validation errors),
   FEAT-016 (MCP tools surface validation errors)

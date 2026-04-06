@@ -708,6 +708,160 @@ exercised in unit tests without requiring a database.
   links table
 - Existing entity data is unchanged
 
+## 11. Validation Gate Tables
+
+See FEAT-019 for the full gate model. The gate tables extend the
+physical schema:
+
+**Gate definitions** — registered when a schema is saved:
+
+```sql
+CREATE TABLE gate_definitions (
+    collection_id  INT   NOT NULL REFERENCES collections(id),
+    gate_name      TEXT  NOT NULL,
+    description    TEXT,
+    includes       TEXT[],
+    rule_count     INT   NOT NULL DEFAULT 0,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (collection_id, gate_name)
+);
+```
+
+**Entity gate status** — materialized on every entity write:
+
+```sql
+CREATE TABLE entity_gates (
+    collection_id  INT       NOT NULL,
+    entity_id      UUID      NOT NULL,
+    gate_name      TEXT      NOT NULL,
+    pass           BOOLEAN   NOT NULL,
+    failure_count  INT       NOT NULL DEFAULT 0,
+    evaluated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    failures_json  JSONB,
+    PRIMARY KEY (collection_id, entity_id, gate_name),
+    FOREIGN KEY (collection_id, entity_id)
+        REFERENCES entities(collection_id, id) ON DELETE CASCADE,
+    FOREIGN KEY (collection_id, gate_name)
+        REFERENCES gate_definitions(collection_id, gate_name) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_gates_by_status
+    ON entity_gates (collection_id, gate_name, pass, entity_id);
+```
+
+On KV stores:
+```
+gates/def/     {collection_id}/{gate_name}                     → {description, includes, rule_count}
+gates/entity/  {collection_id}/{entity_id}/{gate_name}         → {pass, failure_count, failures}
+gates/bystate/ {collection_id}/{gate_name}/{0|1}/{entity_id}   → {}
+```
+
+## 12. Table Partitioning (PostgreSQL)
+
+PostgreSQL declarative partitioning provides operational benefits for
+large tables. Partitioning strategy varies by table access pattern:
+
+### Audit Log — Time-Range Partitioning
+
+The audit log is append-only, queried by time range, and subject to
+retention policies. Time-based partitioning enables:
+- **Cheap retention**: `DROP` an old partition instead of `DELETE` —
+  instant, no vacuum, no dead tuples
+- **Query acceleration**: Time-range queries scan only relevant partitions
+- **Tiered storage**: Old partitions can be moved to cheaper tablespaces
+
+```sql
+CREATE TABLE audit_log (
+    id              BIGSERIAL,
+    timestamp_ns    BIGINT      NOT NULL,
+    collection_id   INT         NOT NULL,
+    entity_id       UUID        NOT NULL,
+    version         INT         NOT NULL,
+    mutation        TEXT        NOT NULL,
+    actor           TEXT,
+    transaction_id  TEXT,
+    entry_json      JSONB       NOT NULL,
+    PRIMARY KEY (id, timestamp_ns)
+) PARTITION BY RANGE (timestamp_ns);
+
+-- Monthly partitions (epoch nanos for 2026-04)
+CREATE TABLE audit_log_2026_04 PARTITION OF audit_log
+    FOR VALUES FROM (1743465600000000000) TO (1746057600000000000);
+
+-- Retention: DROP TABLE audit_log_2025_01;
+```
+
+Partition creation is automated: a background job creates the next
+month's partition before it's needed. Retention is configurable per
+database (FEAT-014).
+
+### Entities — List Partitioning by Collection
+
+For deployments with many collections or very large collections,
+entities can be list-partitioned by `collection_id`:
+
+```sql
+CREATE TABLE entities (
+    collection_id  INT     NOT NULL,
+    id             UUID    NOT NULL,
+    version        INT     NOT NULL DEFAULT 1,
+    data           JSONB   NOT NULL,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_by     TEXT,
+    updated_by     TEXT,
+    PRIMARY KEY (collection_id, id)
+) PARTITION BY LIST (collection_id);
+
+-- One partition per collection
+CREATE TABLE entities_coll_1 PARTITION OF entities FOR VALUES IN (1);
+CREATE TABLE entities_coll_2 PARTITION OF entities FOR VALUES IN (2);
+
+-- Default partition for new collections before explicit partition creation
+CREATE TABLE entities_default PARTITION OF entities DEFAULT;
+```
+
+Benefits:
+- **Collection isolation**: Queries scoped to one collection scan only
+  that partition
+- **Collection drop**: `DROP TABLE entities_coll_N` is instant (vs
+  `DELETE FROM entities WHERE collection_id = N`)
+- **Maintenance**: VACUUM, ANALYZE, and REINDEX operate per-partition
+- **Tablespace assignment**: Hot collections on fast storage, cold on
+  cheaper storage
+
+Partition creation is automated when a collection is registered.
+
+### EAV Index Tables, Links, Entity Gates
+
+Same list-partitioning by `collection_id` applies to:
+- `index_string`, `index_integer`, `index_float`, `index_datetime`,
+  `index_boolean`, `index_compound` — each partitioned by `collection_id`
+- `links` — partitioned by `source_collection_id`
+- `entity_gates` — partitioned by `collection_id`
+
+All follow the same pattern: one partition per collection, auto-created
+on collection registration, instant drop on collection deletion.
+
+### Partitioning on SQLite and KV Stores
+
+- **SQLite**: No native partitioning. Collection-scoped queries use the
+  `collection_id` prefix in indexes, which gives similar scan locality.
+  Audit log retention is handled by `DELETE` + `VACUUM`
+- **KV stores**: Key prefix partitioning is inherent in the key layout.
+  FoundationDB directory layer provides namespace-level isolation. No
+  additional partitioning needed
+
+### Partitioning Is Optional
+
+Partitioning is a deployment-time optimization, not a schema
+requirement. The tables work identically with or without partitioning.
+Small deployments (< 100K entities, < 10 collections) don't need it.
+Partitioning is recommended when:
+- Audit log exceeds 10M rows (retention via partition drop)
+- Any single collection exceeds 1M entities
+- Collection drop needs to be instant (not a long DELETE)
+
 ## Not In Scope
 
 - **Array field indexing**: Indexing individual elements of array fields
