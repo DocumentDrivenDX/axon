@@ -1,0 +1,25 @@
+{
+  "name": "@axon/client",
+  "version": "0.1.0",
+  "description": "TypeScript client SDK for Axon data store",
+  "license": "MIT OR Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "proto:gen": "npx protoc --ts_out=src/generated --proto_path=../../crates/axon-server/proto ../../crates/axon-server/proto/axon.proto",
+    "build": "tsc",
+    "test": "vitest run",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@grpc/grpc-js": "^1.12.0",
+    "@protobuf-ts/runtime": "^2.9.0",
+    "@protobuf-ts/runtime-rpc": "^2.9.0",
+    "@protobuf-ts/grpc-transport": "^2.9.0"
+  },
+  "devDependencies": {
+    "@protobuf-ts/plugin": "^2.9.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}
