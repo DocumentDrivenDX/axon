@@ -22,6 +22,11 @@ struct Args {
     /// Port for the gRPC service.
     #[arg(long, env = "AXON_GRPC_PORT", default_value = "50051")]
     grpc_port: u16,
+
+    /// Disable authentication — all requests succeed as admin with actor="anonymous".
+    /// Intended for local development only.
+    #[arg(long, env = "AXON_NO_AUTH", default_value = "true")]
+    no_auth: bool,
 }
 
 #[tokio::main]
@@ -31,6 +36,10 @@ async fn main() {
         .init();
 
     let args = Args::parse();
+
+    if args.no_auth {
+        tracing::info!("running in --no-auth mode: all requests succeed as admin (actor=anonymous)");
+    }
 
     // Single shared handler for both HTTP and gRPC.
     let handler = Arc::new(Mutex::new(
