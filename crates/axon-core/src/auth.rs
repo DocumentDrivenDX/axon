@@ -161,6 +161,58 @@ pub struct MaskPolicy {
     pub min_role: Role,
 }
 
+// ── Attribute-based write control (US-047, FEAT-012) ────────────────────────
+
+/// Per-collection write policy for attribute-based access control (ABAC).
+///
+/// Stored in the `__axon_policies__` pseudo-collection. Defines:
+/// - Minimum role required to write to this collection
+/// - Fields that are immutable after creation
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WritePolicy {
+    /// Collection this policy applies to.
+    pub collection: String,
+    /// Minimum role required for write operations.
+    pub min_write_role: Role,
+    /// Fields that cannot be modified after the initial create.
+    #[serde(default)]
+    pub immutable_fields: Vec<String>,
+}
+
+impl WritePolicy {
+    /// Check if a caller has sufficient role to write to this collection.
+    pub fn check_write(&self, caller: &CallerIdentity) -> Result<(), AxonError> {
+        if caller.role >= self.min_write_role {
+            Ok(())
+        } else {
+            Err(AxonError::InvalidOperation(format!(
+                "write policy for '{}': role '{}' insufficient (requires '{}')",
+                self.collection, caller.role, self.min_write_role
+            )))
+        }
+    }
+
+    /// Check if any immutable fields have been modified.
+    ///
+    /// Returns the list of field names that were illegally modified.
+    pub fn check_immutable_fields(
+        &self,
+        old_data: &serde_json::Value,
+        new_data: &serde_json::Value,
+    ) -> Vec<String> {
+        let mut violations = Vec::new();
+        for field in &self.immutable_fields {
+            let old_val = old_data.get(field);
+            let new_val = new_data.get(field);
+            // If the field existed before and is now different or missing, it's a violation.
+            if old_val.is_some() && old_val != new_val {
+                violations.push(field.clone());
+            }
+        }
+        violations
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,5 +380,74 @@ mod tests {
         }];
         reader.apply_masks(&mut data, &policies);
         assert_eq!(data, serde_json::json!("just a string"));
+    }
+
+    // ── ABAC write policy tests (US-047) ───────────────────────────────
+
+    #[test]
+    fn write_policy_allows_matching_role() {
+        let policy = WritePolicy {
+            collection: "tasks".into(),
+            min_write_role: Role::Write,
+            immutable_fields: vec![],
+        };
+        let caller = CallerIdentity::new("alice", Role::Write);
+        assert!(policy.check_write(&caller).is_ok());
+    }
+
+    #[test]
+    fn write_policy_denies_insufficient_role() {
+        let policy = WritePolicy {
+            collection: "tasks".into(),
+            min_write_role: Role::Admin,
+            immutable_fields: vec![],
+        };
+        let caller = CallerIdentity::new("bob", Role::Write);
+        assert!(policy.check_write(&caller).is_err());
+    }
+
+    #[test]
+    fn immutable_fields_detected() {
+        let policy = WritePolicy {
+            collection: "tasks".into(),
+            min_write_role: Role::Write,
+            immutable_fields: vec!["created_by".into(), "source".into()],
+        };
+
+        let old_data = serde_json::json!({"title": "T", "created_by": "alice", "source": "api"});
+        let new_data = serde_json::json!({"title": "T2", "created_by": "alice", "source": "api"});
+        let violations = policy.check_immutable_fields(&old_data, &new_data);
+        assert!(violations.is_empty());
+
+        let changed = serde_json::json!({"title": "T2", "created_by": "bob", "source": "api"});
+        let violations = policy.check_immutable_fields(&old_data, &changed);
+        assert_eq!(violations, vec!["created_by"]);
+    }
+
+    #[test]
+    fn immutable_field_added_is_ok() {
+        // Adding an immutable field to an entity that didn't have it is OK.
+        let policy = WritePolicy {
+            collection: "tasks".into(),
+            min_write_role: Role::Write,
+            immutable_fields: vec!["locked".into()],
+        };
+        let old_data = serde_json::json!({"title": "T"});
+        let new_data = serde_json::json!({"title": "T", "locked": true});
+        let violations = policy.check_immutable_fields(&old_data, &new_data);
+        assert!(violations.is_empty());
+    }
+
+    #[test]
+    fn immutable_field_removed_is_violation() {
+        let policy = WritePolicy {
+            collection: "tasks".into(),
+            min_write_role: Role::Write,
+            immutable_fields: vec!["source".into()],
+        };
+        let old_data = serde_json::json!({"title": "T", "source": "api"});
+        let new_data = serde_json::json!({"title": "T2"});
+        let violations = policy.check_immutable_fields(&old_data, &new_data);
+        assert_eq!(violations, vec!["source"]);
     }
 }
