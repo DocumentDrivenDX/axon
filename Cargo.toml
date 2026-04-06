@@ -9,6 +9,7 @@ members = [
     "crates/axon-sim",
     "crates/axon-server",
     "crates/axon-graphql",
+    "crates/axon-mcp",
 ]
 resolver = "2"
 
