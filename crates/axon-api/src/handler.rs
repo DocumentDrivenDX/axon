@@ -20,22 +20,24 @@ use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
-    CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest, DeleteEntityRequest,
-    DeleteLinkRequest, DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest,
-    DropNamespaceRequest, FieldFilter, FilterNode, FilterOp, GetEntityRequest, GetSchemaRequest,
-    ListCollectionsRequest, ListNamespaceCollectionsRequest, PutSchemaRequest, QueryAuditRequest,
-    QueryEntitiesRequest, ReachableRequest, RevalidateRequest, RevertEntityRequest, SortDirection,
-    TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
+    DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest, DiffSchemaRequest,
+    DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest, FieldFilter, FilterNode,
+    FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
+    ListNamespaceCollectionsRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
+    ReachableRequest, RevalidateRequest, RevertEntityRequest, SortDirection, TraverseDirection,
+    TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
-    CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, CreateNamespaceResponse,
-    DeleteEntityResponse, DeleteLinkResponse, DescribeCollectionResponse, DiffSchemaResponse,
-    DropCollectionResponse, DropNamespaceResponse, GetEntityResponse, GetSchemaResponse,
-    InvalidEntity, ListCollectionsResponse, ListNamespaceCollectionsResponse,
-    PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse, ReachableResponse,
-    RevalidateResponse, RevertEntityResponse, TraverseHop, TraversePath, TraverseResponse,
-    UpdateEntityResponse,
+    CreateCollectionResponse, CreateDatabaseResponse, CreateEntityResponse, CreateLinkResponse,
+    CreateNamespaceResponse, DeleteEntityResponse, DeleteLinkResponse,
+    DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse,
+    DropDatabaseResponse, DropNamespaceResponse, GetEntityResponse, GetSchemaResponse,
+    InvalidEntity, ListCollectionsResponse, ListDatabasesResponse,
+    ListNamespaceCollectionsResponse, PutSchemaResponse, QueryAuditResponse,
+    QueryEntitiesResponse, ReachableResponse, RevalidateResponse, RevertEntityResponse,
+    TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -1211,6 +1213,85 @@ impl<S: StorageAdapter> AxonHandler<S> {
             schema: req.schema,
             collections_removed: removed,
         })
+    }
+
+    // ── Database isolation (US-035, FEAT-014) ───────────────────────────
+
+    /// Create a new database (isolated data space).
+    ///
+    /// A database is a namespace prefix that groups collections.
+    /// Collections in different databases are invisible to each other.
+    pub fn create_database(
+        &mut self,
+        req: CreateDatabaseRequest,
+    ) -> Result<CreateDatabaseResponse, AxonError> {
+        let ns_key = format!("{}.default", req.name);
+        if self.namespaces.contains_key(&ns_key) {
+            return Err(AxonError::AlreadyExists(format!(
+                "database '{}'",
+                req.name
+            )));
+        }
+        self.namespaces.insert(ns_key, HashSet::new());
+        Ok(CreateDatabaseResponse { name: req.name })
+    }
+
+    /// Drop a database and all its collections.
+    ///
+    /// Removes all namespaces with the given database prefix and their
+    /// collections. Audit entries are retained but the data is purged.
+    pub fn drop_database(
+        &mut self,
+        req: DropDatabaseRequest,
+    ) -> Result<DropDatabaseResponse, AxonError> {
+        let prefix = format!("{}.", req.name);
+        let matching_keys: Vec<String> = self
+            .namespaces
+            .keys()
+            .filter(|k| k.starts_with(&prefix))
+            .cloned()
+            .collect();
+
+        if matching_keys.is_empty() {
+            return Err(AxonError::NotFound(format!("database '{}'", req.name)));
+        }
+
+        let total_collections: usize = matching_keys
+            .iter()
+            .map(|k| self.namespaces.get(k).map_or(0, |c| c.len()))
+            .sum();
+
+        if total_collections > 0 && !req.force {
+            return Err(AxonError::InvalidOperation(format!(
+                "database '{}' contains {total_collections} collections. Use force=true to drop",
+                req.name
+            )));
+        }
+
+        for key in &matching_keys {
+            self.namespaces.remove(key);
+        }
+
+        Ok(DropDatabaseResponse {
+            name: req.name,
+            collections_removed: total_collections,
+        })
+    }
+
+    /// List all databases.
+    pub fn list_databases(
+        &self,
+        _req: ListDatabasesRequest,
+    ) -> Result<ListDatabasesResponse, AxonError> {
+        let mut databases: Vec<String> = self
+            .namespaces
+            .keys()
+            .filter_map(|k| k.split('.').next().map(String::from))
+            .collect::<HashSet<String>>()
+            .into_iter()
+            .collect();
+        databases.sort();
+        Ok(ListDatabasesResponse { databases })
     }
 
     /// Diff two schema versions for a collection (US-061).
@@ -6980,5 +7061,131 @@ link_types:
             .unwrap_err();
 
         assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    // ── Database isolation tests (US-035) ──────────────────────────────
+
+    #[test]
+    fn create_database() {
+        use crate::request::CreateDatabaseRequest;
+        let mut h = handler();
+        let resp = h
+            .create_database(CreateDatabaseRequest {
+                name: "mydb".into(),
+            })
+            .unwrap();
+        assert_eq!(resp.name, "mydb");
+    }
+
+    #[test]
+    fn create_duplicate_database_fails() {
+        use crate::request::CreateDatabaseRequest;
+        let mut h = handler();
+        h.create_database(CreateDatabaseRequest {
+            name: "mydb".into(),
+        })
+        .unwrap();
+        let err = h
+            .create_database(CreateDatabaseRequest {
+                name: "mydb".into(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::AlreadyExists(_)));
+    }
+
+    #[test]
+    fn list_databases_includes_default() {
+        use crate::request::ListDatabasesRequest;
+        let h = handler();
+        let resp = h.list_databases(ListDatabasesRequest {}).unwrap();
+        assert!(resp.databases.contains(&"default".to_string()));
+    }
+
+    #[test]
+    fn list_databases_after_create() {
+        use crate::request::{CreateDatabaseRequest, ListDatabasesRequest};
+        let mut h = handler();
+        h.create_database(CreateDatabaseRequest {
+            name: "analytics".into(),
+        })
+        .unwrap();
+        let resp = h.list_databases(ListDatabasesRequest {}).unwrap();
+        assert!(resp.databases.contains(&"analytics".to_string()));
+        assert!(resp.databases.contains(&"default".to_string()));
+    }
+
+    #[test]
+    fn drop_empty_database() {
+        use crate::request::{CreateDatabaseRequest, DropDatabaseRequest, ListDatabasesRequest};
+        let mut h = handler();
+        h.create_database(CreateDatabaseRequest {
+            name: "temp".into(),
+        })
+        .unwrap();
+        let resp = h
+            .drop_database(DropDatabaseRequest {
+                name: "temp".into(),
+                force: false,
+            })
+            .unwrap();
+        assert_eq!(resp.name, "temp");
+        assert_eq!(resp.collections_removed, 0);
+
+        let dbs = h.list_databases(ListDatabasesRequest {}).unwrap();
+        assert!(!dbs.databases.contains(&"temp".to_string()));
+    }
+
+    #[test]
+    fn drop_nonexistent_database_fails() {
+        use crate::request::DropDatabaseRequest;
+        let mut h = handler();
+        let err = h
+            .drop_database(DropDatabaseRequest {
+                name: "nope".into(),
+                force: false,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn drop_nonempty_database_requires_force() {
+        use crate::request::{
+            CreateDatabaseRequest, CreateNamespaceRequest, DropDatabaseRequest,
+        };
+        let mut h = handler();
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        // Add a second schema namespace to the same database.
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "analytics".into(),
+        })
+        .unwrap();
+        // Manually track a collection in the namespace for the test.
+        // (In real usage, create_collection would register this.)
+        h.namespaces
+            .get_mut("prod.default")
+            .unwrap()
+            .insert("tasks".to_string());
+
+        let err = h
+            .drop_database(DropDatabaseRequest {
+                name: "prod".into(),
+                force: false,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::InvalidOperation(_)));
+
+        // Force drop succeeds and removes all schemas.
+        let resp = h
+            .drop_database(DropDatabaseRequest {
+                name: "prod".into(),
+                force: true,
+            })
+            .unwrap();
+        assert_eq!(resp.collections_removed, 1);
     }
 }

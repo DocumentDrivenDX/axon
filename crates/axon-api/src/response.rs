@@ -351,3 +351,24 @@ pub struct AggregateResponse {
     /// Aggregated result. A single entry when no GROUP BY; multiple for GROUP BY.
     pub results: Vec<AggregateGroup>,
 }
+
+// ── Database isolation responses (US-035, FEAT-014) ───────────────────────
+
+/// Response from creating a database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDatabaseResponse {
+    pub name: String,
+}
+
+/// Response from dropping a database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DropDatabaseResponse {
+    pub name: String,
+    pub collections_removed: usize,
+}
+
+/// Response listing all databases.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListDatabasesResponse {
+    pub databases: Vec<String>,
+}

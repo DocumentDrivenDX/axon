@@ -437,3 +437,26 @@ pub struct AggregateRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
 }
+
+// ── Database isolation requests (US-035, FEAT-014) ────────────────────────
+
+/// Request to create a new database (isolated data space).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDatabaseRequest {
+    /// Database name.
+    pub name: String,
+}
+
+/// Request to drop a database and all its collections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DropDatabaseRequest {
+    /// Database name.
+    pub name: String,
+    /// If true, drop all collections within the database.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Request to list all databases.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListDatabasesRequest {}
