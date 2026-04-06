@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod error;
 pub mod id;
+pub mod topology;
 pub mod types;
 
 pub use auth::{
