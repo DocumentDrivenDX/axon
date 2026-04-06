@@ -239,6 +239,7 @@ async fn create_entity(
         id: EntityId::new(&id),
         data: body.data,
         actor: body.actor,
+        audit_metadata: None,
     }) {
         Ok(resp) => (
             StatusCode::CREATED,
@@ -288,6 +289,7 @@ async fn update_entity(
         data: body.data,
         expected_version: body.expected_version,
         actor: body.actor,
+        audit_metadata: None,
     }) {
         Ok(resp) => Json(json!({
             "entity": {
@@ -312,6 +314,7 @@ async fn delete_entity(
         collection: CollectionId::new(&collection),
         id: EntityId::new(&id),
         actor,
+        audit_metadata: None,
         force: false,
     }) {
         Ok(resp) => Json(json!({"collection": resp.collection, "id": resp.id})).into_response(),
@@ -593,6 +596,7 @@ async fn drop_collection(
     match handler.lock().await.drop_collection(DropCollectionRequest {
         name: CollectionId::new(&name),
         actor,
+        confirm: true,
     }) {
         Ok(resp) => Json(json!({
             "name": resp.name,

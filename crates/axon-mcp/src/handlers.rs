@@ -71,6 +71,7 @@ fn build_create_tool<S: StorageAdapter + 'static>(
                 id: id_str,
                 data,
                 actor: Some("mcp".into()),
+                audit_metadata: None,
             });
 
             match result {
@@ -164,6 +165,7 @@ fn build_patch_tool<S: StorageAdapter + 'static>(
                 data,
                 expected_version,
                 actor: Some("mcp".into()),
+                audit_metadata: None,
             });
 
             match result {
@@ -205,6 +207,7 @@ fn build_delete_tool<S: StorageAdapter + 'static>(
                 collection: CollectionId::new(&col),
                 id: EntityId::new(id),
                 actor: Some("mcp".into()),
+                audit_metadata: None,
                 force: false,
             });
 

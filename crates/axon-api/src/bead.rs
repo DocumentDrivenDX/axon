@@ -209,6 +209,7 @@ pub fn create_bead<S: StorageAdapter>(
         id: EntityId::new(params.id),
         data: data.clone(),
         actor: Some("bead-system".into()),
+        audit_metadata: None,
     })?;
 
     let mut bead: Bead = serde_json::from_value(data)
@@ -265,6 +266,7 @@ pub fn transition_bead<S: StorageAdapter>(
         data: new_data,
         expected_version: entity.version,
         actor: Some("bead-system".into()),
+        audit_metadata: None,
     })?;
 
     Ok(())
@@ -452,6 +454,7 @@ pub fn import_beads<S: StorageAdapter>(
             id: EntityId::new(&bead.id),
             data: entity_data,
             actor: Some("bead-import".into()),
+            audit_metadata: None,
         })?;
         imported += 1;
     }

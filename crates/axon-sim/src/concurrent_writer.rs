@@ -91,6 +91,7 @@ pub fn run_concurrent_writer_workload(config: &ConcurrentWriterConfig) -> Concur
             id: entity_id.clone(),
             data: json!({ "counter": 0_i64 }),
             actor: Some("sim".into()),
+            audit_metadata: None,
         })
         .expect("counter entity creation must not fail during setup");
 
@@ -135,6 +136,7 @@ pub fn run_concurrent_writer_workload(config: &ConcurrentWriterConfig) -> Concur
                 data: json!({ "counter": current_counter + increment }),
                 expected_version: stale_version,
                 actor: Some("sim".into()),
+                audit_metadata: None,
             }) {
                 Ok(_) => {
                     // Only the first success per round contributes to the

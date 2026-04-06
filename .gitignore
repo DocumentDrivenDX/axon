@@ -1,2 +1,4 @@
 /target/
 Cargo.lock
+.ddx/agent-logs/
+.helix-logs/

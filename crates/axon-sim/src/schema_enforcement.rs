@@ -150,6 +150,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
             id: attempt.id.clone(),
             data: attempt.data.clone(),
             actor: Some("sim".into()),
+            audit_metadata: None,
         });
 
         if attempt.should_succeed {
@@ -186,6 +187,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
             data: json!({ "name": "alpha", "status": "bad_enum" }), // invalid
             expected_version: resp.entity.version,
             actor: Some("sim".into()),
+            audit_metadata: None,
         });
         if !matches!(update_result, Err(AxonError::SchemaValidation(_))) {
             invalid_writes_rejected = false;

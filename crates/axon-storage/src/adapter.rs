@@ -604,4 +604,51 @@ pub trait StorageAdapter: Send + Sync {
         }
         Ok(links)
     }
+
+    // ── Gate persistence (FEAT-019, US-067) ─────────────────────────────────
+
+    /// Store materialized gate results for an entity.
+    ///
+    /// Replaces any existing gate results for this entity.
+    fn put_gate_results(
+        &mut self,
+        _collection: &CollectionId,
+        _entity_id: &EntityId,
+        _gates: &std::collections::HashMap<String, bool>,
+    ) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Retrieve materialized gate results for an entity.
+    ///
+    /// Returns `None` if no gate results have been stored.
+    fn get_gate_results(
+        &self,
+        _collection: &CollectionId,
+        _entity_id: &EntityId,
+    ) -> Result<Option<std::collections::HashMap<String, bool>>, AxonError> {
+        Ok(None)
+    }
+
+    /// Look up entity IDs that have a specific gate pass/fail status.
+    ///
+    /// Returns entity IDs in the given collection where the named gate
+    /// has the specified pass/fail status.
+    fn gate_lookup(
+        &self,
+        _collection: &CollectionId,
+        _gate: &str,
+        _pass: bool,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        Ok(Vec::new())
+    }
+
+    /// Remove gate results for a deleted entity.
+    fn delete_gate_results(
+        &mut self,
+        _collection: &CollectionId,
+        _entity_id: &EntityId,
+    ) -> Result<(), AxonError> {
+        Ok(())
+    }
 }

@@ -98,6 +98,9 @@ enum CollectionCmd {
         name: String,
         #[arg(long)]
         actor: Option<String>,
+        /// Confirm the destructive operation.
+        #[arg(long)]
+        confirm: bool,
     },
     /// Describe a collection (entity count, schema, timestamps).
     Describe {
@@ -472,11 +475,16 @@ fn run_collection(
                 }
             }
         }
-        CollectionCmd::Drop { name, actor } => {
+        CollectionCmd::Drop {
+            name,
+            actor,
+            confirm,
+        } => {
             let resp = handler
                 .drop_collection(DropCollectionRequest {
                     name: CollectionId::new(&name),
                     actor,
+                    confirm,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             let result = serde_json::json!({
@@ -546,6 +554,7 @@ fn run_entity(
                     id: EntityId::new(&id),
                     data,
                     actor,
+                    audit_metadata: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_entity(entity_to_json(&resp.entity), format);
@@ -594,6 +603,7 @@ fn run_entity(
                     data,
                     expected_version,
                     actor,
+                    audit_metadata: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_entity(entity_to_json(&resp.entity), format);
@@ -608,6 +618,7 @@ fn run_entity(
                     collection: CollectionId::new(&collection),
                     id: EntityId::new(&id),
                     actor,
+                    audit_metadata: None,
                     force: false,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -1173,7 +1184,7 @@ mod tests {
         run(make_cli(&db, &["--output", "json", "collection", "list"])).unwrap();
 
         // Drop one.
-        run(make_cli(&db, &["collection", "drop", "users"])).unwrap();
+        run(make_cli(&db, &["collection", "drop", "users", "--confirm"])).unwrap();
     }
 
     #[test]
@@ -1270,6 +1281,7 @@ mod tests {
                 id: EntityId::new("t-001"),
                 data: serde_json::json!({"title": "hi"}),
                 actor: Some("agent-1".into()),
+                audit_metadata: None,
             })
             .unwrap();
 
@@ -1312,6 +1324,7 @@ mod tests {
                 id: EntityId::new("t-001"),
                 data: serde_json::json!({"title": "hi"}),
                 actor: Some("agent-1".into()),
+                audit_metadata: None,
             })
             .unwrap();
 
@@ -1357,6 +1370,7 @@ mod tests {
                 id: EntityId::new("t-001"),
                 data: serde_json::json!({"title": "hi"}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
 

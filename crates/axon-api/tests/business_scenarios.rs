@@ -34,6 +34,7 @@ fn create(h: &mut AxonHandler<MemoryStorageAdapter>, collection: &str, id: &str,
         id: eid(id),
         data,
         actor: None,
+        audit_metadata: None,
     })
     .unwrap();
 }
@@ -60,6 +61,7 @@ fn update(
         data,
         expected_version: version,
         actor: None,
+        audit_metadata: None,
     })
     .unwrap()
     .entity

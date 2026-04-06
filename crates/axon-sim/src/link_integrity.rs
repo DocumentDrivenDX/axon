@@ -66,6 +66,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
                 id: EntityId::new(format!("s-{i:03}")),
                 data: json!({ "index": i }),
                 actor: Some("sim".into()),
+                audit_metadata: None,
             })
             .expect("source entity creation must not fail");
     }
@@ -76,6 +77,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
                 id: EntityId::new(format!("t-{i:03}")),
                 data: json!({ "index": i }),
                 actor: Some("sim".into()),
+                audit_metadata: None,
             })
             .expect("target entity creation must not fail");
     }
@@ -127,6 +129,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
             collection: tgt.clone(),
             id: EntityId::new("t-000"),
             actor: Some("sim".into()),
+            audit_metadata: None,
             force: false,
         }),
         Err(AxonError::InvalidOperation(_))
@@ -138,6 +141,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
             collection: tgt.clone(),
             id: EntityId::new("t-002"),
             actor: Some("sim".into()),
+            audit_metadata: None,
             force: false,
         })
         .is_ok();

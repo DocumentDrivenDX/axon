@@ -44,6 +44,7 @@ proptest! {
             id:         id.clone(),
             data:       json!({"val": update_values[0]}),
             actor:      Some("prop-test".into()),
+            audit_metadata: None,
         }).unwrap();
 
         // Apply subsequent values as updates.
@@ -59,6 +60,7 @@ proptest! {
                 data:             json!({"val": val}),
                 expected_version: current.version,
                 actor:            Some("prop-test".into()),
+                audit_metadata: None,
             }).unwrap();
         }
 
@@ -70,6 +72,7 @@ proptest! {
                 collection: col.clone(),
                 id:         id.clone(),
                 actor:      Some("prop-test".into()),
+                audit_metadata: None,
                 force: false,
             }).unwrap();
             expected_ops += 1;
@@ -256,6 +259,7 @@ proptest! {
                 id:         EntityId::new(format!("e-{i}")),
                 data:       json!({"i": i}),
                 actor:      None,
+                audit_metadata: None,
             }).unwrap();
         }
 

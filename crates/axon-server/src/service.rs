@@ -133,6 +133,7 @@ impl AxonService for AxonServiceImpl {
                 id: EntityId::new(&req.id),
                 data,
                 actor,
+                audit_metadata: None,
             })
             .map_err(axon_to_status)?;
 
@@ -184,6 +185,7 @@ impl AxonService for AxonServiceImpl {
                 data,
                 expected_version: req.expected_version,
                 actor,
+                audit_metadata: None,
             })
             .map_err(axon_to_status)?;
 
@@ -211,6 +213,7 @@ impl AxonService for AxonServiceImpl {
                 collection: CollectionId::new(&req.collection),
                 id: EntityId::new(&req.id),
                 actor,
+                audit_metadata: None,
                 force: false,
             })
             .map_err(axon_to_status)?;

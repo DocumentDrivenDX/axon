@@ -94,6 +94,7 @@ pub fn run_audit_immutability_workload(
                 id: eid.clone(),
                 data: json!({ "index": i }),
                 actor: Some("sim".into()),
+                audit_metadata: None,
             })
             .expect("initial entity creation must not fail");
         entity_ids.push(eid);
@@ -128,6 +129,7 @@ pub fn run_audit_immutability_workload(
                 data: json!({ "index": old + 1 }),
                 expected_version: resp.entity.version,
                 actor: Some("sim".into()),
+                audit_metadata: None,
             });
         }
     }

@@ -54,6 +54,7 @@ fn test_entity_crud<S: StorageAdapter>(mut h: AxonHandler<S>) {
             id: eid("t-001"),
             data: json!({"title": "hello"}),
             actor: Some("alice".into()),
+            audit_metadata: None,
         })
         .unwrap();
     assert_eq!(resp.entity.version, 1);
@@ -75,6 +76,7 @@ fn test_entity_crud<S: StorageAdapter>(mut h: AxonHandler<S>) {
             data: json!({"title": "updated"}),
             expected_version: 1,
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     assert_eq!(resp.entity.version, 2);
@@ -88,6 +90,7 @@ fn test_entity_crud<S: StorageAdapter>(mut h: AxonHandler<S>) {
             data: json!({"title": "stale"}),
             expected_version: 1,
             actor: None,
+            audit_metadata: None,
         })
         .unwrap_err();
     assert!(matches!(err, AxonError::ConflictingVersion { .. }));
@@ -97,6 +100,7 @@ fn test_entity_crud<S: StorageAdapter>(mut h: AxonHandler<S>) {
         collection: col("tasks"),
         id: eid("t-001"),
         actor: None,
+        audit_metadata: None,
         force: false,
     })
     .unwrap();
@@ -130,6 +134,7 @@ fn test_collection_lifecycle<S: StorageAdapter>(mut h: AxonHandler<S>) {
     h.drop_collection(DropCollectionRequest {
         name: col("items"),
         actor: None,
+        confirm: true,
     })
     .unwrap();
 
@@ -151,6 +156,7 @@ fn test_links_and_traversal<S: StorageAdapter>(mut h: AxonHandler<S>) {
             id: eid(name),
             data: json!({"name": name}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -224,6 +230,7 @@ fn test_query_entities<S: StorageAdapter>(mut h: AxonHandler<S>) {
             id: eid(id),
             data: json!({"status": status}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -275,6 +282,7 @@ fn test_schema_enforcement<S: StorageAdapter>(mut h: AxonHandler<S>) {
         id: eid("ok"),
         data: json!({"amount": 42}),
         actor: None,
+        audit_metadata: None,
     })
     .unwrap();
 
@@ -285,6 +293,7 @@ fn test_schema_enforcement<S: StorageAdapter>(mut h: AxonHandler<S>) {
             id: eid("bad"),
             data: json!({"name": "missing amount"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap_err();
     assert!(matches!(err, AxonError::SchemaValidation(_)));
@@ -303,6 +312,7 @@ fn test_audit_log<S: StorageAdapter>(mut h: AxonHandler<S>) {
         id: eid("t-001"),
         data: json!({"title": "v1"}),
         actor: Some("alice".into()),
+        audit_metadata: None,
     })
     .unwrap();
 
@@ -312,6 +322,7 @@ fn test_audit_log<S: StorageAdapter>(mut h: AxonHandler<S>) {
         data: json!({"title": "v2"}),
         expected_version: 1,
         actor: Some("bob".into()),
+        audit_metadata: None,
     })
     .unwrap();
 

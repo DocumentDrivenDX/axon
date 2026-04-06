@@ -96,6 +96,8 @@ pub struct MemoryStorageAdapter {
     /// Dedicated link store (ADR-010): replaces __axon_links__ pseudo-collection
     /// for new code paths. Keyed by (source_col, source_id, link_type, target_col, target_id).
     links: BTreeMap<LinkKey, Link>,
+    /// Materialized gate results: (collection, entity_id) → (gate_name → pass).
+    gate_results: HashMap<(CollectionId, EntityId), HashMap<String, bool>>,
 }
 
 fn now_ns() -> u64 {
@@ -702,6 +704,60 @@ impl StorageAdapter for MemoryStorageAdapter {
             })
             .map(|(_, link)| link.clone())
             .collect())
+    }
+
+    // ── Gate persistence (FEAT-019, US-067) ────────────────────────────
+
+    fn put_gate_results(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        gates: &std::collections::HashMap<String, bool>,
+    ) -> Result<(), AxonError> {
+        self.gate_results
+            .insert((collection.clone(), entity_id.clone()), gates.clone());
+        Ok(())
+    }
+
+    fn get_gate_results(
+        &self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+    ) -> Result<Option<std::collections::HashMap<String, bool>>, AxonError> {
+        Ok(self
+            .gate_results
+            .get(&(collection.clone(), entity_id.clone()))
+            .cloned())
+    }
+
+    fn gate_lookup(
+        &self,
+        collection: &CollectionId,
+        gate: &str,
+        pass: bool,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        let mut result = Vec::new();
+        for ((col, eid), gates) in &self.gate_results {
+            if col == collection {
+                if let Some(&gate_pass) = gates.get(gate) {
+                    if gate_pass == pass {
+                        result.push(eid.clone());
+                    }
+                }
+            }
+        }
+        result.sort();
+        Ok(result)
+    }
+
+    fn delete_gate_results(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+    ) -> Result<(), AxonError> {
+        self.gate_results
+            .remove(&(collection.clone(), entity_id.clone()));
+        Ok(())
     }
 }
 

@@ -16,7 +16,7 @@ use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
 use axon_schema::schema::CollectionSchema;
 use axon_schema::validation::{compile_entity_schema, validate, validate_link_metadata};
-use axon_storage::adapter::StorageAdapter;
+use axon_storage::adapter::{extract_index_value, resolve_field_path, StorageAdapter};
 
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
@@ -25,8 +25,8 @@ use crate::request::{
     DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest, FieldFilter, FilterNode,
     FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
     ListNamespaceCollectionsRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
-    ReachableRequest, RevalidateRequest, RevertEntityRequest, SortDirection, TraverseDirection,
-    TraverseRequest, UpdateEntityRequest,
+    PatchEntityRequest, ReachableRequest, RevalidateRequest, RevertEntityRequest, SortDirection,
+    TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
@@ -37,7 +37,7 @@ use crate::response::{
     InvalidEntity, ListCollectionsResponse, ListDatabasesResponse,
     ListNamespaceCollectionsResponse, PutSchemaResponse, QueryAuditResponse,
     QueryEntitiesResponse, ReachableResponse, RevalidateResponse, RevertEntityResponse,
-    TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
+    PatchEntityResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -189,6 +189,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None
         };
 
+        // Unique index constraint check (FEAT-013, US-032).
+        if let Some(ref s) = schema {
+            check_unique_constraints(
+                &self.storage,
+                &req.collection,
+                &req.id,
+                &req.data,
+                s,
+            )?;
+        }
+
         let now = now_ns();
         let mut entity = Entity::new(req.collection, req.id, req.data);
         entity.created_at_ns = Some(now);
@@ -220,7 +231,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         // Audit.
-        self.audit.append(AuditEntry::new(
+        let mut audit_entry = AuditEntry::new(
             entity.collection.clone(),
             entity.id.clone(),
             entity.version,
@@ -228,10 +239,29 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None,
             Some(entity.data.clone()),
             req.actor,
-        ))?;
+        );
+        if let Some(meta) = req.audit_metadata {
+            audit_entry = audit_entry.with_metadata(meta);
+        }
+        self.audit.append(audit_entry)?;
 
         let (gates, advisories) = match gate_eval {
-            Some(eval) => (eval.gate_results, eval.advisories),
+            Some(eval) => {
+                // Materialize gate results to storage (FEAT-019, US-067).
+                if !eval.gate_results.is_empty() {
+                    let gate_bools: std::collections::HashMap<String, bool> = eval
+                        .gate_results
+                        .iter()
+                        .map(|(name, gr)| (name.clone(), gr.pass))
+                        .collect();
+                    self.storage.put_gate_results(
+                        &entity.collection,
+                        &entity.id,
+                        &gate_bools,
+                    )?;
+                }
+                (eval.gate_results, eval.advisories)
+            }
             None => (Default::default(), Vec::new()),
         };
 
@@ -285,6 +315,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None
         };
 
+        // Unique index constraint check (FEAT-013, US-032).
+        if let Some(ref s) = schema {
+            check_unique_constraints(
+                &self.storage,
+                &req.collection,
+                &req.id,
+                &req.data,
+                s,
+            )?;
+        }
+
         // Read current state for the audit `before` snapshot and metadata preservation.
         let existing = self.storage.get(&req.collection, &req.id)?;
         let before = existing.as_ref().map(|e| e.data.clone());
@@ -327,7 +368,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         // Audit.
-        self.audit.append(AuditEntry::new(
+        let mut audit_entry = AuditEntry::new(
             updated.collection.clone(),
             updated.id.clone(),
             updated.version,
@@ -335,14 +376,165 @@ impl<S: StorageAdapter> AxonHandler<S> {
             before,
             Some(updated.data.clone()),
             req.actor,
-        ))?;
+        );
+        if let Some(meta) = req.audit_metadata {
+            audit_entry = audit_entry.with_metadata(meta);
+        }
+        self.audit.append(audit_entry)?;
 
         let (gates, advisories) = match gate_eval {
-            Some(eval) => (eval.gate_results, eval.advisories),
+            Some(eval) => {
+                // Materialize gate results to storage (FEAT-019, US-067).
+                if !eval.gate_results.is_empty() {
+                    let gate_bools: std::collections::HashMap<String, bool> = eval
+                        .gate_results
+                        .iter()
+                        .map(|(name, gr)| (name.clone(), gr.pass))
+                        .collect();
+                    self.storage.put_gate_results(
+                        &updated.collection,
+                        &updated.id,
+                        &gate_bools,
+                    )?;
+                }
+                (eval.gate_results, eval.advisories)
+            }
             None => (Default::default(), Vec::new()),
         };
 
         Ok(UpdateEntityResponse {
+            entity: updated,
+            gates,
+            advisories,
+        })
+    }
+
+    /// Partially update an entity using RFC 7396 JSON Merge Patch.
+    ///
+    /// Reads the current entity, applies the merge patch, validates the result
+    /// against the schema, and writes via OCC (`compare_and_swap`).
+    pub fn patch_entity(
+        &mut self,
+        req: PatchEntityRequest,
+    ) -> Result<PatchEntityResponse, AxonError> {
+        // Read current entity.
+        let existing = self
+            .storage
+            .get(&req.collection, &req.id)?
+            .ok_or_else(|| AxonError::NotFound(req.id.to_string()))?;
+
+        // Apply RFC 7396 merge patch.
+        let mut merged = existing.data.clone();
+        json_merge_patch(&mut merged, &req.patch);
+
+        // Schema validation on the merged result.
+        let schema = self.storage.get_schema(&req.collection)?;
+        if let Some(schema) = &schema {
+            validate(schema, &merged)?;
+        }
+
+        // Gate evaluation (ESF Layer 5).
+        let gate_eval = if let Some(schema) = &schema {
+            if schema.validation_rules.is_empty() {
+                None
+            } else {
+                let eval = evaluate_gates(&schema.validation_rules, &schema.gates, &merged);
+                if !eval.save_passes() {
+                    return Err(AxonError::SchemaValidation(format!(
+                        "save gate failed: {}",
+                        eval.save_violations
+                            .iter()
+                            .map(|v| v.message.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )));
+                }
+                Some(eval)
+            }
+        } else {
+            None
+        };
+
+        // Unique index constraint check (FEAT-013, US-032).
+        if let Some(ref s) = schema {
+            check_unique_constraints(&self.storage, &req.collection, &req.id, &merged, s)?;
+        }
+
+        let before = Some(existing.data.clone());
+
+        // OCC write.
+        let candidate = Entity {
+            collection: req.collection,
+            id: req.id,
+            version: req.expected_version,
+            data: merged,
+            created_at_ns: existing.created_at_ns,
+            updated_at_ns: Some(now_ns()),
+            created_by: existing.created_by,
+            updated_by: req.actor.clone(),
+        };
+        let updated = self
+            .storage
+            .compare_and_swap(candidate, req.expected_version)?;
+
+        // Index maintenance (FEAT-013).
+        if let Some(ref s) = schema {
+            if !s.indexes.is_empty() {
+                self.storage.update_indexes(
+                    &updated.collection,
+                    &updated.id,
+                    before.as_ref(),
+                    &updated.data,
+                    &s.indexes,
+                )?;
+            }
+            if !s.compound_indexes.is_empty() {
+                self.storage.update_compound_indexes(
+                    &updated.collection,
+                    &updated.id,
+                    before.as_ref(),
+                    &updated.data,
+                    &s.compound_indexes,
+                )?;
+            }
+        }
+
+        // Audit.
+        let mut audit_entry = AuditEntry::new(
+            updated.collection.clone(),
+            updated.id.clone(),
+            updated.version,
+            MutationType::EntityUpdate,
+            before,
+            Some(updated.data.clone()),
+            req.actor,
+        );
+        if let Some(meta) = req.audit_metadata {
+            audit_entry = audit_entry.with_metadata(meta);
+        }
+        self.audit.append(audit_entry)?;
+
+        let (gates, advisories) = match gate_eval {
+            Some(eval) => {
+                // Materialize gate results to storage (FEAT-019, US-067).
+                if !eval.gate_results.is_empty() {
+                    let gate_bools: std::collections::HashMap<String, bool> = eval
+                        .gate_results
+                        .iter()
+                        .map(|(name, gr)| (name.clone(), gr.pass))
+                        .collect();
+                    self.storage.put_gate_results(
+                        &updated.collection,
+                        &updated.id,
+                        &gate_bools,
+                    )?;
+                }
+                (eval.gate_results, eval.advisories)
+            }
+            None => (Default::default(), Vec::new()),
+        };
+
+        Ok(PatchEntityResponse {
             entity: updated,
             gates,
             advisories,
@@ -408,10 +600,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         self.storage.delete(&req.collection, &req.id)?;
+        // Clean up materialized gate results (FEAT-019).
+        self.storage.delete_gate_results(&req.collection, &req.id)?;
 
         // Audit (only if the entity actually existed).
         if before.is_some() {
-            self.audit.append(AuditEntry::new(
+            let mut audit_entry = AuditEntry::new(
                 req.collection.clone(),
                 req.id.clone(),
                 version,
@@ -419,7 +613,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 before,
                 None,
                 req.actor,
-            ))?;
+            );
+            if let Some(meta) = req.audit_metadata {
+                audit_entry = audit_entry.with_metadata(meta);
+            }
+            self.audit.append(audit_entry)?;
         }
 
         Ok(DeleteEntityResponse {
@@ -561,9 +759,28 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: CountEntitiesRequest,
     ) -> Result<CountEntitiesResponse, AxonError> {
-        let all = self.storage.range_scan(&req.collection, None, None, None)?;
+        // Try index-accelerated lookup (FEAT-013).
+        let schema = self.storage.get_schema(&req.collection)?;
+        let index_candidates = try_index_lookup(
+            &self.storage,
+            &req.collection,
+            req.filter.as_ref(),
+            schema.as_ref(),
+        );
 
-        // Apply filter.
+        let all = if let Some(entity_ids) = index_candidates {
+            let mut entities = Vec::with_capacity(entity_ids.len());
+            for eid in &entity_ids {
+                if let Some(e) = self.storage.get(&req.collection, eid)? {
+                    entities.push(e);
+                }
+            }
+            entities
+        } else {
+            self.storage.range_scan(&req.collection, None, None, None)?
+        };
+
+        // Apply filter (post-filter for remaining predicates).
         let matched: Vec<&Entity> = all
             .iter()
             .filter(|e| {
@@ -616,9 +833,28 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: AggregateRequest,
     ) -> Result<AggregateResponse, AxonError> {
-        let all = self.storage.range_scan(&req.collection, None, None, None)?;
+        // Try index-accelerated lookup (FEAT-013).
+        let schema = self.storage.get_schema(&req.collection)?;
+        let index_candidates = try_index_lookup(
+            &self.storage,
+            &req.collection,
+            req.filter.as_ref(),
+            schema.as_ref(),
+        );
 
-        // Apply filter.
+        let all = if let Some(entity_ids) = index_candidates {
+            let mut entities = Vec::with_capacity(entity_ids.len());
+            for eid in &entity_ids {
+                if let Some(e) = self.storage.get(&req.collection, eid)? {
+                    entities.push(e);
+                }
+            }
+            entities
+        } else {
+            self.storage.range_scan(&req.collection, None, None, None)?
+        };
+
+        // Apply filter (post-filter for remaining predicates).
         let matched: Vec<&Entity> = all
             .iter()
             .filter(|e| {
@@ -934,6 +1170,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: DropCollectionRequest,
     ) -> Result<DropCollectionResponse, AxonError> {
+        if !req.confirm {
+            return Err(AxonError::InvalidArgument(
+                "drop_collection requires confirm=true to acknowledge the destructive operation"
+                    .into(),
+            ));
+        }
         let existing = self.storage.list_collections()?;
         if !existing.contains(&req.name) {
             return Err(AxonError::NotFound(req.name.to_string()));
@@ -948,15 +1190,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.storage.delete_schema(&req.name)?;
         self.storage.unregister_collection(&req.name)?;
 
-        self.audit.append(AuditEntry::new(
-            req.name.clone(),
-            EntityId::new(""),
-            0,
-            MutationType::CollectionDrop,
-            None,
-            None,
-            req.actor,
-        ))?;
+        let mut drop_meta = std::collections::HashMap::new();
+        drop_meta.insert("entities_removed".into(), count.to_string());
+        self.audit.append(
+            AuditEntry::new(
+                req.name.clone(),
+                EntityId::new(""),
+                0,
+                MutationType::CollectionDrop,
+                None,
+                None,
+                req.actor,
+            )
+            .with_metadata(drop_meta),
+        )?;
 
         Ok(DropCollectionResponse {
             name: req.name.to_string(),
@@ -1801,10 +2048,26 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .collect();
         let existing_link_count = existing_targets.len();
 
-        // Fetch candidate entities from the target collection.
-        let all_targets = self
-            .storage
-            .range_scan(&target_collection, None, None, None)?;
+        // Fetch candidate entities from the target collection (FEAT-013 index acceleration).
+        let target_schema = self.storage.get_schema(&target_collection)?;
+        let index_candidates = try_index_lookup(
+            &self.storage,
+            &target_collection,
+            req.filter.as_ref(),
+            target_schema.as_ref(),
+        );
+        let all_targets = if let Some(entity_ids) = index_candidates {
+            let mut entities = Vec::with_capacity(entity_ids.len());
+            for eid in &entity_ids {
+                if let Some(e) = self.storage.get(&target_collection, eid)? {
+                    entities.push(e);
+                }
+            }
+            entities
+        } else {
+            self.storage
+                .range_scan(&target_collection, None, None, None)?
+        };
 
         // Filter and collect candidates.
         let limit = req.limit.unwrap_or(50);
@@ -2173,6 +2436,63 @@ fn compare_values(
     }
 }
 
+/// Apply an RFC 7396 JSON Merge Patch to a target value.
+///
+/// - Object values are recursively merged.
+/// - `null` values remove the key from the target.
+/// - Non-object patches replace the target entirely.
+fn json_merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
+    use serde_json::Value;
+    if let Value::Object(patch_map) = patch {
+        if !target.is_object() {
+            *target = Value::Object(serde_json::Map::new());
+        }
+        if let Value::Object(target_map) = target {
+            for (key, value) in patch_map {
+                if value.is_null() {
+                    target_map.remove(key);
+                } else {
+                    let entry = target_map
+                        .entry(key.clone())
+                        .or_insert(Value::Null);
+                    json_merge_patch(entry, value);
+                }
+            }
+        }
+    } else {
+        *target = patch.clone();
+    }
+}
+
+/// Check unique index constraints for an entity's data before write.
+///
+/// Iterates over all unique indexes in the schema and checks whether any other
+/// entity in the collection already has the same indexed value.
+fn check_unique_constraints<S: StorageAdapter>(
+    storage: &S,
+    collection: &CollectionId,
+    entity_id: &EntityId,
+    data: &serde_json::Value,
+    schema: &CollectionSchema,
+) -> Result<(), AxonError> {
+    for idx in &schema.indexes {
+        if !idx.unique {
+            continue;
+        }
+        if let Some(json_val) = resolve_field_path(data, &idx.field) {
+            if let Some(val) = extract_index_value(json_val, &idx.index_type) {
+                if storage.index_unique_conflict(collection, &idx.field, &val, entity_id)? {
+                    return Err(AxonError::UniqueViolation {
+                        field: idx.field.clone(),
+                        value: json_val.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2199,6 +2519,7 @@ mod tests {
                 id: id.clone(),
                 data: json!({"title": "hello"}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
         assert_eq!(created.entity.version, 1);
@@ -2233,6 +2554,7 @@ mod tests {
             id: id.clone(),
             data: json!({"title": "v1"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -2243,6 +2565,7 @@ mod tests {
                 data: json!({"title": "v2"}),
                 expected_version: 1,
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
 
@@ -2261,6 +2584,7 @@ mod tests {
             id: id.clone(),
             data: json!({"title": "v1"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -2271,6 +2595,7 @@ mod tests {
                 data: json!({"title": "v2"}),
                 expected_version: 99, // wrong version
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap_err();
 
@@ -2303,6 +2628,7 @@ mod tests {
             id: id.clone(),
             data: json!({"title": "to-delete"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -2310,6 +2636,7 @@ mod tests {
             collection: col.clone(),
             id: id.clone(),
             actor: None,
+            audit_metadata: None,
             force: false,
         })
         .unwrap();
@@ -2332,6 +2659,7 @@ mod tests {
             id: id.clone(),
             data: json!({"title": "v1"}),
             actor: Some("agent-1".into()),
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -2341,6 +2669,7 @@ mod tests {
             data: json!({"title": "v2"}),
             expected_version: 1,
             actor: Some("agent-1".into()),
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -2348,6 +2677,7 @@ mod tests {
             collection: col,
             id,
             actor: None,
+            audit_metadata: None,
             force: false,
         })
         .unwrap();
@@ -2390,6 +2720,7 @@ entity_schema:
                 id: EntityId::new("t-001"),
                 data: json!({"done": false}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap_err();
 
@@ -2413,6 +2744,7 @@ entity_schema:
             id: EntityId::new("t-001"),
             data: json!({"title": "My task", "done": false}),
             actor: None,
+            audit_metadata: None,
         });
 
         assert!(result.is_ok(), "valid entity should be accepted");
@@ -2426,6 +2758,7 @@ entity_schema:
             id: EntityId::new(id),
             data: json!({"name": id}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -2749,6 +3082,7 @@ entity_schema:
             id: EntityId::new("b"),
             data: json!({"status": "inactive"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -2756,6 +3090,7 @@ entity_schema:
             id: EntityId::new("c"),
             data: json!({"status": "active"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -2934,6 +3269,7 @@ entity_schema:
             id: id.clone(),
             data: json!({"title": "v1", "done": false}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -2943,6 +3279,7 @@ entity_schema:
             data: json!({"title": "v2", "done": false}),
             expected_version: 1,
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -2973,6 +3310,7 @@ entity_schema:
             id: EntityId::new("t-001"),
             data: json!({"title": "by alice"}),
             actor: Some("alice".into()),
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -2981,6 +3319,7 @@ entity_schema:
             id: EntityId::new("t-002"),
             data: json!({"title": "by bob"}),
             actor: Some("bob".into()),
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -3006,6 +3345,7 @@ entity_schema:
                 id: EntityId::new(format!("t-{i:03}")),
                 data: json!({"title": format!("task {i}")}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
         }
@@ -3052,6 +3392,7 @@ entity_schema:
             id: id.clone(),
             data: json!({"title": "v1"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -3061,6 +3402,7 @@ entity_schema:
             data: json!({"title": "v2"}),
             expected_version: 1,
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -3122,6 +3464,7 @@ entity_schema:
             id: id.clone(),
             data: json!({"title": "v1"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -3158,6 +3501,7 @@ entity_schema:
                 id: EntityId::new(format!("w-{i:03}")),
                 data: json!({"name": format!("widget {i}")}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
         }
@@ -3166,6 +3510,7 @@ entity_schema:
             .drop_collection(DropCollectionRequest {
                 name: CollectionId::new("widgets"),
                 actor: Some("admin".into()),
+                confirm: true,
             })
             .unwrap();
 
@@ -3214,6 +3559,7 @@ entity_schema:
             .drop_collection(DropCollectionRequest {
                 name: CollectionId::new("ghost"),
                 actor: None,
+                confirm: true,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::NotFound(_)));
@@ -3398,6 +3744,7 @@ entity_schema:
                 id: EntityId::new(format!("b-{i}")),
                 data: json!({"name": format!("b-{i}")}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
         }
@@ -3471,6 +3818,7 @@ entity_schema:
             id: EntityId::new("t-001"),
             data: json!({}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -3628,6 +3976,7 @@ entity_schema:
             collection: CollectionId::new("tasks"),
             id: EntityId::new("t-001"),
             actor: None,
+            audit_metadata: None,
             force: false,
         })
         .expect("delete_entity must succeed after reverse-index entry is removed");
@@ -3867,6 +4216,7 @@ link_types:
             id: EntityId::new("t-001"),
             data: json!({"title": "Task 1"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -3874,6 +4224,7 @@ link_types:
             id: EntityId::new("t-002"),
             data: json!({"title": "Task 2"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -4025,6 +4376,7 @@ link_types:
             id: EntityId::new(id),
             data,
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -4676,6 +5028,7 @@ link_types:
                 id: EntityId::new("t-bad"),
                 data: json!({"done": false}), // missing required "title"
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::SchemaValidation(_)));
@@ -4686,6 +5039,7 @@ link_types:
             id: EntityId::new("t-good"),
             data: json!({"title": "ok", "done": false}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -5039,6 +5393,7 @@ link_types:
         h.drop_collection(DropCollectionRequest {
             name: col.clone(),
             actor: None,
+            confirm: true,
         })
         .unwrap();
 
@@ -5177,6 +5532,7 @@ link_types:
             id: EntityId::new("g-1"),
             data: json!({"title": "Test"}),
             actor: None,
+            audit_metadata: None,
         });
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -5194,6 +5550,7 @@ link_types:
                 id: EntityId::new("g-2"),
                 data: json!({"bead_type": "task"}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
 
@@ -5221,6 +5578,7 @@ link_types:
                 id: EntityId::new("g-3"),
                 data: json!({"bead_type": "task"}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
 
@@ -5243,6 +5601,7 @@ link_types:
                     "tags": ["core"]
                 }),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
 
@@ -5264,6 +5623,7 @@ link_types:
                 id: EntityId::new("g-5"),
                 data: json!({"bead_type": "task"}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
 
@@ -5274,6 +5634,7 @@ link_types:
             data: json!({"title": "Updated"}),
             expected_version: resp.entity.version,
             actor: None,
+            audit_metadata: None,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("save gate failed"));
@@ -5288,6 +5649,7 @@ link_types:
                 id: EntityId::new("g-6"),
                 data: json!({"bead_type": "bug"}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
 
@@ -5302,6 +5664,7 @@ link_types:
                 }),
                 expected_version: create_resp.entity.version,
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
 
@@ -5322,6 +5685,7 @@ link_types:
                 id: EntityId::new("g-7"),
                 data: json!({"bead_type": "task"}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
 
@@ -5374,6 +5738,7 @@ link_types:
                 id: EntityId::new(format!("b-{i}")),
                 data,
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
         }
@@ -5677,6 +6042,7 @@ link_types:
             id: EntityId::new("rv-1"),
             data: json!({"title": "valid"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -5707,6 +6073,7 @@ link_types:
             id: EntityId::new("rv-2"),
             data: json!({"title": "valid"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -5714,6 +6081,7 @@ link_types:
             id: EntityId::new("rv-3"),
             data: json!({"no_title": true}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -5803,6 +6171,7 @@ link_types:
                 "tags": ["x"]
             }),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -5810,6 +6179,7 @@ link_types:
             id: EntityId::new("gf-2"),
             data: json!({"bead_type": "task"}), // missing description
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -5848,6 +6218,7 @@ link_types:
                 "tags": ["x"]
             }),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -5855,6 +6226,7 @@ link_types:
             id: EntityId::new("gf-4"),
             data: json!({"bead_type": "task"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -5894,6 +6266,7 @@ link_types:
                 "tags": ["x"]
             }),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -5907,6 +6280,7 @@ link_types:
                 "tags": ["y"]
             }),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -5914,6 +6288,7 @@ link_types:
             id: EntityId::new("gf-7"),
             data: json!({"bead_type": "task"}), // fails complete
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -5960,6 +6335,7 @@ link_types:
             id: EntityId::new("nr-1"),
             data: json!({"title": "test"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -6198,6 +6574,7 @@ link_types:
                 id: EntityId::new(format!("inv-{i}")),
                 data,
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
         }
@@ -6378,6 +6755,7 @@ link_types:
                 id: EntityId::new(*id),
                 data: json!({"status": status, "priority": priority}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
         }
@@ -6500,6 +6878,7 @@ link_types:
             data: json!({"status": "done", "priority": 1}),
             expected_version: 1,
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -6531,6 +6910,7 @@ link_types:
             collection: CollectionId::new("tasks"),
             id: EntityId::new("t-001"),
             actor: None,
+            audit_metadata: None,
             force: false,
         })
         .unwrap();
@@ -6631,6 +7011,7 @@ link_types:
             id: EntityId::new("u-001"),
             data: json!({"email": "alice@example.com", "name": "Alice"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -6640,6 +7021,7 @@ link_types:
                 id: EntityId::new("u-002"),
                 data: json!({"email": "alice@example.com", "name": "Bob"}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap_err();
 
@@ -6661,6 +7043,7 @@ link_types:
             id: EntityId::new("u-001"),
             data: json!({"email": "alice@example.com"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -6669,6 +7052,7 @@ link_types:
             id: EntityId::new("u-002"),
             data: json!({"email": "bob@example.com"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -6682,6 +7066,7 @@ link_types:
             id: EntityId::new("u-001"),
             data: json!({"email": "alice@example.com", "name": "Alice"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -6692,6 +7077,7 @@ link_types:
             data: json!({"email": "alice@example.com", "name": "Alice Smith"}),
             expected_version: 1,
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -6705,6 +7091,7 @@ link_types:
             id: EntityId::new("u-001"),
             data: json!({"email": "alice@example.com"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -6713,6 +7100,7 @@ link_types:
             id: EntityId::new("u-002"),
             data: json!({"email": "bob@example.com"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -6724,6 +7112,7 @@ link_types:
                 data: json!({"email": "alice@example.com"}),
                 expected_version: 1,
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap_err();
 
@@ -6742,6 +7131,7 @@ link_types:
             id: EntityId::new("u-001"),
             data: json!({"email": "alice@example.com"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
 
@@ -6749,6 +7139,7 @@ link_types:
             collection: CollectionId::new("users"),
             id: EntityId::new("u-001"),
             actor: None,
+            audit_metadata: None,
             force: false,
         })
         .unwrap();
@@ -6759,6 +7150,7 @@ link_types:
             id: EntityId::new("u-002"),
             data: json!({"email": "alice@example.com"}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -6790,6 +7182,7 @@ link_types:
                 id: EntityId::new(*id),
                 data: json!({"title": id}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
         }
@@ -7187,5 +7580,403 @@ link_types:
             })
             .unwrap();
         assert_eq!(resp.collections_removed, 1);
+    }
+
+    // ── Audit metadata (US-009) ─────────────────────────────────────────────
+
+    #[test]
+    fn create_entity_passes_audit_metadata() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("reason".into(), "batch-import".into());
+        meta.insert("session_id".into(), "sess-42".into());
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "hello"}),
+            actor: Some("agent-1".into()),
+            audit_metadata: Some(meta),
+        })
+        .unwrap();
+
+        let audit = h
+            .query_audit(crate::request::QueryAuditRequest {
+                collection: Some(col),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(audit.entries.len(), 1);
+        assert_eq!(audit.entries[0].metadata["reason"], "batch-import");
+        assert_eq!(audit.entries[0].metadata["session_id"], "sess-42");
+    }
+
+    #[test]
+    fn update_entity_passes_audit_metadata() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "hello"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("ticket".into(), "PROJ-123".into());
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "updated"}),
+            expected_version: 1,
+            actor: None,
+            audit_metadata: Some(meta),
+        })
+        .unwrap();
+
+        let audit = h
+            .query_audit(crate::request::QueryAuditRequest {
+                collection: Some(col),
+                ..Default::default()
+            })
+            .unwrap();
+        // Second entry is the update.
+        let update_entry = &audit.entries[1];
+        assert_eq!(update_entry.metadata["ticket"], "PROJ-123");
+    }
+
+    #[test]
+    fn delete_entity_passes_audit_metadata() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "hello"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("reason".into(), "cleanup".into());
+        h.delete_entity(DeleteEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            actor: None,
+            force: false,
+            audit_metadata: Some(meta),
+        })
+        .unwrap();
+
+        let audit = h
+            .query_audit(crate::request::QueryAuditRequest {
+                collection: Some(col),
+                ..Default::default()
+            })
+            .unwrap();
+        let delete_entry = &audit.entries[1];
+        assert_eq!(delete_entry.metadata["reason"], "cleanup");
+    }
+
+    #[test]
+    fn audit_metadata_is_optional() {
+        let mut h = handler();
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("tasks"),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "hello"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let audit = h
+            .query_audit(crate::request::QueryAuditRequest {
+                collection: Some(CollectionId::new("tasks")),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(audit.entries[0].metadata.is_empty());
+    }
+
+    // ── Drop collection confirmation (US-003) ───────────────────────────────
+
+    #[test]
+    fn drop_collection_requires_confirm() {
+        use axon_schema::schema::CollectionSchema;
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 1,
+                entity_schema: None,
+                link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+            },
+            actor: None,
+        })
+        .unwrap();
+
+        // Without confirm=true, drop is rejected.
+        let err = h
+            .drop_collection(DropCollectionRequest {
+                name: col.clone(),
+                actor: None,
+                confirm: false,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::InvalidArgument(_)));
+
+        // With confirm=true, drop succeeds.
+        h.drop_collection(DropCollectionRequest {
+            name: col.clone(),
+            actor: None,
+            confirm: true,
+        })
+        .unwrap();
+
+        // Collection is gone.
+        assert!(h.storage.list_collections().unwrap().is_empty());
+    }
+
+    #[test]
+    fn drop_collection_audit_includes_entity_count() {
+        use axon_schema::schema::CollectionSchema;
+        let mut h = handler();
+        let col = CollectionId::new("widgets");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 1,
+                entity_schema: None,
+                link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+            },
+            actor: None,
+        })
+        .unwrap();
+        // Add 3 entities.
+        for i in 0..3 {
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new(&format!("w-{i}")),
+                data: json!({"name": format!("widget-{i}")}),
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+        }
+
+        h.drop_collection(DropCollectionRequest {
+            name: col.clone(),
+            actor: None,
+            confirm: true,
+        })
+        .unwrap();
+
+        let audit = h
+            .query_audit(crate::request::QueryAuditRequest {
+                collection: Some(col),
+                ..Default::default()
+            })
+            .unwrap();
+        // Last entry is the drop.
+        let drop_entry = audit.entries.last().unwrap();
+        assert_eq!(drop_entry.metadata["entities_removed"], "3");
+    }
+
+    // ── Patch entity / merge-patch (US-012) ─────────────────────────────────
+
+    #[test]
+    fn patch_entity_merges_fields() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "hello", "status": "draft", "priority": 3}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .patch_entity(PatchEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("t-001"),
+                patch: json!({"status": "active"}),
+                expected_version: 1,
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+
+        // Status changed, title and priority preserved.
+        assert_eq!(resp.entity.data["status"], "active");
+        assert_eq!(resp.entity.data["title"], "hello");
+        assert_eq!(resp.entity.data["priority"], 3);
+        assert_eq!(resp.entity.version, 2);
+    }
+
+    #[test]
+    fn patch_entity_removes_null_fields() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "hello", "notes": "some notes"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .patch_entity(PatchEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("t-001"),
+                patch: json!({"notes": null}),
+                expected_version: 1,
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entity.data["title"], "hello");
+        assert!(resp.entity.data.get("notes").is_none());
+    }
+
+    #[test]
+    fn patch_entity_adds_new_fields() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "hello"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .patch_entity(PatchEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("t-001"),
+                patch: json!({"assignee": "agent-1"}),
+                expected_version: 1,
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entity.data["title"], "hello");
+        assert_eq!(resp.entity.data["assignee"], "agent-1");
+    }
+
+    #[test]
+    fn patch_entity_occ_conflict() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "hello"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let err = h
+            .patch_entity(PatchEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("t-001"),
+                patch: json!({"title": "changed"}),
+                expected_version: 99,
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::ConflictingVersion { .. }));
+    }
+
+    #[test]
+    fn patch_entity_not_found() {
+        let mut h = handler();
+        let err = h
+            .patch_entity(PatchEntityRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("ghost"),
+                patch: json!({"title": "changed"}),
+                expected_version: 1,
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn patch_entity_creates_audit_entry() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"title": "hello", "status": "draft"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.patch_entity(PatchEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("t-001"),
+            patch: json!({"status": "active"}),
+            expected_version: 1,
+            actor: Some("agent-1".into()),
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let audit = h
+            .query_audit(crate::request::QueryAuditRequest {
+                collection: Some(col),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(audit.entries.len(), 2);
+        let patch_entry = &audit.entries[1];
+        assert_eq!(patch_entry.actor, "agent-1");
+        // Before had status=draft, after has status=active.
+        assert_eq!(patch_entry.data_before.as_ref().unwrap()["status"], "draft");
+        assert_eq!(
+            patch_entry.data_after.as_ref().unwrap()["status"],
+            "active"
+        );
+    }
+
+    #[test]
+    fn json_merge_patch_rfc7396_nested() {
+        use serde_json::json;
+        let mut target = json!({"a": {"b": 1, "c": 2}, "d": 3});
+        let patch = json!({"a": {"b": null, "e": 4}});
+        json_merge_patch(&mut target, &patch);
+        assert_eq!(target, json!({"a": {"c": 2, "e": 4}, "d": 3}));
     }
 }

@@ -39,6 +39,19 @@ pub struct UpdateEntityResponse {
     pub advisories: Vec<RuleViolation>,
 }
 
+/// Response after successfully patching an entity (RFC 7396 merge patch).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchEntityResponse {
+    /// The entity at its new version.
+    pub entity: Entity,
+    /// Gate pass/fail status for all non-save gates. Empty when no validation rules.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub gates: HashMap<String, GateResult>,
+    /// Advisory violations (never block, always reported).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisories: Vec<RuleViolation>,
+}
+
 /// Response after successfully deleting an entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteEntityResponse {

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -12,6 +14,9 @@ pub struct CreateEntityRequest {
     pub data: Value,
     /// Optional actor identity for the audit log.
     pub actor: Option<String>,
+    /// Optional key-value metadata attached to the audit entry (US-009).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_metadata: Option<HashMap<String, String>>,
 }
 
 /// Request to read an entity.
@@ -34,6 +39,31 @@ pub struct UpdateEntityRequest {
     /// The version the caller believes is current. Must match the stored version.
     pub expected_version: u64,
     pub actor: Option<String>,
+    /// Optional key-value metadata attached to the audit entry (US-009).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_metadata: Option<HashMap<String, String>>,
+}
+
+/// Request to partially update an entity using RFC 7396 JSON Merge Patch.
+///
+/// Only the fields present in `patch` are modified; absent fields are preserved.
+/// A field set to `null` is removed. The merged result is validated against the
+/// schema before writing.
+///
+/// The write succeeds only if the stored version equals `expected_version`.
+/// On conflict, [`axon_core::error::AxonError::ConflictingVersion`] is returned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatchEntityRequest {
+    pub collection: CollectionId,
+    pub id: EntityId,
+    /// Partial data to merge into the existing entity (RFC 7396 JSON Merge Patch).
+    pub patch: Value,
+    /// The version the caller believes is current. Must match the stored version.
+    pub expected_version: u64,
+    pub actor: Option<String>,
+    /// Optional key-value metadata attached to the audit entry (US-009).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_metadata: Option<HashMap<String, String>>,
 }
 
 /// Request to delete an entity.
@@ -46,6 +76,9 @@ pub struct DeleteEntityRequest {
     /// entity even if it has inbound links. Default: `false`.
     #[serde(default)]
     pub force: bool,
+    /// Optional key-value metadata attached to the audit entry (US-009).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_metadata: Option<HashMap<String, String>>,
 }
 
 /// Request to create a typed link between two entities.
@@ -310,10 +343,15 @@ pub struct CreateCollectionRequest {
 }
 
 /// Request to drop a collection and all its entities, recording the event in the audit log.
+///
+/// The caller must set `confirm` to `true` to acknowledge the destructive operation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DropCollectionRequest {
     pub name: CollectionId,
     pub actor: Option<String>,
+    /// Must be `true` to proceed. Prevents accidental drops.
+    #[serde(default)]
+    pub confirm: bool,
 }
 
 /// Request to list all explicitly created collections.

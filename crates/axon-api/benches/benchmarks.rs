@@ -47,6 +47,7 @@ fn bm_001_single_entity_read(c: &mut Criterion) {
             id: eid(&format!("item-{i:05}")),
             data: json!({"name": format!("Item {i}"), "value": i}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -102,6 +103,7 @@ entity_schema:
                     id: eid(&id),
                     data: json!({"name": format!("Item {i}"), "value": i}),
                     actor: Some("bench".into()),
+                    audit_metadata: None,
                 })
                 .unwrap(),
             );
@@ -166,6 +168,7 @@ fn bm_004_collection_scan(c: &mut Criterion) {
             id: eid(&format!("inv-{i:04}")),
             data: json!({"amount": i * 100, "status": if i % 3 == 0 { "paid" } else { "open" }}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -211,6 +214,7 @@ fn bm_005_audit_append_overhead(c: &mut Criterion) {
                     id: eid(&id),
                     data: json!({"v": i}),
                     actor: Some("bench".into()),
+                    audit_metadata: None,
                 })
                 .unwrap(),
             );
@@ -229,6 +233,7 @@ fn bm_006_link_traversal(c: &mut Criterion) {
         id: eid("root"),
         data: json!({"level": 0}),
         actor: None,
+        audit_metadata: None,
     })
     .unwrap();
 
@@ -239,6 +244,7 @@ fn bm_006_link_traversal(c: &mut Criterion) {
             id: eid(&child),
             data: json!({"level": 1}),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
         h.create_link(CreateLinkRequest {
@@ -259,6 +265,7 @@ fn bm_006_link_traversal(c: &mut Criterion) {
                 id: eid(&grandchild),
                 data: json!({"level": 2}),
                 actor: None,
+                audit_metadata: None,
             })
             .unwrap();
             h.create_link(CreateLinkRequest {
@@ -279,6 +286,7 @@ fn bm_006_link_traversal(c: &mut Criterion) {
                     id: eid(&ggchild),
                     data: json!({"level": 3}),
                     actor: None,
+                    audit_metadata: None,
                 })
                 .unwrap();
                 h.create_link(CreateLinkRequest {
@@ -329,6 +337,7 @@ fn bm_007_aggregation(c: &mut Criterion) {
                 "category": categories[i % 3]
             }),
             actor: None,
+            audit_metadata: None,
         })
         .unwrap();
     }
@@ -500,6 +509,7 @@ fn bm_010_audit_query(c: &mut Criterion) {
         id: eid("e-001"),
         data: json!({"counter": 0}),
         actor: Some("setup".into()),
+        audit_metadata: None,
     })
     .unwrap();
 
@@ -510,6 +520,7 @@ fn bm_010_audit_query(c: &mut Criterion) {
             data: json!({"counter": i}),
             expected_version: i as u64,
             actor: Some(format!("agent-{i}")),
+            audit_metadata: None,
         })
         .unwrap();
     }
