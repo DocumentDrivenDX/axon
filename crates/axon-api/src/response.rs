@@ -222,6 +222,32 @@ pub struct InvalidEntity {
     pub errors: Vec<String>,
 }
 
+// ── Namespace management responses (US-036) ─────────────────────────────────
+
+/// Response after creating a namespace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateNamespaceResponse {
+    pub database: String,
+    pub schema: String,
+}
+
+/// Response listing collections in a namespace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListNamespaceCollectionsResponse {
+    pub database: String,
+    pub schema: String,
+    pub collections: Vec<String>,
+}
+
+/// Response after dropping a namespace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DropNamespaceResponse {
+    pub database: String,
+    pub schema: String,
+    /// Number of collections removed (when force=true).
+    pub collections_removed: usize,
+}
+
 /// Response from revalidating entities against the current schema (US-060).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevalidateResponse {

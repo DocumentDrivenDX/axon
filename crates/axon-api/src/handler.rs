@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap as StdHashMap, HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ns() -> u64 {
@@ -20,17 +20,19 @@ use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
-    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
-    DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest, FieldFilter, FilterNode,
-    FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest,
-    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevalidateRequest,
-    RevertEntityRequest, SortDirection, TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest, DeleteEntityRequest,
+    DeleteLinkRequest, DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest,
+    DropNamespaceRequest, FieldFilter, FilterNode, FilterOp, GetEntityRequest, GetSchemaRequest,
+    ListCollectionsRequest, ListNamespaceCollectionsRequest, PutSchemaRequest, QueryAuditRequest,
+    QueryEntitiesRequest, ReachableRequest, RevalidateRequest, RevertEntityRequest, SortDirection,
+    TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
-    CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse,
-    DeleteLinkResponse, DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse,
-    GetEntityResponse, GetSchemaResponse, InvalidEntity, ListCollectionsResponse,
+    CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, CreateNamespaceResponse,
+    DeleteEntityResponse, DeleteLinkResponse, DescribeCollectionResponse, DiffSchemaResponse,
+    DropCollectionResponse, DropNamespaceResponse, GetEntityResponse, GetSchemaResponse,
+    InvalidEntity, ListCollectionsResponse, ListNamespaceCollectionsResponse,
     PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse, ReachableResponse,
     RevalidateResponse, RevertEntityResponse, TraverseHop, TraversePath, TraverseResponse,
     UpdateEntityResponse,
@@ -47,13 +49,19 @@ const MAX_DEPTH_CAP: usize = 10;
 pub struct AxonHandler<S: StorageAdapter> {
     storage: S,
     audit: MemoryAuditLog,
+    /// Registered namespaces: maps "database.schema" to a set of collection names.
+    namespaces: StdHashMap<String, HashSet<String>>,
 }
 
 impl<S: StorageAdapter> AxonHandler<S> {
     pub fn new(storage: S) -> Self {
+        // Auto-register the default namespace.
+        let mut namespaces = StdHashMap::new();
+        namespaces.insert("default.default".into(), HashSet::new());
         Self {
             storage,
             audit: MemoryAuditLog::default(),
+            namespaces,
         }
     }
 
@@ -1053,6 +1061,69 @@ impl<S: StorageAdapter> AxonHandler<S> {
             total_scanned,
             valid_count,
             invalid,
+        })
+    }
+
+    // ── Namespace management (US-036) ───────────────────────────────────────
+
+    /// Create a schema namespace (database.schema).
+    pub fn create_namespace(
+        &mut self,
+        req: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse, AxonError> {
+        let ns_key = format!("{}.{}", req.database, req.schema);
+        if self.namespaces.contains_key(&ns_key) {
+            return Err(AxonError::AlreadyExists(format!("namespace '{ns_key}'")));
+        }
+        self.namespaces.insert(ns_key, HashSet::new());
+        Ok(CreateNamespaceResponse {
+            database: req.database,
+            schema: req.schema,
+        })
+    }
+
+    /// List collections within a namespace.
+    pub fn list_namespace_collections(
+        &self,
+        req: ListNamespaceCollectionsRequest,
+    ) -> Result<ListNamespaceCollectionsResponse, AxonError> {
+        let ns_key = format!("{}.{}", req.database, req.schema);
+        let collections = self
+            .namespaces
+            .get(&ns_key)
+            .map(|c| c.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        Ok(ListNamespaceCollectionsResponse {
+            database: req.database,
+            schema: req.schema,
+            collections,
+        })
+    }
+
+    /// Drop a namespace. Fails if non-empty unless force is set.
+    pub fn drop_namespace(
+        &mut self,
+        req: DropNamespaceRequest,
+    ) -> Result<DropNamespaceResponse, AxonError> {
+        let ns_key = format!("{}.{}", req.database, req.schema);
+        let collections = self.namespaces.get(&ns_key).ok_or_else(|| {
+            AxonError::NotFound(format!("namespace '{ns_key}'"))
+        })?;
+
+        let count = collections.len();
+        if count > 0 && !req.force {
+            return Err(AxonError::InvalidOperation(format!(
+                "namespace '{ns_key}' contains {} collections: {}. Use force=true to drop",
+                count,
+                collections.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+            )));
+        }
+
+        let removed = self.namespaces.remove(&ns_key).map_or(0, |c| c.len());
+        Ok(DropNamespaceResponse {
+            database: req.database,
+            schema: req.schema,
+            collections_removed: removed,
         })
     }
 
@@ -4972,6 +5043,141 @@ link_types:
             .unwrap();
         assert_eq!(resp.total_count, 0);
         assert!(resp.groups.is_empty());
+    }
+
+    // ── Namespace management tests (US-036) ───────────────────────────────
+
+    #[test]
+    fn create_namespace() {
+        use crate::request::CreateNamespaceRequest;
+        let mut h = handler();
+        let resp = h
+            .create_namespace(CreateNamespaceRequest {
+                database: "prod".into(),
+                schema: "billing".into(),
+            })
+            .unwrap();
+        assert_eq!(resp.database, "prod");
+        assert_eq!(resp.schema, "billing");
+    }
+
+    #[test]
+    fn create_duplicate_namespace_fails() {
+        use crate::request::CreateNamespaceRequest;
+        let mut h = handler();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        })
+        .unwrap();
+        let result = h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn list_namespace_collections_empty() {
+        use crate::request::{CreateNamespaceRequest, ListNamespaceCollectionsRequest};
+        let mut h = handler();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        })
+        .unwrap();
+        let resp = h
+            .list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: "prod".into(),
+                schema: "billing".into(),
+            })
+            .unwrap();
+        assert!(resp.collections.is_empty());
+    }
+
+    #[test]
+    fn drop_empty_namespace() {
+        use crate::request::{CreateNamespaceRequest, DropNamespaceRequest};
+        let mut h = handler();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        })
+        .unwrap();
+        let resp = h
+            .drop_namespace(DropNamespaceRequest {
+                database: "prod".into(),
+                schema: "billing".into(),
+                force: false,
+            })
+            .unwrap();
+        assert_eq!(resp.collections_removed, 0);
+    }
+
+    #[test]
+    fn drop_nonempty_namespace_without_force_fails() {
+        use crate::request::{CreateNamespaceRequest, DropNamespaceRequest};
+        let mut h = handler();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        })
+        .unwrap();
+        // Manually add a collection to the namespace.
+        h.namespaces
+            .get_mut("prod.billing")
+            .unwrap()
+            .insert("invoices".into());
+
+        let result = h.drop_namespace(DropNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+            force: false,
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invoices"));
+    }
+
+    #[test]
+    fn drop_nonempty_namespace_with_force() {
+        use crate::request::{CreateNamespaceRequest, DropNamespaceRequest};
+        let mut h = handler();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        })
+        .unwrap();
+        h.namespaces
+            .get_mut("prod.billing")
+            .unwrap()
+            .insert("invoices".into());
+        h.namespaces
+            .get_mut("prod.billing")
+            .unwrap()
+            .insert("receipts".into());
+
+        let resp = h
+            .drop_namespace(DropNamespaceRequest {
+                database: "prod".into(),
+                schema: "billing".into(),
+                force: true,
+            })
+            .unwrap();
+        assert_eq!(resp.collections_removed, 2);
+    }
+
+    #[test]
+    fn default_namespace_exists_on_startup() {
+        use crate::request::ListNamespaceCollectionsRequest;
+        let h = handler();
+        let resp = h
+            .list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: "default".into(),
+                schema: "default".into(),
+            })
+            .unwrap();
+        assert_eq!(resp.database, "default");
+        assert_eq!(resp.schema, "default");
     }
 
     // ── Revalidation tests (US-060) ───────────────────────────────────────

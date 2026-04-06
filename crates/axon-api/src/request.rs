@@ -323,6 +323,39 @@ pub struct RevalidateRequest {
     pub collection: CollectionId,
 }
 
+// ── Namespace management (US-036) ───────────────────────────────────────────
+
+/// Request to create a schema namespace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateNamespaceRequest {
+    /// Database name.
+    pub database: String,
+    /// Schema name within the database.
+    pub schema: String,
+}
+
+/// Request to list collections within a namespace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListNamespaceCollectionsRequest {
+    /// Database name.
+    pub database: String,
+    /// Schema name within the database.
+    pub schema: String,
+}
+
+/// Request to drop a schema namespace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DropNamespaceRequest {
+    /// Database name.
+    pub database: String,
+    /// Schema name within the database.
+    pub schema: String,
+    /// If true, drop all collections within the namespace.
+    /// If false, fail if the namespace contains collections.
+    #[serde(default)]
+    pub force: bool,
+}
+
 /// Request to diff two schema versions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffSchemaRequest {
