@@ -176,6 +176,97 @@ impl CdcSink for MemoryCdcSink {
     }
 }
 
+// ── Kafka CDC sink (US-074, FEAT-021) ──────────────────────────────────────
+
+/// Configuration for the Kafka CDC sink.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KafkaConfig {
+    /// Kafka bootstrap servers (comma-separated).
+    pub brokers: String,
+    /// Topic name template. `{collection}` is replaced with the collection name.
+    /// Default: `"axon.{collection}"`
+    pub topic_template: String,
+    /// Whether to enable the sink. Default: false.
+    pub enabled: bool,
+}
+
+impl Default for KafkaConfig {
+    fn default() -> Self {
+        Self {
+            brokers: "localhost:9092".into(),
+            topic_template: "axon.{collection}".into(),
+            enabled: false,
+        }
+    }
+}
+
+impl KafkaConfig {
+    /// Resolve the topic name for a given collection.
+    #[allow(clippy::literal_string_with_formatting_args)]
+    pub fn topic_for(&self, collection: &str) -> String {
+        self.topic_template.replace("{collection}", collection)
+    }
+
+    /// Compute partition key for an entity.
+    ///
+    /// Uses the entity ID as the partition key so that all events for the
+    /// same entity land in the same partition, preserving order.
+    pub fn partition_key(entity_id: &str) -> String {
+        entity_id.to_string()
+    }
+}
+
+/// Stub Kafka CDC sink.
+///
+/// This implementation validates the interface and records what *would* be
+/// sent to Kafka. The actual rdkafka integration is deferred to avoid
+/// blocking on native dependency compilation.
+///
+/// Events are buffered in memory with the computed topic and partition key
+/// so tests can verify correct routing.
+#[derive(Debug)]
+pub struct KafkaCdcSink {
+    config: KafkaConfig,
+    /// Buffered events: (topic, partition_key, envelope_json).
+    pub sent: Vec<(String, String, String)>,
+}
+
+impl KafkaCdcSink {
+    /// Create a new Kafka CDC sink with the given configuration.
+    pub fn new(config: KafkaConfig) -> Self {
+        Self {
+            config,
+            sent: Vec::new(),
+        }
+    }
+
+    /// Access the configuration.
+    pub fn config(&self) -> &KafkaConfig {
+        &self.config
+    }
+}
+
+impl CdcSink for KafkaCdcSink {
+    fn emit(&mut self, envelope: &CdcEnvelope) -> Result<(), String> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        let topic = self.config.topic_for(&envelope.source.collection);
+        let partition_key = KafkaConfig::partition_key(&envelope.source.entity_id);
+        let json = serde_json::to_string(envelope)
+            .map_err(|e| format!("Kafka CDC serialization error: {e}"))?;
+
+        self.sent.push((topic, partition_key, json));
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        // Stub: in real implementation, this would flush the rdkafka producer.
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,5 +472,107 @@ mod tests {
     fn ts_ms_from_timestamp_ns() {
         let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
         assert_eq!(envelope.ts_ms, 1000); // 1_000_000_000 ns = 1000 ms
+    }
+
+    // ── Kafka CDC sink tests (US-074) ──────────────────────────────────
+
+    #[test]
+    fn kafka_config_topic_template() {
+        let config = KafkaConfig {
+            brokers: "b1:9092,b2:9092".into(),
+            topic_template: "axon.{collection}".into(),
+            enabled: true,
+        };
+        assert_eq!(config.topic_for("tasks"), "axon.tasks");
+        assert_eq!(config.topic_for("users"), "axon.users");
+    }
+
+    #[test]
+    fn kafka_config_partition_key_is_entity_id() {
+        assert_eq!(KafkaConfig::partition_key("t-001"), "t-001");
+    }
+
+    #[test]
+    fn kafka_sink_disabled_does_not_emit() {
+        let config = KafkaConfig {
+            enabled: false,
+            ..KafkaConfig::default()
+        };
+        let mut sink = KafkaCdcSink::new(config);
+        let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+        sink.emit(&envelope).unwrap();
+        assert!(sink.sent.is_empty());
+    }
+
+    #[test]
+    fn kafka_sink_enabled_records_events() {
+        let config = KafkaConfig {
+            enabled: true,
+            ..KafkaConfig::default()
+        };
+        let mut sink = KafkaCdcSink::new(config);
+        let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+        sink.emit(&envelope).unwrap();
+        assert_eq!(sink.sent.len(), 1);
+
+        let (topic, key, json) = &sink.sent[0];
+        assert_eq!(topic, "axon.tasks");
+        assert_eq!(key, "t-001");
+
+        // Verify the JSON is valid and contains the right audit_id.
+        let parsed: CdcEnvelope = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.source.audit_id, 42);
+    }
+
+    #[test]
+    fn kafka_sink_partitions_by_entity_key() {
+        let config = KafkaConfig {
+            enabled: true,
+            ..KafkaConfig::default()
+        };
+        let mut sink = KafkaCdcSink::new(config);
+
+        // Emit events for different entities.
+        let e1 = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+        let mut entry2 = sample_update_entry();
+        entry2.entity_id = EntityId::new("t-002");
+        let e2 = CdcEnvelope::from_audit_entry(&entry2).unwrap();
+
+        sink.emit(&e1).unwrap();
+        sink.emit(&e2).unwrap();
+
+        assert_eq!(sink.sent[0].1, "t-001"); // partition key for entity t-001
+        assert_eq!(sink.sent[1].1, "t-002"); // partition key for entity t-002
+    }
+
+    #[test]
+    fn kafka_sink_audit_id_cursor() {
+        let config = KafkaConfig {
+            enabled: true,
+            ..KafkaConfig::default()
+        };
+        let mut sink = KafkaCdcSink::new(config);
+
+        let e1 = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+        let e2 = CdcEnvelope::from_audit_entry(&sample_update_entry()).unwrap();
+        sink.emit(&e1).unwrap();
+        sink.emit(&e2).unwrap();
+
+        // Verify that audit_ids increase, providing a cursor for consumers.
+        let parsed1: CdcEnvelope = serde_json::from_str(&sink.sent[0].2).unwrap();
+        let parsed2: CdcEnvelope = serde_json::from_str(&sink.sent[1].2).unwrap();
+        assert!(
+            parsed2.source.audit_id > parsed1.source.audit_id,
+            "audit_id should increase: {} > {}",
+            parsed2.source.audit_id,
+            parsed1.source.audit_id
+        );
+    }
+
+    #[test]
+    fn kafka_config_default() {
+        let config = KafkaConfig::default();
+        assert_eq!(config.brokers, "localhost:9092");
+        assert!(!config.enabled);
     }
 }
