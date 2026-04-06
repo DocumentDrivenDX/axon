@@ -319,3 +319,29 @@ pub struct CountEntitiesRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_by: Option<String>,
 }
+
+/// Aggregation function to apply on a numeric field.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AggregateFunction {
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+/// Request to compute a numeric aggregation over entities.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregateRequest {
+    pub collection: CollectionId,
+    /// The aggregation function to apply.
+    pub function: AggregateFunction,
+    /// The field to aggregate.
+    pub field: String,
+    /// Optional filter to restrict which entities are included.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<FilterNode>,
+    /// Optional field to group by.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+}

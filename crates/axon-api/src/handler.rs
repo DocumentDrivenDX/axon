@@ -19,20 +19,20 @@ use axon_schema::validation::{compile_entity_schema, validate, validate_link_met
 use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
-    CountEntitiesRequest, CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest,
-    DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest,
-    FieldFilter, FilterNode, FilterOp, GetEntityRequest, GetSchemaRequest,
-    ListCollectionsRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
-    ReachableRequest, RevertEntityRequest, SortDirection, TraverseDirection, TraverseRequest,
-    UpdateEntityRequest,
+    AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
+    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
+    DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode, FilterOp,
+    GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest,
+    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevertEntityRequest, SortDirection,
+    TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
-    CollectionMetadata, CountEntitiesResponse, CountGroup, CreateCollectionResponse,
-    CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse, DeleteLinkResponse,
-    DescribeCollectionResponse, DropCollectionResponse, GetEntityResponse, GetSchemaResponse,
-    ListCollectionsResponse, PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse,
-    ReachableResponse, RevertEntityResponse, TraverseHop, TraversePath, TraverseResponse,
-    UpdateEntityResponse,
+    AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
+    CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse,
+    DeleteLinkResponse, DescribeCollectionResponse, DropCollectionResponse, GetEntityResponse,
+    GetSchemaResponse, ListCollectionsResponse, PutSchemaResponse, QueryAuditResponse,
+    QueryEntitiesResponse, ReachableResponse, RevertEntityResponse, TraverseHop, TraversePath,
+    TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -488,6 +488,104 @@ impl<S: StorageAdapter> AxonHandler<S> {
             total_count,
             groups,
         })
+    }
+
+    /// Compute a numeric aggregation (SUM, AVG, MIN, MAX) over entities.
+    pub fn aggregate(
+        &self,
+        req: AggregateRequest,
+    ) -> Result<AggregateResponse, AxonError> {
+        let all = self.storage.range_scan(&req.collection, None, None, None)?;
+
+        // Apply filter.
+        let matched: Vec<&Entity> = all
+            .iter()
+            .filter(|e| {
+                req.filter
+                    .as_ref()
+                    .map_or(true, |f| apply_filter(f, &e.data))
+            })
+            .collect();
+
+        if let Some(ref group_by) = req.group_by {
+            // Group by field, then aggregate per group.
+            let mut groups: std::collections::BTreeMap<String, Vec<f64>> =
+                std::collections::BTreeMap::new();
+            for entity in &matched {
+                let group_key = get_field_value(&entity.data, group_by)
+                    .map(|v| match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        serde_json::Value::Null => "null".into(),
+                        other => other.to_string(),
+                    })
+                    .unwrap_or_else(|| "null".into());
+                let val = get_field_value(&entity.data, &req.field)
+                    .and_then(|v| v.as_f64());
+                if let Some(n) = val {
+                    groups.entry(group_key).or_default().push(n);
+                } else {
+                    // Ensure the group exists even if this entity has null for the agg field.
+                    groups.entry(group_key).or_default();
+                }
+            }
+
+            let results = groups
+                .into_iter()
+                .filter(|(_, vals)| !vals.is_empty())
+                .map(|(key_str, vals)| {
+                    let value = compute_aggregate(&req.function, &vals);
+                    let key = if key_str == "null" {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::String(key_str)
+                    };
+                    AggregateGroup {
+                        key,
+                        value,
+                        count: vals.len(),
+                    }
+                })
+                .collect();
+
+            Ok(AggregateResponse { results })
+        } else {
+            // No GROUP BY — aggregate all matching.
+            let values: Vec<f64> = matched
+                .iter()
+                .filter_map(|e| {
+                    get_field_value(&e.data, &req.field)
+                        .and_then(|v| v.as_f64())
+                })
+                .collect();
+
+            // Check if we tried to aggregate but found no numeric values and entities exist.
+            if values.is_empty() && !matched.is_empty() {
+                // Check if the field exists but is non-numeric.
+                let has_non_numeric = matched.iter().any(|e| {
+                    get_field_value(&e.data, &req.field)
+                        .is_some_and(|v| !v.is_number() && !v.is_null())
+                });
+                if has_non_numeric {
+                    return Err(AxonError::InvalidArgument(format!(
+                        "field '{}' is not numeric",
+                        req.field
+                    )));
+                }
+            }
+
+            if values.is_empty() {
+                return Ok(AggregateResponse { results: vec![] });
+            }
+
+            let value = compute_aggregate(&req.function, &values);
+            Ok(AggregateResponse {
+                results: vec![AggregateGroup {
+                    key: serde_json::Value::Null,
+                    value,
+                    count: values.len(),
+                }],
+            })
+        }
     }
 
     // ── Audit operations ─────────────────────────────────────────────────────
@@ -1397,6 +1495,17 @@ fn get_field_value<'a>(data: &'a serde_json::Value, path: &str) -> Option<&'a se
         cur = cur.get(segment)?;
     }
     Some(cur)
+}
+
+/// Compute an aggregate function over a non-empty slice of f64 values.
+#[allow(clippy::cast_precision_loss)]
+fn compute_aggregate(func: &AggregateFunction, values: &[f64]) -> f64 {
+    match func {
+        AggregateFunction::Sum => values.iter().sum(),
+        AggregateFunction::Avg => values.iter().sum::<f64>() / values.len() as f64,
+        AggregateFunction::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
+        AggregateFunction::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    }
 }
 
 fn values_eq(a: Option<&serde_json::Value>, b: Option<&serde_json::Value>) -> bool {
@@ -4728,5 +4837,154 @@ link_types:
             .unwrap();
         assert_eq!(resp.total_count, 0);
         assert!(resp.groups.is_empty());
+    }
+
+    // ── Numeric aggregation tests (US-063) ──────────────────────────────
+
+    fn handler_with_numeric_entities() -> AxonHandler<MemoryStorageAdapter> {
+        let mut h = handler();
+        let col = CollectionId::new("invoices");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        let items = vec![
+            json!({"amount": 100, "status": "draft", "priority": 1}),
+            json!({"amount": 200, "status": "draft", "priority": 2}),
+            json!({"amount": 300, "status": "pending", "priority": 1}),
+            json!({"amount": 50, "status": "pending"}), // no priority
+            json!({"status": "done", "title": "no-amount"}), // no amount
+        ];
+        for (i, data) in items.into_iter().enumerate() {
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new(format!("inv-{i}")),
+                data,
+                actor: None,
+            })
+            .unwrap();
+        }
+        h
+    }
+
+    #[test]
+    fn aggregate_sum() {
+        let h = handler_with_numeric_entities();
+        let resp = h
+            .aggregate(AggregateRequest {
+                collection: CollectionId::new("invoices"),
+                function: AggregateFunction::Sum,
+                field: "amount".into(),
+                filter: None,
+                group_by: None,
+            })
+            .unwrap();
+        assert_eq!(resp.results.len(), 1);
+        assert!((resp.results[0].value - 650.0).abs() < f64::EPSILON);
+        assert_eq!(resp.results[0].count, 4); // 4 entities have amount
+    }
+
+    #[test]
+    fn aggregate_avg_returns_float() {
+        let h = handler_with_numeric_entities();
+        let resp = h
+            .aggregate(AggregateRequest {
+                collection: CollectionId::new("invoices"),
+                function: AggregateFunction::Avg,
+                field: "amount".into(),
+                filter: None,
+                group_by: None,
+            })
+            .unwrap();
+        assert_eq!(resp.results.len(), 1);
+        assert!((resp.results[0].value - 162.5).abs() < f64::EPSILON); // 650/4
+    }
+
+    #[test]
+    fn aggregate_min_max() {
+        let h = handler_with_numeric_entities();
+        let min_resp = h
+            .aggregate(AggregateRequest {
+                collection: CollectionId::new("invoices"),
+                function: AggregateFunction::Min,
+                field: "amount".into(),
+                filter: None,
+                group_by: None,
+            })
+            .unwrap();
+        assert!((min_resp.results[0].value - 50.0).abs() < f64::EPSILON);
+
+        let max_resp = h
+            .aggregate(AggregateRequest {
+                collection: CollectionId::new("invoices"),
+                function: AggregateFunction::Max,
+                field: "amount".into(),
+                filter: None,
+                group_by: None,
+            })
+            .unwrap();
+        assert!((max_resp.results[0].value - 300.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn aggregate_group_by() {
+        let h = handler_with_numeric_entities();
+        let resp = h
+            .aggregate(AggregateRequest {
+                collection: CollectionId::new("invoices"),
+                function: AggregateFunction::Avg,
+                field: "priority".into(),
+                filter: None,
+                group_by: Some("status".into()),
+            })
+            .unwrap();
+
+        // draft: avg(1,2) = 1.5
+        let draft = resp.results.iter().find(|g| g.key == json!("draft"));
+        assert!(draft.is_some());
+        assert!((draft.unwrap().value - 1.5).abs() < f64::EPSILON);
+
+        // pending: avg(1) = 1.0 (only one entity has priority)
+        let pending = resp.results.iter().find(|g| g.key == json!("pending"));
+        assert!(pending.is_some());
+        assert!((pending.unwrap().value - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn aggregate_non_numeric_field_returns_error() {
+        let h = handler_with_numeric_entities();
+        let result = h.aggregate(AggregateRequest {
+            collection: CollectionId::new("invoices"),
+            function: AggregateFunction::Sum,
+            field: "status".into(),
+            filter: None,
+            group_by: None,
+        });
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().to_string().contains("not numeric"),
+            "should report type error"
+        );
+    }
+
+    #[test]
+    fn aggregate_null_excluded() {
+        let h = handler_with_numeric_entities();
+        // Priority has nulls for some entities.
+        let resp = h
+            .aggregate(AggregateRequest {
+                collection: CollectionId::new("invoices"),
+                function: AggregateFunction::Sum,
+                field: "priority".into(),
+                filter: None,
+                group_by: None,
+            })
+            .unwrap();
+        // Only 3 entities have priority: 1 + 2 + 1 = 4
+        assert!((resp.results[0].value - 4.0).abs() < f64::EPSILON);
+        assert_eq!(resp.results[0].count, 3);
     }
 }

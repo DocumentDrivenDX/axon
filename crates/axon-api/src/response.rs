@@ -231,3 +231,21 @@ pub struct CountEntitiesResponse {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<CountGroup>,
 }
+
+/// A single group in an aggregation result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregateGroup {
+    /// The group key value. `null` when no GROUP BY was specified.
+    pub key: serde_json::Value,
+    /// The aggregated value (always f64 for AVG, may be integer-valued for SUM/MIN/MAX).
+    pub value: f64,
+    /// Number of non-null values that contributed to this aggregation.
+    pub count: usize,
+}
+
+/// Response from a numeric aggregation query.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AggregateResponse {
+    /// Aggregated result. A single entry when no GROUP BY; multiple for GROUP BY.
+    pub results: Vec<AggregateGroup>,
+}
