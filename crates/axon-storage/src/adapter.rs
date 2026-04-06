@@ -4,7 +4,7 @@ use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
 use axon_core::id::CollectionId;
 use axon_core::id::EntityId;
-use axon_core::types::Entity;
+use axon_core::types::{Entity, Link};
 use axon_schema::schema::CollectionSchema;
 
 /// A typed index value extracted from entity data.
@@ -469,5 +469,139 @@ pub trait StorageAdapter: Send + Sync {
         _prefix: &CompoundKey,
     ) -> Result<Vec<EntityId>, AxonError> {
         Ok(vec![])
+    }
+
+    // ── Dedicated link storage (ADR-010) ────────────────────────────────
+
+    /// Store a link in the dedicated links table.
+    ///
+    /// Replaces any existing link with the same (source, target, link_type) key.
+    /// The default implementation falls back to the pseudo-collection approach.
+    fn put_link(&mut self, link: &Link) -> Result<(), AxonError> {
+        self.put(link.to_entity())?;
+        self.put(link.to_rev_entity())
+    }
+
+    /// Delete a link from the dedicated links table.
+    ///
+    /// Returns `Ok(())` whether or not the link existed.
+    fn delete_link(
+        &mut self,
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: &str,
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+    ) -> Result<(), AxonError> {
+        let fwd_id = Link::storage_id(
+            source_collection,
+            source_id,
+            link_type,
+            target_collection,
+            target_id,
+        );
+        let rev_id = Link::rev_storage_id(
+            target_collection,
+            target_id,
+            source_collection,
+            source_id,
+            link_type,
+        );
+        self.delete(&Link::links_collection(), &fwd_id)?;
+        self.delete(&Link::links_rev_collection(), &rev_id)
+    }
+
+    /// Look up a specific link.
+    ///
+    /// Returns `None` if the link does not exist.
+    fn get_link(
+        &self,
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: &str,
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+    ) -> Result<Option<Link>, AxonError> {
+        let fwd_id = Link::storage_id(
+            source_collection,
+            source_id,
+            link_type,
+            target_collection,
+            target_id,
+        );
+        let entity = self.get(&Link::links_collection(), &fwd_id)?;
+        Ok(entity.and_then(|e| Link::from_entity(&e)))
+    }
+
+    /// List outbound links from a given entity.
+    ///
+    /// If `link_type` is `Some`, only returns links of that type.
+    fn list_outbound_links(
+        &self,
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: Option<&str>,
+    ) -> Result<Vec<Link>, AxonError> {
+        let prefix = match link_type {
+            Some(lt) => format!("{source_collection}/{source_id}/{lt}/"),
+            None => format!("{source_collection}/{source_id}/"),
+        };
+        let start = EntityId::new(&prefix);
+        // Compute an exclusive upper bound by incrementing last byte.
+        let mut end_str = prefix.clone();
+        // Replace trailing '/' with '0' (ASCII after '/') as upper bound.
+        end_str.pop();
+        end_str.push('0');
+        let end = EntityId::new(&end_str);
+        let entities = self.range_scan(&Link::links_collection(), Some(&start), Some(&end), None)?;
+        Ok(entities
+            .iter()
+            .filter_map(Link::from_entity)
+            .collect())
+    }
+
+    /// List inbound links to a given entity.
+    ///
+    /// Uses the reverse index for efficient lookup.
+    fn list_inbound_links(
+        &self,
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+        link_type: Option<&str>,
+    ) -> Result<Vec<Link>, AxonError> {
+        // Scan the reverse index to find link keys, then resolve forward entries.
+        let prefix = format!("{target_collection}/{target_id}/");
+        let start = EntityId::new(&prefix);
+        let mut end_str = prefix.clone();
+        end_str.pop();
+        end_str.push('0');
+        let end = EntityId::new(&end_str);
+        let rev_entries =
+            self.range_scan(&Link::links_rev_collection(), Some(&start), Some(&end), None)?;
+
+        let mut links = Vec::new();
+        for rev_ent in &rev_entries {
+            // Parse reverse ID: target_col/target_id/source_col/source_id/link_type
+            let parts: Vec<&str> = rev_ent.id.as_str().splitn(5, '/').collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let (src_col, src_id, lt) = (parts[2], parts[3], parts[4]);
+            if let Some(filter_lt) = link_type {
+                if lt != filter_lt {
+                    continue;
+                }
+            }
+            if let Some(link) = self.get_link(
+                &CollectionId::new(src_col),
+                &EntityId::new(src_id),
+                lt,
+                target_collection,
+                target_id,
+            )? {
+                links.push(link);
+            }
+        }
+        Ok(links)
     }
 }

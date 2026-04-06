@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
-use axon_core::types::Entity;
+use axon_core::types::{Entity, Link};
 use axon_schema::schema::CollectionSchema;
 
 use crate::adapter::{
@@ -50,6 +50,9 @@ impl NumericIdCache {
     }
 }
 
+/// Key for the dedicated link store: (source_col, source_id, link_type, target_col, target_id).
+type LinkKey = (CollectionId, EntityId, String, CollectionId, EntityId);
+
 /// Combined snapshot of mutable state captured at transaction start.
 #[derive(Debug, Clone)]
 struct TxSnapshot {
@@ -62,6 +65,8 @@ struct TxSnapshot {
     compound_indexes: BTreeMap<CompoundIndexKey, BTreeSet<EntityId>>,
     /// Numeric ID cache snapshot for rollback.
     numeric_ids: NumericIdCache,
+    /// Dedicated link store snapshot.
+    links: BTreeMap<LinkKey, Link>,
 }
 
 /// In-memory storage adapter for testing and development.
@@ -88,6 +93,9 @@ pub struct MemoryStorageAdapter {
     compound_indexes: BTreeMap<CompoundIndexKey, BTreeSet<EntityId>>,
     /// Bidirectional name-to-numeric-ID cache (ADR-010).
     numeric_ids: NumericIdCache,
+    /// Dedicated link store (ADR-010): replaces __axon_links__ pseudo-collection
+    /// for new code paths. Keyed by (source_col, source_id, link_type, target_col, target_id).
+    links: BTreeMap<LinkKey, Link>,
 }
 
 fn now_ns() -> u64 {
@@ -206,6 +214,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             indexes: self.indexes.clone(),
             compound_indexes: self.compound_indexes.clone(),
             numeric_ids: self.numeric_ids.clone(),
+            links: self.links.clone(),
         });
         Ok(())
     }
@@ -226,6 +235,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             self.indexes = snapshot.indexes;
             self.compound_indexes = snapshot.compound_indexes;
             self.numeric_ids = snapshot.numeric_ids;
+            self.links = snapshot.links;
         }
         Ok(())
     }
@@ -587,6 +597,111 @@ impl StorageAdapter for MemoryStorageAdapter {
             result.extend(ids.iter().cloned());
         }
         Ok(result)
+    }
+
+    // ── Dedicated link store (ADR-010) ──────────────────────────────────
+
+    fn put_link(&mut self, link: &Link) -> Result<(), AxonError> {
+        let key = (
+            link.source_collection.clone(),
+            link.source_id.clone(),
+            link.link_type.clone(),
+            link.target_collection.clone(),
+            link.target_id.clone(),
+        );
+        self.links.insert(key, link.clone());
+        // Also write to pseudo-collections for backward compatibility.
+        self.put(link.to_entity())?;
+        self.put(link.to_rev_entity())
+    }
+
+    fn delete_link(
+        &mut self,
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: &str,
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+    ) -> Result<(), AxonError> {
+        let key = (
+            source_collection.clone(),
+            source_id.clone(),
+            link_type.to_string(),
+            target_collection.clone(),
+            target_id.clone(),
+        );
+        self.links.remove(&key);
+        // Also clean pseudo-collections for backward compatibility.
+        let fwd_id = Link::storage_id(
+            source_collection,
+            source_id,
+            link_type,
+            target_collection,
+            target_id,
+        );
+        let rev_id = Link::rev_storage_id(
+            target_collection,
+            target_id,
+            source_collection,
+            source_id,
+            link_type,
+        );
+        self.delete(&Link::links_collection(), &fwd_id)?;
+        self.delete(&Link::links_rev_collection(), &rev_id)
+    }
+
+    fn get_link(
+        &self,
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: &str,
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+    ) -> Result<Option<Link>, AxonError> {
+        let key = (
+            source_collection.clone(),
+            source_id.clone(),
+            link_type.to_string(),
+            target_collection.clone(),
+            target_id.clone(),
+        );
+        Ok(self.links.get(&key).cloned())
+    }
+
+    fn list_outbound_links(
+        &self,
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: Option<&str>,
+    ) -> Result<Vec<Link>, AxonError> {
+        Ok(self
+            .links
+            .iter()
+            .filter(|((sc, si, lt, _, _), _)| {
+                sc == source_collection
+                    && si == source_id
+                    && link_type.map_or(true, |f| lt == f)
+            })
+            .map(|(_, link)| link.clone())
+            .collect())
+    }
+
+    fn list_inbound_links(
+        &self,
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+        link_type: Option<&str>,
+    ) -> Result<Vec<Link>, AxonError> {
+        Ok(self
+            .links
+            .iter()
+            .filter(|((_, _, lt, tc, ti), _)| {
+                tc == target_collection
+                    && ti == target_id
+                    && link_type.map_or(true, |f| lt == f)
+            })
+            .map(|(_, link)| link.clone())
+            .collect())
     }
 }
 
@@ -1512,6 +1627,162 @@ mod tests {
         fn unknown_numeric_id_returns_none() {
             let store = MemoryStorageAdapter::default();
             assert!(store.collection_by_numeric_id(9999).unwrap().is_none());
+        }
+    }
+
+    // ── Dedicated link store tests (ADR-010) ────────────────────────────
+
+    mod dedicated_links {
+        use super::*;
+        use serde_json::json;
+
+        fn make_link() -> Link {
+            Link {
+                source_collection: CollectionId::new("tasks"),
+                source_id: EntityId::new("t-001"),
+                target_collection: CollectionId::new("users"),
+                target_id: EntityId::new("u-001"),
+                link_type: "assigned-to".into(),
+                metadata: json!({}),
+            }
+        }
+
+        #[test]
+        fn put_and_get_link() {
+            let mut store = MemoryStorageAdapter::default();
+            let link = make_link();
+            store.put_link(&link).unwrap();
+
+            let found = store
+                .get_link(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                )
+                .unwrap();
+            assert_eq!(found, Some(link));
+        }
+
+        #[test]
+        fn get_nonexistent_link_returns_none() {
+            let store = MemoryStorageAdapter::default();
+            let found = store
+                .get_link(
+                    &CollectionId::new("a"),
+                    &EntityId::new("1"),
+                    "x",
+                    &CollectionId::new("b"),
+                    &EntityId::new("2"),
+                )
+                .unwrap();
+            assert!(found.is_none());
+        }
+
+        #[test]
+        fn delete_link_removes_it() {
+            let mut store = MemoryStorageAdapter::default();
+            let link = make_link();
+            store.put_link(&link).unwrap();
+
+            store
+                .delete_link(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                )
+                .unwrap();
+
+            let found = store
+                .get_link(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                )
+                .unwrap();
+            assert!(found.is_none());
+        }
+
+        #[test]
+        fn list_outbound_links_all() {
+            let mut store = MemoryStorageAdapter::default();
+            let link1 = make_link();
+            let link2 = Link {
+                link_type: "created-by".into(),
+                ..make_link()
+            };
+            store.put_link(&link1).unwrap();
+            store.put_link(&link2).unwrap();
+
+            let outbound = store
+                .list_outbound_links(
+                    &CollectionId::new("tasks"),
+                    &EntityId::new("t-001"),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(outbound.len(), 2);
+        }
+
+        #[test]
+        fn list_outbound_links_filtered() {
+            let mut store = MemoryStorageAdapter::default();
+            let link1 = make_link();
+            let link2 = Link {
+                link_type: "created-by".into(),
+                ..make_link()
+            };
+            store.put_link(&link1).unwrap();
+            store.put_link(&link2).unwrap();
+
+            let outbound = store
+                .list_outbound_links(
+                    &CollectionId::new("tasks"),
+                    &EntityId::new("t-001"),
+                    Some("assigned-to"),
+                )
+                .unwrap();
+            assert_eq!(outbound.len(), 1);
+            assert_eq!(outbound[0].link_type, "assigned-to");
+        }
+
+        #[test]
+        fn list_inbound_links() {
+            let mut store = MemoryStorageAdapter::default();
+            let link = make_link();
+            store.put_link(&link).unwrap();
+
+            let inbound = store
+                .list_inbound_links(
+                    &CollectionId::new("users"),
+                    &EntityId::new("u-001"),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(inbound.len(), 1);
+            assert_eq!(inbound[0].source_id, EntityId::new("t-001"));
+        }
+
+        #[test]
+        fn abort_tx_rolls_back_links() {
+            let mut store = MemoryStorageAdapter::default();
+            store.begin_tx().unwrap();
+            store.put_link(&make_link()).unwrap();
+            store.abort_tx().unwrap();
+
+            let outbound = store
+                .list_outbound_links(
+                    &CollectionId::new("tasks"),
+                    &EntityId::new("t-001"),
+                    None,
+                )
+                .unwrap();
+            assert!(outbound.is_empty());
         }
     }
 }
