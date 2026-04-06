@@ -640,6 +640,8 @@ async fn put_schema(
     match handler.lock().await.handle_put_schema(PutSchemaRequest {
         schema,
         actor: body.actor,
+        force: false,
+        dry_run: false,
     }) {
         Ok(resp) => (StatusCode::OK, Json(json!({ "schema": resp.schema }))).into_response(),
         Err(e) => axon_error_response(e),

@@ -690,6 +690,37 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: PutSchemaRequest,
     ) -> Result<PutSchemaResponse, AxonError> {
         let collection = req.schema.collection.clone();
+
+        // Compatibility check against existing schema.
+        let existing = self.storage.get_schema(&collection)?;
+        let old_entity_schema = existing.as_ref().and_then(|s| s.entity_schema.as_ref());
+        let new_entity_schema = req.schema.entity_schema.as_ref();
+        let diff = axon_schema::diff_schemas(old_entity_schema, new_entity_schema);
+        let compatibility = axon_schema::classify(&diff);
+
+        // Dry-run: return classification without applying.
+        if req.dry_run {
+            return Ok(PutSchemaResponse {
+                schema: req.schema,
+                compatibility: Some(compatibility),
+                diff: Some(diff),
+                dry_run: true,
+            });
+        }
+
+        // Breaking changes require force flag.
+        if compatibility == axon_schema::Compatibility::Breaking && !req.force {
+            return Err(AxonError::InvalidOperation(format!(
+                "schema change is breaking ({}). Use force=true to apply. Changes: {}",
+                diff.changes.len(),
+                diff.changes
+                    .iter()
+                    .map(|c| c.description.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )));
+        }
+
         self.put_schema(req.schema.clone())?;
         self.audit.append(AuditEntry::new(
             collection,
@@ -700,7 +731,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None,
             req.actor,
         ))?;
-        Ok(PutSchemaResponse { schema: req.schema })
+        Ok(PutSchemaResponse {
+            schema: req.schema,
+            compatibility: Some(compatibility),
+            diff: Some(diff),
+            dry_run: false,
+        })
     }
 
     /// Retrieve the schema for a collection.
@@ -3702,6 +3738,8 @@ link_types:
         h.handle_put_schema(PutSchemaRequest {
             schema,
             actor: Some("alice".into()),
+            force: false,
+            dry_run: false,
         })
         .unwrap();
 
@@ -3782,6 +3820,8 @@ link_types:
             .handle_put_schema(PutSchemaRequest {
                 schema,
                 actor: None,
+                force: false,
+                dry_run: false,
             })
             .unwrap_err();
         assert!(
@@ -3807,6 +3847,8 @@ link_types:
         h.handle_put_schema(PutSchemaRequest {
             schema,
             actor: None,
+            force: false,
+            dry_run: false,
         })
         .unwrap();
     }

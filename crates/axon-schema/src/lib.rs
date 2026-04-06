@@ -4,12 +4,16 @@
 //! stored in Axon collections. Every collection has an associated schema that
 //! validates entity fields, types, and constraints.
 
+pub mod evolution;
 pub mod schema;
 pub mod validation;
 
 #[cfg(test)]
 mod proptest_schema;
 
+pub use evolution::{
+    classify, diff_schemas, Compatibility, FieldChange, FieldChangeKind, SchemaDiff,
+};
 pub use schema::{Cardinality, CollectionSchema, EsfDocument, LinkTypeDef};
 pub use validation::{
     compile_entity_schema, validate, validate_entity, validate_link_metadata,

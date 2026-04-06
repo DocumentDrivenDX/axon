@@ -178,6 +178,15 @@ pub struct DescribeCollectionResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PutSchemaResponse {
     pub schema: CollectionSchema,
+    /// Compatibility classification of this schema change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compatibility: Option<axon_schema::Compatibility>,
+    /// Field-level diff from the previous schema version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff: Option<axon_schema::SchemaDiff>,
+    /// True if this was a dry-run (schema was not applied).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub dry_run: bool,
 }
 
 /// Response after retrieving a collection schema.

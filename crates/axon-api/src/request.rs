@@ -292,6 +292,12 @@ pub struct PutSchemaRequest {
     pub schema: CollectionSchema,
     /// Optional actor identifier for audit provenance.
     pub actor: Option<String>,
+    /// If true, apply even if the change is classified as breaking.
+    #[serde(default)]
+    pub force: bool,
+    /// If true, check compatibility and return the diff without applying.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 /// Request to retrieve the schema for a collection.
