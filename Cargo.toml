@@ -85,6 +85,7 @@ postgres = { version = "0.19", features = ["with-serde_json-1"] }
 # Schema validation
 jsonschema = "0.28"
 serde_yaml = "0.9"
+regex = "1"
 
 # gRPC / HTTP
 tonic = { version = "0.13", features = ["transport"] }

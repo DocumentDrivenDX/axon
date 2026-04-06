@@ -5,6 +5,7 @@
 //! validates entity fields, types, and constraints.
 
 pub mod evolution;
+pub mod rules;
 pub mod schema;
 pub mod validation;
 
