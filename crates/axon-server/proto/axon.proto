@@ -131,6 +131,26 @@ message AuditEntryProto {
   string transaction_id = 10;
 }
 
+// ── Transaction operations ───────────────────────────────────────────────────
+
+message TransactionOp {
+  string op = 1;           // "create", "update", or "delete"
+  string collection = 2;
+  string id = 3;
+  string data_json = 4;    // required for create/update
+  uint64 expected_version = 5;  // required for update/delete
+}
+
+message CommitTransactionRequest {
+  repeated TransactionOp operations = 1;
+  string actor = 2;
+}
+
+message CommitTransactionResponse {
+  string transaction_id = 1;
+  repeated EntityProto entities = 2;
+}
+
 // ── Service definition ────────────────────────────────────────────────────────
 
 service AxonService {
@@ -145,4 +165,6 @@ service AxonService {
   rpc Traverse(TraverseRequest) returns (TraverseResponse);
   // Audit
   rpc QueryAuditByEntity(QueryAuditByEntityRequest) returns (QueryAuditByEntityResponse);
+  // Transactions
+  rpc CommitTransaction(CommitTransactionRequest) returns (CommitTransactionResponse);
 }

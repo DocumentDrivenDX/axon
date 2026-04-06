@@ -569,3 +569,68 @@ async fn parity_link_traverse() {
     let grpc_data: Value = serde_json::from_str(&grpc_entities[0].data_json).unwrap();
     assert_eq!(http_data, &grpc_data);
 }
+
+#[tokio::test]
+async fn grpc_commit_transaction_atomic() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    // Seed an entity to delete in the transaction.
+    client
+        .create_entity(proto::CreateEntityRequest {
+            collection: "items".into(),
+            id: "del-me".into(),
+            data_json: r#"{"x":1}"#.into(),
+            actor: String::new(),
+        })
+        .await
+        .unwrap();
+
+    // Commit a transaction: create one entity, delete another.
+    let resp = client
+        .commit_transaction(proto::CommitTransactionRequest {
+            operations: vec![
+                proto::TransactionOp {
+                    op: "create".into(),
+                    collection: "items".into(),
+                    id: "new-one".into(),
+                    data_json: r#"{"y":2}"#.into(),
+                    expected_version: 0,
+                },
+                proto::TransactionOp {
+                    op: "delete".into(),
+                    collection: "items".into(),
+                    id: "del-me".into(),
+                    data_json: String::new(),
+                    expected_version: 1,
+                },
+            ],
+            actor: "tx-agent".into(),
+        })
+        .await
+        .unwrap();
+
+    let inner = resp.into_inner();
+    assert!(!inner.transaction_id.is_empty());
+    assert_eq!(inner.entities.len(), 2);
+
+    // Verify: new-one exists.
+    let resp = client
+        .get_entity(proto::GetEntityRequest {
+            collection: "items".into(),
+            id: "new-one".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(resp.into_inner().entity.unwrap().id, "new-one");
+
+    // Verify: del-me is gone.
+    let err = client
+        .get_entity(proto::GetEntityRequest {
+            collection: "items".into(),
+            id: "del-me".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::NotFound);
+}

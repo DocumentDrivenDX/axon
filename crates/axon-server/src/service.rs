@@ -5,6 +5,7 @@ use axon_api::request::{
     CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
     GetEntityRequest, TraverseRequest, UpdateEntityRequest,
 };
+use axon_api::transaction::Transaction;
 use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
@@ -20,13 +21,14 @@ pub mod proto {
 
 pub use proto::axon_service_server::{AxonService, AxonServiceServer};
 pub use proto::{
-    AuditEntryProto, CreateEntityRequest as ProtoCreateEntityReq,
+    AuditEntryProto, CommitTransactionRequest as ProtoCommitTxReq,
+    CommitTransactionResponse as ProtoCommitTxResp, CreateEntityRequest as ProtoCreateEntityReq,
     CreateEntityResponse as ProtoCreateEntityResp, CreateLinkRequest as ProtoCreateLinkReq,
     CreateLinkResponse as ProtoCreateLinkResp, DeleteEntityRequest as ProtoDeleteEntityReq,
     DeleteEntityResponse as ProtoDeleteEntityResp, DeleteLinkRequest as ProtoDeleteLinkReq,
     DeleteLinkResponse as ProtoDeleteLinkResp, EntityProto, GetEntityRequest as ProtoGetEntityReq,
     GetEntityResponse as ProtoGetEntityResp, LinkProto, QueryAuditByEntityRequest,
-    QueryAuditByEntityResponse, TraverseRequest as ProtoTraverseReq,
+    QueryAuditByEntityResponse, TransactionOp as ProtoTxOp, TraverseRequest as ProtoTraverseReq,
     TraverseResponse as ProtoTraverseResp, UpdateEntityRequest as ProtoUpdateEntityReq,
     UpdateEntityResponse as ProtoUpdateEntityResp,
 };
@@ -363,6 +365,89 @@ impl AxonService for AxonServiceImpl {
 
         Ok(Response::new(QueryAuditByEntityResponse {
             entries: proto_entries,
+        }))
+    }
+
+    async fn commit_transaction(
+        &self,
+        request: Request<ProtoCommitTxReq>,
+    ) -> Result<Response<ProtoCommitTxResp>, Status> {
+        let req = request.into_inner();
+        let mut tx = Transaction::new();
+
+        for op in &req.operations {
+            let result = match op.op.as_str() {
+                "create" => {
+                    let data: serde_json::Value = serde_json::from_str(&op.data_json)
+                        .map_err(|e| Status::invalid_argument(format!("invalid data_json: {e}")))?;
+                    tx.create(axon_core::types::Entity::new(
+                        CollectionId::new(&op.collection),
+                        EntityId::new(&op.id),
+                        data,
+                    ))
+                }
+                "update" => {
+                    let data: serde_json::Value = serde_json::from_str(&op.data_json)
+                        .map_err(|e| Status::invalid_argument(format!("invalid data_json: {e}")))?;
+                    let h = self.handler.lock().await;
+                    let data_before = h
+                        .get_entity(GetEntityRequest {
+                            collection: CollectionId::new(&op.collection),
+                            id: EntityId::new(&op.id),
+                        })
+                        .ok()
+                        .map(|r| r.entity.data);
+                    drop(h);
+                    tx.update(
+                        axon_core::types::Entity::new(
+                            CollectionId::new(&op.collection),
+                            EntityId::new(&op.id),
+                            data,
+                        ),
+                        op.expected_version,
+                        data_before,
+                    )
+                }
+                "delete" => {
+                    let h = self.handler.lock().await;
+                    let data_before = h
+                        .get_entity(GetEntityRequest {
+                            collection: CollectionId::new(&op.collection),
+                            id: EntityId::new(&op.id),
+                        })
+                        .ok()
+                        .map(|r| r.entity.data);
+                    drop(h);
+                    tx.delete(
+                        CollectionId::new(&op.collection),
+                        EntityId::new(&op.id),
+                        op.expected_version,
+                        data_before,
+                    )
+                }
+                other => {
+                    return Err(Status::invalid_argument(format!(
+                        "unknown operation: {other}"
+                    )));
+                }
+            };
+            result.map_err(axon_to_status)?;
+        }
+
+        let tx_id = tx.id.clone();
+        let actor = if req.actor.is_empty() {
+            None
+        } else {
+            Some(req.actor)
+        };
+
+        let mut h = self.handler.lock().await;
+        let (storage, audit) = h.storage_and_audit_mut();
+        let written = tx.commit(storage, audit, actor).map_err(axon_to_status)?;
+
+        Ok(Response::new(ProtoCommitTxResp {
+            transaction_id: tx_id,
+            entities: written.into_iter().map(entity_to_proto).collect(),
         }))
     }
 }
