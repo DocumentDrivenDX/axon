@@ -17,6 +17,7 @@
 //! schema API to rebuild the schema when collections change.
 
 pub mod dynamic;
+pub mod graph;
 pub mod subscriptions;
 pub mod types;
 
