@@ -89,6 +89,31 @@ pub struct IndexDef {
     pub unique: bool,
 }
 
+/// A single field within a compound index.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompoundIndexField {
+    /// JSON field path.
+    pub field: String,
+    /// Value type.
+    #[serde(rename = "type")]
+    pub index_type: IndexType,
+}
+
+/// A compound (multi-field) secondary index declaration (ESF Layer 4, US-033).
+///
+/// Compound indexes accelerate queries that filter on multiple fields.
+/// The field order matters: leftmost prefix matching is supported (a
+/// compound index on `[status, priority]` also accelerates queries
+/// filtering on `status` alone).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompoundIndexDef {
+    /// Ordered list of fields in the compound key.
+    pub fields: Vec<CompoundIndexField>,
+    /// When `true`, the combination of all indexed field values must be unique.
+    #[serde(default)]
+    pub unique: bool,
+}
+
 /// Defines the structure and constraints for entities in a collection.
 ///
 /// The `entity_schema` field holds a JSON Schema 2020-12 document (Layer 1 of ESF)
@@ -116,6 +141,9 @@ pub struct CollectionSchema {
     /// Secondary index declarations (ESF Layer 4).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub indexes: Vec<IndexDef>,
+    /// Compound index declarations (ESF Layer 4, US-033).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub compound_indexes: Vec<CompoundIndexDef>,
 }
 
 impl CollectionSchema {
@@ -129,6 +157,7 @@ impl CollectionSchema {
             gates: HashMap::new(),
             validation_rules: Vec::new(),
             indexes: Vec::new(),
+            compound_indexes: Vec::new(),
         }
     }
 }
@@ -186,6 +215,7 @@ impl EsfDocument {
             gates: HashMap::new(),
             validation_rules: Vec::new(),
             indexes: Vec::new(),
+            compound_indexes: Vec::new(),
         })
     }
 }

@@ -14,7 +14,8 @@ pub mod sqlite;
 mod proptest_storage;
 
 pub use adapter::{
-    extract_index_value, resolve_field_path, IndexValue, OrderedFloat, StorageAdapter,
+    extract_compound_key, extract_index_value, resolve_field_path, CompoundKey, IndexValue,
+    OrderedFloat, StorageAdapter,
 };
 pub use memory::MemoryStorageAdapter;
 pub use postgres::PostgresStorageAdapter;

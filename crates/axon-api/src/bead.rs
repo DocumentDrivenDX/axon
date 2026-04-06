@@ -143,6 +143,7 @@ pub fn bead_schema() -> CollectionSchema {
         gates: Default::default(),
         validation_rules: Default::default(),
         indexes: Default::default(),
+        compound_indexes: Default::default(),
     }
 }
 

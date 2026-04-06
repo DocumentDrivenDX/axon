@@ -206,6 +206,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     &s.indexes,
                 )?;
             }
+            if !s.compound_indexes.is_empty() {
+                self.storage.update_compound_indexes(
+                    &entity.collection,
+                    &entity.id,
+                    None,
+                    &entity.data,
+                    &s.compound_indexes,
+                )?;
+            }
         }
 
         // Audit.
@@ -304,6 +313,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     &s.indexes,
                 )?;
             }
+            if !s.compound_indexes.is_empty() {
+                self.storage.update_compound_indexes(
+                    &updated.collection,
+                    &updated.id,
+                    before.as_ref(),
+                    &updated.data,
+                    &s.compound_indexes,
+                )?;
+            }
         }
 
         // Audit.
@@ -374,6 +392,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         &req.id,
                         data,
                         &schema.indexes,
+                    )?;
+                }
+                if !schema.compound_indexes.is_empty() {
+                    self.storage.remove_compound_index_entries(
+                        &req.collection,
+                        &req.id,
+                        data,
+                        &schema.compound_indexes,
                     )?;
                 }
             }
@@ -3127,6 +3153,7 @@ entity_schema:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -3237,6 +3264,7 @@ entity_schema:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         let err = h
@@ -3325,6 +3353,7 @@ entity_schema:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         })
         .unwrap();
 
@@ -3353,6 +3382,7 @@ entity_schema:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -4478,6 +4508,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         h.put_schema(schema.clone()).unwrap();
@@ -4525,6 +4556,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -4590,6 +4622,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         let err = h.put_schema(schema).unwrap_err();
@@ -4612,6 +4645,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         let err = h
@@ -4643,6 +4677,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -4674,6 +4709,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -4701,6 +4737,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         let err = h
             .handle_put_schema(PutSchemaRequest {
@@ -4733,6 +4770,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -4759,6 +4797,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -4792,6 +4831,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -4818,6 +4858,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -4855,6 +4896,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -4881,6 +4923,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -5038,6 +5081,7 @@ link_types:
                 },
             ],
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         h.put_schema(schema).unwrap();
         h
@@ -5538,6 +5582,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -5608,6 +5653,7 @@ link_types:
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
+                compound_indexes: Default::default(),
             },
             actor: None,
             force: true,
@@ -5644,6 +5690,7 @@ link_types:
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
+                compound_indexes: Default::default(),
             },
             actor: None,
         })
@@ -5876,6 +5923,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -5900,6 +5948,7 @@ link_types:
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v2_schema,
@@ -5972,6 +6021,7 @@ link_types:
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
+                compound_indexes: Default::default(),
             },
             actor: None,
         })
@@ -5994,6 +6044,7 @@ link_types:
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
+                compound_indexes: Default::default(),
             },
             actor: None,
             force: false,
@@ -6019,6 +6070,7 @@ link_types:
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
+                compound_indexes: Default::default(),
             },
             actor: None,
             force: false,
@@ -6222,6 +6274,7 @@ link_types:
                     unique: false,
                 },
             ],
+            compound_indexes: Default::default(),
         };
 
         h.create_collection(CreateCollectionRequest {
@@ -6439,6 +6492,7 @@ link_types:
                 index_type: IndexType::String,
                 unique: false,
             }],
+            compound_indexes: Default::default(),
         };
 
         let err = h.put_schema(schema).unwrap_err();
@@ -6474,6 +6528,7 @@ link_types:
                 index_type: IndexType::String,
                 unique: true,
             }],
+            compound_indexes: Default::default(),
         };
 
         h.create_collection(CreateCollectionRequest {

@@ -132,6 +132,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         gates: Default::default(),
         validation_rules: Default::default(),
         indexes: Default::default(),
+        compound_indexes: Default::default(),
     };
     handler.put_schema(schema).unwrap();
 
@@ -201,6 +202,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         gates: Default::default(),
         validation_rules: Default::default(),
         indexes: Default::default(),
+        compound_indexes: Default::default(),
     };
 
     let all_entities = handler

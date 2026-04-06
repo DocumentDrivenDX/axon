@@ -83,6 +83,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         let fields = extract_fields(&schema);

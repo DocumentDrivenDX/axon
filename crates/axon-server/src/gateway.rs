@@ -569,6 +569,7 @@ async fn create_collection(
         gates: Default::default(),
         validation_rules: Default::default(),
         indexes: Default::default(),
+        compound_indexes: Default::default(),
     };
     match handler
         .lock()
@@ -650,6 +651,7 @@ async fn put_schema(
         gates: Default::default(),
         validation_rules: Default::default(),
         indexes: Default::default(),
+        compound_indexes: Default::default(),
     };
     match handler.lock().await.handle_put_schema(PutSchemaRequest {
         schema,

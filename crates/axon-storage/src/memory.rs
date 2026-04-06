@@ -8,7 +8,8 @@ use axon_core::types::Entity;
 use axon_schema::schema::CollectionSchema;
 
 use crate::adapter::{
-    extract_index_value, resolve_field_path, IndexValue, StorageAdapter,
+    extract_compound_key, extract_index_value, resolve_field_path, CompoundKey, IndexValue,
+    StorageAdapter,
 };
 
 type CollectionMap = HashMap<EntityId, Entity>;
@@ -19,6 +20,9 @@ type SchemaVersionEntry = (CollectionSchema, u64);
 /// Key for the EAV index: (collection, field_name, indexed_value).
 type IndexKey = (CollectionId, String, IndexValue);
 
+/// Key for compound indexes: (collection, index_position, compound_key).
+type CompoundIndexKey = (CollectionId, usize, CompoundKey);
+
 /// Combined snapshot of mutable state captured at transaction start.
 #[derive(Debug, Clone)]
 struct TxSnapshot {
@@ -27,6 +31,8 @@ struct TxSnapshot {
     collections: HashSet<CollectionId>,
     /// Index snapshot for rollback.
     indexes: BTreeMap<IndexKey, BTreeSet<EntityId>>,
+    /// Compound index snapshot for rollback.
+    compound_indexes: BTreeMap<CompoundIndexKey, BTreeSet<EntityId>>,
 }
 
 /// In-memory storage adapter for testing and development.
@@ -49,6 +55,8 @@ pub struct MemoryStorageAdapter {
     tx_snapshot: Option<TxSnapshot>,
     /// EAV secondary index: (collection, field, value) → set of entity IDs.
     indexes: BTreeMap<IndexKey, BTreeSet<EntityId>>,
+    /// Compound indexes: (collection, index_position, compound_key) → set of entity IDs.
+    compound_indexes: BTreeMap<CompoundIndexKey, BTreeSet<EntityId>>,
 }
 
 fn now_ns() -> u64 {
@@ -165,6 +173,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             schema_versions: self.schema_versions.clone(),
             collections: self.collections.clone(),
             indexes: self.indexes.clone(),
+            compound_indexes: self.compound_indexes.clone(),
         });
         Ok(())
     }
@@ -183,6 +192,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             self.schema_versions = snapshot.schema_versions;
             self.collections = snapshot.collections;
             self.indexes = snapshot.indexes;
+            self.compound_indexes = snapshot.compound_indexes;
         }
         Ok(())
     }
@@ -419,7 +429,120 @@ impl StorageAdapter for MemoryStorageAdapter {
     fn drop_indexes(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         self.indexes
             .retain(|(col, _, _), _| col != collection);
+        self.compound_indexes
+            .retain(|(col, _, _), _| col != collection);
         Ok(())
+    }
+
+    // ── Compound index operations (US-033) ──────────────────────────────
+
+    fn update_compound_indexes(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        old_data: Option<&serde_json::Value>,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        // Remove old entries.
+        if let Some(old) = old_data {
+            for (idx_pos, idx) in indexes.iter().enumerate() {
+                if let Some(key) = extract_compound_key(old, &idx.fields) {
+                    let ckey = (collection.clone(), idx_pos, key);
+                    if let Some(set) = self.compound_indexes.get_mut(&ckey) {
+                        set.remove(entity_id);
+                        if set.is_empty() {
+                            self.compound_indexes.remove(&ckey);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Insert new entries.
+        for (idx_pos, idx) in indexes.iter().enumerate() {
+            if let Some(key) = extract_compound_key(new_data, &idx.fields) {
+                if idx.unique {
+                    let ckey = (collection.clone(), idx_pos, key.clone());
+                    if let Some(existing) = self.compound_indexes.get(&ckey) {
+                        if existing.iter().any(|eid| eid != entity_id) {
+                            let field_names: Vec<&str> =
+                                idx.fields.iter().map(|f| f.field.as_str()).collect();
+                            return Err(AxonError::UniqueViolation {
+                                field: field_names.join(", "),
+                                value: format!("{key:?}"),
+                            });
+                        }
+                    }
+                }
+                let ckey = (collection.clone(), idx_pos, key);
+                self.compound_indexes
+                    .entry(ckey)
+                    .or_default()
+                    .insert(entity_id.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_compound_index_entries(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        for (idx_pos, idx) in indexes.iter().enumerate() {
+            if let Some(key) = extract_compound_key(data, &idx.fields) {
+                let ckey = (collection.clone(), idx_pos, key);
+                if let Some(set) = self.compound_indexes.get_mut(&ckey) {
+                    set.remove(entity_id);
+                    if set.is_empty() {
+                        self.compound_indexes.remove(&ckey);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn compound_index_lookup(
+        &self,
+        collection: &CollectionId,
+        index_idx: usize,
+        key: &CompoundKey,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        let ckey = (collection.clone(), index_idx, key.clone());
+        Ok(self
+            .compound_indexes
+            .get(&ckey)
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default())
+    }
+
+    fn compound_index_prefix(
+        &self,
+        collection: &CollectionId,
+        index_idx: usize,
+        prefix: &CompoundKey,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        let mut result = Vec::new();
+        // Range from prefix..(prefix with all possible suffixes).
+        let start = (collection.clone(), index_idx, prefix.clone());
+        for ((col, idx, key), ids) in self.compound_indexes.range(start..) {
+            if col != collection || *idx != index_idx {
+                break;
+            }
+            // Check if this key starts with the prefix.
+            if key.0.len() < prefix.0.len() {
+                break;
+            }
+            if key.0[..prefix.0.len()] != prefix.0[..] {
+                break;
+            }
+            result.extend(ids.iter().cloned());
+        }
+        Ok(result)
     }
 }
 
@@ -626,6 +749,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         store.put_schema(&schema).unwrap();
@@ -656,6 +780,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
             })
             .unwrap();
         store
@@ -668,6 +793,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
             })
             .unwrap();
 
@@ -688,6 +814,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         // Persist a schema before the transaction.
@@ -705,6 +832,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
             })
             .unwrap();
         // Also add a schema for a second collection.
@@ -719,6 +847,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
             })
             .unwrap();
         store.abort_tx().unwrap();
@@ -751,6 +880,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
             })
             .unwrap();
         assert!(store.get_schema(&col).unwrap().is_some());
@@ -1099,6 +1229,156 @@ mod tests {
                 .index_lookup(&col, "status", &IndexValue::String("pending".into()))
                 .unwrap();
             assert_eq!(results.len(), 3);
+        }
+    }
+
+    mod compound_index_tests {
+        use super::*;
+        use crate::adapter::CompoundKey;
+        use axon_schema::schema::{CompoundIndexDef, CompoundIndexField, IndexType};
+
+        fn status_priority_index() -> CompoundIndexDef {
+            CompoundIndexDef {
+                fields: vec![
+                    CompoundIndexField {
+                        field: "status".into(),
+                        index_type: IndexType::String,
+                    },
+                    CompoundIndexField {
+                        field: "priority".into(),
+                        index_type: IndexType::Integer,
+                    },
+                ],
+                unique: false,
+            }
+        }
+
+        #[test]
+        fn compound_index_lookup_exact_match() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![status_priority_index()];
+
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                .unwrap();
+
+            let key = CompoundKey(vec![
+                IndexValue::String("pending".into()),
+                IndexValue::Integer(1),
+            ]);
+            let results = store.compound_index_lookup(&col, 0, &key).unwrap();
+            assert_eq!(results, vec![EntityId::new("t-001")]);
+        }
+
+        #[test]
+        fn compound_index_prefix_match() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![status_priority_index()];
+
+            for (id, status, priority) in &[
+                ("t-001", "pending", 1),
+                ("t-002", "pending", 2),
+                ("t-003", "done", 1),
+            ] {
+                let eid = EntityId::new(*id);
+                let data = json!({"status": status, "priority": priority});
+                store
+                    .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                    .unwrap();
+            }
+
+            // Prefix match on status=pending only.
+            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
+            let results = store.compound_index_prefix(&col, 0, &prefix).unwrap();
+            assert_eq!(results.len(), 2, "should match t-001 and t-002");
+        }
+
+        #[test]
+        fn compound_index_removes_old_entries_on_update() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![status_priority_index()];
+
+            let eid = EntityId::new("t-001");
+            let old_data = json!({"status": "pending", "priority": 1});
+            let new_data = json!({"status": "done", "priority": 1});
+
+            store
+                .update_compound_indexes(&col, &eid, None, &old_data, &indexes)
+                .unwrap();
+            store
+                .update_compound_indexes(&col, &eid, Some(&old_data), &new_data, &indexes)
+                .unwrap();
+
+            // Old entry should be gone.
+            let old_key = CompoundKey(vec![
+                IndexValue::String("pending".into()),
+                IndexValue::Integer(1),
+            ]);
+            let old_results = store.compound_index_lookup(&col, 0, &old_key).unwrap();
+            assert!(old_results.is_empty());
+
+            // New entry should exist.
+            let new_key = CompoundKey(vec![
+                IndexValue::String("done".into()),
+                IndexValue::Integer(1),
+            ]);
+            let new_results = store.compound_index_lookup(&col, 0, &new_key).unwrap();
+            assert_eq!(new_results, vec![EntityId::new("t-001")]);
+        }
+
+        #[test]
+        fn compound_unique_index_rejects_duplicate() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![CompoundIndexDef {
+                fields: vec![
+                    CompoundIndexField {
+                        field: "status".into(),
+                        index_type: IndexType::String,
+                    },
+                    CompoundIndexField {
+                        field: "priority".into(),
+                        index_type: IndexType::Integer,
+                    },
+                ],
+                unique: true,
+            }];
+
+            let eid1 = EntityId::new("t-001");
+            let data1 = json!({"status": "pending", "priority": 1});
+            store
+                .update_compound_indexes(&col, &eid1, None, &data1, &indexes)
+                .unwrap();
+
+            let eid2 = EntityId::new("t-002");
+            let data2 = json!({"status": "pending", "priority": 1});
+            let err = store
+                .update_compound_indexes(&col, &eid2, None, &data2, &indexes)
+                .unwrap_err();
+            assert!(matches!(err, AxonError::UniqueViolation { .. }));
+        }
+
+        #[test]
+        fn compound_index_missing_field_not_indexed() {
+            let mut store = MemoryStorageAdapter::default();
+            let col = tasks();
+            let indexes = vec![status_priority_index()];
+
+            // Entity missing priority field — should not be indexed.
+            let eid = EntityId::new("t-001");
+            let data = json!({"status": "pending"});
+            store
+                .update_compound_indexes(&col, &eid, None, &data, &indexes)
+                .unwrap();
+
+            let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
+            let results = store.compound_index_prefix(&col, 0, &prefix).unwrap();
+            assert!(results.is_empty());
         }
     }
 }

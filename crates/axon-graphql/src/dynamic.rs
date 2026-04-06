@@ -155,6 +155,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         }
     }
 
@@ -195,6 +196,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         let schema = build_schema(&[tasks, users]).expect("schema should build");

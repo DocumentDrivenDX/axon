@@ -208,6 +208,7 @@ macro_rules! storage_conformance_tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
                 };
                 s.put_schema(&schema).unwrap();
                 let got = s.get_schema(&col).unwrap().unwrap();
@@ -235,6 +236,7 @@ macro_rules! storage_conformance_tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
                 };
                 let v2 = CollectionSchema {
                     collection: col.clone(),
@@ -245,6 +247,7 @@ macro_rules! storage_conformance_tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
                 };
                 s.put_schema(&v1).unwrap();
                 s.put_schema(&v2).unwrap();
@@ -266,6 +269,7 @@ macro_rules! storage_conformance_tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
                 };
                 s.put_schema(&schema).unwrap();
                 assert!(s.get_schema(&col).unwrap().is_some());
@@ -286,6 +290,7 @@ macro_rules! storage_conformance_tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
                 };
                 s.put_schema(&original).unwrap();
 
@@ -299,6 +304,7 @@ macro_rules! storage_conformance_tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
                 })
                 .unwrap();
                 s.abort_tx().unwrap();

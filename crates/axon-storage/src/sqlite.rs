@@ -698,6 +698,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         s.put_schema(&schema).unwrap();
@@ -731,6 +732,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
         let v2 = CollectionSchema {
             collection: col.clone(),
@@ -741,6 +743,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         s.put_schema(&v1).unwrap();
@@ -767,6 +770,7 @@ mod tests {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
         };
 
         s.put_schema(&schema).unwrap();

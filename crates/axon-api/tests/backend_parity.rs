@@ -33,6 +33,7 @@ fn make_schema(name: &str) -> CollectionSchema {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
     }
 }
 
@@ -258,6 +259,7 @@ fn test_schema_enforcement<S: StorageAdapter>(mut h: AxonHandler<S>) {
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
+            compound_indexes: Default::default(),
     };
 
     h.create_collection(CreateCollectionRequest {

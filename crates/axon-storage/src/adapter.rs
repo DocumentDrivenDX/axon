@@ -103,6 +103,30 @@ pub fn extract_index_value(
     }
 }
 
+/// A compound index key: ordered list of field values for multi-field indexes.
+///
+/// Implements `Ord` lexicographically, enabling prefix matching via
+/// BTreeMap range scans.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CompoundKey(pub Vec<IndexValue>);
+
+/// Extract a compound key from entity data given a compound index definition.
+///
+/// Returns `None` if any field in the compound key is null/missing/type-mismatch,
+/// since compound index entries require all fields to be present.
+pub fn extract_compound_key(
+    data: &serde_json::Value,
+    fields: &[axon_schema::schema::CompoundIndexField],
+) -> Option<CompoundKey> {
+    let mut values = Vec::with_capacity(fields.len());
+    for f in fields {
+        let json_val = resolve_field_path(data, &f.field)?;
+        let val = extract_index_value(json_val, &f.index_type)?;
+        values.push(val);
+    }
+    Some(CompoundKey(values))
+}
+
 /// Navigate a dotted field path in a JSON value.
 ///
 /// E.g., `"address.city"` resolves `{"address": {"city": "NY"}}` to `"NY"`.
@@ -377,5 +401,52 @@ pub trait StorageAdapter: Send + Sync {
     /// The default implementation is a no-op.
     fn drop_indexes(&mut self, _collection: &CollectionId) -> Result<(), AxonError> {
         Ok(())
+    }
+
+    // ── Compound index operations (FEAT-013, US-033) ────────────────────
+
+    /// Update compound index entries for an entity.
+    fn update_compound_indexes(
+        &mut self,
+        _collection: &CollectionId,
+        _entity_id: &EntityId,
+        _old_data: Option<&serde_json::Value>,
+        _new_data: &serde_json::Value,
+        _indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Remove compound index entries for a deleted entity.
+    fn remove_compound_index_entries(
+        &mut self,
+        _collection: &CollectionId,
+        _entity_id: &EntityId,
+        _data: &serde_json::Value,
+        _indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Look up entity IDs by exact compound key.
+    fn compound_index_lookup(
+        &self,
+        _collection: &CollectionId,
+        _index_idx: usize,
+        _key: &CompoundKey,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        Ok(vec![])
+    }
+
+    /// Prefix match on a compound index using a partial key.
+    ///
+    /// Returns entity IDs whose compound key starts with the given prefix.
+    fn compound_index_prefix(
+        &self,
+        _collection: &CollectionId,
+        _index_idx: usize,
+        _prefix: &CompoundKey,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        Ok(vec![])
     }
 }
