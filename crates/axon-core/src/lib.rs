@@ -4,10 +4,12 @@
 //! It defines the fundamental data model: entities, links, collection identifiers,
 //! and the error hierarchy used across the workspace.
 
+pub mod auth;
 pub mod error;
 pub mod id;
 pub mod types;
 
+pub use auth::{CallerIdentity, Operation, Role};
 pub use error::AxonError;
 pub use id::{CollectionId, EntityId, LinkId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 pub use types::{Entity, Link, LINKS_COLLECTION};
