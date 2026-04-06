@@ -63,6 +63,22 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(entity_schema) = &schema.entity_schema {
             compile_entity_schema(entity_schema)?;
         }
+
+        // Validate rule definitions (US-069).
+        if !schema.validation_rules.is_empty() {
+            let rule_errors = axon_schema::rules::validate_rule_definitions(
+                &schema.validation_rules,
+                schema.entity_schema.as_ref(),
+            );
+            if !rule_errors.is_empty() {
+                let msgs: Vec<String> = rule_errors.iter().map(|e| e.to_string()).collect();
+                return Err(AxonError::SchemaValidation(format!(
+                    "invalid validation rules: {}",
+                    msgs.join("; ")
+                )));
+            }
+        }
+
         self.storage.put_schema(&schema)
     }
 
