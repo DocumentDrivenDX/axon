@@ -104,6 +104,30 @@ pub struct ReachableResponse {
     pub depth: Option<usize>,
 }
 
+/// A candidate target entity for link creation (US-070).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinkCandidate {
+    /// The candidate entity.
+    pub entity: Entity,
+    /// Whether this entity is already linked from the source.
+    pub already_linked: bool,
+}
+
+/// Response from a find-link-candidates query (US-070, FEAT-020).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FindLinkCandidatesResponse {
+    /// Target collection for the link type.
+    pub target_collection: String,
+    /// The link type.
+    pub link_type: String,
+    /// The cardinality of the link type (from schema), or "unknown".
+    pub cardinality: String,
+    /// Number of existing links of this type from the source entity.
+    pub existing_link_count: usize,
+    /// Candidate target entities.
+    pub candidates: Vec<LinkCandidate>,
+}
+
 /// A group of neighbors for a specific link type and direction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NeighborGroup {

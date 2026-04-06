@@ -124,6 +124,23 @@ pub struct ReachableRequest {
     pub direction: TraverseDirection,
 }
 
+/// Request to find link target candidates (US-070, FEAT-020).
+///
+/// Given a source entity and link type, returns candidate target entities
+/// from the target collection with an already-linked indicator.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FindLinkCandidatesRequest {
+    /// Source entity.
+    pub source_collection: CollectionId,
+    pub source_id: EntityId,
+    /// The link type to find candidates for.
+    pub link_type: String,
+    /// Optional search filter applied to candidate entities.
+    pub filter: Option<FilterNode>,
+    /// Maximum number of candidates to return.
+    pub limit: Option<usize>,
+}
+
 /// Request to list an entity's neighbors (US-071, FEAT-020).
 ///
 /// Returns both outbound and inbound linked entities grouped by link type

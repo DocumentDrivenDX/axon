@@ -1647,6 +1647,86 @@ impl<S: StorageAdapter> AxonHandler<S> {
         })
     }
 
+    /// Find candidate target entities for a link type (US-070, FEAT-020).
+    ///
+    /// Returns entities from the target collection with an already-linked
+    /// indicator, cardinality info, and existing link count.
+    pub fn find_link_candidates(
+        &self,
+        req: crate::request::FindLinkCandidatesRequest,
+    ) -> Result<crate::response::FindLinkCandidatesResponse, AxonError> {
+        // Verify source entity exists.
+        if self
+            .storage
+            .get(&req.source_collection, &req.source_id)?
+            .is_none()
+        {
+            return Err(AxonError::NotFound(format!(
+                "{}/{}",
+                req.source_collection, req.source_id
+            )));
+        }
+
+        // Look up link type definition from source schema.
+        let source_schema = self.storage.get_schema(&req.source_collection)?;
+        let link_def = source_schema
+            .as_ref()
+            .and_then(|s| s.link_types.get(&req.link_type));
+
+        let target_collection = link_def
+            .map(|d| CollectionId::new(&d.target_collection))
+            .unwrap_or_else(|| req.source_collection.clone());
+
+        let cardinality_str = link_def
+            .map(|d| format!("{:?}", d.cardinality).to_lowercase().replace("to", "-to-"))
+            .unwrap_or_else(|| "unknown".into());
+
+        // Get all existing links of this type from the source.
+        let all_links = self.load_all_links()?;
+        let existing_targets: HashSet<String> = all_links
+            .iter()
+            .filter(|l| {
+                l.source_collection == req.source_collection
+                    && l.source_id == req.source_id
+                    && l.link_type == req.link_type
+            })
+            .map(|l| l.target_id.to_string())
+            .collect();
+        let existing_link_count = existing_targets.len();
+
+        // Fetch candidate entities from the target collection.
+        let all_targets = self
+            .storage
+            .range_scan(&target_collection, None, None, None)?;
+
+        // Filter and collect candidates.
+        let limit = req.limit.unwrap_or(50);
+        let candidates: Vec<crate::response::LinkCandidate> = all_targets
+            .into_iter()
+            .filter(|e| {
+                req.filter
+                    .as_ref()
+                    .map_or(true, |f| apply_filter(f, &e.data))
+            })
+            .take(limit)
+            .map(|e| {
+                let already_linked = existing_targets.contains(e.id.as_str());
+                crate::response::LinkCandidate {
+                    entity: e,
+                    already_linked,
+                }
+            })
+            .collect();
+
+        Ok(crate::response::FindLinkCandidatesResponse {
+            target_collection: target_collection.to_string(),
+            link_type: req.link_type,
+            cardinality: cardinality_str,
+            existing_link_count,
+            candidates,
+        })
+    }
+
     /// List an entity's neighbors: outbound + inbound linked entities
     /// grouped by link type and direction (US-071, FEAT-020).
     pub fn list_neighbors(
@@ -6736,5 +6816,114 @@ link_types:
         for entity in &resp.groups[0].entities {
             assert!(entity.data.get("title").is_some(), "entity data should be included");
         }
+    }
+
+    // ── Find link candidates tests (US-070, FEAT-020) ───────────────────
+
+    #[test]
+    fn find_link_candidates_returns_target_entities() {
+        let h = setup_neighbor_graph();
+
+        let resp = h
+            .find_link_candidates(crate::request::FindLinkCandidatesRequest {
+                source_collection: CollectionId::new("tasks"),
+                source_id: EntityId::new("t-001"),
+                link_type: "depends-on".into(),
+                filter: None,
+                limit: None,
+            })
+            .unwrap();
+
+        // Target collection defaults to source collection (no schema link def).
+        assert_eq!(resp.target_collection, "tasks");
+        // t-001 has 2 existing depends-on links.
+        assert_eq!(resp.existing_link_count, 2);
+        // All 3 tasks are candidates (including t-001 itself).
+        assert!(resp.candidates.len() >= 3);
+    }
+
+    #[test]
+    fn find_link_candidates_marks_already_linked() {
+        let h = setup_neighbor_graph();
+
+        let resp = h
+            .find_link_candidates(crate::request::FindLinkCandidatesRequest {
+                source_collection: CollectionId::new("tasks"),
+                source_id: EntityId::new("t-001"),
+                link_type: "depends-on".into(),
+                filter: None,
+                limit: None,
+            })
+            .unwrap();
+
+        let t002 = resp
+            .candidates
+            .iter()
+            .find(|c| c.entity.id.as_str() == "t-002")
+            .unwrap();
+        assert!(t002.already_linked, "t-002 is linked");
+
+        let t001 = resp
+            .candidates
+            .iter()
+            .find(|c| c.entity.id.as_str() == "t-001")
+            .unwrap();
+        assert!(!t001.already_linked, "t-001 is not linked to itself");
+    }
+
+    #[test]
+    fn find_link_candidates_with_filter() {
+        let h = setup_neighbor_graph();
+
+        let resp = h
+            .find_link_candidates(crate::request::FindLinkCandidatesRequest {
+                source_collection: CollectionId::new("tasks"),
+                source_id: EntityId::new("t-001"),
+                link_type: "depends-on".into(),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "title".into(),
+                    op: FilterOp::Eq,
+                    value: json!("t-003"),
+                })),
+                limit: None,
+            })
+            .unwrap();
+
+        assert_eq!(resp.candidates.len(), 1);
+        assert_eq!(resp.candidates[0].entity.id.as_str(), "t-003");
+    }
+
+    #[test]
+    fn find_link_candidates_with_limit() {
+        let h = setup_neighbor_graph();
+
+        let resp = h
+            .find_link_candidates(crate::request::FindLinkCandidatesRequest {
+                source_collection: CollectionId::new("tasks"),
+                source_id: EntityId::new("t-001"),
+                link_type: "depends-on".into(),
+                filter: None,
+                limit: Some(1),
+            })
+            .unwrap();
+
+        assert_eq!(resp.candidates.len(), 1);
+    }
+
+    #[test]
+    fn find_link_candidates_source_not_found() {
+        let h = setup_neighbor_graph();
+
+        let err = h
+            .find_link_candidates(crate::request::FindLinkCandidatesRequest {
+                source_collection: CollectionId::new("tasks"),
+                source_id: EntityId::new("ghost"),
+                link_type: "depends-on".into(),
+                filter: None,
+                limit: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(err, AxonError::NotFound(_)));
     }
 }
