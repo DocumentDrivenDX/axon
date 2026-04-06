@@ -21,7 +21,7 @@ use serde_json::Value;
 
 // ── Output format ──────────────────────────────────────────────────────────────
 
-#[derive(Clone, ValueEnum, Default)]
+#[derive(Clone, Debug, ValueEnum, Default)]
 enum OutputFormat {
     #[default]
     Table,
@@ -67,6 +67,9 @@ enum Command {
     /// Schema operations.
     #[command(subcommand)]
     Schema(SchemaCmd),
+
+    /// Show current configuration.
+    Config,
 
     /// Bead (work item) management.
     #[command(subcommand)]
@@ -371,6 +374,15 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Collection(cmd) => run_collection(cmd, &cli.output, &mut handler),
         Command::Entity(cmd) => run_entity(cmd, &cli.output, &mut handler),
         Command::Link(cmd) => run_link(cmd, &cli.output, &mut handler),
+        Command::Config => {
+            let config = serde_json::json!({
+                "db": cli.db,
+                "output": format!("{:?}", cli.output),
+                "mode": "embedded",
+            });
+            print_serialized(&config, &cli.output);
+            Ok(())
+        }
         Command::Schema(cmd) => run_schema(cmd, &cli.output, &handler),
         Command::Audit(cmd) => run_audit(cmd, &cli.output, &mut handler),
         Command::Bead(cmd) => run_bead(cmd, &cli.output, &mut handler),
