@@ -16,6 +16,7 @@
 //! can be created and dropped at runtime. We use `async-graphql`'s dynamic
 //! schema API to rebuild the schema when collections change.
 
+pub mod aggregation;
 pub mod dynamic;
 pub mod graph;
 pub mod subscriptions;
