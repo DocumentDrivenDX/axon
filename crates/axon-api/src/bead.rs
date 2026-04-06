@@ -396,6 +396,65 @@ pub fn dependency_tree<S: StorageAdapter>(
     Ok(beads)
 }
 
+/// Export all beads as a JSON array of Bead structs.
+pub fn export_beads<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+) -> Result<serde_json::Value, AxonError> {
+    let beads = list_beads(handler, None)?;
+    serde_json::to_value(&beads).map_err(|e| AxonError::Storage(format!("export: {e}")))
+}
+
+/// Import beads from a JSON array. Each element must have at least `id`, `bead_type`,
+/// `status`, and `title`. Existing beads with the same ID are skipped.
+pub fn import_beads<S: StorageAdapter>(
+    handler: &mut AxonHandler<S>,
+    data: &serde_json::Value,
+) -> Result<usize, AxonError> {
+    init_beads(handler)?;
+
+    let arr = data
+        .as_array()
+        .ok_or_else(|| AxonError::InvalidArgument("expected JSON array".into()))?;
+
+    let col = bead_collection();
+    let mut imported = 0;
+
+    for item in arr {
+        let bead: Bead = serde_json::from_value(item.clone())
+            .map_err(|e| AxonError::InvalidArgument(format!("invalid bead: {e}")))?;
+
+        if bead.id.is_empty() {
+            return Err(AxonError::InvalidArgument("bead missing id".into()));
+        }
+
+        // Skip if already exists.
+        if handler
+            .storage_ref()
+            .get(&col, &EntityId::new(&bead.id))?
+            .is_some()
+        {
+            continue;
+        }
+
+        // Build entity data without the id field.
+        let mut entity_data = serde_json::to_value(&bead)
+            .map_err(|e| AxonError::Storage(format!("bead serialization: {e}")))?;
+        if let Some(obj) = entity_data.as_object_mut() {
+            obj.remove("id");
+        }
+
+        handler.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new(&bead.id),
+            data: entity_data,
+            actor: Some("bead-import".into()),
+        })?;
+        imported += 1;
+    }
+
+    Ok(imported)
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -541,5 +600,28 @@ mod tests {
         let pendings = list_beads(&h, Some("pending")).unwrap();
         assert_eq!(pendings.len(), 1);
         assert_eq!(pendings[0].id, "b-2");
+    }
+
+    #[test]
+    fn export_import_round_trip() {
+        let mut h = handler();
+        make_bead(&mut h, "b-1", "First");
+        make_bead(&mut h, "b-2", "Second");
+
+        let exported = export_beads(&h).unwrap();
+        let arr = exported.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+
+        // Import into a fresh handler.
+        let mut h2 = handler();
+        let count = import_beads(&mut h2, &exported).unwrap();
+        assert_eq!(count, 2);
+
+        let beads = list_beads(&h2, None).unwrap();
+        assert_eq!(beads.len(), 2);
+
+        // Import again — should skip existing.
+        let count = import_beads(&mut h2, &exported).unwrap();
+        assert_eq!(count, 0);
     }
 }

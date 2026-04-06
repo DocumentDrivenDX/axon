@@ -259,6 +259,16 @@ enum BeadCmd {
         /// Bead ID.
         id: String,
     },
+    /// Export all beads to a JSON file.
+    Export {
+        /// Output file path (default: stdout).
+        file: Option<String>,
+    },
+    /// Import beads from a JSON file.
+    Import {
+        /// Input file path.
+        file: String,
+    },
 }
 
 // ── Output helpers ─────────────────────────────────────────────────────────────
@@ -829,6 +839,31 @@ fn run_bead(
         BeadCmd::Deps { id } => {
             let deps = bead::dependency_tree(handler, &id).map_err(|e| anyhow::anyhow!("{e}"))?;
             print_beads(&deps, format);
+        }
+        BeadCmd::Export { file } => {
+            let exported = bead::export_beads(handler).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let json = serde_json::to_string_pretty(&exported)?;
+            match file {
+                Some(path) => std::fs::write(&path, &json)
+                    .with_context(|| format!("failed to write {path}"))?,
+                None => println!("{json}"),
+            }
+        }
+        BeadCmd::Import { file } => {
+            let content =
+                std::fs::read_to_string(&file).with_context(|| format!("failed to read {file}"))?;
+            let data: Value =
+                serde_json::from_str(&content).with_context(|| "file must contain valid JSON")?;
+            let count = bead::import_beads(handler, &data).map_err(|e| anyhow::anyhow!("{e}"))?;
+            match format {
+                OutputFormat::Json => {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&serde_json::json!({"imported": count}))?
+                    );
+                }
+                OutputFormat::Table => println!("imported {} beads", count),
+            }
         }
     }
     Ok(())
