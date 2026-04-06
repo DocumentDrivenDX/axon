@@ -722,7 +722,8 @@ pub struct CollectionSchema {
 - **FEAT-002** (Schema Engine): Rules extend the schema validation pipeline
 - **FEAT-004** (Entity Operations): Rules execute on every write
 - **ADR-002** (Schema Format): Rules are Layer 5 of ESF
-- **ADR-008** (Lifecycles): Lifecycle transitions and rules are complementary — lifecycles validate state transitions, rules validate field constraints conditional on state
+- **ADR-008** (Lifecycles): Lifecycle transitions and rules are complementary — lifecycles validate state transitions, rules validate field constraints conditional on state. `requires_gate` field on transitions connects L3 and L5
+- **ADR-010** Section 11 (Gate Tables): Physical schema for `gate_definitions` and `entity_gates` tables with indexes
 
 ## Out of Scope
 

@@ -5,6 +5,8 @@ dun:
     - helix.prd
     - FEAT-007
     - FEAT-008
+    - FEAT-009
+    - FEAT-019
 ---
 # Feature Specification: FEAT-010 - Workflow State Machines
 

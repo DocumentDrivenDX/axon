@@ -6,6 +6,7 @@ dun:
     - ADR-007
     - FEAT-002
     - FEAT-006
+    - FEAT-019
 ---
 # ADR-008: Lifecycle State Machines as Schema Declarations
 
@@ -160,16 +161,33 @@ An invoices collection could declare `status: draft → submitted → approved �
 paid → reconciled`. A contracts collection could declare `stage: negotiation
 → review → signed → active → expired`.
 
-### Future Extensions (Not in V1)
+### Transition Guards via Validation Gates (FEAT-019)
 
-- **Transition guards**: Conditions that must be true for a transition
-  (e.g., "can only transition to `approved` if `approved_by` is set").
-  These would be cross-field validation rules, potentially expressed as
-  simple predicates in the lifecycle declaration
+Transition guards are realized through FEAT-019 validation gates. A
+transition can specify `requires_gate` to block unless the entity passes
+a named validation gate:
+
+```yaml
+transitions:
+  pending:
+    - target: ready
+      requires_gate: complete    # entity must pass the "complete" gate
+```
+
+This connects lifecycles (Layer 3) with validation rules (Layer 5).
+The gate model supports cross-field conditions, link-based conditions
+(via FEAT-009 traversal), and progressive validation — an entity can
+be saved in an incomplete state and gated at transition time.
+
+See FEAT-019 for the full gate design and ADR-010 Section 11 for the
+materialized gate tables.
+
+### Future Extensions
+
 - **Transition hooks**: Side effects on transition (e.g., "on transition
   to `done`, create an audit summary"). Deferred to the plugin system
-- **Lifecycle visualization**: The admin UI could render the state machine
-  as a directed graph
+- **Lifecycle visualization**: The admin UI (FEAT-011) could render the
+  state machine as a directed graph
 
 ## Consequences
 

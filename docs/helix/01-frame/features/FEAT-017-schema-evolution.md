@@ -204,4 +204,5 @@ compatibility detection, and revalidation.
 
 ### Feature Dependencies
 - **Depends On**: FEAT-002, FEAT-013
-- **Depended By**: FEAT-011 (Admin UI schema diff view)
+- **Depended By**: FEAT-011 (Admin UI schema diff view),
+  FEAT-021 (CDC consumers use schema registry for evolution)
