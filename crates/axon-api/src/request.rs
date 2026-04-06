@@ -306,6 +306,16 @@ pub struct GetSchemaRequest {
     pub collection: CollectionId,
 }
 
+/// Request to diff two schema versions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffSchemaRequest {
+    pub collection: CollectionId,
+    /// First version to compare.
+    pub version_a: u32,
+    /// Second version to compare.
+    pub version_b: u32,
+}
+
 // ── Aggregation requests (US-062, US-063) ───────────────────────────────────
 
 /// Request to count entities, optionally grouped by a field.

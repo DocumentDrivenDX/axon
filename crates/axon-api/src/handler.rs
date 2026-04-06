@@ -21,18 +21,18 @@ use axon_storage::adapter::StorageAdapter;
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
     CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
-    DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode, FilterOp,
-    GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest,
+    DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest, FieldFilter, FilterNode,
+    FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest,
     QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevertEntityRequest, SortDirection,
     TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
     CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse,
-    DeleteLinkResponse, DescribeCollectionResponse, DropCollectionResponse, GetEntityResponse,
-    GetSchemaResponse, ListCollectionsResponse, PutSchemaResponse, QueryAuditResponse,
-    QueryEntitiesResponse, ReachableResponse, RevertEntityResponse, TraverseHop, TraversePath,
-    TraverseResponse, UpdateEntityResponse,
+    DeleteLinkResponse, DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse,
+    GetEntityResponse, GetSchemaResponse, ListCollectionsResponse, PutSchemaResponse,
+    QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevertEntityResponse,
+    TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -988,6 +988,44 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .ok_or_else(|| {
                 AxonError::NotFound(format!("schema for collection '{}'", req.collection))
             })
+    }
+
+    /// Diff two schema versions for a collection (US-061).
+    ///
+    /// Retrieves both versions from storage and produces a field-level diff.
+    pub fn diff_schema_versions(
+        &self,
+        req: DiffSchemaRequest,
+    ) -> Result<DiffSchemaResponse, AxonError> {
+        let schema_a = self
+            .storage
+            .get_schema_version(&req.collection, req.version_a)?
+            .ok_or_else(|| {
+                AxonError::NotFound(format!(
+                    "schema version {} for collection '{}'",
+                    req.version_a, req.collection
+                ))
+            })?;
+        let schema_b = self
+            .storage
+            .get_schema_version(&req.collection, req.version_b)?
+            .ok_or_else(|| {
+                AxonError::NotFound(format!(
+                    "schema version {} for collection '{}'",
+                    req.version_b, req.collection
+                ))
+            })?;
+
+        let diff = axon_schema::diff_schemas(
+            schema_a.entity_schema.as_ref(),
+            schema_b.entity_schema.as_ref(),
+        );
+
+        Ok(DiffSchemaResponse {
+            version_a: req.version_a,
+            version_b: req.version_b,
+            diff,
+        })
     }
 
     // ── Link operations ──────────────────────────────────────────────────────
@@ -4837,6 +4875,189 @@ link_types:
             .unwrap();
         assert_eq!(resp.total_count, 0);
         assert!(resp.groups.is_empty());
+    }
+
+    // ── Schema diff tests (US-061) ────────────────────────────────────────
+
+    #[test]
+    fn diff_schema_versions_shows_added_fields() {
+        use crate::request::DiffSchemaRequest;
+
+        let mut h = handler();
+        let col = CollectionId::new("diff-test");
+
+        // Create collection with v1 schema (title only).
+        let v1_schema = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"}
+                }
+            })),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+        };
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: v1_schema,
+            actor: None,
+        })
+        .unwrap();
+
+        // v2: title + description.
+        let v2_schema = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 2,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "description": {"type": "string"}
+                }
+            })),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema: v2_schema,
+            actor: None,
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        // Diff v1 vs v2: v1 is version 1 from create_collection, v2 is version 2.
+        let resp = h
+            .diff_schema_versions(DiffSchemaRequest {
+                collection: col,
+                version_a: 1,
+                version_b: 2,
+            })
+            .unwrap();
+
+        assert_eq!(resp.version_a, 1);
+        assert_eq!(resp.version_b, 2);
+        assert!(
+            resp.diff.changes.iter().any(|c| c.path == "description"),
+            "should show description was added: {:?}",
+            resp.diff.changes
+        );
+    }
+
+    #[test]
+    fn diff_nonexistent_version_returns_error() {
+        use crate::request::DiffSchemaRequest;
+
+        let mut h = handler();
+        let col = CollectionId::new("diff-test-2");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        let result = h.diff_schema_versions(DiffSchemaRequest {
+            collection: col,
+            version_a: 1,
+            version_b: 99,
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn diff_non_adjacent_versions() {
+        use crate::request::DiffSchemaRequest;
+
+        let mut h = handler();
+        let col = CollectionId::new("diff-test-3");
+
+        // v1: title.
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 1,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"}
+                    }
+                })),
+                link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+            },
+            actor: None,
+        })
+        .unwrap();
+
+        // v2: title + desc.
+        h.handle_put_schema(PutSchemaRequest {
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 2,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "description": {"type": "string"}
+                    }
+                })),
+                link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+            },
+            actor: None,
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        // v3: title + desc + priority.
+        h.handle_put_schema(PutSchemaRequest {
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 3,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                        "priority": {"type": "integer"}
+                    }
+                })),
+                link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+            },
+            actor: None,
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        // Diff v1 to v3 (non-adjacent).
+        let resp = h
+            .diff_schema_versions(DiffSchemaRequest {
+                collection: col,
+                version_a: 1,
+                version_b: 3,
+            })
+            .unwrap();
+
+        let paths: Vec<&str> = resp.diff.changes.iter().map(|c| c.path.as_str()).collect();
+        assert!(paths.contains(&"description"), "should show description added");
+        assert!(paths.contains(&"priority"), "should show priority added");
     }
 
     // ── Numeric aggregation tests (US-063) ──────────────────────────────

@@ -211,6 +211,16 @@ pub struct GetSchemaResponse {
     pub schema: CollectionSchema,
 }
 
+/// Response from diffing two schema versions (US-061).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiffSchemaResponse {
+    /// The version pair that was compared.
+    pub version_a: u32,
+    pub version_b: u32,
+    /// The field-level diff.
+    pub diff: axon_schema::SchemaDiff,
+}
+
 // ── Aggregation responses (US-062) ──────────────────────────────────────────
 
 /// A single group in a COUNT GROUP BY result.
