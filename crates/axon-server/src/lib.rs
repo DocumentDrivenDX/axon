@@ -2,6 +2,7 @@
 pub mod auth;
 pub mod gateway;
 pub mod mcp_stdio;
+pub mod schema_registry;
 pub mod service;
 
 pub use auth::{AuthMode, Identity};
