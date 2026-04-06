@@ -213,6 +213,85 @@ impl WritePolicy {
     }
 }
 
+// ── Database-scoped access control (US-038, FEAT-014) ────────────────────────
+
+/// A grant that scopes a role to a specific database.
+///
+/// Without a grant, users cannot access a database (unless they have a
+/// wildcard `*` grant or admin role).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseGrant {
+    /// The actor (user/node) this grant applies to. `"*"` means all users.
+    pub actor: String,
+    /// The database name. `"*"` means all databases.
+    pub database: String,
+    /// The role granted for this database.
+    pub role: Role,
+}
+
+/// Registry of database-scoped grants.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GrantRegistry {
+    grants: Vec<DatabaseGrant>,
+}
+
+impl GrantRegistry {
+    /// Create a new empty grant registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a grant.
+    pub fn add(&mut self, grant: DatabaseGrant) {
+        self.grants.push(grant);
+    }
+
+    /// Remove all grants for an actor on a database.
+    pub fn revoke(&mut self, actor: &str, database: &str) {
+        self.grants
+            .retain(|g| g.actor != actor || g.database != database);
+    }
+
+    /// Resolve the effective role for an actor on a database.
+    ///
+    /// Checks grants in order: exact match, then wildcard actor, then
+    /// wildcard database. Returns the highest-privilege matching role.
+    pub fn effective_role(&self, actor: &str, database: &str) -> Role {
+        self.grants
+            .iter()
+            .filter(|g| {
+                (g.actor == actor || g.actor == "*")
+                    && (g.database == database || g.database == "*")
+            })
+            .map(|g| g.role)
+            .max()
+            .unwrap_or(Role::None)
+    }
+
+    /// Check if an actor can perform an operation on a database.
+    pub fn check(
+        &self,
+        actor: &str,
+        database: &str,
+        operation: Operation,
+    ) -> Result<(), AxonError> {
+        let role = self.effective_role(actor, database);
+        if role >= operation.required_role() {
+            Ok(())
+        } else {
+            Err(AxonError::InvalidOperation(format!(
+                "no grant for actor '{actor}' on database '{database}' with sufficient role (has '{role}', needs '{}')",
+                operation.required_role()
+            )))
+        }
+    }
+
+    /// List all grants.
+    pub fn list(&self) -> &[DatabaseGrant] {
+        &self.grants
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,5 +528,93 @@ mod tests {
         let new_data = serde_json::json!({"title": "T2"});
         let violations = policy.check_immutable_fields(&old_data, &new_data);
         assert_eq!(violations, vec!["source"]);
+    }
+
+    // ── Database grant tests (US-038) ──────────────────────────────────
+
+    #[test]
+    fn grant_registry_empty_denies_all() {
+        let registry = GrantRegistry::new();
+        assert_eq!(registry.effective_role("alice", "prod"), Role::None);
+        assert!(registry.check("alice", "prod", Operation::Read).is_err());
+    }
+
+    #[test]
+    fn exact_grant_allows_access() {
+        let mut registry = GrantRegistry::new();
+        registry.add(DatabaseGrant {
+            actor: "alice".into(),
+            database: "prod".into(),
+            role: Role::Write,
+        });
+        assert_eq!(registry.effective_role("alice", "prod"), Role::Write);
+        assert!(registry.check("alice", "prod", Operation::Write).is_ok());
+        assert!(registry.check("alice", "prod", Operation::Admin).is_err());
+    }
+
+    #[test]
+    fn wildcard_actor_grant() {
+        let mut registry = GrantRegistry::new();
+        registry.add(DatabaseGrant {
+            actor: "*".into(),
+            database: "public".into(),
+            role: Role::Read,
+        });
+        assert_eq!(registry.effective_role("anyone", "public"), Role::Read);
+        assert_eq!(registry.effective_role("alice", "public"), Role::Read);
+    }
+
+    #[test]
+    fn wildcard_database_grant() {
+        let mut registry = GrantRegistry::new();
+        registry.add(DatabaseGrant {
+            actor: "admin-bot".into(),
+            database: "*".into(),
+            role: Role::Admin,
+        });
+        assert_eq!(
+            registry.effective_role("admin-bot", "any-database"),
+            Role::Admin
+        );
+    }
+
+    #[test]
+    fn highest_privilege_wins() {
+        let mut registry = GrantRegistry::new();
+        registry.add(DatabaseGrant {
+            actor: "alice".into(),
+            database: "prod".into(),
+            role: Role::Read,
+        });
+        registry.add(DatabaseGrant {
+            actor: "alice".into(),
+            database: "prod".into(),
+            role: Role::Admin,
+        });
+        assert_eq!(registry.effective_role("alice", "prod"), Role::Admin);
+    }
+
+    #[test]
+    fn no_cross_database_access_without_grant() {
+        let mut registry = GrantRegistry::new();
+        registry.add(DatabaseGrant {
+            actor: "alice".into(),
+            database: "dev".into(),
+            role: Role::Admin,
+        });
+        // alice has no grant on prod
+        assert_eq!(registry.effective_role("alice", "prod"), Role::None);
+    }
+
+    #[test]
+    fn revoke_removes_grants() {
+        let mut registry = GrantRegistry::new();
+        registry.add(DatabaseGrant {
+            actor: "alice".into(),
+            database: "prod".into(),
+            role: Role::Write,
+        });
+        registry.revoke("alice", "prod");
+        assert_eq!(registry.effective_role("alice", "prod"), Role::None);
     }
 }

@@ -9,7 +9,9 @@ pub mod error;
 pub mod id;
 pub mod types;
 
-pub use auth::{CallerIdentity, MaskPolicy, Operation, Role, WritePolicy};
+pub use auth::{
+    CallerIdentity, DatabaseGrant, GrantRegistry, MaskPolicy, Operation, Role, WritePolicy,
+};
 pub use error::AxonError;
 pub use id::{CollectionId, EntityId, LinkId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 pub use types::{Entity, Link, LINKS_COLLECTION};
