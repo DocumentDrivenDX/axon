@@ -8,6 +8,7 @@ members = [
     "crates/axon-cli",
     "crates/axon-sim",
     "crates/axon-server",
+    "crates/axon-graphql",
 ]
 resolver = "2"
 
@@ -92,6 +93,9 @@ tonic = { version = "0.13", features = ["transport"] }
 tonic-build = "0.13"
 prost = "0.13"
 axum = "0.8"
+
+# GraphQL
+async-graphql = "7"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
