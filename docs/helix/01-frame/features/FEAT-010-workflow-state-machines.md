@@ -97,6 +97,7 @@ transitions:
 - [ ] Error response includes: current state, attempted state, valid transitions from current state
 - [ ] Transition from `submitted` to `approved` succeeds only if `approver_id` is set
 - [ ] The audit entry for a transition includes the transition metadata (`reason`)
+- [ ] Audit entry for a lifecycle transition includes transition metadata (reason, actor) when provided on the update
 
 ### Story US-027: Bead Lifecycle with Dependency Guards [FEAT-010]
 
@@ -109,6 +110,8 @@ transitions:
 - [ ] Guard evaluation traverses links (uses FEAT-009 traversal primitive)
 - [ ] Transition to `ready` succeeds once all dependencies are `done`
 - [ ] API endpoint `GET /collections/beads/state-machine` returns the full state machine definition
+- [ ] Guard evaluation for link-based conditions uses the same traversal primitive as FEAT-009
+- [ ] If a guard fails, the error message identifies the specific guard condition and the failing entity/field
 
 ### Story US-028: Query Valid Transitions [FEAT-010]
 
@@ -120,6 +123,7 @@ transitions:
 - [ ] `GET /collections/{coll}/entities/{id}/transitions` returns valid next states with guard status
 - [ ] Each transition includes whether the guard currently passes or fails (with reason)
 - [ ] Response is structured JSON that agents can use to make decisions
+- [ ] Response includes all failing guards with specific reasons when multiple guards fail simultaneously
 
 ## Edge Cases
 

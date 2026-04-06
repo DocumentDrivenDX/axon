@@ -85,6 +85,8 @@ These queries operate at **moderate scale** — designed for thousands to low mi
 - [ ] Nested fields are individually queryable (e.g., `address.city = "Seattle"`)
 - [ ] Schema validates nested structure including required fields within nested objects
 - [ ] Recursive schema (tree node with children of same type) is supported
+- [ ] Required fields within nested objects are validated; missing required nested fields cause entity write to fail
+- [ ] Nested object fields are queryable by dot-path: `address.city = "Seattle"` returns matching entities
 
 ### Story US-018: Create and Traverse Links [FEAT-007]
 
@@ -98,6 +100,7 @@ These queries operate at **moderate scale** — designed for thousands to low mi
 - [ ] `axon link traverse --from beads/bead-A --type depends-on --depth 3` shows the transitive dependency tree
 - [ ] Link creation fails if source or target entity doesn't exist
 - [ ] Duplicate (source, target, type) triple is rejected with conflict error
+- [ ] Attempting to create a link with a non-existent target entity fails with a not-found error identifying the missing entity
 
 ### Story US-019: Query Across Entity-Link Graph [FEAT-007]
 
@@ -108,7 +111,8 @@ These queries operate at **moderate scale** — designed for thousands to low mi
 **Acceptance Criteria:**
 - [ ] Query: "entities in `beads` where status = 'pending' AND linked-via `depends-on` to entities where status = 'done'"
 - [ ] Results include both the matching entities and the traversal path
-- [ ] Query executes within reasonable time for collections with < 10,000 entities
+- [ ] 3-hop traversal over a 10K-entity collection completes in under 500ms p99
+- [ ] Traversal with no matching results returns an empty result set (not an error)
 
 ## Edge Cases and Error Handling
 

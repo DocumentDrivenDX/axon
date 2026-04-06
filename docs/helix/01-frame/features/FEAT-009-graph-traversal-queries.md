@@ -67,6 +67,8 @@ Entities in isolation are documents. Entities connected by typed links are a kno
 - [ ] Result includes the path from bead-A to each dependency
 - [ ] Circular dependencies are detected and reported (not infinite loop)
 - [ ] Filtering at each hop works: `WHERE status != 'done'` returns only incomplete dependencies
+- [ ] Cycle detection: traversal that encounters a cycle returns a structured response identifying the cycle path
+- [ ] Cycle detection terminates safely (no infinite loop or timeout)
 
 ### Story US-024: Explode a Bill of Materials [FEAT-009]
 
@@ -79,6 +81,8 @@ Entities in isolation are documents. Entities connected by typed links are a kno
 - [ ] Link metadata (`quantity` field on `contains` links) is included in results
 - [ ] Leaf nodes (entities with no outgoing `contains` links) are identified
 - [ ] Shared components (same entity reached via multiple paths) are reported once with all paths
+- [ ] Deleted link targets are skipped during traversal (no error, traversal continues)
+- [ ] Shared components reached via multiple paths appear once in results with all paths listed
 
 ### Story US-025: Check Reachability [FEAT-009]
 
@@ -90,6 +94,8 @@ Entities in isolation are documents. Entities connected by typed links are a kno
 - [ ] Reachability query returns true/false without materializing the full path
 - [ ] Short-circuits on first path found (doesn't explore entire graph)
 - [ ] Works across link types: `VIA [blocks, depends-on]`
+- [ ] Non-reachable query returns `{reachable: false, depth: null}` without exploring the full graph
+- [ ] Reachability check short-circuits on first path found
 
 ## Edge Cases
 

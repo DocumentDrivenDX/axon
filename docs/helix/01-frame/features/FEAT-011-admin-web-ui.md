@@ -1,6 +1,6 @@
 ---
 dun:
-  id: FEAT-009
+  id: FEAT-011
   depends_on:
     - helix.prd
     - FEAT-001
@@ -8,9 +8,9 @@ dun:
     - FEAT-004
     - FEAT-005
 ---
-# Feature Specification: FEAT-009 - Admin Web UI
+# Feature Specification: FEAT-011 - Admin Web UI
 
-**Feature ID**: FEAT-009
+**Feature ID**: FEAT-011
 **Status**: Draft
 **Priority**: P1
 **Owner**: Core Team
@@ -99,7 +99,7 @@ history.
 
 ## User Stories
 
-### Story US-023: Browse Axon Data Visually [FEAT-009]
+### Story US-040: Browse Axon Data Visually [FEAT-011]
 
 **As a** developer using Axon
 **I want** a web UI to browse collections and entities
@@ -110,8 +110,10 @@ history.
 - [ ] Clicking a collection shows its entities in a table
 - [ ] Clicking an entity shows its full JSON data
 - [ ] Empty collections show an empty state with a "Create Entity" action
+- [ ] Entity table paginates at 50 rows per page with next/previous navigation
+- [ ] "Create Entity" action in empty state opens a form with JSON input validated against schema
 
-### Story US-024: Manage Schemas Visually [FEAT-009]
+### Story US-041: Manage Schemas Visually [FEAT-011]
 
 **As a** developer defining Axon schemas
 **I want** a web UI to view and edit collection schemas
@@ -122,8 +124,10 @@ history.
 - [ ] Clicking a collection shows its schema as formatted JSON
 - [ ] Editing and saving a schema updates it via PUT and shows success/error
 - [ ] Creating a collection includes a schema input field
+- [ ] Saving invalid schema JSON shows inline error with details
+- [ ] Saving a schema change shows validation result before commit
 
-### Story US-025: Inspect Audit Log Visually [FEAT-009]
+### Story US-042: Inspect Audit Log Visually [FEAT-011]
 
 **As an** operator debugging agent behavior
 **I want** a web UI to browse and filter the audit log
@@ -134,6 +138,7 @@ history.
 - [ ] Entries show operation type, collection, entity ID, version, and actor
 - [ ] Filtering by collection or actor narrows the results
 - [ ] Clicking an entry shows the full before/after data
+- [ ] Audit log supports date range filtering (since/until)
 
 ## Technical Design
 
@@ -222,7 +227,7 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 
 ### Related Artifacts
 - **Parent PRD Section**: Requirements Overview > P1 #8 (Admin web UI)
-- **User Stories**: US-023, US-024, US-025
+- **User Stories**: US-040, US-041, US-042
 - **Architecture**: ADR-006 (SvelteKit + Bun + Vite)
 - **Cross-cutting concern**: svelte-bun in `concerns.md`
 - **Implementation**: `ui/` at project root

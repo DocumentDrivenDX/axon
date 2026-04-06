@@ -1,14 +1,14 @@
 ---
 dun:
-  id: FEAT-010
+  id: FEAT-012
   depends_on:
     - helix.prd
     - FEAT-005
     - ADR-005
 ---
-# Feature Specification: FEAT-010 - Authorization
+# Feature Specification: FEAT-012 - Authorization
 
-**Feature ID**: FEAT-010
+**Feature ID**: FEAT-012
 **Status**: Draft
 **Priority**: P1
 **Owner**: Core Team
@@ -188,7 +188,7 @@ attributes of the **user**, the **resource** (entity/collection), and the
 
 ## User Stories
 
-### Story US-026: Authenticate via Tailscale [FEAT-010]
+### Story US-043: Authenticate via Tailscale [FEAT-012]
 
 **As an** agent running on a tailnet
 **I want** Axon to recognize my Tailscale identity
@@ -198,8 +198,9 @@ attributes of the **user**, the **resource** (entity/collection), and the
 - [ ] Agent connects via Tailscale IP; Axon resolves its identity via whois
 - [ ] Audit entries show the agent's Tailscale node name as actor
 - [ ] Connections from outside the tailnet are rejected with 401
+- [ ] Agent with no recognized Tailscale tags receives the configured `default_role` (default: `read`)
 
-### Story US-027: Role-Based Access Control [FEAT-010]
+### Story US-044: Role-Based Access Control [FEAT-012]
 
 **As an** operator managing Axon
 **I want** to restrict what agents can do based on their role
@@ -210,8 +211,9 @@ attributes of the **user**, the **resource** (entity/collection), and the
 - [ ] An agent with `tag:axon-write` cannot drop collections or change schemas
 - [ ] An agent with `tag:axon-read` gets 403 on any write operation
 - [ ] An admin with `tag:axon-admin` can perform all operations
+- [ ] When a node has multiple role-granting tags, the highest-privilege role wins (admin > write > read)
 
-### Story US-028: Development Without Auth [FEAT-010]
+### Story US-045: Development Without Auth [FEAT-012]
 
 **As a** developer running Axon locally
 **I want** to disable auth for development
@@ -352,7 +354,7 @@ role_claim = "axon_role"
 - `tailscale-localapi` crate (v0.5.0) for whois calls
 - `jsonwebtoken` crate for generic OIDC JWT validation (Phase 2)
 
-### Story US-029: Field-Level Masking [FEAT-010]
+### Story US-046: Field-Level Masking [FEAT-012]
 
 **As a** data steward
 **I want** sensitive fields hidden from unauthorized users
@@ -364,7 +366,7 @@ role_claim = "axon_role"
 - [ ] Masked fields are omitted from the response (not replaced with null or redacted)
 - [ ] Masking applies to query results, entity detail, and audit log data_after
 
-### Story US-030: Attribute-Based Write Control [FEAT-010]
+### Story US-047: Attribute-Based Write Control [FEAT-012]
 
 **As an** operator
 **I want** to control who can edit which collections and fields
@@ -389,10 +391,10 @@ role_claim = "axon_role"
 
 ### Related Artifacts
 - **Parent PRD Section**: Requirements Overview > P1 #6 (Authentication/authorization)
-- **User Stories**: US-026, US-027, US-028
+- **User Stories**: US-043, US-044, US-045
 - **Architecture**: ADR-005 (Tailscale LocalAPI whois)
 - **Implementation**: `crates/axon-server/src/auth/` (planned)
 
 ### Feature Dependencies
 - **Depends On**: FEAT-005
-- **Depended By**: FEAT-009 (Admin UI will inherit auth when enabled)
+- **Depended By**: FEAT-011 (Admin UI will inherit auth when enabled)

@@ -127,6 +127,132 @@ Derived from niflheim's production-proven limits, adapted for Axon's entity-grap
 
 ---
 
+## 4a. Physical Storage Architecture
+
+The logical data model from Section 3 is materialized with the following
+physical design principles. See [ADR-010](../02-design/adr/ADR-010-physical-storage-and-secondary-indexes.md).
+
+### Numeric Collection IDs
+
+Collections use surrogate integer primary keys. All storage tables reference
+collections by integer, not by name. Collection renames are O(1) — update
+one row, no data rewrite.
+
+### Native UUID Entity IDs
+
+Entity IDs are stored as 16-byte UUIDs (native type on PostgreSQL, BLOB on
+SQLite, raw bytes on KV stores). UUIDv7 is the default server-generated
+format (time-ordered). Client-supplied non-UUID strings are mapped via UUID v5
+deterministic hashing.
+
+### Dedicated Links Table
+
+Links are stored in a dedicated table (not as entities in pseudo-collections)
+with database-enforced referential integrity:
+- `ON DELETE RESTRICT` — cannot delete an entity that has links pointing at it
+- Reverse-lookup index replaces the `__axon_links_rev__` pseudo-collection
+- All backends implement the same referential integrity semantics (DB-enforced
+  on SQL, application-enforced on KV)
+
+### Entity Data Opacity
+
+Entity data is opaque to the storage layer. The data column type varies by
+backend (JSONB in PostgreSQL, TEXT in SQLite, raw bytes in KV stores) but is
+not used for query execution. All structured queries go through declared
+secondary indexes.
+
+### No Backend-Specific Query Operators
+
+The storage layer does not use GIN indexes, JSONB containment operators, or
+any backend-specific query features. This keeps the query path portable across
+PostgreSQL, SQLite, and KV stores (FoundationDB, Fjall).
+
+---
+
+## 4b. Secondary Indexes
+
+Axon uses the EAV (Entity-Attribute-Value) pattern for secondary indexes.
+See [ADR-010](../02-design/adr/ADR-010-physical-storage-and-secondary-indexes.md)
+and [FEAT-013](features/FEAT-013-secondary-indexes.md).
+
+### Index Types
+
+| Type | Storage | Use Case |
+|------|---------|----------|
+| `string` | TEXT | Status, name, category lookups |
+| `integer` | BIGINT | Priority, count, quantity ranges |
+| `float` | DOUBLE PRECISION | Scores, percentages, measurements |
+| `datetime` | TIMESTAMPTZ / epoch nanos | Time-range queries, sorting by date |
+| `boolean` | BOOLEAN | Flag-based filtering |
+
+### Index Varieties
+
+- **Single-field**: One EAV table per type, shared across all collections.
+  PK: `(collection_id, field_path, value, entity_id)`
+- **Compound**: Binary-encoded sort key preserving multi-field sort order.
+  Uses FoundationDB-compatible tuple encoding. PK:
+  `(collection_id, index_name, sort_key, entity_id)`
+- **Unique**: Single-field or compound with uniqueness constraint. Enforced
+  at the storage level
+
+### Index Lifecycle
+
+Indexes go through states: `building` → `ready` → `dropping`. The query
+planner only uses `ready` indexes. Background workers handle build and
+cleanup. A rebuild operation returns a `ready` index to `building` for
+reindexing.
+
+### Query Planner
+
+Rules-based (not cost-based). Checks filter fields against declared indexes:
+1. Exact match on indexed field → use index table
+2. Prefix match on compound index → use compound index with range scan
+3. Sort field matches index → use index scan order
+4. No match → full scan with application-layer filter
+
+---
+
+## 4c. Namespace Hierarchy and Multi-Tenancy
+
+See [ADR-011](../02-design/adr/ADR-011-multi-tenancy-and-namespace-hierarchy.md)
+and [FEAT-014](features/FEAT-014-multi-tenancy.md).
+
+### Four-Level Hierarchy
+
+```
+node          (deployment / physical location — routing only)
+  └── database    (tenant isolation boundary)
+       └── schema     (logical namespace within a database)
+            └── collection  (entity container)
+```
+
+### Data Path
+
+The entity address is `database.schema.collection/entity_id`. The node
+level is not part of the data path — it is a routing/placement concept.
+
+### Defaults
+
+- Single-tenant deployments use `default.default.{collection}` implicitly
+- First startup creates the `default` database and `default` schema
+- Zero configuration required for single-tenant use
+
+### Node Topology (P2)
+
+Nodes carry region and zone metadata. A `database_placement` table maps
+databases to nodes. Database migration is a routing table update plus data
+replication — no key-space rewrite, no entity address change.
+
+### Access Control Scoping
+
+RBAC/ABAC grants (FEAT-012) operate at four granularity levels:
+- Global (all databases)
+- Database (all schemas within a database)
+- Schema (all collections within a namespace)
+- Collection (existing behavior)
+
+---
+
 ## 5. Schema System
 
 ### Axon Entity Schema Format (ESF)
@@ -270,14 +396,24 @@ Quality metrics that can only improve:
 
 ## Traceability
 
-| Requirement Area | PRD Section | Feature Specs |
-|-----------------|-------------|---------------|
-| Stateless servers | Section 6 (Cloud-native) | FEAT-005 (API Surface) |
-| Multi-backend | Section 10 (Constraints) | FEAT-001 (Collections) |
-| Data shape limits | Section 4 (Data Model) | FEAT-007 (Entity-Graph Model) |
-| Schema system (ESF) | Section 4, 8 | FEAT-002 (Schema Engine) |
-| Correctness | Section 5 (Transactions) | FEAT-008 (ACID Transactions) |
-| Performance targets | Section 6 (Success Metrics) | FEAT-004 (Entity Operations) |
+| Requirement Area | PRD Section | Feature Specs | ADRs |
+|-----------------|-------------|---------------|------|
+| Stateless servers | Section 6 (Cloud-native) | FEAT-005 (API Surface) | ADR-003 |
+| Multi-backend | Section 10 (Constraints) | FEAT-001 (Collections) | ADR-003 |
+| Data shape limits | Section 4 (Data Model) | FEAT-007 (Entity-Graph Model) | — |
+| Schema system (ESF) | Section 4, 8 | FEAT-002 (Schema Engine) | ADR-002, ADR-007, ADR-008 |
+| Correctness | Section 5 (Transactions) | FEAT-008 (ACID Transactions) | ADR-004 |
+| Performance targets | Section 6 (Success Metrics) | FEAT-004 (Entity Operations) | — |
+| Physical storage | Section 8 P1 #11 | FEAT-013 (Indexes) | ADR-010 |
+| Secondary indexes | Section 8 P1 #9 | FEAT-013 (Indexes) | ADR-010 |
+| Multi-tenancy / namespaces | Section 8 P1 #10, P2 #4 | FEAT-014 (Multi-Tenancy) | ADR-011 |
+| Authentication / authorization | Section 8 P1 #6 | FEAT-012 (Authorization) | ADR-005 |
+| Admin web UI | Section 8 P1 #8 | FEAT-011 (Admin Web UI) | ADR-006 |
+| Schema evolution | Section 8 P1 #1 | FEAT-017 (Schema Evolution) | ADR-007 |
+| Change feeds | Section 8 P1 #2 | FEAT-015 (GraphQL subscriptions), FEAT-003 (Audit polling) | ADR-003, ADR-012 |
+| Aggregation queries | Section 8 P1 #3 | FEAT-018 (Aggregation) | — |
+| GraphQL API | Section 8 P1 #12 | FEAT-015 (GraphQL) | ADR-012 |
+| MCP server | Section 8 P1 #13 | FEAT-016 (MCP) | ADR-013 |
 
 ---
 

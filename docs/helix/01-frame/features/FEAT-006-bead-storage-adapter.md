@@ -53,6 +53,8 @@ Every agentic framework that uses beads (or bead-like work items) reinvents stor
 - [ ] `axon bead list --status pending` lists pending beads
 - [ ] `axon bead ready` lists beads with all dependencies satisfied
 - [ ] Bead status transitions are validated (can't go from `draft` to `done` directly)
+- [ ] Attempt to transition a bead from `draft` directly to `done` is rejected with error listing valid next states
+- [ ] Creating a bead with a dependency referencing a non-existent entity ID fails with a validation error
 
 ### Story US-016: Track Bead Dependencies [FEAT-006]
 
@@ -65,6 +67,8 @@ Every agentic framework that uses beads (or bead-like work items) reinvents stor
 - [ ] Creating a circular dependency is detected and rejected
 - [ ] `axon bead deps <id>` shows the dependency tree for a bead
 - [ ] Ready-queue computation correctly identifies beads with all deps satisfied
+- [ ] Adding a dependency that would create a cycle (A→B→C→A) is rejected with a cycle detection error
+- [ ] Removing an existing dependency succeeds and is captured in the audit trail
 
 ## Dependencies
 

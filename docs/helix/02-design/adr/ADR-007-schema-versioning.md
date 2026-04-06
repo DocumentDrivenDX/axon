@@ -3,13 +3,14 @@ dun:
   id: ADR-007
   depends_on:
     - FEAT-002
+    - FEAT-017
     - ADR-002
 ---
 # ADR-007: Schema Versioning and Link Type Validation
 
 | Date | Status | Deciders | Related | Confidence |
 |------|--------|----------|---------|------------|
-| 2026-04-05 | Accepted | Erik LaBianca | FEAT-002, ADR-002 | High |
+| 2026-04-05 | Accepted | Erik LaBianca | FEAT-002, FEAT-017, ADR-002 | High |
 
 ## Context
 
@@ -97,7 +98,7 @@ respective link types. This is a UI/editor concern, not a schema concern.
 
 ### Bidirectional Links — UI Concern
 
-The admin UI (FEAT-009) will offer a "make bidirectional" convenience
+The admin UI (FEAT-011) will offer a "make bidirectional" convenience
 when editing link types. This checkbox:
 
 1. Shows a picker for the reverse link type name

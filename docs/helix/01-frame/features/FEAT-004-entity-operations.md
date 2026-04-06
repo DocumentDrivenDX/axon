@@ -137,8 +137,9 @@ Agents need to create, read, update, delete, and query structured entities with 
 - Full-text search (P2)
 - Aggregation queries (P2)
 - Multi-entity transactions / batch operations (P1)
-- Secondary indexes (P1 — V1 uses sequential scan for queries)
 - Geospatial queries
+
+Note: Secondary indexes are now covered by FEAT-013.
 
 ## Traceability
 

@@ -100,9 +100,10 @@ Agentic applications need a structured place to store groups of related entities
 ## Constraints and Assumptions
 
 ### Constraints
-- Collection names are immutable after creation (rename = create new + migrate + drop old)
+- Collection names can be renamed (ADR-010 numeric collection IDs make renames O(1))
 - Schema binding is required — no schemaless collections
 - Database-level isolation (collections in different databases are fully independent)
+- Collections exist within a schema namespace within a database (FEAT-014). Fully qualified name: `database.schema.collection`
 
 ### Assumptions
 - Most applications will have 5-50 collections

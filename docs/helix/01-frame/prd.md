@@ -214,8 +214,8 @@ Each operation within the transaction is validated (schema, version) and the ent
 - **Replacing analytical databases** — Axon is transactional, not analytical. Niflheim handles analytics
 - **Building a full ORM** — Axon provides a data API, not an object-relational mapper
 - **Supporting arbitrary SQL** — Axon has a structured query interface, not a general SQL engine
-- **Multi-region replication in V1** — local-first sync is in scope; geo-distributed clusters are not
-- **GUI/dashboard in V1** — API-first; admin UIs come later
+- **Multi-region replication in V1** — node topology is designed (ADR-011) and database placement is modeled, but actual multi-node routing and database migration are P2
+- **GIN / backend-specific query acceleration** — secondary indexes use the portable EAV pattern, not backend-specific features like JSONB containment operators
 
 Deferred items tracked in `docs/helix/parking-lot.md`.
 
@@ -286,24 +286,41 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ### Should Have (P1)
 
-1. **Schema evolution** — add/remove/modify fields with migration support
-2. **Change feeds** — subscribe to collection changes in real-time
-3. **Aggregation queries** — COUNT, SUM, AVG, GROUP BY across entities in a collection
+1. **Schema evolution** — breaking change detection, compatibility classification, entity revalidation, schema diff. Migration declarations deferred to V2. See FEAT-017, ADR-007
+2. **Change feeds** — Debezium-compatible CDC records on Kafka topics with Confluent-compatible Schema Registry. Multi-sink: Kafka (production), HTTP SSE (real-time clients), file (debugging/replay). Initial snapshot for bootstrapping consumers. At-least-once delivery with audit_id cursors. Real-time push also via GraphQL subscriptions (FEAT-015). See FEAT-021, ADR-014
+3. **Aggregation queries** — COUNT, SUM, AVG, MIN, MAX, GROUP BY across entities in a collection. Accelerated by secondary indexes. Exposed via structured API, GraphQL, and MCP. See FEAT-018
 4. **Graph traversal queries** — follow typed links with depth limits, filters, and path queries
 5. **Server mode** — run Axon as a standalone service with network API
-6. **Authentication/authorization** — OIDC-based identity with Tailscale as default provider; RBAC + ABAC with per-collection policies, field-level masking, and field-level immutability. See FEAT-010
+6. **Authentication/authorization** — OIDC-based identity with Tailscale as default provider; RBAC + ABAC with per-collection policies, field-level masking, and field-level immutability. See FEAT-012
 7. **Bead storage adapter** — purpose-built entity/link schemas and API for beads lifecycle
-8. **Admin web UI** — browser-based console for collection management, entity browsing, schema editing, and audit log inspection. Served by the axon-server binary. See FEAT-009
+8. **Admin web UI** — browser-based console for collection management, entity browsing, schema editing, and audit log inspection. Served by the axon-server binary. See FEAT-011
+9. **Secondary indexes** — EAV-pattern typed indexes (string, integer, float, datetime, boolean) declared in schema. Single-field, compound, and unique indexes. Query planner uses indexes for equality, range, and sort acceleration. Background index build for existing collections. See FEAT-013
+10. **Multi-tenancy data model** — database/schema namespace hierarchy for tenant isolation. Three-level data path (`database.schema.collection`). Default database/schema for zero-config single-tenant use. Access control grants scoped to database, schema, or collection. See FEAT-014
+11. **Physical storage architecture** — numeric collection IDs (O(1) renames), native UUID entity IDs, dedicated links table with DB-enforced referential integrity, portable design across SQL and KV backends. See ADR-010
+12. **GraphQL API** — full read/write GraphQL API auto-generated from ESF schemas. Queries: entity types, relationship fields from link types, lifecycle fields, filter/sort inputs, Relay-style cursor pagination. Mutations: entity CRUD with OCC, merge patch, link management, lifecycle transitions, atomic transactions. Subscriptions: change feeds backed by audit log via WebSocket. See FEAT-015, ADR-012
+13. **MCP server** — Model Context Protocol server exposing Axon to AI agents. Tools (CRUD, query, traverse, transition) auto-generated from ESF schemas. Resources with URI scheme for entity/collection data. Subscriptions for change notification. GraphQL bridge via `axon.query` tool. Stdio and HTTP+SSE transports. See FEAT-016, ADR-013
+14. **Validation rules** — cross-field conditional validation (ESF Layer 5) with severity levels (error/warning/info). Actionable error messages with fix suggestions and "did you mean?" near-match detection. Enhanced JSON Schema errors. See FEAT-019
+15. **Link discovery and graph queries** — fast, indexed queries for finding link targets, listing entity neighbors, and exploring the entity graph. Powers autocomplete, relationship building, and graph exploration. Exposed via structured API, GraphQL relationship fields, and MCP tools. See FEAT-020
 
 ### Nice to Have (P2)
 
 1. **Local-first sync** — CRDTs or OT for offline-capable clients with conflict resolution
 2. **Workflow primitives** — state machine definitions, transition guards, lifecycle hooks
 3. **Schema registry** — shared schema definitions across Axon instances
-4. **Multi-tenancy** — database-level isolation for SaaS deployment
+4. **Node topology and database migration** — geographic node registry, database-to-node placement, request routing/proxy, database migration between nodes. See FEAT-014 (P2 section)
 5. **Niflheim bridge** — CDC export from Axon collections to niflheim for analytics
 6. **Tablespec/UMF integration** — import schemas from UMF format
 7. **Plugin system** — custom validators, transformers, and hooks
+
+### Not Scheduled
+
+The following capabilities have been discussed and are architecturally
+compatible with Axon but are not prioritized for any release:
+
+- **Cypher subset (read-only)** — graph pattern matching query language. Valuable for complex multi-hop, cycle detection, and cross-link-type queries. Would compile to the same query planner as GraphQL
+- **SQL DML** — batch updates, bulk operations, data migration via SQL write syntax. Read-side SQL is better served by CDC → DuckDB
+- **Semantic search (vector indexes)** — vector similarity as an ESF index type. Eliminates need for a separate vector store. Would surface as a `near` filter in GraphQL
+- **Document search (Tantivy)** — full-text search with inverted indexes, BM25 ranking, faceting. Significant integration effort
 
 ---
 
