@@ -291,7 +291,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 3. **Aggregation queries** — COUNT, SUM, AVG, GROUP BY across entities in a collection
 4. **Graph traversal queries** — follow typed links with depth limits, filters, and path queries
 5. **Server mode** — run Axon as a standalone service with network API
-6. **Authentication/authorization** — API keys, per-collection permissions
+6. **Authentication/authorization** — OIDC-based identity with Tailscale as default provider; per-collection permissions. See FEAT-010
 7. **Bead storage adapter** — purpose-built entity/link schemas and API for beads lifecycle
 8. **Admin web UI** — browser-based console for collection management, entity browsing, schema editing, and audit log inspection. Served by the axon-server binary. See FEAT-009
 
