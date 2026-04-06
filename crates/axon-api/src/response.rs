@@ -210,3 +210,24 @@ pub struct PutSchemaResponse {
 pub struct GetSchemaResponse {
     pub schema: CollectionSchema,
 }
+
+// ── Aggregation responses (US-062) ──────────────────────────────────────────
+
+/// A single group in a COUNT GROUP BY result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CountGroup {
+    /// The group key value. `null` for entities where the field is absent or null.
+    pub key: serde_json::Value,
+    /// Number of entities in this group.
+    pub count: usize,
+}
+
+/// Response from counting entities with optional GROUP BY.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CountEntitiesResponse {
+    /// Total number of entities matching the filter (across all groups).
+    pub total_count: usize,
+    /// Groups when `group_by` was specified. Empty otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<CountGroup>,
+}

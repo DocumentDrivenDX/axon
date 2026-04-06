@@ -19,18 +19,20 @@ use axon_schema::validation::{compile_entity_schema, validate, validate_link_met
 use axon_storage::adapter::StorageAdapter;
 
 use crate::request::{
-    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode,
-    FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest,
-    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevertEntityRequest, SortDirection,
-    TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    CountEntitiesRequest, CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest,
+    DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest,
+    FieldFilter, FilterNode, FilterOp, GetEntityRequest, GetSchemaRequest,
+    ListCollectionsRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
+    ReachableRequest, RevertEntityRequest, SortDirection, TraverseDirection, TraverseRequest,
+    UpdateEntityRequest,
 };
 use crate::response::{
-    CollectionMetadata, CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse,
-    DeleteEntityResponse, DeleteLinkResponse, DescribeCollectionResponse, DropCollectionResponse,
-    GetEntityResponse, GetSchemaResponse, ListCollectionsResponse, PutSchemaResponse,
-    QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevertEntityResponse,
-    TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
+    CollectionMetadata, CountEntitiesResponse, CountGroup, CreateCollectionResponse,
+    CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse, DeleteLinkResponse,
+    DescribeCollectionResponse, DropCollectionResponse, GetEntityResponse, GetSchemaResponse,
+    ListCollectionsResponse, PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse,
+    ReachableResponse, RevertEntityResponse, TraverseHop, TraversePath, TraverseResponse,
+    UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -428,6 +430,63 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entities,
             total_count,
             next_cursor,
+        })
+    }
+
+    // ── Aggregation operations (US-062) ────────────────────────────────────────
+
+    /// Count entities with optional filter and GROUP BY.
+    pub fn count_entities(
+        &self,
+        req: CountEntitiesRequest,
+    ) -> Result<CountEntitiesResponse, AxonError> {
+        let all = self.storage.range_scan(&req.collection, None, None, None)?;
+
+        // Apply filter.
+        let matched: Vec<&Entity> = all
+            .iter()
+            .filter(|e| {
+                req.filter
+                    .as_ref()
+                    .map_or(true, |f| apply_filter(f, &e.data))
+            })
+            .collect();
+
+        let total_count = matched.len();
+
+        // Group by field, if requested.
+        let groups = if let Some(ref field) = req.group_by {
+            let mut group_map: std::collections::BTreeMap<String, usize> =
+                std::collections::BTreeMap::new();
+            for entity in &matched {
+                let key = get_field_value(&entity.data, field)
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                let key_str = match &key {
+                    serde_json::Value::String(s) => s.clone(),
+                    serde_json::Value::Null => "null".into(),
+                    other => other.to_string(),
+                };
+                *group_map.entry(key_str).or_insert(0) += 1;
+            }
+            group_map
+                .into_iter()
+                .map(|(key_str, count)| {
+                    let key = if key_str == "null" {
+                        serde_json::Value::Null
+                    } else {
+                        serde_json::Value::String(key_str)
+                    };
+                    CountGroup { key, count }
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        Ok(CountEntitiesResponse {
+            total_count,
+            groups,
         })
     }
 
@@ -4511,5 +4570,163 @@ link_types:
         assert!(schema.gates.contains_key("complete"));
         assert!(schema.gates.contains_key("review"));
         assert_eq!(schema.gates["review"].includes, vec!["complete"]);
+    }
+
+    // ── Aggregation tests (US-062) ──────────────────────────────────────
+
+    fn handler_with_entities() -> AxonHandler<MemoryStorageAdapter> {
+        let mut h = handler();
+        let col = CollectionId::new("beads");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        // Create entities with various statuses and types.
+        let items = vec![
+            json!({"bead_type": "task", "status": "draft"}),
+            json!({"bead_type": "task", "status": "draft"}),
+            json!({"bead_type": "task", "status": "pending"}),
+            json!({"bead_type": "bug", "status": "pending"}),
+            json!({"bead_type": "bug", "status": "done"}),
+            json!({"bead_type": "epic"}), // missing status
+        ];
+        for (i, data) in items.into_iter().enumerate() {
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new(format!("b-{i}")),
+                data,
+                actor: None,
+            })
+            .unwrap();
+        }
+        h
+    }
+
+    #[test]
+    fn count_without_group_by_returns_total() {
+        let h = handler_with_entities();
+        let resp = h
+            .count_entities(CountEntitiesRequest {
+                collection: CollectionId::new("beads"),
+                filter: None,
+                group_by: None,
+            })
+            .unwrap();
+        assert_eq!(resp.total_count, 6);
+        assert!(resp.groups.is_empty());
+    }
+
+    #[test]
+    fn count_group_by_status() {
+        let h = handler_with_entities();
+        let resp = h
+            .count_entities(CountEntitiesRequest {
+                collection: CollectionId::new("beads"),
+                filter: None,
+                group_by: Some("status".into()),
+            })
+            .unwrap();
+        assert_eq!(resp.total_count, 6);
+
+        // Should have groups for draft, pending, done, and null (missing status).
+        assert!(!resp.groups.is_empty());
+
+        let draft_count = resp
+            .groups
+            .iter()
+            .find(|g| g.key == json!("draft"))
+            .map(|g| g.count)
+            .unwrap_or(0);
+        assert_eq!(draft_count, 2);
+
+        let pending_count = resp
+            .groups
+            .iter()
+            .find(|g| g.key == json!("pending"))
+            .map(|g| g.count)
+            .unwrap_or(0);
+        assert_eq!(pending_count, 2);
+
+        let done_count = resp
+            .groups
+            .iter()
+            .find(|g| g.key == json!("done"))
+            .map(|g| g.count)
+            .unwrap_or(0);
+        assert_eq!(done_count, 1);
+
+        // Null group for the entity missing status.
+        let null_count = resp
+            .groups
+            .iter()
+            .find(|g| g.key.is_null())
+            .map(|g| g.count)
+            .unwrap_or(0);
+        assert_eq!(null_count, 1);
+    }
+
+    #[test]
+    fn count_with_filter() {
+        let h = handler_with_entities();
+        let resp = h
+            .count_entities(CountEntitiesRequest {
+                collection: CollectionId::new("beads"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "bead_type".into(),
+                    op: FilterOp::Eq,
+                    value: json!("task"),
+                })),
+                group_by: None,
+            })
+            .unwrap();
+        assert_eq!(resp.total_count, 3);
+    }
+
+    #[test]
+    fn count_with_filter_and_group_by() {
+        let h = handler_with_entities();
+        let resp = h
+            .count_entities(CountEntitiesRequest {
+                collection: CollectionId::new("beads"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "bead_type".into(),
+                    op: FilterOp::Eq,
+                    value: json!("task"),
+                })),
+                group_by: Some("status".into()),
+            })
+            .unwrap();
+        assert_eq!(resp.total_count, 3);
+
+        let draft = resp.groups.iter().find(|g| g.key == json!("draft"));
+        assert_eq!(draft.unwrap().count, 2);
+
+        let pending = resp.groups.iter().find(|g| g.key == json!("pending"));
+        assert_eq!(pending.unwrap().count, 1);
+    }
+
+    #[test]
+    fn count_empty_collection() {
+        let mut h = handler();
+        let col = CollectionId::new("empty");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .count_entities(CountEntitiesRequest {
+                collection: col,
+                filter: None,
+                group_by: Some("status".into()),
+            })
+            .unwrap();
+        assert_eq!(resp.total_count, 0);
+        assert!(resp.groups.is_empty());
     }
 }

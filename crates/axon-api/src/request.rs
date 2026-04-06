@@ -305,3 +305,17 @@ pub struct PutSchemaRequest {
 pub struct GetSchemaRequest {
     pub collection: CollectionId,
 }
+
+// ── Aggregation requests (US-062, US-063) ───────────────────────────────────
+
+/// Request to count entities, optionally grouped by a field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CountEntitiesRequest {
+    pub collection: CollectionId,
+    /// Optional filter to restrict which entities are counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<FilterNode>,
+    /// Field to group by. If `None`, returns a single total count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_by: Option<String>,
+}
