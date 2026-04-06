@@ -356,6 +356,91 @@ pub fn build_aggregate_tool(collection: &str) -> ToolDef {
     }
 }
 
+/// Build `{collection}.link_candidates` tool.
+///
+/// Returns possible link types for a collection (from schema link definitions).
+pub fn build_link_candidates_tool(collection: &str) -> ToolDef {
+    let col = collection.to_string();
+    ToolDef {
+        name: format!("{col}.link_candidates"),
+        description: format!("Discover available link types for entities in the {col} collection"),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "Entity ID to find link candidates for" }
+            },
+            "required": ["id"]
+        }),
+        handler: Box::new(move |args| {
+            let id = args
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidArgument("missing 'id'".into()))?;
+
+            // Stub: return empty candidates list.
+            Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::json!({
+                        "collection": col,
+                        "entity_id": id,
+                        "candidates": [],
+                        "info": "link candidates stub — schema integration pending"
+                    }).to_string()
+                }]
+            }))
+        }),
+    }
+}
+
+/// Build `{collection}.neighbors` tool.
+///
+/// Returns linked entities for a given entity.
+pub fn build_neighbors_tool(collection: &str) -> ToolDef {
+    let col = collection.to_string();
+    ToolDef {
+        name: format!("{col}.neighbors"),
+        description: format!("Find entities linked to a {col} entity"),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "Entity ID" },
+                "link_type": { "type": "string", "description": "Optional link type filter" },
+                "direction": {
+                    "type": "string",
+                    "enum": ["outbound", "inbound", "both"],
+                    "description": "Link direction (default: both)"
+                }
+            },
+            "required": ["id"]
+        }),
+        handler: Box::new(move |args| {
+            let id = args
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidArgument("missing 'id'".into()))?;
+            let direction = args
+                .get("direction")
+                .and_then(|v| v.as_str())
+                .unwrap_or("both");
+
+            // Stub response
+            Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::json!({
+                        "collection": col,
+                        "entity_id": id,
+                        "direction": direction,
+                        "neighbors": [],
+                        "info": "neighbors stub — handler integration pending"
+                    }).to_string()
+                }]
+            }))
+        }),
+    }
+}
+
 fn to_tool_error(err: axon_core::error::AxonError) -> ToolError {
     use axon_core::error::AxonError;
     match err {
@@ -602,5 +687,40 @@ mod tests {
         let tool = build_aggregate_tool("tasks");
         let err = (tool.handler)(&serde_json::json!({"field": "x"})).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgument(_)));
+    }
+
+    // ── link tools tests ───────────────────────────────────────────────
+
+    #[test]
+    fn link_candidates_tool() {
+        let tool = build_link_candidates_tool("tasks");
+        assert_eq!(tool.name, "tasks.link_candidates");
+        let result = (tool.handler)(&serde_json::json!({"id": "t-001"})).unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["entity_id"], "t-001");
+    }
+
+    #[test]
+    fn neighbors_tool() {
+        let tool = build_neighbors_tool("tasks");
+        assert_eq!(tool.name, "tasks.neighbors");
+        let result = (tool.handler)(&serde_json::json!({"id": "t-001"})).unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["direction"], "both");
+    }
+
+    #[test]
+    fn neighbors_tool_with_direction() {
+        let tool = build_neighbors_tool("tasks");
+        let result = (tool.handler)(&serde_json::json!({
+            "id": "t-001",
+            "direction": "outbound"
+        }))
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["direction"], "outbound");
     }
 }

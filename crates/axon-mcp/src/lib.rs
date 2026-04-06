@@ -16,6 +16,9 @@ pub mod handlers;
 pub mod protocol;
 pub mod tools;
 
-pub use handlers::{build_aggregate_tool, build_crud_tools, build_query_tool};
+pub use handlers::{
+    build_aggregate_tool, build_crud_tools, build_link_candidates_tool, build_neighbors_tool,
+    build_query_tool,
+};
 pub use protocol::{McpServer, McpError};
 pub use tools::ToolRegistry;
