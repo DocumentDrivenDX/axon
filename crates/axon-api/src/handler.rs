@@ -1647,6 +1647,93 @@ impl<S: StorageAdapter> AxonHandler<S> {
         })
     }
 
+    /// List an entity's neighbors: outbound + inbound linked entities
+    /// grouped by link type and direction (US-071, FEAT-020).
+    pub fn list_neighbors(
+        &self,
+        req: crate::request::ListNeighborsRequest,
+    ) -> Result<crate::response::ListNeighborsResponse, AxonError> {
+        use std::collections::BTreeMap;
+
+        // Verify entity exists.
+        if self.storage.get(&req.collection, &req.id)?.is_none() {
+            return Err(AxonError::NotFound(format!(
+                "{}/{}",
+                req.collection, req.id
+            )));
+        }
+
+        let all_links = self.load_all_links()?;
+
+        // group key: (link_type, direction)
+        let mut groups: BTreeMap<(String, String), Vec<Entity>> = BTreeMap::new();
+
+        let include_outbound = req
+            .direction
+            .as_ref()
+            .map_or(true, |d| *d == TraverseDirection::Forward);
+        let include_inbound = req
+            .direction
+            .as_ref()
+            .map_or(true, |d| *d == TraverseDirection::Reverse);
+
+        for link in &all_links {
+            let type_filter_ok = req
+                .link_type
+                .as_deref()
+                .map_or(true, |lt| link.link_type == lt);
+            if !type_filter_ok {
+                continue;
+            }
+
+            // Outbound: this entity is the source.
+            if include_outbound
+                && link.source_collection == req.collection
+                && link.source_id == req.id
+            {
+                let key = (link.link_type.clone(), "outbound".to_string());
+                if let Some(target) = self
+                    .storage
+                    .get(&link.target_collection, &link.target_id)?
+                {
+                    groups.entry(key).or_default().push(target);
+                }
+            }
+
+            // Inbound: this entity is the target.
+            if include_inbound
+                && link.target_collection == req.collection
+                && link.target_id == req.id
+            {
+                let key = (link.link_type.clone(), "inbound".to_string());
+                if let Some(source) = self
+                    .storage
+                    .get(&link.source_collection, &link.source_id)?
+                {
+                    groups.entry(key).or_default().push(source);
+                }
+            }
+        }
+
+        let mut total_count = 0;
+        let result_groups: Vec<crate::response::NeighborGroup> = groups
+            .into_iter()
+            .map(|((link_type, direction), entities)| {
+                total_count += entities.len();
+                crate::response::NeighborGroup {
+                    link_type,
+                    direction,
+                    entities,
+                }
+            })
+            .collect();
+
+        Ok(crate::response::ListNeighborsResponse {
+            groups: result_groups,
+            total_count,
+        })
+    }
+
     /// Load all stored links from the internal links collection.
     fn load_all_links(&self) -> Result<Vec<Link>, AxonError> {
         let links_col = Link::links_collection();
@@ -6458,5 +6545,196 @@ link_types:
             actor: None,
         })
         .unwrap();
+    }
+
+    // ── List neighbors tests (US-071, FEAT-020) ─────────────────────────
+
+    fn setup_neighbor_graph() -> AxonHandler<MemoryStorageAdapter> {
+        let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+
+        // Create two collections.
+        for name in &["tasks", "users"] {
+            h.create_collection(CreateCollectionRequest {
+                name: CollectionId::new(*name),
+                schema: CollectionSchema::new(CollectionId::new(*name)),
+                actor: Some("test".into()),
+            })
+            .unwrap();
+        }
+
+        // Create entities.
+        for (col, id) in &[
+            ("tasks", "t-001"),
+            ("tasks", "t-002"),
+            ("tasks", "t-003"),
+            ("users", "u-001"),
+        ] {
+            h.create_entity(CreateEntityRequest {
+                collection: CollectionId::new(*col),
+                id: EntityId::new(*id),
+                data: json!({"title": id}),
+                actor: None,
+            })
+            .unwrap();
+        }
+
+        // Create links: t-001 --depends-on--> t-002, t-001 --depends-on--> t-003
+        // u-001 --assigned-to--> t-001
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("tasks"),
+            source_id: EntityId::new("t-001"),
+            target_collection: CollectionId::new("tasks"),
+            target_id: EntityId::new("t-002"),
+            link_type: "depends-on".into(),
+            metadata: serde_json::Value::Null,
+            actor: None,
+        })
+        .unwrap();
+
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("tasks"),
+            source_id: EntityId::new("t-001"),
+            target_collection: CollectionId::new("tasks"),
+            target_id: EntityId::new("t-003"),
+            link_type: "depends-on".into(),
+            metadata: serde_json::Value::Null,
+            actor: None,
+        })
+        .unwrap();
+
+        h.create_link(CreateLinkRequest {
+            source_collection: CollectionId::new("users"),
+            source_id: EntityId::new("u-001"),
+            target_collection: CollectionId::new("tasks"),
+            target_id: EntityId::new("t-001"),
+            link_type: "assigned-to".into(),
+            metadata: serde_json::Value::Null,
+            actor: None,
+        })
+        .unwrap();
+
+        h
+    }
+
+    #[test]
+    fn list_neighbors_returns_outbound_and_inbound() {
+        let h = setup_neighbor_graph();
+
+        let resp = h
+            .list_neighbors(crate::request::ListNeighborsRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                link_type: None,
+                direction: None,
+            })
+            .unwrap();
+
+        // t-001 has 2 outbound depends-on and 1 inbound assigned-to.
+        assert_eq!(resp.total_count, 3);
+        assert_eq!(resp.groups.len(), 2); // depends-on/outbound + assigned-to/inbound
+
+        let outbound = resp
+            .groups
+            .iter()
+            .find(|g| g.direction == "outbound" && g.link_type == "depends-on")
+            .unwrap();
+        assert_eq!(outbound.entities.len(), 2);
+
+        let inbound = resp
+            .groups
+            .iter()
+            .find(|g| g.direction == "inbound" && g.link_type == "assigned-to")
+            .unwrap();
+        assert_eq!(inbound.entities.len(), 1);
+    }
+
+    #[test]
+    fn list_neighbors_filter_by_direction() {
+        let h = setup_neighbor_graph();
+
+        // Only outbound.
+        let resp = h
+            .list_neighbors(crate::request::ListNeighborsRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                link_type: None,
+                direction: Some(TraverseDirection::Forward),
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 2); // only outbound depends-on
+        assert!(resp.groups.iter().all(|g| g.direction == "outbound"));
+    }
+
+    #[test]
+    fn list_neighbors_filter_by_link_type() {
+        let h = setup_neighbor_graph();
+
+        let resp = h
+            .list_neighbors(crate::request::ListNeighborsRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                link_type: Some("assigned-to".into()),
+                direction: None,
+            })
+            .unwrap();
+
+        // Only the inbound assigned-to from u-001.
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.groups.len(), 1);
+        assert_eq!(resp.groups[0].link_type, "assigned-to");
+    }
+
+    #[test]
+    fn list_neighbors_entity_not_found() {
+        let h = setup_neighbor_graph();
+
+        let err = h
+            .list_neighbors(crate::request::ListNeighborsRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("ghost"),
+                link_type: None,
+                direction: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn list_neighbors_entity_with_no_links() {
+        let h = setup_neighbor_graph();
+
+        let resp = h
+            .list_neighbors(crate::request::ListNeighborsRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-003"),
+                link_type: None,
+                direction: None,
+            })
+            .unwrap();
+
+        // t-003 has 1 inbound depends-on from t-001.
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.groups[0].direction, "inbound");
+    }
+
+    #[test]
+    fn list_neighbors_includes_entity_data() {
+        let h = setup_neighbor_graph();
+
+        let resp = h
+            .list_neighbors(crate::request::ListNeighborsRequest {
+                collection: CollectionId::new("tasks"),
+                id: EntityId::new("t-001"),
+                link_type: Some("depends-on".into()),
+                direction: Some(TraverseDirection::Forward),
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 2);
+        for entity in &resp.groups[0].entities {
+            assert!(entity.data.get("title").is_some(), "entity data should be included");
+        }
     }
 }

@@ -104,6 +104,26 @@ pub struct ReachableResponse {
     pub depth: Option<usize>,
 }
 
+/// A group of neighbors for a specific link type and direction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NeighborGroup {
+    /// The link type (e.g. `"depends-on"`).
+    pub link_type: String,
+    /// Direction relative to the queried entity.
+    pub direction: String,
+    /// Linked entities with their data.
+    pub entities: Vec<Entity>,
+}
+
+/// Response from a list-neighbors query (US-071).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListNeighborsResponse {
+    /// Neighbor groups, each for a unique (link_type, direction) combination.
+    pub groups: Vec<NeighborGroup>,
+    /// Total number of neighbor entities across all groups.
+    pub total_count: usize,
+}
+
 // ── Audit responses ──────────────────────────────────────────────────────────
 
 /// Response from an audit log query.

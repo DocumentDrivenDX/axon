@@ -124,6 +124,21 @@ pub struct ReachableRequest {
     pub direction: TraverseDirection,
 }
 
+/// Request to list an entity's neighbors (US-071, FEAT-020).
+///
+/// Returns both outbound and inbound linked entities grouped by link type
+/// and direction.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListNeighborsRequest {
+    /// The entity whose neighbors to list.
+    pub collection: CollectionId,
+    pub id: EntityId,
+    /// Filter to a specific link type. If `None`, returns all link types.
+    pub link_type: Option<String>,
+    /// Filter by direction. If `None`, returns both inbound and outbound.
+    pub direction: Option<TraverseDirection>,
+}
+
 // ── Audit requests ───────────────────────────────────────────────────────────
 
 /// Request to query the audit log with optional filters and cursor-based pagination.
