@@ -6280,4 +6280,183 @@ link_types:
             "expected SchemaValidation, got: {err}"
         );
     }
+
+    // ── Unique index enforcement tests (US-032) ─────────────────────────
+
+    fn setup_unique_indexed_collection() -> AxonHandler<MemoryStorageAdapter> {
+        use axon_schema::schema::{IndexDef, IndexType};
+
+        let mut h = AxonHandler::new(MemoryStorageAdapter::default());
+
+        let schema = CollectionSchema {
+            collection: CollectionId::new("users"),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "email": { "type": "string" },
+                    "name": { "type": "string" }
+                }
+            })),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: vec![IndexDef {
+                field: "email".into(),
+                index_type: IndexType::String,
+                unique: true,
+            }],
+        };
+
+        h.create_collection(CreateCollectionRequest {
+            name: CollectionId::new("users"),
+            schema,
+            actor: Some("test".into()),
+        })
+        .unwrap();
+
+        h
+    }
+
+    #[test]
+    fn unique_index_rejects_duplicate_on_create() {
+        let mut h = setup_unique_indexed_collection();
+
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("users"),
+            id: EntityId::new("u-001"),
+            data: json!({"email": "alice@example.com", "name": "Alice"}),
+            actor: None,
+        })
+        .unwrap();
+
+        let err = h
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("users"),
+                id: EntityId::new("u-002"),
+                data: json!({"email": "alice@example.com", "name": "Bob"}),
+                actor: None,
+            })
+            .unwrap_err();
+
+        match &err {
+            AxonError::UniqueViolation { field, value } => {
+                assert_eq!(field, "email");
+                assert!(value.contains("alice@example.com"), "value: {value}");
+            }
+            other => panic!("expected UniqueViolation, got: {other}"),
+        }
+    }
+
+    #[test]
+    fn unique_index_allows_different_values() {
+        let mut h = setup_unique_indexed_collection();
+
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("users"),
+            id: EntityId::new("u-001"),
+            data: json!({"email": "alice@example.com"}),
+            actor: None,
+        })
+        .unwrap();
+
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("users"),
+            id: EntityId::new("u-002"),
+            data: json!({"email": "bob@example.com"}),
+            actor: None,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn unique_index_allows_update_same_entity() {
+        let mut h = setup_unique_indexed_collection();
+
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("users"),
+            id: EntityId::new("u-001"),
+            data: json!({"email": "alice@example.com", "name": "Alice"}),
+            actor: None,
+        })
+        .unwrap();
+
+        // Update name but keep same email — should succeed.
+        h.update_entity(UpdateEntityRequest {
+            collection: CollectionId::new("users"),
+            id: EntityId::new("u-001"),
+            data: json!({"email": "alice@example.com", "name": "Alice Smith"}),
+            expected_version: 1,
+            actor: None,
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn unique_index_rejects_duplicate_on_update() {
+        let mut h = setup_unique_indexed_collection();
+
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("users"),
+            id: EntityId::new("u-001"),
+            data: json!({"email": "alice@example.com"}),
+            actor: None,
+        })
+        .unwrap();
+
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("users"),
+            id: EntityId::new("u-002"),
+            data: json!({"email": "bob@example.com"}),
+            actor: None,
+        })
+        .unwrap();
+
+        // Try to update u-002 to have alice's email.
+        let err = h
+            .update_entity(UpdateEntityRequest {
+                collection: CollectionId::new("users"),
+                id: EntityId::new("u-002"),
+                data: json!({"email": "alice@example.com"}),
+                expected_version: 1,
+                actor: None,
+            })
+            .unwrap_err();
+
+        assert!(
+            matches!(err, AxonError::UniqueViolation { .. }),
+            "expected UniqueViolation, got: {err}"
+        );
+    }
+
+    #[test]
+    fn unique_index_freed_after_delete() {
+        let mut h = setup_unique_indexed_collection();
+
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("users"),
+            id: EntityId::new("u-001"),
+            data: json!({"email": "alice@example.com"}),
+            actor: None,
+        })
+        .unwrap();
+
+        h.delete_entity(DeleteEntityRequest {
+            collection: CollectionId::new("users"),
+            id: EntityId::new("u-001"),
+            actor: None,
+            force: false,
+        })
+        .unwrap();
+
+        // After delete, the email should be available.
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("users"),
+            id: EntityId::new("u-002"),
+            data: json!({"email": "alice@example.com"}),
+            actor: None,
+        })
+        .unwrap();
+    }
 }
