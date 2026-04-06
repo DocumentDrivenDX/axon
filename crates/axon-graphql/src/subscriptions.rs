@@ -1,0 +1,320 @@
+//! GraphQL subscription support for change feeds (US-050, FEAT-015).
+//!
+//! Provides a change feed broker that distributes entity change events
+//! to GraphQL WebSocket subscribers. Backed by the audit log.
+//!
+//! Subscriptions can filter by collection and/or specific fields.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+use axon_core::id::CollectionId;
+use serde::{Deserialize, Serialize};
+
+/// A change event emitted to subscribers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeEvent {
+    /// The collection that changed.
+    pub collection: String,
+    /// The entity ID that changed.
+    pub entity_id: String,
+    /// The operation: "create", "update", or "delete".
+    pub operation: String,
+    /// Entity data after the change (None for deletes).
+    pub data: Option<serde_json::Value>,
+    /// Entity data before the change (None for creates).
+    pub previous_data: Option<serde_json::Value>,
+    /// Entity version after the change.
+    pub version: u64,
+    /// Timestamp in milliseconds.
+    pub timestamp_ms: u64,
+    /// Actor who made the change.
+    pub actor: String,
+}
+
+/// Subscription filter criteria.
+#[derive(Debug, Clone, Default)]
+pub struct SubscriptionFilter {
+    /// If set, only receive events for this collection.
+    pub collection: Option<CollectionId>,
+    /// If set, only receive events that touch these fields.
+    pub fields: Vec<String>,
+}
+
+impl SubscriptionFilter {
+    /// Check if an event matches this filter.
+    pub fn matches(&self, event: &ChangeEvent) -> bool {
+        if let Some(col) = &self.collection {
+            if event.collection != col.as_str() {
+                return false;
+            }
+        }
+
+        if !self.fields.is_empty() {
+            // Check if any of the filtered fields are present in the data.
+            if let Some(data) = &event.data {
+                if !self.fields.iter().any(|f| data.get(f).is_some()) {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+}
+
+/// Unique identifier for a subscription.
+pub type SubscriptionId = u64;
+
+/// A registered subscriber.
+struct Subscriber {
+    filter: SubscriptionFilter,
+    /// Buffered events waiting to be consumed.
+    events: Vec<ChangeEvent>,
+    /// Whether this subscription has been closed.
+    closed: bool,
+}
+
+/// Change feed broker that distributes events to subscribers.
+///
+/// Thread-safe via internal `Mutex`. Subscribers register with a filter
+/// and poll for events. When a collection is dropped, all subscriptions
+/// for that collection are closed.
+#[derive(Default, Clone)]
+pub struct ChangeFeedBroker {
+    inner: Arc<Mutex<BrokerInner>>,
+}
+
+#[derive(Default)]
+struct BrokerInner {
+    next_id: SubscriptionId,
+    subscribers: HashMap<SubscriptionId, Subscriber>,
+}
+
+impl ChangeFeedBroker {
+    /// Create a new broker.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Subscribe to change events with the given filter.
+    ///
+    /// Returns a subscription ID that can be used to poll for events
+    /// or unsubscribe.
+    pub fn subscribe(&self, filter: SubscriptionFilter) -> SubscriptionId {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.next_id += 1;
+        let id = inner.next_id;
+        inner.subscribers.insert(
+            id,
+            Subscriber {
+                filter,
+                events: Vec::new(),
+                closed: false,
+            },
+        );
+        id
+    }
+
+    /// Unsubscribe and remove a subscription.
+    pub fn unsubscribe(&self, id: SubscriptionId) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.subscribers.remove(&id);
+    }
+
+    /// Publish a change event to all matching subscribers.
+    pub fn publish(&self, event: ChangeEvent) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        for sub in inner.subscribers.values_mut() {
+            if !sub.closed && sub.filter.matches(&event) {
+                sub.events.push(event.clone());
+            }
+        }
+    }
+
+    /// Poll for events on a subscription.
+    ///
+    /// Returns all buffered events and clears the buffer.
+    /// Returns `None` if the subscription has been closed or doesn't exist.
+    pub fn poll(&self, id: SubscriptionId) -> Option<Vec<ChangeEvent>> {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let sub = inner.subscribers.get_mut(&id)?;
+        if sub.closed {
+            return None;
+        }
+        let events = std::mem::take(&mut sub.events);
+        Some(events)
+    }
+
+    /// Close all subscriptions for a collection (e.g., when collection is dropped).
+    pub fn close_collection(&self, collection: &CollectionId) {
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        for sub in inner.subscribers.values_mut() {
+            if let Some(col) = &sub.filter.collection {
+                if col == collection {
+                    sub.closed = true;
+                }
+            }
+        }
+    }
+
+    /// Number of active (non-closed) subscriptions.
+    pub fn active_count(&self) -> usize {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner.subscribers.values().filter(|s| !s.closed).count()
+    }
+
+    /// Check if a subscription is still active.
+    pub fn is_active(&self, id: SubscriptionId) -> bool {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        inner
+            .subscribers
+            .get(&id)
+            .is_some_and(|s| !s.closed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_event(collection: &str, entity_id: &str, op: &str) -> ChangeEvent {
+        ChangeEvent {
+            collection: collection.into(),
+            entity_id: entity_id.into(),
+            operation: op.into(),
+            data: Some(json!({"title": "test"})),
+            previous_data: None,
+            version: 1,
+            timestamp_ms: 1000,
+            actor: "agent".into(),
+        }
+    }
+
+    #[test]
+    fn subscribe_and_receive_events() {
+        let broker = ChangeFeedBroker::new();
+        let id = broker.subscribe(SubscriptionFilter::default());
+
+        broker.publish(make_event("tasks", "t-001", "create"));
+
+        let events = broker.poll(id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].entity_id, "t-001");
+    }
+
+    #[test]
+    fn poll_clears_buffer() {
+        let broker = ChangeFeedBroker::new();
+        let id = broker.subscribe(SubscriptionFilter::default());
+
+        broker.publish(make_event("tasks", "t-001", "create"));
+        let events = broker.poll(id).unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Second poll returns empty.
+        let events = broker.poll(id).unwrap();
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn filter_by_collection() {
+        let broker = ChangeFeedBroker::new();
+        let id = broker.subscribe(SubscriptionFilter {
+            collection: Some(CollectionId::new("tasks")),
+            ..SubscriptionFilter::default()
+        });
+
+        broker.publish(make_event("tasks", "t-001", "create"));
+        broker.publish(make_event("users", "u-001", "create"));
+
+        let events = broker.poll(id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].collection, "tasks");
+    }
+
+    #[test]
+    fn filter_by_fields() {
+        let broker = ChangeFeedBroker::new();
+        let id = broker.subscribe(SubscriptionFilter {
+            fields: vec!["title".into()],
+            ..SubscriptionFilter::default()
+        });
+
+        broker.publish(ChangeEvent {
+            data: Some(json!({"title": "yes"})),
+            ..make_event("tasks", "t-001", "create")
+        });
+        broker.publish(ChangeEvent {
+            data: Some(json!({"other": "no"})),
+            ..make_event("tasks", "t-002", "create")
+        });
+
+        let events = broker.poll(id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].entity_id, "t-001");
+    }
+
+    #[test]
+    fn unsubscribe_removes_subscription() {
+        let broker = ChangeFeedBroker::new();
+        let id = broker.subscribe(SubscriptionFilter::default());
+        broker.unsubscribe(id);
+
+        assert!(broker.poll(id).is_none());
+    }
+
+    #[test]
+    fn close_collection_closes_matching_subscriptions() {
+        let broker = ChangeFeedBroker::new();
+        let id1 = broker.subscribe(SubscriptionFilter {
+            collection: Some(CollectionId::new("tasks")),
+            ..SubscriptionFilter::default()
+        });
+        let id2 = broker.subscribe(SubscriptionFilter {
+            collection: Some(CollectionId::new("users")),
+            ..SubscriptionFilter::default()
+        });
+
+        broker.close_collection(&CollectionId::new("tasks"));
+
+        assert!(!broker.is_active(id1));
+        assert!(broker.is_active(id2));
+        assert!(broker.poll(id1).is_none());
+    }
+
+    #[test]
+    fn active_count_tracks_subscriptions() {
+        let broker = ChangeFeedBroker::new();
+        assert_eq!(broker.active_count(), 0);
+
+        let id1 = broker.subscribe(SubscriptionFilter::default());
+        let _id2 = broker.subscribe(SubscriptionFilter::default());
+        assert_eq!(broker.active_count(), 2);
+
+        broker.unsubscribe(id1);
+        assert_eq!(broker.active_count(), 1);
+    }
+
+    #[test]
+    fn multiple_subscribers_receive_same_event() {
+        let broker = ChangeFeedBroker::new();
+        let id1 = broker.subscribe(SubscriptionFilter::default());
+        let id2 = broker.subscribe(SubscriptionFilter::default());
+
+        broker.publish(make_event("tasks", "t-001", "create"));
+
+        assert_eq!(broker.poll(id1).unwrap().len(), 1);
+        assert_eq!(broker.poll(id2).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn change_event_serialization() {
+        let event = make_event("tasks", "t-001", "update");
+        let json = serde_json::to_string(&event).unwrap();
+        let parsed: ChangeEvent = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.collection, "tasks");
+        assert_eq!(parsed.operation, "update");
+    }
+}
