@@ -73,9 +73,99 @@ Audit log entries should carry real actor identities, not "anonymous".
   - **Default role**: Configurable. Default is `read` for authenticated
     users with no explicit role assignment
 
-- **Per-collection ACLs** (Phase 2): Fine-grained rules like "user X can
-  write to `invoices` but only read `customers`". Deferred — the built-in
-  roles apply globally across all collections in V1
+#### Attribute-Based Access Control (ABAC)
+
+Beyond global roles, Axon supports fine-grained access policies based on
+attributes of the **user**, the **resource** (entity/collection), and the
+**action**. Policies are expressed as rules that combine these attributes.
+
+- **Per-collection permissions**: Rules that scope a role to specific
+  collections. Example: "erik has `write` on `technical-designs` but
+  `read` on `prds`; mike has `write` on `prds` but `read` on
+  `technical-designs`"
+
+- **Per-entity policies**: Rules based on entity data attributes.
+  Example: "agents with role `write` can only update entities where
+  `status != 'approved'`" — preventing mutation of finalized records
+
+- **Field-level visibility (masking)**: Certain fields in entity data
+  can be hidden from users who lack a required attribute. Example:
+  `salary` field in `employees` collection is visible only to users
+  with `tag:hr-admin`. Other users see the entity but the masked
+  fields are omitted from the response
+
+- **Field-level immutability**: Certain fields can be made read-only
+  for specific roles. Example: `approved_by` field can only be set by
+  users with `admin` role; `write` users can update other fields but
+  `approved_by` is silently preserved (not overwritten) or rejected
+
+- **Policy storage**: ABAC policies are stored as entities in a
+  system collection (`__axon_policies__`) with a defined schema.
+  Policies are themselves audited — every policy change produces an
+  audit entry
+
+- **Policy evaluation order**: Deny rules take precedence over allow
+  rules. More-specific rules (per-entity) override less-specific
+  (per-collection). Explicit rules override the default role.
+
+##### Policy Rule Schema (Conceptual)
+
+```json
+{
+  "id": "pol-001",
+  "effect": "allow",
+  "principal": { "email": "erik@example.com" },
+  "action": ["write"],
+  "resource": {
+    "collection": "technical-designs"
+  }
+}
+```
+
+```json
+{
+  "id": "pol-002",
+  "effect": "deny",
+  "principal": { "tag": "tag:axon-agent" },
+  "action": ["update"],
+  "resource": {
+    "collection": "invoices",
+    "condition": { "field": "status", "eq": "approved" }
+  }
+}
+```
+
+```json
+{
+  "id": "pol-003",
+  "effect": "mask",
+  "principal": { "role": "read" },
+  "resource": {
+    "collection": "employees",
+    "fields": ["salary", "ssn"]
+  }
+}
+```
+
+```json
+{
+  "id": "pol-004",
+  "effect": "immutable",
+  "principal": { "role": "write" },
+  "resource": {
+    "collection": "contracts",
+    "fields": ["approved_by", "approval_date"]
+  }
+}
+```
+
+##### Implementation Phases
+
+| Phase | Capability |
+|-------|-----------|
+| V1 | Global RBAC roles (admin/write/read/none) + --no-auth mode |
+| V2 | Per-collection policies, field masking, field immutability |
+| V3 | Per-entity attribute conditions, policy inheritance, policy UI |
 
 #### Network-Layer Security (Tailscale-Specific)
 
@@ -262,13 +352,38 @@ role_claim = "axon_role"
 - `tailscale-localapi` crate (v0.5.0) for whois calls
 - `jsonwebtoken` crate for generic OIDC JWT validation (Phase 2)
 
+### Story US-029: Field-Level Masking [FEAT-010]
+
+**As a** data steward
+**I want** sensitive fields hidden from unauthorized users
+**So that** PII and confidential data is only visible to those who need it
+
+**Acceptance Criteria:**
+- [ ] A `mask` policy on `employees.salary` hides the field from `read`-role users
+- [ ] `admin` users see the full entity including masked fields
+- [ ] Masked fields are omitted from the response (not replaced with null or redacted)
+- [ ] Masking applies to query results, entity detail, and audit log data_after
+
+### Story US-030: Attribute-Based Write Control [FEAT-010]
+
+**As an** operator
+**I want** to control who can edit which collections and fields
+**So that** PRD authors can't edit technical designs and vice versa
+
+**Acceptance Criteria:**
+- [ ] A policy grants erik `write` on `technical-designs` and `read` on `prds`
+- [ ] erik's attempt to update an entity in `prds` returns 403
+- [ ] mike's complementary policy allows the reverse
+- [ ] An `immutable` policy on `contracts.approved_by` prevents `write`-role users from changing that field
+
 ## Out of Scope
 
-- Per-collection ACLs (Phase 2 — global roles only in V1)
 - API key authentication (use OIDC instead)
 - User management UI (roles come from the identity provider, not Axon)
 - Token refresh/rotation (handled by the identity provider)
 - Multi-provider federation (one provider per deployment in V1)
+- Row-level security with SQL-like predicates (ABAC conditions are simpler
+  field equality checks, not arbitrary expressions)
 
 ## Traceability
 
