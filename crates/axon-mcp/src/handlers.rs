@@ -221,6 +221,72 @@ fn build_delete_tool<S: StorageAdapter + 'static>(
     }
 }
 
+/// Build the `axon.query` tool for GraphQL queries via MCP.
+///
+/// Accepts a `query` string and optional `variables` object. Validates
+/// basic GraphQL syntax (brace matching) before forwarding.
+pub fn build_query_tool() -> ToolDef {
+    ToolDef {
+        name: "axon.query".into(),
+        description: "Execute a GraphQL query or mutation against Axon. Accepts a query string and optional variables.".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "GraphQL query or mutation string"
+                },
+                "variables": {
+                    "type": "object",
+                    "description": "Optional variables for the query"
+                }
+            },
+            "required": ["query"]
+        }),
+        handler: Box::new(|args| {
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| ToolError::InvalidArgument("missing 'query' string".into()))?;
+
+            // Basic syntax validation: check brace balance.
+            let open = query.chars().filter(|&c| c == '{').count();
+            let close = query.chars().filter(|&c| c == '}').count();
+            if open != close {
+                return Err(ToolError::InvalidArgument(format!(
+                    "GraphQL syntax error: mismatched braces ({{={open}, }}={close})"
+                )));
+            }
+
+            if query.trim().is_empty() {
+                return Err(ToolError::InvalidArgument(
+                    "empty query string".into(),
+                ));
+            }
+
+            let variables = args
+                .get("variables")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({}));
+
+            // In the full implementation, this would execute against the
+            // async-graphql schema. For now, return a stub response that
+            // confirms the query was parsed and accepted.
+            Ok(serde_json::json!({
+                "content": [{
+                    "type": "text",
+                    "text": serde_json::json!({
+                        "data": null,
+                        "info": "GraphQL execution stub — query accepted",
+                        "query": query,
+                        "variables": variables
+                    }).to_string()
+                }]
+            }))
+        }),
+    }
+}
+
 fn to_tool_error(err: axon_core::error::AxonError) -> ToolError {
     use axon_core::error::AxonError;
     match err {
@@ -376,5 +442,61 @@ mod tests {
 
         let err = (tools[1].handler)(&serde_json::json!({})).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgument(_)));
+    }
+
+    // ── axon.query tool tests ──────────────────────────────────────────
+
+    #[test]
+    fn query_tool_accepts_valid_graphql() {
+        let tool = build_query_tool();
+        assert_eq!(tool.name, "axon.query");
+        let result = (tool.handler)(&serde_json::json!({
+            "query": "{ tasks { id title } }"
+        }))
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["info"], "GraphQL execution stub — query accepted");
+        assert!(parsed["query"].as_str().unwrap().contains("tasks"));
+    }
+
+    #[test]
+    fn query_tool_rejects_mismatched_braces() {
+        let tool = build_query_tool();
+        let err = (tool.handler)(&serde_json::json!({
+            "query": "{ tasks { id }"
+        }))
+        .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn query_tool_rejects_empty_query() {
+        let tool = build_query_tool();
+        let err = (tool.handler)(&serde_json::json!({
+            "query": ""
+        }))
+        .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn query_tool_rejects_missing_query() {
+        let tool = build_query_tool();
+        let err = (tool.handler)(&serde_json::json!({})).unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn query_tool_passes_variables() {
+        let tool = build_query_tool();
+        let result = (tool.handler)(&serde_json::json!({
+            "query": "query($id: ID!) { task(id: $id) { title } }",
+            "variables": {"id": "t-001"}
+        }))
+        .unwrap();
+        let text = result["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["variables"]["id"], "t-001");
     }
 }

@@ -16,6 +16,6 @@ pub mod handlers;
 pub mod protocol;
 pub mod tools;
 
-pub use handlers::build_crud_tools;
+pub use handlers::{build_crud_tools, build_query_tool};
 pub use protocol::{McpServer, McpError};
 pub use tools::ToolRegistry;
