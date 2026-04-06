@@ -129,6 +129,8 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         version: 1,
         entity_schema: Some(schema_value.clone()),
         link_types: Default::default(),
+        gates: Default::default(),
+        validation_rules: Default::default(),
     };
     handler.put_schema(schema).unwrap();
 
@@ -195,6 +197,8 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         version: 1,
         entity_schema: Some(schema_value),
         link_types: Default::default(),
+        gates: Default::default(),
+        validation_rules: Default::default(),
     };
 
     let all_entities = handler

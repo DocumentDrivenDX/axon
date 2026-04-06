@@ -1,7 +1,11 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 use axon_audit::entry::AuditEntry;
 use axon_core::types::{Entity, Link};
+use axon_schema::gates::GateResult;
+use axon_schema::rules::RuleViolation;
 use axon_schema::schema::CollectionSchema;
 
 /// Response containing a retrieved entity.
@@ -14,6 +18,12 @@ pub struct GetEntityResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntityResponse {
     pub entity: Entity,
+    /// Gate pass/fail status for all non-save gates. Empty when no validation rules.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub gates: HashMap<String, GateResult>,
+    /// Advisory violations (never block, always reported).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisories: Vec<RuleViolation>,
 }
 
 /// Response after successfully updating an entity.
@@ -21,6 +31,12 @@ pub struct CreateEntityResponse {
 pub struct UpdateEntityResponse {
     /// The entity at its new version.
     pub entity: Entity,
+    /// Gate pass/fail status for all non-save gates. Empty when no validation rules.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub gates: HashMap<String, GateResult>,
+    /// Advisory violations (never block, always reported).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub advisories: Vec<RuleViolation>,
 }
 
 /// Response after successfully deleting an entity.

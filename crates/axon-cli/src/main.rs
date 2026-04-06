@@ -415,6 +415,8 @@ fn run_collection(
                 version: 1,
                 entity_schema,
                 link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
             };
             handler
                 .create_collection(CreateCollectionRequest {
@@ -1251,6 +1253,8 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
                 },
                 actor: None,
             })
@@ -1289,6 +1293,8 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
                 },
                 actor: None,
             })
@@ -1330,6 +1336,8 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
                 },
                 actor: None,
             })

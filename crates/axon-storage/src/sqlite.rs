@@ -695,6 +695,8 @@ mod tests {
             version: 99, // ignored — auto-increment assigns v1
             entity_schema: Some(json!({"type": "object"})),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         s.put_schema(&schema).unwrap();
@@ -725,6 +727,8 @@ mod tests {
             version: 1,
             entity_schema: None,
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
         let v2 = CollectionSchema {
             collection: col.clone(),
@@ -732,6 +736,8 @@ mod tests {
             version: 2,
             entity_schema: None,
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         s.put_schema(&v1).unwrap();
@@ -755,6 +761,8 @@ mod tests {
             version: 1,
             entity_schema: None,
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         s.put_schema(&schema).unwrap();

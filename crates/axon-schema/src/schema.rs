@@ -6,6 +6,8 @@ use serde_json::Value;
 use axon_core::error::AxonError;
 use axon_core::id::CollectionId;
 
+use crate::rules::ValidationRule;
+
 /// Cardinality constraint for a link type (ADR-002).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -30,6 +32,23 @@ pub struct LinkTypeDef {
     pub metadata_schema: Option<Value>,
 }
 
+/// Gate definition declared in the schema (ESF Layer 5).
+///
+/// Gates group validation rules by purpose. The `save` gate blocks persistence;
+/// custom gates (e.g. `complete`, `review`) allow saves but track readiness.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GateDef {
+    /// Human-readable description of what this gate means.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
+    /// Other gates whose rules are included in this gate.
+    /// e.g., `review` includes `complete` means all complete rules
+    /// must also pass for review to pass.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub includes: Vec<String>,
+}
+
 /// Defines the structure and constraints for entities in a collection.
 ///
 /// The `entity_schema` field holds a JSON Schema 2020-12 document (Layer 1 of ESF)
@@ -48,6 +67,12 @@ pub struct CollectionSchema {
     /// Link-type definitions (Layer 2 of ESF). Keys are link-type names.
     #[serde(default)]
     pub link_types: HashMap<String, LinkTypeDef>,
+    /// Gate definitions (ESF Layer 5). Keys are gate names.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub gates: HashMap<String, GateDef>,
+    /// Validation rules (ESF Layer 5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub validation_rules: Vec<ValidationRule>,
 }
 
 impl CollectionSchema {
@@ -58,6 +83,8 @@ impl CollectionSchema {
             version: 1,
             entity_schema: None,
             link_types: HashMap::new(),
+            gates: HashMap::new(),
+            validation_rules: Vec::new(),
         }
     }
 }
@@ -112,6 +139,8 @@ impl EsfDocument {
             version: 1,
             entity_schema: self.entity_schema,
             link_types,
+            gates: HashMap::new(),
+            validation_rules: Vec::new(),
         })
     }
 }

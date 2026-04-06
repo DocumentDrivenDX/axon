@@ -445,6 +445,8 @@ mod tests {
             version: 99, // ignored — auto-increment assigns v1
             entity_schema: None,
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         store.put_schema(&schema).unwrap();
@@ -472,6 +474,8 @@ mod tests {
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
             })
             .unwrap();
         store
@@ -481,6 +485,8 @@ mod tests {
                 version: 2,
                 entity_schema: None,
                 link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
             })
             .unwrap();
 
@@ -498,6 +504,8 @@ mod tests {
             version: 1,
             entity_schema: None,
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         // Persist a schema before the transaction.
@@ -512,6 +520,8 @@ mod tests {
                 version: 2,
                 entity_schema: None,
                 link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
             })
             .unwrap();
         // Also add a schema for a second collection.
@@ -523,6 +533,8 @@ mod tests {
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
             })
             .unwrap();
         store.abort_tx().unwrap();
@@ -552,6 +564,8 @@ mod tests {
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
             })
             .unwrap();
         assert!(store.get_schema(&col).unwrap().is_some());

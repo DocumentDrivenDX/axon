@@ -558,6 +558,8 @@ async fn create_collection(
         version: schema_body.version,
         entity_schema: schema_body.entity_schema,
         link_types: schema_body.link_types.unwrap_or_default(),
+        gates: Default::default(),
+        validation_rules: Default::default(),
     };
     match handler
         .lock()
@@ -636,6 +638,8 @@ async fn put_schema(
         version: body.version,
         entity_schema: body.entity_schema,
         link_types: body.link_types.unwrap_or_default(),
+        gates: Default::default(),
+        validation_rules: Default::default(),
     };
     match handler.lock().await.handle_put_schema(PutSchemaRequest {
         schema,

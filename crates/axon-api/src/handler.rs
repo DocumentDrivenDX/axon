@@ -13,6 +13,7 @@ use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::{Entity, Link};
+use axon_schema::gates::evaluate_gates;
 use axon_schema::schema::CollectionSchema;
 use axon_schema::validation::{compile_entity_schema, validate, validate_link_metadata};
 use axon_storage::adapter::StorageAdapter;
@@ -122,9 +123,33 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: CreateEntityRequest,
     ) -> Result<CreateEntityResponse, AxonError> {
         // Schema validation.
-        if let Some(schema) = self.storage.get_schema(&req.collection)? {
-            validate(&schema, &req.data)?;
+        let schema = self.storage.get_schema(&req.collection)?;
+        if let Some(schema) = &schema {
+            validate(schema, &req.data)?;
         }
+
+        // Gate evaluation (ESF Layer 5).
+        let gate_eval = if let Some(schema) = &schema {
+            if schema.validation_rules.is_empty() {
+                None
+            } else {
+                let eval = evaluate_gates(&schema.validation_rules, &schema.gates, &req.data);
+                // Save gate blocks persistence.
+                if !eval.save_passes() {
+                    return Err(AxonError::SchemaValidation(format!(
+                        "save gate failed: {}",
+                        eval.save_violations
+                            .iter()
+                            .map(|v| v.message.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )));
+                }
+                Some(eval)
+            }
+        } else {
+            None
+        };
 
         let now = now_ns();
         let mut entity = Entity::new(req.collection, req.id, req.data);
@@ -145,7 +170,16 @@ impl<S: StorageAdapter> AxonHandler<S> {
             req.actor,
         ))?;
 
-        Ok(CreateEntityResponse { entity })
+        let (gates, advisories) = match gate_eval {
+            Some(eval) => (eval.gate_results, eval.advisories),
+            None => (Default::default(), Vec::new()),
+        };
+
+        Ok(CreateEntityResponse {
+            entity,
+            gates,
+            advisories,
+        })
     }
 
     pub fn get_entity(&self, req: GetEntityRequest) -> Result<GetEntityResponse, AxonError> {
@@ -164,9 +198,32 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: UpdateEntityRequest,
     ) -> Result<UpdateEntityResponse, AxonError> {
         // Schema validation.
-        if let Some(schema) = self.storage.get_schema(&req.collection)? {
-            validate(&schema, &req.data)?;
+        let schema = self.storage.get_schema(&req.collection)?;
+        if let Some(schema) = &schema {
+            validate(schema, &req.data)?;
         }
+
+        // Gate evaluation (ESF Layer 5).
+        let gate_eval = if let Some(schema) = &schema {
+            if schema.validation_rules.is_empty() {
+                None
+            } else {
+                let eval = evaluate_gates(&schema.validation_rules, &schema.gates, &req.data);
+                if !eval.save_passes() {
+                    return Err(AxonError::SchemaValidation(format!(
+                        "save gate failed: {}",
+                        eval.save_violations
+                            .iter()
+                            .map(|v| v.message.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )));
+                }
+                Some(eval)
+            }
+        } else {
+            None
+        };
 
         // Read current state for the audit `before` snapshot and metadata preservation.
         let existing = self.storage.get(&req.collection, &req.id)?;
@@ -198,7 +255,16 @@ impl<S: StorageAdapter> AxonHandler<S> {
             req.actor,
         ))?;
 
-        Ok(UpdateEntityResponse { entity: updated })
+        let (gates, advisories) = match gate_eval {
+            Some(eval) => (eval.gate_results, eval.advisories),
+            None => (Default::default(), Vec::new()),
+        };
+
+        Ok(UpdateEntityResponse {
+            entity: updated,
+            gates,
+            advisories,
+        })
     }
 
     pub fn delete_entity(
@@ -2351,6 +2417,8 @@ entity_schema:
             version: 1,
             entity_schema: Some(json!({"type": "object"})),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -2458,6 +2526,8 @@ entity_schema:
             version: 1,
             entity_schema: Some(json!({"type": "bogus"})),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         let err = h
@@ -2543,6 +2613,8 @@ entity_schema:
             version: 99, // ignored — auto-increment assigns v2
             entity_schema: None,
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         })
         .unwrap();
 
@@ -2568,6 +2640,8 @@ entity_schema:
             version: 2,
             entity_schema: None,
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -3690,6 +3764,8 @@ link_types:
             version: 1,
             entity_schema: Some(json!({"type": "object"})),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         h.put_schema(schema.clone()).unwrap();
@@ -3734,6 +3810,8 @@ link_types:
             version: 1,
             entity_schema: None,
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -3796,6 +3874,8 @@ link_types:
             version: 1,
             entity_schema: Some(json!({"type": "bogus"})),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         let err = h.put_schema(schema).unwrap_err();
@@ -3815,6 +3895,8 @@ link_types:
             version: 1,
             entity_schema: Some(json!({"type": "bogus"})),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         let err = h
@@ -3843,6 +3925,8 @@ link_types:
                 json!({"type": "object", "properties": {"title": {"type": "string"}}}),
             ),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -3871,6 +3955,8 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -3895,6 +3981,8 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
         let err = h
             .handle_put_schema(PutSchemaRequest {
@@ -3924,6 +4012,8 @@ link_types:
                 "properties": {"title": {"type": "string"}}
             })),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -3947,6 +4037,8 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -3977,6 +4069,8 @@ link_types:
                 "properties": {"title": {"type": "string"}}
             })),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -4000,6 +4094,8 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -4034,6 +4130,8 @@ link_types:
                 "properties": {"title": {"type": "string"}}
             })),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -4057,6 +4155,8 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -4098,5 +4198,302 @@ link_types:
             h.get_schema(&col).unwrap().is_none(),
             "schema must be removed when collection is dropped"
         );
+    }
+
+    // ── Validation gate integration tests (US-067) ──────────────────────
+
+    fn handler_with_gated_schema() -> AxonHandler<MemoryStorageAdapter> {
+        use axon_schema::rules::{
+            ConditionOp, RequirementOp, RuleCondition, RuleRequirement, ValidationRule,
+        };
+        use axon_schema::schema::GateDef;
+        use std::collections::HashMap;
+
+        let mut h = handler();
+        let col = CollectionId::new("items");
+
+        // Create collection first.
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        // Schema with save, complete, review gates and advisory.
+        let schema = CollectionSchema {
+            collection: col,
+            description: None,
+            version: 1,
+            entity_schema: None,
+            link_types: Default::default(),
+            gates: HashMap::from([
+                (
+                    "complete".into(),
+                    GateDef {
+                        description: Some("Ready for processing".into()),
+                        includes: vec![],
+                    },
+                ),
+                (
+                    "review".into(),
+                    GateDef {
+                        description: Some("Ready for review".into()),
+                        includes: vec!["complete".into()],
+                    },
+                ),
+            ]),
+            validation_rules: vec![
+                // Save gate: bead_type required.
+                ValidationRule {
+                    name: "need-type".into(),
+                    gate: Some("save".into()),
+                    advisory: false,
+                    when: None,
+                    require: RuleRequirement {
+                        field: "bead_type".into(),
+                        op: RequirementOp::NotNull(true),
+                    },
+                    message: "bead_type is required".into(),
+                    fix: Some("Set bead_type".into()),
+                },
+                // Complete gate: description required.
+                ValidationRule {
+                    name: "need-desc".into(),
+                    gate: Some("complete".into()),
+                    advisory: false,
+                    when: None,
+                    require: RuleRequirement {
+                        field: "description".into(),
+                        op: RequirementOp::NotNull(true),
+                    },
+                    message: "Description required for completion".into(),
+                    fix: Some("Add a description".into()),
+                },
+                // Complete gate: conditional - bugs need priority.
+                ValidationRule {
+                    name: "bugs-need-priority".into(),
+                    gate: Some("complete".into()),
+                    advisory: false,
+                    when: Some(RuleCondition::Field {
+                        field: "bead_type".into(),
+                        op: ConditionOp::Eq(serde_json::json!("bug")),
+                    }),
+                    require: RuleRequirement {
+                        field: "priority".into(),
+                        op: RequirementOp::NotNull(true),
+                    },
+                    message: "Bugs must have priority".into(),
+                    fix: Some("Set priority (0-4)".into()),
+                },
+                // Review gate: acceptance required.
+                ValidationRule {
+                    name: "need-acceptance".into(),
+                    gate: Some("review".into()),
+                    advisory: false,
+                    when: None,
+                    require: RuleRequirement {
+                        field: "acceptance".into(),
+                        op: RequirementOp::NotNull(true),
+                    },
+                    message: "Acceptance criteria required for review".into(),
+                    fix: Some("Add acceptance criteria".into()),
+                },
+                // Advisory: recommend tags.
+                ValidationRule {
+                    name: "recommend-tags".into(),
+                    gate: None,
+                    advisory: true,
+                    when: None,
+                    require: RuleRequirement {
+                        field: "tags".into(),
+                        op: RequirementOp::NotNull(true),
+                    },
+                    message: "Consider adding tags".into(),
+                    fix: Some("Add tags for categorization".into()),
+                },
+            ],
+        };
+        h.put_schema(schema).unwrap();
+        h
+    }
+
+    #[test]
+    fn save_gate_blocks_create() {
+        let mut h = handler_with_gated_schema();
+        // Missing bead_type → save gate blocks.
+        let result = h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("items"),
+            id: EntityId::new("g-1"),
+            data: json!({"title": "Test"}),
+            actor: None,
+        });
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("save gate failed"), "got: {err}");
+        assert!(err.contains("bead_type is required"), "got: {err}");
+    }
+
+    #[test]
+    fn custom_gate_allows_save_reports_failures() {
+        let mut h = handler_with_gated_schema();
+        // Has bead_type (save passes) but missing description (complete gate fails).
+        let resp = h
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("items"),
+                id: EntityId::new("g-2"),
+                data: json!({"bead_type": "task"}),
+                actor: None,
+            })
+            .unwrap();
+
+        // Entity was saved.
+        assert_eq!(resp.entity.data["bead_type"], "task");
+
+        // Complete gate fails.
+        let complete = resp.gates.get("complete").unwrap();
+        assert!(!complete.pass);
+        assert!(complete.failures.iter().any(|f| f.rule == "need-desc"));
+
+        // Review gate also fails (inherits complete).
+        let review = resp.gates.get("review").unwrap();
+        assert!(!review.pass);
+        assert!(review.failures.iter().any(|f| f.rule == "need-desc"));
+        assert!(review.failures.iter().any(|f| f.rule == "need-acceptance"));
+    }
+
+    #[test]
+    fn advisory_reported_in_response() {
+        let mut h = handler_with_gated_schema();
+        let resp = h
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("items"),
+                id: EntityId::new("g-3"),
+                data: json!({"bead_type": "task"}),
+                actor: None,
+            })
+            .unwrap();
+
+        assert_eq!(resp.advisories.len(), 1);
+        assert_eq!(resp.advisories[0].rule, "recommend-tags");
+        assert!(resp.advisories[0].advisory);
+    }
+
+    #[test]
+    fn all_gates_pass_when_all_fields_present() {
+        let mut h = handler_with_gated_schema();
+        let resp = h
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("items"),
+                id: EntityId::new("g-4"),
+                data: json!({
+                    "bead_type": "task",
+                    "description": "Something",
+                    "acceptance": "Tests pass",
+                    "tags": ["core"]
+                }),
+                actor: None,
+            })
+            .unwrap();
+
+        // All gates pass.
+        for (_, gate) in &resp.gates {
+            assert!(gate.pass, "gate {} should pass", gate.gate);
+        }
+        // No advisories.
+        assert!(resp.advisories.is_empty());
+    }
+
+    #[test]
+    fn save_gate_blocks_update() {
+        let mut h = handler_with_gated_schema();
+        // Create with valid data.
+        let resp = h
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("items"),
+                id: EntityId::new("g-5"),
+                data: json!({"bead_type": "task"}),
+                actor: None,
+            })
+            .unwrap();
+
+        // Update removing bead_type → save gate blocks.
+        let result = h.update_entity(UpdateEntityRequest {
+            collection: CollectionId::new("items"),
+            id: EntityId::new("g-5"),
+            data: json!({"title": "Updated"}),
+            expected_version: resp.entity.version,
+            actor: None,
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("save gate failed"));
+    }
+
+    #[test]
+    fn update_reports_gate_status() {
+        let mut h = handler_with_gated_schema();
+        let create_resp = h
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("items"),
+                id: EntityId::new("g-6"),
+                data: json!({"bead_type": "bug"}),
+                actor: None,
+            })
+            .unwrap();
+
+        // Update with description but no priority (bug needs priority for complete gate).
+        let resp = h
+            .update_entity(UpdateEntityRequest {
+                collection: CollectionId::new("items"),
+                id: EntityId::new("g-6"),
+                data: json!({
+                    "bead_type": "bug",
+                    "description": "A bug"
+                }),
+                expected_version: create_resp.entity.version,
+                actor: None,
+            })
+            .unwrap();
+
+        let complete = resp.gates.get("complete").unwrap();
+        assert!(!complete.pass);
+        assert!(complete
+            .failures
+            .iter()
+            .any(|f| f.rule == "bugs-need-priority"));
+    }
+
+    #[test]
+    fn gate_inclusion_review_inherits_complete_failures() {
+        let mut h = handler_with_gated_schema();
+        let resp = h
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("items"),
+                id: EntityId::new("g-7"),
+                data: json!({"bead_type": "task"}),
+                actor: None,
+            })
+            .unwrap();
+
+        // Review gate should contain complete-gate failures too.
+        let review = resp.gates.get("review").unwrap();
+        let failure_rules: Vec<&str> = review.failures.iter().map(|f| f.rule.as_str()).collect();
+        assert!(
+            failure_rules.contains(&"need-desc"),
+            "review should inherit complete's need-desc failure"
+        );
+        assert!(
+            failure_rules.contains(&"need-acceptance"),
+            "review should have its own need-acceptance failure"
+        );
+    }
+
+    #[test]
+    fn gate_definitions_registered_on_schema_save() {
+        let h = handler_with_gated_schema();
+        let schema = h.get_schema(&CollectionId::new("items")).unwrap().unwrap();
+        assert!(schema.gates.contains_key("complete"));
+        assert!(schema.gates.contains_key("review"));
+        assert_eq!(schema.gates["review"].includes, vec!["complete"]);
     }
 }

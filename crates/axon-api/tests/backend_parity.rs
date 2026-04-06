@@ -30,6 +30,8 @@ fn make_schema(name: &str) -> CollectionSchema {
         version: 1,
         entity_schema: None,
         link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
     }
 }
 
@@ -252,6 +254,8 @@ fn test_schema_enforcement<S: StorageAdapter>(mut h: AxonHandler<S>) {
             }
         })),
         link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
     };
 
     h.create_collection(CreateCollectionRequest {
