@@ -26,6 +26,7 @@ enum OutputFormat {
     #[default]
     Table,
     Json,
+    Yaml,
 }
 
 // ── CLI structure ──────────────────────────────────────────────────────────────
@@ -62,6 +63,10 @@ enum Command {
     /// Audit log queries.
     #[command(subcommand)]
     Audit(AuditCmd),
+
+    /// Schema operations.
+    #[command(subcommand)]
+    Schema(SchemaCmd),
 
     /// Bead (work item) management.
     #[command(subcommand)]
@@ -138,6 +143,20 @@ enum EntityCmd {
         #[arg(long)]
         actor: Option<String>,
     },
+    /// Query entities with filter expressions.
+    ///
+    /// Filters use `field=value` syntax (equality). Multiple filters are ANDed.
+    Query {
+        collection: String,
+        /// Filter expressions (e.g. `status=open`). Multiple allowed, ANDed together.
+        #[arg(long, num_args = 1..)]
+        filter: Vec<String>,
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Return only the count of matching entities.
+        #[arg(long)]
+        count_only: bool,
+    },
 }
 
 // ── Link commands ──────────────────────────────────────────────────────────────
@@ -203,6 +222,24 @@ enum AuditCmd {
         /// Bypass schema validation for the restored state.
         #[arg(long)]
         force: bool,
+    },
+}
+
+// ── Schema commands ───────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum SchemaCmd {
+    /// Show the schema for a collection.
+    Show {
+        /// Collection name.
+        collection: String,
+    },
+    /// Validate a JSON file against a collection's schema.
+    Validate {
+        /// Collection name.
+        collection: String,
+        /// Path to a JSON file containing entity data.
+        file: String,
     },
 }
 
@@ -273,9 +310,21 @@ enum BeadCmd {
 
 // ── Output helpers ─────────────────────────────────────────────────────────────
 
+/// Serialize a value as JSON or YAML to stdout.
+fn print_serialized(value: &(impl serde::Serialize + ?Sized), format: &OutputFormat) {
+    match format {
+        OutputFormat::Json | OutputFormat::Table => {
+            println!("{}", serde_json::to_string_pretty(value).unwrap());
+        }
+        OutputFormat::Yaml => {
+            println!("{}", serde_yaml::to_string(value).unwrap());
+        }
+    }
+}
+
 fn print_entity(entity_json: Value, format: &OutputFormat) {
     match format {
-        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&entity_json).unwrap()),
+        OutputFormat::Json | OutputFormat::Yaml => print_serialized(&entity_json, format),
         OutputFormat::Table => {
             println!(
                 "collection={} id={} version={}",
@@ -290,7 +339,7 @@ fn print_entity(entity_json: Value, format: &OutputFormat) {
 
 fn print_entities(entities: &[Value], format: &OutputFormat) {
     match format {
-        OutputFormat::Json => println!("{}", serde_json::to_string_pretty(entities).unwrap()),
+        OutputFormat::Json | OutputFormat::Yaml => print_serialized(entities, format),
         OutputFormat::Table => {
             for e in entities {
                 println!(
@@ -322,6 +371,7 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Collection(cmd) => run_collection(cmd, &cli.output, &mut handler),
         Command::Entity(cmd) => run_entity(cmd, &cli.output, &mut handler),
         Command::Link(cmd) => run_link(cmd, &cli.output, &mut handler),
+        Command::Schema(cmd) => run_schema(cmd, &cli.output, &handler),
         Command::Audit(cmd) => run_audit(cmd, &cli.output, &mut handler),
         Command::Bead(cmd) => run_bead(cmd, &cli.output, &mut handler),
     }
@@ -363,7 +413,9 @@ fn run_collection(
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             let result = serde_json::json!({ "collection": name, "status": "created" });
             match format {
-                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
                 OutputFormat::Table => println!("collection '{}' created", name),
             }
         }
@@ -372,7 +424,7 @@ fn run_collection(
                 .list_collections(ListCollectionsRequest {})
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
-                OutputFormat::Json => {
+                OutputFormat::Json | OutputFormat::Yaml => {
                     let json: Vec<Value> = resp
                         .collections
                         .iter()
@@ -417,7 +469,9 @@ fn run_collection(
                 "status": "dropped"
             });
             match format {
-                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
                 OutputFormat::Table => println!(
                     "dropped '{}' ({} entities removed)",
                     resp.name, resp.entities_removed
@@ -431,7 +485,7 @@ fn run_collection(
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
-                OutputFormat::Json => {
+                OutputFormat::Json | OutputFormat::Yaml => {
                     let result = serde_json::json!({
                         "name": resp.name,
                         "entity_count": resp.entity_count,
@@ -499,7 +553,9 @@ fn run_entity(
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             let entities: Vec<Value> = resp.entities.iter().map(entity_to_json).collect();
             match format {
-                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&entities)?),
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    println!("{}", serde_json::to_string_pretty(&entities)?);
+                }
                 OutputFormat::Table => {
                     println!("{} entities (total: {})", entities.len(), resp.total_count);
                     print_entities(&entities, format);
@@ -540,7 +596,7 @@ fn run_entity(
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
-                OutputFormat::Json => println!(
+                OutputFormat::Json | OutputFormat::Yaml => println!(
                     "{}",
                     serde_json::to_string_pretty(&serde_json::json!({
                         "collection": resp.collection,
@@ -549,6 +605,73 @@ fn run_entity(
                     }))?
                 ),
                 OutputFormat::Table => println!("deleted {}/{}", resp.collection, resp.id),
+            }
+        }
+        EntityCmd::Query {
+            collection,
+            filter,
+            limit,
+            count_only,
+        } => {
+            use axon_api::request::{FieldFilter, FilterNode, FilterOp};
+
+            // Parse --filter args: each is "field=value" (equality).
+            let filter_node = if filter.is_empty() {
+                None
+            } else {
+                let field_filters: Vec<FilterNode> = filter
+                    .iter()
+                    .map(|f| {
+                        let (field, value) = f.split_once('=').unwrap_or((f, ""));
+                        FilterNode::Field(FieldFilter {
+                            field: field.to_string(),
+                            op: FilterOp::Eq,
+                            value: serde_json::json!(value),
+                        })
+                    })
+                    .collect();
+                if field_filters.len() == 1 {
+                    Some(field_filters.into_iter().next().unwrap())
+                } else {
+                    Some(FilterNode::And {
+                        filters: field_filters,
+                    })
+                }
+            };
+
+            let resp = handler
+                .query_entities(QueryEntitiesRequest {
+                    collection: CollectionId::new(&collection),
+                    filter: filter_node,
+                    limit,
+                    count_only,
+                    ..Default::default()
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            if count_only {
+                match format {
+                    OutputFormat::Table => println!("{} matching entities", resp.total_count),
+                    _ => print_serialized(
+                        &serde_json::json!({"total_count": resp.total_count}),
+                        format,
+                    ),
+                }
+            } else {
+                let entities: Vec<Value> = resp.entities.iter().map(entity_to_json).collect();
+                match format {
+                    OutputFormat::Table => {
+                        println!("{} entities (total: {})", entities.len(), resp.total_count);
+                        print_entities(&entities, format);
+                    }
+                    _ => print_serialized(
+                        &serde_json::json!({
+                            "entities": entities,
+                            "total_count": resp.total_count,
+                        }),
+                        format,
+                    ),
+                }
             }
         }
     }
@@ -589,7 +712,9 @@ fn run_link(
                 "link_type": link.link_type,
             });
             match format {
-                OutputFormat::Json => println!("{}", serde_json::to_string_pretty(&result)?),
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
                 OutputFormat::Table => println!(
                     "link {}/{} --[{}]--> {}/{}",
                     link.source_collection,
@@ -618,6 +743,77 @@ fn run_link(
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             let entities: Vec<Value> = resp.entities.iter().map(entity_to_json).collect();
             print_entities(&entities, format);
+        }
+    }
+    Ok(())
+}
+
+fn run_schema(
+    cmd: SchemaCmd,
+    format: &OutputFormat,
+    handler: &AxonHandler<SqliteStorageAdapter>,
+) -> Result<()> {
+    use axon_schema::validation::validate;
+
+    match cmd {
+        SchemaCmd::Show { collection } => {
+            let resp = handler
+                .get_schema(&CollectionId::new(&collection))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            match resp {
+                Some(schema) => {
+                    let json = serde_json::to_value(&schema)?;
+                    print_serialized(&json, format);
+                }
+                None => {
+                    return Err(anyhow::anyhow!(
+                        "no schema registered for collection '{collection}'"
+                    ));
+                }
+            }
+        }
+        SchemaCmd::Validate { collection, file } => {
+            let schema = handler
+                .get_schema(&CollectionId::new(&collection))
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no schema registered for collection '{collection}'")
+                })?;
+
+            let content =
+                std::fs::read_to_string(&file).with_context(|| format!("failed to read {file}"))?;
+            let data: Value =
+                serde_json::from_str(&content).with_context(|| "file must contain valid JSON")?;
+
+            if schema.entity_schema.is_some() {
+                match validate(&schema, &data) {
+                    Ok(()) => match format {
+                        OutputFormat::Table => println!("valid"),
+                        _ => print_serialized(&serde_json::json!({"valid": true}), format),
+                    },
+                    Err(e) => match format {
+                        OutputFormat::Table => {
+                            eprintln!("validation failed: {e}");
+                            std::process::exit(1);
+                        }
+                        _ => {
+                            print_serialized(
+                                &serde_json::json!({"valid": false, "error": e.to_string()}),
+                                format,
+                            );
+                            std::process::exit(1);
+                        }
+                    },
+                }
+            } else {
+                match format {
+                    OutputFormat::Table => println!("no entity_schema defined; all data is valid"),
+                    _ => print_serialized(
+                        &serde_json::json!({"valid": true, "note": "no entity_schema defined"}),
+                        format,
+                    ),
+                }
+            }
         }
     }
     Ok(())
@@ -653,7 +849,7 @@ fn run_audit(
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .ok_or_else(|| anyhow::anyhow!("audit entry {} not found", id))?;
             match format {
-                OutputFormat::Json => {
+                OutputFormat::Json | OutputFormat::Yaml => {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&audit_entry_to_json(&entry))?
@@ -689,7 +885,7 @@ fn run_audit(
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
-                OutputFormat::Json => {
+                OutputFormat::Json | OutputFormat::Yaml => {
                     let result = serde_json::json!({
                         "entity": entity_to_json(&resp.entity),
                         "audit_entry": audit_entry_to_json(&resp.audit_entry),
@@ -727,7 +923,7 @@ fn audit_entry_to_json(e: &axon_audit::AuditEntry) -> Value {
 
 fn print_audit_entries(entries: &[axon_audit::AuditEntry], format: &OutputFormat) {
     match format {
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Yaml => {
             let json_entries: Vec<Value> = entries.iter().map(audit_entry_to_json).collect();
             println!("{}", serde_json::to_string_pretty(&json_entries).unwrap());
         }
@@ -766,7 +962,9 @@ fn run_bead(
         BeadCmd::Init => {
             bead::init_beads(handler).map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
-                OutputFormat::Json => println!(r#"{{"status":"initialized"}}"#),
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    println!(r#"{{"status":"initialized"}}"#);
+                }
                 OutputFormat::Table => println!("bead collection initialized"),
             }
         }
@@ -811,7 +1009,7 @@ fn run_bead(
         BeadCmd::Transition { id, status } => {
             bead::transition_bead(handler, &id, &status).map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
-                OutputFormat::Json => {
+                OutputFormat::Json | OutputFormat::Yaml => {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
@@ -825,7 +1023,7 @@ fn run_bead(
         BeadCmd::Dep { id, dep_id } => {
             bead::add_dependency(handler, &id, &dep_id).map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
-                OutputFormat::Json => {
+                OutputFormat::Json | OutputFormat::Yaml => {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({
@@ -856,7 +1054,7 @@ fn run_bead(
                 serde_json::from_str(&content).with_context(|| "file must contain valid JSON")?;
             let count = bead::import_beads(handler, &data).map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
-                OutputFormat::Json => {
+                OutputFormat::Json | OutputFormat::Yaml => {
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&serde_json::json!({"imported": count}))?
@@ -885,7 +1083,7 @@ fn bead_to_json(b: &axon_api::bead::Bead) -> Value {
 
 fn print_bead(b: &axon_api::bead::Bead, format: &OutputFormat) {
     match format {
-        OutputFormat::Json => println!(
+        OutputFormat::Json | OutputFormat::Yaml => println!(
             "{}",
             serde_json::to_string_pretty(&bead_to_json(b)).unwrap()
         ),
@@ -900,7 +1098,7 @@ fn print_bead(b: &axon_api::bead::Bead, format: &OutputFormat) {
 
 fn print_beads(beads: &[axon_api::bead::Bead], format: &OutputFormat) {
     match format {
-        OutputFormat::Json => {
+        OutputFormat::Json | OutputFormat::Yaml => {
             let json: Vec<Value> = beads.iter().map(bead_to_json).collect();
             println!("{}", serde_json::to_string_pretty(&json).unwrap());
         }
