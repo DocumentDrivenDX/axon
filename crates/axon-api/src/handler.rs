@@ -366,13 +366,37 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // Full scan — FEAT-004 notes secondary indexes are P1 for V1.
         let all = self.storage.range_scan(&req.collection, None, None, None)?;
 
+        // Pre-compute gate evaluations if any gate filters are present.
+        let needs_gates = req
+            .filter
+            .as_ref()
+            .is_some_and(has_gate_filter);
+        let schema = if needs_gates {
+            self.storage.get_schema(&req.collection)?
+        } else {
+            None
+        };
+
         // Apply filter.
         let mut matched: Vec<Entity> = all
             .into_iter()
             .filter(|e| {
-                req.filter
-                    .as_ref()
-                    .map_or(true, |f| apply_filter(f, &e.data))
+                req.filter.as_ref().map_or(true, |f| {
+                    if needs_gates {
+                        if let Some(ref s) = schema {
+                            let eval = evaluate_gates(
+                                &s.validation_rules,
+                                &s.gates,
+                                &e.data,
+                            );
+                            apply_filter_with_gates(f, &e.data, Some(&eval))
+                        } else {
+                            apply_filter(f, &e.data)
+                        }
+                    } else {
+                        apply_filter(f, &e.data)
+                    }
+                })
             })
             .collect();
 
@@ -1487,11 +1511,42 @@ fn filter_depth(root: &FilterNode) -> usize {
 }
 
 /// Evaluate a [`FilterNode`] against the entity's JSON data.
+///
+/// `gate_eval` is an optional pre-computed gate evaluation for the entity.
+/// When `None`, any `Gate` filter nodes evaluate to `false`.
 fn apply_filter(node: &FilterNode, data: &serde_json::Value) -> bool {
+    apply_filter_with_gates(node, data, None)
+}
+
+fn apply_filter_with_gates(
+    node: &FilterNode,
+    data: &serde_json::Value,
+    gate_eval: Option<&axon_schema::GateEvaluation>,
+) -> bool {
     match node {
         FilterNode::Field(f) => apply_field_filter(f, data),
-        FilterNode::And { filters } => filters.iter().all(|f| apply_filter(f, data)),
-        FilterNode::Or { filters } => filters.iter().any(|f| apply_filter(f, data)),
+        FilterNode::Gate(g) => {
+            gate_eval
+                .and_then(|eval| eval.gate_results.get(&g.gate))
+                .is_some_and(|result| result.pass == g.pass)
+        }
+        FilterNode::And { filters } => {
+            filters.iter().all(|f| apply_filter_with_gates(f, data, gate_eval))
+        }
+        FilterNode::Or { filters } => {
+            filters.iter().any(|f| apply_filter_with_gates(f, data, gate_eval))
+        }
+    }
+}
+
+/// Check if a filter tree contains any gate filter nodes.
+fn has_gate_filter(node: &FilterNode) -> bool {
+    match node {
+        FilterNode::Gate(_) => true,
+        FilterNode::Field(_) => false,
+        FilterNode::And { filters } | FilterNode::Or { filters } => {
+            filters.iter().any(has_gate_filter)
+        }
     }
 }
 
@@ -4875,6 +4930,203 @@ link_types:
             .unwrap();
         assert_eq!(resp.total_count, 0);
         assert!(resp.groups.is_empty());
+    }
+
+    // ── Gate filter tests (US-074b) ───────────────────────────────────────
+
+    #[test]
+    fn query_gate_filter_pass_true() {
+        use crate::request::GateFilter;
+
+        let mut h = handler_with_gated_schema();
+        let col = CollectionId::new("items");
+
+        // Create entities: one with description (complete gate passes), one without.
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("gf-1"),
+            data: json!({
+                "bead_type": "task",
+                "description": "complete",
+                "acceptance": "yes",
+                "tags": ["x"]
+            }),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("gf-2"),
+            data: json!({"bead_type": "task"}), // missing description
+            actor: None,
+        })
+        .unwrap();
+
+        // Query: gate.complete = true.
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: col.clone(),
+                filter: Some(FilterNode::Gate(GateFilter {
+                    gate: "complete".into(),
+                    pass: true,
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].id, EntityId::new("gf-1"));
+    }
+
+    #[test]
+    fn query_gate_filter_pass_false() {
+        use crate::request::GateFilter;
+
+        let mut h = handler_with_gated_schema();
+        let col = CollectionId::new("items");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("gf-3"),
+            data: json!({
+                "bead_type": "task",
+                "description": "done",
+                "acceptance": "yes",
+                "tags": ["x"]
+            }),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("gf-4"),
+            data: json!({"bead_type": "task"}),
+            actor: None,
+        })
+        .unwrap();
+
+        // Query: gate.complete = false.
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: col.clone(),
+                filter: Some(FilterNode::Gate(GateFilter {
+                    gate: "complete".into(),
+                    pass: false,
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].id, EntityId::new("gf-4"));
+    }
+
+    #[test]
+    fn gate_filter_combines_with_field_filter() {
+        use crate::request::GateFilter;
+
+        let mut h = handler_with_gated_schema();
+        let col = CollectionId::new("items");
+
+        // Two passing entities, different types.
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("gf-5"),
+            data: json!({
+                "bead_type": "task",
+                "description": "done",
+                "acceptance": "yes",
+                "tags": ["x"]
+            }),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("gf-6"),
+            data: json!({
+                "bead_type": "bug",
+                "description": "done",
+                "priority": 1,
+                "acceptance": "yes",
+                "tags": ["y"]
+            }),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("gf-7"),
+            data: json!({"bead_type": "task"}), // fails complete
+            actor: None,
+        })
+        .unwrap();
+
+        // gate.complete = true AND bead_type = "task"
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: col.clone(),
+                filter: Some(FilterNode::And {
+                    filters: vec![
+                        FilterNode::Gate(GateFilter {
+                            gate: "complete".into(),
+                            pass: true,
+                        }),
+                        FilterNode::Field(FieldFilter {
+                            field: "bead_type".into(),
+                            op: FilterOp::Eq,
+                            value: json!("task"),
+                        }),
+                    ],
+                }),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].id, EntityId::new("gf-5"));
+    }
+
+    #[test]
+    fn gate_filter_no_rules_returns_empty() {
+        // Collection without validation rules: gate filters return no results.
+        let mut h = handler();
+        let col = CollectionId::new("norules");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("nr-1"),
+            data: json!({"title": "test"}),
+            actor: None,
+        })
+        .unwrap();
+
+        use crate::request::GateFilter;
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: col,
+                filter: Some(FilterNode::Gate(GateFilter {
+                    gate: "complete".into(),
+                    pass: true,
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+        assert_eq!(resp.total_count, 0, "no gate results without rules");
     }
 
     // ── Schema diff tests (US-061) ────────────────────────────────────────

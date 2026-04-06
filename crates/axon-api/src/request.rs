@@ -193,12 +193,23 @@ pub struct FieldFilter {
     pub value: serde_json::Value,
 }
 
+/// A gate filter: test whether an entity passes a named validation gate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GateFilter {
+    /// Gate name (e.g. "complete", "review").
+    pub gate: String,
+    /// If true, match entities that pass this gate; if false, match those that fail.
+    pub pass: bool,
+}
+
 /// A composable filter node: either a single field test or a boolean combinator.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum FilterNode {
     /// Test a single field.
     Field(FieldFilter),
+    /// Test a validation gate pass/fail status.
+    Gate(GateFilter),
     /// All child filters must match (logical AND).
     And { filters: Vec<FilterNode> },
     /// At least one child filter must match (logical OR).
