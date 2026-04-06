@@ -68,14 +68,17 @@ pub struct CdcSource {
 
 impl CdcEnvelope {
     /// Convert an [`AuditEntry`] to a Debezium-compatible CDC envelope.
+    ///
+    /// Produces envelopes for entity and link operations (US-077, US-078).
+    /// Collection lifecycle events return `None`.
     pub fn from_audit_entry(entry: &AuditEntry) -> Option<Self> {
         use crate::entry::MutationType;
 
         let op = match entry.mutation {
-            MutationType::EntityCreate => CdcOp::Create,
+            MutationType::EntityCreate | MutationType::LinkCreate => CdcOp::Create,
             MutationType::EntityUpdate | MutationType::EntityRevert => CdcOp::Update,
-            MutationType::EntityDelete => CdcOp::Delete,
-            // Non-entity operations don't produce CDC events.
+            MutationType::EntityDelete | MutationType::LinkDelete => CdcOp::Delete,
+            // Non-entity/link operations don't produce CDC events.
             _ => return None,
         };
 
@@ -320,6 +323,58 @@ mod tests {
         let parsed: CdcEnvelope = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.op, CdcOp::Create);
         assert_eq!(parsed.source.audit_id, 42);
+    }
+
+    #[test]
+    fn link_create_produces_cdc_event() {
+        let mut entry = AuditEntry::new(
+            CollectionId::new("__axon_links__"),
+            EntityId::new("tasks/t-001/depends-on/tasks/t-002"),
+            1,
+            MutationType::LinkCreate,
+            None,
+            Some(json!({
+                "source_collection": "tasks",
+                "source_id": "t-001",
+                "target_collection": "tasks",
+                "target_id": "t-002",
+                "link_type": "depends-on"
+            })),
+            Some("agent-1".into()),
+        );
+        entry.id = 50;
+        entry.timestamp_ns = 5_000_000_000;
+
+        let envelope = CdcEnvelope::from_audit_entry(&entry).unwrap();
+        assert_eq!(envelope.op, CdcOp::Create);
+        assert_eq!(envelope.source.collection, "__axon_links__");
+        assert!(envelope.after.is_some());
+    }
+
+    #[test]
+    fn link_delete_produces_cdc_event() {
+        let mut entry = AuditEntry::new(
+            CollectionId::new("__axon_links__"),
+            EntityId::new("tasks/t-001/depends-on/tasks/t-002"),
+            1,
+            MutationType::LinkDelete,
+            Some(json!({
+                "source_collection": "tasks",
+                "source_id": "t-001",
+                "target_collection": "tasks",
+                "target_id": "t-002",
+                "link_type": "depends-on"
+            })),
+            None,
+            Some("agent-1".into()),
+        );
+        entry.id = 51;
+        entry.timestamp_ns = 6_000_000_000;
+
+        let envelope = CdcEnvelope::from_audit_entry(&entry).unwrap();
+        assert_eq!(envelope.op, CdcOp::Delete);
+        assert!(envelope.before.is_some());
+        assert!(envelope.after.is_none());
     }
 
     #[test]
