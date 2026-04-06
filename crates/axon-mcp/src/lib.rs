@@ -12,8 +12,10 @@
 //! - `tools/call` — dispatch to the appropriate handler
 //! - `notifications/initialized` — client ack (no response)
 
+pub mod handlers;
 pub mod protocol;
 pub mod tools;
 
+pub use handlers::build_crud_tools;
 pub use protocol::{McpServer, McpError};
 pub use tools::ToolRegistry;
