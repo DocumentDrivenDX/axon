@@ -202,14 +202,14 @@ macro_rules! storage_conformance_tests {
                 let schema = CollectionSchema {
                     collection: col.clone(),
                     description: Some("test schema".into()),
-                    version: 2,
+                    version: 99, // ignored — auto-increment assigns v1
                     entity_schema: Some(json!({"type": "object"})),
                     link_types: Default::default(),
                 };
                 s.put_schema(&schema).unwrap();
                 let got = s.get_schema(&col).unwrap().unwrap();
                 assert_eq!(got.collection, col);
-                assert_eq!(got.version, 2);
+                assert_eq!(got.version, 1); // auto-incremented
                 assert_eq!(got.description.as_deref(), Some("test schema"));
             }
 

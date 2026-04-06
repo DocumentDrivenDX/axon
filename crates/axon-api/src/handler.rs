@@ -2536,17 +2536,18 @@ entity_schema:
             actor: None,
         })
         .unwrap();
+        // Auto-increment: create_collection stores v1, this put_schema stores v2.
         h.put_schema(CollectionSchema {
             collection: CollectionId::new("items"),
             description: None,
-            version: 5,
+            version: 99, // ignored — auto-increment assigns v2
             entity_schema: None,
             link_types: Default::default(),
         })
         .unwrap();
 
         let resp = h.list_collections(ListCollectionsRequest {}).unwrap();
-        assert_eq!(resp.collections[0].schema_version, Some(5));
+        assert_eq!(resp.collections[0].schema_version, Some(2));
     }
 
     // ── describe_collection ──────────────────────────────────────────────────

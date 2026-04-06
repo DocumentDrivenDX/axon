@@ -60,10 +60,12 @@ impl SqliteStorageAdapter {
                     data       TEXT NOT NULL,
                     PRIMARY KEY (collection, id)
                 );
-                CREATE TABLE IF NOT EXISTS schemas (
-                    collection  TEXT NOT NULL PRIMARY KEY,
+                CREATE TABLE IF NOT EXISTS schema_versions (
+                    collection  TEXT NOT NULL,
                     version     INTEGER NOT NULL,
-                    schema_json TEXT NOT NULL
+                    schema_json TEXT NOT NULL,
+                    created_at  INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (collection, version)
                 );
                 CREATE TABLE IF NOT EXISTS collections (
                     name TEXT NOT NULL PRIMARY KEY
@@ -352,15 +354,35 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
-        let schema_json = serde_json::to_string(schema)?;
+        // Auto-increment: find current max version for this collection.
+        let max_version: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_versions WHERE collection = ?1",
+                params![schema.collection.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let next_version = max_version + 1;
+
+        let mut versioned = schema.clone();
+        versioned.version = next_version as u32;
+        let schema_json = serde_json::to_string(&versioned)?;
+
+        let now_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i64;
+
         self.conn
             .execute(
-                "INSERT OR REPLACE INTO schemas (collection, version, schema_json)
-                 VALUES (?1, ?2, ?3)",
+                "INSERT INTO schema_versions (collection, version, schema_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
                 params![
                     schema.collection.as_str(),
-                    schema.version as i64,
-                    schema_json
+                    next_version,
+                    schema_json,
+                    now_ns,
                 ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -370,7 +392,10 @@ impl StorageAdapter for SqliteStorageAdapter {
     fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
         let mut stmt = self
             .conn
-            .prepare_cached("SELECT schema_json FROM schemas WHERE collection = ?1")
+            .prepare_cached(
+                "SELECT schema_json FROM schema_versions
+                 WHERE collection = ?1 ORDER BY version DESC LIMIT 1",
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         let mut rows = stmt
@@ -386,10 +411,61 @@ impl StorageAdapter for SqliteStorageAdapter {
         }
     }
 
+    fn get_schema_version(
+        &self,
+        collection: &CollectionId,
+        version: u32,
+    ) -> Result<Option<CollectionSchema>, AxonError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT schema_json FROM schema_versions
+                 WHERE collection = ?1 AND version = ?2",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let mut rows = stmt
+            .query(params![collection.as_str(), version as i64])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
+            let json: String = row.get(0).map_err(|e| AxonError::Storage(e.to_string()))?;
+            let schema: CollectionSchema = serde_json::from_str(&json)?;
+            Ok(Some(schema))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn list_schema_versions(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Vec<(u32, u64)>, AxonError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT version, created_at FROM schema_versions
+                 WHERE collection = ?1 ORDER BY version ASC",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![collection.as_str()], |row| {
+                Ok((row.get::<_, i64>(0)? as u32, row.get::<_, i64>(1)? as u64))
+            })
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let mut result = vec![];
+        for row in rows {
+            result.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
+        }
+        Ok(result)
+    }
+
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         self.conn
             .execute(
-                "DELETE FROM schemas WHERE collection = ?1",
+                "DELETE FROM schema_versions WHERE collection = ?1",
                 params![collection.as_str()],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -616,7 +692,7 @@ mod tests {
         let schema = CollectionSchema {
             collection: col.clone(),
             description: Some("test schema".into()),
-            version: 2,
+            version: 99, // ignored — auto-increment assigns v1
             entity_schema: Some(json!({"type": "object"})),
             link_types: Default::default(),
         };
@@ -627,7 +703,7 @@ mod tests {
         assert!(retrieved.is_some());
         let retrieved = retrieved.unwrap();
         assert_eq!(retrieved.collection, col);
-        assert_eq!(retrieved.version, 2);
+        assert_eq!(retrieved.version, 1); // auto-incremented
         assert_eq!(retrieved.description.as_deref(), Some("test schema"));
     }
 

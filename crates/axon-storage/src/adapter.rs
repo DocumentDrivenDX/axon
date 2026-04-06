@@ -121,6 +121,31 @@ pub trait StorageAdapter: Send + Sync {
         Ok(None)
     }
 
+    /// Retrieve a specific version of a collection schema.
+    ///
+    /// Returns `Ok(None)` if the version does not exist.
+    /// The default implementation always returns `Ok(None)`.
+    fn get_schema_version(
+        &self,
+        collection: &CollectionId,
+        version: u32,
+    ) -> Result<Option<CollectionSchema>, AxonError> {
+        let _ = (collection, version);
+        Ok(None)
+    }
+
+    /// List all schema versions for a collection, returning (version, created_at_ns) pairs
+    /// in ascending version order.
+    ///
+    /// The default implementation returns an empty list.
+    fn list_schema_versions(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Vec<(u32, u64)>, AxonError> {
+        let _ = collection;
+        Ok(vec![])
+    }
+
     /// Delete the schema for a collection. Returns `Ok(())` whether or not a
     /// schema existed.
     ///

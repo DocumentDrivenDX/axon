@@ -1,4 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
@@ -9,11 +10,14 @@ use crate::adapter::StorageAdapter;
 
 type CollectionMap = HashMap<EntityId, Entity>;
 
+/// A schema version entry: (schema, created_at_ns).
+type SchemaVersionEntry = (CollectionSchema, u64);
+
 /// Combined snapshot of mutable state captured at transaction start.
 #[derive(Debug, Clone)]
 struct TxSnapshot {
     data: HashMap<CollectionId, CollectionMap>,
-    schemas: HashMap<CollectionId, CollectionSchema>,
+    schema_versions: HashMap<CollectionId, BTreeMap<u32, SchemaVersionEntry>>,
     collections: HashSet<CollectionId>,
 }
 
@@ -29,12 +33,19 @@ struct TxSnapshot {
 #[derive(Debug, Default)]
 pub struct MemoryStorageAdapter {
     data: HashMap<CollectionId, CollectionMap>,
-    /// Persisted schemas keyed by collection.
-    schemas: HashMap<CollectionId, CollectionSchema>,
+    /// Schema version history keyed by (collection → version → schema).
+    schema_versions: HashMap<CollectionId, BTreeMap<u32, SchemaVersionEntry>>,
     /// Explicitly registered collections.
     collections: HashSet<CollectionId>,
     /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
     tx_snapshot: Option<TxSnapshot>,
+}
+
+fn now_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
 }
 
 impl StorageAdapter for MemoryStorageAdapter {
@@ -141,7 +152,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         }
         self.tx_snapshot = Some(TxSnapshot {
             data: self.data.clone(),
-            schemas: self.schemas.clone(),
+            schema_versions: self.schema_versions.clone(),
             collections: self.collections.clone(),
         });
         Ok(())
@@ -158,24 +169,62 @@ impl StorageAdapter for MemoryStorageAdapter {
     fn abort_tx(&mut self) -> Result<(), AxonError> {
         if let Some(snapshot) = self.tx_snapshot.take() {
             self.data = snapshot.data;
-            self.schemas = snapshot.schemas;
+            self.schema_versions = snapshot.schema_versions;
             self.collections = snapshot.collections;
         }
         Ok(())
     }
 
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
-        self.schemas
-            .insert(schema.collection.clone(), schema.clone());
+        let versions = self
+            .schema_versions
+            .entry(schema.collection.clone())
+            .or_default();
+        let next_version = versions.keys().last().map_or(1, |v| v + 1);
+        let mut versioned = schema.clone();
+        versioned.version = next_version;
+        versions.insert(next_version, (versioned, now_ns()));
         Ok(())
     }
 
     fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
-        Ok(self.schemas.get(collection).cloned())
+        Ok(self
+            .schema_versions
+            .get(collection)
+            .and_then(|versions| versions.values().last())
+            .map(|(schema, _)| schema.clone()))
+    }
+
+    fn get_schema_version(
+        &self,
+        collection: &CollectionId,
+        version: u32,
+    ) -> Result<Option<CollectionSchema>, AxonError> {
+        Ok(self
+            .schema_versions
+            .get(collection)
+            .and_then(|versions| versions.get(&version))
+            .map(|(schema, _)| schema.clone()))
+    }
+
+    fn list_schema_versions(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Vec<(u32, u64)>, AxonError> {
+        Ok(self
+            .schema_versions
+            .get(collection)
+            .map(|versions| {
+                versions
+                    .iter()
+                    .map(|(v, (_, ts))| (*v, *ts))
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
-        self.schemas.remove(collection);
+        self.schema_versions.remove(collection);
         Ok(())
     }
 
@@ -393,14 +442,14 @@ mod tests {
         let schema = CollectionSchema {
             collection: col.clone(),
             description: Some("my schema".into()),
-            version: 3,
+            version: 99, // ignored — auto-increment assigns v1
             entity_schema: None,
             link_types: Default::default(),
         };
 
         store.put_schema(&schema).unwrap();
         let retrieved = store.get_schema(&col).unwrap().unwrap();
-        assert_eq!(retrieved.version, 3);
+        assert_eq!(retrieved.version, 1); // auto-incremented
         assert_eq!(retrieved.description.as_deref(), Some("my schema"));
     }
 
