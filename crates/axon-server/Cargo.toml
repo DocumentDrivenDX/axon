@@ -16,6 +16,7 @@ axon-api = { path = "../axon-api" }
 axon-audit = { path = "../axon-audit" }
 axon-schema = { path = "../axon-schema" }
 axon-storage = { path = "../axon-storage" }
+axon-mcp = { path = "../axon-mcp" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

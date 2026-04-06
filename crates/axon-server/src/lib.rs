@@ -1,7 +1,9 @@
 // placeholder — filled in by service.rs and gateway.rs modules
 pub mod auth;
 pub mod gateway;
+pub mod mcp_stdio;
 pub mod service;
 
 pub use auth::{AuthMode, Identity};
+pub use mcp_stdio::run_mcp_stdio;
 pub use service::AxonServiceImpl;

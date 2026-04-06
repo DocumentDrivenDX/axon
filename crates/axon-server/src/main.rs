@@ -1,10 +1,9 @@
-//! Axon server binary — starts HTTP gateway and gRPC service.
+//! Axon server binary — starts HTTP gateway, gRPC service, or MCP stdio.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::Parser;
-use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 
 use axon_api::handler::AxonHandler;
@@ -27,22 +26,50 @@ struct Args {
     /// Intended for local development only.
     #[arg(long, env = "AXON_NO_AUTH", default_value = "true")]
     no_auth: bool,
+
+    /// Run MCP server over stdin/stdout instead of HTTP/gRPC.
+    /// No authentication is applied for stdio connections.
+    #[arg(long)]
+    mcp_stdio: bool,
 }
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
-
     let args = Args::parse();
+
+    // For MCP stdio mode, minimize logging to stderr so stdout is clean.
+    if args.mcp_stdio {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .with_writer(std::io::stderr)
+            .init();
+    } else {
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env())
+            .init();
+    }
+
+    if args.mcp_stdio {
+        tracing::info!("starting MCP stdio server (no auth)");
+        let handler = Arc::new(std::sync::Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ));
+
+        // In stdio mode, collections are discovered dynamically.
+        // Start with an empty list — agents use tools/list after initialization.
+        if let Err(e) = axon_server::run_mcp_stdio(handler, &[]) {
+            tracing::error!("MCP stdio error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     if args.no_auth {
         tracing::info!("running in --no-auth mode: all requests succeed as admin (actor=anonymous)");
     }
 
     // Single shared handler for both HTTP and gRPC.
-    let handler = Arc::new(Mutex::new(
+    let handler = Arc::new(tokio::sync::Mutex::new(
         AxonHandler::new(MemoryStorageAdapter::default()),
     ));
 
