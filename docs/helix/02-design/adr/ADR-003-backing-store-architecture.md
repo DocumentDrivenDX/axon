@@ -32,8 +32,15 @@ The audit log and change data capture (CDC) are foundational to Axon — princip
 
 | Backend | Mode | Crate | Role |
 |---------|------|-------|------|
-| **SQLite via libsql** | Embedded | `libsql` v0.9.x | Development, testing, single-user, edge, CLI |
-| **PostgreSQL** | Server | `sqlx` v0.8.x | Production, multi-user, existing infrastructure |
+| **SQLite** | Embedded | `rusqlite` v0.32 (bundled) | Development, testing, single-user, edge, CLI |
+| **PostgreSQL** | Server | `postgres` v0.19 (sync, with `with-serde_json-1`) | Production, multi-user, existing infrastructure |
+
+> **Implementation note (2026-04-05):** The original ADR specified `libsql` v0.9.x
+> and `sqlx` v0.8.x. During implementation, `rusqlite` v0.32 was chosen for SQLite
+> (bundled build, simpler API, no async overhead for embedded mode) and the synchronous
+> `postgres` v0.19 crate was chosen for PostgreSQL (simpler integration with the
+> synchronous `StorageAdapter` trait using `RefCell<Client>`). Both choices pass the
+> full L4 conformance suite and L2 backend parity tests.
 
 Both backends implement the same `StorageAdapter` trait. Both pass the identical test suite (L4 backend conformance).
 
