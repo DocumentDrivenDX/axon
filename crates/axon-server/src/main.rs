@@ -32,15 +32,17 @@ async fn main() {
 
     let args = Args::parse();
 
-    // Build HTTP gateway (uses its own handler instance).
-    let http_handler = Arc::new(Mutex::new(
+    // Single shared handler for both HTTP and gRPC.
+    let handler = Arc::new(Mutex::new(
         AxonHandler::new(MemoryStorageAdapter::default()),
     ));
-    let http_app = axon_server::gateway::build_router(http_handler);
+
+    // Build HTTP gateway.
+    let http_app = axon_server::gateway::build_router(handler.clone());
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
-    // Build gRPC service (uses its own handler instance).
-    let grpc_svc = AxonServiceImpl::new_in_memory();
+    // Build gRPC service sharing the same handler.
+    let grpc_svc = AxonServiceImpl::from_shared(handler);
     let grpc_addr: SocketAddr = ([0, 0, 0, 0], args.grpc_port).into();
 
     tracing::info!("HTTP gateway listening on {http_addr}");

@@ -97,6 +97,13 @@ impl AxonServiceImpl {
             handler: Arc::new(Mutex::new(handler)),
         }
     }
+
+    /// Create a service sharing an existing handler reference.
+    ///
+    /// Use this to share state between the gRPC service and the HTTP gateway.
+    pub fn from_shared(handler: Arc<Mutex<AxonHandler<MemoryStorageAdapter>>>) -> Self {
+        Self { handler }
+    }
 }
 
 #[tonic::async_trait]
