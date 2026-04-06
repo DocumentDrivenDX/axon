@@ -23,16 +23,17 @@ use crate::request::{
     CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
     DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest, FieldFilter, FilterNode,
     FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest,
-    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevertEntityRequest, SortDirection,
-    TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevalidateRequest,
+    RevertEntityRequest, SortDirection, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
     CreateCollectionResponse, CreateEntityResponse, CreateLinkResponse, DeleteEntityResponse,
     DeleteLinkResponse, DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse,
-    GetEntityResponse, GetSchemaResponse, ListCollectionsResponse, PutSchemaResponse,
-    QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevertEntityResponse,
-    TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
+    GetEntityResponse, GetSchemaResponse, InvalidEntity, ListCollectionsResponse,
+    PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse, ReachableResponse,
+    RevalidateResponse, RevertEntityResponse, TraverseHop, TraversePath, TraverseResponse,
+    UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -1012,6 +1013,47 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .ok_or_else(|| {
                 AxonError::NotFound(format!("schema for collection '{}'", req.collection))
             })
+    }
+
+    /// Revalidate all entities in a collection against the current schema (US-060).
+    ///
+    /// Scans all entities and reports which ones fail validation, including
+    /// the entity ID, version, and specific errors.
+    pub fn revalidate(
+        &self,
+        req: RevalidateRequest,
+    ) -> Result<RevalidateResponse, AxonError> {
+        let schema = self
+            .storage
+            .get_schema(&req.collection)?
+            .ok_or_else(|| {
+                AxonError::NotFound(format!(
+                    "schema for collection '{}'",
+                    req.collection
+                ))
+            })?;
+
+        let all = self.storage.range_scan(&req.collection, None, None, None)?;
+        let total_scanned = all.len();
+        let mut invalid = Vec::new();
+
+        for entity in &all {
+            if let Err(errs) = axon_schema::validate_entity(&schema, &entity.data) {
+                invalid.push(InvalidEntity {
+                    id: entity.id.to_string(),
+                    version: entity.version,
+                    errors: errs.0.iter().map(|e| e.to_string()).collect(),
+                });
+            }
+        }
+
+        let valid_count = total_scanned - invalid.len();
+
+        Ok(RevalidateResponse {
+            total_scanned,
+            valid_count,
+            invalid,
+        })
     }
 
     /// Diff two schema versions for a collection (US-061).
@@ -4930,6 +4972,143 @@ link_types:
             .unwrap();
         assert_eq!(resp.total_count, 0);
         assert!(resp.groups.is_empty());
+    }
+
+    // ── Revalidation tests (US-060) ───────────────────────────────────────
+
+    #[test]
+    fn revalidate_all_valid() {
+        use crate::request::RevalidateRequest;
+
+        let mut h = handler();
+        let col = CollectionId::new("rv-test");
+        let schema = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                    "title": {"type": "string"}
+                }
+            })),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+        };
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema,
+            actor: None,
+        })
+        .unwrap();
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("rv-1"),
+            data: json!({"title": "valid"}),
+            actor: None,
+        })
+        .unwrap();
+
+        let resp = h.revalidate(RevalidateRequest { collection: col }).unwrap();
+        assert_eq!(resp.total_scanned, 1);
+        assert_eq!(resp.valid_count, 1);
+        assert!(resp.invalid.is_empty());
+    }
+
+    #[test]
+    fn revalidate_finds_invalid_after_schema_tightened() {
+        use crate::request::RevalidateRequest;
+
+        let mut h = handler();
+        let col = CollectionId::new("rv-test-2");
+
+        // Loose schema first.
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        // Create entities with no constraints.
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("rv-2"),
+            data: json!({"title": "valid"}),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("rv-3"),
+            data: json!({"no_title": true}),
+            actor: None,
+        })
+        .unwrap();
+
+        // Now tighten the schema.
+        h.handle_put_schema(PutSchemaRequest {
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 2,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "required": ["title"],
+                    "properties": {
+                        "title": {"type": "string"}
+                    }
+                })),
+                link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+            },
+            actor: None,
+            force: true,
+            dry_run: false,
+        })
+        .unwrap();
+
+        let resp = h
+            .revalidate(RevalidateRequest {
+                collection: col,
+            })
+            .unwrap();
+        assert_eq!(resp.total_scanned, 2);
+        assert_eq!(resp.valid_count, 1);
+        assert_eq!(resp.invalid.len(), 1);
+        assert_eq!(resp.invalid[0].id, "rv-3");
+        assert!(!resp.invalid[0].errors.is_empty());
+    }
+
+    #[test]
+    fn revalidate_empty_collection() {
+        use crate::request::RevalidateRequest;
+
+        let mut h = handler();
+        let col = CollectionId::new("rv-empty");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 1,
+                entity_schema: Some(json!({"type": "object"})),
+                link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+            },
+            actor: None,
+        })
+        .unwrap();
+
+        let resp = h.revalidate(RevalidateRequest { collection: col }).unwrap();
+        assert_eq!(resp.total_scanned, 0);
+        assert_eq!(resp.valid_count, 0);
+        assert!(resp.invalid.is_empty());
     }
 
     // ── Gate filter tests (US-074b) ───────────────────────────────────────

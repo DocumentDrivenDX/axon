@@ -317,6 +317,12 @@ pub struct GetSchemaRequest {
     pub collection: CollectionId,
 }
 
+/// Request to revalidate all entities in a collection against the current schema.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RevalidateRequest {
+    pub collection: CollectionId,
+}
+
 /// Request to diff two schema versions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffSchemaRequest {

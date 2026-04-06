@@ -211,6 +211,28 @@ pub struct GetSchemaResponse {
     pub schema: CollectionSchema,
 }
 
+/// A single invalid entity found during revalidation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InvalidEntity {
+    /// Entity ID.
+    pub id: String,
+    /// Entity version.
+    pub version: u64,
+    /// Validation errors.
+    pub errors: Vec<String>,
+}
+
+/// Response from revalidating entities against the current schema (US-060).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RevalidateResponse {
+    /// Total entities scanned.
+    pub total_scanned: usize,
+    /// Number of valid entities.
+    pub valid_count: usize,
+    /// Invalid entities with their errors.
+    pub invalid: Vec<InvalidEntity>,
+}
+
 /// Response from diffing two schema versions (US-061).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffSchemaResponse {
