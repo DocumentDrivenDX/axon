@@ -89,6 +89,39 @@ pub trait AuditLog: Send + Sync {
     /// at `after_id + 1`. When the returned [`AuditPage::next_cursor`] is `None`
     /// there are no further results.
     fn query_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError>;
+
+    /// Replay audit entries from a given cursor, returning CDC envelopes.
+    ///
+    /// - `after_id = None`: initial snapshot — replays all entries.
+    /// - `after_id = Some(id)`: resumable replay from that cursor.
+    /// - `limit`: maximum number of events to return per call.
+    ///
+    /// Returns `(envelopes, next_cursor)` where `next_cursor` is `None`
+    /// when all events have been replayed.
+    ///
+    /// Consumer deduplication: each envelope carries `source.audit_id`
+    /// which is globally unique and monotonically increasing.
+    fn replay(
+        &self,
+        after_id: Option<u64>,
+        collection: Option<&CollectionId>,
+        limit: usize,
+    ) -> Result<(Vec<crate::cdc::CdcEnvelope>, Option<u64>), AxonError> {
+        let page = self.query_paginated(AuditQuery {
+            collection: collection.cloned(),
+            after_id,
+            limit: Some(limit),
+            ..AuditQuery::default()
+        })?;
+
+        let envelopes: Vec<crate::cdc::CdcEnvelope> = page
+            .entries
+            .iter()
+            .filter_map(crate::cdc::CdcEnvelope::from_audit_entry)
+            .collect();
+
+        Ok((envelopes, page.next_cursor))
+    }
 }
 
 // ── MemoryAuditLog ───────────────────────────────────────────────────────────
@@ -463,5 +496,144 @@ mod tests {
         let log = MemoryAuditLog::default();
         assert!(log.is_empty());
         // No delete or update method exists — enforced by the trait definition.
+    }
+
+    // ── Replay tests (US-075) ──────────────────────────────────────────
+
+    #[test]
+    fn replay_initial_snapshot_returns_all_events() {
+        let mut log = MemoryAuditLog::default();
+        for i in 1..=5 {
+            log.append(AuditEntry::new(
+                CollectionId::new("tasks"),
+                EntityId::new(format!("t-{i:03}")),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({"n": i})),
+                Some("agent".into()),
+            ))
+            .unwrap();
+        }
+
+        let (envelopes, cursor) = log.replay(None, None, 100).unwrap();
+        assert_eq!(envelopes.len(), 5);
+        // cursor should be None since we got all events.
+        assert!(cursor.is_none());
+    }
+
+    #[test]
+    fn replay_resumable_from_cursor() {
+        let mut log = MemoryAuditLog::default();
+        for i in 1..=10 {
+            log.append(AuditEntry::new(
+                CollectionId::new("tasks"),
+                EntityId::new(format!("t-{i:03}")),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({"n": i})),
+                Some("agent".into()),
+            ))
+            .unwrap();
+        }
+
+        // First page: 5 events.
+        let (page1, cursor1) = log.replay(None, None, 5).unwrap();
+        assert_eq!(page1.len(), 5);
+        assert!(cursor1.is_some());
+
+        // Second page from cursor.
+        let (page2, cursor2) = log.replay(cursor1, None, 5).unwrap();
+        assert_eq!(page2.len(), 5);
+        assert!(cursor2.is_none());
+
+        // audit_ids should not overlap.
+        let ids1: Vec<u64> = page1.iter().map(|e| e.source.audit_id).collect();
+        let ids2: Vec<u64> = page2.iter().map(|e| e.source.audit_id).collect();
+        assert!(ids1.iter().max().unwrap() < ids2.iter().min().unwrap());
+    }
+
+    #[test]
+    fn replay_filters_by_collection() {
+        let mut log = MemoryAuditLog::default();
+        log.append(AuditEntry::new(
+            CollectionId::new("tasks"),
+            EntityId::new("t-001"),
+            1,
+            MutationType::EntityCreate,
+            None,
+            Some(serde_json::json!({"task": true})),
+            Some("a".into()),
+        ))
+        .unwrap();
+        log.append(AuditEntry::new(
+            CollectionId::new("users"),
+            EntityId::new("u-001"),
+            1,
+            MutationType::EntityCreate,
+            None,
+            Some(serde_json::json!({"user": true})),
+            Some("a".into()),
+        ))
+        .unwrap();
+
+        let (envelopes, _) =
+            log.replay(None, Some(&CollectionId::new("tasks")), 100).unwrap();
+        assert_eq!(envelopes.len(), 1);
+        assert_eq!(envelopes[0].source.collection, "tasks");
+    }
+
+    #[test]
+    fn replay_collection_events_skipped_in_envelopes() {
+        let mut log = MemoryAuditLog::default();
+        // Collection create events don't produce CDC envelopes.
+        log.append(AuditEntry::new(
+            CollectionId::new("tasks"),
+            EntityId::new(""),
+            0,
+            MutationType::CollectionCreate,
+            None,
+            None,
+            None,
+        ))
+        .unwrap();
+        log.append(AuditEntry::new(
+            CollectionId::new("tasks"),
+            EntityId::new("t-001"),
+            1,
+            MutationType::EntityCreate,
+            None,
+            Some(serde_json::json!({"x": 1})),
+            Some("a".into()),
+        ))
+        .unwrap();
+
+        let (envelopes, _) = log.replay(None, None, 100).unwrap();
+        // Only entity events produce envelopes.
+        assert_eq!(envelopes.len(), 1);
+    }
+
+    #[test]
+    fn replay_dedup_by_audit_id() {
+        let mut log = MemoryAuditLog::default();
+        for _ in 0..3 {
+            log.append(AuditEntry::new(
+                CollectionId::new("tasks"),
+                EntityId::new("t-001"),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({})),
+                None,
+            ))
+            .unwrap();
+        }
+
+        let (envelopes, _) = log.replay(None, None, 100).unwrap();
+        // Each envelope has a unique audit_id.
+        let ids: Vec<u64> = envelopes.iter().map(|e| e.source.audit_id).collect();
+        let unique: std::collections::HashSet<u64> = ids.iter().copied().collect();
+        assert_eq!(ids.len(), unique.len());
     }
 }
