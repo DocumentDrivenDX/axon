@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 use tracing_subscriber::EnvFilter;
 
 use axon_api::handler::AxonHandler;
+use axon_server::service::{AxonServiceImpl, AxonServiceServer};
 use axon_storage::memory::MemoryStorageAdapter;
 
 /// Axon server — schema-first transactional data store for agentic applications.
@@ -31,16 +32,19 @@ async fn main() {
 
     let args = Args::parse();
 
-    let handler = Arc::new(Mutex::new(
+    // Build HTTP gateway (uses its own handler instance).
+    let http_handler = Arc::new(Mutex::new(
         AxonHandler::new(MemoryStorageAdapter::default()),
     ));
-
-    // Build HTTP gateway.
-    let http_app = axon_server::gateway::build_router(handler.clone());
+    let http_app = axon_server::gateway::build_router(http_handler);
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
+    // Build gRPC service (uses its own handler instance).
+    let grpc_svc = AxonServiceImpl::new_in_memory();
+    let grpc_addr: SocketAddr = ([0, 0, 0, 0], args.grpc_port).into();
+
     tracing::info!("HTTP gateway listening on {http_addr}");
-    tracing::info!("gRPC service listening on 0.0.0.0:{}", args.grpc_port);
+    tracing::info!("gRPC service listening on {grpc_addr}");
 
     // Start HTTP server with graceful shutdown.
     let http_handle = tokio::spawn(async move {
@@ -51,11 +55,20 @@ async fn main() {
             .unwrap();
     });
 
-    // Health-check: the HTTP gateway itself serves as the health endpoint.
-    // A GET to any unknown path returns 404, confirming the server is up.
-    // A dedicated /health route could be added but is not required for V1.
+    // Start gRPC server with graceful shutdown.
+    let grpc_handle = tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(AxonServiceServer::new(grpc_svc))
+            .serve_with_shutdown(grpc_addr, shutdown_signal())
+            .await
+            .unwrap();
+    });
 
-    http_handle.await.unwrap();
+    // Wait for either server to finish (both shut down on CTRL+C).
+    tokio::select! {
+        r = http_handle => { if let Err(e) = r { tracing::error!("HTTP server error: {e}"); } }
+        r = grpc_handle => { if let Err(e) = r { tracing::error!("gRPC server error: {e}"); } }
+    }
 }
 
 async fn shutdown_signal() {
