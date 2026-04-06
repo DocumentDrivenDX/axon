@@ -293,6 +293,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 5. **Server mode** — run Axon as a standalone service with network API
 6. **Authentication/authorization** — API keys, per-collection permissions
 7. **Bead storage adapter** — purpose-built entity/link schemas and API for beads lifecycle
+8. **Admin web UI** — browser-based console for collection management, entity browsing, schema editing, and audit log inspection. Served by the axon-server binary. See FEAT-009
 
 ### Nice to Have (P2)
 
