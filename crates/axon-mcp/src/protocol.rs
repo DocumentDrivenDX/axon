@@ -97,10 +97,22 @@ pub struct ToolsCapability {
     pub list_changed: bool,
 }
 
+/// A resource subscription tracked by the MCP server.
+#[derive(Debug, Clone)]
+pub struct ResourceSubscription {
+    /// The resource URI (e.g., "axon://collections/tasks/entities/t-001").
+    pub uri: String,
+    /// Subscription ID for tracking.
+    pub id: u64,
+}
+
 /// The MCP server: processes JSON-RPC requests and returns responses.
 pub struct McpServer {
     tool_registry: ToolRegistry,
     initialized: bool,
+    /// Active resource subscriptions.
+    subscriptions: Vec<ResourceSubscription>,
+    next_sub_id: u64,
 }
 
 impl McpServer {
@@ -109,6 +121,8 @@ impl McpServer {
         Self {
             tool_registry,
             initialized: false,
+            subscriptions: Vec::new(),
+            next_sub_id: 0,
         }
     }
 
@@ -136,6 +150,8 @@ impl McpServer {
             "initialize" => self.handle_initialize(request),
             "tools/list" => self.handle_tools_list(request),
             "tools/call" => self.handle_tools_call(request),
+            "resources/subscribe" => self.handle_resource_subscribe(request),
+            "resources/unsubscribe" => self.handle_resource_unsubscribe(request),
             "ping" => JsonRpcResponse::success(request.id.clone(), serde_json::json!({})),
             _ => JsonRpcResponse::error(
                 request.id.clone(),
@@ -152,6 +168,9 @@ impl McpServer {
             "capabilities": {
                 "tools": {
                     "listChanged": true
+                },
+                "resources": {
+                    "subscribe": true
                 }
             },
             "serverInfo": {
@@ -209,6 +228,74 @@ impl McpServer {
                 JsonRpcResponse::success(request.id.clone(), result)
             }
         }
+    }
+
+    fn handle_resource_subscribe(&mut self, request: &JsonRpcRequest) -> JsonRpcResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return JsonRpcResponse::error(
+                    request.id.clone(),
+                    -32602,
+                    "Missing params".into(),
+                );
+            }
+        };
+
+        let uri = match params.get("uri").and_then(|v| v.as_str()) {
+            Some(u) => u.to_string(),
+            None => {
+                return JsonRpcResponse::error(
+                    request.id.clone(),
+                    -32602,
+                    "Missing 'uri' in params".into(),
+                );
+            }
+        };
+
+        self.next_sub_id += 1;
+        let sub = ResourceSubscription {
+            uri: uri.clone(),
+            id: self.next_sub_id,
+        };
+        self.subscriptions.push(sub);
+
+        JsonRpcResponse::success(
+            request.id.clone(),
+            serde_json::json!({ "subscriptionId": self.next_sub_id }),
+        )
+    }
+
+    fn handle_resource_unsubscribe(&mut self, request: &JsonRpcRequest) -> JsonRpcResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return JsonRpcResponse::error(
+                    request.id.clone(),
+                    -32602,
+                    "Missing params".into(),
+                );
+            }
+        };
+
+        let uri = match params.get("uri").and_then(|v| v.as_str()) {
+            Some(u) => u,
+            None => {
+                return JsonRpcResponse::error(
+                    request.id.clone(),
+                    -32602,
+                    "Missing 'uri' in params".into(),
+                );
+            }
+        };
+
+        self.subscriptions.retain(|s| s.uri != uri);
+        JsonRpcResponse::success(request.id.clone(), serde_json::json!({}))
+    }
+
+    /// Get active subscription count.
+    pub fn subscription_count(&self) -> usize {
+        self.subscriptions.len()
     }
 
     /// Update the tool registry (e.g., after schema changes).
@@ -373,5 +460,77 @@ mod tests {
         let resp_str = server.handle_message("not json").unwrap();
         let resp: Value = serde_json::from_str(&resp_str).unwrap();
         assert_eq!(resp["error"]["code"], -32700);
+    }
+
+    // ── Resource subscription tests (US-055) ───────────────────────────
+
+    #[test]
+    fn initialize_declares_resource_subscribe_capability() {
+        let mut server = empty_server();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {}
+        });
+        let resp_str = server.handle_message(&req.to_string()).unwrap();
+        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+        assert!(resp["result"]["capabilities"]["resources"]["subscribe"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn resource_subscribe_returns_subscription_id() {
+        let mut server = empty_server();
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": { "uri": "axon://collections/tasks/entities/t-001" }
+        });
+        let resp_str = server.handle_message(&req.to_string()).unwrap();
+        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+        assert!(resp["result"]["subscriptionId"].as_u64().unwrap() > 0);
+        assert_eq!(server.subscription_count(), 1);
+    }
+
+    #[test]
+    fn resource_unsubscribe_removes_subscription() {
+        let mut server = empty_server();
+        let uri = "axon://collections/tasks/entities/t-001";
+
+        // Subscribe
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "resources/subscribe",
+            "params": { "uri": uri }
+        });
+        server.handle_message(&req.to_string());
+        assert_eq!(server.subscription_count(), 1);
+
+        // Unsubscribe
+        let req = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "resources/unsubscribe",
+            "params": { "uri": uri }
+        });
+        server.handle_message(&req.to_string());
+        assert_eq!(server.subscription_count(), 0);
+    }
+
+    #[test]
+    fn multiple_subscriptions_tracked() {
+        let mut server = empty_server();
+        for i in 1..=3 {
+            let req = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": i,
+                "method": "resources/subscribe",
+                "params": { "uri": format!("axon://collections/tasks/entities/t-{i:03}") }
+            });
+            server.handle_message(&req.to_string());
+        }
+        assert_eq!(server.subscription_count(), 3);
     }
 }
