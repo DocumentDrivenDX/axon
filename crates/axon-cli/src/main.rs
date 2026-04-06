@@ -526,6 +526,7 @@ fn run_entity(
                     collection: CollectionId::new(&collection),
                     id: EntityId::new(&id),
                     actor,
+                    force: false,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {

@@ -70,6 +70,7 @@ proptest! {
                 collection: col.clone(),
                 id:         id.clone(),
                 actor:      Some("prop-test".into()),
+                force: false,
             }).unwrap();
             expected_ops += 1;
         }

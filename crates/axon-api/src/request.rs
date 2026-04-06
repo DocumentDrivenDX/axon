@@ -42,6 +42,10 @@ pub struct DeleteEntityRequest {
     pub collection: CollectionId,
     pub id: EntityId,
     pub actor: Option<String>,
+    /// When `true`, bypass the referential integrity check and delete the
+    /// entity even if it has inbound links. Default: `false`.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// Request to create a typed link between two entities.

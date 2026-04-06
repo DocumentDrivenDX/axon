@@ -205,28 +205,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: DeleteEntityRequest,
     ) -> Result<DeleteEntityResponse, AxonError> {
-        // Referential integrity: reject delete when inbound links exist.
-        //
-        // Use the reverse-index collection to avoid an O(N_total_links) full
-        // table scan.  Reverse-index IDs are formatted as
-        // `{target_col}/{target_id}/{source_col}/{source_id}/{link_type}`, so a
-        // prefix scan from `{target_col}/{target_id}/` with limit=1 is enough
-        // to determine whether any inbound link exists.
-        let links_rev_col = Link::links_rev_collection();
-        let rev_prefix = format!("{}/{}/", req.collection, req.id);
-        let rev_start = EntityId::new(&rev_prefix);
-        let rev_candidates =
-            self.storage
-                .range_scan(&links_rev_col, Some(&rev_start), None, Some(1))?;
-        let inbound_count = rev_candidates
-            .iter()
-            .filter(|e| e.id.as_str().starts_with(&rev_prefix))
-            .count();
-        if inbound_count > 0 {
-            return Err(AxonError::InvalidOperation(format!(
-                "entity {}/{} has inbound link(s); delete or re-target those links first",
-                req.collection, req.id
-            )));
+        // Referential integrity: reject delete when inbound links exist
+        // (unless `force` is set).
+        if !req.force {
+            let links_rev_col = Link::links_rev_collection();
+            let rev_prefix = format!("{}/{}/", req.collection, req.id);
+            let rev_start = EntityId::new(&rev_prefix);
+            let rev_candidates =
+                self.storage
+                    .range_scan(&links_rev_col, Some(&rev_start), None, Some(1))?;
+            let has_inbound = rev_candidates
+                .iter()
+                .any(|e| e.id.as_str().starts_with(&rev_prefix));
+            if has_inbound {
+                return Err(AxonError::InvalidOperation(format!(
+                    "entity {}/{} has inbound link(s); delete or re-target those links first, or use force=true",
+                    req.collection, req.id
+                )));
+            }
         }
 
         // Read current state for the audit `before` snapshot.
@@ -1398,6 +1394,7 @@ mod tests {
             collection: col.clone(),
             id: id.clone(),
             actor: None,
+            force: false,
         })
         .unwrap();
 
@@ -1435,6 +1432,7 @@ mod tests {
             collection: col,
             id,
             actor: None,
+            force: false,
         })
         .unwrap();
 
@@ -2697,6 +2695,7 @@ entity_schema:
             collection: CollectionId::new("tasks"),
             id: EntityId::new("t-001"),
             actor: None,
+            force: false,
         })
         .expect("delete_entity must succeed after reverse-index entry is removed");
     }

@@ -127,6 +127,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
             collection: tgt.clone(),
             id: EntityId::new("t-000"),
             actor: Some("sim".into()),
+            force: false,
         }),
         Err(AxonError::InvalidOperation(_))
     );
@@ -137,6 +138,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
             collection: tgt.clone(),
             id: EntityId::new("t-002"),
             actor: Some("sim".into()),
+            force: false,
         })
         .is_ok();
 

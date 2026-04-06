@@ -170,6 +170,7 @@ pub fn run_audit_completeness_workload(
                     collection: col_b.clone(),
                     id: eid.clone(),
                     actor: Some("sim".into()),
+                    force: false,
                 })
                 .is_ok()
             {

@@ -304,6 +304,7 @@ async fn delete_entity(
         collection: CollectionId::new(&collection),
         id: EntityId::new(&id),
         actor,
+        force: false,
     }) {
         Ok(resp) => Json(json!({"collection": resp.collection, "id": resp.id})).into_response(),
         Err(e) => axon_error_response(e),

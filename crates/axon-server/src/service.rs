@@ -199,6 +199,7 @@ impl AxonService for AxonServiceImpl {
                 collection: CollectionId::new(&req.collection),
                 id: EntityId::new(&req.id),
                 actor,
+                force: false,
             })
             .map_err(axon_to_status)?;
 

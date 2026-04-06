@@ -93,6 +93,7 @@ fn test_entity_crud<S: StorageAdapter>(mut h: AxonHandler<S>) {
         collection: col("tasks"),
         id: eid("t-001"),
         actor: None,
+        force: false,
     })
     .unwrap();
 
