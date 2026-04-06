@@ -9,5 +9,5 @@ pub mod id;
 pub mod types;
 
 pub use error::AxonError;
-pub use id::{CollectionId, EntityId, LinkId};
+pub use id::{CollectionId, EntityId, LinkId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 pub use types::{Entity, Link, LINKS_COLLECTION};
