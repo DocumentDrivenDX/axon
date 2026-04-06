@@ -125,6 +125,40 @@ impl CallerIdentity {
             )))
         }
     }
+
+    /// Apply field-level masking to entity data based on mask policies.
+    ///
+    /// Admin users see all fields. For other roles, fields listed in a
+    /// mask policy that requires a higher role than the caller's are
+    /// removed from the data.
+    pub fn apply_masks(
+        &self,
+        data: &mut serde_json::Value,
+        policies: &[MaskPolicy],
+    ) {
+        if self.role >= Role::Admin {
+            return; // Admin sees all.
+        }
+        if let Some(obj) = data.as_object_mut() {
+            for policy in policies {
+                if self.role < policy.min_role {
+                    obj.remove(&policy.field);
+                }
+            }
+        }
+    }
+}
+
+/// A field-level mask policy (US-046, FEAT-012).
+///
+/// Specifies that a field should be hidden from callers whose role is
+/// below `min_role`. Admin always sees all fields.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaskPolicy {
+    /// The field name to mask.
+    pub field: String,
+    /// Minimum role required to see this field.
+    pub min_role: Role,
 }
 
 #[cfg(test)]
@@ -204,5 +238,95 @@ mod tests {
         assert!(msg.contains("permission denied"), "msg: {msg}");
         assert!(msg.contains("read"), "msg: {msg}");
         assert!(msg.contains("write"), "msg: {msg}");
+    }
+
+    // ── Field-level masking tests (US-046) ──────────────────────────────
+
+    #[test]
+    fn admin_sees_all_fields() {
+        let admin = CallerIdentity::new("admin", Role::Admin);
+        let mut data = serde_json::json!({"name": "Alice", "salary": 100000});
+        let policies = vec![MaskPolicy {
+            field: "salary".into(),
+            min_role: Role::Admin,
+        }];
+        admin.apply_masks(&mut data, &policies);
+        assert!(data.get("salary").is_some(), "admin should see salary");
+    }
+
+    #[test]
+    fn reader_cannot_see_admin_only_fields() {
+        let reader = CallerIdentity::new("bob", Role::Read);
+        let mut data = serde_json::json!({"name": "Alice", "salary": 100000, "email": "alice@co.com"});
+        let policies = vec![MaskPolicy {
+            field: "salary".into(),
+            min_role: Role::Admin,
+        }];
+        reader.apply_masks(&mut data, &policies);
+        assert!(data.get("salary").is_none(), "reader should not see salary");
+        assert!(data.get("name").is_some(), "name is not masked");
+        assert!(data.get("email").is_some(), "email is not masked");
+    }
+
+    #[test]
+    fn writer_sees_write_level_fields() {
+        let writer = CallerIdentity::new("charlie", Role::Write);
+        let mut data = serde_json::json!({"name": "Alice", "internal_notes": "sensitive"});
+        let policies = vec![MaskPolicy {
+            field: "internal_notes".into(),
+            min_role: Role::Write,
+        }];
+        writer.apply_masks(&mut data, &policies);
+        assert!(
+            data.get("internal_notes").is_some(),
+            "writer should see write-level fields"
+        );
+    }
+
+    #[test]
+    fn reader_cannot_see_write_level_fields() {
+        let reader = CallerIdentity::new("dave", Role::Read);
+        let mut data = serde_json::json!({"name": "Alice", "internal_notes": "sensitive"});
+        let policies = vec![MaskPolicy {
+            field: "internal_notes".into(),
+            min_role: Role::Write,
+        }];
+        reader.apply_masks(&mut data, &policies);
+        assert!(
+            data.get("internal_notes").is_none(),
+            "reader should not see write-level fields"
+        );
+    }
+
+    #[test]
+    fn multiple_mask_policies() {
+        let reader = CallerIdentity::new("eve", Role::Read);
+        let mut data = serde_json::json!({"name": "Alice", "salary": 100000, "ssn": "123-45-6789"});
+        let policies = vec![
+            MaskPolicy {
+                field: "salary".into(),
+                min_role: Role::Admin,
+            },
+            MaskPolicy {
+                field: "ssn".into(),
+                min_role: Role::Write,
+            },
+        ];
+        reader.apply_masks(&mut data, &policies);
+        assert!(data.get("salary").is_none());
+        assert!(data.get("ssn").is_none());
+        assert!(data.get("name").is_some());
+    }
+
+    #[test]
+    fn mask_on_non_object_is_noop() {
+        let reader = CallerIdentity::new("f", Role::Read);
+        let mut data = serde_json::json!("just a string");
+        let policies = vec![MaskPolicy {
+            field: "anything".into(),
+            min_role: Role::Admin,
+        }];
+        reader.apply_masks(&mut data, &policies);
+        assert_eq!(data, serde_json::json!("just a string"));
     }
 }
