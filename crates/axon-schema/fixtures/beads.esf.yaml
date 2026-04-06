@@ -1,0 +1,93 @@
+esf_version: "1.0"
+collection: beads
+
+entity_schema:
+  type: object
+  required:
+    - bead_type
+    - status
+    - title
+  properties:
+
+    # ── Identity & type ──────────────────────────────────────────
+    bead_type:
+      type: string
+      enum: [task, bug, epic, chore, spike, feature]
+    status:
+      type: string
+      # Enum kept in sync with lifecycle states below.
+      enum: [draft, pending, ready, in_progress, review, done, blocked, cancelled]
+    title:
+      type: string
+      minLength: 1
+    description:
+      type: string
+    acceptance:
+      type: string
+
+    # ── Ownership & assignment ───────────────────────────────────
+    owner:
+      type: string
+    assignee:
+      type: string
+    priority:
+      type: integer
+      minimum: 0
+      maximum: 4
+
+    # ── Categorization ───────────────────────────────────────────
+    labels:
+      type: array
+      items:
+        type: string
+    tags:
+      type: array
+      items:
+        type: string
+    spec-id:
+      type: string
+
+    # ── Claim tracking ───────────────────────────────────────────
+    claimed-at:
+      type: string
+      format: date-time
+    claimed-machine:
+      type: string
+    claimed-pid:
+      type: string
+
+    # ── Notes & resolution ───────────────────────────────────────
+    notes:
+      type: string
+    resolution:
+      type: string
+
+    # ── Traceability ─────────────────────────────────────────────
+    discovered-from:
+      type: string
+    prior-review:
+      type: string
+
+link_types:
+  depends-on:
+    target_collection: beads
+    cardinality: many-to-many
+    required: false
+  parent-of:
+    target_collection: beads
+    cardinality: one-to-many
+    required: false
+
+lifecycles:
+  status:
+    field: status
+    initial: draft
+    transitions:
+      draft: [pending, cancelled]
+      pending: [ready, in_progress, blocked, cancelled]
+      ready: [in_progress, blocked, cancelled]
+      in_progress: [review, done, blocked, cancelled]
+      review: [in_progress, done, cancelled]
+      done: []
+      blocked: [pending, cancelled]
+      cancelled: []
