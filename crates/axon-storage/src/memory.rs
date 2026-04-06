@@ -23,6 +23,33 @@ type IndexKey = (CollectionId, String, IndexValue);
 /// Key for compound indexes: (collection, index_position, compound_key).
 type CompoundIndexKey = (CollectionId, usize, CompoundKey);
 
+/// Bidirectional mapping between collection names and numeric IDs (ADR-010).
+#[derive(Debug, Clone, Default)]
+struct NumericIdCache {
+    name_to_id: HashMap<CollectionId, u64>,
+    id_to_name: HashMap<u64, CollectionId>,
+    next_id: u64,
+}
+
+impl NumericIdCache {
+    fn assign(&mut self, collection: &CollectionId) -> u64 {
+        if let Some(&id) = self.name_to_id.get(collection) {
+            return id;
+        }
+        self.next_id += 1;
+        let id = self.next_id;
+        self.name_to_id.insert(collection.clone(), id);
+        self.id_to_name.insert(id, collection.clone());
+        id
+    }
+
+    fn remove(&mut self, collection: &CollectionId) {
+        if let Some(id) = self.name_to_id.remove(collection) {
+            self.id_to_name.remove(&id);
+        }
+    }
+}
+
 /// Combined snapshot of mutable state captured at transaction start.
 #[derive(Debug, Clone)]
 struct TxSnapshot {
@@ -33,6 +60,8 @@ struct TxSnapshot {
     indexes: BTreeMap<IndexKey, BTreeSet<EntityId>>,
     /// Compound index snapshot for rollback.
     compound_indexes: BTreeMap<CompoundIndexKey, BTreeSet<EntityId>>,
+    /// Numeric ID cache snapshot for rollback.
+    numeric_ids: NumericIdCache,
 }
 
 /// In-memory storage adapter for testing and development.
@@ -57,6 +86,8 @@ pub struct MemoryStorageAdapter {
     indexes: BTreeMap<IndexKey, BTreeSet<EntityId>>,
     /// Compound indexes: (collection, index_position, compound_key) → set of entity IDs.
     compound_indexes: BTreeMap<CompoundIndexKey, BTreeSet<EntityId>>,
+    /// Bidirectional name-to-numeric-ID cache (ADR-010).
+    numeric_ids: NumericIdCache,
 }
 
 fn now_ns() -> u64 {
@@ -174,6 +205,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             collections: self.collections.clone(),
             indexes: self.indexes.clone(),
             compound_indexes: self.compound_indexes.clone(),
+            numeric_ids: self.numeric_ids.clone(),
         });
         Ok(())
     }
@@ -193,6 +225,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             self.collections = snapshot.collections;
             self.indexes = snapshot.indexes;
             self.compound_indexes = snapshot.compound_indexes;
+            self.numeric_ids = snapshot.numeric_ids;
         }
         Ok(())
     }
@@ -252,11 +285,14 @@ impl StorageAdapter for MemoryStorageAdapter {
 
     fn register_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         self.collections.insert(collection.clone());
+        // Auto-assign a numeric ID (ADR-010).
+        self.numeric_ids.assign(collection);
         Ok(())
     }
 
     fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         self.collections.remove(collection);
+        self.numeric_ids.remove(collection);
         Ok(())
     }
 
@@ -264,6 +300,14 @@ impl StorageAdapter for MemoryStorageAdapter {
         let mut names: Vec<CollectionId> = self.collections.iter().cloned().collect();
         names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
         Ok(names)
+    }
+
+    fn collection_numeric_id(&self, collection: &CollectionId) -> Result<Option<u64>, AxonError> {
+        Ok(self.numeric_ids.name_to_id.get(collection).copied())
+    }
+
+    fn collection_by_numeric_id(&self, numeric_id: u64) -> Result<Option<CollectionId>, AxonError> {
+        Ok(self.numeric_ids.id_to_name.get(&numeric_id).cloned())
     }
 
     // ── Secondary index operations (FEAT-013) ───────────────────────────
@@ -1379,6 +1423,95 @@ mod tests {
             let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
             let results = store.compound_index_prefix(&col, 0, &prefix).unwrap();
             assert!(results.is_empty());
+        }
+    }
+
+    // ── Numeric collection ID tests (ADR-010) ──────────────────────────
+
+    mod numeric_collection_ids {
+        use super::*;
+
+        #[test]
+        fn register_assigns_numeric_id() {
+            let mut store = MemoryStorageAdapter::default();
+            store.register_collection(&tasks()).unwrap();
+
+            let nid = store.collection_numeric_id(&tasks()).unwrap();
+            assert!(nid.is_some(), "registered collection should have numeric id");
+            assert!(nid.unwrap() > 0, "numeric id should be positive");
+        }
+
+        #[test]
+        fn numeric_id_is_stable_on_re_register() {
+            let mut store = MemoryStorageAdapter::default();
+            store.register_collection(&tasks()).unwrap();
+            let first = store.collection_numeric_id(&tasks()).unwrap().unwrap();
+
+            // Re-register should not change the ID.
+            store.register_collection(&tasks()).unwrap();
+            let second = store.collection_numeric_id(&tasks()).unwrap().unwrap();
+            assert_eq!(first, second);
+        }
+
+        #[test]
+        fn different_collections_get_different_ids() {
+            let mut store = MemoryStorageAdapter::default();
+            store.register_collection(&tasks()).unwrap();
+            store
+                .register_collection(&CollectionId::new("users"))
+                .unwrap();
+
+            let tasks_id = store.collection_numeric_id(&tasks()).unwrap().unwrap();
+            let users_id = store
+                .collection_numeric_id(&CollectionId::new("users"))
+                .unwrap()
+                .unwrap();
+            assert_ne!(tasks_id, users_id);
+        }
+
+        #[test]
+        fn reverse_lookup_by_numeric_id() {
+            let mut store = MemoryStorageAdapter::default();
+            store.register_collection(&tasks()).unwrap();
+            let nid = store.collection_numeric_id(&tasks()).unwrap().unwrap();
+
+            let resolved = store.collection_by_numeric_id(nid).unwrap();
+            assert_eq!(resolved.as_ref(), Some(&tasks()));
+        }
+
+        #[test]
+        fn unregistered_collection_has_no_numeric_id() {
+            let store = MemoryStorageAdapter::default();
+            let nid = store.collection_numeric_id(&tasks()).unwrap();
+            assert!(nid.is_none());
+        }
+
+        #[test]
+        fn unregister_removes_numeric_id() {
+            let mut store = MemoryStorageAdapter::default();
+            store.register_collection(&tasks()).unwrap();
+            let nid = store.collection_numeric_id(&tasks()).unwrap().unwrap();
+
+            store.unregister_collection(&tasks()).unwrap();
+            assert!(store.collection_numeric_id(&tasks()).unwrap().is_none());
+            assert!(store.collection_by_numeric_id(nid).unwrap().is_none());
+        }
+
+        #[test]
+        fn abort_tx_rolls_back_numeric_ids() {
+            let mut store = MemoryStorageAdapter::default();
+            store.begin_tx().unwrap();
+            store.register_collection(&tasks()).unwrap();
+            assert!(store.collection_numeric_id(&tasks()).unwrap().is_some());
+
+            store.abort_tx().unwrap();
+            assert!(store.collection_numeric_id(&tasks()).unwrap().is_none());
+        }
+
+        #[test]
+        fn unknown_numeric_id_returns_none() {
+            let store = MemoryStorageAdapter::default();
+            assert!(store.collection_by_numeric_id(9999).unwrap().is_none());
         }
     }
 }

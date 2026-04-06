@@ -319,6 +319,27 @@ pub trait StorageAdapter: Send + Sync {
         Ok(vec![])
     }
 
+    // ── Numeric collection ID mapping (ADR-010) ─────────────────────────
+
+    /// Resolve a collection's stable numeric ID.
+    ///
+    /// Returns the auto-assigned numeric ID for a registered collection.
+    /// Returns `None` if the collection has not been registered.
+    /// The default implementation always returns `None`.
+    fn collection_numeric_id(&self, collection: &CollectionId) -> Result<Option<u64>, AxonError> {
+        let _ = collection;
+        Ok(None)
+    }
+
+    /// Resolve a numeric ID back to a collection name.
+    ///
+    /// Returns `None` if no collection has the given numeric ID.
+    /// The default implementation always returns `None`.
+    fn collection_by_numeric_id(&self, numeric_id: u64) -> Result<Option<CollectionId>, AxonError> {
+        let _ = numeric_id;
+        Ok(None)
+    }
+
     // ── Secondary index operations (FEAT-013) ───────────────────────────
 
     /// Update index entries for an entity.
