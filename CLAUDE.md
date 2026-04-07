@@ -18,6 +18,11 @@ crates/
   axon-audit/     # Immutable audit log
   axon-storage/   # Storage adapter trait + in-memory impl
   axon-api/       # Request/response types and handler
+  axon-server/    # HTTP/gRPC server (axum + tonic)
+  axon-graphql/   # GraphQL schema and resolvers
+  axon-mcp/       # MCP (Model Context Protocol) server
+  axon-render/    # Markdown template rendering and validation
+  axon-sim/       # Simulation / load testing harness
   axon-cli/       # axon binary entry point
 ```
 
