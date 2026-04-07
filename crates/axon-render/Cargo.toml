@@ -1,0 +1,19 @@
+[package]
+name = "axon-render"
+description = "Markdown template rendering and validation for Axon collections"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axon-core = { path = "../axon-core" }
+serde_json.workspace = true
+regex.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
