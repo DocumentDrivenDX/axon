@@ -151,6 +151,103 @@ message CommitTransactionResponse {
   repeated EntityProto entities = 2;
 }
 
+// ── Entity query operations ───────────────────────────────────────────────────
+
+message QueryEntitiesRequest {
+  string collection = 1;
+  // Optional JSON-encoded FilterNode. Empty means no filter (return all).
+  string filter_json = 2;
+  // Maximum number of entities to return (0 = server default).
+  uint32 limit = 3;
+  // Pagination cursor: last entity ID seen. Empty to start from beginning.
+  string after_id = 4;
+}
+
+message QueryEntitiesResponse {
+  repeated EntityProto entities = 1;
+  uint64 total_count = 2;
+  // Cursor for next page. Empty when exhausted.
+  string next_cursor = 3;
+}
+
+// ── Schema operations ─────────────────────────────────────────────────────────
+
+message PutSchemaRequest {
+  // JSON-encoded CollectionSchema.
+  string schema_json = 1;
+  string actor = 2;
+  // If true, apply even if the change is classified as breaking.
+  bool force = 3;
+  // If true, return the diff without applying.
+  bool dry_run = 4;
+}
+
+message PutSchemaResponse {
+  // JSON-encoded CollectionSchema as stored.
+  string schema_json = 1;
+  // Compatibility classification (e.g. "compatible", "breaking"). Empty if unknown.
+  string compatibility = 2;
+  bool dry_run = 3;
+}
+
+message GetSchemaRequest {
+  string collection = 1;
+}
+
+message GetSchemaResponse {
+  // JSON-encoded CollectionSchema.
+  string schema_json = 1;
+}
+
+// ── Collection lifecycle operations ──────────────────────────────────────────
+
+message CreateCollectionRequest {
+  string name = 1;
+  // JSON-encoded CollectionSchema.
+  string schema_json = 2;
+  string actor = 3;
+}
+
+message CreateCollectionResponse {
+  string name = 1;
+}
+
+message DropCollectionRequest {
+  string name = 1;
+  string actor = 2;
+  // Must be true to confirm the destructive operation.
+  bool confirm = 3;
+}
+
+message DropCollectionResponse {
+  string name = 1;
+  uint64 entities_removed = 2;
+}
+
+message ListCollectionsRequest {}
+
+message CollectionMeta {
+  string name = 1;
+  uint64 entity_count = 2;
+  // Schema version, 0 if no schema registered.
+  uint32 schema_version = 3;
+}
+
+message ListCollectionsResponse {
+  repeated CollectionMeta collections = 1;
+}
+
+message DescribeCollectionRequest {
+  string name = 1;
+}
+
+message DescribeCollectionResponse {
+  string name = 1;
+  uint64 entity_count = 2;
+  // JSON-encoded CollectionSchema. Empty if no schema registered.
+  string schema_json = 3;
+}
+
 // ── Service definition ────────────────────────────────────────────────────────
 
 service AxonService {
@@ -159,6 +256,8 @@ service AxonService {
   rpc GetEntity(GetEntityRequest) returns (GetEntityResponse);
   rpc UpdateEntity(UpdateEntityRequest) returns (UpdateEntityResponse);
   rpc DeleteEntity(DeleteEntityRequest) returns (DeleteEntityResponse);
+  // Entity query
+  rpc QueryEntities(QueryEntitiesRequest) returns (QueryEntitiesResponse);
   // Link operations
   rpc CreateLink(CreateLinkRequest) returns (CreateLinkResponse);
   rpc DeleteLink(DeleteLinkRequest) returns (DeleteLinkResponse);
@@ -167,4 +266,12 @@ service AxonService {
   rpc QueryAuditByEntity(QueryAuditByEntityRequest) returns (QueryAuditByEntityResponse);
   // Transactions
   rpc CommitTransaction(CommitTransactionRequest) returns (CommitTransactionResponse);
+  // Schema
+  rpc PutSchema(PutSchemaRequest) returns (PutSchemaResponse);
+  rpc GetSchema(GetSchemaRequest) returns (GetSchemaResponse);
+  // Collection lifecycle
+  rpc CreateCollection(CreateCollectionRequest) returns (CreateCollectionResponse);
+  rpc DropCollection(DropCollectionRequest) returns (DropCollectionResponse);
+  rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse);
+  rpc DescribeCollection(DescribeCollectionRequest) returns (DescribeCollectionResponse);
 }

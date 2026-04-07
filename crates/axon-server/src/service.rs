@@ -2,8 +2,10 @@ use std::sync::Arc;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
-    GetEntityRequest, TraverseRequest, UpdateEntityRequest,
+    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
+    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, GetEntityRequest,
+    GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest, QueryEntitiesRequest,
+    TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::transaction::Transaction;
 use axon_audit::log::AuditLog;
@@ -21,14 +23,25 @@ pub mod proto {
 
 pub use proto::axon_service_server::{AxonService, AxonServiceServer};
 pub use proto::{
-    AuditEntryProto, CommitTransactionRequest as ProtoCommitTxReq,
-    CommitTransactionResponse as ProtoCommitTxResp, CreateEntityRequest as ProtoCreateEntityReq,
-    CreateEntityResponse as ProtoCreateEntityResp, CreateLinkRequest as ProtoCreateLinkReq,
-    CreateLinkResponse as ProtoCreateLinkResp, DeleteEntityRequest as ProtoDeleteEntityReq,
-    DeleteEntityResponse as ProtoDeleteEntityResp, DeleteLinkRequest as ProtoDeleteLinkReq,
-    DeleteLinkResponse as ProtoDeleteLinkResp, EntityProto, GetEntityRequest as ProtoGetEntityReq,
-    GetEntityResponse as ProtoGetEntityResp, LinkProto, QueryAuditByEntityRequest,
-    QueryAuditByEntityResponse, TransactionOp as ProtoTxOp, TraverseRequest as ProtoTraverseReq,
+    AuditEntryProto, CollectionMeta, CommitTransactionRequest as ProtoCommitTxReq,
+    CommitTransactionResponse as ProtoCommitTxResp,
+    CreateCollectionRequest as ProtoCreateCollectionReq,
+    CreateCollectionResponse as ProtoCreateCollectionResp,
+    CreateEntityRequest as ProtoCreateEntityReq, CreateEntityResponse as ProtoCreateEntityResp,
+    CreateLinkRequest as ProtoCreateLinkReq, CreateLinkResponse as ProtoCreateLinkResp,
+    DeleteEntityRequest as ProtoDeleteEntityReq, DeleteEntityResponse as ProtoDeleteEntityResp,
+    DeleteLinkRequest as ProtoDeleteLinkReq, DeleteLinkResponse as ProtoDeleteLinkResp,
+    DescribeCollectionRequest as ProtoDescribeCollectionReq,
+    DescribeCollectionResponse as ProtoDescribeCollectionResp,
+    DropCollectionRequest as ProtoDropCollectionReq,
+    DropCollectionResponse as ProtoDropCollectionResp, EntityProto,
+    GetEntityRequest as ProtoGetEntityReq, GetEntityResponse as ProtoGetEntityResp,
+    GetSchemaRequest as ProtoGetSchemaReq, GetSchemaResponse as ProtoGetSchemaResp, LinkProto,
+    ListCollectionsRequest as ProtoListCollectionsReq,
+    ListCollectionsResponse as ProtoListCollectionsResp, PutSchemaRequest as ProtoPutSchemaReq,
+    PutSchemaResponse as ProtoPutSchemaResp, QueryAuditByEntityRequest, QueryAuditByEntityResponse,
+    QueryEntitiesRequest as ProtoQueryEntitiesReq, QueryEntitiesResponse as ProtoQueryEntitiesResp,
+    TransactionOp as ProtoTxOp, TraverseRequest as ProtoTraverseReq,
     TraverseResponse as ProtoTraverseResp, UpdateEntityRequest as ProtoUpdateEntityReq,
     UpdateEntityResponse as ProtoUpdateEntityResp,
 };
@@ -461,6 +474,216 @@ impl AxonService for AxonServiceImpl {
         Ok(Response::new(ProtoCommitTxResp {
             transaction_id: tx_id,
             entities: written.into_iter().map(entity_to_proto).collect(),
+        }))
+    }
+
+    async fn query_entities(
+        &self,
+        request: Request<ProtoQueryEntitiesReq>,
+    ) -> Result<Response<ProtoQueryEntitiesResp>, Status> {
+        let req = request.into_inner();
+        let filter = if req.filter_json.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::from_str(&req.filter_json)
+                    .map_err(|e| Status::invalid_argument(format!("invalid filter_json: {e}")))?,
+            )
+        };
+        let limit = if req.limit == 0 {
+            None
+        } else {
+            Some(req.limit as usize)
+        };
+        let after_id = if req.after_id.is_empty() {
+            None
+        } else {
+            Some(axon_core::id::EntityId::new(&req.after_id))
+        };
+
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .query_entities(QueryEntitiesRequest {
+                collection: axon_core::id::CollectionId::new(&req.collection),
+                filter,
+                sort: vec![],
+                limit,
+                after_id,
+                count_only: false,
+            })
+            .map_err(axon_to_status)?;
+
+        Ok(Response::new(ProtoQueryEntitiesResp {
+            entities: resp.entities.into_iter().map(entity_to_proto).collect(),
+            total_count: resp.total_count as u64,
+            next_cursor: resp.next_cursor.unwrap_or_default(),
+        }))
+    }
+
+    async fn put_schema(
+        &self,
+        request: Request<ProtoPutSchemaReq>,
+    ) -> Result<Response<ProtoPutSchemaResp>, Status> {
+        let req = request.into_inner();
+        let schema: axon_schema::schema::CollectionSchema = serde_json::from_str(&req.schema_json)
+            .map_err(|e| Status::invalid_argument(format!("invalid schema_json: {e}")))?;
+        let actor = if req.actor.is_empty() {
+            None
+        } else {
+            Some(req.actor.clone())
+        };
+
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .handle_put_schema(PutSchemaRequest {
+                schema,
+                actor,
+                force: req.force,
+                dry_run: req.dry_run,
+            })
+            .map_err(axon_to_status)?;
+
+        let compatibility = resp
+            .compatibility
+            .map(|c| format!("{c:?}"))
+            .unwrap_or_default();
+        let schema_json = serde_json::to_string(&resp.schema)
+            .map_err(|e| Status::internal(format!("serialization error: {e}")))?;
+
+        Ok(Response::new(ProtoPutSchemaResp {
+            schema_json,
+            compatibility,
+            dry_run: resp.dry_run,
+        }))
+    }
+
+    async fn get_schema(
+        &self,
+        request: Request<ProtoGetSchemaReq>,
+    ) -> Result<Response<ProtoGetSchemaResp>, Status> {
+        let req = request.into_inner();
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .handle_get_schema(GetSchemaRequest {
+                collection: axon_core::id::CollectionId::new(&req.collection),
+            })
+            .map_err(axon_to_status)?;
+
+        let schema_json = serde_json::to_string(&resp.schema)
+            .map_err(|e| Status::internal(format!("serialization error: {e}")))?;
+
+        Ok(Response::new(ProtoGetSchemaResp { schema_json }))
+    }
+
+    async fn create_collection(
+        &self,
+        request: Request<ProtoCreateCollectionReq>,
+    ) -> Result<Response<ProtoCreateCollectionResp>, Status> {
+        let req = request.into_inner();
+        let schema: axon_schema::schema::CollectionSchema = serde_json::from_str(&req.schema_json)
+            .map_err(|e| Status::invalid_argument(format!("invalid schema_json: {e}")))?;
+        let actor = if req.actor.is_empty() {
+            None
+        } else {
+            Some(req.actor.clone())
+        };
+
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .create_collection(CreateCollectionRequest {
+                name: axon_core::id::CollectionId::new(&req.name),
+                schema,
+                actor,
+            })
+            .map_err(axon_to_status)?;
+
+        Ok(Response::new(ProtoCreateCollectionResp { name: resp.name }))
+    }
+
+    async fn drop_collection(
+        &self,
+        request: Request<ProtoDropCollectionReq>,
+    ) -> Result<Response<ProtoDropCollectionResp>, Status> {
+        let req = request.into_inner();
+        let actor = if req.actor.is_empty() {
+            None
+        } else {
+            Some(req.actor.clone())
+        };
+
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .drop_collection(DropCollectionRequest {
+                name: axon_core::id::CollectionId::new(&req.name),
+                actor,
+                confirm: req.confirm,
+            })
+            .map_err(axon_to_status)?;
+
+        Ok(Response::new(ProtoDropCollectionResp {
+            name: resp.name,
+            entities_removed: resp.entities_removed as u64,
+        }))
+    }
+
+    async fn list_collections(
+        &self,
+        _request: Request<ProtoListCollectionsReq>,
+    ) -> Result<Response<ProtoListCollectionsResp>, Status> {
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .list_collections(ListCollectionsRequest {})
+            .map_err(axon_to_status)?;
+
+        let collections = resp
+            .collections
+            .into_iter()
+            .map(|c| CollectionMeta {
+                name: c.name,
+                entity_count: c.entity_count as u64,
+                schema_version: c.schema_version.unwrap_or(0),
+            })
+            .collect();
+
+        Ok(Response::new(ProtoListCollectionsResp { collections }))
+    }
+
+    async fn describe_collection(
+        &self,
+        request: Request<ProtoDescribeCollectionReq>,
+    ) -> Result<Response<ProtoDescribeCollectionResp>, Status> {
+        let req = request.into_inner();
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .describe_collection(DescribeCollectionRequest {
+                name: axon_core::id::CollectionId::new(&req.name),
+            })
+            .map_err(axon_to_status)?;
+
+        let schema_json = match resp.schema {
+            Some(s) => serde_json::to_string(&s)
+                .map_err(|e| Status::internal(format!("serialization error: {e}")))?,
+            None => String::new(),
+        };
+
+        Ok(Response::new(ProtoDescribeCollectionResp {
+            name: resp.name,
+            entity_count: resp.entity_count as u64,
+            schema_json,
         }))
     }
 }

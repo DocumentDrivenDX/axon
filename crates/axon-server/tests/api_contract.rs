@@ -634,3 +634,338 @@ async fn grpc_commit_transaction_atomic() {
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::NotFound);
 }
+
+// ── New RPC contract tests ────────────────────────────────────────────────────
+
+/// Minimal schema JSON for tests.
+fn minimal_schema_json(collection: &str) -> String {
+    serde_json::json!({
+        "collection": collection,
+        "version": 1
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn grpc_query_entities_basic() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    for i in 1..=3_u32 {
+        client
+            .create_entity(proto::CreateEntityRequest {
+                collection: "items".into(),
+                id: format!("item-{i:03}"),
+                data_json: serde_json::json!({"n": i}).to_string(),
+                actor: String::new(),
+            })
+            .await
+            .unwrap();
+    }
+
+    let resp = client
+        .query_entities(proto::QueryEntitiesRequest {
+            collection: "items".into(),
+            filter_json: String::new(),
+            limit: 0,
+            after_id: String::new(),
+        })
+        .await
+        .unwrap();
+    let inner = resp.into_inner();
+    assert_eq!(inner.entities.len(), 3);
+    assert_eq!(inner.total_count, 3);
+}
+
+#[tokio::test]
+async fn grpc_query_entities_with_filter() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    for i in 1..=5_u32 {
+        client
+            .create_entity(proto::CreateEntityRequest {
+                collection: "things".into(),
+                id: format!("t-{i:03}"),
+                data_json: serde_json::json!({"v": i}).to_string(),
+                actor: String::new(),
+            })
+            .await
+            .unwrap();
+    }
+
+    let filter = serde_json::json!({
+        "type": "field",
+        "field": "v",
+        "op": "gte",
+        "value": 3
+    });
+    let resp = client
+        .query_entities(proto::QueryEntitiesRequest {
+            collection: "things".into(),
+            filter_json: filter.to_string(),
+            limit: 0,
+            after_id: String::new(),
+        })
+        .await
+        .unwrap();
+    let inner = resp.into_inner();
+    assert_eq!(inner.entities.len(), 3, "expected v=3,4,5");
+}
+
+#[tokio::test]
+async fn grpc_query_entities_with_pagination() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    for i in 1..=5_u32 {
+        client
+            .create_entity(proto::CreateEntityRequest {
+                collection: "pages".into(),
+                id: format!("p-{i:03}"),
+                data_json: serde_json::json!({"i": i}).to_string(),
+                actor: String::new(),
+            })
+            .await
+            .unwrap();
+    }
+
+    let resp = client
+        .query_entities(proto::QueryEntitiesRequest {
+            collection: "pages".into(),
+            filter_json: String::new(),
+            limit: 2,
+            after_id: String::new(),
+        })
+        .await
+        .unwrap();
+    let inner = resp.into_inner();
+    assert_eq!(inner.entities.len(), 2);
+    assert!(!inner.next_cursor.is_empty(), "cursor should be set");
+
+    let resp = client
+        .query_entities(proto::QueryEntitiesRequest {
+            collection: "pages".into(),
+            filter_json: String::new(),
+            limit: 2,
+            after_id: inner.next_cursor.clone(),
+        })
+        .await
+        .unwrap();
+    let inner2 = resp.into_inner();
+    assert_eq!(inner2.entities.len(), 2);
+}
+
+#[tokio::test]
+async fn grpc_put_and_get_schema() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    let schema_json = serde_json::json!({
+        "collection": "docs",
+        "version": 1,
+        "entity_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"}
+            }
+        }
+    })
+    .to_string();
+
+    let resp = client
+        .put_schema(proto::PutSchemaRequest {
+            schema_json: schema_json.clone(),
+            actor: "admin".into(),
+            force: false,
+            dry_run: false,
+        })
+        .await
+        .unwrap();
+    let inner = resp.into_inner();
+    assert!(!inner.schema_json.is_empty());
+    assert!(!inner.dry_run);
+
+    let resp = client
+        .get_schema(proto::GetSchemaRequest {
+            collection: "docs".into(),
+        })
+        .await
+        .unwrap();
+    let returned: Value = serde_json::from_str(&resp.into_inner().schema_json).unwrap();
+    assert_eq!(returned["collection"], "docs");
+}
+
+#[tokio::test]
+async fn grpc_get_schema_not_found() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    let err = client
+        .get_schema(proto::GetSchemaRequest {
+            collection: "nonexistent".into(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::NotFound);
+}
+
+#[tokio::test]
+async fn grpc_put_schema_dry_run() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    let resp = client
+        .put_schema(proto::PutSchemaRequest {
+            schema_json: minimal_schema_json("myc"),
+            actor: String::new(),
+            force: false,
+            dry_run: true,
+        })
+        .await
+        .unwrap();
+    assert!(
+        resp.into_inner().dry_run,
+        "dry_run flag should be reflected"
+    );
+
+    let err = client
+        .get_schema(proto::GetSchemaRequest {
+            collection: "myc".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::NotFound);
+}
+
+#[tokio::test]
+async fn grpc_collection_lifecycle() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    let schema_json = serde_json::json!({
+        "collection": "books",
+        "version": 1
+    })
+    .to_string();
+
+    // Create.
+    let resp = client
+        .create_collection(proto::CreateCollectionRequest {
+            name: "books".into(),
+            schema_json: schema_json.clone(),
+            actor: "admin".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(resp.into_inner().name, "books");
+
+    // Add an entity.
+    client
+        .create_entity(proto::CreateEntityRequest {
+            collection: "books".into(),
+            id: "b-001".into(),
+            data_json: r#"{"title":"Rust Programming"}"#.into(),
+            actor: String::new(),
+        })
+        .await
+        .unwrap();
+
+    // Describe.
+    let resp = client
+        .describe_collection(proto::DescribeCollectionRequest {
+            name: "books".into(),
+        })
+        .await
+        .unwrap();
+    let inner = resp.into_inner();
+    assert_eq!(inner.name, "books");
+    assert_eq!(inner.entity_count, 1);
+    assert!(!inner.schema_json.is_empty());
+
+    // List.
+    let resp = client
+        .list_collections(proto::ListCollectionsRequest {})
+        .await
+        .unwrap();
+    let inner = resp.into_inner();
+    assert!(
+        inner.collections.iter().any(|c| c.name == "books"),
+        "books should be in list"
+    );
+
+    // Drop.
+    let resp = client
+        .drop_collection(proto::DropCollectionRequest {
+            name: "books".into(),
+            actor: "admin".into(),
+            confirm: true,
+        })
+        .await
+        .unwrap();
+    let inner = resp.into_inner();
+    assert_eq!(inner.name, "books");
+    assert_eq!(inner.entities_removed, 1);
+
+    // describe should now return not-found.
+    let err = client
+        .describe_collection(proto::DescribeCollectionRequest {
+            name: "books".into(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::NotFound);
+}
+
+#[tokio::test]
+async fn grpc_drop_collection_requires_confirm() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    client
+        .create_collection(proto::CreateCollectionRequest {
+            name: "tmp".into(),
+            schema_json: minimal_schema_json("tmp"),
+            actor: String::new(),
+        })
+        .await
+        .unwrap();
+
+    let err = client
+        .drop_collection(proto::DropCollectionRequest {
+            name: "tmp".into(),
+            actor: String::new(),
+            confirm: false,
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn grpc_create_collection_duplicate_fails() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    let schema_json = minimal_schema_json("dupes");
+
+    client
+        .create_collection(proto::CreateCollectionRequest {
+            name: "dupes".into(),
+            schema_json: schema_json.clone(),
+            actor: String::new(),
+        })
+        .await
+        .unwrap();
+
+    let err = client
+        .create_collection(proto::CreateCollectionRequest {
+            name: "dupes".into(),
+            schema_json,
+            actor: String::new(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::AlreadyExists);
+}
