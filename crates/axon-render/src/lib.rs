@@ -431,7 +431,7 @@ mod tests {
     fn schema_with_required(required: &[&str], optional: &[&str]) -> Value {
         let mut props = serde_json::Map::new();
         for f in required.iter().chain(optional.iter()) {
-            props.insert(f.to_string(), json!({"type": "string"}));
+            props.insert((*f).to_string(), json!({"type": "string"}));
         }
         json!({
             "type": "object",
