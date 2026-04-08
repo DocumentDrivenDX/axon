@@ -129,12 +129,13 @@ US-069): catch errors at definition time, not render time.
 
 #### API Surface
 
-A single new surface in V1: the entity GET endpoint with a format
-parameter.
+The currently shipped V1 slice adds a single HTTP surface: the entity
+GET endpoint with a `format` query parameter. Markdown rendering over
+gRPC remains deferred for a later slice.
 
 **HTTP:**
 ```
-GET /v1/collections/{collection}/entities/{id}?format=markdown
+GET /collections/{collection}/entities/{id}?format=markdown
 Accept: text/markdown
 
 200 OK
@@ -153,25 +154,10 @@ Content-Type: text/markdown; charset=utf-8
 ```
 
 **gRPC:**
-```protobuf
-message GetEntityRequest {
-  string collection = 1;
-  string id = 2;
-  RenderFormat format = 3;  // optional, default RENDER_JSON
-}
-
-enum RenderFormat {
-  RENDER_JSON = 0;
-  RENDER_MARKDOWN = 1;
-}
-
-message GetEntityResponse {
-  Entity entity = 1;
-  // When format=RENDER_MARKDOWN, rendered_markdown is populated
-  // and entity.data is still included for programmatic access
-  string rendered_markdown = 4;
-}
-```
+- `GetEntity` remains JSON-only in the current shipped slice
+- Markdown-specific request fields and a `rendered_markdown` response
+  field are deferred until the protobuf contract and service
+  implementation are extended together
 
 **Behavior:**
 - If `format=markdown` and the collection has no template: return
@@ -183,6 +169,8 @@ message GetEntityResponse {
 - Default format remains JSON. The `format` parameter is opt-in
 
 **Deferred surfaces** (not in V1 of this feature):
+- gRPC `GetEntity` markdown format selection and `rendered_markdown`
+  response field
 - List/query responses with markdown rendering
 - GraphQL `renderedMarkdown` field
 - MCP tool returning markdown
@@ -192,9 +180,9 @@ message GetEntityResponse {
 #### Template Management API
 
 ```
-PUT  /v1/collections/{collection}/template    — save/update template
-GET  /v1/collections/{collection}/template    — retrieve current template
-DELETE /v1/collections/{collection}/template  — remove template
+PUT  /collections/{collection}/template    — save/update template
+GET  /collections/{collection}/template    — retrieve current template
+DELETE /collections/{collection}/template  — remove template
 ```
 
 PUT validates the template against the schema before saving. The
@@ -283,7 +271,8 @@ get_entity(collection, id, format=markdown) → {
     3. If no template: return error
     4. Build render context: entity.data + system fields
     5. Call axon_render::render(template, context)
-    6. Return entity + rendered_markdown
+    6. Return rendered markdown on the HTTP surface; retain the entity
+       for error responses and future gRPC expansion
 }
 ```
 
@@ -312,16 +301,16 @@ put_template(collection, template_text) → {
 entities
 
 **Acceptance Criteria:**
-- [ ] `PUT /v1/collections/{collection}/template` accepts a valid
+- [ ] `PUT /collections/{collection}/template` accepts a valid
       Mustache template and stores it
 - [ ] Template is validated against the collection's entity schema
       before saving
 - [ ] References to nonexistent fields are rejected with error naming
       the invalid field
 - [ ] References to optional fields produce an advisory warning
-- [ ] `GET /v1/collections/{collection}/template` returns the current
+- [ ] `GET /collections/{collection}/template` returns the current
       template
-- [ ] `DELETE /v1/collections/{collection}/template` removes the
+- [ ] `DELETE /collections/{collection}/template` removes the
       template
 - [ ] Template changes are audited (actor, timestamp, before/after)
 
@@ -332,9 +321,12 @@ entities
 **So that** I can present it to users without building formatting logic
 
 **Acceptance Criteria:**
-- [ ] `GET /v1/collections/{c}/entities/{id}?format=markdown` returns
+- [ ] `GET /collections/{c}/entities/{id}?format=markdown` returns
       rendered markdown with `Content-Type: text/markdown`
-- [ ] Entity JSON is also included in the response (dual payload)
+- [ ] On successful HTTP render, the response body is the rendered
+      markdown document
+- [ ] If rendering fails after the entity is fetched, the error
+      response includes entity JSON for caller fallback
 - [ ] Scalar fields render via `{{field}}` interpolation
 - [ ] Nested object fields render via `{{parent.child}}` dot notation
 - [ ] Array fields render via `{{#items}}...{{/items}}` iteration
