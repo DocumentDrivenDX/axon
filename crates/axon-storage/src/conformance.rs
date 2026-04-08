@@ -22,7 +22,8 @@ macro_rules! storage_conformance_tests {
             use axon_core::error::AxonError;
             use axon_core::id::{CollectionId, EntityId};
             use axon_core::types::Entity;
-            use axon_schema::schema::CollectionSchema;
+            use axon_schema::{diff_schemas, Compatibility};
+            use axon_schema::schema::{CollectionSchema, CollectionView};
             use serde_json::json;
 
             fn tasks() -> CollectionId {
@@ -311,6 +312,105 @@ macro_rules! storage_conformance_tests {
 
                 let got = s.get_schema(&col).unwrap().unwrap();
                 assert_eq!(got.version, 1, "abort should restore original schema");
+            }
+
+            // ── Collection views / markdown templates ─────────────────────
+
+            #[test]
+            fn put_get_collection_view_roundtrip() {
+                let mut s = store();
+                let col = CollectionId::new("widgets");
+                let view = CollectionView {
+                    collection: col.clone(),
+                    description: Some("markdown view".into()),
+                    markdown_template: "# {{title}}".into(),
+                    version: 99,
+                    updated_at_ns: None,
+                    updated_by: Some("agent".into()),
+                };
+
+                let stored = s.put_collection_view(&view).unwrap();
+                assert_eq!(stored.version, 1);
+                assert!(stored.updated_at_ns.is_some());
+
+                let got = s.get_collection_view(&col).unwrap().unwrap();
+                assert_eq!(got.collection, col);
+                assert_eq!(got.version, 1);
+                assert_eq!(got.markdown_template, "# {{title}}");
+                assert_eq!(got.updated_by.as_deref(), Some("agent"));
+            }
+
+            #[test]
+            fn updating_collection_view_does_not_bump_schema_version() {
+                let mut s = store();
+                let col = CollectionId::new("items");
+                let schema = CollectionSchema {
+                    collection: col.clone(),
+                    description: Some("v1".into()),
+                    version: 42,
+                    entity_schema: Some(json!({
+                        "type": "object",
+                        "properties": { "title": { "type": "string" } },
+                        "required": ["title"]
+                    })),
+                    link_types: Default::default(),
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                };
+                s.put_schema(&schema).unwrap();
+
+                let v1 = s
+                    .put_collection_view(&CollectionView::new(col.clone(), "# {{title}}"))
+                    .unwrap();
+                let v2 = s
+                    .put_collection_view(&CollectionView::new(
+                        col.clone(),
+                        "# Item\n\n{{title}}",
+                    ))
+                    .unwrap();
+
+                assert_eq!(v1.version, 1);
+                assert_eq!(v2.version, 2);
+
+                let stored_schema = s.get_schema(&col).unwrap().unwrap();
+                assert_eq!(stored_schema.version, 1);
+
+                let diff = diff_schemas(
+                    schema.entity_schema.as_ref(),
+                    stored_schema.entity_schema.as_ref(),
+                );
+                assert_eq!(diff.compatibility, Compatibility::MetadataOnly);
+                assert!(diff.changes.is_empty());
+            }
+
+            #[test]
+            fn delete_collection_view_removes_it() {
+                let mut s = store();
+                let col = CollectionId::new("tmp");
+                s.put_collection_view(&CollectionView::new(col.clone(), "# {{title}}"))
+                    .unwrap();
+                assert!(s.get_collection_view(&col).unwrap().is_some());
+                s.delete_collection_view(&col).unwrap();
+                assert!(s.get_collection_view(&col).unwrap().is_none());
+            }
+
+            #[test]
+            fn abort_tx_rolls_back_collection_view_changes() {
+                let mut s = store();
+                let col = CollectionId::new("notes");
+                s.put_collection_view(&CollectionView::new(col.clone(), "# v1"))
+                    .unwrap();
+
+                s.begin_tx().unwrap();
+                s.put_collection_view(&CollectionView::new(col.clone(), "# v2"))
+                    .unwrap();
+                s.abort_tx().unwrap();
+
+                let got = s.get_collection_view(&col).unwrap().unwrap();
+                assert_eq!(got.version, 1);
+                assert_eq!(got.markdown_template, "# v1");
             }
 
             // ── Collection registry ─────────────────────────────────────

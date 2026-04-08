@@ -9,8 +9,7 @@ pub mod entry;
 pub mod log;
 
 pub use cdc::{
-    CdcEnvelope, CdcOp, CdcSink, CdcSource, JsonlFileSink, KafkaCdcSink, KafkaConfig,
-    MemoryCdcSink,
+    CdcEnvelope, CdcOp, CdcSink, CdcSource, JsonlFileSink, KafkaCdcSink, KafkaConfig, MemoryCdcSink,
 };
 pub use entry::{compute_diff, AuditEntry, FieldDiff, MutationType};
 pub use log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};

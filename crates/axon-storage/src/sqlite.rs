@@ -6,7 +6,7 @@ use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
-use axon_schema::schema::CollectionSchema;
+use axon_schema::schema::{CollectionSchema, CollectionView};
 
 use crate::adapter::StorageAdapter;
 
@@ -66,6 +66,13 @@ impl SqliteStorageAdapter {
                     schema_json TEXT NOT NULL,
                     created_at  INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (collection, version)
+                );
+                CREATE TABLE IF NOT EXISTS collection_views (
+                    collection        TEXT NOT NULL PRIMARY KEY,
+                    version           INTEGER NOT NULL,
+                    view_json         TEXT NOT NULL,
+                    updated_at_ns     INTEGER NOT NULL,
+                    updated_by        TEXT
                 );
                 CREATE TABLE IF NOT EXISTS collections (
                     name TEXT NOT NULL PRIMARY KEY
@@ -466,6 +473,84 @@ impl StorageAdapter for SqliteStorageAdapter {
         self.conn
             .execute(
                 "DELETE FROM schema_versions WHERE collection = ?1",
+                params![collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
+        let current_version: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(version, 0) FROM collection_views WHERE collection = ?1",
+                params![view.collection.as_str()],
+                |row| row.get(0),
+            )
+            .or_else(|_| Ok(0))
+            .map_err(|e: rusqlite::Error| AxonError::Storage(e.to_string()))?;
+        let next_version = current_version + 1;
+
+        let updated_at_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i64;
+
+        let mut versioned = view.clone();
+        versioned.version = next_version as u32;
+        versioned.updated_at_ns = Some(updated_at_ns as u64);
+        let view_json = serde_json::to_string(&versioned)?;
+
+        self.conn
+            .execute(
+                "INSERT INTO collection_views (collection, version, view_json, updated_at_ns, updated_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(collection) DO UPDATE SET
+                     version = excluded.version,
+                     view_json = excluded.view_json,
+                     updated_at_ns = excluded.updated_at_ns,
+                     updated_by = excluded.updated_by",
+                params![
+                    view.collection.as_str(),
+                    next_version,
+                    view_json,
+                    updated_at_ns,
+                    versioned.updated_by.as_deref(),
+                ],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(versioned)
+    }
+
+    fn get_collection_view(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Option<CollectionView>, AxonError> {
+        let mut stmt = self
+            .conn
+            .prepare_cached(
+                "SELECT view_json FROM collection_views
+                 WHERE collection = ?1",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let mut rows = stmt
+            .query(params![collection.as_str()])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
+            let json: String = row.get(0).map_err(|e| AxonError::Storage(e.to_string()))?;
+            let view: CollectionView = serde_json::from_str(&json)?;
+            Ok(Some(view))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.conn
+            .execute(
+                "DELETE FROM collection_views WHERE collection = ?1",
                 params![collection.as_str()],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;

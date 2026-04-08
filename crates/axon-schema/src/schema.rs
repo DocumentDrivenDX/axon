@@ -146,6 +146,43 @@ pub struct CollectionSchema {
     pub compound_indexes: Vec<CompoundIndexDef>,
 }
 
+/// Presentation metadata for a collection, versioned independently from the
+/// validation schema.
+///
+/// Markdown templates are a rendering concern. Keeping them in a sibling type
+/// avoids inflating schema versions when only presentation changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CollectionView {
+    /// The collection this view describes.
+    pub collection: CollectionId,
+    /// Optional human-readable description for the view itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Markdown template used to render entities in the collection.
+    pub markdown_template: String,
+    /// View version; incremented on each template update.
+    pub version: u32,
+    /// Nanoseconds since Unix epoch when the view was last updated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_ns: Option<u64>,
+    /// Actor who last updated the view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_by: Option<String>,
+}
+
+impl CollectionView {
+    pub fn new(collection: CollectionId, markdown_template: impl Into<String>) -> Self {
+        Self {
+            collection,
+            description: None,
+            markdown_template: markdown_template.into(),
+            version: 1,
+            updated_at_ns: None,
+            updated_by: None,
+        }
+    }
+}
+
 impl CollectionSchema {
     pub fn new(collection: CollectionId) -> Self {
         Self {
@@ -230,6 +267,15 @@ mod tests {
         assert_eq!(schema.version, 1);
         assert!(schema.description.is_none());
         assert!(schema.entity_schema.is_none());
+    }
+
+    #[test]
+    fn collection_view_new_starts_at_version_one() {
+        let view = CollectionView::new(CollectionId::new("tasks"), "# {{title}}");
+        assert_eq!(view.version, 1);
+        assert_eq!(view.markdown_template, "# {{title}}");
+        assert!(view.updated_at_ns.is_none());
+        assert!(view.updated_by.is_none());
     }
 
     /// Sample ESF document derived from ADR-002 (invoice collection).

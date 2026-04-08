@@ -82,11 +82,26 @@ mod tests {
 
     #[test]
     fn parse_aggregate_functions() {
-        assert_eq!(GqlAggregateFunction::parse("count"), Some(GqlAggregateFunction::Count));
-        assert_eq!(GqlAggregateFunction::parse("SUM"), Some(GqlAggregateFunction::Sum));
-        assert_eq!(GqlAggregateFunction::parse("avg"), Some(GqlAggregateFunction::Avg));
-        assert_eq!(GqlAggregateFunction::parse("MIN"), Some(GqlAggregateFunction::Min));
-        assert_eq!(GqlAggregateFunction::parse("max"), Some(GqlAggregateFunction::Max));
+        assert_eq!(
+            GqlAggregateFunction::parse("count"),
+            Some(GqlAggregateFunction::Count)
+        );
+        assert_eq!(
+            GqlAggregateFunction::parse("SUM"),
+            Some(GqlAggregateFunction::Sum)
+        );
+        assert_eq!(
+            GqlAggregateFunction::parse("avg"),
+            Some(GqlAggregateFunction::Avg)
+        );
+        assert_eq!(
+            GqlAggregateFunction::parse("MIN"),
+            Some(GqlAggregateFunction::Min)
+        );
+        assert_eq!(
+            GqlAggregateFunction::parse("max"),
+            Some(GqlAggregateFunction::Max)
+        );
         assert_eq!(GqlAggregateFunction::parse("median"), None);
     }
 

@@ -32,7 +32,9 @@ pub fn build_crud_tools<S: StorageAdapter + 'static>(
     ]
 }
 
-fn lock_handler<S: StorageAdapter>(handler: &Mutex<AxonHandler<S>>) -> Result<std::sync::MutexGuard<'_, AxonHandler<S>>, ToolError> {
+fn lock_handler<S: StorageAdapter>(
+    handler: &Mutex<AxonHandler<S>>,
+) -> Result<std::sync::MutexGuard<'_, AxonHandler<S>>, ToolError> {
     handler
         .lock()
         .map_err(|e| ToolError::Internal(format!("mutex poisoned: {e}")))
@@ -482,9 +484,9 @@ mod tests {
     use serde_json::Value;
 
     fn make_handler() -> Arc<Mutex<AxonHandler<MemoryStorageAdapter>>> {
-        Arc::new(Mutex::new(AxonHandler::new(
-            MemoryStorageAdapter::default(),
-        )))
+        Arc::new(Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ))
     }
 
     #[test]

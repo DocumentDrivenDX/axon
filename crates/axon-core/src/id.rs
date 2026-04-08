@@ -53,14 +53,8 @@ impl Namespace {
         let parts: Vec<&str> = name.split('.').collect();
         match parts.len() {
             1 => (Self::default_ns(), parts[0].to_string()),
-            2 => (
-                Self::new(parts[0], DEFAULT_SCHEMA),
-                parts[1].to_string(),
-            ),
-            _ => (
-                Self::new(parts[0], parts[1]),
-                parts[2..].join("."),
-            ),
+            2 => (Self::new(parts[0], DEFAULT_SCHEMA), parts[1].to_string()),
+            _ => (Self::new(parts[0], parts[1]), parts[2..].join(".")),
         }
     }
 }
@@ -102,8 +96,7 @@ impl fmt::Display for CollectionId {
 /// Chosen as a well-known constant so that the same string always produces the
 /// same UUID across all Axon instances.
 pub const AXON_UUID_NAMESPACE: Uuid = Uuid::from_bytes([
-    0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x47, 0x89, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56,
-    0x78,
+    0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x47, 0x89, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78,
 ]);
 
 /// Identifies an entity within a collection.

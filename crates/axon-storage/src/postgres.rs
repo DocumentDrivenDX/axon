@@ -7,7 +7,7 @@ use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
-use axon_schema::schema::CollectionSchema;
+use axon_schema::schema::{CollectionSchema, CollectionView};
 
 use crate::adapter::StorageAdapter;
 
@@ -55,6 +55,13 @@ impl PostgresStorageAdapter {
                     collection  TEXT NOT NULL PRIMARY KEY,
                     version     INTEGER NOT NULL,
                     schema_json JSONB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS collection_views (
+                    collection    TEXT NOT NULL PRIMARY KEY,
+                    version       INTEGER NOT NULL,
+                    view_json     JSONB NOT NULL,
+                    updated_at_ns BIGINT NOT NULL,
+                    updated_by    TEXT
                 );
                 CREATE TABLE IF NOT EXISTS collections (
                     name TEXT NOT NULL PRIMARY KEY
@@ -356,6 +363,84 @@ impl StorageAdapter for PostgresStorageAdapter {
             .borrow_mut()
             .execute(
                 "DELETE FROM schemas WHERE collection = $1",
+                &[&collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
+        let current_version = self
+            .client
+            .borrow_mut()
+            .query_opt(
+                "SELECT version FROM collection_views WHERE collection = $1",
+                &[&view.collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?
+            .map_or(0, |row| row.get::<_, i32>("version"));
+        let next_version = current_version + 1;
+
+        let updated_at_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i64;
+
+        let mut versioned = view.clone();
+        versioned.version = next_version as u32;
+        versioned.updated_at_ns = Some(updated_at_ns as u64);
+        let view_json = serde_json::to_value(&versioned)?;
+
+        self.client
+            .borrow_mut()
+            .execute(
+                "INSERT INTO collection_views (collection, version, view_json, updated_at_ns, updated_by)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (collection) DO UPDATE SET
+                     version = EXCLUDED.version,
+                     view_json = EXCLUDED.view_json,
+                     updated_at_ns = EXCLUDED.updated_at_ns,
+                     updated_by = EXCLUDED.updated_by",
+                &[
+                    &view.collection.as_str(),
+                    &next_version,
+                    &view_json,
+                    &updated_at_ns,
+                    &versioned.updated_by,
+                ],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(versioned)
+    }
+
+    fn get_collection_view(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Option<CollectionView>, AxonError> {
+        let rows = self
+            .client
+            .borrow_mut()
+            .query(
+                "SELECT view_json FROM collection_views WHERE collection = $1",
+                &[&collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        match rows.first() {
+            Some(row) => {
+                let view_json: serde_json::Value = row.get("view_json");
+                let view: CollectionView = serde_json::from_value(view_json)?;
+                Ok(Some(view))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.client
+            .borrow_mut()
+            .execute(
+                "DELETE FROM collection_views WHERE collection = $1",
                 &[&collection.as_str()],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;

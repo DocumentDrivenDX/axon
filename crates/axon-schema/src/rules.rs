@@ -179,16 +179,24 @@ fn evaluate_condition_op(op: &ConditionOp, value: Option<&Value>) -> bool {
             let is_null = value.is_none() || value.is_some_and(|v| v.is_null());
             is_null == *flag
         }
-        ConditionOp::Gt(expected) => compare_values(value, Some(expected)) == Some(std::cmp::Ordering::Greater),
-        ConditionOp::Gte(expected) => matches!(compare_values(value, Some(expected)), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)),
-        ConditionOp::Lt(expected) => compare_values(value, Some(expected)) == Some(std::cmp::Ordering::Less),
-        ConditionOp::Lte(expected) => matches!(compare_values(value, Some(expected)), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)),
-        ConditionOp::Match(pattern) => {
-            value
-                .and_then(|v| v.as_str())
-                .and_then(|s| regex::Regex::new(pattern).ok().map(|r| r.is_match(s)))
-                .unwrap_or(false)
+        ConditionOp::Gt(expected) => {
+            compare_values(value, Some(expected)) == Some(std::cmp::Ordering::Greater)
         }
+        ConditionOp::Gte(expected) => matches!(
+            compare_values(value, Some(expected)),
+            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+        ),
+        ConditionOp::Lt(expected) => {
+            compare_values(value, Some(expected)) == Some(std::cmp::Ordering::Less)
+        }
+        ConditionOp::Lte(expected) => matches!(
+            compare_values(value, Some(expected)),
+            Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+        ),
+        ConditionOp::Match(pattern) => value
+            .and_then(|v| v.as_str())
+            .and_then(|s| regex::Regex::new(pattern).ok().map(|r| r.is_match(s)))
+            .unwrap_or(false),
     }
 }
 
@@ -210,7 +218,10 @@ fn evaluate_requirement(req: &RuleRequirement, data: &Value) -> bool {
         }
         RequirementOp::GteField(other_field) => {
             let other = get_field(data, other_field);
-            matches!(compare_values(value, other), Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal))
+            matches!(
+                compare_values(value, other),
+                Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+            )
         }
         RequirementOp::LtField(other_field) => {
             let other = get_field(data, other_field);
@@ -218,27 +229,31 @@ fn evaluate_requirement(req: &RuleRequirement, data: &Value) -> bool {
         }
         RequirementOp::LteField(other_field) => {
             let other = get_field(data, other_field);
-            matches!(compare_values(value, other), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal))
+            matches!(
+                compare_values(value, other),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            )
         }
-        RequirementOp::Match(pattern) => {
-            value
-                .and_then(|v| v.as_str())
-                .and_then(|s| regex::Regex::new(pattern).ok().map(|r| r.is_match(s)))
-                .unwrap_or(false)
-        }
-        RequirementOp::NotMatch(pattern) => {
-            value
-                .and_then(|v| v.as_str())
-                .map(|s| regex::Regex::new(pattern).ok().map_or(true, |r| !r.is_match(s)))
-                .unwrap_or(true)
-        }
-        RequirementOp::MinLength(min) => {
-            value
-                .and_then(|v| v.as_str())
-                .is_some_and(|s| s.len() >= *min)
-        }
+        RequirementOp::Match(pattern) => value
+            .and_then(|v| v.as_str())
+            .and_then(|s| regex::Regex::new(pattern).ok().map(|r| r.is_match(s)))
+            .unwrap_or(false),
+        RequirementOp::NotMatch(pattern) => value
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                regex::Regex::new(pattern)
+                    .ok()
+                    .map_or(true, |r| !r.is_match(s))
+            })
+            .unwrap_or(true),
+        RequirementOp::MinLength(min) => value
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.len() >= *min),
         RequirementOp::Lte(expected) => {
-            matches!(compare_values(value, Some(expected)), Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal))
+            matches!(
+                compare_values(value, Some(expected)),
+                Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)
+            )
         }
     }
 }
@@ -261,9 +276,7 @@ fn get_field<'a>(data: &'a Value, path: &str) -> Option<&'a Value> {
 /// Compare two JSON values numerically or lexicographically.
 fn compare_values(a: Option<&Value>, b: Option<&Value>) -> Option<std::cmp::Ordering> {
     match (a?, b?) {
-        (Value::Number(a), Value::Number(b)) => {
-            a.as_f64()?.partial_cmp(&b.as_f64()?)
-        }
+        (Value::Number(a), Value::Number(b)) => a.as_f64()?.partial_cmp(&b.as_f64()?),
         (Value::String(a), Value::String(b)) => Some(a.cmp(b)),
         _ => None,
     }
@@ -282,7 +295,12 @@ fn interpolate_fix(template: &str, data: &Value) -> String {
                     other => other.to_string(),
                 })
                 .unwrap_or_else(|| "<missing>".to_string());
-            result = format!("{}{}{}", &result[..start], value, &result[start + end + 1..]);
+            result = format!(
+                "{}{}{}",
+                &result[..start],
+                value,
+                &result[start + end + 1..]
+            );
         } else {
             break;
         }
@@ -346,7 +364,11 @@ pub fn validate_rule_definitions(
     let known_fields = entity_schema
         .and_then(|s| s.get("properties"))
         .and_then(|p| p.as_object())
-        .map(|obj| obj.keys().cloned().collect::<std::collections::HashSet<_>>());
+        .map(|obj| {
+            obj.keys()
+                .cloned()
+                .collect::<std::collections::HashSet<_>>()
+        });
 
     // Check for duplicate rule names.
     let mut seen_names = std::collections::HashSet::new();
@@ -395,21 +417,14 @@ pub fn validate_rule_definitions(
                 if !fields.contains(other_top) {
                     errors.push(RuleDefinitionError {
                         rule: Some(rule.name.clone()),
-                        message: format!(
-                            "cross-field reference to non-existent field '{other}'"
-                        ),
+                        message: format!("cross-field reference to non-existent field '{other}'"),
                     });
                 }
             }
 
             // Check condition field references.
             if let Some(cond) = &rule.when {
-                validate_condition_fields(
-                    cond,
-                    fields,
-                    &rule.name,
-                    &mut errors,
-                );
+                validate_condition_fields(cond, fields, &rule.name, &mut errors);
             }
         }
 
@@ -452,9 +467,7 @@ fn validate_condition_fields(
             if !known_fields.contains(top) && top != "*" {
                 errors.push(RuleDefinitionError {
                     rule: Some(rule_name.into()),
-                    message: format!(
-                        "when condition references non-existent field '{field}'"
-                    ),
+                    message: format!("when condition references non-existent field '{field}'"),
                 });
             }
         }
@@ -754,7 +767,9 @@ mod tests {
 
         let violations = evaluate_rules(&rules, &data);
         assert_eq!(violations.len(), 3);
-        assert!(violations.iter().any(|v| v.rule == "approved-needs-approver"));
+        assert!(violations
+            .iter()
+            .any(|v| v.rule == "approved-needs-approver"));
         assert!(violations.iter().any(|v| v.rule == "bugs-need-priority"));
         assert!(violations.iter().any(|v| v.rule == "title-not-placeholder"));
     }
@@ -861,7 +876,9 @@ mod tests {
         let schema = entity_schema_with_fields(&["title", "status"]);
         let rules = vec![simple_rule("check-ghost", "ghost_field")];
         let errors = validate_rule_definitions(&rules, Some(&schema));
-        assert!(errors.iter().any(|e| e.message.contains("non-existent field 'ghost_field'")));
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("non-existent field 'ghost_field'")));
     }
 
     #[test]
@@ -869,7 +886,10 @@ mod tests {
         let schema = entity_schema_with_fields(&["title", "status"]);
         let rules = vec![simple_rule("check-title", "title")];
         let errors = validate_rule_definitions(&rules, Some(&schema));
-        assert!(errors.is_empty(), "should pass with valid fields: {errors:?}");
+        assert!(
+            errors.is_empty(),
+            "should pass with valid fields: {errors:?}"
+        );
     }
 
     #[test]
@@ -888,7 +908,9 @@ mod tests {
             fix: None,
         }];
         let errors = validate_rule_definitions(&rules, Some(&schema));
-        assert!(errors.iter().any(|e| e.message.contains("non-existent field 'start_date'")));
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("non-existent field 'start_date'")));
     }
 
     #[test]
@@ -942,7 +964,9 @@ mod tests {
             fix: None,
         }];
         let errors = validate_rule_definitions(&rules, None);
-        assert!(errors.iter().any(|e| e.message.contains("message must not be empty")));
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("message must not be empty")));
     }
 
     #[test]
@@ -964,7 +988,9 @@ mod tests {
             fix: None,
         }];
         let errors = validate_rule_definitions(&rules, Some(&schema));
-        assert!(errors.iter().any(|e| e.message.contains("non-existent field 'nonexistent'")));
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("non-existent field 'nonexistent'")));
     }
 
     #[test]
@@ -982,7 +1008,9 @@ mod tests {
             fix: None,
         }];
         let errors = validate_rule_definitions(&rules, None);
-        assert!(errors.iter().any(|e| e.message.contains("must specify either")));
+        assert!(errors
+            .iter()
+            .any(|e| e.message.contains("must specify either")));
     }
 
     #[test]

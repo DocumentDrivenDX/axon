@@ -198,9 +198,7 @@ fn enhance_json_schema_error(
         JsonSchemaErrorKind::RequiredMissing { field } => {
             let default_hint = find_default_in_schema(schema, &field);
             let fix = match default_hint {
-                Some(default_val) => format!(
-                    "Add a '{field}' field (default: {default_val})"
-                ),
+                Some(default_val) => format!("Add a '{field}' field (default: {default_val})"),
                 None => format!("Add a '{field}' field"),
             };
             SchemaValidationError {
@@ -214,19 +212,13 @@ fn enhance_json_schema_error(
                 })),
             }
         }
-        JsonSchemaErrorKind::EnumMismatch {
-            actual,
-            allowed,
-        } => {
+        JsonSchemaErrorKind::EnumMismatch { actual, allowed } => {
             let suggestion = if allowed.len() <= 20 {
                 nearest_match(&actual, &allowed)
             } else {
                 None
             };
-            let mut fix = format!(
-                "Use one of the allowed values: {}",
-                allowed.join(", ")
-            );
+            let mut fix = format!("Use one of the allowed values: {}", allowed.join(", "));
             if let Some(near) = &suggestion {
                 fix = format!("{fix}. Did you mean '{near}'?");
             }
@@ -245,24 +237,17 @@ fn enhance_json_schema_error(
                 })),
             }
         }
-        JsonSchemaErrorKind::TypeMismatch {
-            expected,
-            actual,
-        } => {
-            SchemaValidationError {
-                field_path,
-                message: format!(
-                    "Field '{field_name}' must be {expected}. Got: {actual}"
-                ),
-                severity: "error".into(),
-                fix: Some(format!("Provide a {expected} value")),
-                context: Some(serde_json::json!({
-                    "constraint": "type",
-                    "expected": expected,
-                    "actual": actual,
-                })),
-            }
-        }
+        JsonSchemaErrorKind::TypeMismatch { expected, actual } => SchemaValidationError {
+            field_path,
+            message: format!("Field '{field_name}' must be {expected}. Got: {actual}"),
+            severity: "error".into(),
+            fix: Some(format!("Provide a {expected} value")),
+            context: Some(serde_json::json!({
+                "constraint": "type",
+                "expected": expected,
+                "actual": actual,
+            })),
+        },
         JsonSchemaErrorKind::Other => SchemaValidationError {
             field_path,
             message: raw_msg,
@@ -274,9 +259,17 @@ fn enhance_json_schema_error(
 }
 
 enum JsonSchemaErrorKind {
-    RequiredMissing { field: String },
-    EnumMismatch { actual: String, allowed: Vec<String> },
-    TypeMismatch { expected: String, actual: String },
+    RequiredMissing {
+        field: String,
+    },
+    EnumMismatch {
+        actual: String,
+        allowed: Vec<String>,
+    },
+    TypeMismatch {
+        expected: String,
+        actual: String,
+    },
     Other,
 }
 
@@ -392,9 +385,7 @@ fn levenshtein(a: &str, b: &str) -> usize {
         curr[0] = i;
         for j in 1..=n {
             let cost = usize::from(a_chars[i - 1] != b_chars[j - 1]);
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }
@@ -418,9 +409,7 @@ fn nearest_match(input: &str, candidates: &[String]) -> Option<String> {
         if dist == 0 {
             continue; // Exact match, not useful as suggestion.
         }
-        if dist <= threshold
-            && (best.is_none() || dist < best.unwrap().0)
-        {
+        if dist <= threshold && (best.is_none() || dist < best.unwrap().0) {
             best = Some((dist, candidate));
         }
     }
@@ -616,7 +605,11 @@ entity_schema:
             .expect("should have status error");
 
         assert!(
-            status_err.fix.as_deref().unwrap_or("").contains("Did you mean"),
+            status_err
+                .fix
+                .as_deref()
+                .unwrap_or("")
+                .contains("Did you mean"),
             "fix should include did-you-mean suggestion: {:?}",
             status_err.fix
         );
@@ -654,10 +647,7 @@ entity_schema:
             "should mention expected type: {}",
             type_err.message
         );
-        assert!(
-            type_err.fix.is_some(),
-            "should have a fix suggestion"
-        );
+        assert!(type_err.fix.is_some(), "should have a fix suggestion");
     }
 
     #[test]
@@ -719,7 +709,10 @@ entity_schema:
             context: None,
         };
         let display = err.to_string();
-        assert!(display.contains("Fix:"), "display should include fix: {display}");
+        assert!(
+            display.contains("Fix:"),
+            "display should include fix: {display}"
+        );
     }
 
     // ── Levenshtein unit tests ───────────────────────────────────────────
@@ -743,23 +736,13 @@ entity_schema:
 
     #[test]
     fn nearest_match_finds_close_candidate() {
-        let candidates = vec![
-            "draft".into(),
-            "submitted".into(),
-            "approved".into(),
-        ];
-        assert_eq!(
-            nearest_match("drafy", &candidates),
-            Some("draft".into())
-        );
+        let candidates = vec!["draft".into(), "submitted".into(), "approved".into()];
+        assert_eq!(nearest_match("drafy", &candidates), Some("draft".into()));
     }
 
     #[test]
     fn nearest_match_returns_none_for_distant_input() {
-        let candidates = vec![
-            "draft".into(),
-            "submitted".into(),
-        ];
+        let candidates = vec!["draft".into(), "submitted".into()];
         assert_eq!(nearest_match("zzzzzzzzz", &candidates), None);
     }
 }

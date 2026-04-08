@@ -83,10 +83,7 @@ pub fn role_from_tags(tags: &[String], default_role: &Role) -> Role {
 }
 
 /// Resolve identity from a Tailscale whois response.
-pub fn identity_from_tailscale(
-    whois: &TailscaleWhoisResponse,
-    default_role: &Role,
-) -> Identity {
+pub fn identity_from_tailscale(whois: &TailscaleWhoisResponse, default_role: &Role) -> Identity {
     Identity {
         actor: whois.node_name.clone(),
         role: role_from_tags(&whois.tags, default_role),

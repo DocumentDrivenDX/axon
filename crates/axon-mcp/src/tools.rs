@@ -319,8 +319,16 @@ mod tests {
         assert_eq!(updated.tool_count(), 8);
 
         // The old and new registries differ in tool count.
-        let old_names: Vec<String> = registry.list_tools().iter().map(|t| t.name.clone()).collect();
-        let new_names: Vec<String> = updated.list_tools().iter().map(|t| t.name.clone()).collect();
+        let old_names: Vec<String> = registry
+            .list_tools()
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        let new_names: Vec<String> = updated
+            .list_tools()
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
         assert!(new_names.len() > old_names.len());
     }
 }

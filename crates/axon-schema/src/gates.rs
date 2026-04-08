@@ -283,10 +283,7 @@ mod tests {
         assert!(!complete.pass);
         assert_eq!(complete.failures.len(), 1);
         assert_eq!(complete.failures[0].rule, "need-desc");
-        assert_eq!(
-            complete.failures[0].fix.as_deref(),
-            Some("Set description")
-        );
+        assert_eq!(complete.failures[0].fix.as_deref(), Some("Set description"));
     }
 
     #[test]
@@ -541,10 +538,7 @@ mod tests {
         // basic: 1 failure.
         assert_eq!(eval.gate_results.get("basic").unwrap().failures.len(), 1);
         // complete: 2 failures (own + basic).
-        assert_eq!(
-            eval.gate_results.get("complete").unwrap().failures.len(),
-            2
-        );
+        assert_eq!(eval.gate_results.get("complete").unwrap().failures.len(), 2);
         // review: 3 failures (own + complete + basic).
         assert_eq!(eval.gate_results.get("review").unwrap().failures.len(), 3);
     }

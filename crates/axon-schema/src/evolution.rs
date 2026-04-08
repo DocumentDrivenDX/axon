@@ -234,10 +234,7 @@ fn diff_field(
             changes.push(FieldChange {
                 path: path.to_string(),
                 kind: FieldChangeKind::EnumNarrowed,
-                description: format!(
-                    "Field '{path}' enum values removed: {:?}",
-                    removed
-                ),
+                description: format!("Field '{path}' enum values removed: {:?}", removed),
             });
             *has_breaking = true;
         }
@@ -245,10 +242,7 @@ fn diff_field(
             changes.push(FieldChange {
                 path: path.to_string(),
                 kind: FieldChangeKind::EnumWidened,
-                description: format!(
-                    "Field '{path}' enum values added: {:?}",
-                    added
-                ),
+                description: format!("Field '{path}' enum values added: {:?}", added),
             });
         }
     } else if old_enum.is_some() != new_enum.is_some() {
@@ -403,15 +397,17 @@ mod tests {
 
         let diff = diff_schemas(Some(&old), Some(&new));
         assert_eq!(diff.compatibility, Compatibility::Compatible);
-        assert!(diff.changes.iter().any(|c| c.path == "tags" && c.kind == FieldChangeKind::Added));
+        assert!(diff
+            .changes
+            .iter()
+            .any(|c| c.path == "tags" && c.kind == FieldChangeKind::Added));
     }
 
     #[test]
     fn widening_enum_is_compatible() {
         let old = schema_v1();
         let mut new = schema_v1();
-        new["properties"]["status"]["enum"] =
-            json!(["draft", "active", "done", "archived"]);
+        new["properties"]["status"]["enum"] = json!(["draft", "active", "done", "archived"]);
 
         let diff = diff_schemas(Some(&old), Some(&new));
         assert_eq!(diff.compatibility, Compatibility::Compatible);

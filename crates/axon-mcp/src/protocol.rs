@@ -191,11 +191,7 @@ impl McpServer {
         let params = match &request.params {
             Some(p) => p,
             None => {
-                return JsonRpcResponse::error(
-                    request.id.clone(),
-                    -32602,
-                    "Missing params".into(),
-                );
+                return JsonRpcResponse::error(request.id.clone(), -32602, "Missing params".into());
             }
         };
 
@@ -234,11 +230,7 @@ impl McpServer {
         let params = match &request.params {
             Some(p) => p,
             None => {
-                return JsonRpcResponse::error(
-                    request.id.clone(),
-                    -32602,
-                    "Missing params".into(),
-                );
+                return JsonRpcResponse::error(request.id.clone(), -32602, "Missing params".into());
             }
         };
 
@@ -270,11 +262,7 @@ impl McpServer {
         let params = match &request.params {
             Some(p) => p,
             None => {
-                return JsonRpcResponse::error(
-                    request.id.clone(),
-                    -32602,
-                    "Missing params".into(),
-                );
+                return JsonRpcResponse::error(request.id.clone(), -32602, "Missing params".into());
             }
         };
 
@@ -336,7 +324,9 @@ mod tests {
 
         assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
         assert_eq!(resp["result"]["serverInfo"]["name"], "axon-mcp");
-        assert!(resp["result"]["capabilities"]["tools"]["listChanged"].as_bool().unwrap());
+        assert!(resp["result"]["capabilities"]["tools"]["listChanged"]
+            .as_bool()
+            .unwrap());
         assert!(server.is_initialized());
     }
 
@@ -350,9 +340,11 @@ mod tests {
                 "type": "object",
                 "properties": {}
             }),
-            handler: Box::new(|_args| Ok(serde_json::json!({
-                "content": [{"type": "text", "text": "ok"}]
-            }))),
+            handler: Box::new(|_args| {
+                Ok(serde_json::json!({
+                    "content": [{"type": "text", "text": "ok"}]
+                }))
+            }),
         });
 
         let mut server = McpServer::new(registry);
@@ -475,7 +467,9 @@ mod tests {
         });
         let resp_str = server.handle_message(&req.to_string()).unwrap();
         let resp: Value = serde_json::from_str(&resp_str).unwrap();
-        assert!(resp["result"]["capabilities"]["resources"]["subscribe"].as_bool().unwrap());
+        assert!(resp["result"]["capabilities"]["resources"]["subscribe"]
+            .as_bool()
+            .unwrap());
     }
 
     #[test]

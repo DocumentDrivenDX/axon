@@ -92,33 +92,35 @@ impl IndexBuildRegistry {
         total_entities: usize,
     ) -> &IndexBuildInfo {
         let info = IndexBuildInfo::new(collection.clone(), index_name.clone(), total_entities);
-        self.builds
-            .entry((collection, index_name))
-            .or_insert(info)
+        self.builds.entry((collection, index_name)).or_insert(info)
     }
 
     /// Record progress: increment the count of indexed entities.
-    pub fn record_progress(
-        &mut self,
-        collection: &CollectionId,
-        index_name: &str,
-        count: usize,
-    ) {
-        if let Some(info) = self.builds.get_mut(&(collection.clone(), index_name.to_string())) {
+    pub fn record_progress(&mut self, collection: &CollectionId, index_name: &str, count: usize) {
+        if let Some(info) = self
+            .builds
+            .get_mut(&(collection.clone(), index_name.to_string()))
+        {
             info.entities_indexed = (info.entities_indexed + count).min(info.entities_total);
         }
     }
 
     /// Mark an index as ready (build complete).
     pub fn mark_ready(&mut self, collection: &CollectionId, index_name: &str) {
-        if let Some(info) = self.builds.get_mut(&(collection.clone(), index_name.to_string())) {
+        if let Some(info) = self
+            .builds
+            .get_mut(&(collection.clone(), index_name.to_string()))
+        {
             info.mark_ready();
         }
     }
 
     /// Mark an index for dropping.
     pub fn mark_dropping(&mut self, collection: &CollectionId, index_name: &str) {
-        if let Some(info) = self.builds.get_mut(&(collection.clone(), index_name.to_string())) {
+        if let Some(info) = self
+            .builds
+            .get_mut(&(collection.clone(), index_name.to_string()))
+        {
             info.mark_dropping();
         }
     }

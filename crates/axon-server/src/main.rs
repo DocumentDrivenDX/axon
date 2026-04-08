@@ -51,9 +51,9 @@ async fn main() {
 
     if args.mcp_stdio {
         tracing::info!("starting MCP stdio server (no auth)");
-        let handler = Arc::new(std::sync::Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
+        let handler = Arc::new(std::sync::Mutex::new(AxonHandler::new(
+            MemoryStorageAdapter::default(),
+        )));
 
         // In stdio mode, collections are discovered dynamically.
         // Start with an empty list — agents use tools/list after initialization.
@@ -65,13 +65,15 @@ async fn main() {
     }
 
     if args.no_auth {
-        tracing::info!("running in --no-auth mode: all requests succeed as admin (actor=anonymous)");
+        tracing::info!(
+            "running in --no-auth mode: all requests succeed as admin (actor=anonymous)"
+        );
     }
 
     // Single shared handler for both HTTP and gRPC.
-    let handler = Arc::new(tokio::sync::Mutex::new(
-        AxonHandler::new(MemoryStorageAdapter::default()),
-    ));
+    let handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(
+        MemoryStorageAdapter::default(),
+    )));
 
     // Build HTTP gateway.
     let http_app = axon_server::gateway::build_router(handler.clone());

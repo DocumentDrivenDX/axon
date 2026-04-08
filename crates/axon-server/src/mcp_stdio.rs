@@ -8,9 +8,9 @@ use std::io::{self, BufRead, Write};
 use std::sync::{Arc, Mutex};
 
 use axon_api::handler::AxonHandler;
+use axon_mcp::handlers::{build_crud_tools, build_query_tool};
 use axon_mcp::protocol::McpServer;
 use axon_mcp::tools::ToolRegistry;
-use axon_mcp::handlers::{build_crud_tools, build_query_tool};
 use axon_storage::adapter::StorageAdapter;
 
 /// Run the MCP stdio loop: read lines from stdin, process, write to stdout.
@@ -61,9 +61,9 @@ mod tests {
     use axon_storage::memory::MemoryStorageAdapter;
 
     fn make_handler() -> Arc<Mutex<AxonHandler<MemoryStorageAdapter>>> {
-        Arc::new(Mutex::new(AxonHandler::new(
-            MemoryStorageAdapter::default(),
-        )))
+        Arc::new(Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ))
     }
 
     #[test]
@@ -151,7 +151,10 @@ mod tests {
         });
         let resp_str = server.handle_message(&req.to_string()).unwrap();
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        assert!(resp["result"]["content"][0]["text"].as_str().unwrap().contains("Widget"));
+        assert!(resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Widget"));
 
         // Get
         let req = serde_json::json!({
@@ -165,7 +168,10 @@ mod tests {
         });
         let resp_str = server.handle_message(&req.to_string()).unwrap();
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
-        assert!(resp["result"]["content"][0]["text"].as_str().unwrap().contains("Widget"));
+        assert!(resp["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Widget"));
     }
 
     #[test]

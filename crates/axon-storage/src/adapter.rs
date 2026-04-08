@@ -5,7 +5,7 @@ use axon_core::error::AxonError;
 use axon_core::id::CollectionId;
 use axon_core::id::EntityId;
 use axon_core::types::{Entity, Link};
-use axon_schema::schema::CollectionSchema;
+use axon_schema::schema::{CollectionSchema, CollectionView};
 
 /// A typed index value extracted from entity data.
 ///
@@ -92,13 +92,13 @@ pub fn extract_index_value(
     match index_type {
         IndexType::String => json_val.as_str().map(|s| IndexValue::String(s.to_string())),
         IndexType::Integer => json_val.as_i64().map(IndexValue::Integer),
-        IndexType::Float => json_val.as_f64().map(|f| IndexValue::Float(OrderedFloat::new(f))),
+        IndexType::Float => json_val
+            .as_f64()
+            .map(|f| IndexValue::Float(OrderedFloat::new(f))),
         IndexType::Boolean => json_val.as_bool().map(IndexValue::Boolean),
         IndexType::Datetime => {
             // Datetimes are stored as strings for ordering purposes.
-            json_val
-                .as_str()
-                .map(|s| IndexValue::String(s.to_string()))
+            json_val.as_str().map(|s| IndexValue::String(s.to_string()))
         }
     }
 }
@@ -287,6 +287,33 @@ pub trait StorageAdapter: Send + Sync {
     ///
     /// The default implementation is a no-op.
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let _ = collection;
+        Ok(())
+    }
+
+    // ── Collection presentation persistence ─────────────────────────────────
+
+    /// Persist a [`CollectionView`], replacing any previously stored view for
+    /// the same collection and incrementing its independent version counter.
+    ///
+    /// Returns the stored view with the adapter-assigned `version` and
+    /// `updated_at_ns`.
+    fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
+        Ok(view.clone())
+    }
+
+    /// Retrieve the latest [`CollectionView`] for a collection, if one exists.
+    fn get_collection_view(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Option<CollectionView>, AxonError> {
+        let _ = collection;
+        Ok(None)
+    }
+
+    /// Delete the collection view for a collection. Returns `Ok(())` whether or
+    /// not a view existed.
+    fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let _ = collection;
         Ok(())
     }
@@ -553,11 +580,9 @@ pub trait StorageAdapter: Send + Sync {
         end_str.pop();
         end_str.push('0');
         let end = EntityId::new(&end_str);
-        let entities = self.range_scan(&Link::links_collection(), Some(&start), Some(&end), None)?;
-        Ok(entities
-            .iter()
-            .filter_map(Link::from_entity)
-            .collect())
+        let entities =
+            self.range_scan(&Link::links_collection(), Some(&start), Some(&end), None)?;
+        Ok(entities.iter().filter_map(Link::from_entity).collect())
     }
 
     /// List inbound links to a given entity.
@@ -576,8 +601,12 @@ pub trait StorageAdapter: Send + Sync {
         end_str.pop();
         end_str.push('0');
         let end = EntityId::new(&end_str);
-        let rev_entries =
-            self.range_scan(&Link::links_rev_collection(), Some(&start), Some(&end), None)?;
+        let rev_entries = self.range_scan(
+            &Link::links_rev_collection(),
+            Some(&start),
+            Some(&end),
+            None,
+        )?;
 
         let mut links = Vec::new();
         for rev_ent in &rev_entries {

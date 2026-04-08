@@ -24,20 +24,20 @@ use crate::request::{
     DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest, DiffSchemaRequest,
     DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest, FieldFilter, FilterNode,
     FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
-    ListNamespaceCollectionsRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
-    PatchEntityRequest, ReachableRequest, RevalidateRequest, RevertEntityRequest, SortDirection,
+    ListNamespaceCollectionsRequest, PatchEntityRequest, PutSchemaRequest, QueryAuditRequest,
+    QueryEntitiesRequest, ReachableRequest, RevalidateRequest, RevertEntityRequest, SortDirection,
     TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
     CreateCollectionResponse, CreateDatabaseResponse, CreateEntityResponse, CreateLinkResponse,
-    CreateNamespaceResponse, DeleteEntityResponse, DeleteLinkResponse,
-    DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse,
-    DropDatabaseResponse, DropNamespaceResponse, GetEntityResponse, GetSchemaResponse,
-    InvalidEntity, ListCollectionsResponse, ListDatabasesResponse,
-    ListNamespaceCollectionsResponse, PutSchemaResponse, QueryAuditResponse,
-    QueryEntitiesResponse, ReachableResponse, RevalidateResponse, RevertEntityResponse,
-    PatchEntityResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
+    CreateNamespaceResponse, DeleteEntityResponse, DeleteLinkResponse, DescribeCollectionResponse,
+    DiffSchemaResponse, DropCollectionResponse, DropDatabaseResponse, DropNamespaceResponse,
+    GetEntityResponse, GetSchemaResponse, InvalidEntity, ListCollectionsResponse,
+    ListDatabasesResponse, ListNamespaceCollectionsResponse, PatchEntityResponse,
+    PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse, ReachableResponse,
+    RevalidateResponse, RevertEntityResponse, TraverseHop, TraversePath, TraverseResponse,
+    UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -191,13 +191,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // Unique index constraint check (FEAT-013, US-032).
         if let Some(ref s) = schema {
-            check_unique_constraints(
-                &self.storage,
-                &req.collection,
-                &req.id,
-                &req.data,
-                s,
-            )?;
+            check_unique_constraints(&self.storage, &req.collection, &req.id, &req.data, s)?;
         }
 
         let now = now_ns();
@@ -254,11 +248,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         .iter()
                         .map(|(name, gr)| (name.clone(), gr.pass))
                         .collect();
-                    self.storage.put_gate_results(
-                        &entity.collection,
-                        &entity.id,
-                        &gate_bools,
-                    )?;
+                    self.storage
+                        .put_gate_results(&entity.collection, &entity.id, &gate_bools)?;
                 }
                 (eval.gate_results, eval.advisories)
             }
@@ -317,13 +308,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // Unique index constraint check (FEAT-013, US-032).
         if let Some(ref s) = schema {
-            check_unique_constraints(
-                &self.storage,
-                &req.collection,
-                &req.id,
-                &req.data,
-                s,
-            )?;
+            check_unique_constraints(&self.storage, &req.collection, &req.id, &req.data, s)?;
         }
 
         // Read current state for the audit `before` snapshot and metadata preservation.
@@ -391,11 +376,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         .iter()
                         .map(|(name, gr)| (name.clone(), gr.pass))
                         .collect();
-                    self.storage.put_gate_results(
-                        &updated.collection,
-                        &updated.id,
-                        &gate_bools,
-                    )?;
+                    self.storage
+                        .put_gate_results(&updated.collection, &updated.id, &gate_bools)?;
                 }
                 (eval.gate_results, eval.advisories)
             }
@@ -523,11 +505,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         .iter()
                         .map(|(name, gr)| (name.clone(), gr.pass))
                         .collect();
-                    self.storage.put_gate_results(
-                        &updated.collection,
-                        &updated.id,
-                        &gate_bools,
-                    )?;
+                    self.storage
+                        .put_gate_results(&updated.collection, &updated.id, &gate_bools)?;
                 }
                 (eval.gate_results, eval.advisories)
             }
@@ -649,7 +628,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // Try index-accelerated lookup (FEAT-013) before falling back to scan.
         let schema = self.storage.get_schema(&req.collection)?;
-        let index_candidates = try_index_lookup(&self.storage, &req.collection, req.filter.as_ref(), schema.as_ref());
+        let index_candidates = try_index_lookup(
+            &self.storage,
+            &req.collection,
+            req.filter.as_ref(),
+            schema.as_ref(),
+        );
 
         let all = if let Some(entity_ids) = index_candidates {
             // Fetch entities by ID from the index results.
@@ -666,10 +650,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         };
 
         // Pre-compute gate evaluations if any gate filters are present.
-        let needs_gates = req
-            .filter
-            .as_ref()
-            .is_some_and(has_gate_filter);
+        let needs_gates = req.filter.as_ref().is_some_and(has_gate_filter);
 
         // Apply filter (even if we used an index, there may be additional
         // filter predicates or gate filters that need post-filtering).
@@ -679,11 +660,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 req.filter.as_ref().map_or(true, |f| {
                     if needs_gates {
                         if let Some(ref s) = schema {
-                            let eval = evaluate_gates(
-                                &s.validation_rules,
-                                &s.gates,
-                                &e.data,
-                            );
+                            let eval = evaluate_gates(&s.validation_rules, &s.gates, &e.data);
                             apply_filter_with_gates(f, &e.data, Some(&eval))
                         } else {
                             apply_filter(f, &e.data)
@@ -829,10 +806,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     /// Compute a numeric aggregation (SUM, AVG, MIN, MAX) over entities.
-    pub fn aggregate(
-        &self,
-        req: AggregateRequest,
-    ) -> Result<AggregateResponse, AxonError> {
+    pub fn aggregate(&self, req: AggregateRequest) -> Result<AggregateResponse, AxonError> {
         // Try index-accelerated lookup (FEAT-013).
         let schema = self.storage.get_schema(&req.collection)?;
         let index_candidates = try_index_lookup(
@@ -876,8 +850,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         other => other.to_string(),
                     })
                     .unwrap_or_else(|| "null".into());
-                let val = get_field_value(&entity.data, &req.field)
-                    .and_then(|v| v.as_f64());
+                let val = get_field_value(&entity.data, &req.field).and_then(|v| v.as_f64());
                 if let Some(n) = val {
                     groups.entry(group_key).or_default().push(n);
                 } else {
@@ -909,10 +882,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             // No GROUP BY — aggregate all matching.
             let values: Vec<f64> = matched
                 .iter()
-                .filter_map(|e| {
-                    get_field_value(&e.data, &req.field)
-                        .and_then(|v| v.as_f64())
-                })
+                .filter_map(|e| get_field_value(&e.data, &req.field).and_then(|v| v.as_f64()))
                 .collect();
 
             // Check if we tried to aggregate but found no numeric values and entities exist.
@@ -1362,19 +1332,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ///
     /// Scans all entities and reports which ones fail validation, including
     /// the entity ID, version, and specific errors.
-    pub fn revalidate(
-        &self,
-        req: RevalidateRequest,
-    ) -> Result<RevalidateResponse, AxonError> {
-        let schema = self
-            .storage
-            .get_schema(&req.collection)?
-            .ok_or_else(|| {
-                AxonError::NotFound(format!(
-                    "schema for collection '{}'",
-                    req.collection
-                ))
-            })?;
+    pub fn revalidate(&self, req: RevalidateRequest) -> Result<RevalidateResponse, AxonError> {
+        let schema = self.storage.get_schema(&req.collection)?.ok_or_else(|| {
+            AxonError::NotFound(format!("schema for collection '{}'", req.collection))
+        })?;
 
         let all = self.storage.range_scan(&req.collection, None, None, None)?;
         let total_scanned = all.len();
@@ -1441,16 +1402,22 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: DropNamespaceRequest,
     ) -> Result<DropNamespaceResponse, AxonError> {
         let ns_key = format!("{}.{}", req.database, req.schema);
-        let collections = self.namespaces.get(&ns_key).ok_or_else(|| {
-            AxonError::NotFound(format!("namespace '{ns_key}'"))
-        })?;
+        let collections = self
+            .namespaces
+            .get(&ns_key)
+            .ok_or_else(|| AxonError::NotFound(format!("namespace '{ns_key}'")))?;
 
         let count = collections.len();
         if count > 0 && !req.force {
             return Err(AxonError::InvalidOperation(format!(
                 "namespace '{ns_key}' contains {} collections: {}. Use force=true to drop",
                 count,
-                collections.iter().take(5).cloned().collect::<Vec<_>>().join(", ")
+                collections
+                    .iter()
+                    .take(5)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
             )));
         }
 
@@ -1474,10 +1441,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<CreateDatabaseResponse, AxonError> {
         let ns_key = format!("{}.default", req.name);
         if self.namespaces.contains_key(&ns_key) {
-            return Err(AxonError::AlreadyExists(format!(
-                "database '{}'",
-                req.name
-            )));
+            return Err(AxonError::AlreadyExists(format!("database '{}'", req.name)));
         }
         self.namespaces.insert(ns_key, HashSet::new());
         Ok(CreateDatabaseResponse { name: req.name })
@@ -2032,7 +1996,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .unwrap_or_else(|| req.source_collection.clone());
 
         let cardinality_str = link_def
-            .map(|d| format!("{:?}", d.cardinality).to_lowercase().replace("to", "-to-"))
+            .map(|d| {
+                format!("{:?}", d.cardinality)
+                    .to_lowercase()
+                    .replace("to", "-to-")
+            })
             .unwrap_or_else(|| "unknown".into());
 
         // Get all existing links of this type from the source.
@@ -2142,10 +2110,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 && link.source_id == req.id
             {
                 let key = (link.link_type.clone(), "outbound".to_string());
-                if let Some(target) = self
-                    .storage
-                    .get(&link.target_collection, &link.target_id)?
-                {
+                if let Some(target) = self.storage.get(&link.target_collection, &link.target_id)? {
                     groups.entry(key).or_default().push(target);
                 }
             }
@@ -2156,10 +2121,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 && link.target_id == req.id
             {
                 let key = (link.link_type.clone(), "inbound".to_string());
-                if let Some(source) = self
-                    .storage
-                    .get(&link.source_collection, &link.source_id)?
-                {
+                if let Some(source) = self.storage.get(&link.source_collection, &link.source_id)? {
                     groups.entry(key).or_default().push(source);
                 }
             }
@@ -2268,9 +2230,7 @@ fn try_index_lookup<S: StorageAdapter>(
                                 axon_storage::extract_index_value(&f.value, &idx.index_type)
                             {
                                 // Use this index; remaining filters applied post-fetch.
-                                return storage
-                                    .index_lookup(collection, &f.field, &val)
-                                    .ok();
+                                return storage.index_lookup(collection, &f.field, &val).ok();
                             }
                         }
                     }
@@ -2325,17 +2285,15 @@ fn apply_filter_with_gates(
 ) -> bool {
     match node {
         FilterNode::Field(f) => apply_field_filter(f, data),
-        FilterNode::Gate(g) => {
-            gate_eval
-                .and_then(|eval| eval.gate_results.get(&g.gate))
-                .is_some_and(|result| result.pass == g.pass)
-        }
-        FilterNode::And { filters } => {
-            filters.iter().all(|f| apply_filter_with_gates(f, data, gate_eval))
-        }
-        FilterNode::Or { filters } => {
-            filters.iter().any(|f| apply_filter_with_gates(f, data, gate_eval))
-        }
+        FilterNode::Gate(g) => gate_eval
+            .and_then(|eval| eval.gate_results.get(&g.gate))
+            .is_some_and(|result| result.pass == g.pass),
+        FilterNode::And { filters } => filters
+            .iter()
+            .all(|f| apply_filter_with_gates(f, data, gate_eval)),
+        FilterNode::Or { filters } => filters
+            .iter()
+            .any(|f| apply_filter_with_gates(f, data, gate_eval)),
     }
 }
 
@@ -2452,9 +2410,7 @@ fn json_merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
                 if value.is_null() {
                     target_map.remove(key);
                 } else {
-                    let entry = target_map
-                        .entry(key.clone())
-                        .or_insert(Value::Null);
+                    let entry = target_map.entry(key.clone()).or_insert(Value::Null);
                     json_merge_patch(entry, value);
                 }
             }
@@ -6110,11 +6066,7 @@ link_types:
         })
         .unwrap();
 
-        let resp = h
-            .revalidate(RevalidateRequest {
-                collection: col,
-            })
-            .unwrap();
+        let resp = h.revalidate(RevalidateRequest { collection: col }).unwrap();
         assert_eq!(resp.total_scanned, 2);
         assert_eq!(resp.valid_count, 1);
         assert_eq!(resp.invalid.len(), 1);
@@ -6545,7 +6497,10 @@ link_types:
             .unwrap();
 
         let paths: Vec<&str> = resp.diff.changes.iter().map(|c| c.path.as_str()).collect();
-        assert!(paths.contains(&"description"), "should show description added");
+        assert!(
+            paths.contains(&"description"),
+            "should show description added"
+        );
         assert!(paths.contains(&"priority"), "should show priority added");
     }
 
@@ -7343,7 +7298,10 @@ link_types:
 
         assert_eq!(resp.total_count, 2);
         for entity in &resp.groups[0].entities {
-            assert!(entity.data.get("title").is_some(), "entity data should be included");
+            assert!(
+                entity.data.get("title").is_some(),
+                "entity data should be included"
+            );
         }
     }
 
@@ -7543,9 +7501,7 @@ link_types:
 
     #[test]
     fn drop_nonempty_database_requires_force() {
-        use crate::request::{
-            CreateDatabaseRequest, CreateNamespaceRequest, DropDatabaseRequest,
-        };
+        use crate::request::{CreateDatabaseRequest, CreateNamespaceRequest, DropDatabaseRequest};
         let mut h = handler();
         h.create_database(CreateDatabaseRequest {
             name: "prod".into(),
@@ -7965,10 +7921,7 @@ link_types:
         assert_eq!(patch_entry.actor, "agent-1");
         // Before had status=draft, after has status=active.
         assert_eq!(patch_entry.data_before.as_ref().unwrap()["status"], "draft");
-        assert_eq!(
-            patch_entry.data_after.as_ref().unwrap()["status"],
-            "active"
-        );
+        assert_eq!(patch_entry.data_after.as_ref().unwrap()["status"], "active");
     }
 
     #[test]

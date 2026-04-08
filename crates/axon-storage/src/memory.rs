@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::{Entity, Link};
-use axon_schema::schema::CollectionSchema;
+use axon_schema::schema::{CollectionSchema, CollectionView};
 
 use crate::adapter::{
     extract_compound_key, extract_index_value, resolve_field_path, CompoundKey, IndexValue,
@@ -16,6 +16,8 @@ type CollectionMap = HashMap<EntityId, Entity>;
 
 /// A schema version entry: (schema, created_at_ns).
 type SchemaVersionEntry = (CollectionSchema, u64);
+/// A collection view version entry: (view, updated_at_ns).
+type CollectionViewEntry = (CollectionView, u64);
 
 /// Key for the EAV index: (collection, field_name, indexed_value).
 type IndexKey = (CollectionId, String, IndexValue);
@@ -58,6 +60,7 @@ type LinkKey = (CollectionId, EntityId, String, CollectionId, EntityId);
 struct TxSnapshot {
     data: HashMap<CollectionId, CollectionMap>,
     schema_versions: HashMap<CollectionId, BTreeMap<u32, SchemaVersionEntry>>,
+    collection_views: HashMap<CollectionId, CollectionViewEntry>,
     collections: HashSet<CollectionId>,
     /// Index snapshot for rollback.
     indexes: BTreeMap<IndexKey, BTreeSet<EntityId>>,
@@ -83,6 +86,8 @@ pub struct MemoryStorageAdapter {
     data: HashMap<CollectionId, CollectionMap>,
     /// Schema version history keyed by (collection → version → schema).
     schema_versions: HashMap<CollectionId, BTreeMap<u32, SchemaVersionEntry>>,
+    /// Latest collection view keyed by collection.
+    collection_views: HashMap<CollectionId, CollectionViewEntry>,
     /// Explicitly registered collections.
     collections: HashSet<CollectionId>,
     /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
@@ -212,6 +217,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         self.tx_snapshot = Some(TxSnapshot {
             data: self.data.clone(),
             schema_versions: self.schema_versions.clone(),
+            collection_views: self.collection_views.clone(),
             collections: self.collections.clone(),
             indexes: self.indexes.clone(),
             compound_indexes: self.compound_indexes.clone(),
@@ -233,6 +239,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         if let Some(snapshot) = self.tx_snapshot.take() {
             self.data = snapshot.data;
             self.schema_versions = snapshot.schema_versions;
+            self.collection_views = snapshot.collection_views;
             self.collections = snapshot.collections;
             self.indexes = snapshot.indexes;
             self.compound_indexes = snapshot.compound_indexes;
@@ -281,17 +288,41 @@ impl StorageAdapter for MemoryStorageAdapter {
         Ok(self
             .schema_versions
             .get(collection)
-            .map(|versions| {
-                versions
-                    .iter()
-                    .map(|(v, (_, ts))| (*v, *ts))
-                    .collect()
-            })
+            .map(|versions| versions.iter().map(|(v, (_, ts))| (*v, *ts)).collect())
             .unwrap_or_default())
     }
 
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         self.schema_versions.remove(collection);
+        Ok(())
+    }
+
+    fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
+        let next_version = self
+            .collection_views
+            .get(&view.collection)
+            .map_or(1, |(existing, _)| existing.version + 1);
+        let mut versioned = view.clone();
+        let updated_at_ns = now_ns();
+        versioned.version = next_version;
+        versioned.updated_at_ns = Some(updated_at_ns);
+        self.collection_views
+            .insert(view.collection.clone(), (versioned.clone(), updated_at_ns));
+        Ok(versioned)
+    }
+
+    fn get_collection_view(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Option<CollectionView>, AxonError> {
+        Ok(self
+            .collection_views
+            .get(collection)
+            .map(|(view, _)| view.clone()))
+    }
+
+    fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.collection_views.remove(collection);
         Ok(())
     }
 
@@ -449,11 +480,7 @@ impl StorageAdapter for MemoryStorageAdapter {
                 // Since field is a String, we append a char that sorts after all values.
                 let mut upper_field = field.to_string();
                 upper_field.push('\x7f');
-                Bound::Excluded((
-                    collection.clone(),
-                    upper_field,
-                    IndexValue::Boolean(false),
-                ))
+                Bound::Excluded((collection.clone(), upper_field, IndexValue::Boolean(false)))
             }
         };
 
@@ -483,8 +510,7 @@ impl StorageAdapter for MemoryStorageAdapter {
     }
 
     fn drop_indexes(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
-        self.indexes
-            .retain(|(col, _, _), _| col != collection);
+        self.indexes.retain(|(col, _, _), _| col != collection);
         self.compound_indexes
             .retain(|(col, _, _), _| col != collection);
         Ok(())
@@ -680,9 +706,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             .links
             .iter()
             .filter(|((sc, si, lt, _, _), _)| {
-                sc == source_collection
-                    && si == source_id
-                    && link_type.map_or(true, |f| lt == f)
+                sc == source_collection && si == source_id && link_type.map_or(true, |f| lt == f)
             })
             .map(|(_, link)| link.clone())
             .collect())
@@ -698,9 +722,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             .links
             .iter()
             .filter(|((_, _, lt, tc, ti), _)| {
-                tc == target_collection
-                    && ti == target_id
-                    && link_type.map_or(true, |f| lt == f)
+                tc == target_collection && ti == target_id && link_type.map_or(true, |f| lt == f)
             })
             .map(|(_, link)| link.clone())
             .collect())
@@ -992,10 +1014,10 @@ mod tests {
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
             })
             .unwrap();
         store
@@ -1005,10 +1027,10 @@ mod tests {
                 version: 2,
                 entity_schema: None,
                 link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
             })
             .unwrap();
 
@@ -1044,10 +1066,10 @@ mod tests {
                 version: 2,
                 entity_schema: None,
                 link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
             })
             .unwrap();
         // Also add a schema for a second collection.
@@ -1059,10 +1081,10 @@ mod tests {
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
             })
             .unwrap();
         store.abort_tx().unwrap();
@@ -1092,10 +1114,10 @@ mod tests {
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
             })
             .unwrap();
         assert!(store.get_schema(&col).unwrap().is_some());
@@ -1608,7 +1630,10 @@ mod tests {
             store.register_collection(&tasks()).unwrap();
 
             let nid = store.collection_numeric_id(&tasks()).unwrap();
-            assert!(nid.is_some(), "registered collection should have numeric id");
+            assert!(
+                nid.is_some(),
+                "registered collection should have numeric id"
+            );
             assert!(nid.unwrap() > 0, "numeric id should be positive");
         }
 
@@ -1776,11 +1801,7 @@ mod tests {
             store.put_link(&link2).unwrap();
 
             let outbound = store
-                .list_outbound_links(
-                    &CollectionId::new("tasks"),
-                    &EntityId::new("t-001"),
-                    None,
-                )
+                .list_outbound_links(&CollectionId::new("tasks"), &EntityId::new("t-001"), None)
                 .unwrap();
             assert_eq!(outbound.len(), 2);
         }
@@ -1814,11 +1835,7 @@ mod tests {
             store.put_link(&link).unwrap();
 
             let inbound = store
-                .list_inbound_links(
-                    &CollectionId::new("users"),
-                    &EntityId::new("u-001"),
-                    None,
-                )
+                .list_inbound_links(&CollectionId::new("users"), &EntityId::new("u-001"), None)
                 .unwrap();
             assert_eq!(inbound.len(), 1);
             assert_eq!(inbound[0].source_id, EntityId::new("t-001"));
@@ -1832,11 +1849,7 @@ mod tests {
             store.abort_tx().unwrap();
 
             let outbound = store
-                .list_outbound_links(
-                    &CollectionId::new("tasks"),
-                    &EntityId::new("t-001"),
-                    None,
-                )
+                .list_outbound_links(&CollectionId::new("tasks"), &EntityId::new("t-001"), None)
                 .unwrap();
             assert!(outbound.is_empty());
         }

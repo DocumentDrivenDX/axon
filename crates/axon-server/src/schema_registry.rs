@@ -117,8 +117,8 @@ pub fn check_compatibility(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axon_schema::schema::CollectionSchema;
     use axon_core::id::CollectionId;
+    use axon_schema::schema::CollectionSchema;
     use serde_json::json;
 
     #[test]

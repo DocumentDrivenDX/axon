@@ -67,7 +67,10 @@ impl NodeRegistry {
 
     /// Find the node hosting a database.
     pub fn find_database(&self, database: &str) -> Option<&NodeInfo> {
-        let placement = self.placements.iter().find(|p| p.database == database && p.primary)?;
+        let placement = self
+            .placements
+            .iter()
+            .find(|p| p.database == database && p.primary)?;
         self.nodes.iter().find(|n| n.node_id == placement.node_id)
     }
 

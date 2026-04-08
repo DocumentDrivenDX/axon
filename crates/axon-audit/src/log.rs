@@ -578,8 +578,9 @@ mod tests {
         ))
         .unwrap();
 
-        let (envelopes, _) =
-            log.replay(None, Some(&CollectionId::new("tasks")), 100).unwrap();
+        let (envelopes, _) = log
+            .replay(None, Some(&CollectionId::new("tasks")), 100)
+            .unwrap();
         assert_eq!(envelopes.len(), 1);
         assert_eq!(envelopes[0].source.collection, "tasks");
     }

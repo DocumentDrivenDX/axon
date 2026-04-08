@@ -23,4 +23,4 @@ pub mod subscriptions;
 pub mod types;
 
 pub use dynamic::{build_schema, AxonSchema};
-pub use subscriptions::{ChangeFeedBroker, ChangeEvent, SubscriptionFilter};
+pub use subscriptions::{ChangeEvent, ChangeFeedBroker, SubscriptionFilter};

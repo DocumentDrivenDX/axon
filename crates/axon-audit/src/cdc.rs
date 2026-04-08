@@ -145,8 +145,8 @@ impl JsonlFileSink {
 
 impl CdcSink for JsonlFileSink {
     fn emit(&mut self, envelope: &CdcEnvelope) -> Result<(), String> {
-        let json = serde_json::to_string(envelope)
-            .map_err(|e| format!("CDC serialization error: {e}"))?;
+        let json =
+            serde_json::to_string(envelope).map_err(|e| format!("CDC serialization error: {e}"))?;
         self.writer
             .write_all(json.as_bytes())
             .map_err(|e| format!("CDC write error: {e}"))?;

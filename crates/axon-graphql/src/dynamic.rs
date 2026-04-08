@@ -60,7 +60,11 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         query = query.field(Field::new(
             &list_field_name,
             TypeRef::named_list(&type_name_list),
-            |_ctx| FieldFuture::new(async move { Ok(Some(FieldValue::list(Vec::<FieldValue>::new()))) }),
+            |_ctx| {
+                FieldFuture::new(
+                    async move { Ok(Some(FieldValue::list(Vec::<FieldValue>::new()))) },
+                )
+            },
         ));
 
         // Mutation: create.
@@ -87,9 +91,7 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
             &delete_field_name,
             TypeRef::named_nn(TypeRef::BOOLEAN),
             |_ctx| {
-                FieldFuture::new(async move {
-                    Ok(Some(FieldValue::from(GqlValue::from(true))))
-                })
+                FieldFuture::new(async move { Ok(Some(FieldValue::from(GqlValue::from(true)))) })
             },
         ));
     }

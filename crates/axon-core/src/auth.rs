@@ -44,7 +44,10 @@ impl Role {
 
     /// Determine the highest-privilege role from a set of tags.
     pub fn from_tags(tags: &[String]) -> Self {
-        tags.iter().map(|t| Role::from_tag(t)).max().unwrap_or(Role::None)
+        tags.iter()
+            .map(|t| Role::from_tag(t))
+            .max()
+            .unwrap_or(Role::None)
     }
 }
 
@@ -131,11 +134,7 @@ impl CallerIdentity {
     /// Admin users see all fields. For other roles, fields listed in a
     /// mask policy that requires a higher role than the caller's are
     /// removed from the data.
-    pub fn apply_masks(
-        &self,
-        data: &mut serde_json::Value,
-        policies: &[MaskPolicy],
-    ) {
+    pub fn apply_masks(&self, data: &mut serde_json::Value, policies: &[MaskPolicy]) {
         if self.role >= Role::Admin {
             return; // Admin sees all.
         }
@@ -388,7 +387,8 @@ mod tests {
     #[test]
     fn reader_cannot_see_admin_only_fields() {
         let reader = CallerIdentity::new("bob", Role::Read);
-        let mut data = serde_json::json!({"name": "Alice", "salary": 100000, "email": "alice@co.com"});
+        let mut data =
+            serde_json::json!({"name": "Alice", "salary": 100000, "email": "alice@co.com"});
         let policies = vec![MaskPolicy {
             field: "salary".into(),
             min_role: Role::Admin,

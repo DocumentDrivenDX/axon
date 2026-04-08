@@ -167,10 +167,7 @@ impl ChangeFeedBroker {
     /// Check if a subscription is still active.
     pub fn is_active(&self, id: SubscriptionId) -> bool {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-        inner
-            .subscribers
-            .get(&id)
-            .is_some_and(|s| !s.closed)
+        inner.subscribers.get(&id).is_some_and(|s| !s.closed)
     }
 }
 
