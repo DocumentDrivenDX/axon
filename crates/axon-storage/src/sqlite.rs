@@ -53,7 +53,8 @@ impl SqliteStorageAdapter {
     fn init_schema(&self) -> Result<(), AxonError> {
         self.conn
             .execute_batch(
-                "CREATE TABLE IF NOT EXISTS entities (
+                "PRAGMA foreign_keys = ON;
+                CREATE TABLE IF NOT EXISTS entities (
                     collection TEXT NOT NULL,
                     id         TEXT NOT NULL,
                     version    INTEGER NOT NULL,
@@ -67,15 +68,16 @@ impl SqliteStorageAdapter {
                     created_at  INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (collection, version)
                 );
+                CREATE TABLE IF NOT EXISTS collections (
+                    name TEXT NOT NULL PRIMARY KEY
+                );
                 CREATE TABLE IF NOT EXISTS collection_views (
-                    collection        TEXT NOT NULL PRIMARY KEY,
+                    collection        TEXT NOT NULL PRIMARY KEY
+                                      REFERENCES collections(name) ON DELETE CASCADE,
                     version           INTEGER NOT NULL,
                     view_json         TEXT NOT NULL,
                     updated_at_ns     INTEGER NOT NULL,
                     updated_by        TEXT
-                );
-                CREATE TABLE IF NOT EXISTS collections (
-                    name TEXT NOT NULL PRIMARY KEY
                 );
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,6 +92,18 @@ impl SqliteStorageAdapter {
                 );",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))
+    }
+
+    fn collection_exists(&self, collection: &CollectionId) -> Result<bool, AxonError> {
+        let exists: i64 = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM collections WHERE name = ?1)",
+                params![collection.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(exists != 0)
     }
 
     fn row_to_entity(
@@ -480,6 +494,13 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
+        if !self.collection_exists(&view.collection)? {
+            return Err(AxonError::InvalidArgument(format!(
+                "collection '{}' is not registered",
+                view.collection.as_str()
+            )));
+        }
+
         let current_version: i64 = self
             .conn
             .query_row(

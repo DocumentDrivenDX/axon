@@ -320,6 +320,7 @@ macro_rules! storage_conformance_tests {
             fn put_get_collection_view_roundtrip() {
                 let mut s = store();
                 let col = CollectionId::new("widgets");
+                s.register_collection(&col).unwrap();
                 let view = CollectionView {
                     collection: col.clone(),
                     description: Some("markdown view".into()),
@@ -344,6 +345,7 @@ macro_rules! storage_conformance_tests {
             fn updating_collection_view_does_not_bump_schema_version() {
                 let mut s = store();
                 let col = CollectionId::new("items");
+                s.register_collection(&col).unwrap();
                 let schema = CollectionSchema {
                     collection: col.clone(),
                     description: Some("v1".into()),
@@ -389,6 +391,7 @@ macro_rules! storage_conformance_tests {
             fn delete_collection_view_removes_it() {
                 let mut s = store();
                 let col = CollectionId::new("tmp");
+                s.register_collection(&col).unwrap();
                 s.put_collection_view(&CollectionView::new(col.clone(), "# {{title}}"))
                     .unwrap();
                 assert!(s.get_collection_view(&col).unwrap().is_some());
@@ -400,6 +403,7 @@ macro_rules! storage_conformance_tests {
             fn abort_tx_rolls_back_collection_view_changes() {
                 let mut s = store();
                 let col = CollectionId::new("notes");
+                s.register_collection(&col).unwrap();
                 s.put_collection_view(&CollectionView::new(col.clone(), "# v1"))
                     .unwrap();
 
@@ -411,6 +415,38 @@ macro_rules! storage_conformance_tests {
                 let got = s.get_collection_view(&col).unwrap().unwrap();
                 assert_eq!(got.version, 1);
                 assert_eq!(got.markdown_template, "# v1");
+            }
+
+            #[test]
+            fn put_collection_view_requires_registered_collection() {
+                let mut s = store();
+                let col = CollectionId::new("orphaned");
+                let err = s
+                    .put_collection_view(&CollectionView::new(col.clone(), "# {{title}}"))
+                    .unwrap_err();
+
+                match err {
+                    AxonError::InvalidArgument(msg) => {
+                        assert!(msg.contains(col.as_str()));
+                        assert!(msg.contains("not registered"));
+                    }
+                    other => panic!("expected InvalidArgument, got {other:?}"),
+                }
+
+                assert!(s.get_collection_view(&col).unwrap().is_none());
+            }
+
+            #[test]
+            fn unregister_collection_removes_collection_view() {
+                let mut s = store();
+                let col = CollectionId::new("ephemeral");
+                s.register_collection(&col).unwrap();
+                s.put_collection_view(&CollectionView::new(col.clone(), "# {{title}}"))
+                    .unwrap();
+
+                s.unregister_collection(&col).unwrap();
+
+                assert!(s.get_collection_view(&col).unwrap().is_none());
             }
 
             // ── Collection registry ─────────────────────────────────────

@@ -56,15 +56,16 @@ impl PostgresStorageAdapter {
                     version     INTEGER NOT NULL,
                     schema_json JSONB NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS collections (
+                    name TEXT NOT NULL PRIMARY KEY
+                );
                 CREATE TABLE IF NOT EXISTS collection_views (
-                    collection    TEXT NOT NULL PRIMARY KEY,
+                    collection    TEXT NOT NULL PRIMARY KEY
+                                  REFERENCES collections(name) ON DELETE CASCADE,
                     version       INTEGER NOT NULL,
                     view_json     JSONB NOT NULL,
                     updated_at_ns BIGINT NOT NULL,
                     updated_by    TEXT
-                );
-                CREATE TABLE IF NOT EXISTS collections (
-                    name TEXT NOT NULL PRIMARY KEY
                 );
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id             BIGSERIAL PRIMARY KEY,
@@ -79,6 +80,18 @@ impl PostgresStorageAdapter {
                 );",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))
+    }
+
+    fn collection_exists(&self, collection: &CollectionId) -> Result<bool, AxonError> {
+        let row = self
+            .client
+            .borrow_mut()
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM collections WHERE name = $1)",
+                &[&collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(row.get(0))
     }
 
     fn row_to_entity(row: &postgres::Row) -> Result<Entity, AxonError> {
@@ -370,6 +383,13 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
+        if !self.collection_exists(&view.collection)? {
+            return Err(AxonError::InvalidArgument(format!(
+                "collection '{}' is not registered",
+                view.collection.as_str()
+            )));
+        }
+
         let current_version = self
             .client
             .borrow_mut()

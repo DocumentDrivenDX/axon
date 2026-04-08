@@ -296,6 +296,9 @@ pub trait StorageAdapter: Send + Sync {
     /// Persist a [`CollectionView`], replacing any previously stored view for
     /// the same collection and incrementing its independent version counter.
     ///
+    /// Implementations must reject views whose target collection has not been
+    /// registered yet.
+    ///
     /// Returns the stored view with the adapter-assigned `version` and
     /// `updated_at_ns`.
     fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {

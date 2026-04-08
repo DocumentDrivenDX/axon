@@ -112,6 +112,13 @@ fn now_ns() -> u64 {
         .as_nanos() as u64
 }
 
+fn unregistered_collection_error(collection: &CollectionId) -> AxonError {
+    AxonError::InvalidArgument(format!(
+        "collection '{}' is not registered",
+        collection.as_str()
+    ))
+}
+
 impl StorageAdapter for MemoryStorageAdapter {
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
         Ok(self
@@ -298,6 +305,10 @@ impl StorageAdapter for MemoryStorageAdapter {
     }
 
     fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
+        if !self.collections.contains(&view.collection) {
+            return Err(unregistered_collection_error(&view.collection));
+        }
+
         let next_version = self
             .collection_views
             .get(&view.collection)
@@ -335,6 +346,7 @@ impl StorageAdapter for MemoryStorageAdapter {
 
     fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         self.collections.remove(collection);
+        self.collection_views.remove(collection);
         self.numeric_ids.remove(collection);
         Ok(())
     }
