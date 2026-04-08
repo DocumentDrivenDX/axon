@@ -1190,6 +1190,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             self.storage.delete(&req.name, &entity.id)?;
         }
         self.storage.delete_schema(&req.name)?;
+        self.storage.delete_collection_view(&req.name)?;
         self.storage.unregister_collection(&req.name)?;
 
         let mut drop_meta = std::collections::HashMap::new();
@@ -5451,6 +5452,55 @@ link_types:
             h.get_schema(&col).unwrap().is_none(),
             "schema must be removed when collection is dropped"
         );
+    }
+
+    #[test]
+    fn drop_collection_removes_collection_view_and_resets_version_on_recreate() {
+        let mut h = handler();
+        let col = CollectionId::new("notes");
+
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        let initial_view = h
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(col.clone(), "# {{title}}"))
+            .unwrap();
+        assert_eq!(initial_view.version, 1);
+
+        h.drop_collection(DropCollectionRequest {
+            name: col.clone(),
+            actor: None,
+            confirm: true,
+        })
+        .unwrap();
+
+        assert!(
+            h.storage.get_collection_view(&col).unwrap().is_none(),
+            "collection view must be removed when collection is dropped"
+        );
+
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+        assert!(
+            h.storage.get_collection_view(&col).unwrap().is_none(),
+            "recreated collections must not inherit a prior collection view"
+        );
+
+        let recreated_view = h
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(col.clone(), "# {{summary}}"))
+            .unwrap();
+        assert_eq!(recreated_view.version, 1);
+        assert_eq!(recreated_view.markdown_template, "# {{summary}}");
     }
 
     // ── Validation gate integration tests (US-067) ──────────────────────
