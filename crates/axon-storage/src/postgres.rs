@@ -520,10 +520,26 @@ impl StorageAdapter for PostgresStorageAdapter {
 // Run with: AXON_TEST_POSTGRES="host=localhost user=axon dbname=axon_test" cargo test -p axon-storage postgres_conformance
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
     use super::*;
 
+    fn postgres_test_guard() -> MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("PostgreSQL test guard lock should not be poisoned")
+    }
+
     fn pg_url() -> Option<String> {
-        std::env::var("AXON_TEST_POSTGRES").ok()
+        match std::env::var("AXON_TEST_POSTGRES") {
+            Ok(url) => Some(url),
+            Err(_) if std::env::var_os("CI").is_some() => {
+                panic!("AXON_TEST_POSTGRES must be set during automated verification")
+            }
+            Err(_) => None,
+        }
     }
 
     fn reset_test_tables(client: &mut Client) -> Result<(), AxonError> {
@@ -538,9 +554,11 @@ mod tests {
             .map_err(|e| AxonError::Storage(e.to_string()))
     }
 
-    fn store() -> Option<PostgresStorageAdapter> {
-        let url = pg_url()?;
-        let adapter = PostgresStorageAdapter::connect(&url).ok()?;
+    fn store() -> Result<Option<PostgresStorageAdapter>, AxonError> {
+        let Some(url) = pg_url() else {
+            return Ok(None);
+        };
+        let adapter = PostgresStorageAdapter::connect(&url)?;
         // Clean tables for a fresh test.
         adapter
             .client
@@ -548,13 +566,14 @@ mod tests {
             .batch_execute(
                 "TRUNCATE entities, schemas, collection_views, collections, audit_log RESTART IDENTITY CASCADE",
             )
-            .ok()?;
-        Some(adapter)
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(Some(adapter))
     }
 
     #[test]
     fn postgres_roundtrip_when_available() {
-        let Some(mut s) = store() else {
+        let _guard = postgres_test_guard();
+        let Some(mut s) = store().expect("PostgreSQL test setup should succeed") else {
             eprintln!("Skipping PostgreSQL test: AXON_TEST_POSTGRES not set");
             return;
         };
@@ -573,6 +592,7 @@ mod tests {
 
     #[test]
     fn unregister_collection_cleans_up_legacy_collection_views_when_available() {
+        let _guard = postgres_test_guard();
         let Some(url) = pg_url() else {
             eprintln!("Skipping PostgreSQL test: AXON_TEST_POSTGRES not set");
             return;
