@@ -12,6 +12,7 @@ workspace = true
 
 [dependencies]
 axon-core = { path = "../axon-core" }
+ramhorns = { version = "1.0.1", default-features = false }
 serde_json.workspace = true
 regex.workspace = true
 
