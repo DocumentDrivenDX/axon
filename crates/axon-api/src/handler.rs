@@ -33,11 +33,11 @@ use crate::response::{
     CreateCollectionResponse, CreateDatabaseResponse, CreateEntityResponse, CreateLinkResponse,
     CreateNamespaceResponse, DeleteEntityResponse, DeleteLinkResponse, DescribeCollectionResponse,
     DiffSchemaResponse, DropCollectionResponse, DropDatabaseResponse, DropNamespaceResponse,
-    GetEntityResponse, GetSchemaResponse, InvalidEntity, ListCollectionsResponse,
-    ListDatabasesResponse, ListNamespaceCollectionsResponse, PatchEntityResponse,
-    PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse, ReachableResponse,
-    RevalidateResponse, RevertEntityResponse, TraverseHop, TraversePath, TraverseResponse,
-    UpdateEntityResponse,
+    GetEntityMarkdownResponse, GetEntityResponse, GetSchemaResponse, InvalidEntity,
+    ListCollectionsResponse, ListDatabasesResponse, ListNamespaceCollectionsResponse,
+    PatchEntityResponse, PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse,
+    ReachableResponse, RevalidateResponse, RevertEntityResponse, TraverseHop, TraversePath,
+    TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -279,7 +279,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         collection: &CollectionId,
         id: &EntityId,
-    ) -> Result<String, AxonError> {
+    ) -> Result<GetEntityMarkdownResponse, AxonError> {
         let entity = self
             .storage
             .get(collection, id)?
@@ -294,12 +294,21 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 ))
             })?;
 
-        axon_render::render(&entity, &view.markdown_template).map_err(|error| {
-            AxonError::Storage(format!(
-                "failed to render markdown for collection '{}': {error}",
-                collection
-            ))
-        })
+        Ok(
+            match axon_render::render(&entity, &view.markdown_template) {
+                Ok(rendered_markdown) => GetEntityMarkdownResponse::Rendered {
+                    entity,
+                    rendered_markdown,
+                },
+                Err(error) => GetEntityMarkdownResponse::RenderFailed {
+                    entity,
+                    detail: format!(
+                        "failed to render markdown for collection '{}': {error}",
+                        collection
+                    ),
+                },
+            },
+        )
     }
 
     /// Update an entity using optimistic concurrency control (OCC).
@@ -2562,7 +2571,16 @@ mod tests {
 
         let rendered = h.get_entity_markdown(&col, &id).unwrap();
 
-        assert_eq!(rendered, "# hello\n\nStatus: open");
+        match rendered {
+            GetEntityMarkdownResponse::Rendered {
+                rendered_markdown, ..
+            } => {
+                assert_eq!(rendered_markdown, "# hello\n\nStatus: open");
+            }
+            GetEntityMarkdownResponse::RenderFailed { .. } => {
+                panic!("expected markdown render to succeed")
+            }
+        }
     }
 
     #[test]
@@ -2592,6 +2610,44 @@ mod tests {
         assert!(error
             .to_string()
             .contains("has no markdown template defined"));
+    }
+
+    #[test]
+    fn get_entity_markdown_preserves_entity_on_render_failure() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "hello"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        h.storage_mut()
+            .put_collection_view(&CollectionView::new(col.clone(), "{{#title}"))
+            .unwrap();
+
+        let rendered = h.get_entity_markdown(&col, &id).unwrap();
+
+        match rendered {
+            GetEntityMarkdownResponse::RenderFailed { entity, detail } => {
+                assert_eq!(entity.id, id);
+                assert_eq!(entity.data["title"], "hello");
+                assert!(detail.contains("failed to render markdown"));
+            }
+            GetEntityMarkdownResponse::Rendered { .. } => {
+                panic!("expected markdown render to fail")
+            }
+        }
     }
 
     #[test]

@@ -14,6 +14,18 @@ pub struct GetEntityResponse {
     pub entity: Entity,
 }
 
+/// Outcome of requesting an entity rendered through a collection markdown template.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GetEntityMarkdownResponse {
+    /// Template rendering succeeded.
+    Rendered {
+        entity: Entity,
+        rendered_markdown: String,
+    },
+    /// Template rendering failed after the entity was fetched.
+    RenderFailed { entity: Entity, detail: String },
+}
+
 /// Response after successfully creating an entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntityResponse {

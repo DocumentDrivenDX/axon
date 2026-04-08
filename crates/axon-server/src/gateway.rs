@@ -23,9 +23,11 @@ use axon_api::request::{
     GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest, QueryAuditRequest,
     QueryEntitiesRequest, RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
 };
+use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
+use axon_core::types::Entity;
 use axon_schema::schema::CollectionSchema;
 use axon_storage::memory::MemoryStorageAdapter;
 
@@ -105,6 +107,15 @@ fn axon_error_response(err: AxonError) -> Response {
         )
             .into_response(),
     }
+}
+
+fn entity_payload(entity: &Entity) -> Value {
+    json!({
+        "collection": entity.collection.to_string(),
+        "id": entity.id.to_string(),
+        "version": entity.version,
+        "data": &entity.data,
+    })
 }
 
 // ── Request bodies ────────────────────────────────────────────────────────────
@@ -271,12 +282,7 @@ async fn get_entity(
         id: EntityId::new(&id),
     }) {
         Ok(resp) => Json(json!({
-            "entity": {
-                "collection": resp.entity.collection.to_string(),
-                "id": resp.entity.id.to_string(),
-                "version": resp.entity.version,
-                "data": resp.entity.data,
-            }
+            "entity": entity_payload(&resp.entity)
         }))
         .into_response(),
         Err(e) => axon_error_response(e),
@@ -297,10 +303,21 @@ async fn get_collection_entity(
             .await
             .get_entity_markdown(&collection_id, &entity_id)
         {
-            Ok(markdown) => (
+            Ok(GetEntityMarkdownResponse::Rendered {
+                rendered_markdown, ..
+            }) => (
                 StatusCode::OK,
                 [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
-                markdown,
+                rendered_markdown,
+            )
+                .into_response(),
+            Ok(GetEntityMarkdownResponse::RenderFailed { entity, detail }) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "code": "storage_error",
+                    "detail": detail,
+                    "entity": entity_payload(&entity),
+                })),
             )
                 .into_response(),
             Err(e) => axon_error_response(e),
@@ -313,12 +330,7 @@ async fn get_collection_entity(
             id: entity_id,
         }) {
             Ok(resp) => Json(json!({
-                "entity": {
-                    "collection": resp.entity.collection.to_string(),
-                    "id": resp.entity.id.to_string(),
-                    "version": resp.entity.version,
-                    "data": resp.entity.data,
-                }
+                "entity": entity_payload(&resp.entity)
             }))
             .into_response(),
             Err(e) => axon_error_response(e),
@@ -1005,6 +1017,50 @@ mod tests {
             .as_str()
             .unwrap_or_default()
             .contains("has no markdown template defined"));
+    }
+
+    #[tokio::test]
+    async fn http_collection_entity_get_markdown_render_failure_returns_entity_payload() {
+        let (server, handler) = test_server_with_handler();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "hello", "status": "open"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        handler
+            .lock()
+            .await
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(
+                CollectionId::new("tasks"),
+                "{{#title}",
+            ))
+            .unwrap();
+
+        let resp = server
+            .get("/collections/tasks/entities/t-001?format=markdown")
+            .await;
+
+        resp.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
+        resp.assert_header("content-type", "application/json");
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "storage_error");
+        assert!(body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("failed to render markdown"));
+        assert_eq!(body["entity"]["collection"], "tasks");
+        assert_eq!(body["entity"]["id"], "t-001");
+        assert_eq!(body["entity"]["version"], 1);
+        assert_eq!(body["entity"]["data"]["title"], "hello");
+        assert_eq!(body["entity"]["data"]["status"], "open");
     }
 
     #[tokio::test]
