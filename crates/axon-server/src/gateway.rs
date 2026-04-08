@@ -7,8 +7,8 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, State};
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
@@ -138,6 +138,11 @@ pub struct RevertEntityBody {
 #[derive(Deserialize)]
 pub struct CollectionActorBody {
     pub actor: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct GetEntityParams {
+    pub format: Option<String>,
 }
 
 /// Request body for `POST /collections/{name}`.
@@ -275,6 +280,49 @@ async fn get_entity(
         }))
         .into_response(),
         Err(e) => axon_error_response(e),
+    }
+}
+
+async fn get_collection_entity(
+    State(handler): State<SharedHandler>,
+    Path((collection, id)): Path<(String, String)>,
+    Query(params): Query<GetEntityParams>,
+) -> Response {
+    let collection_id = CollectionId::new(&collection);
+    let entity_id = EntityId::new(&id);
+
+    match params.format.as_deref() {
+        Some("markdown") => match handler
+            .lock()
+            .await
+            .get_entity_markdown(&collection_id, &entity_id)
+        {
+            Ok(markdown) => (
+                StatusCode::OK,
+                [(header::CONTENT_TYPE, "text/markdown; charset=utf-8")],
+                markdown,
+            )
+                .into_response(),
+            Err(e) => axon_error_response(e),
+        },
+        Some(other) => axon_error_response(AxonError::InvalidArgument(format!(
+            "unsupported format '{other}'; expected 'markdown'"
+        ))),
+        None => match handler.lock().await.get_entity(GetEntityRequest {
+            collection: collection_id,
+            id: entity_id,
+        }) {
+            Ok(resp) => Json(json!({
+                "entity": {
+                    "collection": resp.entity.collection.to_string(),
+                    "id": resp.entity.id.to_string(),
+                    "version": resp.entity.version,
+                    "data": resp.entity.data,
+                }
+            }))
+            .into_response(),
+            Err(e) => axon_error_response(e),
+        },
     }
 }
 
@@ -791,6 +839,10 @@ pub fn build_router(handler: SharedHandler) -> Router {
         .route("/entities/{collection}/{id}", get(get_entity))
         .route("/entities/{collection}/{id}", put(update_entity))
         .route("/entities/{collection}/{id}", delete(delete_entity))
+        .route(
+            "/collections/{collection}/entities/{id}",
+            get(get_collection_entity),
+        )
         .route("/collections/{collection}/query", post(query_entities))
         .route("/links", post(create_link))
         .route("/links", delete(delete_link))
@@ -829,15 +881,21 @@ pub fn build_router(handler: SharedHandler) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axon_schema::schema::CollectionView;
+    use axon_storage::adapter::StorageAdapter;
     use axum_test::TestServer;
     use serde_json::json;
 
-    fn test_server() -> TestServer {
+    fn test_server_with_handler() -> (TestServer, SharedHandler) {
         let handler = Arc::new(Mutex::new(
             AxonHandler::new(MemoryStorageAdapter::default()),
         ));
-        let app = build_router(handler);
-        TestServer::new(app)
+        let app = build_router(handler.clone());
+        (TestServer::new(app), handler)
+    }
+
+    fn test_server() -> TestServer {
+        test_server_with_handler().0
     }
 
     #[tokio::test]
@@ -867,6 +925,86 @@ mod tests {
         resp.assert_status_not_found();
         let body: Value = resp.json();
         assert_eq!(body["code"], "not_found");
+    }
+
+    #[tokio::test]
+    async fn http_collection_entity_get_defaults_to_json() {
+        let server = test_server();
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "hello"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let resp = server.get("/collections/tasks/entities/t-001").await;
+
+        resp.assert_status_ok();
+        resp.assert_header("content-type", "application/json");
+        let body: Value = resp.json();
+        assert_eq!(body["entity"]["data"]["title"], "hello");
+    }
+
+    #[tokio::test]
+    async fn http_collection_entity_get_markdown_returns_text_markdown() {
+        let (server, handler) = test_server_with_handler();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "hello", "status": "open"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        handler
+            .lock()
+            .await
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(
+                CollectionId::new("tasks"),
+                "# {{title}}\n\nStatus: {{status}}",
+            ))
+            .unwrap();
+
+        let resp = server
+            .get("/collections/tasks/entities/t-001?format=markdown")
+            .await;
+
+        resp.assert_status_ok();
+        resp.assert_header("content-type", "text/markdown; charset=utf-8");
+        assert_eq!(resp.text(), "# hello\n\nStatus: open");
+    }
+
+    #[tokio::test]
+    async fn http_collection_entity_get_markdown_requires_template() {
+        let server = test_server();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "hello"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let resp = server
+            .get("/collections/tasks/entities/t-001?format=markdown")
+            .await;
+
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "invalid_argument");
+        assert!(body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("has no markdown template defined"));
     }
 
     #[tokio::test]

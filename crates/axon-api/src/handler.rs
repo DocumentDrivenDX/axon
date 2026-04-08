@@ -270,6 +270,38 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
     }
 
+    /// Render a single entity using the collection's stored markdown template.
+    ///
+    /// Returns [`AxonError::InvalidArgument`] when the collection has no view,
+    /// keeping the HTTP surface aligned with FEAT-026's `400 Bad Request`
+    /// contract for `format=markdown` without a template.
+    pub fn get_entity_markdown(
+        &self,
+        collection: &CollectionId,
+        id: &EntityId,
+    ) -> Result<String, AxonError> {
+        let entity = self
+            .storage
+            .get(collection, id)?
+            .ok_or_else(|| AxonError::NotFound(id.to_string()))?;
+        let view = self
+            .storage
+            .get_collection_view(collection)?
+            .ok_or_else(|| {
+                AxonError::InvalidArgument(format!(
+                    "collection '{}' has no markdown template defined",
+                    collection
+                ))
+            })?;
+
+        axon_render::render(&entity, &view.markdown_template).map_err(|error| {
+            AxonError::Storage(format!(
+                "failed to render markdown for collection '{}': {error}",
+                collection
+            ))
+        })
+    }
+
     /// Update an entity using optimistic concurrency control (OCC).
     ///
     /// Fails with [`AxonError::ConflictingVersion`] if `expected_version`
@@ -2453,7 +2485,8 @@ fn check_unique_constraints<S: StorageAdapter>(
 mod tests {
     use super::*;
     use axon_core::id::{CollectionId, EntityId};
-    use axon_schema::schema::EsfDocument;
+    use axon_schema::schema::{CollectionView, EsfDocument};
+    use axon_storage::adapter::StorageAdapter;
     use axon_storage::memory::MemoryStorageAdapter;
     use serde_json::json;
 
@@ -2497,6 +2530,67 @@ mod tests {
             id: EntityId::new("missing"),
         });
         assert!(matches!(result, Err(AxonError::NotFound(_))));
+    }
+
+    #[test]
+    fn get_entity_markdown_renders_collection_view() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "hello", "status": "open"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        h.storage_mut()
+            .put_collection_view(&CollectionView::new(
+                col.clone(),
+                "# {{title}}\n\nStatus: {{status}}",
+            ))
+            .unwrap();
+
+        let rendered = h.get_entity_markdown(&col, &id).unwrap();
+
+        assert_eq!(rendered, "# hello\n\nStatus: open");
+    }
+
+    #[test]
+    fn get_entity_markdown_requires_collection_view() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "hello"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let error = h.get_entity_markdown(&col, &id).unwrap_err();
+
+        assert!(matches!(error, AxonError::InvalidArgument(_)));
+        assert!(error
+            .to_string()
+            .contains("has no markdown template defined"));
     }
 
     #[test]
