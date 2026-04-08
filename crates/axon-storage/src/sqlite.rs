@@ -589,6 +589,15 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        // Older SQLite databases may have `collection_views` without the
+        // `ON DELETE CASCADE` foreign key. Delete the dependent row explicitly
+        // so upgraded databases do not retain stale collection views.
+        self.conn
+            .execute(
+                "DELETE FROM collection_views WHERE collection = ?1",
+                params![collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.conn
             .execute(
                 "DELETE FROM collections WHERE name = ?1",
@@ -622,6 +631,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tempfile::NamedTempFile;
 
     fn tasks() -> CollectionId {
         CollectionId::new("tasks")
@@ -633,6 +643,39 @@ mod tests {
 
     fn store() -> SqliteStorageAdapter {
         SqliteStorageAdapter::open_in_memory().expect("test operation should succeed")
+    }
+
+    fn legacy_collection_views_db(collection: &CollectionId, template: &str) -> NamedTempFile {
+        let file = NamedTempFile::new().expect("test temp db should be created");
+        let conn = Connection::open(file.path()).expect("test temp db connection should be opened");
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+            CREATE TABLE collections (
+                name TEXT NOT NULL PRIMARY KEY
+            );
+            CREATE TABLE collection_views (
+                collection        TEXT NOT NULL PRIMARY KEY,
+                version           INTEGER NOT NULL,
+                view_json         TEXT NOT NULL,
+                updated_at_ns     INTEGER NOT NULL,
+                updated_by        TEXT
+            );",
+        )
+        .expect("legacy schema should be created");
+        let view_json = serde_json::to_string(&CollectionView::new(collection.clone(), template))
+            .expect("legacy collection view should serialize");
+        conn.execute(
+            "INSERT INTO collections (name) VALUES (?1)",
+            params![collection.as_str()],
+        )
+        .expect("legacy collection should be inserted");
+        conn.execute(
+            "INSERT INTO collection_views (collection, version, view_json, updated_at_ns, updated_by)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![collection.as_str(), 1_i64, view_json, 0_i64, Option::<&str>::None],
+        )
+        .expect("legacy collection view should be inserted");
+        file
     }
 
     #[test]
@@ -698,6 +741,28 @@ mod tests {
             .expect("test operation should succeed");
         let ids: Vec<_> = results.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["t-002", "t-003"]);
+    }
+
+    #[test]
+    fn opening_legacy_db_unregister_collection_removes_stale_collection_view() {
+        let collection = CollectionId::new("legacy");
+        let file = legacy_collection_views_db(&collection, "# {{title}}");
+        let path = file.path().to_string_lossy().into_owned();
+
+        let mut store = SqliteStorageAdapter::open(&path).expect("test operation should succeed");
+        assert!(store
+            .get_collection_view(&collection)
+            .expect("test operation should succeed")
+            .is_some());
+
+        store
+            .unregister_collection(&collection)
+            .expect("test operation should succeed");
+
+        assert!(store
+            .get_collection_view(&collection)
+            .expect("test operation should succeed")
+            .is_none());
     }
 
     #[test]
