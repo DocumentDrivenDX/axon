@@ -892,6 +892,8 @@ pub fn build_router(handler: SharedHandler) -> Router {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Display;
+
     use super::*;
     use axon_schema::schema::CollectionView;
     use axon_storage::adapter::StorageAdapter;
@@ -908,6 +910,13 @@ mod tests {
 
     fn test_server() -> TestServer {
         test_server_with_handler().0
+    }
+
+    fn ok_or_panic<T, E: Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(err) => panic!("{context}: {err}"),
+        }
     }
 
     #[tokio::test]
@@ -972,15 +981,17 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
 
-        handler
-            .lock()
-            .await
-            .storage_mut()
-            .put_collection_view(&CollectionView::new(
-                CollectionId::new("tasks"),
-                "# {{title}}\n\nStatus: {{status}}",
-            ))
-            .unwrap();
+        ok_or_panic(
+            handler
+                .lock()
+                .await
+                .storage_mut()
+                .put_collection_view(&CollectionView::new(
+                    CollectionId::new("tasks"),
+                    "# {{title}}\n\nStatus: {{status}}",
+                )),
+            "storing collection view for markdown HTTP test",
+        );
 
         let resp = server
             .get("/collections/tasks/entities/t-001?format=markdown")
@@ -1034,15 +1045,17 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
 
-        handler
-            .lock()
-            .await
-            .storage_mut()
-            .put_collection_view(&CollectionView::new(
-                CollectionId::new("tasks"),
-                "{{#title}",
-            ))
-            .unwrap();
+        ok_or_panic(
+            handler
+                .lock()
+                .await
+                .storage_mut()
+                .put_collection_view(&CollectionView::new(
+                    CollectionId::new("tasks"),
+                    "{{#title}",
+                )),
+            "storing invalid collection view for markdown HTTP test",
+        );
 
         let resp = server
             .get("/collections/tasks/entities/t-001?format=markdown")

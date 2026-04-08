@@ -2494,6 +2494,8 @@ fn check_unique_constraints<S: StorageAdapter>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Display;
+
     use axon_core::id::{CollectionId, EntityId};
     use axon_schema::schema::{CollectionView, EsfDocument};
     use axon_storage::adapter::StorageAdapter;
@@ -2502,6 +2504,20 @@ mod tests {
 
     fn handler() -> AxonHandler<MemoryStorageAdapter> {
         AxonHandler::new(MemoryStorageAdapter::default())
+    }
+
+    fn ok_or_panic<T, E: Display>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(err) => panic!("{context}: {err}"),
+        }
+    }
+
+    fn err_or_panic<T, E: Display>(result: Result<T, E>, context: &str) -> E {
+        match result {
+            Ok(_) => panic!("{context}: expected error"),
+            Err(err) => err,
+        }
     }
 
     // ── Entity CRUD ──────────────────────────────────────────────────────────
@@ -2548,28 +2564,36 @@ mod tests {
         let col = CollectionId::new("tasks");
         let id = EntityId::new("t-001");
 
-        h.create_collection(CreateCollectionRequest {
-            name: col.clone(),
-            schema: CollectionSchema::new(col.clone()),
-            actor: None,
-        })
-        .unwrap();
-        h.create_entity(CreateEntityRequest {
-            collection: col.clone(),
-            id: id.clone(),
-            data: json!({"title": "hello", "status": "open"}),
-            actor: None,
-            audit_metadata: None,
-        })
-        .unwrap();
-        h.storage_mut()
-            .put_collection_view(&CollectionView::new(
+        ok_or_panic(
+            h.create_collection(CreateCollectionRequest {
+                name: col.clone(),
+                schema: CollectionSchema::new(col.clone()),
+                actor: None,
+            }),
+            "creating collection for markdown render test",
+        );
+        ok_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                data: json!({"title": "hello", "status": "open"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating entity for markdown render test",
+        );
+        ok_or_panic(
+            h.storage_mut().put_collection_view(&CollectionView::new(
                 col.clone(),
                 "# {{title}}\n\nStatus: {{status}}",
-            ))
-            .unwrap();
+            )),
+            "storing collection view for markdown render test",
+        );
 
-        let rendered = h.get_entity_markdown(&col, &id).unwrap();
+        let rendered = ok_or_panic(
+            h.get_entity_markdown(&col, &id),
+            "rendering markdown with collection view",
+        );
 
         match rendered {
             GetEntityMarkdownResponse::Rendered {
@@ -2589,22 +2613,29 @@ mod tests {
         let col = CollectionId::new("tasks");
         let id = EntityId::new("t-001");
 
-        h.create_collection(CreateCollectionRequest {
-            name: col.clone(),
-            schema: CollectionSchema::new(col.clone()),
-            actor: None,
-        })
-        .unwrap();
-        h.create_entity(CreateEntityRequest {
-            collection: col.clone(),
-            id: id.clone(),
-            data: json!({"title": "hello"}),
-            actor: None,
-            audit_metadata: None,
-        })
-        .unwrap();
+        ok_or_panic(
+            h.create_collection(CreateCollectionRequest {
+                name: col.clone(),
+                schema: CollectionSchema::new(col.clone()),
+                actor: None,
+            }),
+            "creating collection for missing template test",
+        );
+        ok_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                data: json!({"title": "hello"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating entity for missing template test",
+        );
 
-        let error = h.get_entity_markdown(&col, &id).unwrap_err();
+        let error = err_or_panic(
+            h.get_entity_markdown(&col, &id),
+            "rendering markdown without collection view",
+        );
 
         assert!(matches!(error, AxonError::InvalidArgument(_)));
         assert!(error
@@ -2618,25 +2649,34 @@ mod tests {
         let col = CollectionId::new("tasks");
         let id = EntityId::new("t-001");
 
-        h.create_collection(CreateCollectionRequest {
-            name: col.clone(),
-            schema: CollectionSchema::new(col.clone()),
-            actor: None,
-        })
-        .unwrap();
-        h.create_entity(CreateEntityRequest {
-            collection: col.clone(),
-            id: id.clone(),
-            data: json!({"title": "hello"}),
-            actor: None,
-            audit_metadata: None,
-        })
-        .unwrap();
-        h.storage_mut()
-            .put_collection_view(&CollectionView::new(col.clone(), "{{#title}"))
-            .unwrap();
+        ok_or_panic(
+            h.create_collection(CreateCollectionRequest {
+                name: col.clone(),
+                schema: CollectionSchema::new(col.clone()),
+                actor: None,
+            }),
+            "creating collection for render failure test",
+        );
+        ok_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                data: json!({"title": "hello"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating entity for render failure test",
+        );
+        ok_or_panic(
+            h.storage_mut()
+                .put_collection_view(&CollectionView::new(col.clone(), "{{#title}")),
+            "storing invalid collection view for render failure test",
+        );
 
-        let rendered = h.get_entity_markdown(&col, &id).unwrap();
+        let rendered = ok_or_panic(
+            h.get_entity_markdown(&col, &id),
+            "rendering markdown with invalid template",
+        );
 
         match rendered {
             GetEntityMarkdownResponse::RenderFailed { entity, detail } => {
