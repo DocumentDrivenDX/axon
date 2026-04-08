@@ -520,9 +520,83 @@ impl StorageAdapter for PostgresStorageAdapter {
 // Run with: AXON_TEST_POSTGRES="host=localhost user=axon dbname=axon_test" cargo test -p axon-storage postgres_conformance
 #[cfg(test)]
 mod tests {
-    use std::sync::{Mutex, MutexGuard, OnceLock};
+    use std::{
+        ops::{Deref, DerefMut},
+        sync::{Mutex, MutexGuard, OnceLock},
+    };
 
     use super::*;
+    use testcontainers_modules::{
+        postgres,
+        testcontainers::{runners::SyncRunner, Container},
+    };
+
+    struct TestDatabase {
+        url: String,
+        _container: Option<Container<postgres::Postgres>>,
+    }
+
+    impl TestDatabase {
+        fn connect() -> Result<Self, AxonError> {
+            if let Ok(url) = std::env::var("AXON_TEST_POSTGRES") {
+                return Ok(Self {
+                    url,
+                    _container: None,
+                });
+            }
+
+            let container = postgres::Postgres::default()
+                .with_db_name("axon_test")
+                .with_user("postgres")
+                .with_password("postgres")
+                .start()
+                .map_err(|error| {
+                    AxonError::Storage(format!(
+                        "failed to start PostgreSQL test container: {error}"
+                    ))
+                })?;
+            let host = container.get_host().map_err(|error| {
+                AxonError::Storage(format!(
+                    "failed to resolve PostgreSQL test container host: {error}"
+                ))
+            })?;
+            let port = container.get_host_port_ipv4(5432).map_err(|error| {
+                AxonError::Storage(format!(
+                    "failed to resolve PostgreSQL test container port: {error}"
+                ))
+            })?;
+
+            Ok(Self {
+                url: format!(
+                    "host={host} port={port} user=postgres password=postgres dbname=axon_test"
+                ),
+                _container: Some(container),
+            })
+        }
+
+        fn url(&self) -> &str {
+            &self.url
+        }
+    }
+
+    struct TestStore {
+        adapter: PostgresStorageAdapter,
+        _database: TestDatabase,
+    }
+
+    impl Deref for TestStore {
+        type Target = PostgresStorageAdapter;
+
+        fn deref(&self) -> &Self::Target {
+            &self.adapter
+        }
+    }
+
+    impl DerefMut for TestStore {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut self.adapter
+        }
+    }
 
     fn postgres_test_guard() -> MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
@@ -530,16 +604,6 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .expect("PostgreSQL test guard lock should not be poisoned")
-    }
-
-    fn pg_url() -> Option<String> {
-        match std::env::var("AXON_TEST_POSTGRES") {
-            Ok(url) => Some(url),
-            Err(_) if std::env::var_os("CI").is_some() => {
-                panic!("AXON_TEST_POSTGRES must be set during automated verification")
-            }
-            Err(_) => None,
-        }
     }
 
     fn reset_test_tables(client: &mut Client) -> Result<(), AxonError> {
@@ -554,11 +618,9 @@ mod tests {
             .map_err(|e| AxonError::Storage(e.to_string()))
     }
 
-    fn store() -> Result<Option<PostgresStorageAdapter>, AxonError> {
-        let Some(url) = pg_url() else {
-            return Ok(None);
-        };
-        let adapter = PostgresStorageAdapter::connect(&url)?;
+    fn store() -> Result<TestStore, AxonError> {
+        let database = TestDatabase::connect()?;
+        let adapter = PostgresStorageAdapter::connect(database.url())?;
         // Clean tables for a fresh test.
         adapter
             .client
@@ -567,16 +629,16 @@ mod tests {
                 "TRUNCATE entities, schemas, collection_views, collections, audit_log RESTART IDENTITY CASCADE",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        Ok(Some(adapter))
+        Ok(TestStore {
+            adapter,
+            _database: database,
+        })
     }
 
     #[test]
     fn postgres_roundtrip_when_available() {
         let _guard = postgres_test_guard();
-        let Some(mut s) = store().expect("PostgreSQL test setup should succeed") else {
-            eprintln!("Skipping PostgreSQL test: AXON_TEST_POSTGRES not set");
-            return;
-        };
+        let mut s = store().expect("PostgreSQL test setup should succeed");
 
         let col = CollectionId::new("tasks");
         let entity = Entity::new(
@@ -584,8 +646,11 @@ mod tests {
             EntityId::new("t-001"),
             serde_json::json!({"title": "hello"}),
         );
-        s.put(entity).unwrap();
-        let got = s.get(&col, &EntityId::new("t-001")).unwrap().unwrap();
+        s.put(entity).expect("test operation should succeed");
+        let got = s
+            .get(&col, &EntityId::new("t-001"))
+            .expect("test operation should succeed")
+            .expect("test operation should succeed");
         assert_eq!(got.data["title"], "hello");
         assert_eq!(got.version, 1);
     }
@@ -593,13 +658,10 @@ mod tests {
     #[test]
     fn unregister_collection_cleans_up_legacy_collection_views_when_available() {
         let _guard = postgres_test_guard();
-        let Some(url) = pg_url() else {
-            eprintln!("Skipping PostgreSQL test: AXON_TEST_POSTGRES not set");
-            return;
-        };
+        let database = TestDatabase::connect().expect("PostgreSQL test setup should succeed");
 
-        let mut legacy_client =
-            Client::connect(&url, NoTls).expect("PostgreSQL test database should be reachable");
+        let mut legacy_client = Client::connect(database.url(), NoTls)
+            .expect("PostgreSQL test database should be reachable");
         reset_test_tables(&mut legacy_client).expect("test tables should reset cleanly");
         legacy_client
             .batch_execute(
@@ -649,8 +711,8 @@ mod tests {
             .expect("legacy collection view should insert");
         drop(legacy_client);
 
-        let mut adapter =
-            PostgresStorageAdapter::connect(&url).expect("adapter should connect after upgrade");
+        let mut adapter = PostgresStorageAdapter::connect(database.url())
+            .expect("adapter should connect after upgrade");
         assert!(
             adapter
                 .get_collection_view(&collection)

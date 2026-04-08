@@ -632,21 +632,26 @@ mod tests {
     }
 
     fn store() -> SqliteStorageAdapter {
-        SqliteStorageAdapter::open_in_memory().unwrap()
+        SqliteStorageAdapter::open_in_memory().expect("test operation should succeed")
     }
 
     #[test]
     fn create_entity() {
         let mut s = store();
-        s.put(entity("t-001")).unwrap();
-        assert_eq!(s.count(&tasks()).unwrap(), 1);
+        s.put(entity("t-001"))
+            .expect("test operation should succeed");
+        assert_eq!(s.count(&tasks()).expect("test operation should succeed"), 1);
     }
 
     #[test]
     fn read_entity() {
         let mut s = store();
-        s.put(entity("t-001")).unwrap();
-        let e = s.get(&tasks(), &EntityId::new("t-001")).unwrap().unwrap();
+        s.put(entity("t-001"))
+            .expect("test operation should succeed");
+        let e = s
+            .get(&tasks(), &EntityId::new("t-001"))
+            .expect("test operation should succeed")
+            .expect("test operation should succeed");
         assert_eq!(e.id.as_str(), "t-001");
         assert_eq!(e.data["title"], "t-001");
         assert_eq!(e.version, 1);
@@ -655,18 +660,26 @@ mod tests {
     #[test]
     fn delete_entity() {
         let mut s = store();
-        s.put(entity("t-001")).unwrap();
-        s.delete(&tasks(), &EntityId::new("t-001")).unwrap();
-        assert!(s.get(&tasks(), &EntityId::new("t-001")).unwrap().is_none());
+        s.put(entity("t-001"))
+            .expect("test operation should succeed");
+        s.delete(&tasks(), &EntityId::new("t-001"))
+            .expect("test operation should succeed");
+        assert!(s
+            .get(&tasks(), &EntityId::new("t-001"))
+            .expect("test operation should succeed")
+            .is_none());
     }
 
     #[test]
     fn range_scan_returns_sorted_results() {
         let mut s = store();
         for i in [3, 1, 2] {
-            s.put(entity(&format!("t-00{i}"))).unwrap();
+            s.put(entity(&format!("t-00{i}")))
+                .expect("test operation should succeed");
         }
-        let results = s.range_scan(&tasks(), None, None, None).unwrap();
+        let results = s
+            .range_scan(&tasks(), None, None, None)
+            .expect("test operation should succeed");
         let ids: Vec<_> = results.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["t-001", "t-002", "t-003"]);
     }
@@ -675,13 +688,14 @@ mod tests {
     fn range_scan_with_bounds_and_limit() {
         let mut s = store();
         for i in 1..=5 {
-            s.put(entity(&format!("t-00{i}"))).unwrap();
+            s.put(entity(&format!("t-00{i}")))
+                .expect("test operation should succeed");
         }
         let start = EntityId::new("t-002");
         let end = EntityId::new("t-004");
         let results = s
             .range_scan(&tasks(), Some(&start), Some(&end), Some(2))
-            .unwrap();
+            .expect("test operation should succeed");
         let ids: Vec<_> = results.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["t-002", "t-003"]);
     }
@@ -689,18 +703,27 @@ mod tests {
     #[test]
     fn update_with_version_check_succeeds() {
         let mut s = store();
-        s.put(entity("t-001")).unwrap();
-        let updated = s.compare_and_swap(entity("t-001"), 1).unwrap();
+        s.put(entity("t-001"))
+            .expect("test operation should succeed");
+        let updated = s
+            .compare_and_swap(entity("t-001"), 1)
+            .expect("test operation should succeed");
         assert_eq!(updated.version, 2);
-        let stored = s.get(&tasks(), &EntityId::new("t-001")).unwrap().unwrap();
+        let stored = s
+            .get(&tasks(), &EntityId::new("t-001"))
+            .expect("test operation should succeed")
+            .expect("test operation should succeed");
         assert_eq!(stored.version, 2);
     }
 
     #[test]
     fn version_conflict_detected_and_rejected() {
         let mut s = store();
-        s.put(entity("t-001")).unwrap();
-        let err = s.compare_and_swap(entity("t-001"), 99).unwrap_err();
+        s.put(entity("t-001"))
+            .expect("test operation should succeed");
+        let err = s
+            .compare_and_swap(entity("t-001"), 99)
+            .expect_err("test operation should fail");
         assert!(
             matches!(
                 err,
@@ -722,7 +745,9 @@ mod tests {
     #[test]
     fn compare_and_swap_missing_entity_rejected() {
         let mut s = store();
-        let err = s.compare_and_swap(entity("ghost"), 1).unwrap_err();
+        let err = s
+            .compare_and_swap(entity("ghost"), 1)
+            .expect_err("test operation should fail");
         assert!(
             matches!(
                 err,
@@ -745,35 +770,45 @@ mod tests {
     #[test]
     fn begin_commit_tx_persists_writes() {
         let mut s = store();
-        s.begin_tx().unwrap();
-        s.put(entity("t-001")).unwrap();
-        s.commit_tx().unwrap();
-        assert!(s.get(&tasks(), &EntityId::new("t-001")).unwrap().is_some());
+        s.begin_tx().expect("test operation should succeed");
+        s.put(entity("t-001"))
+            .expect("test operation should succeed");
+        s.commit_tx().expect("test operation should succeed");
+        assert!(s
+            .get(&tasks(), &EntityId::new("t-001"))
+            .expect("test operation should succeed")
+            .is_some());
     }
 
     #[test]
     fn abort_tx_rolls_back_writes() {
         let mut s = store();
-        s.put(entity("t-existing")).unwrap();
+        s.put(entity("t-existing"))
+            .expect("test operation should succeed");
 
-        s.begin_tx().unwrap();
-        s.put(entity("t-new")).unwrap();
-        s.delete(&tasks(), &EntityId::new("t-existing")).unwrap();
-        s.abort_tx().unwrap();
+        s.begin_tx().expect("test operation should succeed");
+        s.put(entity("t-new"))
+            .expect("test operation should succeed");
+        s.delete(&tasks(), &EntityId::new("t-existing"))
+            .expect("test operation should succeed");
+        s.abort_tx().expect("test operation should succeed");
 
-        assert!(s.get(&tasks(), &EntityId::new("t-new")).unwrap().is_none());
+        assert!(s
+            .get(&tasks(), &EntityId::new("t-new"))
+            .expect("test operation should succeed")
+            .is_none());
         assert!(s
             .get(&tasks(), &EntityId::new("t-existing"))
-            .unwrap()
+            .expect("test operation should succeed")
             .is_some());
     }
 
     #[test]
     fn begin_tx_rejects_nested_begin() {
         let mut s = store();
-        s.begin_tx().unwrap();
+        s.begin_tx().expect("test operation should succeed");
         assert!(s.begin_tx().is_err());
-        s.abort_tx().unwrap();
+        s.abort_tx().expect("test operation should succeed");
     }
 
     #[test]
@@ -785,7 +820,7 @@ mod tests {
     #[test]
     fn abort_tx_without_active_tx_is_noop() {
         let mut s = store();
-        s.abort_tx().unwrap();
+        s.abort_tx().expect("test operation should succeed");
     }
 
     // ── Schema persistence ───────────────────────────────────────────────────
@@ -807,11 +842,12 @@ mod tests {
             compound_indexes: Default::default(),
         };
 
-        s.put_schema(&schema).unwrap();
+        s.put_schema(&schema)
+            .expect("test operation should succeed");
 
-        let retrieved = s.get_schema(&col).unwrap();
+        let retrieved = s.get_schema(&col).expect("test operation should succeed");
         assert!(retrieved.is_some());
-        let retrieved = retrieved.unwrap();
+        let retrieved = retrieved.expect("test operation should succeed");
         assert_eq!(retrieved.collection, col);
         assert_eq!(retrieved.version, 1); // auto-incremented
         assert_eq!(retrieved.description.as_deref(), Some("test schema"));
@@ -820,7 +856,10 @@ mod tests {
     #[test]
     fn get_schema_missing_returns_none() {
         let s = store();
-        assert!(s.get_schema(&tasks()).unwrap().is_none());
+        assert!(s
+            .get_schema(&tasks())
+            .expect("test operation should succeed")
+            .is_none());
     }
 
     #[test]
@@ -852,10 +891,13 @@ mod tests {
             compound_indexes: Default::default(),
         };
 
-        s.put_schema(&v1).unwrap();
-        s.put_schema(&v2).unwrap();
+        s.put_schema(&v1).expect("test operation should succeed");
+        s.put_schema(&v2).expect("test operation should succeed");
 
-        let retrieved = s.get_schema(&col).unwrap().unwrap();
+        let retrieved = s
+            .get_schema(&col)
+            .expect("test operation should succeed")
+            .expect("test operation should succeed");
         assert_eq!(
             retrieved.version, 2,
             "second put_schema must overwrite the first"
@@ -879,11 +921,19 @@ mod tests {
             compound_indexes: Default::default(),
         };
 
-        s.put_schema(&schema).unwrap();
-        assert!(s.get_schema(&col).unwrap().is_some());
+        s.put_schema(&schema)
+            .expect("test operation should succeed");
+        assert!(s
+            .get_schema(&col)
+            .expect("test operation should succeed")
+            .is_some());
 
-        s.delete_schema(&col).unwrap();
-        assert!(s.get_schema(&col).unwrap().is_none());
+        s.delete_schema(&col)
+            .expect("test operation should succeed");
+        assert!(s
+            .get_schema(&col)
+            .expect("test operation should succeed")
+            .is_none());
     }
 
     // ── Audit co-location ────────────────────────────────────────────────────
@@ -907,7 +957,9 @@ mod tests {
         assert_eq!(entry.id, 0);
         assert_eq!(entry.timestamp_ns, 0);
 
-        let stored = s.append_audit_entry(entry).unwrap();
+        let stored = s
+            .append_audit_entry(entry)
+            .expect("test operation should succeed");
         assert_eq!(stored.id, 1, "first entry gets id=1");
         assert!(stored.timestamp_ns > 0, "timestamp_ns is assigned");
     }
@@ -921,8 +973,9 @@ mod tests {
         let mut s = store();
 
         // Begin a transaction, write an entity and an audit entry, then abort.
-        s.begin_tx().unwrap();
-        s.put(entity("t-001")).unwrap();
+        s.begin_tx().expect("test operation should succeed");
+        s.put(entity("t-001"))
+            .expect("test operation should succeed");
         let entry = AuditEntry::new(
             tasks(),
             EntityId::new("t-001"),
@@ -932,17 +985,21 @@ mod tests {
             Some(json!({"title": "t-001"})),
             None,
         );
-        s.append_audit_entry(entry).unwrap();
-        s.abort_tx().unwrap();
+        s.append_audit_entry(entry)
+            .expect("test operation should succeed");
+        s.abort_tx().expect("test operation should succeed");
 
         // Entity must be absent.
-        assert!(s.get(&tasks(), &EntityId::new("t-001")).unwrap().is_none());
+        assert!(s
+            .get(&tasks(), &EntityId::new("t-001"))
+            .expect("test operation should succeed")
+            .is_none());
 
         // Audit entry must also be absent (rolled back with the transaction).
         let count: i64 = s
             .conn
             .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
-            .unwrap();
+            .expect("test operation should succeed");
         assert_eq!(count, 0, "audit entry must be rolled back with the entity");
     }
 
@@ -954,8 +1011,9 @@ mod tests {
 
         let mut s = store();
 
-        s.begin_tx().unwrap();
-        s.put(entity("t-001")).unwrap();
+        s.begin_tx().expect("test operation should succeed");
+        s.put(entity("t-001"))
+            .expect("test operation should succeed");
         let entry = AuditEntry::new(
             tasks(),
             EntityId::new("t-001"),
@@ -965,17 +1023,21 @@ mod tests {
             Some(json!({"title": "t-001"})),
             Some("tester".into()),
         );
-        s.append_audit_entry(entry).unwrap();
-        s.commit_tx().unwrap();
+        s.append_audit_entry(entry)
+            .expect("test operation should succeed");
+        s.commit_tx().expect("test operation should succeed");
 
         // Entity must be present.
-        assert!(s.get(&tasks(), &EntityId::new("t-001")).unwrap().is_some());
+        assert!(s
+            .get(&tasks(), &EntityId::new("t-001"))
+            .expect("test operation should succeed")
+            .is_some());
 
         // Audit entry must also be present.
         let count: i64 = s
             .conn
             .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
-            .unwrap();
+            .expect("test operation should succeed");
         assert_eq!(
             count, 1,
             "audit entry must persist when transaction commits"
@@ -986,5 +1048,5 @@ mod tests {
 // L4 conformance test suite for SqliteStorageAdapter.
 crate::storage_conformance_tests!(
     sqlite_conformance,
-    SqliteStorageAdapter::open_in_memory().unwrap()
+    SqliteStorageAdapter::open_in_memory().expect("test operation should succeed")
 );

@@ -191,7 +191,9 @@ mod tests {
         registry.start_build(tasks(), "status".into(), 100);
         registry.record_progress(&tasks(), "status", 50);
 
-        let info = registry.get(&tasks(), "status").unwrap();
+        let info = registry
+            .get(&tasks(), "status")
+            .expect("test operation should succeed");
         assert!((info.progress() - 0.5).abs() < f64::EPSILON);
     }
 
@@ -201,7 +203,9 @@ mod tests {
         registry.start_build(tasks(), "status".into(), 100);
         registry.mark_ready(&tasks(), "status");
 
-        let info = registry.get(&tasks(), "status").unwrap();
+        let info = registry
+            .get(&tasks(), "status")
+            .expect("test operation should succeed");
         assert_eq!(info.state, IndexState::Ready);
         assert_eq!(info.entities_indexed, 100);
     }
@@ -213,7 +217,9 @@ mod tests {
         registry.mark_ready(&tasks(), "status");
         registry.mark_dropping(&tasks(), "status");
 
-        let info = registry.get(&tasks(), "status").unwrap();
+        let info = registry
+            .get(&tasks(), "status")
+            .expect("test operation should succeed");
         assert_eq!(info.state, IndexState::Dropping);
     }
 
@@ -271,7 +277,9 @@ mod tests {
         registry.start_build(tasks(), "status".into(), 10);
         registry.record_progress(&tasks(), "status", 20); // More than total
 
-        let info = registry.get(&tasks(), "status").unwrap();
+        let info = registry
+            .get(&tasks(), "status")
+            .expect("test operation should succeed");
         assert_eq!(info.entities_indexed, 10); // Capped at total
     }
 }

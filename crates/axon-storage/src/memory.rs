@@ -814,37 +814,73 @@ mod tests {
         let store = MemoryStorageAdapter::default();
         assert!(store
             .get(&tasks(), &EntityId::new("missing"))
-            .unwrap()
+            .expect("test operation should succeed")
             .is_none());
     }
 
     #[test]
     fn put_then_get_roundtrip() {
         let mut store = MemoryStorageAdapter::default();
-        store.put(entity("t-001")).unwrap();
-        let found = store.get(&tasks(), &EntityId::new("t-001")).unwrap();
+        store
+            .put(entity("t-001"))
+            .expect("test operation should succeed");
+        let found = store
+            .get(&tasks(), &EntityId::new("t-001"))
+            .expect("test operation should succeed");
         assert!(found.is_some());
-        assert_eq!(found.unwrap().data["title"], "t-001");
+        assert_eq!(
+            found.expect("test operation should succeed").data["title"],
+            "t-001"
+        );
     }
 
     #[test]
     fn count_reflects_puts_and_deletes() {
         let mut store = MemoryStorageAdapter::default();
-        assert_eq!(store.count(&tasks()).unwrap(), 0);
-        store.put(entity("t-001")).unwrap();
-        store.put(entity("t-002")).unwrap();
-        assert_eq!(store.count(&tasks()).unwrap(), 2);
-        store.delete(&tasks(), &EntityId::new("t-001")).unwrap();
-        assert_eq!(store.count(&tasks()).unwrap(), 1);
+        assert_eq!(
+            store
+                .count(&tasks())
+                .expect("test operation should succeed"),
+            0
+        );
+        store
+            .put(entity("t-001"))
+            .expect("test operation should succeed");
+        store
+            .put(entity("t-002"))
+            .expect("test operation should succeed");
+        assert_eq!(
+            store
+                .count(&tasks())
+                .expect("test operation should succeed"),
+            2
+        );
+        store
+            .delete(&tasks(), &EntityId::new("t-001"))
+            .expect("test operation should succeed");
+        assert_eq!(
+            store
+                .count(&tasks())
+                .expect("test operation should succeed"),
+            1
+        );
     }
 
     #[test]
     fn range_scan_returns_sorted_entities() {
         let mut store = MemoryStorageAdapter::default();
-        store.put(entity("t-003")).unwrap();
-        store.put(entity("t-001")).unwrap();
-        store.put(entity("t-002")).unwrap();
-        let results = store.range_scan(&tasks(), None, None, None).unwrap();
+        store
+            .put(entity("t-003"))
+            .expect("test operation should succeed");
+        store
+            .put(entity("t-001"))
+            .expect("test operation should succeed");
+        store
+            .put(entity("t-002"))
+            .expect("test operation should succeed");
+        let results = store
+            .range_scan(&tasks(), None, None, None)
+            .expect("test operation should succeed");
         let ids: Vec<_> = results.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["t-001", "t-002", "t-003"]);
     }
@@ -853,13 +889,15 @@ mod tests {
     fn range_scan_respects_start_end_and_limit() {
         let mut store = MemoryStorageAdapter::default();
         for i in 1..=5 {
-            store.put(entity(&format!("t-00{i}"))).unwrap();
+            store
+                .put(entity(&format!("t-00{i}")))
+                .expect("test operation should succeed");
         }
         let start = EntityId::new("t-002");
         let end = EntityId::new("t-004");
         let results = store
             .range_scan(&tasks(), Some(&start), Some(&end), Some(2))
-            .unwrap();
+            .expect("test operation should succeed");
         let ids: Vec<_> = results.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["t-002", "t-003"]);
     }
@@ -867,21 +905,29 @@ mod tests {
     #[test]
     fn compare_and_swap_increments_version() {
         let mut store = MemoryStorageAdapter::default();
-        store.put(entity("t-001")).unwrap();
-        let updated = store.compare_and_swap(entity("t-001"), 1).unwrap();
+        store
+            .put(entity("t-001"))
+            .expect("test operation should succeed");
+        let updated = store
+            .compare_and_swap(entity("t-001"), 1)
+            .expect("test operation should succeed");
         assert_eq!(updated.version, 2);
         let stored = store
             .get(&tasks(), &EntityId::new("t-001"))
-            .unwrap()
-            .unwrap();
+            .expect("test operation should succeed")
+            .expect("test operation should succeed");
         assert_eq!(stored.version, 2);
     }
 
     #[test]
     fn compare_and_swap_rejects_wrong_version() {
         let mut store = MemoryStorageAdapter::default();
-        store.put(entity("t-001")).unwrap();
-        let err = store.compare_and_swap(entity("t-001"), 99).unwrap_err();
+        store
+            .put(entity("t-001"))
+            .expect("test operation should succeed");
+        let err = store
+            .compare_and_swap(entity("t-001"), 99)
+            .expect_err("test operation should fail");
         assert!(
             matches!(
                 err,
@@ -904,7 +950,9 @@ mod tests {
     #[test]
     fn compare_and_swap_rejects_missing_entity() {
         let mut store = MemoryStorageAdapter::default();
-        let err = store.compare_and_swap(entity("ghost"), 1).unwrap_err();
+        let err = store
+            .compare_and_swap(entity("ghost"), 1)
+            .expect_err("test operation should fail");
         assert!(
             matches!(
                 err,
@@ -928,45 +976,51 @@ mod tests {
     #[test]
     fn begin_commit_tx_persists_writes() {
         let mut store = MemoryStorageAdapter::default();
-        store.begin_tx().unwrap();
-        store.put(entity("t-001")).unwrap();
-        store.commit_tx().unwrap();
+        store.begin_tx().expect("test operation should succeed");
+        store
+            .put(entity("t-001"))
+            .expect("test operation should succeed");
+        store.commit_tx().expect("test operation should succeed");
         assert!(store
             .get(&tasks(), &EntityId::new("t-001"))
-            .unwrap()
+            .expect("test operation should succeed")
             .is_some());
     }
 
     #[test]
     fn abort_tx_rolls_back_writes() {
         let mut store = MemoryStorageAdapter::default();
-        store.put(entity("t-existing")).unwrap();
+        store
+            .put(entity("t-existing"))
+            .expect("test operation should succeed");
 
-        store.begin_tx().unwrap();
-        store.put(entity("t-new")).unwrap();
+        store.begin_tx().expect("test operation should succeed");
+        store
+            .put(entity("t-new"))
+            .expect("test operation should succeed");
         store
             .delete(&tasks(), &EntityId::new("t-existing"))
-            .unwrap();
-        store.abort_tx().unwrap();
+            .expect("test operation should succeed");
+        store.abort_tx().expect("test operation should succeed");
 
         // t-new must be gone, t-existing must be restored.
         assert!(store
             .get(&tasks(), &EntityId::new("t-new"))
-            .unwrap()
+            .expect("test operation should succeed")
             .is_none());
         assert!(store
             .get(&tasks(), &EntityId::new("t-existing"))
-            .unwrap()
+            .expect("test operation should succeed")
             .is_some());
     }
 
     #[test]
     fn begin_tx_rejects_nested_begin() {
         let mut store = MemoryStorageAdapter::default();
-        store.begin_tx().unwrap();
+        store.begin_tx().expect("test operation should succeed");
         assert!(store.begin_tx().is_err());
         // Clean up.
-        store.abort_tx().unwrap();
+        store.abort_tx().expect("test operation should succeed");
     }
 
     #[test]
@@ -979,7 +1033,7 @@ mod tests {
     fn abort_tx_without_active_tx_is_noop() {
         let mut store = MemoryStorageAdapter::default();
         // Should not error.
-        store.abort_tx().unwrap();
+        store.abort_tx().expect("test operation should succeed");
     }
 
     // ── Schema persistence ───────────────────────────────────────────────────
@@ -1001,8 +1055,13 @@ mod tests {
             compound_indexes: Default::default(),
         };
 
-        store.put_schema(&schema).unwrap();
-        let retrieved = store.get_schema(&col).unwrap().unwrap();
+        store
+            .put_schema(&schema)
+            .expect("test operation should succeed");
+        let retrieved = store
+            .get_schema(&col)
+            .expect("test operation should succeed")
+            .expect("test operation should succeed");
         assert_eq!(retrieved.version, 1); // auto-incremented
         assert_eq!(retrieved.description.as_deref(), Some("my schema"));
     }
@@ -1010,7 +1069,10 @@ mod tests {
     #[test]
     fn get_schema_missing_returns_none() {
         let store = MemoryStorageAdapter::default();
-        assert!(store.get_schema(&tasks()).unwrap().is_none());
+        assert!(store
+            .get_schema(&tasks())
+            .expect("test operation should succeed")
+            .is_none());
     }
 
     #[test]
@@ -1031,7 +1093,7 @@ mod tests {
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
             })
-            .unwrap();
+            .expect("test operation should succeed");
         store
             .put_schema(&CollectionSchema {
                 collection: col.clone(),
@@ -1044,9 +1106,16 @@ mod tests {
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
             })
-            .unwrap();
+            .expect("test operation should succeed");
 
-        assert_eq!(store.get_schema(&col).unwrap().unwrap().version, 2);
+        assert_eq!(
+            store
+                .get_schema(&col)
+                .expect("test operation should succeed")
+                .expect("test operation should succeed")
+                .version,
+            2
+        );
     }
 
     #[test]
@@ -1067,9 +1136,11 @@ mod tests {
         };
 
         // Persist a schema before the transaction.
-        store.put_schema(&original).unwrap();
+        store
+            .put_schema(&original)
+            .expect("test operation should succeed");
 
-        store.begin_tx().unwrap();
+        store.begin_tx().expect("test operation should succeed");
         // Overwrite the schema inside the transaction.
         store
             .put_schema(&CollectionSchema {
@@ -1083,7 +1154,7 @@ mod tests {
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
             })
-            .unwrap();
+            .expect("test operation should succeed");
         // Also add a schema for a second collection.
         let other = CollectionId::new("other");
         store
@@ -1098,17 +1169,23 @@ mod tests {
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
             })
-            .unwrap();
-        store.abort_tx().unwrap();
+            .expect("test operation should succeed");
+        store.abort_tx().expect("test operation should succeed");
 
         // Schema for `tasks` must be restored to v1.
-        let retrieved = store.get_schema(&col).unwrap().unwrap();
+        let retrieved = store
+            .get_schema(&col)
+            .expect("test operation should succeed")
+            .expect("test operation should succeed");
         assert_eq!(retrieved.version, 1, "schema should be rolled back to v1");
         assert_eq!(retrieved.description.as_deref(), Some("v1"));
 
         // Schema added inside the transaction must not persist.
         assert!(
-            store.get_schema(&other).unwrap().is_none(),
+            store
+                .get_schema(&other)
+                .expect("test operation should succeed")
+                .is_none(),
             "schema added in aborted transaction must not persist"
         );
     }
@@ -1131,11 +1208,19 @@ mod tests {
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
             })
-            .unwrap();
-        assert!(store.get_schema(&col).unwrap().is_some());
+            .expect("test operation should succeed");
+        assert!(store
+            .get_schema(&col)
+            .expect("test operation should succeed")
+            .is_some());
 
-        store.delete_schema(&col).unwrap();
-        assert!(store.get_schema(&col).unwrap().is_none());
+        store
+            .delete_schema(&col)
+            .expect("test operation should succeed");
+        assert!(store
+            .get_schema(&col)
+            .expect("test operation should succeed")
+            .is_none());
     }
 
     // ── Secondary index tests (FEAT-013, US-031) ────────────────────────
@@ -1169,6 +1254,7 @@ mod tests {
             }
         }
 
+        #[expect(dead_code, reason = "helper is kept for nearby index tests")]
         fn task_with_status(id: &str, status: &str) -> Entity {
             Entity::new(
                 tasks(),
@@ -1177,6 +1263,7 @@ mod tests {
             )
         }
 
+        #[expect(dead_code, reason = "helper is kept for nearby index tests")]
         fn task_with_priority(id: &str, priority: i64) -> Entity {
             Entity::new(
                 tasks(),
@@ -1195,11 +1282,11 @@ mod tests {
 
             store
                 .update_indexes(&col, &eid, None, &data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             let results = store
                 .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .unwrap();
+                .expect("test operation should succeed");
             assert_eq!(results, vec![EntityId::new("t-001")]);
         }
 
@@ -1214,21 +1301,21 @@ mod tests {
 
             store
                 .update_indexes(&col, &eid, None, &old_data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
             store
                 .update_indexes(&col, &eid, Some(&old_data), &new_data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             // Old value should be gone.
             let old_results = store
                 .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .unwrap();
+                .expect("test operation should succeed");
             assert!(old_results.is_empty());
 
             // New value should be present.
             let new_results = store
                 .index_lookup(&col, "status", &IndexValue::String("done".into()))
-                .unwrap();
+                .expect("test operation should succeed");
             assert_eq!(new_results, vec![EntityId::new("t-001")]);
         }
 
@@ -1242,14 +1329,14 @@ mod tests {
 
             store
                 .update_indexes(&col, &eid, None, &data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
             store
                 .remove_index_entries(&col, &eid, &data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             let results = store
                 .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .unwrap();
+                .expect("test operation should succeed");
             assert!(results.is_empty());
         }
 
@@ -1264,7 +1351,7 @@ mod tests {
                 let data = json!({"priority": i});
                 store
                     .update_indexes(&col, &eid, None, &data, &indexes)
-                    .unwrap();
+                    .expect("test operation should succeed");
             }
 
             // Range: priority > 2 (i.e., 3, 4, 5)
@@ -1275,7 +1362,7 @@ mod tests {
                     std::ops::Bound::Excluded(&IndexValue::Integer(2)),
                     std::ops::Bound::Unbounded,
                 )
-                .unwrap();
+                .expect("test operation should succeed");
             assert_eq!(results.len(), 3);
         }
 
@@ -1289,13 +1376,13 @@ mod tests {
             let data1 = json!({"email": "alice@example.com"});
             store
                 .update_indexes(&col, &eid1, None, &data1, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             let eid2 = EntityId::new("u-002");
             let data2 = json!({"email": "alice@example.com"});
             let err = store
                 .update_indexes(&col, &eid2, None, &data2, &indexes)
-                .unwrap_err();
+                .expect_err("test operation should fail");
             assert!(
                 matches!(err, AxonError::UniqueViolation { .. }),
                 "expected UniqueViolation, got: {err}"
@@ -1312,13 +1399,13 @@ mod tests {
             let data = json!({"email": "alice@example.com"});
             store
                 .update_indexes(&col, &eid, None, &data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             // Updating same entity with same value should succeed.
             let new_data = json!({"email": "alice@example.com", "name": "Alice"});
             store
                 .update_indexes(&col, &eid, Some(&data), &new_data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
         }
 
         #[test]
@@ -1331,12 +1418,12 @@ mod tests {
 
             store
                 .update_indexes(&col, &eid, None, &data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             // No entries should exist for missing fields.
             let results = store
-                .index_lookup(&col, "status", &IndexValue::String("".into()))
-                .unwrap();
+                .index_lookup(&col, "status", &IndexValue::String(String::new()))
+                .expect("test operation should succeed");
             assert!(results.is_empty());
         }
 
@@ -1350,13 +1437,15 @@ mod tests {
             let data = json!({"status": "pending"});
             store
                 .update_indexes(&col, &eid, None, &data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
-            store.drop_indexes(&col).unwrap();
+            store
+                .drop_indexes(&col)
+                .expect("test operation should succeed");
 
             let results = store
                 .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .unwrap();
+                .expect("test operation should succeed");
             assert!(results.is_empty());
         }
 
@@ -1370,7 +1459,7 @@ mod tests {
             let data1 = json!({"email": "alice@example.com"});
             store
                 .update_indexes(&col, &eid1, None, &data1, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             let conflict = store
                 .index_unique_conflict(
@@ -1379,7 +1468,7 @@ mod tests {
                     &IndexValue::String("alice@example.com".into()),
                     &EntityId::new("u-002"),
                 )
-                .unwrap();
+                .expect("test operation should succeed");
             assert!(conflict, "should detect conflict for different entity");
 
             let no_conflict = store
@@ -1389,7 +1478,7 @@ mod tests {
                     &IndexValue::String("alice@example.com".into()),
                     &eid1,
                 )
-                .unwrap();
+                .expect("test operation should succeed");
             assert!(
                 !no_conflict,
                 "should not conflict when excluding the owning entity"
@@ -1406,24 +1495,24 @@ mod tests {
             let data = json!({"status": "pending"});
             store
                 .update_indexes(&col, &eid, None, &data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
-            store.begin_tx().unwrap();
+            store.begin_tx().expect("test operation should succeed");
             let new_data = json!({"status": "done"});
             store
                 .update_indexes(&col, &eid, Some(&data), &new_data, &indexes)
-                .unwrap();
-            store.abort_tx().unwrap();
+                .expect("test operation should succeed");
+            store.abort_tx().expect("test operation should succeed");
 
             // Index should still have the old value.
             let results = store
                 .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .unwrap();
+                .expect("test operation should succeed");
             assert_eq!(results, vec![EntityId::new("t-001")]);
 
             let done_results = store
                 .index_lookup(&col, "status", &IndexValue::String("done".into()))
-                .unwrap();
+                .expect("test operation should succeed");
             assert!(done_results.is_empty());
         }
 
@@ -1441,11 +1530,11 @@ mod tests {
             let data = json!({"address": {"city": "NYC"}});
             store
                 .update_indexes(&col, &eid, None, &data, &[idx])
-                .unwrap();
+                .expect("test operation should succeed");
 
             let results = store
                 .index_lookup(&col, "address.city", &IndexValue::String("NYC".into()))
-                .unwrap();
+                .expect("test operation should succeed");
             assert_eq!(results, vec![EntityId::new("t-001")]);
         }
 
@@ -1471,12 +1560,12 @@ mod tests {
                 let data = json!({"status": "pending"});
                 store
                     .update_indexes(&col, &eid, None, &data, &indexes)
-                    .unwrap();
+                    .expect("test operation should succeed");
             }
 
             let results = store
                 .index_lookup(&col, "status", &IndexValue::String("pending".into()))
-                .unwrap();
+                .expect("test operation should succeed");
             assert_eq!(results.len(), 3);
         }
     }
@@ -1512,13 +1601,15 @@ mod tests {
             let data = json!({"status": "pending", "priority": 1});
             store
                 .update_compound_indexes(&col, &eid, None, &data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             let key = CompoundKey(vec![
                 IndexValue::String("pending".into()),
                 IndexValue::Integer(1),
             ]);
-            let results = store.compound_index_lookup(&col, 0, &key).unwrap();
+            let results = store
+                .compound_index_lookup(&col, 0, &key)
+                .expect("test operation should succeed");
             assert_eq!(results, vec![EntityId::new("t-001")]);
         }
 
@@ -1537,12 +1628,14 @@ mod tests {
                 let data = json!({"status": status, "priority": priority});
                 store
                     .update_compound_indexes(&col, &eid, None, &data, &indexes)
-                    .unwrap();
+                    .expect("test operation should succeed");
             }
 
             // Prefix match on status=pending only.
             let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
-            let results = store.compound_index_prefix(&col, 0, &prefix).unwrap();
+            let results = store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("test operation should succeed");
             assert_eq!(results.len(), 2, "should match t-001 and t-002");
         }
 
@@ -1558,17 +1651,19 @@ mod tests {
 
             store
                 .update_compound_indexes(&col, &eid, None, &old_data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
             store
                 .update_compound_indexes(&col, &eid, Some(&old_data), &new_data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             // Old entry should be gone.
             let old_key = CompoundKey(vec![
                 IndexValue::String("pending".into()),
                 IndexValue::Integer(1),
             ]);
-            let old_results = store.compound_index_lookup(&col, 0, &old_key).unwrap();
+            let old_results = store
+                .compound_index_lookup(&col, 0, &old_key)
+                .expect("test operation should succeed");
             assert!(old_results.is_empty());
 
             // New entry should exist.
@@ -1576,7 +1671,9 @@ mod tests {
                 IndexValue::String("done".into()),
                 IndexValue::Integer(1),
             ]);
-            let new_results = store.compound_index_lookup(&col, 0, &new_key).unwrap();
+            let new_results = store
+                .compound_index_lookup(&col, 0, &new_key)
+                .expect("test operation should succeed");
             assert_eq!(new_results, vec![EntityId::new("t-001")]);
         }
 
@@ -1602,13 +1699,13 @@ mod tests {
             let data1 = json!({"status": "pending", "priority": 1});
             store
                 .update_compound_indexes(&col, &eid1, None, &data1, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             let eid2 = EntityId::new("t-002");
             let data2 = json!({"status": "pending", "priority": 1});
             let err = store
                 .update_compound_indexes(&col, &eid2, None, &data2, &indexes)
-                .unwrap_err();
+                .expect_err("test operation should fail");
             assert!(matches!(err, AxonError::UniqueViolation { .. }));
         }
 
@@ -1623,10 +1720,12 @@ mod tests {
             let data = json!({"status": "pending"});
             store
                 .update_compound_indexes(&col, &eid, None, &data, &indexes)
-                .unwrap();
+                .expect("test operation should succeed");
 
             let prefix = CompoundKey(vec![IndexValue::String("pending".into())]);
-            let results = store.compound_index_prefix(&col, 0, &prefix).unwrap();
+            let results = store
+                .compound_index_prefix(&col, 0, &prefix)
+                .expect("test operation should succeed");
             assert!(results.is_empty());
         }
     }
@@ -1639,87 +1738,142 @@ mod tests {
         #[test]
         fn register_assigns_numeric_id() {
             let mut store = MemoryStorageAdapter::default();
-            store.register_collection(&tasks()).unwrap();
+            store
+                .register_collection(&tasks())
+                .expect("test operation should succeed");
 
-            let nid = store.collection_numeric_id(&tasks()).unwrap();
+            let nid = store
+                .collection_numeric_id(&tasks())
+                .expect("test operation should succeed");
             assert!(
                 nid.is_some(),
                 "registered collection should have numeric id"
             );
-            assert!(nid.unwrap() > 0, "numeric id should be positive");
+            assert!(
+                nid.expect("test operation should succeed") > 0,
+                "numeric id should be positive"
+            );
         }
 
         #[test]
         fn numeric_id_is_stable_on_re_register() {
             let mut store = MemoryStorageAdapter::default();
-            store.register_collection(&tasks()).unwrap();
-            let first = store.collection_numeric_id(&tasks()).unwrap().unwrap();
+            store
+                .register_collection(&tasks())
+                .expect("test operation should succeed");
+            let first = store
+                .collection_numeric_id(&tasks())
+                .expect("test operation should succeed")
+                .expect("test operation should succeed");
 
             // Re-register should not change the ID.
-            store.register_collection(&tasks()).unwrap();
-            let second = store.collection_numeric_id(&tasks()).unwrap().unwrap();
+            store
+                .register_collection(&tasks())
+                .expect("test operation should succeed");
+            let second = store
+                .collection_numeric_id(&tasks())
+                .expect("test operation should succeed")
+                .expect("test operation should succeed");
             assert_eq!(first, second);
         }
 
         #[test]
         fn different_collections_get_different_ids() {
             let mut store = MemoryStorageAdapter::default();
-            store.register_collection(&tasks()).unwrap();
+            store
+                .register_collection(&tasks())
+                .expect("test operation should succeed");
             store
                 .register_collection(&CollectionId::new("users"))
-                .unwrap();
+                .expect("test operation should succeed");
 
-            let tasks_id = store.collection_numeric_id(&tasks()).unwrap().unwrap();
+            let tasks_id = store
+                .collection_numeric_id(&tasks())
+                .expect("test operation should succeed")
+                .expect("test operation should succeed");
             let users_id = store
                 .collection_numeric_id(&CollectionId::new("users"))
-                .unwrap()
-                .unwrap();
+                .expect("test operation should succeed")
+                .expect("test operation should succeed");
             assert_ne!(tasks_id, users_id);
         }
 
         #[test]
         fn reverse_lookup_by_numeric_id() {
             let mut store = MemoryStorageAdapter::default();
-            store.register_collection(&tasks()).unwrap();
-            let nid = store.collection_numeric_id(&tasks()).unwrap().unwrap();
+            store
+                .register_collection(&tasks())
+                .expect("test operation should succeed");
+            let nid = store
+                .collection_numeric_id(&tasks())
+                .expect("test operation should succeed")
+                .expect("test operation should succeed");
 
-            let resolved = store.collection_by_numeric_id(nid).unwrap();
+            let resolved = store
+                .collection_by_numeric_id(nid)
+                .expect("test operation should succeed");
             assert_eq!(resolved.as_ref(), Some(&tasks()));
         }
 
         #[test]
         fn unregistered_collection_has_no_numeric_id() {
             let store = MemoryStorageAdapter::default();
-            let nid = store.collection_numeric_id(&tasks()).unwrap();
+            let nid = store
+                .collection_numeric_id(&tasks())
+                .expect("test operation should succeed");
             assert!(nid.is_none());
         }
 
         #[test]
         fn unregister_removes_numeric_id() {
             let mut store = MemoryStorageAdapter::default();
-            store.register_collection(&tasks()).unwrap();
-            let nid = store.collection_numeric_id(&tasks()).unwrap().unwrap();
+            store
+                .register_collection(&tasks())
+                .expect("test operation should succeed");
+            let nid = store
+                .collection_numeric_id(&tasks())
+                .expect("test operation should succeed")
+                .expect("test operation should succeed");
 
-            store.unregister_collection(&tasks()).unwrap();
-            assert!(store.collection_numeric_id(&tasks()).unwrap().is_none());
-            assert!(store.collection_by_numeric_id(nid).unwrap().is_none());
+            store
+                .unregister_collection(&tasks())
+                .expect("test operation should succeed");
+            assert!(store
+                .collection_numeric_id(&tasks())
+                .expect("test operation should succeed")
+                .is_none());
+            assert!(store
+                .collection_by_numeric_id(nid)
+                .expect("test operation should succeed")
+                .is_none());
         }
 
         #[test]
         fn abort_tx_rolls_back_numeric_ids() {
             let mut store = MemoryStorageAdapter::default();
-            store.begin_tx().unwrap();
-            store.register_collection(&tasks()).unwrap();
-            assert!(store.collection_numeric_id(&tasks()).unwrap().is_some());
+            store.begin_tx().expect("test operation should succeed");
+            store
+                .register_collection(&tasks())
+                .expect("test operation should succeed");
+            assert!(store
+                .collection_numeric_id(&tasks())
+                .expect("test operation should succeed")
+                .is_some());
 
-            store.abort_tx().unwrap();
-            assert!(store.collection_numeric_id(&tasks()).unwrap().is_none());
+            store.abort_tx().expect("test operation should succeed");
+            assert!(store
+                .collection_numeric_id(&tasks())
+                .expect("test operation should succeed")
+                .is_none());
         }
 
         #[test]
         fn unknown_numeric_id_returns_none() {
             let store = MemoryStorageAdapter::default();
-            assert!(store.collection_by_numeric_id(9999).unwrap().is_none());
+            assert!(store
+                .collection_by_numeric_id(9999)
+                .expect("test operation should succeed")
+                .is_none());
         }
     }
 
@@ -1744,7 +1898,9 @@ mod tests {
         fn put_and_get_link() {
             let mut store = MemoryStorageAdapter::default();
             let link = make_link();
-            store.put_link(&link).unwrap();
+            store
+                .put_link(&link)
+                .expect("test operation should succeed");
 
             let found = store
                 .get_link(
@@ -1754,7 +1910,7 @@ mod tests {
                     &link.target_collection,
                     &link.target_id,
                 )
-                .unwrap();
+                .expect("test operation should succeed");
             assert_eq!(found, Some(link));
         }
 
@@ -1769,7 +1925,7 @@ mod tests {
                     &CollectionId::new("b"),
                     &EntityId::new("2"),
                 )
-                .unwrap();
+                .expect("test operation should succeed");
             assert!(found.is_none());
         }
 
@@ -1777,7 +1933,9 @@ mod tests {
         fn delete_link_removes_it() {
             let mut store = MemoryStorageAdapter::default();
             let link = make_link();
-            store.put_link(&link).unwrap();
+            store
+                .put_link(&link)
+                .expect("test operation should succeed");
 
             store
                 .delete_link(
@@ -1787,7 +1945,7 @@ mod tests {
                     &link.target_collection,
                     &link.target_id,
                 )
-                .unwrap();
+                .expect("test operation should succeed");
 
             let found = store
                 .get_link(
@@ -1797,7 +1955,7 @@ mod tests {
                     &link.target_collection,
                     &link.target_id,
                 )
-                .unwrap();
+                .expect("test operation should succeed");
             assert!(found.is_none());
         }
 
@@ -1809,12 +1967,16 @@ mod tests {
                 link_type: "created-by".into(),
                 ..make_link()
             };
-            store.put_link(&link1).unwrap();
-            store.put_link(&link2).unwrap();
+            store
+                .put_link(&link1)
+                .expect("test operation should succeed");
+            store
+                .put_link(&link2)
+                .expect("test operation should succeed");
 
             let outbound = store
                 .list_outbound_links(&CollectionId::new("tasks"), &EntityId::new("t-001"), None)
-                .unwrap();
+                .expect("test operation should succeed");
             assert_eq!(outbound.len(), 2);
         }
 
@@ -1826,8 +1988,12 @@ mod tests {
                 link_type: "created-by".into(),
                 ..make_link()
             };
-            store.put_link(&link1).unwrap();
-            store.put_link(&link2).unwrap();
+            store
+                .put_link(&link1)
+                .expect("test operation should succeed");
+            store
+                .put_link(&link2)
+                .expect("test operation should succeed");
 
             let outbound = store
                 .list_outbound_links(
@@ -1835,7 +2001,7 @@ mod tests {
                     &EntityId::new("t-001"),
                     Some("assigned-to"),
                 )
-                .unwrap();
+                .expect("test operation should succeed");
             assert_eq!(outbound.len(), 1);
             assert_eq!(outbound[0].link_type, "assigned-to");
         }
@@ -1844,11 +2010,13 @@ mod tests {
         fn list_inbound_links() {
             let mut store = MemoryStorageAdapter::default();
             let link = make_link();
-            store.put_link(&link).unwrap();
+            store
+                .put_link(&link)
+                .expect("test operation should succeed");
 
             let inbound = store
                 .list_inbound_links(&CollectionId::new("users"), &EntityId::new("u-001"), None)
-                .unwrap();
+                .expect("test operation should succeed");
             assert_eq!(inbound.len(), 1);
             assert_eq!(inbound[0].source_id, EntityId::new("t-001"));
         }
@@ -1856,13 +2024,15 @@ mod tests {
         #[test]
         fn abort_tx_rolls_back_links() {
             let mut store = MemoryStorageAdapter::default();
-            store.begin_tx().unwrap();
-            store.put_link(&make_link()).unwrap();
-            store.abort_tx().unwrap();
+            store.begin_tx().expect("test operation should succeed");
+            store
+                .put_link(&make_link())
+                .expect("test operation should succeed");
+            store.abort_tx().expect("test operation should succeed");
 
             let outbound = store
                 .list_outbound_links(&CollectionId::new("tasks"), &EntityId::new("t-001"), None)
-                .unwrap();
+                .expect("test operation should succeed");
             assert!(outbound.is_empty());
         }
     }

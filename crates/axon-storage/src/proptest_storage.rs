@@ -37,10 +37,10 @@ proptest! {
         let id  = EntityId::new("e-001");
 
         // Seed the entity at version 1.
-        store.put(Entity::new(col.clone(), id.clone(), json!({"v": 0}))).unwrap();
+        store.put(Entity::new(col.clone(), id.clone(), json!({"v": 0}))).expect("test operation should succeed");
 
         for i in 1..=n_updates {
-            let current = store.get(&col, &id).unwrap().unwrap();
+            let current = store.get(&col, &id).expect("test operation should succeed").expect("test operation should succeed");
             prop_assert_eq!(current.version, i as u64,
                 "before update {}: expected stored version {}", i, i);
 
@@ -61,7 +61,7 @@ proptest! {
                 "after update {}: version must be {}", i, i + 1);
         }
 
-        let final_entity = store.get(&col, &id).unwrap().unwrap();
+        let final_entity = store.get(&col, &id).expect("test operation should succeed").expect("test operation should succeed");
         prop_assert_eq!(final_entity.version, (n_updates as u64) + 1,
             "final version must be n_updates + 1");
         prop_assert_eq!(&final_entity.data["v"], &json!(n_updates),
@@ -93,7 +93,7 @@ proptest! {
         updated_at_ns: None,
         created_by: None,
         updated_by: None,
-        }).unwrap();
+        }).expect("test operation should succeed");
 
         let wrong_version = 1 + version_delta; // always > 1
         let result = store.compare_and_swap(
@@ -129,7 +129,7 @@ proptest! {
         }
 
         // Stored entity must be unchanged.
-        let stored = store.get(&col, &id).unwrap().unwrap();
+        let stored = store.get(&col, &id).expect("test operation should succeed").expect("test operation should succeed");
         prop_assert_eq!(stored.version, 1_u64, "stored version must be unchanged");
         prop_assert_eq!(&stored.data["tag"], &json!(initial_tag),
             "stored data must be unchanged after failed CAS");
