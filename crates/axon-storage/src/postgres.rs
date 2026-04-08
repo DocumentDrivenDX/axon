@@ -479,6 +479,16 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        // Upgraded databases may still have a pre-fix collection_views table
+        // without the collection -> collections foreign key, so clean up the
+        // view row explicitly instead of relying solely on ON DELETE CASCADE.
+        self.client
+            .borrow_mut()
+            .execute(
+                "DELETE FROM collection_views WHERE collection = $1",
+                &[&collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.client
             .borrow_mut()
             .execute(
@@ -516,6 +526,18 @@ mod tests {
         std::env::var("AXON_TEST_POSTGRES").ok()
     }
 
+    fn reset_test_tables(client: &mut Client) -> Result<(), AxonError> {
+        client
+            .batch_execute(
+                "DROP TABLE IF EXISTS collection_views;
+                 DROP TABLE IF EXISTS collections;
+                 DROP TABLE IF EXISTS entities;
+                 DROP TABLE IF EXISTS schemas;
+                 DROP TABLE IF EXISTS audit_log;",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))
+    }
+
     fn store() -> Option<PostgresStorageAdapter> {
         let url = pg_url()?;
         let adapter = PostgresStorageAdapter::connect(&url).ok()?;
@@ -524,7 +546,7 @@ mod tests {
             .client
             .borrow_mut()
             .batch_execute(
-                "TRUNCATE entities, schemas, collections, audit_log RESTART IDENTITY CASCADE",
+                "TRUNCATE entities, schemas, collection_views, collections, audit_log RESTART IDENTITY CASCADE",
             )
             .ok()?;
         Some(adapter)
@@ -547,5 +569,100 @@ mod tests {
         let got = s.get(&col, &EntityId::new("t-001")).unwrap().unwrap();
         assert_eq!(got.data["title"], "hello");
         assert_eq!(got.version, 1);
+    }
+
+    #[test]
+    fn unregister_collection_cleans_up_legacy_collection_views_when_available() {
+        let Some(url) = pg_url() else {
+            eprintln!("Skipping PostgreSQL test: AXON_TEST_POSTGRES not set");
+            return;
+        };
+
+        let mut legacy_client =
+            Client::connect(&url, NoTls).expect("PostgreSQL test database should be reachable");
+        reset_test_tables(&mut legacy_client).expect("test tables should reset cleanly");
+        legacy_client
+            .batch_execute(
+                "CREATE TABLE collections (
+                    name TEXT NOT NULL PRIMARY KEY
+                );
+                CREATE TABLE collection_views (
+                    collection    TEXT NOT NULL PRIMARY KEY,
+                    version       INTEGER NOT NULL,
+                    view_json     JSONB NOT NULL,
+                    updated_at_ns BIGINT NOT NULL,
+                    updated_by    TEXT
+                );",
+            )
+            .expect("legacy collection metadata schema should be created");
+
+        let collection = CollectionId::new("ephemeral");
+        let legacy_view = CollectionView {
+            collection: collection.clone(),
+            description: Some("legacy view".into()),
+            markdown_template: "# {{title}}".into(),
+            version: 1,
+            updated_at_ns: Some(42),
+            updated_by: Some("legacy".into()),
+        };
+        let legacy_view_json =
+            serde_json::to_value(&legacy_view).expect("legacy collection view should serialize");
+
+        legacy_client
+            .execute(
+                "INSERT INTO collections (name) VALUES ($1)",
+                &[&collection.as_str()],
+            )
+            .expect("legacy collection should insert");
+        legacy_client
+            .execute(
+                "INSERT INTO collection_views (collection, version, view_json, updated_at_ns, updated_by)
+                 VALUES ($1, $2, $3, $4, $5)",
+                &[
+                    &collection.as_str(),
+                    &1_i32,
+                    &legacy_view_json,
+                    &42_i64,
+                    &Some("legacy"),
+                ],
+            )
+            .expect("legacy collection view should insert");
+        drop(legacy_client);
+
+        let mut adapter =
+            PostgresStorageAdapter::connect(&url).expect("adapter should connect after upgrade");
+        assert!(
+            adapter
+                .get_collection_view(&collection)
+                .expect("legacy view should be readable after upgrade")
+                .is_some(),
+            "upgraded adapter should observe the pre-fix collection view"
+        );
+
+        adapter
+            .unregister_collection(&collection)
+            .expect("unregister_collection should succeed on upgraded database");
+
+        assert!(
+            adapter
+                .get_collection_view(&collection)
+                .expect("collection view lookup should succeed after unregister")
+                .is_none(),
+            "legacy collection view should be removed during unregister"
+        );
+
+        let remaining_views: i64 = adapter
+            .client
+            .borrow_mut()
+            .query_one(
+                "SELECT COUNT(*) FROM collection_views WHERE collection = $1",
+                &[&collection.as_str()],
+            )
+            .expect("remaining collection views query should succeed")
+            .get(0);
+        assert_eq!(
+            remaining_views, 0,
+            "stale collection view rows must be deleted"
+        );
     }
 }
