@@ -129,11 +129,16 @@ US-069): catch errors at definition time, not render time.
 
 #### API Surface
 
-The currently shipped V1 slice adds a single HTTP surface: the entity
-GET endpoint with a `format` query parameter. Markdown rendering over
-gRPC remains deferred for a later slice.
+The repository currently includes an internal/test-only markdown render
+path behind the entity GET endpoint with a `format` query parameter,
+but that path is **not yet a user-reachable shipped surface**. External
+clients cannot rely on `GET /collections/{collection}/entities/{id}?format=markdown`
+until template management APIs or CLI support land, because there is
+no public way to create, read, or delete the required collection
+template. Markdown rendering over gRPC also remains deferred for a
+later slice.
 
-**HTTP:**
+**Planned HTTP surface once template management lands:**
 ```
 GET /collections/{collection}/entities/{id}?format=markdown
 Accept: text/markdown
@@ -154,12 +159,12 @@ Content-Type: text/markdown; charset=utf-8
 ```
 
 **gRPC:**
-- `GetEntity` remains JSON-only in the current shipped slice
+- `GetEntity` remains JSON-only in the current slice
 - Markdown-specific request fields and a `rendered_markdown` response
   field are deferred until the protobuf contract and service
   implementation are extended together
 
-**Behavior:**
+**Planned shipped behavior:**
 - If `format=markdown` and the collection has no template: return
   `400 Bad Request` with error "collection 'X' has no markdown
   template defined"
@@ -168,7 +173,9 @@ Content-Type: text/markdown; charset=utf-8
   caller has the data even if rendering failed
 - Default format remains JSON. The `format` parameter is opt-in
 
-**Deferred surfaces** (not in V1 of this feature):
+**Deferred surfaces** (required before markdown rendering is a
+user-reachable feature):
+- Public template management over HTTP or CLI
 - gRPC `GetEntity` markdown format selection and `rendered_markdown`
   response field
 - List/query responses with markdown rendering
@@ -177,7 +184,7 @@ Content-Type: text/markdown; charset=utf-8
 - CLI `axon entity show --format markdown`
 - Batch/transaction response rendering
 
-#### Template Management API
+#### Planned Template Management API
 
 ```
 PUT  /collections/{collection}/template    — save/update template
@@ -185,9 +192,10 @@ GET  /collections/{collection}/template    — retrieve current template
 DELETE /collections/{collection}/template  — remove template
 ```
 
-PUT validates the template against the schema before saving. The
-request body is the raw Mustache template string with content type
-`text/plain` or a JSON wrapper:
+These endpoints must ship before the markdown GET path is described as
+publicly reachable. PUT validates the template against the schema
+before saving. The request body is the raw Mustache template string
+with content type `text/plain` or a JSON wrapper:
 
 ```json
 {
@@ -300,6 +308,9 @@ put_template(collection, template_text) → {
 **So that** all consumers get a consistent, readable presentation of
 entities
 
+This story must ship before US-076 becomes a public client-facing
+surface.
+
 **Acceptance Criteria:**
 - [ ] `PUT /collections/{collection}/template` accepts a valid
       Mustache template and stores it
@@ -319,6 +330,10 @@ entities
 **As an** agent or application
 **I want** to retrieve an entity rendered as markdown
 **So that** I can present it to users without building formatting logic
+
+Current scope note: the repository contains an internal/test-only HTTP
+render path for this story, but it is not yet a shipped user surface
+until US-075's template management APIs land.
 
 **Acceptance Criteria:**
 - [ ] `GET /collections/{c}/entities/{id}?format=markdown` returns
