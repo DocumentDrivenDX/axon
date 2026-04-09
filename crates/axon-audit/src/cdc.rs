@@ -274,6 +274,20 @@ mod tests {
     use axon_core::id::{CollectionId, EntityId};
     use serde_json::json;
 
+    fn must_some<T>(value: Option<T>, context: &str) -> T {
+        match value {
+            Some(value) => value,
+            None => panic!("{context}"),
+        }
+    }
+
+    fn must_ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{context}: {error:?}"),
+        }
+    }
+
     fn sample_create_entry() -> AuditEntry {
         let mut entry = AuditEntry::new(
             CollectionId::new("tasks"),
@@ -321,7 +335,10 @@ mod tests {
 
     #[test]
     fn create_entry_to_cdc_envelope() {
-        let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&sample_create_entry()),
+            "entity create should produce a CDC envelope",
+        );
         assert_eq!(envelope.op, CdcOp::Create);
         assert_eq!(envelope.source.collection, "tasks");
         assert_eq!(envelope.source.entity_id, "t-001");
@@ -332,7 +349,10 @@ mod tests {
 
     #[test]
     fn update_entry_to_cdc_envelope() {
-        let envelope = CdcEnvelope::from_audit_entry(&sample_update_entry()).unwrap();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&sample_update_entry()),
+            "entity update should produce a CDC envelope",
+        );
         assert_eq!(envelope.op, CdcOp::Update);
         assert!(envelope.before.is_some());
         assert!(envelope.after.is_some());
@@ -340,7 +360,10 @@ mod tests {
 
     #[test]
     fn delete_entry_to_cdc_envelope() {
-        let envelope = CdcEnvelope::from_audit_entry(&sample_delete_entry()).unwrap();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&sample_delete_entry()),
+            "entity delete should produce a CDC envelope",
+        );
         assert_eq!(envelope.op, CdcOp::Delete);
         assert!(envelope.before.is_some());
         assert!(envelope.after.is_none());
@@ -363,8 +386,14 @@ mod tests {
     #[test]
     fn memory_sink_collects_events() {
         let mut sink = MemoryCdcSink::default();
-        let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
-        sink.emit(&envelope).unwrap();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&sample_create_entry()),
+            "entity create should produce a CDC envelope",
+        );
+        must_ok(
+            sink.emit(&envelope),
+            "memory sink should collect emitted events",
+        );
         assert_eq!(sink.events.len(), 1);
     }
 
@@ -379,7 +408,12 @@ mod tests {
             struct SharedWriter(Arc<Mutex<Vec<u8>>>);
             impl Write for SharedWriter {
                 fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
-                    self.0.lock().unwrap().write(data)
+                    match self.0.lock() {
+                        Ok(mut buffer) => buffer.write(data),
+                        Err(error) => Err(std::io::Error::other(format!(
+                            "shared writer mutex poisoned: {error}"
+                        ))),
+                    }
                 }
                 fn flush(&mut self) -> std::io::Result<()> {
                     Ok(())
@@ -389,29 +423,50 @@ mod tests {
         };
 
         let mut sink = JsonlFileSink::new(writer);
-        let e1 = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
-        let e2 = CdcEnvelope::from_audit_entry(&sample_update_entry()).unwrap();
-        sink.emit(&e1).unwrap();
-        sink.emit(&e2).unwrap();
-        sink.flush().unwrap();
+        let e1 = must_some(
+            CdcEnvelope::from_audit_entry(&sample_create_entry()),
+            "entity create should produce a CDC envelope",
+        );
+        let e2 = must_some(
+            CdcEnvelope::from_audit_entry(&sample_update_entry()),
+            "entity update should produce a CDC envelope",
+        );
+        must_ok(sink.emit(&e1), "jsonl sink should emit first event");
+        must_ok(sink.emit(&e2), "jsonl sink should emit second event");
+        must_ok(sink.flush(), "jsonl sink should flush");
 
-        let data = buf.lock().unwrap();
-        let output = String::from_utf8(data.clone()).unwrap();
+        let data = must_ok(buf.lock(), "acquire JSONL test buffer lock");
+        let output = must_ok(
+            String::from_utf8(data.clone()),
+            "JSONL output should remain valid UTF-8",
+        );
         let lines: Vec<&str> = output.lines().collect();
         assert_eq!(lines.len(), 2, "should have 2 JSONL lines");
 
         // Each line should be valid JSON.
         for line in &lines {
-            let parsed: CdcEnvelope = serde_json::from_str(line).unwrap();
+            let parsed: CdcEnvelope = must_ok(
+                serde_json::from_str(line),
+                "JSONL line should parse as CDC envelope",
+            );
             assert_eq!(parsed.source.name, "axon");
         }
     }
 
     #[test]
     fn cdc_envelope_roundtrip_serialization() {
-        let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
-        let json = serde_json::to_string(&envelope).unwrap();
-        let parsed: CdcEnvelope = serde_json::from_str(&json).unwrap();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&sample_create_entry()),
+            "entity create should produce a CDC envelope",
+        );
+        let json = must_ok(
+            serde_json::to_string(&envelope),
+            "CDC envelope should serialize to JSON",
+        );
+        let parsed: CdcEnvelope = must_ok(
+            serde_json::from_str(&json),
+            "CDC envelope JSON should deserialize",
+        );
         assert_eq!(parsed.op, CdcOp::Create);
         assert_eq!(parsed.source.audit_id, 42);
     }
@@ -436,7 +491,10 @@ mod tests {
         entry.id = 50;
         entry.timestamp_ns = 5_000_000_000;
 
-        let envelope = CdcEnvelope::from_audit_entry(&entry).unwrap();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&entry),
+            "link create should produce a CDC envelope",
+        );
         assert_eq!(envelope.op, CdcOp::Create);
         assert_eq!(envelope.source.collection, "__axon_links__");
         assert!(envelope.after.is_some());
@@ -462,7 +520,10 @@ mod tests {
         entry.id = 51;
         entry.timestamp_ns = 6_000_000_000;
 
-        let envelope = CdcEnvelope::from_audit_entry(&entry).unwrap();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&entry),
+            "link delete should produce a CDC envelope",
+        );
         assert_eq!(envelope.op, CdcOp::Delete);
         assert!(envelope.before.is_some());
         assert!(envelope.after.is_none());
@@ -470,7 +531,10 @@ mod tests {
 
     #[test]
     fn ts_ms_from_timestamp_ns() {
-        let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&sample_create_entry()),
+            "entity create should produce a CDC envelope",
+        );
         assert_eq!(envelope.ts_ms, 1000); // 1_000_000_000 ns = 1000 ms
     }
 
@@ -499,8 +563,14 @@ mod tests {
             ..KafkaConfig::default()
         };
         let mut sink = KafkaCdcSink::new(config);
-        let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
-        sink.emit(&envelope).unwrap();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&sample_create_entry()),
+            "entity create should produce a CDC envelope",
+        );
+        must_ok(
+            sink.emit(&envelope),
+            "disabled Kafka sink emit should be a no-op",
+        );
         assert!(sink.sent.is_empty());
     }
 
@@ -511,8 +581,14 @@ mod tests {
             ..KafkaConfig::default()
         };
         let mut sink = KafkaCdcSink::new(config);
-        let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
-        sink.emit(&envelope).unwrap();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&sample_create_entry()),
+            "entity create should produce a CDC envelope",
+        );
+        must_ok(
+            sink.emit(&envelope),
+            "enabled Kafka sink should record the event",
+        );
         assert_eq!(sink.sent.len(), 1);
 
         let (topic, key, json) = &sink.sent[0];
@@ -520,7 +596,10 @@ mod tests {
         assert_eq!(key, "t-001");
 
         // Verify the JSON is valid and contains the right audit_id.
-        let parsed: CdcEnvelope = serde_json::from_str(json).unwrap();
+        let parsed: CdcEnvelope = must_ok(
+            serde_json::from_str(json),
+            "stored Kafka CDC payload should deserialize",
+        );
         assert_eq!(parsed.source.audit_id, 42);
     }
 
@@ -533,13 +612,25 @@ mod tests {
         let mut sink = KafkaCdcSink::new(config);
 
         // Emit events for different entities.
-        let e1 = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+        let e1 = must_some(
+            CdcEnvelope::from_audit_entry(&sample_create_entry()),
+            "entity create should produce a CDC envelope",
+        );
         let mut entry2 = sample_update_entry();
         entry2.entity_id = EntityId::new("t-002");
-        let e2 = CdcEnvelope::from_audit_entry(&entry2).unwrap();
+        let e2 = must_some(
+            CdcEnvelope::from_audit_entry(&entry2),
+            "entity update should produce a CDC envelope",
+        );
 
-        sink.emit(&e1).unwrap();
-        sink.emit(&e2).unwrap();
+        must_ok(
+            sink.emit(&e1),
+            "Kafka sink should emit first partitioned event",
+        );
+        must_ok(
+            sink.emit(&e2),
+            "Kafka sink should emit second partitioned event",
+        );
 
         assert_eq!(sink.sent[0].1, "t-001"); // partition key for entity t-001
         assert_eq!(sink.sent[1].1, "t-002"); // partition key for entity t-002
@@ -553,14 +644,26 @@ mod tests {
         };
         let mut sink = KafkaCdcSink::new(config);
 
-        let e1 = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
-        let e2 = CdcEnvelope::from_audit_entry(&sample_update_entry()).unwrap();
-        sink.emit(&e1).unwrap();
-        sink.emit(&e2).unwrap();
+        let e1 = must_some(
+            CdcEnvelope::from_audit_entry(&sample_create_entry()),
+            "entity create should produce a CDC envelope",
+        );
+        let e2 = must_some(
+            CdcEnvelope::from_audit_entry(&sample_update_entry()),
+            "entity update should produce a CDC envelope",
+        );
+        must_ok(sink.emit(&e1), "Kafka sink should emit first cursor event");
+        must_ok(sink.emit(&e2), "Kafka sink should emit second cursor event");
 
         // Verify that audit_ids increase, providing a cursor for consumers.
-        let parsed1: CdcEnvelope = serde_json::from_str(&sink.sent[0].2).unwrap();
-        let parsed2: CdcEnvelope = serde_json::from_str(&sink.sent[1].2).unwrap();
+        let parsed1: CdcEnvelope = must_ok(
+            serde_json::from_str(&sink.sent[0].2),
+            "first Kafka CDC payload should deserialize",
+        );
+        let parsed2: CdcEnvelope = must_ok(
+            serde_json::from_str(&sink.sent[1].2),
+            "second Kafka CDC payload should deserialize",
+        );
         assert!(
             parsed2.source.audit_id > parsed1.source.audit_id,
             "audit_id should increase: {} > {}",

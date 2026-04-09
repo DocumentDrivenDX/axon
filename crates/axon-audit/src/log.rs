@@ -275,6 +275,20 @@ mod tests {
     use axon_core::id::{CollectionId, EntityId};
     use serde_json::json;
 
+    fn must_ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{context}: {error:?}"),
+        }
+    }
+
+    fn must_some<T>(value: Option<T>, context: &str) -> T {
+        match value {
+            Some(value) => value,
+            None => panic!("{context}"),
+        }
+    }
+
     fn tasks() -> CollectionId {
         CollectionId::new("tasks")
     }
@@ -300,20 +314,24 @@ mod tests {
     #[test]
     fn memory_log_append_increments_len() {
         let mut log = MemoryAuditLog::default();
-        log.append(sample_entry("t-001", MutationType::EntityCreate))
-            .unwrap();
+        must_ok(
+            log.append(sample_entry("t-001", MutationType::EntityCreate)),
+            "append should succeed",
+        );
         assert_eq!(log.len(), 1);
     }
 
     #[test]
     fn append_assigns_sequential_ids() {
         let mut log = MemoryAuditLog::default();
-        let e1 = log
-            .append(sample_entry("t-001", MutationType::EntityCreate))
-            .unwrap();
-        let e2 = log
-            .append(sample_entry("t-002", MutationType::EntityCreate))
-            .unwrap();
+        let e1 = must_ok(
+            log.append(sample_entry("t-001", MutationType::EntityCreate)),
+            "first append should succeed",
+        );
+        let e2 = must_ok(
+            log.append(sample_entry("t-002", MutationType::EntityCreate)),
+            "second append should succeed",
+        );
         assert_eq!(e1.id, 1);
         assert_eq!(e2.id, 2);
     }
@@ -321,25 +339,33 @@ mod tests {
     #[test]
     fn append_assigns_nonzero_timestamp() {
         let mut log = MemoryAuditLog::default();
-        let e = log
-            .append(sample_entry("t-001", MutationType::EntityCreate))
-            .unwrap();
+        let e = must_ok(
+            log.append(sample_entry("t-001", MutationType::EntityCreate)),
+            "append should succeed",
+        );
         assert!(e.timestamp_ns > 0, "timestamp_ns should be non-zero");
     }
 
     #[test]
     fn query_by_entity_returns_mutations_in_order() {
         let mut log = MemoryAuditLog::default();
-        log.append(sample_entry("t-001", MutationType::EntityCreate))
-            .unwrap();
-        log.append(sample_entry("t-002", MutationType::EntityCreate))
-            .unwrap();
-        log.append(sample_entry("t-001", MutationType::EntityUpdate))
-            .unwrap();
+        must_ok(
+            log.append(sample_entry("t-001", MutationType::EntityCreate)),
+            "first append should succeed",
+        );
+        must_ok(
+            log.append(sample_entry("t-002", MutationType::EntityCreate)),
+            "second append should succeed",
+        );
+        must_ok(
+            log.append(sample_entry("t-001", MutationType::EntityUpdate)),
+            "third append should succeed",
+        );
 
-        let entries = log
-            .query_by_entity(&tasks(), &EntityId::new("t-001"))
-            .unwrap();
+        let entries = must_ok(
+            log.query_by_entity(&tasks(), &EntityId::new("t-001")),
+            "entity query should succeed",
+        );
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].mutation, MutationType::EntityCreate);
         assert_eq!(entries[1].mutation, MutationType::EntityUpdate);
@@ -348,28 +374,35 @@ mod tests {
     #[test]
     fn query_by_entity_empty_collection_returns_empty() {
         let log = MemoryAuditLog::default();
-        let entries = log
-            .query_by_entity(&tasks(), &EntityId::new("none"))
-            .unwrap();
+        let entries = must_ok(
+            log.query_by_entity(&tasks(), &EntityId::new("none")),
+            "empty entity query should succeed",
+        );
         assert!(entries.is_empty());
     }
 
     #[test]
     fn query_by_time_range_filters_correctly() {
         let mut log = MemoryAuditLog::default();
-        let e1 = log
-            .append(sample_entry("t-001", MutationType::EntityCreate))
-            .unwrap();
-        let e2 = log
-            .append(sample_entry("t-002", MutationType::EntityCreate))
-            .unwrap();
+        let e1 = must_ok(
+            log.append(sample_entry("t-001", MutationType::EntityCreate)),
+            "first append should succeed",
+        );
+        let e2 = must_ok(
+            log.append(sample_entry("t-002", MutationType::EntityCreate)),
+            "second append should succeed",
+        );
 
-        let results = log
-            .query_by_time_range(e1.timestamp_ns, e2.timestamp_ns)
-            .unwrap();
+        let results = must_ok(
+            log.query_by_time_range(e1.timestamp_ns, e2.timestamp_ns),
+            "time range query should succeed",
+        );
         assert_eq!(results.len(), 2);
 
-        let results_empty = log.query_by_time_range(0, e1.timestamp_ns - 1).unwrap();
+        let results_empty = must_ok(
+            log.query_by_time_range(0, e1.timestamp_ns - 1),
+            "empty time range query should succeed",
+        );
         assert!(results_empty.is_empty());
     }
 
@@ -378,92 +411,125 @@ mod tests {
         let mut log = MemoryAuditLog::default();
         let mut e = sample_entry("t-001", MutationType::EntityCreate);
         e.actor = "agent-x".into();
-        log.append(e).unwrap();
-        log.append(sample_entry("t-002", MutationType::EntityCreate))
-            .unwrap();
+        must_ok(
+            log.append(e),
+            "append for actor-specific entry should succeed",
+        );
+        must_ok(
+            log.append(sample_entry("t-002", MutationType::EntityCreate)),
+            "append for anonymous entry should succeed",
+        );
 
-        let results = log.query_by_actor("agent-x").unwrap();
+        let results = must_ok(log.query_by_actor("agent-x"), "actor query should succeed");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].entity_id.as_str(), "t-001");
 
-        let anonymous = log.query_by_actor("anonymous").unwrap();
+        let anonymous = must_ok(
+            log.query_by_actor("anonymous"),
+            "anonymous query should succeed",
+        );
         assert_eq!(anonymous.len(), 1);
     }
 
     #[test]
     fn query_by_operation_filters_correctly() {
         let mut log = MemoryAuditLog::default();
-        log.append(sample_entry("t-001", MutationType::EntityCreate))
-            .unwrap();
-        log.append(sample_entry("t-001", MutationType::EntityUpdate))
-            .unwrap();
-        log.append(sample_entry("t-001", MutationType::EntityDelete))
-            .unwrap();
+        must_ok(
+            log.append(sample_entry("t-001", MutationType::EntityCreate)),
+            "create append should succeed",
+        );
+        must_ok(
+            log.append(sample_entry("t-001", MutationType::EntityUpdate)),
+            "update append should succeed",
+        );
+        must_ok(
+            log.append(sample_entry("t-001", MutationType::EntityDelete)),
+            "delete append should succeed",
+        );
 
-        let creates = log.query_by_operation(&MutationType::EntityCreate).unwrap();
+        let creates = must_ok(
+            log.query_by_operation(&MutationType::EntityCreate),
+            "create-operation query should succeed",
+        );
         assert_eq!(creates.len(), 1);
 
-        let updates = log.query_by_operation(&MutationType::EntityUpdate).unwrap();
+        let updates = must_ok(
+            log.query_by_operation(&MutationType::EntityUpdate),
+            "update-operation query should succeed",
+        );
         assert_eq!(updates.len(), 1);
     }
 
     #[test]
     fn find_by_id_returns_correct_entry() {
         let mut log = MemoryAuditLog::default();
-        let e1 = log
-            .append(sample_entry("t-001", MutationType::EntityCreate))
-            .unwrap();
-        log.append(sample_entry("t-002", MutationType::EntityCreate))
-            .unwrap();
+        let e1 = must_ok(
+            log.append(sample_entry("t-001", MutationType::EntityCreate)),
+            "first append should succeed",
+        );
+        must_ok(
+            log.append(sample_entry("t-002", MutationType::EntityCreate)),
+            "second append should succeed",
+        );
 
-        let found = log.find_by_id(e1.id).unwrap();
+        let found = must_ok(log.find_by_id(e1.id), "find_by_id should succeed");
         assert!(found.is_some());
-        assert_eq!(found.unwrap().entity_id.as_str(), "t-001");
+        assert_eq!(
+            must_some(found, "entry should be present")
+                .entity_id
+                .as_str(),
+            "t-001"
+        );
     }
 
     #[test]
     fn find_by_id_missing_returns_none() {
         let log = MemoryAuditLog::default();
-        assert!(log.find_by_id(999).unwrap().is_none());
+        assert!(must_ok(log.find_by_id(999), "missing find_by_id should succeed").is_none());
     }
 
     #[test]
     fn query_paginated_basic_cursor() {
         let mut log = MemoryAuditLog::default();
         for i in 0..5u32 {
-            log.append(sample_entry(
-                &format!("t-{i:03}"),
-                MutationType::EntityCreate,
-            ))
-            .unwrap();
+            must_ok(
+                log.append(sample_entry(
+                    &format!("t-{i:03}"),
+                    MutationType::EntityCreate,
+                )),
+                "paginated append should succeed",
+            );
         }
 
-        let page1 = log
-            .query_paginated(AuditQuery {
+        let page1 = must_ok(
+            log.query_paginated(AuditQuery {
                 limit: Some(2),
                 ..Default::default()
-            })
-            .unwrap();
+            }),
+            "first page query should succeed",
+        );
         assert_eq!(page1.entries.len(), 2);
         assert!(page1.next_cursor.is_some());
 
-        let page2 = log
-            .query_paginated(AuditQuery {
+        let page2 = must_ok(
+            log.query_paginated(AuditQuery {
                 limit: Some(2),
                 after_id: page1.next_cursor,
                 ..Default::default()
-            })
-            .unwrap();
+            }),
+            "second page query should succeed",
+        );
         assert_eq!(page2.entries.len(), 2);
         assert!(page2.next_cursor.is_some());
 
-        let page3 = log
-            .query_paginated(AuditQuery {
+        let page3 = must_ok(
+            log.query_paginated(AuditQuery {
                 limit: Some(2),
                 after_id: page2.next_cursor,
                 ..Default::default()
-            })
-            .unwrap();
+            }),
+            "third page query should succeed",
+        );
         assert_eq!(page3.entries.len(), 1);
         assert!(page3.next_cursor.is_none());
     }
@@ -478,15 +544,16 @@ mod tests {
             } else {
                 "bob".into()
             };
-            log.append(e).unwrap();
+            must_ok(log.append(e), "filtered append should succeed");
         }
 
-        let alice_page = log
-            .query_paginated(AuditQuery {
+        let alice_page = must_ok(
+            log.query_paginated(AuditQuery {
                 actor: Some("alice".into()),
                 ..Default::default()
-            })
-            .unwrap();
+            }),
+            "actor-filtered page query should succeed",
+        );
         assert_eq!(alice_page.entries.len(), 2);
         assert!(alice_page.entries.iter().all(|e| e.actor == "alice"));
     }
@@ -504,19 +571,22 @@ mod tests {
     fn replay_initial_snapshot_returns_all_events() {
         let mut log = MemoryAuditLog::default();
         for i in 1..=5 {
-            log.append(AuditEntry::new(
-                CollectionId::new("tasks"),
-                EntityId::new(format!("t-{i:03}")),
-                1,
-                MutationType::EntityCreate,
-                None,
-                Some(serde_json::json!({"n": i})),
-                Some("agent".into()),
-            ))
-            .unwrap();
+            must_ok(
+                log.append(AuditEntry::new(
+                    CollectionId::new("tasks"),
+                    EntityId::new(format!("t-{i:03}")),
+                    1,
+                    MutationType::EntityCreate,
+                    None,
+                    Some(serde_json::json!({"n": i})),
+                    Some("agent".into()),
+                )),
+                "replay append should succeed",
+            );
         }
 
-        let (envelopes, cursor) = log.replay(None, None, 100).unwrap();
+        let (envelopes, cursor) =
+            must_ok(log.replay(None, None, 100), "initial replay should succeed");
         assert_eq!(envelopes.len(), 5);
         // cursor should be None since we got all events.
         assert!(cursor.is_none());
@@ -526,61 +596,71 @@ mod tests {
     fn replay_resumable_from_cursor() {
         let mut log = MemoryAuditLog::default();
         for i in 1..=10 {
-            log.append(AuditEntry::new(
-                CollectionId::new("tasks"),
-                EntityId::new(format!("t-{i:03}")),
-                1,
-                MutationType::EntityCreate,
-                None,
-                Some(serde_json::json!({"n": i})),
-                Some("agent".into()),
-            ))
-            .unwrap();
+            must_ok(
+                log.append(AuditEntry::new(
+                    CollectionId::new("tasks"),
+                    EntityId::new(format!("t-{i:03}")),
+                    1,
+                    MutationType::EntityCreate,
+                    None,
+                    Some(serde_json::json!({"n": i})),
+                    Some("agent".into()),
+                )),
+                "paged replay append should succeed",
+            );
         }
 
         // First page: 5 events.
-        let (page1, cursor1) = log.replay(None, None, 5).unwrap();
+        let (page1, cursor1) = must_ok(log.replay(None, None, 5), "first replay page should work");
         assert_eq!(page1.len(), 5);
         assert!(cursor1.is_some());
 
         // Second page from cursor.
-        let (page2, cursor2) = log.replay(cursor1, None, 5).unwrap();
+        let (page2, cursor2) = must_ok(
+            log.replay(cursor1, None, 5),
+            "second replay page should work",
+        );
         assert_eq!(page2.len(), 5);
         assert!(cursor2.is_none());
 
         // audit_ids should not overlap.
         let ids1: Vec<u64> = page1.iter().map(|e| e.source.audit_id).collect();
         let ids2: Vec<u64> = page2.iter().map(|e| e.source.audit_id).collect();
-        assert!(ids1.iter().max().unwrap() < ids2.iter().min().unwrap());
+        assert!(ids1[ids1.len() - 1] < ids2[0]);
     }
 
     #[test]
     fn replay_filters_by_collection() {
         let mut log = MemoryAuditLog::default();
-        log.append(AuditEntry::new(
-            CollectionId::new("tasks"),
-            EntityId::new("t-001"),
-            1,
-            MutationType::EntityCreate,
-            None,
-            Some(serde_json::json!({"task": true})),
-            Some("a".into()),
-        ))
-        .unwrap();
-        log.append(AuditEntry::new(
-            CollectionId::new("users"),
-            EntityId::new("u-001"),
-            1,
-            MutationType::EntityCreate,
-            None,
-            Some(serde_json::json!({"user": true})),
-            Some("a".into()),
-        ))
-        .unwrap();
+        must_ok(
+            log.append(AuditEntry::new(
+                CollectionId::new("tasks"),
+                EntityId::new("t-001"),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({"task": true})),
+                Some("a".into()),
+            )),
+            "task append should succeed",
+        );
+        must_ok(
+            log.append(AuditEntry::new(
+                CollectionId::new("users"),
+                EntityId::new("u-001"),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({"user": true})),
+                Some("a".into()),
+            )),
+            "user append should succeed",
+        );
 
-        let (envelopes, _) = log
-            .replay(None, Some(&CollectionId::new("tasks")), 100)
-            .unwrap();
+        let (envelopes, _) = must_ok(
+            log.replay(None, Some(&CollectionId::new("tasks")), 100),
+            "collection-filtered replay should succeed",
+        );
         assert_eq!(envelopes.len(), 1);
         assert_eq!(envelopes[0].source.collection, "tasks");
     }
@@ -589,28 +669,32 @@ mod tests {
     fn replay_collection_events_skipped_in_envelopes() {
         let mut log = MemoryAuditLog::default();
         // Collection create events don't produce CDC envelopes.
-        log.append(AuditEntry::new(
-            CollectionId::new("tasks"),
-            EntityId::new(""),
-            0,
-            MutationType::CollectionCreate,
-            None,
-            None,
-            None,
-        ))
-        .unwrap();
-        log.append(AuditEntry::new(
-            CollectionId::new("tasks"),
-            EntityId::new("t-001"),
-            1,
-            MutationType::EntityCreate,
-            None,
-            Some(serde_json::json!({"x": 1})),
-            Some("a".into()),
-        ))
-        .unwrap();
+        must_ok(
+            log.append(AuditEntry::new(
+                CollectionId::new("tasks"),
+                EntityId::new(""),
+                0,
+                MutationType::CollectionCreate,
+                None,
+                None,
+                None,
+            )),
+            "collection-create append should succeed",
+        );
+        must_ok(
+            log.append(AuditEntry::new(
+                CollectionId::new("tasks"),
+                EntityId::new("t-001"),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({"x": 1})),
+                Some("a".into()),
+            )),
+            "entity-create append should succeed",
+        );
 
-        let (envelopes, _) = log.replay(None, None, 100).unwrap();
+        let (envelopes, _) = must_ok(log.replay(None, None, 100), "mixed replay should succeed");
         // Only entity events produce envelopes.
         assert_eq!(envelopes.len(), 1);
     }
@@ -619,19 +703,21 @@ mod tests {
     fn replay_dedup_by_audit_id() {
         let mut log = MemoryAuditLog::default();
         for _ in 0..3 {
-            log.append(AuditEntry::new(
-                CollectionId::new("tasks"),
-                EntityId::new("t-001"),
-                1,
-                MutationType::EntityCreate,
-                None,
-                Some(serde_json::json!({})),
-                None,
-            ))
-            .unwrap();
+            must_ok(
+                log.append(AuditEntry::new(
+                    CollectionId::new("tasks"),
+                    EntityId::new("t-001"),
+                    1,
+                    MutationType::EntityCreate,
+                    None,
+                    Some(serde_json::json!({})),
+                    None,
+                )),
+                "dedup replay append should succeed",
+            );
         }
 
-        let (envelopes, _) = log.replay(None, None, 100).unwrap();
+        let (envelopes, _) = must_ok(log.replay(None, None, 100), "dedup replay should succeed");
         // Each envelope has a unique audit_id.
         let ids: Vec<u64> = envelopes.iter().map(|e| e.source.audit_id).collect();
         let unique: std::collections::HashSet<u64> = ids.iter().copied().collect();

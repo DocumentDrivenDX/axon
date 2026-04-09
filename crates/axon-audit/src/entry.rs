@@ -191,6 +191,20 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn must_some<'a, T>(value: Option<&'a T>, context: &str) -> &'a T {
+        match value {
+            Some(value) => value,
+            None => panic!("{context}"),
+        }
+    }
+
+    fn must_owned_some<T>(value: Option<T>, context: &str) -> T {
+        match value {
+            Some(value) => value,
+            None => panic!("{context}"),
+        }
+    }
+
     #[test]
     fn mutation_type_display_dot_notation() {
         assert_eq!(MutationType::EntityCreate.to_string(), "entity.create");
@@ -247,7 +261,7 @@ mod tests {
         let after = json!({"title": "v2", "done": false});
         let diff = compute_diff(&before, &after);
         assert_eq!(diff.len(), 1);
-        let title_diff = diff.get("title").unwrap();
+        let title_diff = must_some(diff.get("title"), "title diff should be present");
         assert_eq!(title_diff.before, Some(json!("v1")));
         assert_eq!(title_diff.after, Some(json!("v2")));
     }
@@ -258,7 +272,7 @@ mod tests {
         let after = json!({"title": "v1", "done": true});
         let diff = compute_diff(&before, &after);
         assert_eq!(diff.len(), 1);
-        let done_diff = diff.get("done").unwrap();
+        let done_diff = must_some(diff.get("done"), "done diff should be present");
         assert_eq!(done_diff.before, None);
         assert_eq!(done_diff.after, Some(json!(true)));
     }
@@ -269,7 +283,7 @@ mod tests {
         let after = json!({"title": "v1"});
         let diff = compute_diff(&before, &after);
         assert_eq!(diff.len(), 1);
-        let done_diff = diff.get("done").unwrap();
+        let done_diff = must_some(diff.get("done"), "done diff should be present");
         assert_eq!(done_diff.before, Some(json!(false)));
         assert_eq!(done_diff.after, None);
     }
@@ -298,9 +312,7 @@ mod tests {
             Some(json!({"title": "new", "done": false})),
             None,
         );
-        let diff = entry
-            .diff
-            .expect("diff populated when before+after present");
+        let diff = must_owned_some(entry.diff, "diff populated when before+after present");
         assert_eq!(diff.len(), 1, "only 'title' changed");
         assert_eq!(diff["title"].before, Some(json!("old")));
         assert_eq!(diff["title"].after, Some(json!("new")));
