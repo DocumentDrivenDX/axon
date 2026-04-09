@@ -8,7 +8,7 @@
 		"build": "svelte-kit sync && vite build",
 		"preview": "vite preview",
 		"typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"lint": "biome check biome.json package.json svelte.config.js vite.config.js src/lib/graphql.js",
+		"lint": "bunx biome check biome.json package.json svelte.config.js tsconfig.json vite.config.js src",
 		"test": "bun test"
 	},
 	"devDependencies": {

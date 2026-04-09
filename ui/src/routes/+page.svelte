@@ -1,24 +1,22 @@
 <script>
-	/** @type {string} US-040: Browse Axon data visually */
-	// Collection list page — fetches collections via GraphQL (US-051)
-	import { onMount } from 'svelte';
+/** @type {string} US-040: Browse Axon data visually */
+// Collection list page — fetches collections via GraphQL (US-051)
+import { onMount } from 'svelte';
 
-	let collections = [];
-	let loading = true;
-	let error = null;
+let collections = [];
+let loading = true;
+let error = null;
 
-	onMount(async () => {
-		try {
-			// Placeholder: in production, this calls the GraphQL endpoint
-			collections = [
-				{ name: 'Loading...', entityCount: 0 }
-			];
-		} catch (e) {
-			error = e.message;
-		} finally {
-			loading = false;
-		}
-	});
+onMount(async () => {
+	try {
+		// Placeholder: in production, this calls the GraphQL endpoint
+		collections = [{ name: 'Loading...', entityCount: 0 }];
+	} catch (e) {
+		error = e.message;
+	} finally {
+		loading = false;
+	}
+});
 </script>
 
 <h1>Axon Collections</h1>

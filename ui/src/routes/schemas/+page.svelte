@@ -1,29 +1,29 @@
 <script>
-	/** US-041: Manage schemas visually */
-	// Schema list, view formatted JSON, edit and save, inline validation
-	let schemas = [];
-	let selectedSchema = null;
-	let editMode = false;
-	let editJson = '';
-	let validationError = null;
+/** US-041: Manage schemas visually */
+// Schema list, view formatted JSON, edit and save, inline validation
+const schemas = [];
+let selectedSchema = null;
+let editMode = false;
+let editJson = '';
+let validationError = null;
 
-	function selectSchema(schema) {
-		selectedSchema = schema;
-		editJson = JSON.stringify(schema, null, 2);
-		editMode = false;
+function selectSchema(schema) {
+	selectedSchema = schema;
+	editJson = JSON.stringify(schema, null, 2);
+	editMode = false;
+	validationError = null;
+}
+
+function validateJson() {
+	try {
+		JSON.parse(editJson);
 		validationError = null;
+		return true;
+	} catch (e) {
+		validationError = e.message;
+		return false;
 	}
-
-	function validateJson() {
-		try {
-			JSON.parse(editJson);
-			validationError = null;
-			return true;
-		} catch (e) {
-			validationError = e.message;
-			return false;
-		}
-	}
+}
 </script>
 
 <h1>Schema Management</h1>

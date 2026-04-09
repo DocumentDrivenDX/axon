@@ -1,5 +1,5 @@
 <script>
-	// Axon Admin UI layout
+// Axon Admin UI layout
 </script>
 
 <nav>

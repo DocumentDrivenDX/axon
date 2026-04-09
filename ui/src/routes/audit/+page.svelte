@@ -1,14 +1,18 @@
 <script>
-	/** US-042: Inspect audit log visually */
-	// Audit table with filter by collection/actor, date range, before/after detail
-	let entries = [];
-	let filters = {
-		collection: '',
-		actor: '',
-		startDate: '',
-		endDate: ''
-	};
-	let selectedEntry = null;
+/** US-042: Inspect audit log visually */
+// Audit table with filter by collection/actor, date range, before/after detail
+const entries = [];
+const filters = {
+	collection: '',
+	actor: '',
+	startDate: '',
+	endDate: '',
+};
+let selectedEntry = null;
+
+function selectEntry(entry) {
+	selectedEntry = entry;
+}
 </script>
 
 <h1>Audit Log</h1>
@@ -49,7 +53,7 @@
 			<tr><td colspan="6">No audit entries found. Perform operations to generate entries.</td></tr>
 		{/if}
 		{#each entries as entry}
-			<tr on:click={() => selectedEntry = entry}>
+			<tr on:click={() => selectEntry(entry)}>
 				<td>{entry.id}</td>
 				<td>{new Date(entry.timestamp_ns / 1e6).toISOString()}</td>
 				<td>{entry.collection}</td>
