@@ -11,7 +11,7 @@ fn now_ns() -> u64 {
         .unwrap_or(0)
 }
 
-use axon_audit::entry::{AuditEntry, MutationType};
+use axon_audit::entry::{compute_diff, AuditEntry, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::error::AxonError;
 use axon_core::id::{
@@ -32,8 +32,8 @@ use crate::request::{
     GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
     ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest,
     PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
-    ReachableRequest, RevalidateRequest, RevertEntityRequest, SortDirection, TraverseDirection,
-    TraverseRequest, UpdateEntityRequest,
+    ReachableRequest, RevalidateRequest, RevertEntityRequest, RollbackEntityRequest,
+    RollbackEntityTarget, SortDirection, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
@@ -45,7 +45,8 @@ use crate::response::{
     ListCollectionsResponse, ListDatabasesResponse, ListNamespaceCollectionsResponse,
     ListNamespacesResponse, PatchEntityResponse, PutCollectionTemplateResponse, PutSchemaResponse,
     QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevalidateResponse,
-    RevertEntityResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
+    RevertEntityResponse, RollbackEntityResponse, TraverseHop, TraversePath, TraverseResponse,
+    UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -1301,6 +1302,191 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entity: restored,
             audit_entry: appended,
         })
+    }
+
+    /// Roll an entity back to a prior version or audit entry state.
+    ///
+    /// The rollback uses the target entry's `data_after` snapshot, validates it
+    /// against the current schema and save gate, and writes it as a new
+    /// `entity.revert` revision unless `dry_run=true`.
+    pub fn rollback_entity(
+        &mut self,
+        req: RollbackEntityRequest,
+    ) -> Result<RollbackEntityResponse, AxonError> {
+        let current = self
+            .storage
+            .get(&req.collection, &req.id)?
+            .ok_or_else(|| AxonError::NotFound(req.id.to_string()))?;
+
+        let expected_version = req.expected_version.unwrap_or(current.version);
+        if expected_version != current.version {
+            return Err(AxonError::ConflictingVersion {
+                expected: expected_version,
+                actual: current.version,
+                current_entity: Some(Box::new(Self::present_entity(&req.collection, current))),
+            });
+        }
+
+        let source = self.resolve_rollback_source_entry(&req.collection, &req.id, &req.target)?;
+        let target_data = source.data_after.clone().ok_or_else(|| match &req.target {
+            RollbackEntityTarget::Version(version) => AxonError::NotFound(format!(
+                "entity version {} not found in audit log for {}",
+                version, req.id
+            )),
+            RollbackEntityTarget::AuditEntryId(audit_entry_id) => AxonError::NotFound(format!(
+                "audit entry {} has no stored entity state",
+                audit_entry_id
+            )),
+        })?;
+
+        let schema = self.storage.get_schema(&req.collection)?;
+        if let Some(schema) = &schema {
+            validate(schema, &target_data)?;
+        }
+
+        let gate_eval = if let Some(schema) = &schema {
+            if schema.validation_rules.is_empty() {
+                None
+            } else {
+                let eval = evaluate_gates(&schema.validation_rules, &schema.gates, &target_data);
+                if !eval.save_passes() {
+                    return Err(AxonError::SchemaValidation(format!(
+                        "save gate failed: {}",
+                        eval.save_violations
+                            .iter()
+                            .map(|v| v.message.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    )));
+                }
+                Some(eval)
+            }
+        } else {
+            None
+        };
+
+        if let Some(ref s) = schema {
+            check_unique_constraints(&self.storage, &req.collection, &req.id, &target_data, s)?;
+        }
+
+        let target = Entity {
+            collection: req.collection.clone(),
+            id: req.id.clone(),
+            version: current.version + 1,
+            data: target_data.clone(),
+            created_at_ns: current.created_at_ns,
+            updated_at_ns: current.updated_at_ns,
+            created_by: current.created_by.clone(),
+            updated_by: req.actor.clone(),
+        };
+
+        if req.dry_run {
+            return Ok(RollbackEntityResponse::DryRun {
+                current: Self::present_entity(&req.collection, current.clone()),
+                target,
+                diff: compute_diff(&current.data, &target_data),
+            });
+        }
+
+        let stored = self.storage.compare_and_swap(
+            Entity {
+                collection: req.collection.clone(),
+                id: req.id.clone(),
+                version: expected_version,
+                data: target_data.clone(),
+                created_at_ns: current.created_at_ns,
+                updated_at_ns: Some(now_ns()),
+                created_by: current.created_by.clone(),
+                updated_by: req.actor.clone(),
+            },
+            expected_version,
+        )?;
+
+        if let Some(ref s) = schema {
+            if !s.indexes.is_empty() {
+                self.storage.update_indexes(
+                    &req.collection,
+                    &stored.id,
+                    Some(&current.data),
+                    &stored.data,
+                    &s.indexes,
+                )?;
+            }
+            if !s.compound_indexes.is_empty() {
+                self.storage.update_compound_indexes(
+                    &req.collection,
+                    &stored.id,
+                    Some(&current.data),
+                    &stored.data,
+                    &s.compound_indexes,
+                )?;
+            }
+        }
+
+        if let Some(eval) = gate_eval {
+            if !eval.gate_results.is_empty() {
+                let gate_bools: std::collections::HashMap<String, bool> = eval
+                    .gate_results
+                    .iter()
+                    .map(|(name, gr)| (name.clone(), gr.pass))
+                    .collect();
+                self.storage
+                    .put_gate_results(&req.collection, &stored.id, &gate_bools)?;
+            }
+        }
+
+        let entity = Self::present_entity(&req.collection, stored);
+        let mut audit_entry = AuditEntry::new(
+            entity.collection.clone(),
+            entity.id.clone(),
+            entity.version,
+            MutationType::EntityRevert,
+            Some(current.data.clone()),
+            Some(entity.data.clone()),
+            req.actor,
+        );
+        audit_entry
+            .metadata
+            .insert("reverted_from_entry_id".into(), source.id.to_string());
+        let audit_entry = self.audit.append(audit_entry)?;
+
+        Ok(RollbackEntityResponse::Applied {
+            entity,
+            audit_entry,
+        })
+    }
+
+    fn resolve_rollback_source_entry(
+        &self,
+        collection: &CollectionId,
+        id: &EntityId,
+        target: &RollbackEntityTarget,
+    ) -> Result<AuditEntry, AxonError> {
+        match target {
+            RollbackEntityTarget::Version(version) => self
+                .audit
+                .query_by_entity(collection, id)?
+                .into_iter()
+                .find(|entry| entry.version == *version && entry.data_after.is_some())
+                .ok_or_else(|| {
+                    AxonError::NotFound(format!(
+                        "entity version {} not found in audit log for {}",
+                        version, id
+                    ))
+                }),
+            RollbackEntityTarget::AuditEntryId(audit_entry_id) => {
+                let entry = self.audit.find_by_id(*audit_entry_id)?.ok_or_else(|| {
+                    AxonError::NotFound(format!("audit entry {}", audit_entry_id))
+                })?;
+                if &entry.collection != collection || &entry.entity_id != id {
+                    return Err(AxonError::NotFound(format!(
+                        "audit entry {} not found for {}/{}",
+                        audit_entry_id, collection, id
+                    )));
+                }
+                Ok(entry)
+            }
+        }
     }
 
     // ── Collection lifecycle ─────────────────────────────────────────────────
@@ -4661,6 +4847,269 @@ entity_schema:
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::InvalidOperation(_)));
+    }
+
+    #[test]
+    fn rollback_entity_to_version_restores_target_state_and_audits() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v1"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v2"}),
+            expected_version: 1,
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v3"}),
+            expected_version: 2,
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                target: RollbackEntityTarget::Version(1),
+                expected_version: None,
+                actor: Some("admin".into()),
+                dry_run: false,
+            })
+            .unwrap();
+
+        let RollbackEntityResponse::Applied {
+            entity,
+            audit_entry,
+        } = resp
+        else {
+            panic!("rollback should apply");
+        };
+
+        assert_eq!(entity.version, 4);
+        assert_eq!(entity.data["title"], "v1");
+        assert_eq!(audit_entry.mutation, MutationType::EntityRevert);
+        assert_eq!(
+            audit_entry
+                .metadata
+                .get("reverted_from_entry_id")
+                .map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn rollback_entity_dry_run_returns_current_target_and_diff() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v1"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v2"}),
+            expected_version: 1,
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                target: RollbackEntityTarget::Version(1),
+                expected_version: None,
+                actor: Some("admin".into()),
+                dry_run: true,
+            })
+            .unwrap();
+
+        let RollbackEntityResponse::DryRun {
+            current,
+            target,
+            diff,
+        } = resp
+        else {
+            panic!("rollback should return dry-run preview");
+        };
+
+        assert_eq!(current.version, 2);
+        assert_eq!(current.data["title"], "v2");
+        assert_eq!(target.version, 3);
+        assert_eq!(target.data["title"], "v1");
+        assert_eq!(
+            diff.get("title").and_then(|field| field.after.as_ref()),
+            Some(&json!("v1"))
+        );
+
+        let stored = h
+            .get_entity(GetEntityRequest {
+                collection: col,
+                id,
+            })
+            .unwrap();
+        assert_eq!(stored.entity.version, 2, "dry run must not persist changes");
+    }
+
+    #[test]
+    fn rollback_entity_missing_version_returns_not_found() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v1"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let err = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: col,
+                id,
+                target: RollbackEntityTarget::Version(99),
+                expected_version: None,
+                actor: None,
+                dry_run: false,
+            })
+            .unwrap_err();
+
+        assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn rollback_entity_honors_expected_version() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v1"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v2"}),
+            expected_version: 1,
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let err = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: col,
+                id,
+                target: RollbackEntityTarget::Version(1),
+                expected_version: Some(1),
+                actor: None,
+                dry_run: false,
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            AxonError::ConflictingVersion {
+                expected: 1,
+                actual: 2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn rollback_entity_returns_schema_validation_when_save_gate_fails() {
+        let mut h = handler();
+        let col = CollectionId::new("items");
+        let id = EntityId::new("g-rollback");
+
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema::new(col.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "draft"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let gated_schema = handler_with_gated_schema()
+            .storage
+            .get_schema(&CollectionId::new("items"))
+            .unwrap()
+            .unwrap();
+        h.put_schema(gated_schema).unwrap();
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({
+                "title": "draft",
+                "bead_type": "task",
+                "description": "ready",
+                "acceptance": "defined"
+            }),
+            expected_version: 1,
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let err = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: col,
+                id,
+                target: RollbackEntityTarget::Version(1),
+                expected_version: None,
+                actor: None,
+                dry_run: false,
+            })
+            .unwrap_err();
+
+        assert!(matches!(err, AxonError::SchemaValidation(_)));
+        assert!(err.to_string().contains("save gate failed"));
     }
 
     // ── Collection lifecycle ─────────────────────────────────────────────────

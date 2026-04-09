@@ -230,6 +230,31 @@ pub struct RevertEntityRequest {
     pub force: bool,
 }
 
+/// Roll an entity back to a prior state recorded in the audit log.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackEntityRequest {
+    pub collection: CollectionId,
+    pub id: EntityId,
+    pub target: RollbackEntityTarget,
+    /// Optional OCC guard. When omitted, the current stored version is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<u64>,
+    /// Actor performing the rollback.
+    pub actor: Option<String>,
+    /// When true, validate and preview the rollback without writing it.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// How to identify the historical state to restore.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RollbackEntityTarget {
+    /// Restore the entity state stored in the audit entry for this entity version.
+    Version(u64),
+    /// Restore the entity state stored in this specific audit entry.
+    AuditEntryId(u64),
+}
+
 // ── Entity query requests ─────────────────────────────────────────────────────
 
 /// Comparison operator for a field filter.

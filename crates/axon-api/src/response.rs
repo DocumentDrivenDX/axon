@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use axon_audit::entry::AuditEntry;
+use axon_audit::entry::{AuditEntry, FieldDiff};
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::GateResult;
 use axon_schema::rules::RuleViolation;
@@ -190,6 +190,22 @@ pub struct RevertEntityResponse {
     pub entity: Entity,
     /// The new audit entry produced by the revert operation.
     pub audit_entry: AuditEntry,
+}
+
+/// Response from entity-level rollback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RollbackEntityResponse {
+    /// The rollback was applied and audited as a new revision.
+    Applied {
+        entity: Entity,
+        audit_entry: AuditEntry,
+    },
+    /// The rollback was validated and previewed without writing.
+    DryRun {
+        current: Entity,
+        target: Entity,
+        diff: HashMap<String, FieldDiff>,
+    },
 }
 
 // ── Entity query response ─────────────────────────────────────────────────────

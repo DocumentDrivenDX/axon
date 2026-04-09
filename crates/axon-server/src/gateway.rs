@@ -32,7 +32,8 @@ use axon_api::request::{
     DropNamespaceRequest, GetCollectionTemplateRequest, GetEntityRequest, GetSchemaRequest,
     ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
     ListNamespacesRequest, PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest,
-    QueryEntitiesRequest, RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
+    QueryEntitiesRequest, RevertEntityRequest, RollbackEntityRequest, RollbackEntityTarget,
+    TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
@@ -260,6 +261,23 @@ fn entity_payload(entity: &Entity) -> Value {
     })
 }
 
+fn audit_entry_payload(entry: &axon_audit::AuditEntry) -> Value {
+    json!({
+        "id": entry.id,
+        "timestamp_ns": entry.timestamp_ns,
+        "collection": entry.collection.to_string(),
+        "entity_id": entry.entity_id.to_string(),
+        "version": entry.version,
+        "operation": entry.mutation.to_string(),
+        "data_before": &entry.data_before,
+        "data_after": &entry.data_after,
+        "diff": &entry.diff,
+        "actor": &entry.actor,
+        "metadata": &entry.metadata,
+        "transaction_id": &entry.transaction_id,
+    })
+}
+
 // ── Request bodies ────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -291,6 +309,16 @@ pub struct RevertEntityBody {
     pub actor: Option<String>,
     #[serde(default)]
     pub force: bool,
+}
+
+#[derive(Deserialize)]
+pub struct RollbackEntityBody {
+    pub to_version: Option<u64>,
+    pub to_audit_id: Option<String>,
+    pub expected_version: Option<u64>,
+    pub actor: Option<String>,
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Deserialize)]
@@ -866,6 +894,77 @@ async fn revert_entity<S: StorageAdapter>(
     }
 }
 
+fn rollback_error_response(err: AxonError) -> Response {
+    match err {
+        AxonError::SchemaValidation(detail) => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new("schema_validation", detail)),
+        )
+            .into_response(),
+        other => axon_error_response(other),
+    }
+}
+
+fn rollback_target_from_body(body: &RollbackEntityBody) -> Result<RollbackEntityTarget, AxonError> {
+    match (&body.to_version, &body.to_audit_id) {
+        (Some(version), None) => Ok(RollbackEntityTarget::Version(*version)),
+        (None, Some(audit_id)) => {
+            let parsed = audit_id.parse::<u64>().map_err(|error| {
+                AxonError::InvalidArgument(format!("invalid to_audit_id '{}': {error}", audit_id))
+            })?;
+            Ok(RollbackEntityTarget::AuditEntryId(parsed))
+        }
+        (Some(_), Some(_)) => Err(AxonError::InvalidArgument(
+            "provide exactly one of 'to_version' or 'to_audit_id'".into(),
+        )),
+        (None, None) => Err(AxonError::InvalidArgument(
+            "one of 'to_version' or 'to_audit_id' is required".into(),
+        )),
+    }
+}
+
+async fn rollback_collection_entity<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Extension(identity): Extension<Identity>,
+    Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
+    Json(body): Json<RollbackEntityBody>,
+) -> Response {
+    let target = match rollback_target_from_body(&body) {
+        Ok(target) => target,
+        Err(error) => return axon_error_response(error),
+    };
+
+    match handler.lock().await.rollback_entity(RollbackEntityRequest {
+        collection: qualify_collection_name(&collection, &current_database),
+        id: EntityId::new(&id),
+        target,
+        expected_version: body.expected_version,
+        actor: Some(identity.actor),
+        dry_run: body.dry_run,
+    }) {
+        Ok(axon_api::response::RollbackEntityResponse::Applied {
+            entity,
+            audit_entry,
+        }) => Json(json!({
+            "entity": entity_payload(&entity),
+            "audit_entry": audit_entry_payload(&audit_entry),
+        }))
+        .into_response(),
+        Ok(axon_api::response::RollbackEntityResponse::DryRun {
+            current,
+            target,
+            diff,
+        }) => Json(json!({
+            "current": entity_payload(&current),
+            "target": entity_payload(&target),
+            "diff": diff,
+        }))
+        .into_response(),
+        Err(error) => rollback_error_response(error),
+    }
+}
+
 async fn create_collection<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -1345,6 +1444,10 @@ fn data_routes<S: StorageAdapter + 'static>() -> Router<SharedHandler<S>> {
             "/collections/{collection}/entities/{id}",
             get(get_collection_entity::<S>),
         )
+        .route(
+            "/collections/{collection}/entities/{id}/rollback",
+            post(rollback_collection_entity::<S>),
+        )
         .route("/collections/{collection}/query", post(query_entities::<S>))
         .route("/links", post(create_link::<S>))
         .route("/links", delete(delete_link::<S>))
@@ -1388,6 +1491,8 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
     let mut router = Router::new()
         .merge(data_routes::<S>())
         .nest("/db/{database}", data_routes::<S>())
+        .nest("/v1", data_routes::<S>())
+        .nest("/db/{database}/v1", data_routes::<S>())
         .route("/databases", get(list_databases::<S>))
         .route("/databases/{name}", post(create_database::<S>))
         .route("/databases/{name}", delete(drop_database::<S>))
@@ -2291,6 +2396,154 @@ mod tests {
         assert_eq!(body["entity"]["data"]["title"], "v1");
         // Silence unused variable warning.
         let _ = create_entry_id;
+    }
+
+    #[tokio::test]
+    async fn http_entity_rollback_by_version_on_v1_route() {
+        let server = test_server();
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1"}, "actor": "alice"}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .put("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v2"}, "expected_version": 1, "actor": "alice"}))
+            .await
+            .assert_status_ok();
+
+        let resp = server
+            .post("/v1/collections/tasks/entities/t-001/rollback")
+            .json(&json!({"to_version": 1}))
+            .await;
+        resp.assert_status_ok();
+
+        let body: Value = resp.json();
+        assert_eq!(body["entity"]["version"], 3);
+        assert_eq!(body["entity"]["data"]["title"], "v1");
+        assert_eq!(body["audit_entry"]["operation"], "entity.revert");
+        assert_eq!(
+            body["audit_entry"]["metadata"]["reverted_from_entry_id"],
+            "1"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_entity_rollback_dry_run_returns_preview_without_write() {
+        let server = test_server();
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .put("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v2"}, "expected_version": 1}))
+            .await
+            .assert_status_ok();
+
+        let resp = server
+            .post("/collections/tasks/entities/t-001/rollback")
+            .json(&json!({"to_version": 1, "dry_run": true}))
+            .await;
+        resp.assert_status_ok();
+
+        let body: Value = resp.json();
+        assert_eq!(body["current"]["version"], 2);
+        assert_eq!(body["current"]["data"]["title"], "v2");
+        assert_eq!(body["target"]["version"], 3);
+        assert_eq!(body["target"]["data"]["title"], "v1");
+        assert_eq!(body["diff"]["title"]["after"], "v1");
+
+        let current = server.get("/entities/tasks/t-001").await;
+        current.assert_status_ok();
+        let current_body: Value = current.json();
+        assert_eq!(current_body["entity"]["version"], 2);
+        assert_eq!(current_body["entity"]["data"]["title"], "v2");
+    }
+
+    #[tokio::test]
+    async fn http_entity_rollback_save_gate_failure_returns_conflict() {
+        use axon_api::request::{
+            CreateCollectionRequest, CreateEntityRequest, UpdateEntityRequest,
+        };
+        use axon_schema::rules::{RequirementOp, RuleRequirement, ValidationRule};
+        use axon_schema::schema::{CollectionSchema, GateDef};
+        use std::collections::HashMap;
+
+        let (server, handler) = test_server_with_handler();
+        let col = CollectionId::new("items");
+        let id = EntityId::new("g-1");
+
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_collection(CreateCollectionRequest {
+                    name: col.clone(),
+                    schema: CollectionSchema::new(col.clone()),
+                    actor: None,
+                })
+                .unwrap();
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: col.clone(),
+                    id: id.clone(),
+                    data: json!({"title": "draft"}),
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .unwrap();
+            guard
+                .put_schema(CollectionSchema {
+                    collection: col.clone(),
+                    description: None,
+                    version: 1,
+                    entity_schema: None,
+                    link_types: Default::default(),
+                    gates: HashMap::from([(
+                        "complete".into(),
+                        GateDef {
+                            description: Some("Ready".into()),
+                            includes: vec![],
+                        },
+                    )]),
+                    validation_rules: vec![ValidationRule {
+                        name: "need-type".into(),
+                        gate: Some("save".into()),
+                        advisory: false,
+                        when: None,
+                        require: RuleRequirement {
+                            field: "bead_type".into(),
+                            op: RequirementOp::NotNull(true),
+                        },
+                        message: "bead_type is required".into(),
+                        fix: Some("Set bead_type".into()),
+                    }],
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                })
+                .unwrap();
+            guard
+                .update_entity(UpdateEntityRequest {
+                    collection: col.clone(),
+                    id: id.clone(),
+                    data: json!({"title": "draft", "bead_type": "task"}),
+                    expected_version: 1,
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .unwrap();
+        }
+
+        let resp = server
+            .post("/collections/items/entities/g-1/rollback")
+            .json(&json!({"to_version": 1}))
+            .await;
+        resp.assert_status(StatusCode::CONFLICT);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "schema_validation");
     }
 
     #[tokio::test]
