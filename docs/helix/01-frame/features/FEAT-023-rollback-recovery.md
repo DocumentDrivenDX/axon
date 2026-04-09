@@ -41,13 +41,18 @@ writes. This should be a first-class operation.
   timestamp.
 - Produces a new transaction that applies the inverse of all mutations
   after the cutoff.
-- The rollback itself is audited (creates audit entries with
-  `operation: rollback` and a reference to the original mutations).
+- The rollback itself is audited using the dot-namespaced audit
+  taxonomy from FEAT-003. Point-in-time rollback reserves
+  `operation: collection.rollback` and includes references to the
+  original mutations it compensates for.
 
 #### Entity-Level Rollback
 
 - Revert a specific entity to a previous version (identified by version
   number or audit entry ID).
+- Entity-level rollback is audited as `operation: entity.revert`, which
+  is the shipped V1 rollback operation defined by FEAT-003 and emitted
+  by the current implementation.
 - Standard OCC applies — the rollback is a write at the current version,
   not a version rewrite.
 - If the entity has been modified since the target version by other
@@ -58,6 +63,8 @@ writes. This should be a first-class operation.
 - Undo a specific transaction by ID — reverting all entities and links
   it touched to their pre-transaction state.
 - Produces a new compensating transaction.
+- Transaction-level rollback reserves `operation: transaction.rollback`
+  when that workflow is implemented.
 - Cross-entity consistency is maintained: all entities in the original
   transaction are rolled back atomically.
 
@@ -89,8 +96,12 @@ writes. This should be a first-class operation.
 - [ ] Point-in-time rollback reverts all mutations after a given
       timestamp
 - [ ] Entity-level rollback restores a specific entity to a prior version
+- [ ] Entity-level rollback audit entries use `operation: entity.revert`
 - [ ] Transaction-level rollback reverses all changes from a specific
       transaction
+- [ ] Point-in-time rollback reserves `operation: collection.rollback`
+      and transaction-level rollback reserves
+      `operation: transaction.rollback`
 - [ ] Dry-run mode shows what would change without committing
 - [ ] All rollback operations are themselves audited
 - [ ] OCC conflicts during rollback are reported clearly
