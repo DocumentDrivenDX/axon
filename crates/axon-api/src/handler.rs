@@ -371,7 +371,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // OCC write: preserve created_at/created_by, update updated_at/updated_by.
         let candidate = Entity {
-            collection: req.collection,
+            collection: req.collection.clone(),
             id: req.id,
             version: req.expected_version, // compare_and_swap bumps this to +1
             data: req.data,
@@ -380,7 +380,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             created_by: existing.as_ref().and_then(|e| e.created_by.clone()),
             updated_by: req.actor.clone(),
         };
-        let updated = self
+        let stored = self
             .storage
             .compare_and_swap(candidate, req.expected_version)?;
 
@@ -388,23 +388,25 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(ref s) = schema {
             if !s.indexes.is_empty() {
                 self.storage.update_indexes(
-                    &updated.collection,
-                    &updated.id,
+                    &req.collection,
+                    &stored.id,
                     before.as_ref(),
-                    &updated.data,
+                    &stored.data,
                     &s.indexes,
                 )?;
             }
             if !s.compound_indexes.is_empty() {
                 self.storage.update_compound_indexes(
-                    &updated.collection,
-                    &updated.id,
+                    &req.collection,
+                    &stored.id,
                     before.as_ref(),
-                    &updated.data,
+                    &stored.data,
                     &s.compound_indexes,
                 )?;
             }
         }
+
+        let updated = Self::present_entity(&req.collection, stored);
 
         // Audit.
         let mut audit_entry = AuditEntry::new(
@@ -431,7 +433,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         .map(|(name, gr)| (name.clone(), gr.pass))
                         .collect();
                     self.storage
-                        .put_gate_results(&updated.collection, &updated.id, &gate_bools)?;
+                        .put_gate_results(&req.collection, &updated.id, &gate_bools)?;
                 }
                 (eval.gate_results, eval.advisories)
             }
@@ -500,7 +502,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // OCC write.
         let candidate = Entity {
-            collection: req.collection,
+            collection: req.collection.clone(),
             id: req.id,
             version: req.expected_version,
             data: merged,
@@ -509,7 +511,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             created_by: existing.created_by,
             updated_by: req.actor.clone(),
         };
-        let updated = self
+        let stored = self
             .storage
             .compare_and_swap(candidate, req.expected_version)?;
 
@@ -517,23 +519,25 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(ref s) = schema {
             if !s.indexes.is_empty() {
                 self.storage.update_indexes(
-                    &updated.collection,
-                    &updated.id,
+                    &req.collection,
+                    &stored.id,
                     before.as_ref(),
-                    &updated.data,
+                    &stored.data,
                     &s.indexes,
                 )?;
             }
             if !s.compound_indexes.is_empty() {
                 self.storage.update_compound_indexes(
-                    &updated.collection,
-                    &updated.id,
+                    &req.collection,
+                    &stored.id,
                     before.as_ref(),
-                    &updated.data,
+                    &stored.data,
                     &s.compound_indexes,
                 )?;
             }
         }
+
+        let updated = Self::present_entity(&req.collection, stored);
 
         // Audit.
         let mut audit_entry = AuditEntry::new(
@@ -560,7 +564,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         .map(|(name, gr)| (name.clone(), gr.pass))
                         .collect();
                     self.storage
-                        .put_gate_results(&updated.collection, &updated.id, &gate_bools)?;
+                        .put_gate_results(&req.collection, &updated.id, &gate_bools)?;
                 }
                 (eval.gate_results, eval.advisories)
             }
@@ -2551,6 +2555,38 @@ mod tests {
 
     fn handler() -> AxonHandler<MemoryStorageAdapter> {
         AxonHandler::new(MemoryStorageAdapter::default())
+    }
+
+    fn register_prod_billing_and_engineering_collection(
+        h: &mut AxonHandler<MemoryStorageAdapter>,
+        collection: &str,
+    ) -> (CollectionId, CollectionId) {
+        use crate::request::{CreateDatabaseRequest, CreateNamespaceRequest};
+        use axon_core::id::Namespace;
+
+        let bare = CollectionId::new(collection);
+        let billing = CollectionId::new(format!("prod.billing.{collection}"));
+        let engineering = CollectionId::new(format!("prod.engineering.{collection}"));
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        for schema in ["billing", "engineering"] {
+            h.create_namespace(CreateNamespaceRequest {
+                database: "prod".into(),
+                schema: schema.into(),
+            })
+            .unwrap();
+        }
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &Namespace::new("prod", "billing"))
+            .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &Namespace::new("prod", "engineering"))
+            .unwrap();
+
+        (billing, engineering)
     }
 
     fn ok_or_panic<T, E: Display>(result: Result<T, E>, context: &str) -> T {
@@ -7487,6 +7523,100 @@ link_types:
     }
 
     #[test]
+    fn namespaced_update_preserves_qualified_collection_for_indexes_and_audit() {
+        use axon_schema::schema::{IndexDef, IndexType};
+        use axon_storage::adapter::IndexValue;
+
+        let mut h = handler();
+        let (billing, engineering) =
+            register_prod_billing_and_engineering_collection(&mut h, "invoices");
+        let entity_id = EntityId::new("inv-001");
+
+        let indexed_schema = |collection: CollectionId| CollectionSchema {
+            collection,
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "status": { "type": "string" }
+                }
+            })),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: vec![IndexDef {
+                field: "status".into(),
+                index_type: IndexType::String,
+                unique: false,
+            }],
+            compound_indexes: Default::default(),
+        };
+
+        h.put_schema(indexed_schema(billing.clone())).unwrap();
+        h.put_schema(indexed_schema(engineering.clone())).unwrap();
+
+        for collection in [billing.clone(), engineering.clone()] {
+            h.create_entity(CreateEntityRequest {
+                collection,
+                id: entity_id.clone(),
+                data: json!({ "status": "pending" }),
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+        }
+
+        let response = h
+            .update_entity(UpdateEntityRequest {
+                collection: billing.clone(),
+                id: entity_id.clone(),
+                data: json!({ "status": "paid" }),
+                expected_version: 1,
+                actor: Some("agent-1".into()),
+                audit_metadata: None,
+            })
+            .unwrap();
+
+        assert_eq!(response.entity.collection, billing);
+        assert_eq!(
+            h.storage_mut()
+                .index_lookup(&billing, "status", &IndexValue::String("paid".into()))
+                .unwrap(),
+            vec![entity_id.clone()]
+        );
+        assert!(h
+            .storage_mut()
+            .index_lookup(&billing, "status", &IndexValue::String("pending".into()))
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            h.storage_mut()
+                .index_lookup(
+                    &engineering,
+                    "status",
+                    &IndexValue::String("pending".into())
+                )
+                .unwrap(),
+            vec![entity_id.clone()]
+        );
+
+        let audit = h.audit_log().query_by_entity(&billing, &entity_id).unwrap();
+        assert_eq!(audit.len(), 2);
+        assert_eq!(audit[1].collection, billing);
+        assert_eq!(
+            h.get_entity(GetEntityRequest {
+                collection: billing.clone(),
+                id: entity_id.clone(),
+            })
+            .unwrap()
+            .entity
+            .collection,
+            billing
+        );
+    }
+
+    #[test]
     fn index_maintenance_on_delete() {
         let mut h = setup_indexed_collection();
 
@@ -8763,6 +8893,125 @@ link_types:
         // Before had status=draft, after has status=active.
         assert_eq!(patch_entry.data_before.as_ref().unwrap()["status"], "draft");
         assert_eq!(patch_entry.data_after.as_ref().unwrap()["status"], "active");
+    }
+
+    #[test]
+    fn namespaced_patch_preserves_qualified_collection_for_gate_results_and_audit() {
+        use axon_schema::rules::{RequirementOp, RuleRequirement, ValidationRule};
+        use axon_schema::schema::GateDef;
+
+        let mut h = handler();
+        let (billing, engineering) =
+            register_prod_billing_and_engineering_collection(&mut h, "invoices");
+        let entity_id = EntityId::new("inv-001");
+
+        let gated_schema = |collection: CollectionId| CollectionSchema {
+            collection,
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "bead_type": { "type": "string" },
+                    "description": { "type": "string" }
+                }
+            })),
+            link_types: Default::default(),
+            gates: std::collections::HashMap::from([(
+                "complete".into(),
+                GateDef {
+                    description: Some("Ready for completion".into()),
+                    includes: vec![],
+                },
+            )]),
+            validation_rules: vec![
+                ValidationRule {
+                    name: "need-type".into(),
+                    gate: Some("save".into()),
+                    advisory: false,
+                    when: None,
+                    require: RuleRequirement {
+                        field: "bead_type".into(),
+                        op: RequirementOp::NotNull(true),
+                    },
+                    message: "bead_type is required".into(),
+                    fix: None,
+                },
+                ValidationRule {
+                    name: "need-desc".into(),
+                    gate: Some("complete".into()),
+                    advisory: false,
+                    when: None,
+                    require: RuleRequirement {
+                        field: "description".into(),
+                        op: RequirementOp::NotNull(true),
+                    },
+                    message: "description is required".into(),
+                    fix: None,
+                },
+            ],
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+        };
+
+        h.put_schema(gated_schema(billing.clone())).unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: billing.clone(),
+            id: entity_id.clone(),
+            data: json!({ "bead_type": "invoice" }),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: engineering.clone(),
+            id: entity_id.clone(),
+            data: json!({ "bead_type": "invoice" }),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let response = h
+            .patch_entity(PatchEntityRequest {
+                collection: billing.clone(),
+                id: entity_id.clone(),
+                patch: json!({ "description": "ready" }),
+                expected_version: 1,
+                actor: Some("agent-1".into()),
+                audit_metadata: None,
+            })
+            .unwrap();
+
+        assert_eq!(response.entity.collection, billing);
+        assert_eq!(response.gates["complete"].pass, true);
+        assert_eq!(
+            h.storage_mut()
+                .get_gate_results(&billing, &entity_id)
+                .unwrap()
+                .unwrap()
+                .get("complete"),
+            Some(&true)
+        );
+        assert_eq!(
+            h.audit_log().query_by_entity(&billing, &entity_id).unwrap()[1].collection,
+            billing
+        );
+        assert_eq!(
+            h.get_entity(GetEntityRequest {
+                collection: billing.clone(),
+                id: entity_id.clone(),
+            })
+            .unwrap()
+            .entity
+            .collection,
+            billing
+        );
+        assert!(h
+            .storage_mut()
+            .get_gate_results(&engineering, &entity_id)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
