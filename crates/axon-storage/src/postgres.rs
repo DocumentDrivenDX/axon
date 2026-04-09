@@ -342,6 +342,56 @@ impl PostgresStorageAdapter {
         }
     }
 
+    fn namespace_collection_keys(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
+        let rows = self
+            .client
+            .borrow_mut()
+            .query(
+                "SELECT name FROM collections
+                 WHERE database_name = $1 AND schema_name = $2
+                 ORDER BY name ASC",
+                &[&namespace.database, &namespace.schema],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                QualifiedCollectionId::from_parts(
+                    namespace,
+                    &CollectionId::new(row.get::<_, String>("name")),
+                )
+            })
+            .collect())
+    }
+
+    fn database_collection_keys(
+        &self,
+        database: &str,
+    ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
+        let rows = self
+            .client
+            .borrow_mut()
+            .query(
+                "SELECT schema_name, name FROM collections
+                 WHERE database_name = $1
+                 ORDER BY schema_name ASC, name ASC",
+                &[&database],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                QualifiedCollectionId::from_parts(
+                    &Namespace::new(database, row.get::<_, String>("schema_name")),
+                    &CollectionId::new(row.get::<_, String>("name")),
+                )
+            })
+            .collect())
+    }
+
     fn ensure_default_namespace(&self) -> Result<(), AxonError> {
         self.client
             .borrow_mut()
@@ -389,6 +439,13 @@ unsafe impl Send for PostgresStorageAdapter {}
 unsafe impl Sync for PostgresStorageAdapter {}
 
 impl StorageAdapter for PostgresStorageAdapter {
+    fn resolve_collection_key(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<QualifiedCollectionId, AxonError> {
+        self.resolve_catalog_key(collection)
+    }
+
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let rows = self
@@ -636,6 +693,8 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Err(AxonError::NotFound(format!("database '{name}'")));
         }
 
+        let doomed = self.database_collection_keys(name)?;
+        self.purge_links_for_collections(&doomed)?;
         self.client
             .borrow_mut()
             .execute("DELETE FROM entities WHERE database_name = $1", &[&name])
@@ -706,6 +765,8 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
+        let doomed = self.namespace_collection_keys(namespace)?;
+        self.purge_links_for_collections(&doomed)?;
         self.client
             .borrow_mut()
             .execute(
@@ -1105,6 +1166,7 @@ mod tests {
     };
 
     use super::*;
+    use axon_core::types::Link;
     use testcontainers_modules::{
         postgres,
         testcontainers::{runners::SyncRunner, Container},
@@ -1488,6 +1550,101 @@ mod tests {
     }
 
     #[test]
+    fn drop_namespace_purges_links_for_removed_collections() {
+        let _guard = postgres_test_guard();
+        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let billing = Namespace::new("prod", "billing");
+        let engineering = Namespace::new("prod", "engineering");
+        let invoices = CollectionId::new("prod.billing.invoices");
+        let ledger = CollectionId::new("prod.engineering.ledger");
+        let keep = CollectionId::new("keep");
+        let archive = CollectionId::new("archive");
+
+        s.create_database("prod")
+            .expect("database create should succeed");
+        s.create_namespace(&billing)
+            .expect("billing namespace create should succeed");
+        s.create_namespace(&engineering)
+            .expect("engineering namespace create should succeed");
+        s.register_collection_in_namespace(&CollectionId::new("invoices"), &billing)
+            .expect("billing collection register should succeed");
+        s.register_collection_in_namespace(&CollectionId::new("ledger"), &engineering)
+            .expect("engineering collection register should succeed");
+        s.register_collection(&keep)
+            .expect("default collection register should succeed");
+        s.register_collection(&archive)
+            .expect("archive collection register should succeed");
+        for entity in [
+            Entity::new(
+                invoices.clone(),
+                EntityId::new("inv-001"),
+                serde_json::json!({"title": "invoice"}),
+            ),
+            Entity::new(
+                ledger.clone(),
+                EntityId::new("led-001"),
+                serde_json::json!({"title": "ledger"}),
+            ),
+            Entity::new(
+                keep.clone(),
+                EntityId::new("keep-001"),
+                serde_json::json!({"title": "keep"}),
+            ),
+            Entity::new(
+                archive.clone(),
+                EntityId::new("arc-001"),
+                serde_json::json!({"title": "archive"}),
+            ),
+        ] {
+            s.put(entity).expect("entity put should succeed");
+        }
+
+        for link in [
+            Link {
+                source_collection: invoices.clone(),
+                source_id: EntityId::new("inv-001"),
+                target_collection: ledger.clone(),
+                target_id: EntityId::new("led-001"),
+                link_type: "relates-to".into(),
+                metadata: serde_json::Value::Null,
+            },
+            Link {
+                source_collection: keep.clone(),
+                source_id: EntityId::new("keep-001"),
+                target_collection: invoices.clone(),
+                target_id: EntityId::new("inv-001"),
+                link_type: "references".into(),
+                metadata: serde_json::Value::Null,
+            },
+            Link {
+                source_collection: keep.clone(),
+                source_id: EntityId::new("keep-001"),
+                target_collection: archive.clone(),
+                target_id: EntityId::new("arc-001"),
+                link_type: "references".into(),
+                metadata: serde_json::Value::Null,
+            },
+        ] {
+            s.put_link(&link).expect("link put should succeed");
+        }
+
+        s.drop_namespace(&billing)
+            .expect("billing drop should succeed");
+
+        assert!(
+            s.list_inbound_links(&ledger, &EntityId::new("led-001"), None)
+                .expect("ledger inbound links should load")
+                .is_empty(),
+            "links from removed collections must be purged"
+        );
+        let keep_links = s
+            .list_outbound_links(&keep, &EntityId::new("keep-001"), None)
+            .expect("keep outbound links should load");
+        assert_eq!(keep_links.len(), 1);
+        assert_eq!(keep_links[0].target_collection, archive);
+    }
+
+    #[test]
     fn drop_database_purges_entities_for_removed_collections() {
         let _guard = postgres_test_guard();
         let mut s = store().expect("PostgreSQL test setup should succeed");
@@ -1546,6 +1703,101 @@ mod tests {
                 .is_some(),
             "entities in other databases must survive"
         );
+    }
+
+    #[test]
+    fn drop_database_purges_links_for_removed_collections() {
+        let _guard = postgres_test_guard();
+        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let analytics = Namespace::new("prod", "analytics");
+        let orders = CollectionId::new("prod.default.orders");
+        let rollups = CollectionId::new("prod.analytics.rollups");
+        let keep = CollectionId::new("keep");
+        let archive = CollectionId::new("archive");
+
+        s.create_database("prod")
+            .expect("database create should succeed");
+        s.create_namespace(&analytics)
+            .expect("analytics namespace create should succeed");
+        s.register_collection_in_namespace(
+            &CollectionId::new("orders"),
+            &Namespace::new("prod", "default"),
+        )
+        .expect("prod default collection register should succeed");
+        s.register_collection_in_namespace(&CollectionId::new("rollups"), &analytics)
+            .expect("analytics collection register should succeed");
+        s.register_collection(&keep)
+            .expect("default collection register should succeed");
+        s.register_collection(&archive)
+            .expect("archive collection register should succeed");
+        for entity in [
+            Entity::new(
+                orders.clone(),
+                EntityId::new("ord-001"),
+                serde_json::json!({"title": "order"}),
+            ),
+            Entity::new(
+                rollups.clone(),
+                EntityId::new("sum-001"),
+                serde_json::json!({"title": "rollup"}),
+            ),
+            Entity::new(
+                keep.clone(),
+                EntityId::new("keep-001"),
+                serde_json::json!({"title": "keep"}),
+            ),
+            Entity::new(
+                archive.clone(),
+                EntityId::new("arc-001"),
+                serde_json::json!({"title": "archive"}),
+            ),
+        ] {
+            s.put(entity).expect("entity put should succeed");
+        }
+
+        for link in [
+            Link {
+                source_collection: keep.clone(),
+                source_id: EntityId::new("keep-001"),
+                target_collection: orders.clone(),
+                target_id: EntityId::new("ord-001"),
+                link_type: "references".into(),
+                metadata: serde_json::Value::Null,
+            },
+            Link {
+                source_collection: rollups.clone(),
+                source_id: EntityId::new("sum-001"),
+                target_collection: keep.clone(),
+                target_id: EntityId::new("keep-001"),
+                link_type: "feeds".into(),
+                metadata: serde_json::Value::Null,
+            },
+            Link {
+                source_collection: keep.clone(),
+                source_id: EntityId::new("keep-001"),
+                target_collection: archive.clone(),
+                target_id: EntityId::new("arc-001"),
+                link_type: "references".into(),
+                metadata: serde_json::Value::Null,
+            },
+        ] {
+            s.put_link(&link).expect("link put should succeed");
+        }
+
+        s.drop_database("prod")
+            .expect("database drop should succeed");
+
+        assert!(
+            s.list_inbound_links(&keep, &EntityId::new("keep-001"), Some("feeds"))
+                .expect("keep inbound links should load")
+                .is_empty(),
+            "inbound links from removed databases must be purged"
+        );
+        let keep_links = s
+            .list_outbound_links(&keep, &EntityId::new("keep-001"), None)
+            .expect("keep outbound links should load");
+        assert_eq!(keep_links.len(), 1);
+        assert_eq!(keep_links[0].target_collection, archive);
     }
 
     #[test]

@@ -1,8 +1,9 @@
+use std::collections::BTreeSet;
 use std::ops::Bound;
 
 use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId, Namespace};
+use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
@@ -273,6 +274,59 @@ pub trait StorageAdapter: Send + Sync {
         _namespace: &Namespace,
     ) -> Result<Vec<CollectionId>, AxonError> {
         Ok(vec![])
+    }
+
+    /// Resolve a collection identifier to its fully qualified catalog key.
+    ///
+    /// Concrete adapters should override this when bare collection names need
+    /// catalog-aware disambiguation across namespaces or databases.
+    fn resolve_collection_key(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<QualifiedCollectionId, AxonError> {
+        let (namespace, bare_collection) = Namespace::parse(collection.as_str());
+        Ok(QualifiedCollectionId::from_parts(
+            &namespace,
+            &CollectionId::new(bare_collection),
+        ))
+    }
+
+    /// Remove any links whose source or target belongs to the provided
+    /// collections.
+    ///
+    /// The default implementation scans the forward link pseudo-collection and
+    /// deletes matching links through [`StorageAdapter::delete_link`], allowing
+    /// concrete adapters to clean both pseudo-collection rows and any dedicated
+    /// link storage they maintain.
+    fn purge_links_for_collections(
+        &mut self,
+        collections: &[QualifiedCollectionId],
+    ) -> Result<(), AxonError> {
+        if collections.is_empty() {
+            return Ok(());
+        }
+
+        let doomed: BTreeSet<_> = collections.iter().cloned().collect();
+        let links = self.range_scan(&Link::links_collection(), None, None, None)?;
+        for entity in links {
+            let Some(link) = Link::from_entity(&entity) else {
+                continue;
+            };
+
+            let source = self.resolve_collection_key(&link.source_collection)?;
+            let target = self.resolve_collection_key(&link.target_collection)?;
+            if doomed.contains(&source) || doomed.contains(&target) {
+                self.delete_link(
+                    &link.source_collection,
+                    &link.source_id,
+                    &link.link_type,
+                    &link.target_collection,
+                    &link.target_id,
+                )?;
+            }
+        }
+
+        Ok(())
     }
 
     // ── Schema persistence ───────────────────────────────────────────────────

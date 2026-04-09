@@ -6457,6 +6457,126 @@ link_types:
     }
 
     #[test]
+    fn drop_namespace_with_force_removes_links_for_deleted_collections() {
+        use crate::request::{
+            CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
+            DropNamespaceRequest, ListNeighborsRequest,
+        };
+        use axon_core::id::Namespace;
+
+        let mut h = handler();
+        let billing_invoice = CollectionId::new("prod.billing.invoices");
+        let engineering_ledger = CollectionId::new("prod.engineering.ledger");
+        let keep = CollectionId::new("keep");
+        let archive = CollectionId::new("archive");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        for schema in ["billing", "engineering"] {
+            h.create_namespace(CreateNamespaceRequest {
+                database: "prod".into(),
+                schema: schema.into(),
+            })
+            .unwrap();
+        }
+        h.storage_mut()
+            .register_collection_in_namespace(
+                &CollectionId::new("invoices"),
+                &Namespace::new("prod", "billing"),
+            )
+            .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(
+                &CollectionId::new("ledger"),
+                &Namespace::new("prod", "engineering"),
+            )
+            .unwrap();
+        h.storage_mut().register_collection(&keep).unwrap();
+        h.storage_mut().register_collection(&archive).unwrap();
+
+        for (collection, id) in [
+            (billing_invoice.clone(), "inv-001"),
+            (engineering_ledger.clone(), "led-001"),
+            (keep.clone(), "keep-001"),
+            (archive.clone(), "arc-001"),
+        ] {
+            h.create_entity(CreateEntityRequest {
+                collection,
+                id: EntityId::new(id),
+                data: json!({ "title": id }),
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+        }
+
+        for request in [
+            CreateLinkRequest {
+                source_collection: billing_invoice.clone(),
+                source_id: EntityId::new("inv-001"),
+                target_collection: engineering_ledger.clone(),
+                target_id: EntityId::new("led-001"),
+                link_type: "relates-to".into(),
+                metadata: serde_json::Value::Null,
+                actor: None,
+            },
+            CreateLinkRequest {
+                source_collection: keep.clone(),
+                source_id: EntityId::new("keep-001"),
+                target_collection: billing_invoice.clone(),
+                target_id: EntityId::new("inv-001"),
+                link_type: "references".into(),
+                metadata: serde_json::Value::Null,
+                actor: None,
+            },
+            CreateLinkRequest {
+                source_collection: keep.clone(),
+                source_id: EntityId::new("keep-001"),
+                target_collection: archive.clone(),
+                target_id: EntityId::new("arc-001"),
+                link_type: "references".into(),
+                metadata: serde_json::Value::Null,
+                actor: None,
+            },
+        ] {
+            h.create_link(request).unwrap();
+        }
+
+        h.drop_namespace(DropNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+            force: true,
+        })
+        .unwrap();
+
+        let keep_neighbors = h
+            .list_neighbors(ListNeighborsRequest {
+                collection: keep.clone(),
+                id: EntityId::new("keep-001"),
+                link_type: None,
+                direction: None,
+            })
+            .unwrap();
+        assert_eq!(keep_neighbors.total_count, 1);
+        assert_eq!(
+            keep_neighbors.groups[0].entities[0].id,
+            EntityId::new("arc-001")
+        );
+
+        let ledger_neighbors = h
+            .list_neighbors(ListNeighborsRequest {
+                collection: engineering_ledger,
+                id: EntityId::new("led-001"),
+                link_type: None,
+                direction: None,
+            })
+            .unwrap();
+        assert_eq!(ledger_neighbors.total_count, 0);
+    }
+
+    #[test]
     fn default_namespace_exists_on_startup() {
         use crate::request::ListNamespaceCollectionsRequest;
         let h = handler();
@@ -8135,6 +8255,127 @@ link_types:
         assert_eq!(
             dropped,
             std::collections::BTreeSet::from(["orders".to_string(), "rollups".to_string()])
+        );
+    }
+
+    #[test]
+    fn drop_database_with_force_removes_links_for_deleted_collections() {
+        use crate::request::{
+            CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
+            DropDatabaseRequest, ListNeighborsRequest,
+        };
+        use axon_core::id::Namespace;
+
+        let mut h = handler();
+        let orders = CollectionId::new("prod.default.orders");
+        let rollups = CollectionId::new("prod.analytics.rollups");
+        let keep = CollectionId::new("keep");
+        let archive = CollectionId::new("archive");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "analytics".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(
+                &CollectionId::new("orders"),
+                &Namespace::new("prod", "default"),
+            )
+            .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(
+                &CollectionId::new("rollups"),
+                &Namespace::new("prod", "analytics"),
+            )
+            .unwrap();
+        h.storage_mut().register_collection(&keep).unwrap();
+        h.storage_mut().register_collection(&archive).unwrap();
+
+        for (collection, id) in [
+            (orders.clone(), "ord-001"),
+            (rollups.clone(), "sum-001"),
+            (keep.clone(), "keep-001"),
+            (archive.clone(), "arc-001"),
+        ] {
+            h.create_entity(CreateEntityRequest {
+                collection,
+                id: EntityId::new(id),
+                data: json!({ "title": id }),
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+        }
+
+        for request in [
+            CreateLinkRequest {
+                source_collection: keep.clone(),
+                source_id: EntityId::new("keep-001"),
+                target_collection: orders.clone(),
+                target_id: EntityId::new("ord-001"),
+                link_type: "references".into(),
+                metadata: serde_json::Value::Null,
+                actor: None,
+            },
+            CreateLinkRequest {
+                source_collection: rollups.clone(),
+                source_id: EntityId::new("sum-001"),
+                target_collection: keep.clone(),
+                target_id: EntityId::new("keep-001"),
+                link_type: "feeds".into(),
+                metadata: serde_json::Value::Null,
+                actor: None,
+            },
+            CreateLinkRequest {
+                source_collection: keep.clone(),
+                source_id: EntityId::new("keep-001"),
+                target_collection: archive.clone(),
+                target_id: EntityId::new("arc-001"),
+                link_type: "references".into(),
+                metadata: serde_json::Value::Null,
+                actor: None,
+            },
+        ] {
+            h.create_link(request).unwrap();
+        }
+
+        h.drop_database(DropDatabaseRequest {
+            name: "prod".into(),
+            force: true,
+        })
+        .unwrap();
+
+        let keep_neighbors = h
+            .list_neighbors(ListNeighborsRequest {
+                collection: keep.clone(),
+                id: EntityId::new("keep-001"),
+                link_type: None,
+                direction: None,
+            })
+            .unwrap();
+        assert_eq!(keep_neighbors.total_count, 1);
+        assert_eq!(
+            keep_neighbors.groups[0].entities[0].id,
+            EntityId::new("arc-001")
+        );
+
+        let archive_neighbors = h
+            .list_neighbors(ListNeighborsRequest {
+                collection: archive,
+                id: EntityId::new("arc-001"),
+                link_type: None,
+                direction: None,
+            })
+            .unwrap();
+        assert_eq!(archive_neighbors.total_count, 1);
+        assert_eq!(
+            archive_neighbors.groups[0].entities[0].id,
+            EntityId::new("keep-001")
         );
     }
 
