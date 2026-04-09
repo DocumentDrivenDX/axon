@@ -1,4 +1,5 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ns() -> u64 {
@@ -43,6 +44,17 @@ use crate::response::{
 const DEFAULT_MAX_DEPTH: usize = 3;
 const MAX_DEPTH_CAP: usize = 10;
 
+#[derive(Debug)]
+struct CachedMarkdownTemplate {
+    version: u32,
+    template: Arc<axon_render::CompiledTemplate>,
+}
+
+#[derive(Debug, Default)]
+struct MarkdownTemplateCache {
+    entries: HashMap<CollectionId, CachedMarkdownTemplate>,
+}
+
 /// Core API handler: coordinates storage, schema validation, and audit.
 ///
 /// Schemas and collection registrations are persisted via the `StorageAdapter`;
@@ -51,6 +63,7 @@ const MAX_DEPTH_CAP: usize = 10;
 pub struct AxonHandler<S: StorageAdapter> {
     storage: S,
     audit: MemoryAuditLog,
+    markdown_template_cache: Mutex<MarkdownTemplateCache>,
 }
 
 impl<S: StorageAdapter> AxonHandler<S> {
@@ -75,7 +88,43 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Self {
             storage,
             audit: MemoryAuditLog::default(),
+            markdown_template_cache: Mutex::default(),
         }
+    }
+
+    fn markdown_template_cache(&self) -> Result<MutexGuard<'_, MarkdownTemplateCache>, AxonError> {
+        self.markdown_template_cache
+            .lock()
+            .map_err(|_| AxonError::InvalidOperation("markdown template cache is poisoned".into()))
+    }
+
+    fn compiled_markdown_template(
+        &self,
+        collection: &CollectionId,
+        view: &axon_schema::schema::CollectionView,
+    ) -> Result<Arc<axon_render::CompiledTemplate>, AxonError> {
+        let mut cache = self.markdown_template_cache()?;
+
+        if let Some(cached) = cache.entries.get(collection) {
+            if cached.version == view.version {
+                return Ok(Arc::clone(&cached.template));
+            }
+        }
+
+        let compiled = Arc::new(axon_render::compile(view.markdown_template.clone())?);
+        cache.entries.insert(
+            collection.clone(),
+            CachedMarkdownTemplate {
+                version: view.version,
+                template: Arc::clone(&compiled),
+            },
+        );
+        Ok(compiled)
+    }
+
+    fn invalidate_markdown_template(&self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.markdown_template_cache()?.entries.remove(collection);
+        Ok(())
     }
 
     /// Persist a schema for a collection via the storage adapter.
@@ -307,21 +356,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 ))
             })?;
 
-        Ok(
-            match axon_render::render(&entity, &view.markdown_template) {
-                Ok(rendered_markdown) => GetEntityMarkdownResponse::Rendered {
-                    entity: Self::present_entity(collection, entity),
-                    rendered_markdown,
-                },
-                Err(error) => GetEntityMarkdownResponse::RenderFailed {
-                    entity: Self::present_entity(collection, entity),
-                    detail: format!(
-                        "failed to render markdown for collection '{}': {error}",
-                        collection
-                    ),
-                },
+        let render_result = self
+            .compiled_markdown_template(collection, &view)
+            .map(|template| axon_render::render_compiled(&entity, template.as_ref()));
+
+        Ok(match render_result {
+            Ok(rendered_markdown) => GetEntityMarkdownResponse::Rendered {
+                entity: Self::present_entity(collection, entity),
+                rendered_markdown,
             },
-        )
+            Err(error) => GetEntityMarkdownResponse::RenderFailed {
+                entity: Self::present_entity(collection, entity),
+                detail: format!(
+                    "failed to render markdown for collection '{}': {error}",
+                    collection
+                ),
+            },
+        })
     }
 
     /// Update an entity using optimistic concurrency control (OCC).
@@ -1230,6 +1281,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
         self.storage.delete_schema(&req.name)?;
         self.storage.delete_collection_view(&req.name)?;
+        self.invalidate_markdown_template(&req.name)?;
         self.storage.unregister_collection(&req.name)?;
 
         let mut drop_meta = std::collections::HashMap::new();
@@ -2686,6 +2738,68 @@ mod tests {
             }
             GetEntityMarkdownResponse::RenderFailed { .. } => {
                 panic!("expected markdown render to succeed")
+            }
+        }
+    }
+
+    #[test]
+    fn get_entity_markdown_refreshes_compiled_template_after_view_update() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        ok_or_panic(
+            h.create_collection(CreateCollectionRequest {
+                name: col.clone(),
+                schema: CollectionSchema::new(col.clone()),
+                actor: None,
+            }),
+            "creating collection for template cache test",
+        );
+        ok_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                data: json!({"title": "hello", "status": "open"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating entity for template cache test",
+        );
+        ok_or_panic(
+            h.storage_mut()
+                .put_collection_view(&CollectionView::new(col.clone(), "# {{title}}")),
+            "storing initial collection view for template cache test",
+        );
+
+        match ok_or_panic(
+            h.get_entity_markdown(&col, &id),
+            "rendering markdown with initial collection view",
+        ) {
+            GetEntityMarkdownResponse::Rendered {
+                rendered_markdown, ..
+            } => assert_eq!(rendered_markdown, "# hello"),
+            GetEntityMarkdownResponse::RenderFailed { .. } => {
+                panic!("expected initial markdown render to succeed")
+            }
+        }
+
+        let updated = ok_or_panic(
+            h.storage_mut()
+                .put_collection_view(&CollectionView::new(col.clone(), "Status: {{status}}")),
+            "updating collection view for template cache test",
+        );
+        assert_eq!(updated.version, 2);
+
+        match ok_or_panic(
+            h.get_entity_markdown(&col, &id),
+            "rendering markdown after collection view update",
+        ) {
+            GetEntityMarkdownResponse::Rendered {
+                rendered_markdown, ..
+            } => assert_eq!(rendered_markdown, "Status: open"),
+            GetEntityMarkdownResponse::RenderFailed { .. } => {
+                panic!("expected markdown render to refresh after template update")
             }
         }
     }

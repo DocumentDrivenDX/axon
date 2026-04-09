@@ -7,8 +7,10 @@
 //!
 //! # Key entry points
 //!
+//! - [`compile`] — compile a template once for repeated renders.
 //! - [`render`] — render an [`axon_core::Entity`] into markdown using a Mustache
 //!   template string.
+//! - [`render_compiled`] — render an entity with a precompiled template.
 //! - [`extract_template_fields`] — extract all `{{field}}` references from a
 //!   template string.
 //! - [`validate_template`] — check those references against a JSON Schema and
@@ -253,16 +255,40 @@ fn build_render_context(entity: &Entity) -> Value {
     Value::Object(context)
 }
 
+/// A precompiled markdown template that can be reused across renders.
+#[derive(Debug)]
+pub struct CompiledTemplate {
+    template: Template<'static>,
+}
+
+impl CompiledTemplate {
+    /// Render `entity` using this compiled template.
+    pub fn render(&self, entity: &Entity) -> String {
+        let context = build_render_context(entity);
+        self.template.render(&JsonContent(&context))
+    }
+}
+
+/// Compile a Mustache template for repeated markdown renders.
+pub fn compile(template: impl Into<String>) -> Result<CompiledTemplate, AxonError> {
+    let template = Template::new(template.into()).map_err(|error| {
+        AxonError::InvalidArgument(format!("invalid markdown template: {error}"))
+    })?;
+    Ok(CompiledTemplate { template })
+}
+
+/// Render an entity with a precompiled template.
+pub fn render_compiled(entity: &Entity, template: &CompiledTemplate) -> String {
+    template.render(entity)
+}
+
 /// Render an entity to markdown with a Mustache template string.
 ///
 /// Entity fields are available at the template root alongside system fields
 /// such as `_id` and `_version`.
 pub fn render(entity: &Entity, template: &str) -> Result<String, AxonError> {
-    let template = Template::new(template).map_err(|error| {
-        AxonError::InvalidArgument(format!("invalid markdown template: {error}"))
-    })?;
-    let context = build_render_context(entity);
-    Ok(template.render(&JsonContent(&context)))
+    let template = compile(template.to_owned())?;
+    Ok(render_compiled(entity, &template))
 }
 
 /// An error produced when a template references a field that does not exist in
@@ -637,6 +663,17 @@ mod tests {
     }
 
     #[test]
+    fn compiled_template_renders_repeatedly() {
+        let template = compile("# {{title}}").expect("template should compile");
+        let entity = sample_entity(json!({
+            "title": "Compiled",
+        }));
+
+        assert_eq!(render_compiled(&entity, &template), "# Compiled");
+        assert_eq!(template.render(&entity), "# Compiled");
+    }
+
+    #[test]
     fn render_supports_nested_objects() {
         let entity = sample_entity(json!({
             "customer": {
@@ -704,6 +741,13 @@ mod tests {
 
         let error =
             render(&entity, "{{title").expect_err("invalid template should return an error");
+
+        assert!(matches!(error, AxonError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn compile_rejects_invalid_template_syntax() {
+        let error = compile("{{title").expect_err("invalid template should return an error");
 
         assert!(matches!(error, AxonError::InvalidArgument(_)));
     }
