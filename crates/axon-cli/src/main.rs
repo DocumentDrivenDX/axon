@@ -902,7 +902,13 @@ fn run_entity(
                         axon_api::response::GetEntityMarkdownResponse::RenderFailed {
                             detail,
                             ..
-                        } => anyhow::bail!("{detail}"),
+                        } => match format {
+                            OutputFormat::Json | OutputFormat::Yaml => {
+                                print_serialized(&response, format);
+                                anyhow::bail!("{detail}");
+                            }
+                            OutputFormat::Table => anyhow::bail!("{detail}"),
+                        },
                     }
                 }
             }

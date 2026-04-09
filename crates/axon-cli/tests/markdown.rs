@@ -2,7 +2,7 @@ use std::process::Command;
 
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_core::id::{CollectionId, Namespace};
-use axon_schema::schema::CollectionSchema;
+use axon_schema::schema::{CollectionSchema, CollectionView};
 use axon_storage::{adapter::StorageAdapter, SqliteStorageAdapter};
 use serde_json::json;
 use tempfile::NamedTempFile;
@@ -11,13 +11,17 @@ fn axon_bin() -> &'static str {
     env!("CARGO_BIN_EXE_axon")
 }
 
-fn run_ok(db: &str, args: &[&str]) -> String {
-    let output = Command::new(axon_bin())
+fn run(db: &str, args: &[&str]) -> std::process::Output {
+    Command::new(axon_bin())
         .arg("--db")
         .arg(db)
         .args(args)
         .output()
-        .expect("failed to run axon binary");
+        .expect("failed to run axon binary")
+}
+
+fn run_ok(db: &str, args: &[&str]) -> String {
+    let output = run(db, args);
     assert!(
         output.status.success(),
         "command failed: {}\nstderr: {}",
@@ -28,12 +32,7 @@ fn run_ok(db: &str, args: &[&str]) -> String {
 }
 
 fn run_err(db: &str, args: &[&str]) -> String {
-    let output = Command::new(axon_bin())
-        .arg("--db")
-        .arg(db)
-        .args(args)
-        .output()
-        .expect("failed to run axon binary");
+    let output = run(db, args);
     assert!(
         !output.status.success(),
         "command unexpectedly succeeded: {}",
@@ -76,6 +75,16 @@ fn seed_namespaced_collection(db: &str, qualified: &str) {
             compound_indexes: Default::default(),
         })
         .expect("put schema should succeed");
+}
+
+fn seed_invalid_template(db: &str, collection: &str, template: &str) {
+    let mut storage = SqliteStorageAdapter::open(db).expect("open sqlite db");
+    storage
+        .put_collection_view(&CollectionView::new(
+            CollectionId::new(collection),
+            template,
+        ))
+        .expect("put invalid template directly should succeed");
 }
 
 #[test]
@@ -286,6 +295,92 @@ fn entity_get_markdown_honors_yaml_output() {
         }
         GetEntityMarkdownResponse::RenderFailed { detail, .. } => {
             panic!("expected rendered markdown, got failure: {detail}");
+        }
+    }
+}
+
+#[test]
+fn entity_get_markdown_json_output_preserves_render_failure_payload() {
+    let db = NamedTempFile::new().expect("temp db").into_temp_path();
+    let db_path = db.to_string_lossy().into_owned();
+
+    run_ok(&db_path, &["collection", "create", "tasks"]);
+    run_ok(
+        &db_path,
+        &[
+            "entity",
+            "create",
+            "tasks",
+            "t-001",
+            r#"{"title":"hello","status":"open"}"#,
+        ],
+    );
+    seed_invalid_template(&db_path, "tasks", "{{#title}");
+
+    let output = run(
+        &db_path,
+        &[
+            "--output", "json", "entity", "get", "tasks", "t-001", "--render", "markdown",
+        ],
+    );
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+
+    let response: GetEntityMarkdownResponse =
+        serde_json::from_slice(&output.stdout).expect("stdout should be valid JSON");
+    match response {
+        GetEntityMarkdownResponse::RenderFailed { entity, detail } => {
+            assert_eq!(entity.collection.to_string(), "tasks");
+            assert_eq!(entity.id.to_string(), "t-001");
+            assert_eq!(entity.data["title"], "hello");
+            assert!(detail.contains("failed to render markdown"));
+        }
+        GetEntityMarkdownResponse::Rendered {
+            rendered_markdown, ..
+        } => {
+            panic!("expected render failure, got markdown: {rendered_markdown}");
+        }
+    }
+}
+
+#[test]
+fn entity_get_markdown_yaml_output_preserves_render_failure_payload() {
+    let db = NamedTempFile::new().expect("temp db").into_temp_path();
+    let db_path = db.to_string_lossy().into_owned();
+
+    run_ok(&db_path, &["collection", "create", "tasks"]);
+    run_ok(
+        &db_path,
+        &[
+            "entity",
+            "create",
+            "tasks",
+            "t-001",
+            r#"{"title":"hello","status":"open"}"#,
+        ],
+    );
+    seed_invalid_template(&db_path, "tasks", "{{#title}");
+
+    let output = run(
+        &db_path,
+        &[
+            "--output", "yaml", "entity", "get", "tasks", "t-001", "--render", "markdown",
+        ],
+    );
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+
+    let response: GetEntityMarkdownResponse =
+        serde_yaml::from_slice(&output.stdout).expect("stdout should be valid YAML");
+    match response {
+        GetEntityMarkdownResponse::RenderFailed { entity, detail } => {
+            assert_eq!(entity.collection.to_string(), "tasks");
+            assert_eq!(entity.id.to_string(), "t-001");
+            assert_eq!(entity.data["title"], "hello");
+            assert!(detail.contains("failed to render markdown"));
+        }
+        GetEntityMarkdownResponse::Rendered {
+            rendered_markdown, ..
+        } => {
+            panic!("expected render failure, got markdown: {rendered_markdown}");
         }
     }
 }
