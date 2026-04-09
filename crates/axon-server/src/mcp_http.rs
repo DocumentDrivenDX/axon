@@ -53,7 +53,13 @@ struct SessionKey {
 
 struct McpHttpSession {
     server: StdMutex<McpServer>,
-    listeners: StdMutex<Vec<mpsc::UnboundedSender<String>>>,
+    listeners: StdMutex<SessionListeners>,
+}
+
+#[derive(Default)]
+struct SessionListeners {
+    senders: Vec<mpsc::UnboundedSender<String>>,
+    had_listener: bool,
 }
 
 #[derive(Clone, Default)]
@@ -77,14 +83,17 @@ impl McpHttpSessions {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
-        if let Some(session) = sessions.get(&session_key) {
-            return Ok(Arc::clone(session));
+        if let Some(session) = sessions.get(&session_key).cloned() {
+            if !Self::session_is_stale(&session) {
+                return Ok(session);
+            }
+            sessions.remove(&session_key);
         }
 
         let server = build_mcp_server(handler, &session_key.database)?;
         let session = Arc::new(McpHttpSession {
             server: StdMutex::new(server),
-            listeners: StdMutex::new(Vec::new()),
+            listeners: StdMutex::new(SessionListeners::default()),
         });
         sessions.insert(session_key, Arc::clone(&session));
         Ok(session)
@@ -112,11 +121,12 @@ impl McpHttpSessions {
     ) -> Result<mpsc::UnboundedReceiver<String>, McpError> {
         let session = self.get_or_create(session_key.clone(), handler)?;
         let (sender, receiver) = mpsc::unbounded_channel();
-        session
+        let mut listeners = session
             .listeners
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(sender.clone());
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        listeners.had_listener = true;
+        listeners.senders.push(sender.clone());
 
         let sessions = self.clone();
         tokio::runtime::Handle::current().spawn(async move {
@@ -145,8 +155,10 @@ impl McpHttpSessions {
                 .listeners
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            listeners.retain(|listener| !listener.same_channel(disconnected));
-            listeners.is_empty()
+            listeners
+                .senders
+                .retain(|listener| !listener.same_channel(disconnected));
+            listeners.had_listener && listeners.senders.is_empty()
         };
 
         if should_remove {
@@ -191,12 +203,21 @@ impl McpHttpSessions {
                 .listeners
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            listeners.retain(|listener| {
+            listeners.senders.retain(|listener| {
                 matched_payloads
                     .iter()
                     .all(|payload| listener.send(payload.clone()).is_ok())
             });
         }
+    }
+
+    fn session_is_stale(session: &McpHttpSession) -> bool {
+        let mut listeners = session
+            .listeners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        listeners.senders.retain(|listener| !listener.is_closed());
+        listeners.had_listener && listeners.senders.is_empty()
     }
 
     #[cfg(test)]
@@ -821,7 +842,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_mcp_disconnect_clears_subscriptions_before_reconnect() {
+    async fn http_mcp_immediate_reconnect_does_not_inherit_subscriptions() {
         let handler = Arc::new(Mutex::new(
             AxonHandler::new(MemoryStorageAdapter::default()),
         ));
@@ -853,14 +874,6 @@ mod tests {
             .expect("session should accept an SSE listener");
         drop(receiver);
 
-        tokio::time::timeout(Duration::from_secs(1), async {
-            while sessions.subscription_count(&session_key).is_some() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("disconnect should remove the cached session");
-
         let mut receiver = tokio::task::spawn_blocking({
             let sessions = sessions.clone();
             let handler = handler.clone();
@@ -873,6 +886,7 @@ mod tests {
         })
         .await
         .expect("reconnect worker should not panic");
+        assert_eq!(sessions.subscription_count(&session_key), Some(0));
         notify_entity_change_by_parts(
             &sessions,
             &CurrentDatabase::new(DEFAULT_DATABASE),
