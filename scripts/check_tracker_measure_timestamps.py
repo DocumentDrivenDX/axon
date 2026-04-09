@@ -21,7 +21,9 @@ class MeasureResultsTimestampParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._stack: list[str] = []
-        self._closed_measure_results_timestamps: list[list[list[str]]] = []
+        self._top_level_measure_results_blocks: list[
+            tuple[list[list[str]], str | None]
+        ] = []
         self._open_measure_results_timestamps: list[list[str]] | None = None
 
     def handle_starttag(
@@ -41,6 +43,10 @@ class MeasureResultsTimestampParser(HTMLParser):
     def handle_startendtag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
+        if not self._stack and tag == "measure-results":
+            self._top_level_measure_results_blocks.append(
+                ([], "self-closing <measure-results/>")
+            )
         if (
             len(self._stack) == 1
             and self._stack[0] == "measure-results"
@@ -56,8 +62,8 @@ class MeasureResultsTimestampParser(HTMLParser):
             and tag == "measure-results"
             and self._open_measure_results_timestamps is not None
         ):
-            self._closed_measure_results_timestamps.append(
-                self._open_measure_results_timestamps
+            self._top_level_measure_results_blocks.append(
+                (self._open_measure_results_timestamps, None)
             )
             self._open_measure_results_timestamps = None
         for index in range(len(self._stack) - 1, -1, -1):
@@ -84,9 +90,9 @@ class MeasureResultsTimestampParser(HTMLParser):
                     for chunks in block
                     if "".join(chunks).strip()
                 ],
-                None,
+                malformed_reason,
             )
-            for block in self._closed_measure_results_timestamps
+            for block, malformed_reason in self._top_level_measure_results_blocks
         ]
         if self._open_measure_results_timestamps is not None:
             blocks.append(([], "missing closing </measure-results>"))

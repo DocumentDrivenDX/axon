@@ -209,6 +209,61 @@ class CheckTrackerMeasureTimestampsCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("all measure timestamps are <= updated_at", result.stdout)
 
+    def test_unscoped_validation_fails_when_self_closing_measure_results_precedes_valid_block(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-self-closing-before-valid",
+                    "updated_at": "2026-04-09T19:00:00Z",
+                    "notes": (
+                        "<measure-results/>"
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:59:11Z</timestamp>"
+                        "</measure-results>"
+                    ),
+                }
+            ]
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            (
+                "hx-self-closing-before-valid has measure-results block with "
+                "self-closing <measure-results/>"
+            ),
+            result.stderr,
+        )
+
+    def test_scoped_validation_fails_when_self_closing_measure_results_precedes_valid_block(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-self-closing-before-valid",
+                    "updated_at": "2026-04-09T19:00:00Z",
+                    "notes": (
+                        "<measure-results/>"
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:59:11Z</timestamp>"
+                        "</measure-results>"
+                    ),
+                }
+            ],
+            "hx-self-closing-before-valid",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            (
+                "hx-self-closing-before-valid has measure-results block with "
+                "self-closing <measure-results/>"
+            ),
+            result.stderr,
+        )
+
     def test_scoped_validation_ignores_fake_measure_results_before_real_block(
         self,
     ) -> None:
