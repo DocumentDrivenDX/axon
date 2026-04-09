@@ -69,7 +69,8 @@ impl PostgresStorageAdapter {
                     schema_name   TEXT NOT NULL DEFAULT 'default',
                     version       INTEGER NOT NULL,
                     schema_json   JSONB NOT NULL,
-                    PRIMARY KEY (database_name, schema_name, collection)
+                    created_at_ns BIGINT NOT NULL DEFAULT 0,
+                    PRIMARY KEY (database_name, schema_name, collection, version)
                 );
                 CREATE TABLE IF NOT EXISTS collections (
                     name TEXT NOT NULL,
@@ -187,6 +188,8 @@ impl PostgresStorageAdapter {
                      ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
                  ALTER TABLE schemas
                      ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';
+                 ALTER TABLE schemas
+                     ADD COLUMN IF NOT EXISTS created_at_ns BIGINT NOT NULL DEFAULT 0;
                  ALTER TABLE collection_views
                      ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
                  ALTER TABLE collection_views
@@ -243,12 +246,15 @@ impl PostgresStorageAdapter {
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         }
 
-        if self.table_pk_columns("schemas")? != vec!["database_name", "schema_name", "collection"] {
+        if self.table_pk_columns("schemas")?
+            != vec!["database_name", "schema_name", "collection", "version"]
+        {
             self.client
                 .borrow_mut()
                 .batch_execute(
                     "ALTER TABLE schemas DROP CONSTRAINT IF EXISTS schemas_pkey;
-                     ALTER TABLE schemas ADD PRIMARY KEY (database_name, schema_name, collection);",
+                     ALTER TABLE schemas
+                         ADD PRIMARY KEY (database_name, schema_name, collection, version);",
                 )
                 .map_err(|e| AxonError::Storage(e.to_string()))?;
         }
@@ -881,13 +887,17 @@ impl StorageAdapter for PostgresStorageAdapter {
                 "SELECT COALESCE(MAX(version), 0) FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
                 &[
-                    &schema.collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                 ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let next_version = row.get::<_, i32>(0) + 1;
+        let created_at_ns = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as i64;
 
         let mut versioned = schema.clone();
         versioned.collection = key.collection.clone();
@@ -896,16 +906,16 @@ impl StorageAdapter for PostgresStorageAdapter {
         self.client
             .borrow_mut()
             .execute(
-                "INSERT INTO schemas (collection, database_name, schema_name, version, schema_json)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (database_name, schema_name, collection)
-                 DO UPDATE SET version = EXCLUDED.version, schema_json = EXCLUDED.schema_json",
+                "INSERT INTO schemas
+                    (collection, database_name, schema_name, version, schema_json, created_at_ns)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
                 &[
-                    &schema.collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                     &next_version,
                     &schema_json,
+                    &created_at_ns,
                 ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -919,9 +929,11 @@ impl StorageAdapter for PostgresStorageAdapter {
             .borrow_mut()
             .query(
                 "SELECT schema_json FROM schemas
-                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3
+                 ORDER BY version DESC
+                 LIMIT 1",
                 &[
-                    &collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                 ],
@@ -938,6 +950,68 @@ impl StorageAdapter for PostgresStorageAdapter {
         }
     }
 
+    fn get_schema_version(
+        &self,
+        collection: &CollectionId,
+        version: u32,
+    ) -> Result<Option<CollectionSchema>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        let rows = self
+            .client
+            .borrow_mut()
+            .query(
+                "SELECT schema_json FROM schemas
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3 AND version = $4",
+                &[
+                    &key.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                    &(version as i32),
+                ],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        match rows.first() {
+            Some(row) => {
+                let schema_json: serde_json::Value = row.get("schema_json");
+                let schema: CollectionSchema = serde_json::from_value(schema_json)?;
+                Ok(Some(schema))
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn list_schema_versions(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Vec<(u32, u64)>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
+        let rows = self
+            .client
+            .borrow_mut()
+            .query(
+                "SELECT version, created_at_ns FROM schemas
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3
+                 ORDER BY version ASC",
+                &[
+                    &key.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                (
+                    row.get::<_, i32>("version") as u32,
+                    row.get::<_, i64>("created_at_ns") as u64,
+                )
+            })
+            .collect())
+    }
+
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         self.client
@@ -946,7 +1020,7 @@ impl StorageAdapter for PostgresStorageAdapter {
                 "DELETE FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
                 &[
-                    &collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                 ],
@@ -957,7 +1031,7 @@ impl StorageAdapter for PostgresStorageAdapter {
 
     fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
         let key = self.resolve_catalog_key(&view.collection)?;
-        if !self.collection_exists_in_namespace(&view.collection, &key.namespace)? {
+        if !self.collection_exists_in_namespace(&key.collection, &key.namespace)? {
             return Err(AxonError::InvalidArgument(format!(
                 "collection '{}' is not registered",
                 view.collection.as_str()
@@ -971,7 +1045,7 @@ impl StorageAdapter for PostgresStorageAdapter {
                 "SELECT version FROM collection_views
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
                 &[
-                    &view.collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                 ],
@@ -1003,7 +1077,7 @@ impl StorageAdapter for PostgresStorageAdapter {
                      updated_at_ns = EXCLUDED.updated_at_ns,
                      updated_by = EXCLUDED.updated_by",
                 &[
-                    &view.collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                     &next_version,
@@ -1028,7 +1102,7 @@ impl StorageAdapter for PostgresStorageAdapter {
                 "SELECT view_json FROM collection_views
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
                 &[
-                    &collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                 ],
@@ -1053,7 +1127,7 @@ impl StorageAdapter for PostgresStorageAdapter {
                 "DELETE FROM collection_views
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
                 &[
-                    &collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                 ],
@@ -1278,6 +1352,26 @@ mod tests {
             adapter,
             _database: database,
         })
+    }
+
+    fn register_unique_namespaced_collection(
+        store: &mut TestStore,
+        qualified: &CollectionId,
+    ) -> (Namespace, CollectionId) {
+        let (namespace, bare_collection) = Namespace::parse(qualified.as_str());
+        let bare_collection = CollectionId::new(bare_collection);
+
+        store
+            .create_database(namespace.database.as_str())
+            .expect("database create should succeed");
+        store
+            .create_namespace(&namespace)
+            .expect("namespace create should succeed");
+        store
+            .register_collection_in_namespace(&bare_collection, &namespace)
+            .expect("collection register should succeed");
+
+        (namespace, bare_collection)
     }
 
     #[test]
@@ -1952,5 +2046,119 @@ mod tests {
                 .is_some(),
             "engineering entity should survive"
         );
+    }
+
+    #[test]
+    fn qualified_schema_write_is_readable_via_bare_unique_collection() {
+        let _guard = postgres_test_guard();
+        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let qualified = CollectionId::new("prod.billing.invoices");
+        let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
+
+        let v1 = CollectionSchema {
+            collection: qualified.clone(),
+            description: Some("v1".into()),
+            version: 99,
+            entity_schema: Some(
+                serde_json::json!({"type": "object", "properties": {"title": {"type": "string"}}}),
+            ),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+        };
+        let v2 = CollectionSchema {
+            collection: qualified,
+            description: Some("v2".into()),
+            version: 100,
+            entity_schema: Some(
+                serde_json::json!({"type": "object", "properties": {"amount": {"type": "number"}}}),
+            ),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+        };
+
+        s.put_schema(&v1).expect("schema v1 put should succeed");
+        s.put_schema(&v2).expect("schema v2 put should succeed");
+
+        let stored_collections: Vec<String> = s
+            .client
+            .borrow_mut()
+            .query(
+                "SELECT collection FROM schemas
+                 WHERE database_name = $1 AND schema_name = $2
+                 ORDER BY version ASC",
+                &[&billing.database, &billing.schema],
+            )
+            .expect("schema version query should succeed")
+            .into_iter()
+            .map(|row| row.get("collection"))
+            .collect();
+        assert_eq!(
+            stored_collections,
+            vec!["invoices".to_string(), "invoices".to_string()]
+        );
+
+        let latest = s
+            .get_schema(&invoices)
+            .expect("latest schema lookup should succeed")
+            .expect("latest schema should exist");
+        assert_eq!(latest.collection, invoices);
+        assert_eq!(latest.version, 2);
+        assert_eq!(latest.description.as_deref(), Some("v2"));
+
+        let version_one = s
+            .get_schema_version(&invoices, 1)
+            .expect("versioned schema lookup should succeed")
+            .expect("schema version one should exist");
+        assert_eq!(version_one.collection, invoices);
+        assert_eq!(version_one.description.as_deref(), Some("v1"));
+
+        assert_eq!(
+            s.list_schema_versions(&invoices)
+                .expect("schema version list should succeed")
+                .into_iter()
+                .map(|(version, _)| version)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn qualified_collection_view_write_is_readable_via_bare_unique_collection() {
+        let _guard = postgres_test_guard();
+        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let qualified = CollectionId::new("prod.billing.invoices");
+        let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
+
+        let stored = s
+            .put_collection_view(&CollectionView::new(qualified, "# {{title}}"))
+            .expect("qualified collection view put should succeed");
+        assert_eq!(stored.collection, invoices);
+        assert_eq!(stored.version, 1);
+
+        let stored_collection: String = s
+            .client
+            .borrow_mut()
+            .query_one(
+                "SELECT collection FROM collection_views
+                 WHERE database_name = $1 AND schema_name = $2",
+                &[&billing.database, &billing.schema],
+            )
+            .expect("stored collection view lookup should succeed")
+            .get("collection");
+        assert_eq!(stored_collection, "invoices");
+
+        let retrieved = s
+            .get_collection_view(&invoices)
+            .expect("bare collection view lookup should succeed")
+            .expect("collection view should exist");
+        assert_eq!(retrieved.collection, invoices);
+        assert_eq!(retrieved.markdown_template, "# {{title}}");
+        assert_eq!(retrieved.version, 1);
     }
 }
