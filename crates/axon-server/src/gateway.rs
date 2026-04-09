@@ -23,6 +23,7 @@ use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{AuthContext, AuthError, Identity};
+use crate::collection_listing::list_collections_for_database;
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
@@ -161,7 +162,16 @@ impl CurrentDatabase {
     }
 }
 
-fn request_current_database(request: &axum::extract::Request) -> CurrentDatabase {
+#[derive(Clone, Debug)]
+struct RequestedDatabaseScope(Option<String>);
+
+impl RequestedDatabaseScope {
+    fn database(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
+fn requested_database_scope(request: &axum::extract::Request) -> RequestedDatabaseScope {
     if let Some(database) = request
         .uri()
         .path()
@@ -169,16 +179,22 @@ fn request_current_database(request: &axum::extract::Request) -> CurrentDatabase
         .and_then(|rest| rest.split('/').next())
         .filter(|database| !database.is_empty())
     {
-        return CurrentDatabase::new(database);
+        return RequestedDatabaseScope(Some(database.to_string()));
     }
 
-    let database = request
-        .headers()
-        .get(AXON_DATABASE_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .filter(|database| !database.is_empty())
-        .unwrap_or(DEFAULT_DATABASE);
-    CurrentDatabase::new(database)
+    RequestedDatabaseScope(
+        request
+            .headers()
+            .get(AXON_DATABASE_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .filter(|database| !database.is_empty())
+            .map(str::to_string),
+    )
+}
+
+fn request_current_database(request: &axum::extract::Request) -> CurrentDatabase {
+    let requested_scope = requested_database_scope(request);
+    CurrentDatabase::new(requested_scope.database().unwrap_or(DEFAULT_DATABASE))
 }
 
 fn qualify_collection_name(collection: &str, current_database: &CurrentDatabase) -> CollectionId {
@@ -197,8 +213,10 @@ async fn authenticate_http_request(
     mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
+    let requested_database_scope = requested_database_scope(&request);
     let current_database = request_current_database(&request);
     request.extensions_mut().insert(current_database);
+    request.extensions_mut().insert(requested_database_scope);
     match auth.resolve_peer(request_peer_address(&request)).await {
         Ok(identity) => {
             request.extensions_mut().insert(identity);
@@ -749,9 +767,11 @@ async fn query_audit_by_entity<S: StorageAdapter>(
 async fn query_audit<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(current_database): Extension<CurrentDatabase>,
+    Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let req = QueryAuditRequest {
+        database: requested_database_scope.database().map(str::to_string),
         collection: params
             .get("collection")
             .map(|collection| qualify_collection_name(collection, &current_database)),
@@ -877,13 +897,20 @@ async fn drop_collection<S: StorageAdapter>(
     }
 }
 
-async fn list_collections<S: StorageAdapter>(State(handler): State<SharedHandler<S>>) -> Response {
-    match handler
-        .lock()
-        .await
-        .list_collections(ListCollectionsRequest {})
-    {
-        Ok(resp) => Json(json!({ "collections": resp.collections })).into_response(),
+async fn list_collections<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
+) -> Response {
+    let handler = handler.lock().await;
+    let collections = match requested_database_scope.database() {
+        Some(database) => list_collections_for_database(&handler, database),
+        None => handler
+            .list_collections(ListCollectionsRequest {})
+            .map(|resp| resp.collections),
+    };
+
+    match collections {
+        Ok(collections) => Json(json!({ "collections": collections })).into_response(),
         Err(e) => axon_error_response(e),
     }
 }
@@ -2828,6 +2855,131 @@ mod tests {
         default_resp.assert_status_ok();
         let default_body: Value = default_resp.json();
         assert_eq!(default_body["entity"]["data"]["scope"], "default");
+    }
+
+    #[tokio::test]
+    async fn http_collection_listings_scope_to_selected_database_only_when_requested() {
+        let server = test_server();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/databases/prod")
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/db/prod/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let global_resp = server.get("/collections").await;
+        global_resp.assert_status_ok();
+        let global_body: Value = global_resp.json();
+        let global_names: Vec<&str> = global_body["collections"]
+            .as_array()
+            .expect("global collection list should be an array")
+            .iter()
+            .map(|collection| {
+                collection["name"]
+                    .as_str()
+                    .expect("collection metadata should include a name")
+            })
+            .collect();
+        assert_eq!(global_names, vec!["tasks", "tasks"]);
+
+        let header_scoped_resp = server
+            .get("/collections")
+            .add_header(AXON_DATABASE_HEADER, "prod")
+            .await;
+        header_scoped_resp.assert_status_ok();
+        let header_scoped_body: Value = header_scoped_resp.json();
+        let header_scoped_collections = header_scoped_body["collections"]
+            .as_array()
+            .expect("header scoped collection list should be an array");
+        assert_eq!(header_scoped_collections.len(), 1);
+        assert_eq!(header_scoped_collections[0]["name"], "prod.default.tasks");
+
+        let path_scoped_resp = server.get("/db/prod/collections").await;
+        path_scoped_resp.assert_status_ok();
+        let path_scoped_body: Value = path_scoped_resp.json();
+        let path_scoped_collections = path_scoped_body["collections"]
+            .as_array()
+            .expect("path scoped collection list should be an array");
+        assert_eq!(path_scoped_collections.len(), 1);
+        assert_eq!(path_scoped_collections[0]["name"], "prod.default.tasks");
+    }
+
+    #[tokio::test]
+    async fn http_audit_queries_scope_to_selected_database_only_when_requested() {
+        let server = test_server();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/databases/prod")
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/db/prod/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"scope": "default"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/db/prod/entities/tasks/t-001")
+            .json(&json!({"data": {"scope": "prod"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let global_resp = server.get("/audit/query").await;
+        global_resp.assert_status_ok();
+        let global_body: Value = global_resp.json();
+        let global_entries = global_body["entries"]
+            .as_array()
+            .expect("global audit query should return an entries array");
+        assert!(global_entries
+            .iter()
+            .any(|entry| entry["collection"] == "tasks"));
+        assert!(global_entries
+            .iter()
+            .any(|entry| entry["collection"] == "prod.default.tasks"));
+
+        let header_scoped_resp = server
+            .get("/audit/query")
+            .add_header(AXON_DATABASE_HEADER, "prod")
+            .await;
+        header_scoped_resp.assert_status_ok();
+        let header_scoped_body: Value = header_scoped_resp.json();
+        let header_scoped_entries = header_scoped_body["entries"]
+            .as_array()
+            .expect("header scoped audit query should return an entries array");
+        assert!(!header_scoped_entries.is_empty());
+        assert!(header_scoped_entries
+            .iter()
+            .all(|entry| entry["collection"] == "prod.default.tasks"));
+
+        let path_scoped_resp = server.get("/db/prod/audit/query").await;
+        path_scoped_resp.assert_status_ok();
+        let path_scoped_body: Value = path_scoped_resp.json();
+        let path_scoped_entries = path_scoped_body["entries"]
+            .as_array()
+            .expect("path scoped audit query should return an entries array");
+        assert!(!path_scoped_entries.is_empty());
+        assert!(path_scoped_entries
+            .iter()
+            .all(|entry| entry["collection"] == "prod.default.tasks"));
     }
 
     #[tokio::test]

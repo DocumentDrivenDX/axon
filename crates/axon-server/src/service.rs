@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::auth::{AuthContext, AuthError, Identity};
+use crate::collection_listing::list_collections_for_database;
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
@@ -116,12 +117,15 @@ fn auth_to_status(error: AuthError) -> Status {
 }
 
 fn grpc_current_database<T>(request: &Request<T>) -> &str {
+    grpc_requested_database(request).unwrap_or(DEFAULT_DATABASE)
+}
+
+fn grpc_requested_database<T>(request: &Request<T>) -> Option<&str> {
     request
         .metadata()
         .get(AXON_DATABASE_HEADER)
         .and_then(|value| value.to_str().ok())
         .filter(|database| !database.is_empty())
-        .unwrap_or(DEFAULT_DATABASE)
 }
 
 fn qualify_collection_name(collection: &str, current_database: &str) -> CollectionId {
@@ -699,22 +703,22 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoListCollectionsReq>,
     ) -> Result<Response<ProtoListCollectionsResp>, Status> {
         self.authorize(request.remote_addr()).await?;
-        let resp = self
-            .handler
-            .lock()
-            .await
-            .list_collections(ListCollectionsRequest {})
-            .map_err(axon_to_status)?;
-
-        let collections = resp
-            .collections
-            .into_iter()
-            .map(|c| CollectionMeta {
-                name: c.name,
-                entity_count: c.entity_count as u64,
-                schema_version: c.schema_version.unwrap_or(0),
-            })
-            .collect();
+        let requested_database = grpc_requested_database(&request).map(str::to_string);
+        let handler = self.handler.lock().await;
+        let collections = match requested_database {
+            Some(database) => list_collections_for_database(&handler, &database),
+            None => handler
+                .list_collections(ListCollectionsRequest {})
+                .map(|resp| resp.collections),
+        }
+        .map_err(axon_to_status)?
+        .into_iter()
+        .map(|c| CollectionMeta {
+            name: c.name,
+            entity_count: c.entity_count as u64,
+            schema_version: c.schema_version.unwrap_or(0),
+        })
+        .collect();
 
         Ok(Response::new(ProtoListCollectionsResp { collections }))
     }
@@ -1176,6 +1180,57 @@ mod tests {
                 .expect("prod entity JSON should parse")["scope"],
             "prod"
         );
+    }
+
+    #[tokio::test]
+    async fn grpc_list_collections_scopes_to_metadata_database_only_when_present() {
+        let svc = AxonServiceImpl::new_in_memory();
+        let default_schema = serde_json::to_string(&axon_schema::schema::CollectionSchema::new(
+            CollectionId::new("tasks"),
+        ))
+        .expect("default schema should serialize");
+
+        svc.create_collection(Request::new(ProtoCreateCollectionReq {
+            name: "tasks".into(),
+            schema_json: default_schema.clone(),
+            actor: String::new(),
+        }))
+        .await
+        .expect("default collection create should succeed");
+
+        svc.create_database(Request::new(ProtoCreateDatabaseReq {
+            name: "prod".into(),
+        }))
+        .await
+        .expect("database create should succeed");
+
+        svc.create_collection(request_with_database(
+            ProtoCreateCollectionReq {
+                name: "tasks".into(),
+                schema_json: default_schema,
+                actor: String::new(),
+            },
+            "prod",
+        ))
+        .await
+        .expect("prod collection create should succeed");
+
+        let global = svc
+            .list_collections(Request::new(ProtoListCollectionsReq {}))
+            .await
+            .expect("global list_collections should succeed")
+            .into_inner();
+        assert_eq!(global.collections.len(), 2);
+        assert_eq!(global.collections[0].name, "tasks");
+        assert_eq!(global.collections[1].name, "tasks");
+
+        let prod = svc
+            .list_collections(request_with_database(ProtoListCollectionsReq {}, "prod"))
+            .await
+            .expect("prod-scoped list_collections should succeed")
+            .into_inner();
+        assert_eq!(prod.collections.len(), 1);
+        assert_eq!(prod.collections[0].name, "prod.default.tasks");
     }
 
     #[tokio::test]
