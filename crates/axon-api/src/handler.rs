@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 fn now_ns() -> u64 {
     SystemTime::now()
@@ -1421,15 +1421,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
         };
 
         if req.dry_run {
-            let Some(current) = current else {
-                return Err(AxonError::InvalidOperation(
-                    "dry-run rollback preview is unavailable for deleted entities".into(),
-                ));
-            };
             return Ok(RollbackEntityResponse::DryRun {
-                current: Self::present_entity(&req.collection, current.clone()),
+                current: current
+                    .clone()
+                    .map(|entity| Self::present_entity(&req.collection, entity)),
                 target,
-                diff: compute_diff(&current.data, &target_data),
+                diff: current.as_ref().map_or_else(
+                    || compute_diff(&json!({}), &target_data),
+                    |entity| compute_diff(&entity.data, &target_data),
+                ),
             });
         }
 
@@ -5020,6 +5020,7 @@ entity_schema:
             panic!("rollback should return dry-run preview");
         };
 
+        let current = current.expect("live entity dry run should return current state");
         assert_eq!(current.version, 2);
         assert_eq!(current.data["title"], "v2");
         assert_eq!(target.version, 3);
@@ -5143,6 +5144,86 @@ entity_schema:
             .unwrap();
         assert_eq!(stored.entity.version, 3);
         assert_eq!(stored.entity.data["title"], "v1");
+    }
+
+    #[test]
+    fn rollback_entity_dry_run_previews_deleted_entity_recreation_without_write() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v1", "status": "draft"}),
+            actor: Some("alice".into()),
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v2", "status": "published"}),
+            expected_version: 1,
+            actor: Some("alice".into()),
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.delete_entity(DeleteEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            actor: Some("alice".into()),
+            force: false,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                target: RollbackEntityTarget::Version(1),
+                expected_version: None,
+                actor: Some("admin".into()),
+                dry_run: true,
+            })
+            .unwrap();
+
+        let RollbackEntityResponse::DryRun {
+            current,
+            target,
+            diff,
+        } = resp
+        else {
+            panic!("rollback should return deleted-entity dry-run preview");
+        };
+
+        assert!(current.is_none());
+        assert_eq!(target.version, 3);
+        assert_eq!(target.data["title"], "v1");
+        assert_eq!(target.data["status"], "draft");
+        assert_eq!(
+            diff.get("title").and_then(|field| field.before.as_ref()),
+            None
+        );
+        assert_eq!(
+            diff.get("title").and_then(|field| field.after.as_ref()),
+            Some(&json!("v1"))
+        );
+        assert_eq!(
+            diff.get("status").and_then(|field| field.after.as_ref()),
+            Some(&json!("draft"))
+        );
+
+        let stored = h
+            .get_entity(GetEntityRequest {
+                collection: col,
+                id,
+            })
+            .unwrap_err();
+        assert!(matches!(stored, AxonError::NotFound(_)));
     }
 
     #[test]

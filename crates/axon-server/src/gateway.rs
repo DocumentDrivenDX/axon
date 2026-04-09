@@ -978,7 +978,7 @@ async fn rollback_collection_entity<S: StorageAdapter>(
             target,
             diff,
         }) => Json(json!({
-            "current": entity_payload(&current),
+            "current": current.as_ref().map(entity_payload),
             "target": entity_payload(&target),
             "diff": diff,
         }))
@@ -2533,6 +2533,50 @@ mod tests {
         let current_body: Value = current.json();
         assert_eq!(current_body["entity"]["version"], 2);
         assert_eq!(current_body["entity"]["data"]["title"], "v2");
+    }
+
+    #[tokio::test]
+    async fn http_entity_rollback_dry_run_previews_deleted_entity_without_recreate() {
+        let server = test_server();
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1", "status": "draft"}, "actor": "alice"}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .put("/entities/tasks/t-001")
+            .json(&json!({
+                "data": {"title": "v2", "status": "published"},
+                "expected_version": 1,
+                "actor": "alice"
+            }))
+            .await
+            .assert_status_ok();
+        server
+            .delete("/entities/tasks/t-001")
+            .await
+            .assert_status_ok();
+
+        let resp = server
+            .post("/v1/collections/tasks/entities/t-001/rollback")
+            .json(&json!({"to_version": 1, "dry_run": true}))
+            .await;
+        resp.assert_status_ok();
+
+        let body: Value = resp.json();
+        assert_eq!(body["current"], Value::Null);
+        assert_eq!(body["target"]["version"], 3);
+        assert_eq!(body["target"]["data"]["title"], "v1");
+        assert_eq!(body["target"]["data"]["status"], "draft");
+        assert_eq!(body["diff"]["title"]["before"], Value::Null);
+        assert_eq!(body["diff"]["title"]["after"], "v1");
+        assert_eq!(body["diff"]["status"]["after"], "draft");
+
+        server
+            .get("/entities/tasks/t-001")
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

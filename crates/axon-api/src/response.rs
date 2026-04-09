@@ -202,7 +202,9 @@ pub enum RollbackEntityResponse {
     },
     /// The rollback was validated and previewed without writing.
     DryRun {
-        current: Entity,
+        /// Current stored entity state. `None` when the rollback would recreate
+        /// a deleted entity.
+        current: Option<Entity>,
         target: Entity,
         diff: HashMap<String, FieldDiff>,
     },
