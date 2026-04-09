@@ -43,6 +43,7 @@ use crate::response::{
 
 const DEFAULT_MAX_DEPTH: usize = 3;
 const MAX_DEPTH_CAP: usize = 10;
+const DEFAULT_MARKDOWN_TEMPLATE_CACHE_CAPACITY: usize = 256;
 
 #[derive(Debug)]
 struct CachedMarkdownTemplate {
@@ -50,9 +51,85 @@ struct CachedMarkdownTemplate {
     template: Arc<axon_render::CompiledTemplate>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct MarkdownTemplateCache {
     entries: HashMap<CollectionId, CachedMarkdownTemplate>,
+    lru: VecDeque<CollectionId>,
+    capacity: usize,
+}
+
+impl Default for MarkdownTemplateCache {
+    fn default() -> Self {
+        Self::new(DEFAULT_MARKDOWN_TEMPLATE_CACHE_CAPACITY)
+    }
+}
+
+impl MarkdownTemplateCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            entries: HashMap::new(),
+            lru: VecDeque::new(),
+            capacity,
+        }
+    }
+
+    fn get(
+        &mut self,
+        collection: &CollectionId,
+        version: u32,
+    ) -> Option<Arc<axon_render::CompiledTemplate>> {
+        let template = match self.entries.get(collection) {
+            Some(cached) if cached.version == version => Arc::clone(&cached.template),
+            _ => return None,
+        };
+
+        self.touch(collection);
+        Some(template)
+    }
+
+    fn insert(&mut self, collection: CollectionId, cached: CachedMarkdownTemplate) {
+        if self.capacity == 0 {
+            return;
+        }
+
+        self.entries.insert(collection.clone(), cached);
+        self.touch(&collection);
+        self.evict_to_capacity();
+    }
+
+    fn remove(&mut self, collection: &CollectionId) -> Option<CachedMarkdownTemplate> {
+        let removed = self.entries.remove(collection);
+        if removed.is_some() {
+            self.lru.retain(|candidate| candidate != collection);
+        }
+        removed
+    }
+
+    fn retain<F>(&mut self, mut keep: F)
+    where
+        F: FnMut(&CollectionId, &CachedMarkdownTemplate) -> bool,
+    {
+        self.entries
+            .retain(|collection, cached| keep(collection, cached));
+        self.lru
+            .retain(|collection| self.entries.contains_key(collection));
+    }
+
+    fn touch(&mut self, collection: &CollectionId) {
+        self.lru.retain(|candidate| candidate != collection);
+        self.lru.push_back(collection.clone());
+    }
+
+    fn evict_to_capacity(&mut self) {
+        while self.entries.len() > self.capacity {
+            match self.lru.pop_front() {
+                Some(collection) => {
+                    self.entries.remove(&collection);
+                }
+                None => break,
+            }
+        }
+    }
 }
 
 /// Core API handler: coordinates storage, schema validation, and audit.
@@ -85,10 +162,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     pub fn new(storage: S) -> Self {
+        Self::new_with_markdown_template_cache_capacity(
+            storage,
+            DEFAULT_MARKDOWN_TEMPLATE_CACHE_CAPACITY,
+        )
+    }
+
+    fn new_with_markdown_template_cache_capacity(storage: S, cache_capacity: usize) -> Self {
         Self {
             storage,
             audit: MemoryAuditLog::default(),
-            markdown_template_cache: Mutex::default(),
+            markdown_template_cache: Mutex::new(MarkdownTemplateCache::new(cache_capacity)),
         }
     }
 
@@ -105,14 +189,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<Arc<axon_render::CompiledTemplate>, AxonError> {
         let mut cache = self.markdown_template_cache()?;
 
-        if let Some(cached) = cache.entries.get(collection) {
-            if cached.version == view.version {
-                return Ok(Arc::clone(&cached.template));
-            }
+        if let Some(cached) = cache.get(collection, view.version) {
+            return Ok(cached);
         }
 
         let compiled = Arc::new(axon_render::compile(view.markdown_template.clone())?);
-        cache.entries.insert(
+        cache.insert(
             collection.clone(),
             CachedMarkdownTemplate {
                 version: view.version,
@@ -123,7 +205,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     fn invalidate_markdown_template(&self, collection: &CollectionId) -> Result<(), AxonError> {
-        self.markdown_template_cache()?.entries.remove(collection);
+        self.markdown_template_cache()?.remove(collection);
         Ok(())
     }
 
@@ -140,20 +222,18 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .iter()
             .map(|collection| collection.collection.clone())
             .collect();
-        self.markdown_template_cache()?
-            .entries
-            .retain(|collection, _| {
-                let (namespace, bare_collection) = Namespace::parse(collection.as_str());
-                if bare_collection == collection.as_str() {
-                    !doomed_bare_names.contains(collection)
-                } else {
-                    let key = QualifiedCollectionId::from_parts(
-                        &namespace,
-                        &CollectionId::new(bare_collection),
-                    );
-                    !doomed.contains(&key)
-                }
-            });
+        self.markdown_template_cache()?.retain(|collection, _| {
+            let (namespace, bare_collection) = Namespace::parse(collection.as_str());
+            if bare_collection == collection.as_str() {
+                !doomed_bare_names.contains(collection)
+            } else {
+                let key = QualifiedCollectionId::from_parts(
+                    &namespace,
+                    &CollectionId::new(bare_collection),
+                );
+                !doomed.contains(&key)
+            }
+        });
         Ok(())
     }
 
@@ -2650,6 +2730,15 @@ mod tests {
         AxonHandler::new(MemoryStorageAdapter::default())
     }
 
+    fn handler_with_markdown_template_cache_capacity(
+        capacity: usize,
+    ) -> AxonHandler<MemoryStorageAdapter> {
+        AxonHandler::new_with_markdown_template_cache_capacity(
+            MemoryStorageAdapter::default(),
+            capacity,
+        )
+    }
+
     fn register_prod_billing_and_engineering_collection(
         h: &mut AxonHandler<MemoryStorageAdapter>,
         collection: &str,
@@ -2705,6 +2794,63 @@ mod tests {
                 panic!("expected markdown render to succeed: {detail}")
             }
         }
+    }
+
+    fn cache_len(handler: &AxonHandler<MemoryStorageAdapter>) -> usize {
+        ok_or_panic(
+            handler.markdown_template_cache(),
+            "reading markdown template cache size",
+        )
+        .entries
+        .len()
+    }
+
+    fn is_template_cached(
+        handler: &AxonHandler<MemoryStorageAdapter>,
+        collection: &CollectionId,
+    ) -> bool {
+        ok_or_panic(
+            handler.markdown_template_cache(),
+            "reading markdown template cache entry",
+        )
+        .entries
+        .contains_key(collection)
+    }
+
+    fn seed_markdown_collection(
+        handler: &mut AxonHandler<MemoryStorageAdapter>,
+        name: &str,
+        title: &str,
+    ) -> (CollectionId, EntityId) {
+        let collection = CollectionId::new(name);
+        let entity_id = EntityId::new("t-001");
+
+        ok_or_panic(
+            handler.create_collection(CreateCollectionRequest {
+                name: collection.clone(),
+                schema: CollectionSchema::new(collection.clone()),
+                actor: None,
+            }),
+            "creating collection for markdown cache test",
+        );
+        ok_or_panic(
+            handler.create_entity(CreateEntityRequest {
+                collection: collection.clone(),
+                id: entity_id.clone(),
+                data: json!({"title": title}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating entity for markdown cache test",
+        );
+        ok_or_panic(
+            handler
+                .storage_mut()
+                .put_collection_view(&CollectionView::new(collection.clone(), "# {{title}}")),
+            "storing collection view for markdown cache test",
+        );
+
+        (collection, entity_id)
     }
 
     // ── Entity CRUD ──────────────────────────────────────────────────────────
@@ -2854,6 +3000,56 @@ mod tests {
                 panic!("expected markdown render to refresh after template update")
             }
         }
+    }
+
+    #[test]
+    fn get_entity_markdown_bounds_template_cache_and_recompiles_evicted_entries() {
+        let mut h = handler_with_markdown_template_cache_capacity(2);
+        let (first_collection, first_id) = seed_markdown_collection(&mut h, "tasks-a", "alpha");
+        let (second_collection, second_id) = seed_markdown_collection(&mut h, "tasks-b", "beta");
+        let (third_collection, third_id) = seed_markdown_collection(&mut h, "tasks-c", "gamma");
+
+        assert_rendered_markdown(
+            ok_or_panic(
+                h.get_entity_markdown(&first_collection, &first_id),
+                "rendering markdown for first collection",
+            ),
+            "# alpha",
+        );
+        assert!(is_template_cached(&h, &first_collection));
+
+        assert_rendered_markdown(
+            ok_or_panic(
+                h.get_entity_markdown(&second_collection, &second_id),
+                "rendering markdown for second collection",
+            ),
+            "# beta",
+        );
+        assert_eq!(cache_len(&h), 2);
+
+        assert_rendered_markdown(
+            ok_or_panic(
+                h.get_entity_markdown(&third_collection, &third_id),
+                "rendering markdown for third collection",
+            ),
+            "# gamma",
+        );
+        assert_eq!(cache_len(&h), 2);
+        assert!(!is_template_cached(&h, &first_collection));
+        assert!(is_template_cached(&h, &second_collection));
+        assert!(is_template_cached(&h, &third_collection));
+
+        assert_rendered_markdown(
+            ok_or_panic(
+                h.get_entity_markdown(&first_collection, &first_id),
+                "rendering markdown for evicted first collection",
+            ),
+            "# alpha",
+        );
+        assert_eq!(cache_len(&h), 2);
+        assert!(is_template_cached(&h, &first_collection));
+        assert!(!is_template_cached(&h, &second_collection));
+        assert!(is_template_cached(&h, &third_collection));
     }
 
     #[test]
