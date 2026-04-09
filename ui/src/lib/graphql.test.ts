@@ -15,6 +15,12 @@ type GraphQLRequest = {
 	variables?: Record<string, unknown>;
 };
 
+type GraphQLTypeRef = {
+	kind: string;
+	name: string | null;
+	ofType?: GraphQLTypeRef | null;
+};
+
 function createJsonResponse(body: unknown): Response {
 	return new Response(JSON.stringify(body), {
 		status: 200,
@@ -30,18 +36,160 @@ function parseRequest(init?: RequestInit): GraphQLRequest {
 	return JSON.parse(init.body) as GraphQLRequest;
 }
 
-function supportedHelperContract() {
+function namedType(name: string): GraphQLTypeRef {
+	return { kind: 'OBJECT', name };
+}
+
+function scalarType(name: string): GraphQLTypeRef {
+	return { kind: 'SCALAR', name };
+}
+
+function nonNullType(ofType: GraphQLTypeRef): GraphQLTypeRef {
+	return { kind: 'NON_NULL', name: null, ofType };
+}
+
+function listType(ofType: GraphQLTypeRef): GraphQLTypeRef {
+	return { kind: 'LIST', name: null, ofType };
+}
+
+function supportedCollectionContract() {
 	return {
 		__schema: {
 			queryType: {
-				fields: [{ name: 'collections' }, { name: 'entities' }, { name: 'entity' }],
+				fields: [
+					{
+						name: 'collections',
+						args: [],
+						type: nonNullType(listType(nonNullType(namedType('CollectionMeta')))),
+					},
+					{
+						name: 'entity',
+						args: [
+							{ name: 'collection', type: nonNullType(scalarType('String')) },
+							{ name: 'id', type: nonNullType(scalarType('ID')) },
+						],
+						type: scalarType('JSON'),
+					},
+					{
+						name: 'entities',
+						args: [
+							{ name: 'collection', type: nonNullType(scalarType('String')) },
+							{ name: 'limit', type: scalarType('Int') },
+							{ name: 'after', type: scalarType('String') },
+						],
+						type: nonNullType(namedType('EntityConnection')),
+					},
+				],
 			},
+			types: [
+				{
+					name: 'CollectionMeta',
+					fields: [
+						{ name: 'name', type: nonNullType(scalarType('String')) },
+						{ name: 'entityCount', type: nonNullType(scalarType('Int')) },
+					],
+				},
+				{
+					name: 'PageInfo',
+					fields: [
+						{ name: 'hasNextPage', type: nonNullType(scalarType('Boolean')) },
+						{ name: 'endCursor', type: scalarType('String') },
+					],
+				},
+				{
+					name: 'EntityEdge',
+					fields: [
+						{ name: 'node', type: scalarType('JSON') },
+						{ name: 'cursor', type: nonNullType(scalarType('String')) },
+					],
+				},
+				{
+					name: 'EntityConnection',
+					fields: [
+						{
+							name: 'edges',
+							type: nonNullType(listType(nonNullType(namedType('EntityEdge')))),
+						},
+						{ name: 'pageInfo', type: nonNullType(namedType('PageInfo')) },
+					],
+				},
+			],
 		},
-		collectionMeta: {
-			fields: [{ name: 'name' }, { name: 'entityCount' }],
-		},
-		entityConnection: {
-			fields: [{ name: 'edges' }, { name: 'pageInfo' }],
+	};
+}
+
+function supportedEntityHelperContract() {
+	return {
+		__schema: {
+			queryType: {
+				fields: [
+					{
+						name: 'collections',
+						args: [],
+						type: nonNullType(listType(nonNullType(namedType('CollectionMeta')))),
+					},
+					{
+						name: 'entity',
+						args: [
+							{ name: 'collection', type: nonNullType(scalarType('String')) },
+							{ name: 'id', type: nonNullType(scalarType('ID')) },
+						],
+						type: namedType('EntityRecord'),
+					},
+					{
+						name: 'entities',
+						args: [
+							{ name: 'collection', type: nonNullType(scalarType('String')) },
+							{ name: 'limit', type: scalarType('Int') },
+							{ name: 'after', type: scalarType('String') },
+						],
+						type: nonNullType(namedType('EntityConnection')),
+					},
+				],
+			},
+			types: [
+				{
+					name: 'CollectionMeta',
+					fields: [
+						{ name: 'name', type: nonNullType(scalarType('String')) },
+						{ name: 'entityCount', type: nonNullType(scalarType('Int')) },
+					],
+				},
+				{
+					name: 'EntityRecord',
+					fields: [
+						{ name: 'id', type: nonNullType(scalarType('ID')) },
+						{ name: 'version', type: nonNullType(scalarType('Int')) },
+						{ name: 'data', type: nonNullType(scalarType('JSON')) },
+						{ name: 'createdAt', type: nonNullType(scalarType('DateTime')) },
+						{ name: 'updatedAt', type: nonNullType(scalarType('DateTime')) },
+					],
+				},
+				{
+					name: 'PageInfo',
+					fields: [
+						{ name: 'hasNextPage', type: nonNullType(scalarType('Boolean')) },
+						{ name: 'endCursor', type: scalarType('String') },
+					],
+				},
+				{
+					name: 'EntityEdge',
+					fields: [
+						{ name: 'node', type: nonNullType(namedType('EntityRecord')) },
+						{ name: 'cursor', type: nonNullType(scalarType('String')) },
+					],
+				},
+				{
+					name: 'EntityConnection',
+					fields: [
+						{
+							name: 'edges',
+							type: nonNullType(listType(nonNullType(namedType('EntityEdge')))),
+						},
+						{ name: 'pageInfo', type: nonNullType(namedType('PageInfo')) },
+					],
+				},
+			],
 		},
 	};
 }
@@ -79,15 +227,14 @@ test('fetchCollections fails fast when the backend schema lacks the helper contr
 					queryType: {
 						fields: [{ name: 'tasks' }],
 					},
+					types: [],
 				},
-				collectionMeta: null,
-				entityConnection: null,
 			},
 		});
 	}) as unknown as typeof fetch;
 
 	await expect(fetchCollections()).rejects.toThrow(
-		/does not expose the collection\/entity helper contract/i,
+		/does not expose the collections helper contract/i,
 	);
 	expect(requests).toHaveLength(1);
 	expect(requests[0]?.query).toContain('__schema');
@@ -101,7 +248,7 @@ test('fetchCollections uses the collections query once the backend advertises su
 		requests.push(request);
 
 		if (requests.length === 1) {
-			return createJsonResponse({ data: supportedHelperContract() });
+			return createJsonResponse({ data: supportedCollectionContract() });
 		}
 
 		return createJsonResponse({
@@ -128,7 +275,7 @@ test('fetchCollections retries the helper contract probe after a transient failu
 		}
 
 		if (requests.length === 2) {
-			return createJsonResponse({ data: supportedHelperContract() });
+			return createJsonResponse({ data: supportedCollectionContract() });
 		}
 
 		return createJsonResponse({
@@ -146,6 +293,23 @@ test('fetchCollections retries the helper contract probe after a transient failu
 	expect(requests[2]?.query).toContain('collections { name entityCount }');
 });
 
+test('fetchEntities fails fast when the backend only exposes the FEAT-015 generic contract', async () => {
+	const requests: GraphQLRequest[] = [];
+
+	globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+		const request = parseRequest(init);
+		requests.push(request);
+
+		return createJsonResponse({ data: supportedCollectionContract() });
+	}) as unknown as typeof fetch;
+
+	await expect(fetchEntities('tasks', { limit: 10 })).rejects.toThrow(
+		/does not expose the entity helper contract/i,
+	);
+	expect(requests).toHaveLength(1);
+	expect(requests[0]?.query).toContain('__schema');
+});
+
 test('fetchEntities uses the entities query once the backend advertises support', async () => {
 	const requests: GraphQLRequest[] = [];
 
@@ -154,7 +318,7 @@ test('fetchEntities uses the entities query once the backend advertises support'
 		requests.push(request);
 
 		if (requests.length === 1) {
-			return createJsonResponse({ data: supportedHelperContract() });
+			return createJsonResponse({ data: supportedEntityHelperContract() });
 		}
 
 		return createJsonResponse({
@@ -172,8 +336,26 @@ test('fetchEntities uses the entities query once the backend advertises support'
 		pageInfo: { hasNextPage: false, endCursor: null },
 	});
 	expect(requests).toHaveLength(2);
+	expect(requests[1]?.query).toContain('query($collection: String!, $limit: Int, $after: String)');
 	expect(requests[1]?.query).toContain('entities(collection: $collection');
 	expect(requests[1]?.variables).toEqual({ collection: 'tasks', limit: 10, after: null });
+});
+
+test('fetchEntity fails fast when the backend only exposes the FEAT-015 generic contract', async () => {
+	const requests: GraphQLRequest[] = [];
+
+	globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+		const request = parseRequest(init);
+		requests.push(request);
+
+		return createJsonResponse({ data: supportedCollectionContract() });
+	}) as unknown as typeof fetch;
+
+	await expect(fetchEntity('tasks', 'task-1')).rejects.toThrow(
+		/does not expose the entity helper contract/i,
+	);
+	expect(requests).toHaveLength(1);
+	expect(requests[0]?.query).toContain('__schema');
 });
 
 test('fetchEntity uses the entity query once the backend advertises support', async () => {
@@ -184,7 +366,7 @@ test('fetchEntity uses the entity query once the backend advertises support', as
 		requests.push(request);
 
 		if (requests.length === 1) {
-			return createJsonResponse({ data: supportedHelperContract() });
+			return createJsonResponse({ data: supportedEntityHelperContract() });
 		}
 
 		return createJsonResponse({

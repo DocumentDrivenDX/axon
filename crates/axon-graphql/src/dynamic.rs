@@ -136,8 +136,87 @@ fn parse_type_ref(type_str: &str) -> TypeRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_graphql::{
+        EmptyMutation, EmptySubscription, Json, Schema as StaticSchema, SimpleObject, ID,
+    };
     use axon_core::id::CollectionId;
-    use serde_json::json;
+    use serde_json::{json, Value};
+
+    #[derive(SimpleObject, Clone)]
+    #[graphql(name = "CollectionMeta", rename_fields = "camelCase")]
+    struct Feat015CollectionMeta {
+        name: String,
+        entity_count: i32,
+    }
+
+    #[derive(SimpleObject, Clone)]
+    #[graphql(name = "PageInfo", rename_fields = "camelCase")]
+    struct Feat015PageInfo {
+        has_next_page: bool,
+        end_cursor: Option<String>,
+    }
+
+    #[derive(SimpleObject, Clone)]
+    #[graphql(name = "EntityEdge", rename_fields = "camelCase")]
+    struct Feat015EntityEdge {
+        node: Json<Value>,
+        cursor: String,
+    }
+
+    #[derive(SimpleObject, Clone)]
+    #[graphql(name = "EntityConnection", rename_fields = "camelCase")]
+    struct Feat015EntityConnection {
+        edges: Vec<Feat015EntityEdge>,
+        page_info: Feat015PageInfo,
+    }
+
+    struct Feat015Query;
+
+    #[async_graphql::Object(rename_fields = "camelCase")]
+    impl Feat015Query {
+        async fn collections(&self) -> Vec<Feat015CollectionMeta> {
+            vec![Feat015CollectionMeta {
+                name: String::from("tasks"),
+                entity_count: 1,
+            }]
+        }
+
+        async fn entity(&self, _collection: String, _id: ID) -> Json<Value> {
+            Json(json!({
+                "id": "task-1",
+                "version": 2,
+                "data": { "title": "Ship it" },
+                "createdAt": "2026-04-08T00:00:00Z",
+                "updatedAt": "2026-04-08T00:00:00Z"
+            }))
+        }
+
+        async fn entities(
+            &self,
+            _collection: String,
+            _limit: Option<i32>,
+            _after: Option<String>,
+        ) -> Feat015EntityConnection {
+            Feat015EntityConnection {
+                edges: vec![Feat015EntityEdge {
+                    node: Json(json!({
+                        "id": "task-1",
+                        "version": 2,
+                        "data": { "title": "Ship it" }
+                    })),
+                    cursor: String::from("cursor-1"),
+                }],
+                page_info: Feat015PageInfo {
+                    has_next_page: false,
+                    end_cursor: None,
+                },
+            }
+        }
+    }
+
+    fn feat_015_schema() -> StaticSchema<Feat015Query, EmptyMutation, EmptySubscription> {
+        StaticSchema::build(Feat015Query, EmptyMutation, EmptySubscription).finish()
+    }
 
     fn test_schema() -> CollectionSchema {
         CollectionSchema {
@@ -250,6 +329,50 @@ mod tests {
             assert!(
                 !result.errors.is_empty(),
                 "{name} unexpectedly matched the current schema",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ui_helper_queries_fail_fast_against_feat_015_generic_contract() {
+        let schema = feat_015_schema();
+
+        let collections_result = schema.execute("{ collections { name entityCount } }").await;
+        assert!(
+            collections_result.errors.is_empty(),
+            "collections helper query should match FEAT-015: {:?}",
+            collections_result.errors
+        );
+
+        let helper_queries = [
+            (
+                "fetchEntities",
+                r#"{
+                    entities(collection: "tasks", limit: 50) {
+                        edges { node { id version data } }
+                        pageInfo { hasNextPage endCursor }
+                    }
+                }"#,
+            ),
+            (
+                "fetchEntity",
+                r#"{
+                    entity(collection: "tasks", id: "task-1") {
+                        id
+                        version
+                        data
+                        createdAt
+                        updatedAt
+                    }
+                }"#,
+            ),
+        ];
+
+        for (name, query) in helper_queries {
+            let result = schema.execute(query).await;
+            assert!(
+                !result.errors.is_empty(),
+                "{name} unexpectedly matched the FEAT-015 generic contract",
             );
         }
     }

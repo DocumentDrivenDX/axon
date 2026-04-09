@@ -6,24 +6,85 @@
  */
 
 const GRAPHQL_ENDPOINT = '/graphql';
-const GRAPHQL_HELPER_CONTRACT_ERROR =
-	'Axon /graphql does not expose the collection/entity helper contract yet.';
+const GRAPHQL_COLLECTIONS_HELPER_CONTRACT_ERROR =
+	'Axon /graphql does not expose the collections helper contract yet.';
+const GRAPHQL_ENTITY_HELPER_CONTRACT_ERROR =
+	'Axon /graphql does not expose the entity helper contract yet.';
 const GRAPHQL_HELPER_CONTRACT_QUERY = `query AxonUiGraphQLHelperContract {
 	__schema {
 		queryType {
 			fields {
 				name
+				args {
+					name
+					type {
+						kind
+						name
+						ofType {
+							kind
+							name
+							ofType {
+								kind
+								name
+								ofType {
+									kind
+									name
+									ofType {
+										kind
+										name
+									}
+								}
+							}
+						}
+					}
+				}
+				type {
+					kind
+					name
+					ofType {
+						kind
+						name
+						ofType {
+							kind
+							name
+							ofType {
+								kind
+								name
+								ofType {
+									kind
+									name
+								}
+							}
+						}
+					}
+				}
 			}
 		}
-	}
-	collectionMeta: __type(name: "CollectionMeta") {
-		fields {
+		types {
 			name
-		}
-	}
-	entityConnection: __type(name: "EntityConnection") {
-		fields {
-			name
+			fields {
+				name
+				type {
+					kind
+					name
+					ofType {
+						kind
+						name
+						ofType {
+							kind
+							name
+							ofType {
+								kind
+								name
+								ofType {
+									kind
+									name
+								}
+							}
+						}
+					}
+				}
+			}
 		}
 	}
 }`;
@@ -39,9 +100,23 @@ type GraphQLResponse<T> = {
 
 type GraphQLFieldMetadata = {
 	name: string;
+	args?: GraphQLArgumentMetadata[] | null;
+	type?: GraphQLTypeRefMetadata | null;
 };
 
-type GraphQLTypeMetadata = {
+type GraphQLArgumentMetadata = {
+	name: string;
+	type?: GraphQLTypeRefMetadata | null;
+};
+
+type GraphQLTypeRefMetadata = {
+	kind: string;
+	name?: string | null;
+	ofType?: GraphQLTypeRefMetadata | null;
+};
+
+type GraphQLNamedTypeMetadata = {
+	name: string;
 	fields?: GraphQLFieldMetadata[] | null;
 };
 
@@ -50,9 +125,8 @@ type GraphQLHelperContractData = {
 		queryType?: {
 			fields?: GraphQLFieldMetadata[] | null;
 		} | null;
+		types?: GraphQLNamedTypeMetadata[] | null;
 	};
-	collectionMeta?: GraphQLTypeMetadata | null;
-	entityConnection?: GraphQLTypeMetadata | null;
 };
 
 export type CollectionSummary = {
@@ -76,10 +150,10 @@ export type EntityConnection = {
 	};
 };
 
-let helperContractCheck: Promise<void> | null = null;
+let helperContractMetadata: Promise<GraphQLHelperContractData> | null = null;
 
 function hasFields(
-	typeMetadata: GraphQLTypeMetadata | null | undefined,
+	typeMetadata: GraphQLNamedTypeMetadata | null | undefined,
 	requiredFields: string[],
 ): boolean {
 	const fieldNames = new Set((typeMetadata?.fields ?? []).map((field) => field.name));
@@ -87,41 +161,125 @@ function hasFields(
 	return requiredFields.every((fieldName) => fieldNames.has(fieldName));
 }
 
-async function assertGraphQLHelperContract(): Promise<void> {
-	if (!helperContractCheck) {
-		const probe = (async () => {
-			const data = await gqlQuery<GraphQLHelperContractData>(GRAPHQL_HELPER_CONTRACT_QUERY);
-			const queryFieldNames = new Set(
-				(data.__schema.queryType?.fields ?? []).map((field) => field.name),
-			);
-			const supportsHelperContract =
-				queryFieldNames.has('collections') &&
-				queryFieldNames.has('entities') &&
-				queryFieldNames.has('entity') &&
-				hasFields(data.collectionMeta, ['name', 'entityCount']) &&
-				hasFields(data.entityConnection, ['edges', 'pageInfo']);
+function unwrapNamedType(typeMetadata: GraphQLTypeRefMetadata | null | undefined): string | null {
+	let currentType = typeMetadata ?? null;
 
-			if (!supportsHelperContract) {
-				throw new Error(GRAPHQL_HELPER_CONTRACT_ERROR);
-			}
-		})();
+	while (currentType) {
+		if (currentType.name) {
+			return currentType.name;
+		}
 
+		currentType = currentType.ofType ?? null;
+	}
+
+	return null;
+}
+
+function getField(
+	typeMetadata: { fields?: GraphQLFieldMetadata[] | null } | null | undefined,
+	fieldName: string,
+): GraphQLFieldMetadata | null {
+	return (typeMetadata?.fields ?? []).find((field) => field.name === fieldName) ?? null;
+}
+
+function getArgument(
+	fieldMetadata: GraphQLFieldMetadata | null | undefined,
+	argumentName: string,
+): GraphQLArgumentMetadata | null {
+	return (fieldMetadata?.args ?? []).find((argument) => argument.name === argumentName) ?? null;
+}
+
+function hasArgumentType(
+	fieldMetadata: GraphQLFieldMetadata | null | undefined,
+	argumentName: string,
+	expectedTypeName: string,
+): boolean {
+	return unwrapNamedType(getArgument(fieldMetadata, argumentName)?.type) === expectedTypeName;
+}
+
+function getNamedType(
+	schemaMetadata: GraphQLHelperContractData['__schema'],
+	typeName: string | null,
+): GraphQLNamedTypeMetadata | null {
+	if (!typeName) {
+		return null;
+	}
+
+	return (schemaMetadata.types ?? []).find((type) => type.name === typeName) ?? null;
+}
+
+function fieldReferencesTypeWithFields(
+	schemaMetadata: GraphQLHelperContractData['__schema'],
+	fieldMetadata: GraphQLFieldMetadata | null | undefined,
+	requiredFields: string[],
+): boolean {
+	const typeMetadata = getNamedType(schemaMetadata, unwrapNamedType(fieldMetadata?.type));
+
+	return hasFields(typeMetadata, requiredFields);
+}
+
+async function loadGraphQLHelperContractMetadata(): Promise<GraphQLHelperContractData> {
+	if (!helperContractMetadata) {
+		const probe = gqlQuery<GraphQLHelperContractData>(GRAPHQL_HELPER_CONTRACT_QUERY);
 		const cachedProbe = probe.catch((error) => {
-			if (helperContractCheck === cachedProbe) {
-				helperContractCheck = null;
+			if (helperContractMetadata === cachedProbe) {
+				helperContractMetadata = null;
 			}
 
 			throw error;
 		});
 
-		helperContractCheck = cachedProbe;
+		helperContractMetadata = cachedProbe;
 	}
 
-	return helperContractCheck;
+	return helperContractMetadata;
+}
+
+async function assertCollectionsHelperContract(): Promise<void> {
+	const data = await loadGraphQLHelperContractMetadata();
+	const collectionsField = getField(data.__schema.queryType, 'collections');
+	const supportsCollectionsHelperContract =
+		fieldReferencesTypeWithFields(data.__schema, collectionsField, ['name', 'entityCount']) &&
+		(collectionsField?.args ?? []).length === 0;
+
+	if (!supportsCollectionsHelperContract) {
+		throw new Error(GRAPHQL_COLLECTIONS_HELPER_CONTRACT_ERROR);
+	}
+}
+
+async function assertEntityHelperContract(): Promise<void> {
+	const data = await loadGraphQLHelperContractMetadata();
+	const entityField = getField(data.__schema.queryType, 'entity');
+	const entitiesField = getField(data.__schema.queryType, 'entities');
+	const entityConnectionType = getNamedType(data.__schema, unwrapNamedType(entitiesField?.type));
+	const entityEdgeField = getField(entityConnectionType, 'edges');
+	const entityEdgeType = getNamedType(data.__schema, unwrapNamedType(entityEdgeField?.type));
+	const entityNodeField = getField(entityEdgeType, 'node');
+	const pageInfoField = getField(entityConnectionType, 'pageInfo');
+	const supportsEntityHelperContract =
+		hasArgumentType(entityField, 'collection', 'String') &&
+		hasArgumentType(entityField, 'id', 'ID') &&
+		fieldReferencesTypeWithFields(data.__schema, entityField, [
+			'id',
+			'version',
+			'data',
+			'createdAt',
+			'updatedAt',
+		]) &&
+		hasArgumentType(entitiesField, 'collection', 'String') &&
+		hasArgumentType(entitiesField, 'limit', 'Int') &&
+		hasArgumentType(entitiesField, 'after', 'String') &&
+		hasFields(entityConnectionType, ['edges', 'pageInfo']) &&
+		fieldReferencesTypeWithFields(data.__schema, entityNodeField, ['id', 'version', 'data']) &&
+		fieldReferencesTypeWithFields(data.__schema, pageInfoField, ['hasNextPage', 'endCursor']);
+
+	if (!supportsEntityHelperContract) {
+		throw new Error(GRAPHQL_ENTITY_HELPER_CONTRACT_ERROR);
+	}
 }
 
 export function __resetGraphQLHelperContractForTests(): void {
-	helperContractCheck = null;
+	helperContractMetadata = null;
 }
 
 /**
@@ -157,7 +315,7 @@ export async function gqlQuery<T>(
  * Fetch all collections.
  */
 export async function fetchCollections(): Promise<CollectionSummary[]> {
-	await assertGraphQLHelperContract();
+	await assertCollectionsHelperContract();
 
 	const data = await gqlQuery<{ collections: CollectionSummary[] }>(
 		'{ collections { name entityCount } }',
@@ -173,10 +331,10 @@ export async function fetchEntities(
 	collection: string,
 	{ limit = 50, after = null }: { limit?: number; after?: string | null } = {},
 ): Promise<EntityConnection> {
-	await assertGraphQLHelperContract();
+	await assertEntityHelperContract();
 
 	const data = await gqlQuery<{ entities: EntityConnection }>(
-		`query($collection: String!, $limit: Int, $after: ID) {
+		`query($collection: String!, $limit: Int, $after: String) {
 			entities(collection: $collection, limit: $limit, after: $after) {
 				edges { node { id version data } }
 				pageInfo { hasNextPage endCursor }
@@ -192,7 +350,7 @@ export async function fetchEntities(
  * Fetch a single entity by ID (entity detail = single query).
  */
 export async function fetchEntity(collection: string, id: string): Promise<EntityRecord> {
-	await assertGraphQLHelperContract();
+	await assertEntityHelperContract();
 
 	const data = await gqlQuery<{ entity: EntityRecord }>(
 		`query($collection: String!, $id: ID!) {
