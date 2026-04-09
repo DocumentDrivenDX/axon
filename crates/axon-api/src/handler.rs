@@ -328,8 +328,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     fn ensure_collection_exists(&self, collection: &CollectionId) -> Result<(), AxonError> {
-        let existing = self.storage.list_collections()?;
-        if existing.contains(collection) {
+        let qualified = self.storage.resolve_collection_key(collection)?;
+        if self
+            .storage
+            .collection_registered_in_namespace(&qualified.collection, &qualified.namespace)?
+        {
             Ok(())
         } else {
             Err(AxonError::NotFound(collection.to_string()))
@@ -2801,8 +2804,8 @@ mod tests {
     use super::*;
     use std::fmt::Display;
 
-    use axon_core::id::{CollectionId, EntityId};
-    use axon_schema::schema::{CollectionView, EsfDocument};
+    use axon_core::id::{CollectionId, EntityId, Namespace};
+    use axon_schema::schema::{CollectionSchema, CollectionView, EsfDocument};
     use axon_storage::adapter::StorageAdapter;
     use axon_storage::memory::MemoryStorageAdapter;
     use serde_json::json;
@@ -3323,6 +3326,96 @@ mod tests {
             "rejecting markdown render after template delete",
         );
         assert!(matches!(error, AxonError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn qualified_collection_template_crud_round_trips_in_registered_namespace() {
+        let mut h = handler();
+        let qualified = CollectionId::new("prod.billing.tasks");
+        let bare = CollectionId::new("tasks");
+        let id = EntityId::new("task-001");
+        let billing = Namespace::new("prod", "billing");
+
+        h.storage_mut()
+            .create_database("prod")
+            .expect("database create should succeed");
+        h.storage_mut()
+            .create_namespace(&billing)
+            .expect("namespace create should succeed");
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &billing)
+            .expect("collection register should succeed");
+        h.storage_mut()
+            .put_schema(&CollectionSchema {
+                collection: qualified.clone(),
+                description: None,
+                version: 1,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "notes": {"type": "string"}
+                    },
+                    "required": ["title"]
+                })),
+                link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+            })
+            .expect("qualified schema put should succeed");
+        h.create_entity(CreateEntityRequest {
+            collection: qualified.clone(),
+            id: id.clone(),
+            data: json!({"title": "Qualified", "notes": "Scoped"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .expect("qualified entity create should succeed");
+
+        let stored = ok_or_panic(
+            h.put_collection_template(PutCollectionTemplateRequest {
+                collection: qualified.clone(),
+                template: "# {{title}}\n\n{{notes}}".into(),
+                actor: Some("operator".into()),
+            }),
+            "storing qualified collection template through handler",
+        );
+        assert_eq!(stored.view.collection, bare);
+        assert_eq!(stored.view.version, 1);
+
+        let retrieved = ok_or_panic(
+            h.get_collection_template(GetCollectionTemplateRequest {
+                collection: qualified.clone(),
+            }),
+            "retrieving qualified collection template through handler",
+        );
+        assert_eq!(retrieved.view, stored.view);
+
+        assert_rendered_markdown(
+            ok_or_panic(
+                h.get_entity_markdown(&qualified, &id),
+                "rendering markdown with qualified collection view",
+            ),
+            "# Qualified\n\nScoped",
+        );
+
+        let deleted = ok_or_panic(
+            h.delete_collection_template(DeleteCollectionTemplateRequest {
+                collection: qualified.clone(),
+            }),
+            "deleting qualified collection template through handler",
+        );
+        assert_eq!(deleted.collection, qualified.to_string());
+
+        let error = err_or_panic(
+            h.get_collection_template(GetCollectionTemplateRequest {
+                collection: qualified,
+            }),
+            "expecting missing template after qualified delete",
+        );
+        assert!(matches!(error, AxonError::NotFound(_)));
     }
 
     #[test]
