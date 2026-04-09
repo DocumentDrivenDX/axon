@@ -1,3 +1,11 @@
+#![allow(
+    clippy::inefficient_to_string,
+    clippy::needless_collect,
+    clippy::similar_names,
+    clippy::unwrap_used,
+    clippy::wildcard_imports
+)]
+
 //! L2 Business Scenario Tests (SCN-001 through SCN-010)
 //!
 //! Each test validates a real-world workflow from use-case research, exercising

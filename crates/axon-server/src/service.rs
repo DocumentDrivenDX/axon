@@ -2,15 +2,18 @@ use std::sync::Arc;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, GetEntityRequest,
-    GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest, QueryEntitiesRequest,
+    CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
+    CreateNamespaceRequest, DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest,
+    DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest, GetEntityRequest,
+    GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
+    ListNamespaceCollectionsRequest, ListNamespacesRequest, PutSchemaRequest, QueryEntitiesRequest,
     TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::transaction::Transaction;
 use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
+use axon_storage::adapter::StorageAdapter;
 use axon_storage::memory::MemoryStorageAdapter;
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -27,18 +30,28 @@ pub use proto::{
     CommitTransactionResponse as ProtoCommitTxResp,
     CreateCollectionRequest as ProtoCreateCollectionReq,
     CreateCollectionResponse as ProtoCreateCollectionResp,
-    CreateEntityRequest as ProtoCreateEntityReq, CreateEntityResponse as ProtoCreateEntityResp,
-    CreateLinkRequest as ProtoCreateLinkReq, CreateLinkResponse as ProtoCreateLinkResp,
+    CreateDatabaseRequest as ProtoCreateDatabaseReq,
+    CreateDatabaseResponse as ProtoCreateDatabaseResp, CreateEntityRequest as ProtoCreateEntityReq,
+    CreateEntityResponse as ProtoCreateEntityResp, CreateLinkRequest as ProtoCreateLinkReq,
+    CreateLinkResponse as ProtoCreateLinkResp, CreateNamespaceRequest as ProtoCreateNamespaceReq,
+    CreateNamespaceResponse as ProtoCreateNamespaceResp,
     DeleteEntityRequest as ProtoDeleteEntityReq, DeleteEntityResponse as ProtoDeleteEntityResp,
     DeleteLinkRequest as ProtoDeleteLinkReq, DeleteLinkResponse as ProtoDeleteLinkResp,
     DescribeCollectionRequest as ProtoDescribeCollectionReq,
     DescribeCollectionResponse as ProtoDescribeCollectionResp,
     DropCollectionRequest as ProtoDropCollectionReq,
-    DropCollectionResponse as ProtoDropCollectionResp, EntityProto,
+    DropCollectionResponse as ProtoDropCollectionResp, DropDatabaseRequest as ProtoDropDatabaseReq,
+    DropDatabaseResponse as ProtoDropDatabaseResp, DropNamespaceRequest as ProtoDropNamespaceReq,
+    DropNamespaceResponse as ProtoDropNamespaceResp, EntityProto,
     GetEntityRequest as ProtoGetEntityReq, GetEntityResponse as ProtoGetEntityResp,
     GetSchemaRequest as ProtoGetSchemaReq, GetSchemaResponse as ProtoGetSchemaResp, LinkProto,
     ListCollectionsRequest as ProtoListCollectionsReq,
-    ListCollectionsResponse as ProtoListCollectionsResp, PutSchemaRequest as ProtoPutSchemaReq,
+    ListCollectionsResponse as ProtoListCollectionsResp,
+    ListDatabasesRequest as ProtoListDatabasesReq, ListDatabasesResponse as ProtoListDatabasesResp,
+    ListNamespaceCollectionsRequest as ProtoListNamespaceCollectionsReq,
+    ListNamespaceCollectionsResponse as ProtoListNamespaceCollectionsResp,
+    ListNamespacesRequest as ProtoListNamespacesReq,
+    ListNamespacesResponse as ProtoListNamespacesResp, PutSchemaRequest as ProtoPutSchemaReq,
     PutSchemaResponse as ProtoPutSchemaResp, QueryAuditByEntityRequest, QueryAuditByEntityResponse,
     QueryEntitiesRequest as ProtoQueryEntitiesReq, QueryEntitiesResponse as ProtoQueryEntitiesResp,
     TransactionOp as ProtoTxOp, TraverseRequest as ProtoTraverseReq,
@@ -93,22 +106,12 @@ fn entity_to_proto(e: axon_core::types::Entity) -> EntityProto {
 /// Shared state for the gRPC service.
 ///
 /// Wraps an `AxonHandler` in a `Mutex` so multiple async tasks can call it.
-pub struct AxonServiceImpl {
-    handler: Arc<Mutex<AxonHandler<MemoryStorageAdapter>>>,
+pub struct AxonServiceImpl<S: StorageAdapter> {
+    handler: Arc<Mutex<AxonHandler<S>>>,
 }
 
-impl AxonServiceImpl {
-    /// Create a service backed by an in-memory storage adapter.
-    pub fn new_in_memory() -> Self {
-        Self {
-            handler: Arc::new(Mutex::new(
-                AxonHandler::new(MemoryStorageAdapter::default()),
-            )),
-        }
-    }
-
-    /// Create a service with a pre-built handler (useful for tests).
-    pub fn from_handler(handler: AxonHandler<MemoryStorageAdapter>) -> Self {
+impl<S: StorageAdapter> AxonServiceImpl<S> {
+    pub fn from_handler(handler: AxonHandler<S>) -> Self {
         Self {
             handler: Arc::new(Mutex::new(handler)),
         }
@@ -117,13 +120,24 @@ impl AxonServiceImpl {
     /// Create a service sharing an existing handler reference.
     ///
     /// Use this to share state between the gRPC service and the HTTP gateway.
-    pub fn from_shared(handler: Arc<Mutex<AxonHandler<MemoryStorageAdapter>>>) -> Self {
+    pub fn from_shared(handler: Arc<Mutex<AxonHandler<S>>>) -> Self {
         Self { handler }
     }
 }
 
+impl AxonServiceImpl<MemoryStorageAdapter> {
+    /// Create a service backed by an in-memory storage adapter.
+    pub fn new_in_memory() -> Self {
+        Self {
+            handler: Arc::new(Mutex::new(
+                AxonHandler::new(MemoryStorageAdapter::default()),
+            )),
+        }
+    }
+}
+
 #[tonic::async_trait]
-impl AxonService for AxonServiceImpl {
+impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
     async fn create_entity(
         &self,
         request: Request<ProtoCreateEntityReq>,
@@ -686,16 +700,151 @@ impl AxonService for AxonServiceImpl {
             schema_json,
         }))
     }
+
+    async fn create_database(
+        &self,
+        request: Request<ProtoCreateDatabaseReq>,
+    ) -> Result<Response<ProtoCreateDatabaseResp>, Status> {
+        let req = request.into_inner();
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .create_database(CreateDatabaseRequest { name: req.name })
+            .map_err(axon_to_status)?;
+        Ok(Response::new(ProtoCreateDatabaseResp { name: resp.name }))
+    }
+
+    async fn list_databases(
+        &self,
+        _request: Request<ProtoListDatabasesReq>,
+    ) -> Result<Response<ProtoListDatabasesResp>, Status> {
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .list_databases(ListDatabasesRequest {})
+            .map_err(axon_to_status)?;
+        Ok(Response::new(ProtoListDatabasesResp {
+            databases: resp.databases,
+        }))
+    }
+
+    async fn drop_database(
+        &self,
+        request: Request<ProtoDropDatabaseReq>,
+    ) -> Result<Response<ProtoDropDatabaseResp>, Status> {
+        let req = request.into_inner();
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .drop_database(DropDatabaseRequest {
+                name: req.name,
+                force: req.force,
+            })
+            .map_err(axon_to_status)?;
+        Ok(Response::new(ProtoDropDatabaseResp {
+            name: resp.name,
+            collections_removed: resp.collections_removed as u64,
+        }))
+    }
+
+    async fn create_namespace(
+        &self,
+        request: Request<ProtoCreateNamespaceReq>,
+    ) -> Result<Response<ProtoCreateNamespaceResp>, Status> {
+        let req = request.into_inner();
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .create_namespace(CreateNamespaceRequest {
+                database: req.database,
+                schema: req.schema,
+            })
+            .map_err(axon_to_status)?;
+        Ok(Response::new(ProtoCreateNamespaceResp {
+            database: resp.database,
+            schema: resp.schema,
+        }))
+    }
+
+    async fn list_namespaces(
+        &self,
+        request: Request<ProtoListNamespacesReq>,
+    ) -> Result<Response<ProtoListNamespacesResp>, Status> {
+        let req = request.into_inner();
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .list_namespaces(ListNamespacesRequest {
+                database: req.database,
+            })
+            .map_err(axon_to_status)?;
+        Ok(Response::new(ProtoListNamespacesResp {
+            database: resp.database,
+            schemas: resp.schemas,
+        }))
+    }
+
+    async fn list_namespace_collections(
+        &self,
+        request: Request<ProtoListNamespaceCollectionsReq>,
+    ) -> Result<Response<ProtoListNamespaceCollectionsResp>, Status> {
+        let req = request.into_inner();
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: req.database,
+                schema: req.schema,
+            })
+            .map_err(axon_to_status)?;
+        Ok(Response::new(ProtoListNamespaceCollectionsResp {
+            database: resp.database,
+            schema: resp.schema,
+            collections: resp.collections,
+        }))
+    }
+
+    async fn drop_namespace(
+        &self,
+        request: Request<ProtoDropNamespaceReq>,
+    ) -> Result<Response<ProtoDropNamespaceResp>, Status> {
+        let req = request.into_inner();
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .drop_namespace(DropNamespaceRequest {
+                database: req.database,
+                schema: req.schema,
+                force: req.force,
+            })
+            .map_err(axon_to_status)?;
+        Ok(Response::new(ProtoDropNamespaceResp {
+            database: resp.database,
+            schema: resp.schema,
+            collections_removed: resp.collections_removed as u64,
+        }))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axon_storage::MemoryStorageAdapter;
     use serde_json::json;
     use tonic::Code;
 
     /// Build a service instance and create one entity in collection `col` with id `id`.
-    async fn make_service_with_entity(col: &str, id: &str) -> AxonServiceImpl {
+    async fn make_service_with_entity(
+        col: &str,
+        id: &str,
+    ) -> AxonServiceImpl<MemoryStorageAdapter> {
         let svc = AxonServiceImpl::new_in_memory();
         svc.create_entity(Request::new(ProtoCreateEntityReq {
             collection: col.to_string(),
@@ -769,5 +918,46 @@ mod tests {
 
         assert_eq!(msg["code"], "version_conflict");
         assert!(msg["current_entity"].is_null());
+    }
+
+    #[tokio::test]
+    async fn grpc_database_and_namespace_round_trip() {
+        let svc = AxonServiceImpl::new_in_memory();
+
+        let created = svc
+            .create_database(Request::new(ProtoCreateDatabaseReq {
+                name: "prod".to_string(),
+            }))
+            .await
+            .expect("database create should succeed")
+            .into_inner();
+        assert_eq!(created.name, "prod");
+
+        let listed = svc
+            .list_databases(Request::new(ProtoListDatabasesReq {}))
+            .await
+            .expect("database list should succeed")
+            .into_inner();
+        assert!(listed.databases.iter().any(|database| database == "prod"));
+
+        let namespace = svc
+            .create_namespace(Request::new(ProtoCreateNamespaceReq {
+                database: "prod".to_string(),
+                schema: "billing".to_string(),
+            }))
+            .await
+            .expect("namespace create should succeed")
+            .into_inner();
+        assert_eq!(namespace.database, "prod");
+        assert_eq!(namespace.schema, "billing");
+
+        let namespaces = svc
+            .list_namespaces(Request::new(ProtoListNamespacesReq {
+                database: "prod".to_string(),
+            }))
+            .await
+            .expect("namespace list should succeed")
+            .into_inner();
+        assert!(namespaces.schemas.iter().any(|schema| schema == "billing"));
     }
 }

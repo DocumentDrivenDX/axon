@@ -364,6 +364,7 @@ impl Default for Transaction {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use axon_audit::log::MemoryAuditLog;

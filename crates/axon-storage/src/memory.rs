@@ -3,7 +3,7 @@ use std::ops::Bound;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
@@ -62,6 +62,9 @@ struct TxSnapshot {
     schema_versions: HashMap<CollectionId, BTreeMap<u32, SchemaVersionEntry>>,
     collection_views: HashMap<CollectionId, CollectionViewEntry>,
     collections: HashSet<CollectionId>,
+    databases: BTreeSet<String>,
+    namespaces: BTreeMap<String, BTreeSet<String>>,
+    collection_namespaces: HashMap<CollectionId, Namespace>,
     /// Index snapshot for rollback.
     indexes: BTreeMap<IndexKey, BTreeSet<EntityId>>,
     /// Compound index snapshot for rollback.
@@ -81,7 +84,7 @@ struct TxSnapshot {
 /// snapshot. Because all mutations require `&mut self`, Rust's borrow checker
 /// already provides exclusive access, so no additional synchronisation is
 /// needed.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MemoryStorageAdapter {
     data: HashMap<CollectionId, CollectionMap>,
     /// Schema version history keyed by (collection → version → schema).
@@ -90,6 +93,12 @@ pub struct MemoryStorageAdapter {
     collection_views: HashMap<CollectionId, CollectionViewEntry>,
     /// Explicitly registered collections.
     collections: HashSet<CollectionId>,
+    /// Known database names.
+    databases: BTreeSet<String>,
+    /// Database -> schema names.
+    namespaces: BTreeMap<String, BTreeSet<String>>,
+    /// Collection -> namespace membership.
+    collection_namespaces: HashMap<CollectionId, Namespace>,
     /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
     tx_snapshot: Option<TxSnapshot>,
     /// EAV secondary index: (collection, field, value) → set of entity IDs.
@@ -117,6 +126,35 @@ fn unregistered_collection_error(collection: &CollectionId) -> AxonError {
         "collection '{}' is not registered",
         collection.as_str()
     ))
+}
+
+impl Default for MemoryStorageAdapter {
+    fn default() -> Self {
+        let mut databases = BTreeSet::new();
+        databases.insert(DEFAULT_DATABASE.to_string());
+
+        let mut namespaces = BTreeMap::new();
+        namespaces.insert(
+            DEFAULT_DATABASE.to_string(),
+            BTreeSet::from([DEFAULT_SCHEMA.to_string()]),
+        );
+
+        Self {
+            data: HashMap::new(),
+            schema_versions: HashMap::new(),
+            collection_views: HashMap::new(),
+            collections: HashSet::new(),
+            databases,
+            namespaces,
+            collection_namespaces: HashMap::new(),
+            tx_snapshot: None,
+            indexes: BTreeMap::new(),
+            compound_indexes: BTreeMap::new(),
+            numeric_ids: NumericIdCache::default(),
+            links: BTreeMap::new(),
+            gate_results: HashMap::new(),
+        }
+    }
 }
 
 impl StorageAdapter for MemoryStorageAdapter {
@@ -226,6 +264,9 @@ impl StorageAdapter for MemoryStorageAdapter {
             schema_versions: self.schema_versions.clone(),
             collection_views: self.collection_views.clone(),
             collections: self.collections.clone(),
+            databases: self.databases.clone(),
+            namespaces: self.namespaces.clone(),
+            collection_namespaces: self.collection_namespaces.clone(),
             indexes: self.indexes.clone(),
             compound_indexes: self.compound_indexes.clone(),
             numeric_ids: self.numeric_ids.clone(),
@@ -248,12 +289,115 @@ impl StorageAdapter for MemoryStorageAdapter {
             self.schema_versions = snapshot.schema_versions;
             self.collection_views = snapshot.collection_views;
             self.collections = snapshot.collections;
+            self.databases = snapshot.databases;
+            self.namespaces = snapshot.namespaces;
+            self.collection_namespaces = snapshot.collection_namespaces;
             self.indexes = snapshot.indexes;
             self.compound_indexes = snapshot.compound_indexes;
             self.numeric_ids = snapshot.numeric_ids;
             self.links = snapshot.links;
         }
         Ok(())
+    }
+
+    fn create_database(&mut self, name: &str) -> Result<(), AxonError> {
+        if !self.databases.insert(name.to_string()) {
+            return Err(AxonError::AlreadyExists(format!("database '{name}'")));
+        }
+        self.namespaces.insert(
+            name.to_string(),
+            BTreeSet::from([DEFAULT_SCHEMA.to_string()]),
+        );
+        Ok(())
+    }
+
+    fn list_databases(&self) -> Result<Vec<String>, AxonError> {
+        Ok(self.databases.iter().cloned().collect())
+    }
+
+    fn drop_database(&mut self, name: &str) -> Result<(), AxonError> {
+        if !self.databases.remove(name) {
+            return Err(AxonError::NotFound(format!("database '{name}'")));
+        }
+
+        self.namespaces.remove(name);
+        let doomed: Vec<CollectionId> = self
+            .collection_namespaces
+            .iter()
+            .filter(|(_, namespace)| namespace.database == name)
+            .map(|(collection, _)| collection.clone())
+            .collect();
+        for collection in doomed {
+            self.collection_namespaces.remove(&collection);
+            self.collections.remove(&collection);
+            self.numeric_ids.remove(&collection);
+        }
+        Ok(())
+    }
+
+    fn create_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
+        let schemas = self
+            .namespaces
+            .get_mut(&namespace.database)
+            .ok_or_else(|| AxonError::NotFound(format!("database '{}'", namespace.database)))?;
+
+        if !schemas.insert(namespace.schema.clone()) {
+            return Err(AxonError::AlreadyExists(format!("namespace '{namespace}'")));
+        }
+        Ok(())
+    }
+
+    fn list_namespaces(&self, database: &str) -> Result<Vec<String>, AxonError> {
+        match self.namespaces.get(database) {
+            Some(schemas) => Ok(schemas.iter().cloned().collect()),
+            None => Err(AxonError::NotFound(format!("database '{database}'"))),
+        }
+    }
+
+    fn drop_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
+        let schemas = self
+            .namespaces
+            .get_mut(&namespace.database)
+            .ok_or_else(|| AxonError::NotFound(format!("database '{}'", namespace.database)))?;
+
+        if !schemas.remove(&namespace.schema) {
+            return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
+        }
+
+        let doomed: Vec<CollectionId> = self
+            .collection_namespaces
+            .iter()
+            .filter(|(_, current)| *current == namespace)
+            .map(|(collection, _)| collection.clone())
+            .collect();
+        for collection in doomed {
+            self.collection_namespaces.remove(&collection);
+            self.collections.remove(&collection);
+            self.numeric_ids.remove(&collection);
+        }
+        Ok(())
+    }
+
+    fn list_namespace_collections(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<CollectionId>, AxonError> {
+        let schemas = self
+            .namespaces
+            .get(&namespace.database)
+            .ok_or_else(|| AxonError::NotFound(format!("database '{}'", namespace.database)))?;
+        if !schemas.contains(&namespace.schema) {
+            return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
+        }
+
+        let mut collections: Vec<CollectionId> = self
+            .collection_namespaces
+            .iter()
+            .filter(|(_, current)| *current == namespace)
+            .map(|(collection, _)| collection.clone())
+            .collect();
+        collections.sort();
+        Ok(collections)
     }
 
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
@@ -337,8 +481,22 @@ impl StorageAdapter for MemoryStorageAdapter {
         Ok(())
     }
 
-    fn register_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+    fn register_collection_in_namespace(
+        &mut self,
+        collection: &CollectionId,
+        namespace: &Namespace,
+    ) -> Result<(), AxonError> {
+        let schemas = self
+            .namespaces
+            .get(&namespace.database)
+            .ok_or_else(|| AxonError::NotFound(format!("database '{}'", namespace.database)))?;
+        if !schemas.contains(&namespace.schema) {
+            return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
+        }
+
         self.collections.insert(collection.clone());
+        self.collection_namespaces
+            .insert(collection.clone(), namespace.clone());
         // Auto-assign a numeric ID (ADR-010).
         self.numeric_ids.assign(collection);
         Ok(())
@@ -346,6 +504,7 @@ impl StorageAdapter for MemoryStorageAdapter {
 
     fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         self.collections.remove(collection);
+        self.collection_namespaces.remove(collection);
         self.collection_views.remove(collection);
         self.numeric_ids.remove(collection);
         Ok(())

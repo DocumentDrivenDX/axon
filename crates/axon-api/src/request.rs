@@ -404,6 +404,13 @@ pub struct CreateNamespaceRequest {
     pub schema: String,
 }
 
+/// Request to list schema namespaces within a database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListNamespacesRequest {
+    /// Database name.
+    pub database: String,
+}
+
 /// Request to list collections within a namespace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListNamespaceCollectionsRequest {

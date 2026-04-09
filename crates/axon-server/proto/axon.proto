@@ -248,6 +248,74 @@ message DescribeCollectionResponse {
   string schema_json = 3;
 }
 
+// ── Database and namespace lifecycle (FEAT-014) ────────────────────────────
+
+message CreateDatabaseRequest {
+  string name = 1;
+}
+
+message CreateDatabaseResponse {
+  string name = 1;
+}
+
+message ListDatabasesRequest {}
+
+message ListDatabasesResponse {
+  repeated string databases = 1;
+}
+
+message DropDatabaseRequest {
+  string name = 1;
+  bool force = 2;
+}
+
+message DropDatabaseResponse {
+  string name = 1;
+  uint64 collections_removed = 2;
+}
+
+message CreateNamespaceRequest {
+  string database = 1;
+  string schema = 2;
+}
+
+message CreateNamespaceResponse {
+  string database = 1;
+  string schema = 2;
+}
+
+message ListNamespacesRequest {
+  string database = 1;
+}
+
+message ListNamespacesResponse {
+  string database = 1;
+  repeated string schemas = 2;
+}
+
+message ListNamespaceCollectionsRequest {
+  string database = 1;
+  string schema = 2;
+}
+
+message ListNamespaceCollectionsResponse {
+  string database = 1;
+  string schema = 2;
+  repeated string collections = 3;
+}
+
+message DropNamespaceRequest {
+  string database = 1;
+  string schema = 2;
+  bool force = 3;
+}
+
+message DropNamespaceResponse {
+  string database = 1;
+  string schema = 2;
+  uint64 collections_removed = 3;
+}
+
 // ── Service definition ────────────────────────────────────────────────────────
 
 service AxonService {
@@ -274,4 +342,12 @@ service AxonService {
   rpc DropCollection(DropCollectionRequest) returns (DropCollectionResponse);
   rpc ListCollections(ListCollectionsRequest) returns (ListCollectionsResponse);
   rpc DescribeCollection(DescribeCollectionRequest) returns (DescribeCollectionResponse);
+  // Database and namespace lifecycle
+  rpc CreateDatabase(CreateDatabaseRequest) returns (CreateDatabaseResponse);
+  rpc ListDatabases(ListDatabasesRequest) returns (ListDatabasesResponse);
+  rpc DropDatabase(DropDatabaseRequest) returns (DropDatabaseResponse);
+  rpc CreateNamespace(CreateNamespaceRequest) returns (CreateNamespaceResponse);
+  rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
+  rpc ListNamespaceCollections(ListNamespaceCollectionsRequest) returns (ListNamespaceCollectionsResponse);
+  rpc DropNamespace(DropNamespaceRequest) returns (DropNamespaceResponse);
 }

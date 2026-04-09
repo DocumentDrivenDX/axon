@@ -1,3 +1,11 @@
+#![allow(
+    clippy::unit_arg,
+    clippy::semicolon_if_nothing_returned,
+    clippy::unwrap_used,
+    clippy::wildcard_imports,
+    unused_must_use
+)]
+
 //! L5 Performance Benchmarks (BM-001 through BM-010)
 //!
 //! All benchmarks use criterion and run against the in-memory storage backend.
@@ -22,7 +30,6 @@ use axon_api::transaction::Transaction;
 use axon_audit::log::MemoryAuditLog;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
-use axon_schema::schema::CollectionSchema;
 use axon_schema::EsfDocument;
 use axon_storage::adapter::StorageAdapter;
 use axon_storage::memory::MemoryStorageAdapter;

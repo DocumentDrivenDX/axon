@@ -5,7 +5,7 @@ use postgres::{Client, NoTls};
 
 use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 use axon_core::types::Entity;
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
@@ -44,7 +44,15 @@ impl PostgresStorageAdapter {
         self.client
             .borrow_mut()
             .batch_execute(
-                "CREATE TABLE IF NOT EXISTS entities (
+                "CREATE TABLE IF NOT EXISTS databases (
+                    name TEXT NOT NULL PRIMARY KEY
+                );
+                CREATE TABLE IF NOT EXISTS namespaces (
+                    database_name TEXT NOT NULL REFERENCES databases(name) ON DELETE CASCADE,
+                    name          TEXT NOT NULL,
+                    PRIMARY KEY (database_name, name)
+                );
+                CREATE TABLE IF NOT EXISTS entities (
                     collection TEXT NOT NULL,
                     id         TEXT NOT NULL,
                     version    BIGINT NOT NULL,
@@ -57,7 +65,9 @@ impl PostgresStorageAdapter {
                     schema_json JSONB NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS collections (
-                    name TEXT NOT NULL PRIMARY KEY
+                    name TEXT NOT NULL PRIMARY KEY,
+                    database_name TEXT NOT NULL DEFAULT 'default',
+                    schema_name TEXT NOT NULL DEFAULT 'default'
                 );
                 CREATE TABLE IF NOT EXISTS collection_views (
                     collection    TEXT NOT NULL PRIMARY KEY
@@ -79,7 +89,19 @@ impl PostgresStorageAdapter {
                     entry_json     JSONB NOT NULL
                 );",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.client
+            .borrow_mut()
+            .batch_execute(
+                "ALTER TABLE collections
+                     ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
+                 ALTER TABLE collections
+                     ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';
+                 CREATE INDEX IF NOT EXISTS idx_collections_namespace
+                     ON collections (database_name, schema_name, name);",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.ensure_default_namespace()
     }
 
     fn collection_exists(&self, collection: &CollectionId) -> Result<bool, AxonError> {
@@ -92,6 +114,53 @@ impl PostgresStorageAdapter {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(row.get(0))
+    }
+
+    fn database_exists(&self, database: &str) -> Result<bool, AxonError> {
+        let row = self
+            .client
+            .borrow_mut()
+            .query_one(
+                "SELECT EXISTS(SELECT 1 FROM databases WHERE name = $1)",
+                &[&database],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(row.get(0))
+    }
+
+    fn namespace_exists(&self, namespace: &Namespace) -> Result<bool, AxonError> {
+        let row = self
+            .client
+            .borrow_mut()
+            .query_one(
+                "SELECT EXISTS(
+                    SELECT 1 FROM namespaces
+                    WHERE database_name = $1 AND name = $2
+                )",
+                &[&namespace.database, &namespace.schema],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(row.get(0))
+    }
+
+    fn ensure_default_namespace(&self) -> Result<(), AxonError> {
+        self.client
+            .borrow_mut()
+            .execute(
+                "INSERT INTO databases (name) VALUES ($1) ON CONFLICT DO NOTHING",
+                &[&DEFAULT_DATABASE],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.client
+            .borrow_mut()
+            .execute(
+                "INSERT INTO namespaces (database_name, name)
+                 VALUES ($1, $2)
+                 ON CONFLICT DO NOTHING",
+                &[&DEFAULT_DATABASE, &DEFAULT_SCHEMA],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
     }
 
     fn row_to_entity(row: &postgres::Row) -> Result<Entity, AxonError> {
@@ -299,6 +368,140 @@ impl StorageAdapter for PostgresStorageAdapter {
         Ok(())
     }
 
+    fn create_database(&mut self, name: &str) -> Result<(), AxonError> {
+        if self.database_exists(name)? {
+            return Err(AxonError::AlreadyExists(format!("database '{name}'")));
+        }
+
+        self.client
+            .borrow_mut()
+            .execute("INSERT INTO databases (name) VALUES ($1)", &[&name])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.client
+            .borrow_mut()
+            .execute(
+                "INSERT INTO namespaces (database_name, name) VALUES ($1, $2)",
+                &[&name, &DEFAULT_SCHEMA],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_databases(&self) -> Result<Vec<String>, AxonError> {
+        let rows = self
+            .client
+            .borrow_mut()
+            .query("SELECT name FROM databases ORDER BY name ASC", &[])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows.iter().map(|row| row.get("name")).collect())
+    }
+
+    fn drop_database(&mut self, name: &str) -> Result<(), AxonError> {
+        if !self.database_exists(name)? {
+            return Err(AxonError::NotFound(format!("database '{name}'")));
+        }
+
+        self.client
+            .borrow_mut()
+            .execute("DELETE FROM collections WHERE database_name = $1", &[&name])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.client
+            .borrow_mut()
+            .execute("DELETE FROM databases WHERE name = $1", &[&name])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn create_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
+        if !self.database_exists(&namespace.database)? {
+            return Err(AxonError::NotFound(format!(
+                "database '{}'",
+                namespace.database
+            )));
+        }
+        if self.namespace_exists(namespace)? {
+            return Err(AxonError::AlreadyExists(format!("namespace '{namespace}'")));
+        }
+
+        self.client
+            .borrow_mut()
+            .execute(
+                "INSERT INTO namespaces (database_name, name) VALUES ($1, $2)",
+                &[&namespace.database, &namespace.schema],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_namespaces(&self, database: &str) -> Result<Vec<String>, AxonError> {
+        if !self.database_exists(database)? {
+            return Err(AxonError::NotFound(format!("database '{database}'")));
+        }
+
+        let rows = self
+            .client
+            .borrow_mut()
+            .query(
+                "SELECT name FROM namespaces
+                 WHERE database_name = $1
+                 ORDER BY name ASC",
+                &[&database],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows.iter().map(|row| row.get("name")).collect())
+    }
+
+    fn drop_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
+        if !self.namespace_exists(namespace)? {
+            return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
+        }
+
+        self.client
+            .borrow_mut()
+            .execute(
+                "DELETE FROM collections
+                 WHERE database_name = $1 AND schema_name = $2",
+                &[&namespace.database, &namespace.schema],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.client
+            .borrow_mut()
+            .execute(
+                "DELETE FROM namespaces
+                 WHERE database_name = $1 AND name = $2",
+                &[&namespace.database, &namespace.schema],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_namespace_collections(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<CollectionId>, AxonError> {
+        if !self.namespace_exists(namespace)? {
+            return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
+        }
+
+        let rows = self
+            .client
+            .borrow_mut()
+            .query(
+                "SELECT name FROM collections
+                 WHERE database_name = $1 AND schema_name = $2
+                 ORDER BY name ASC",
+                &[&namespace.database, &namespace.schema],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let name: String = row.get("name");
+                CollectionId::new(name)
+            })
+            .collect())
+    }
+
     fn append_audit_entry(&mut self, mut entry: AuditEntry) -> Result<AuditEntry, AxonError> {
         if entry.timestamp_ns == 0 {
             entry.timestamp_ns = SystemTime::now()
@@ -467,12 +670,22 @@ impl StorageAdapter for PostgresStorageAdapter {
         Ok(())
     }
 
-    fn register_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+    fn register_collection_in_namespace(
+        &mut self,
+        collection: &CollectionId,
+        namespace: &Namespace,
+    ) -> Result<(), AxonError> {
+        if !self.namespace_exists(namespace)? {
+            return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
+        }
+
         self.client
             .borrow_mut()
             .execute(
-                "INSERT INTO collections (name) VALUES ($1) ON CONFLICT DO NOTHING",
-                &[&collection.as_str()],
+                "INSERT INTO collections (name, database_name, schema_name)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT DO NOTHING",
+                &[&collection.as_str(), &namespace.database, &namespace.schema],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())

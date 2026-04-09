@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! Property-based tests for axon-api.
 //!
 //! PROP-002 — Audit Reconstruction

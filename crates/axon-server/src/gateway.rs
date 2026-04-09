@@ -18,9 +18,11 @@ use tokio::sync::Mutex;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, GetEntityRequest,
-    GetSchemaRequest, ListCollectionsRequest, PutSchemaRequest, QueryAuditRequest,
+    CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
+    CreateNamespaceRequest, DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest,
+    DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest, GetEntityRequest,
+    GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
+    ListNamespaceCollectionsRequest, ListNamespacesRequest, PutSchemaRequest, QueryAuditRequest,
     QueryEntitiesRequest, RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
@@ -29,9 +31,9 @@ use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
 use axon_schema::schema::CollectionSchema;
-use axon_storage::memory::MemoryStorageAdapter;
+use axon_storage::adapter::StorageAdapter;
 
-type SharedHandler = Arc<Mutex<AxonHandler<MemoryStorageAdapter>>>;
+type SharedHandler<S> = Arc<Mutex<AxonHandler<S>>>;
 
 // ── Error response ────────────────────────────────────────────────────────────
 
@@ -152,6 +154,12 @@ pub struct CollectionActorBody {
 }
 
 #[derive(Deserialize, Default)]
+pub struct ForceQuery {
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Deserialize, Default)]
 pub struct GetEntityParams {
     pub format: Option<String>,
 }
@@ -245,8 +253,8 @@ pub struct TransactionBody {
 
 // ── Route handlers ────────────────────────────────────────────────────────────
 
-async fn create_entity(
-    State(handler): State<SharedHandler>,
+async fn create_entity<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path((collection, id)): Path<(String, String)>,
     Json(body): Json<CreateEntityBody>,
 ) -> Response {
@@ -273,8 +281,8 @@ async fn create_entity(
     }
 }
 
-async fn get_entity(
-    State(handler): State<SharedHandler>,
+async fn get_entity<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path((collection, id)): Path<(String, String)>,
 ) -> Response {
     match handler.lock().await.get_entity(GetEntityRequest {
@@ -289,8 +297,8 @@ async fn get_entity(
     }
 }
 
-async fn get_collection_entity(
-    State(handler): State<SharedHandler>,
+async fn get_collection_entity<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path((collection, id)): Path<(String, String)>,
     Query(params): Query<GetEntityParams>,
 ) -> Response {
@@ -338,8 +346,8 @@ async fn get_collection_entity(
     }
 }
 
-async fn update_entity(
-    State(handler): State<SharedHandler>,
+async fn update_entity<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path((collection, id)): Path<(String, String)>,
     Json(body): Json<UpdateEntityBody>,
 ) -> Response {
@@ -364,8 +372,8 @@ async fn update_entity(
     }
 }
 
-async fn delete_entity(
-    State(handler): State<SharedHandler>,
+async fn delete_entity<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path((collection, id)): Path<(String, String)>,
     body: Option<Json<DeleteEntityBody>>,
 ) -> Response {
@@ -382,8 +390,8 @@ async fn delete_entity(
     }
 }
 
-async fn query_entities(
-    State(handler): State<SharedHandler>,
+async fn query_entities<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path(collection): Path<String>,
     Json(body): Json<QueryEntitiesRequest>,
 ) -> Response {
@@ -417,8 +425,8 @@ async fn query_entities(
     }
 }
 
-async fn create_link(
-    State(handler): State<SharedHandler>,
+async fn create_link<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Json(body): Json<CreateLinkBody>,
 ) -> Response {
     match handler.lock().await.create_link(CreateLinkRequest {
@@ -451,8 +459,8 @@ async fn create_link(
     }
 }
 
-async fn delete_link(
-    State(handler): State<SharedHandler>,
+async fn delete_link<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Json(body): Json<DeleteLinkBody>,
 ) -> Response {
     match handler.lock().await.delete_link(DeleteLinkRequest {
@@ -475,8 +483,8 @@ async fn delete_link(
     }
 }
 
-async fn traverse(
-    State(handler): State<SharedHandler>,
+async fn traverse<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path((collection, id)): Path<(String, String)>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
@@ -510,8 +518,8 @@ async fn traverse(
     }
 }
 
-async fn query_audit_by_entity(
-    State(handler): State<SharedHandler>,
+async fn query_audit_by_entity<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path((collection, entity_id)): Path<(String, String)>,
 ) -> Response {
     let handler = handler.lock().await;
@@ -543,8 +551,8 @@ async fn query_audit_by_entity(
     }
 }
 
-async fn query_audit(
-    State(handler): State<SharedHandler>,
+async fn query_audit<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let req = QueryAuditRequest {
@@ -583,8 +591,8 @@ async fn query_audit(
     }
 }
 
-async fn revert_entity(
-    State(handler): State<SharedHandler>,
+async fn revert_entity<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Json(body): Json<RevertEntityBody>,
 ) -> Response {
     match handler
@@ -609,8 +617,8 @@ async fn revert_entity(
     }
 }
 
-async fn create_collection(
-    State(handler): State<SharedHandler>,
+async fn create_collection<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path(name): Path<String>,
     body: Option<Json<CreateCollectionBody>>,
 ) -> Response {
@@ -647,8 +655,8 @@ async fn create_collection(
     }
 }
 
-async fn drop_collection(
-    State(handler): State<SharedHandler>,
+async fn drop_collection<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path(name): Path<String>,
     body: Option<Json<CollectionActorBody>>,
 ) -> Response {
@@ -667,7 +675,7 @@ async fn drop_collection(
     }
 }
 
-async fn list_collections(State(handler): State<SharedHandler>) -> Response {
+async fn list_collections<S: StorageAdapter>(State(handler): State<SharedHandler<S>>) -> Response {
     match handler
         .lock()
         .await
@@ -678,8 +686,8 @@ async fn list_collections(State(handler): State<SharedHandler>) -> Response {
     }
 }
 
-async fn describe_collection(
-    State(handler): State<SharedHandler>,
+async fn describe_collection<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path(name): Path<String>,
 ) -> Response {
     match handler
@@ -700,8 +708,8 @@ async fn describe_collection(
     }
 }
 
-async fn put_schema(
-    State(handler): State<SharedHandler>,
+async fn put_schema<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path(collection): Path<String>,
     Json(body): Json<PutSchemaBody>,
 ) -> Response {
@@ -728,8 +736,8 @@ async fn put_schema(
     }
 }
 
-async fn get_schema(
-    State(handler): State<SharedHandler>,
+async fn get_schema<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Path(collection): Path<String>,
 ) -> Response {
     match handler.lock().await.handle_get_schema(GetSchemaRequest {
@@ -740,10 +748,133 @@ async fn get_schema(
     }
 }
 
+async fn create_database<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Path(name): Path<String>,
+) -> Response {
+    match handler
+        .lock()
+        .await
+        .create_database(CreateDatabaseRequest { name })
+    {
+        Ok(resp) => (StatusCode::CREATED, Json(json!({ "name": resp.name }))).into_response(),
+        Err(err) => axon_error_response(err),
+    }
+}
+
+async fn list_databases<S: StorageAdapter>(State(handler): State<SharedHandler<S>>) -> Response {
+    match handler.lock().await.list_databases(ListDatabasesRequest {}) {
+        Ok(resp) => Json(json!({ "databases": resp.databases })).into_response(),
+        Err(err) => axon_error_response(err),
+    }
+}
+
+async fn drop_database<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Path(name): Path<String>,
+    Query(force): Query<ForceQuery>,
+) -> Response {
+    match handler.lock().await.drop_database(DropDatabaseRequest {
+        name,
+        force: force.force,
+    }) {
+        Ok(resp) => (
+            StatusCode::OK,
+            Json(json!({
+                "name": resp.name,
+                "collections_removed": resp.collections_removed,
+            })),
+        )
+            .into_response(),
+        Err(err) => axon_error_response(err),
+    }
+}
+
+async fn create_namespace<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Path((database, schema)): Path<(String, String)>,
+) -> Response {
+    match handler
+        .lock()
+        .await
+        .create_namespace(CreateNamespaceRequest { database, schema })
+    {
+        Ok(resp) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "database": resp.database,
+                "schema": resp.schema,
+            })),
+        )
+            .into_response(),
+        Err(err) => axon_error_response(err),
+    }
+}
+
+async fn list_namespaces<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Path(database): Path<String>,
+) -> Response {
+    match handler
+        .lock()
+        .await
+        .list_namespaces(ListNamespacesRequest { database })
+    {
+        Ok(resp) => Json(json!({
+            "database": resp.database,
+            "schemas": resp.schemas,
+        }))
+        .into_response(),
+        Err(err) => axon_error_response(err),
+    }
+}
+
+async fn list_namespace_collections<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Path((database, schema)): Path<(String, String)>,
+) -> Response {
+    match handler
+        .lock()
+        .await
+        .list_namespace_collections(ListNamespaceCollectionsRequest { database, schema })
+    {
+        Ok(resp) => Json(json!({
+            "database": resp.database,
+            "schema": resp.schema,
+            "collections": resp.collections,
+        }))
+        .into_response(),
+        Err(err) => axon_error_response(err),
+    }
+}
+
+async fn drop_namespace<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Path((database, schema)): Path<(String, String)>,
+    Query(force): Query<ForceQuery>,
+) -> Response {
+    match handler.lock().await.drop_namespace(DropNamespaceRequest {
+        database,
+        schema,
+        force: force.force,
+    }) {
+        Ok(resp) => (
+            StatusCode::OK,
+            Json(json!({
+                "database": resp.database,
+                "schema": resp.schema,
+                "collections_removed": resp.collections_removed,
+            })),
+        )
+            .into_response(),
+        Err(err) => axon_error_response(err),
+    }
+}
+
 // ── Transaction endpoint ─────────────────────────────────────────────────────
 
-async fn commit_transaction(
-    State(handler): State<SharedHandler>,
+async fn commit_transaction<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
     Json(body): Json<TransactionBody>,
 ) -> Response {
     use axon_api::transaction::Transaction;
@@ -844,67 +975,109 @@ async fn commit_transaction(
 // ── Router construction ───────────────────────────────────────────────────────
 
 /// Build the axum router for the HTTP gateway.
-pub fn build_router(handler: SharedHandler) -> Router {
+pub fn build_router<S: StorageAdapter + 'static>(
+    handler: SharedHandler<S>,
+    backend: impl Into<String>,
+) -> Router {
     let start = Instant::now();
+    let backend = backend.into();
     Router::new()
-        .route("/entities/{collection}/{id}", post(create_entity))
-        .route("/entities/{collection}/{id}", get(get_entity))
-        .route("/entities/{collection}/{id}", put(update_entity))
-        .route("/entities/{collection}/{id}", delete(delete_entity))
+        .route("/entities/{collection}/{id}", post(create_entity::<S>))
+        .route("/entities/{collection}/{id}", get(get_entity::<S>))
+        .route("/entities/{collection}/{id}", put(update_entity::<S>))
+        .route("/entities/{collection}/{id}", delete(delete_entity::<S>))
         .route(
             "/collections/{collection}/entities/{id}",
-            get(get_collection_entity),
+            get(get_collection_entity::<S>),
         )
-        .route("/collections/{collection}/query", post(query_entities))
-        .route("/links", post(create_link))
-        .route("/links", delete(delete_link))
-        .route("/traverse/{collection}/{id}", get(traverse))
+        .route("/collections/{collection}/query", post(query_entities::<S>))
+        .route("/links", post(create_link::<S>))
+        .route("/links", delete(delete_link::<S>))
+        .route("/traverse/{collection}/{id}", get(traverse::<S>))
         .route(
             "/audit/entity/{collection}/{id}",
-            get(query_audit_by_entity),
+            get(query_audit_by_entity::<S>),
         )
-        .route("/audit/query", get(query_audit))
-        .route("/audit/revert", post(revert_entity))
-        .route("/collections", get(list_collections))
-        .route("/collections/{name}", post(create_collection))
-        .route("/collections/{name}", get(describe_collection))
-        .route("/collections/{name}", delete(drop_collection))
-        .route("/collections/{name}/schema", put(put_schema))
-        .route("/collections/{name}/schema", get(get_schema))
-        .route("/transactions", post(commit_transaction))
-        .with_state(handler)
+        .route("/audit/query", get(query_audit::<S>))
+        .route("/audit/revert", post(revert_entity::<S>))
+        .route("/collections", get(list_collections::<S>))
+        .route("/collections/{name}", post(create_collection::<S>))
+        .route("/collections/{name}", get(describe_collection::<S>))
+        .route("/collections/{name}", delete(drop_collection::<S>))
+        .route("/collections/{name}/schema", put(put_schema::<S>))
+        .route("/collections/{name}/schema", get(get_schema::<S>))
+        .route("/databases", get(list_databases::<S>))
+        .route("/databases/{name}", post(create_database::<S>))
+        .route("/databases/{name}", delete(drop_database::<S>))
+        .route("/databases/{database}/schemas", get(list_namespaces::<S>))
+        .route(
+            "/databases/{database}/schemas/{schema}",
+            post(create_namespace::<S>),
+        )
+        .route(
+            "/databases/{database}/schemas/{schema}",
+            delete(drop_namespace::<S>),
+        )
+        .route(
+            "/databases/{database}/schemas/{schema}/collections",
+            get(list_namespace_collections::<S>),
+        )
+        .route("/transactions", post(commit_transaction::<S>))
+        .with_state(handler.clone())
         .route(
             "/health",
-            get(move || async move {
+            get(move || {
                 let uptime = start.elapsed().as_secs();
-                (
-                    StatusCode::OK,
-                    Json(json!({
-                        "status": "ok",
-                        "version": env!("CARGO_PKG_VERSION"),
-                        "uptime_seconds": uptime,
-                    })),
-                )
-                    .into_response()
+                let handler = handler.clone();
+                let backend = backend.clone();
+                async move {
+                    let connectivity = handler
+                        .lock()
+                        .await
+                        .list_databases(ListDatabasesRequest {})
+                        .map(|resp| resp.databases)
+                        .map_err(axon_error_response);
+
+                    match connectivity {
+                        Ok(databases) => (
+                            StatusCode::OK,
+                            Json(json!({
+                                "status": "ok",
+                                "version": env!("CARGO_PKG_VERSION"),
+                                "uptime_seconds": uptime,
+                                "backing_store": {
+                                    "backend": backend,
+                                    "status": "ok",
+                                },
+                                "databases": databases,
+                                "default_namespace": "default.default",
+                            })),
+                        )
+                            .into_response(),
+                        Err(response) => response,
+                    }
+                }
             }),
         )
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use std::fmt::Display;
 
     use super::*;
     use axon_schema::schema::CollectionView;
     use axon_storage::adapter::StorageAdapter;
+    use axon_storage::MemoryStorageAdapter;
     use axum_test::TestServer;
     use serde_json::json;
 
-    fn test_server_with_handler() -> (TestServer, SharedHandler) {
+    fn test_server_with_handler() -> (TestServer, SharedHandler<MemoryStorageAdapter>) {
         let handler = Arc::new(Mutex::new(
             AxonHandler::new(MemoryStorageAdapter::default()),
         ));
-        let app = build_router(handler.clone());
+        let app = build_router(handler.clone(), "memory");
         (TestServer::new(app), handler)
     }
 
@@ -1809,5 +1982,46 @@ mod tests {
         assert_eq!(body["status"], "ok");
         assert!(body["version"].is_string());
         assert!(body["uptime_seconds"].is_number());
+        assert_eq!(body["backing_store"]["backend"], "memory");
+        assert_eq!(body["backing_store"]["status"], "ok");
+        assert_eq!(body["default_namespace"], "default.default");
+        assert!(body["databases"].is_array());
+    }
+
+    #[tokio::test]
+    async fn http_database_and_namespace_endpoints_round_trip() {
+        let server = test_server();
+
+        let resp = server.post("/databases/prod").await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        assert_eq!(body["name"], "prod");
+
+        let resp = server.get("/databases").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert!(body["databases"]
+            .as_array()
+            .is_some_and(|databases| { databases.iter().any(|value| value == "prod") }));
+
+        let resp = server.post("/databases/prod/schemas/billing").await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        assert_eq!(body["database"], "prod");
+        assert_eq!(body["schema"], "billing");
+
+        let resp = server.get("/databases/prod/schemas").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert!(body["schemas"]
+            .as_array()
+            .is_some_and(|schemas| schemas.iter().any(|value| value == "billing")));
+
+        let resp = server
+            .get("/databases/prod/schemas/billing/collections")
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["collections"], json!([]));
     }
 }

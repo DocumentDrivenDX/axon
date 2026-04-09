@@ -4,7 +4,7 @@ use rusqlite::{params, Connection};
 
 use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 use axon_core::types::Entity;
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
@@ -54,6 +54,15 @@ impl SqliteStorageAdapter {
         self.conn
             .execute_batch(
                 "PRAGMA foreign_keys = ON;
+                CREATE TABLE IF NOT EXISTS databases (
+                    name TEXT NOT NULL PRIMARY KEY
+                );
+                CREATE TABLE IF NOT EXISTS namespaces (
+                    database_name TEXT NOT NULL,
+                    name          TEXT NOT NULL,
+                    PRIMARY KEY (database_name, name),
+                    FOREIGN KEY (database_name) REFERENCES databases(name) ON DELETE CASCADE
+                );
                 CREATE TABLE IF NOT EXISTS entities (
                     collection TEXT NOT NULL,
                     id         TEXT NOT NULL,
@@ -69,7 +78,9 @@ impl SqliteStorageAdapter {
                     PRIMARY KEY (collection, version)
                 );
                 CREATE TABLE IF NOT EXISTS collections (
-                    name TEXT NOT NULL PRIMARY KEY
+                    name          TEXT NOT NULL PRIMARY KEY,
+                    database_name TEXT NOT NULL DEFAULT 'default',
+                    schema_name   TEXT NOT NULL DEFAULT 'default'
                 );
                 CREATE TABLE IF NOT EXISTS collection_views (
                     collection        TEXT NOT NULL PRIMARY KEY
@@ -91,7 +102,9 @@ impl SqliteStorageAdapter {
                     entry_json     TEXT NOT NULL
                 );",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.ensure_collection_namespace_columns()?;
+        self.ensure_default_namespace()
     }
 
     fn collection_exists(&self, collection: &CollectionId) -> Result<bool, AxonError> {
@@ -104,6 +117,91 @@ impl SqliteStorageAdapter {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(exists != 0)
+    }
+
+    fn database_exists(&self, database: &str) -> Result<bool, AxonError> {
+        let exists: i64 = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM databases WHERE name = ?1)",
+                params![database],
+                |row| row.get(0),
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(exists != 0)
+    }
+
+    fn namespace_exists(&self, namespace: &Namespace) -> Result<bool, AxonError> {
+        let exists: i64 = self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM namespaces
+                    WHERE database_name = ?1 AND name = ?2
+                )",
+                params![namespace.database.as_str(), namespace.schema.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(exists != 0)
+    }
+
+    fn ensure_collection_namespace_columns(&self) -> Result<(), AxonError> {
+        let mut stmt = self
+            .conn
+            .prepare("PRAGMA table_info(collections)")
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| AxonError::Storage(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        if !columns.iter().any(|column| column == "database_name") {
+            self.conn
+                .execute(
+                    "ALTER TABLE collections
+                     ADD COLUMN database_name TEXT NOT NULL DEFAULT 'default'",
+                    [],
+                )
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
+
+        if !columns.iter().any(|column| column == "schema_name") {
+            self.conn
+                .execute(
+                    "ALTER TABLE collections
+                     ADD COLUMN schema_name TEXT NOT NULL DEFAULT 'default'",
+                    [],
+                )
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
+
+        self.conn
+            .execute(
+                "CREATE INDEX IF NOT EXISTS idx_collections_namespace
+                 ON collections (database_name, schema_name, name)",
+                [],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        Ok(())
+    }
+
+    fn ensure_default_namespace(&self) -> Result<(), AxonError> {
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO databases (name) VALUES (?1)",
+                params![DEFAULT_DATABASE],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO namespaces (database_name, name) VALUES (?1, ?2)",
+                params![DEFAULT_DATABASE, DEFAULT_SCHEMA],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
     }
 
     fn row_to_entity(
@@ -333,6 +431,143 @@ impl StorageAdapter for SqliteStorageAdapter {
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.in_tx = false;
         Ok(())
+    }
+
+    fn create_database(&mut self, name: &str) -> Result<(), AxonError> {
+        if self.database_exists(name)? {
+            return Err(AxonError::AlreadyExists(format!("database '{name}'")));
+        }
+
+        self.conn
+            .execute("INSERT INTO databases (name) VALUES (?1)", params![name])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute(
+                "INSERT INTO namespaces (database_name, name) VALUES (?1, ?2)",
+                params![name, DEFAULT_SCHEMA],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_databases(&self) -> Result<Vec<String>, AxonError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT name FROM databases ORDER BY name ASC")
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let databases = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| AxonError::Storage(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(databases)
+    }
+
+    fn drop_database(&mut self, name: &str) -> Result<(), AxonError> {
+        if !self.database_exists(name)? {
+            return Err(AxonError::NotFound(format!("database '{name}'")));
+        }
+
+        self.conn
+            .execute(
+                "DELETE FROM collections WHERE database_name = ?1",
+                params![name],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute("DELETE FROM databases WHERE name = ?1", params![name])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn create_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
+        if !self.database_exists(&namespace.database)? {
+            return Err(AxonError::NotFound(format!(
+                "database '{}'",
+                namespace.database
+            )));
+        }
+        if self.namespace_exists(namespace)? {
+            return Err(AxonError::AlreadyExists(format!("namespace '{namespace}'")));
+        }
+
+        self.conn
+            .execute(
+                "INSERT INTO namespaces (database_name, name) VALUES (?1, ?2)",
+                params![namespace.database.as_str(), namespace.schema.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_namespaces(&self, database: &str) -> Result<Vec<String>, AxonError> {
+        if !self.database_exists(database)? {
+            return Err(AxonError::NotFound(format!("database '{database}'")));
+        }
+
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT name FROM namespaces
+                 WHERE database_name = ?1
+                 ORDER BY name ASC",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let namespaces = stmt
+            .query_map(params![database], |row| row.get::<_, String>(0))
+            .map_err(|e| AxonError::Storage(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(namespaces)
+    }
+
+    fn drop_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
+        if !self.namespace_exists(namespace)? {
+            return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
+        }
+
+        self.conn
+            .execute(
+                "DELETE FROM collections
+                 WHERE database_name = ?1 AND schema_name = ?2",
+                params![namespace.database.as_str(), namespace.schema.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute(
+                "DELETE FROM namespaces
+                 WHERE database_name = ?1 AND name = ?2",
+                params![namespace.database.as_str(), namespace.schema.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_namespace_collections(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<CollectionId>, AxonError> {
+        if !self.namespace_exists(namespace)? {
+            return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
+        }
+
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT name FROM collections
+                 WHERE database_name = ?1 AND schema_name = ?2
+                 ORDER BY name ASC",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let collections = stmt
+            .query_map(
+                params![namespace.database.as_str(), namespace.schema.as_str()],
+                |row| row.get::<_, String>(0).map(CollectionId::new),
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(collections)
     }
 
     fn append_audit_entry(&mut self, mut entry: AuditEntry) -> Result<AuditEntry, AxonError> {
@@ -578,11 +813,24 @@ impl StorageAdapter for SqliteStorageAdapter {
         Ok(())
     }
 
-    fn register_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+    fn register_collection_in_namespace(
+        &mut self,
+        collection: &CollectionId,
+        namespace: &Namespace,
+    ) -> Result<(), AxonError> {
+        if !self.namespace_exists(namespace)? {
+            return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
+        }
+
         self.conn
             .execute(
-                "INSERT OR IGNORE INTO collections (name) VALUES (?1)",
-                params![collection.as_str()],
+                "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
+                 VALUES (?1, ?2, ?3)",
+                params![
+                    collection.as_str(),
+                    namespace.database.as_str(),
+                    namespace.schema.as_str()
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -684,6 +932,46 @@ mod tests {
         s.put(entity("t-001"))
             .expect("test operation should succeed");
         assert_eq!(s.count(&tasks()).expect("test operation should succeed"), 1);
+    }
+
+    #[test]
+    fn default_database_and_namespace_exist_on_open() {
+        let s = store();
+        assert_eq!(
+            s.list_databases().expect("catalog query should succeed"),
+            vec!["default".to_string()]
+        );
+        assert_eq!(
+            s.list_namespaces("default")
+                .expect("namespace query should succeed"),
+            vec!["default".to_string()]
+        );
+    }
+
+    #[test]
+    fn database_and_namespace_catalog_persist_across_reopen() {
+        let file = NamedTempFile::new().expect("test temp db should be created");
+        let path = file.path().to_string_lossy().into_owned();
+
+        {
+            let mut s = SqliteStorageAdapter::open(&path).expect("initial open should succeed");
+            s.create_database("prod")
+                .expect("database create should succeed");
+            s.create_namespace(&Namespace::new("prod", "billing"))
+                .expect("namespace create should succeed");
+        }
+
+        let reopened = SqliteStorageAdapter::open(&path).expect("reopen should succeed");
+        assert!(reopened
+            .list_databases()
+            .expect("catalog query should succeed")
+            .iter()
+            .any(|database| database == "prod"));
+        assert!(reopened
+            .list_namespaces("prod")
+            .expect("namespace query should succeed")
+            .iter()
+            .any(|schema| schema == "billing"));
     }
 
     #[test]

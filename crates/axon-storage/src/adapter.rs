@@ -2,8 +2,7 @@ use std::ops::Bound;
 
 use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
-use axon_core::id::CollectionId;
-use axon_core::id::EntityId;
+use axon_core::id::{CollectionId, EntityId, Namespace};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
@@ -236,6 +235,46 @@ pub trait StorageAdapter: Send + Sync {
         Ok(entry)
     }
 
+    // ── Database and namespace catalogs (FEAT-014) ─────────────────────────
+
+    /// Create a database and its default schema.
+    fn create_database(&mut self, _name: &str) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Return all database names in ascending order.
+    fn list_databases(&self) -> Result<Vec<String>, AxonError> {
+        Ok(vec![])
+    }
+
+    /// Drop a database catalog entry after its collections have been removed.
+    fn drop_database(&mut self, _name: &str) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Create a schema namespace within an existing database.
+    fn create_namespace(&mut self, _namespace: &Namespace) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Return all schema names within a database in ascending order.
+    fn list_namespaces(&self, _database: &str) -> Result<Vec<String>, AxonError> {
+        Ok(vec![])
+    }
+
+    /// Drop a schema namespace after its collections have been removed.
+    fn drop_namespace(&mut self, _namespace: &Namespace) -> Result<(), AxonError> {
+        Ok(())
+    }
+
+    /// Return collections registered within a namespace in ascending order.
+    fn list_namespace_collections(
+        &self,
+        _namespace: &Namespace,
+    ) -> Result<Vec<CollectionId>, AxonError> {
+        Ok(vec![])
+    }
+
     // ── Schema persistence ───────────────────────────────────────────────────
 
     /// Persist a [`CollectionSchema`], replacing any previously stored schema for
@@ -328,6 +367,18 @@ pub trait StorageAdapter: Send + Sync {
     /// Implementations must persist this so the collection survives process
     /// restart. The default implementation is a no-op.
     fn register_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        self.register_collection_in_namespace(collection, &Namespace::default_ns())
+    }
+
+    /// Record that a named collection belongs to a specific namespace.
+    ///
+    /// Implementations that do not yet distinguish namespaces may ignore the
+    /// namespace and treat all collections as belonging to `default.default`.
+    fn register_collection_in_namespace(
+        &mut self,
+        collection: &CollectionId,
+        _namespace: &Namespace,
+    ) -> Result<(), AxonError> {
         let _ = collection;
         Ok(())
     }

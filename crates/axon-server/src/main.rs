@@ -8,7 +8,14 @@ use tracing_subscriber::EnvFilter;
 
 use axon_api::handler::AxonHandler;
 use axon_server::service::{AxonServiceImpl, AxonServiceServer};
-use axon_storage::memory::MemoryStorageAdapter;
+use axon_storage::{MemoryStorageAdapter, PostgresStorageAdapter, SqliteStorageAdapter};
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum StorageBackend {
+    Memory,
+    Sqlite,
+    Postgres,
+}
 
 /// Axon server — schema-first transactional data store for agentic applications.
 #[derive(Parser)]
@@ -31,12 +38,30 @@ struct Args {
     /// No authentication is applied for stdio connections.
     #[arg(long)]
     mcp_stdio: bool,
+
+    /// Backing storage adapter.
+    #[arg(long, env = "AXON_STORAGE", value_enum, default_value = "sqlite")]
+    storage: StorageBackend,
+
+    /// SQLite database path when `--storage=sqlite`.
+    #[arg(long, env = "AXON_SQLITE_PATH", default_value = "axon-server.db")]
+    sqlite_path: String,
+
+    /// PostgreSQL DSN when `--storage=postgres`.
+    #[arg(long, env = "AXON_POSTGRES_DSN")]
+    postgres_dsn: Option<String>,
 }
 
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    if let Err(error) = run(args).await {
+        tracing::error!("{error}");
+        std::process::exit(1);
+    }
+}
 
+async fn run(args: Args) -> Result<(), String> {
     // For MCP stdio mode, minimize logging to stderr so stdout is clean.
     if args.mcp_stdio {
         tracing_subscriber::fmt()
@@ -49,66 +74,86 @@ async fn main() {
             .init();
     }
 
-    if args.mcp_stdio {
-        tracing::info!("starting MCP stdio server (no auth)");
-        let handler = Arc::new(std::sync::Mutex::new(AxonHandler::new(
-            MemoryStorageAdapter::default(),
-        )));
-
-        // In stdio mode, collections are discovered dynamically.
-        // Start with an empty list — agents use tools/list after initialization.
-        if let Err(e) = axon_server::run_mcp_stdio(handler, &[]) {
-            tracing::error!("MCP stdio error: {e}");
-            std::process::exit(1);
-        }
-        return;
-    }
-
     if args.no_auth {
         tracing::info!(
             "running in --no-auth mode: all requests succeed as admin (actor=anonymous)"
         );
     }
 
-    // Single shared handler for both HTTP and gRPC.
-    let handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(
-        MemoryStorageAdapter::default(),
-    )));
+    match args.storage {
+        StorageBackend::Memory => {
+            run_with_storage(MemoryStorageAdapter::default(), &args, "memory").await
+        }
+        StorageBackend::Sqlite => {
+            let storage = SqliteStorageAdapter::open(&args.sqlite_path)
+                .map_err(|error| format!("failed to open SQLite backing store: {error}"))?;
+            run_with_storage(storage, &args, format!("sqlite:{}", args.sqlite_path)).await
+        }
+        StorageBackend::Postgres => {
+            let dsn = args
+                .postgres_dsn
+                .as_deref()
+                .ok_or_else(|| "--postgres-dsn is required when --storage=postgres".to_string())?;
+            let storage = PostgresStorageAdapter::connect(dsn)
+                .map_err(|error| format!("failed to connect PostgreSQL backing store: {error}"))?;
+            run_with_storage(storage, &args, "postgres").await
+        }
+    }
+}
 
-    // Build HTTP gateway.
-    let http_app = axon_server::gateway::build_router(handler.clone());
+async fn run_with_storage<S>(
+    storage: S,
+    args: &Args,
+    backend: impl Into<String>,
+) -> Result<(), String>
+where
+    S: axon_storage::adapter::StorageAdapter + 'static,
+{
+    let backend = backend.into();
+
+    if args.mcp_stdio {
+        tracing::info!("starting MCP stdio server with backend {backend}");
+        let handler = Arc::new(std::sync::Mutex::new(AxonHandler::new(storage)));
+        return axon_server::run_mcp_stdio(handler, &[]).map_err(|error| error.to_string());
+    }
+
+    let handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(storage)));
+    let http_app = axon_server::gateway::build_router(handler.clone(), backend.clone());
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
-    // Build gRPC service sharing the same handler.
     let grpc_svc = AxonServiceImpl::from_shared(handler);
     let grpc_addr: SocketAddr = ([0, 0, 0, 0], args.grpc_port).into();
 
     tracing::info!("HTTP gateway listening on {http_addr}");
     tracing::info!("gRPC service listening on {grpc_addr}");
 
-    // Start HTTP server with graceful shutdown.
     let http_handle = tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(http_addr).await.unwrap();
+        let listener = tokio::net::TcpListener::bind(http_addr)
+            .await
+            .map_err(|error| format!("failed to bind HTTP listener: {error}"))?;
         axum::serve(listener, http_app)
             .with_graceful_shutdown(shutdown_signal())
             .await
-            .unwrap();
+            .map_err(|error| format!("HTTP server error: {error}"))
     });
 
-    // Start gRPC server with graceful shutdown.
     let grpc_handle = tokio::spawn(async move {
         tonic::transport::Server::builder()
             .add_service(AxonServiceServer::new(grpc_svc))
             .serve_with_shutdown(grpc_addr, shutdown_signal())
             .await
-            .unwrap();
+            .map_err(|error| format!("gRPC server error: {error}"))
     });
 
-    // Wait for either server to finish (both shut down on CTRL+C).
     tokio::select! {
-        r = http_handle => { if let Err(e) = r { tracing::error!("HTTP server error: {e}"); } }
-        r = grpc_handle => { if let Err(e) = r { tracing::error!("gRPC server error: {e}"); } }
+        result = http_handle => {
+            result.map_err(|error| format!("HTTP task join error: {error}"))??;
+        }
+        result = grpc_handle => {
+            result.map_err(|error| format!("gRPC task join error: {error}"))??;
+        }
     }
+    Ok(())
 }
 
 async fn shutdown_signal() {

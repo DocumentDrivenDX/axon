@@ -55,6 +55,7 @@ pub fn run_mcp_stdio<S: StorageAdapter + 'static>(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use axon_api::handler::AxonHandler;

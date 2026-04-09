@@ -115,6 +115,7 @@ pub fn check_compatibility(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use axon_core::id::CollectionId;

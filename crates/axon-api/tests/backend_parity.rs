@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used, clippy::wildcard_imports)]
+
 //! Backend parity tests: verify AxonHandler behaves identically across
 //! MemoryStorageAdapter and SqliteStorageAdapter.
 //!

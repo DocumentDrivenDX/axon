@@ -465,6 +465,7 @@ pub fn import_beads<S: StorageAdapter>(
 // ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use axon_storage::memory::MemoryStorageAdapter;

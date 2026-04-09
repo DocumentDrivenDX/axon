@@ -1,4 +1,4 @@
-use std::collections::{HashMap as StdHashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ns() -> u64 {
@@ -11,7 +11,7 @@ fn now_ns() -> u64 {
 use axon_audit::entry::{AuditEntry, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
 use axon_schema::schema::CollectionSchema;
@@ -24,9 +24,9 @@ use crate::request::{
     DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest, DiffSchemaRequest,
     DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest, FieldFilter, FilterNode,
     FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
-    ListNamespaceCollectionsRequest, PatchEntityRequest, PutSchemaRequest, QueryAuditRequest,
-    QueryEntitiesRequest, ReachableRequest, RevalidateRequest, RevertEntityRequest, SortDirection,
-    TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest, PutSchemaRequest,
+    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevalidateRequest,
+    RevertEntityRequest, SortDirection, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
@@ -35,9 +35,9 @@ use crate::response::{
     DiffSchemaResponse, DropCollectionResponse, DropDatabaseResponse, DropNamespaceResponse,
     GetEntityMarkdownResponse, GetEntityResponse, GetSchemaResponse, InvalidEntity,
     ListCollectionsResponse, ListDatabasesResponse, ListNamespaceCollectionsResponse,
-    PatchEntityResponse, PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse,
-    ReachableResponse, RevalidateResponse, RevertEntityResponse, TraverseHop, TraversePath,
-    TraverseResponse, UpdateEntityResponse,
+    ListNamespacesResponse, PatchEntityResponse, PutSchemaResponse, QueryAuditResponse,
+    QueryEntitiesResponse, ReachableResponse, RevalidateResponse, RevertEntityResponse,
+    TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -51,19 +51,13 @@ const MAX_DEPTH_CAP: usize = 10;
 pub struct AxonHandler<S: StorageAdapter> {
     storage: S,
     audit: MemoryAuditLog,
-    /// Registered namespaces: maps "database.schema" to a set of collection names.
-    namespaces: StdHashMap<String, HashSet<String>>,
 }
 
 impl<S: StorageAdapter> AxonHandler<S> {
     pub fn new(storage: S) -> Self {
-        // Auto-register the default namespace.
-        let mut namespaces = StdHashMap::new();
-        namespaces.insert("default.default".into(), HashSet::new());
         Self {
             storage,
             audit: MemoryAuditLog::default(),
-            namespaces,
         }
     }
 
@@ -1104,7 +1098,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         let mut chars = s.chars();
-        let first = chars.next().unwrap();
+        let Some(first) = chars.next() else {
+            return Err(AxonError::InvalidArgument(format!(
+                "collection name '{}' must be 1-128 characters",
+                s
+            )));
+        };
         if !first.is_ascii_lowercase() {
             return Err(AxonError::InvalidArgument(format!(
                 "collection name '{}' must start with a lowercase letter",
@@ -1155,7 +1154,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if existing.contains(&req.name) {
             return Err(AxonError::AlreadyExists(req.name.to_string()));
         }
-        self.storage.register_collection(&req.name)?;
+        self.storage
+            .register_collection_in_namespace(&req.name, &Namespace::default_ns())?;
         self.put_schema(req.schema)?;
 
         self.audit.append(AuditEntry::new(
@@ -1409,14 +1409,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: CreateNamespaceRequest,
     ) -> Result<CreateNamespaceResponse, AxonError> {
-        let ns_key = format!("{}.{}", req.database, req.schema);
-        if self.namespaces.contains_key(&ns_key) {
-            return Err(AxonError::AlreadyExists(format!("namespace '{ns_key}'")));
-        }
-        self.namespaces.insert(ns_key, HashSet::new());
+        self.storage
+            .create_namespace(&Namespace::new(&req.database, &req.schema))?;
         Ok(CreateNamespaceResponse {
             database: req.database,
             schema: req.schema,
+        })
+    }
+
+    /// List schemas within a database.
+    pub fn list_namespaces(
+        &self,
+        req: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse, AxonError> {
+        let schemas = self.storage.list_namespaces(&req.database)?;
+        Ok(ListNamespacesResponse {
+            database: req.database,
+            schemas,
         })
     }
 
@@ -1425,12 +1434,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: ListNamespaceCollectionsRequest,
     ) -> Result<ListNamespaceCollectionsResponse, AxonError> {
-        let ns_key = format!("{}.{}", req.database, req.schema);
         let collections = self
-            .namespaces
-            .get(&ns_key)
-            .map(|c| c.iter().cloned().collect::<Vec<_>>())
-            .unwrap_or_default();
+            .storage
+            .list_namespace_collections(&Namespace::new(&req.database, &req.schema))?
+            .into_iter()
+            .map(|collection| collection.to_string())
+            .collect();
         Ok(ListNamespaceCollectionsResponse {
             database: req.database,
             schema: req.schema,
@@ -1443,31 +1452,45 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: DropNamespaceRequest,
     ) -> Result<DropNamespaceResponse, AxonError> {
-        let ns_key = format!("{}.{}", req.database, req.schema);
-        let collections = self
-            .namespaces
-            .get(&ns_key)
-            .ok_or_else(|| AxonError::NotFound(format!("namespace '{ns_key}'")))?;
+        if req.schema == DEFAULT_SCHEMA {
+            return Err(AxonError::InvalidOperation(format!(
+                "schema '{}' cannot be dropped",
+                req.schema
+            )));
+        }
 
+        let namespace = Namespace::new(&req.database, &req.schema);
+        let collections = self.storage.list_namespace_collections(&namespace)?;
         let count = collections.len();
         if count > 0 && !req.force {
             return Err(AxonError::InvalidOperation(format!(
-                "namespace '{ns_key}' contains {} collections: {}. Use force=true to drop",
+                "namespace '{}' contains {} collections: {}. Use force=true to drop",
+                namespace,
                 count,
                 collections
                     .iter()
                     .take(5)
-                    .cloned()
+                    .map(ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(", ")
             )));
         }
 
-        let removed = self.namespaces.remove(&ns_key).map_or(0, |c| c.len());
+        if req.force {
+            for collection in &collections {
+                let _ = self.drop_collection(DropCollectionRequest {
+                    name: collection.clone(),
+                    actor: None,
+                    confirm: true,
+                })?;
+            }
+        }
+
+        self.storage.drop_namespace(&namespace)?;
         Ok(DropNamespaceResponse {
             database: req.database,
             schema: req.schema,
-            collections_removed: removed,
+            collections_removed: count,
         })
     }
 
@@ -1481,11 +1504,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: CreateDatabaseRequest,
     ) -> Result<CreateDatabaseResponse, AxonError> {
-        let ns_key = format!("{}.default", req.name);
-        if self.namespaces.contains_key(&ns_key) {
-            return Err(AxonError::AlreadyExists(format!("database '{}'", req.name)));
-        }
-        self.namespaces.insert(ns_key, HashSet::new());
+        self.storage.create_database(&req.name)?;
         Ok(CreateDatabaseResponse { name: req.name })
     }
 
@@ -1497,22 +1516,19 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: DropDatabaseRequest,
     ) -> Result<DropDatabaseResponse, AxonError> {
-        let prefix = format!("{}.", req.name);
-        let matching_keys: Vec<String> = self
-            .namespaces
-            .keys()
-            .filter(|k| k.starts_with(&prefix))
-            .cloned()
-            .collect();
-
-        if matching_keys.is_empty() {
+        if !self.storage.list_databases()?.contains(&req.name) {
             return Err(AxonError::NotFound(format!("database '{}'", req.name)));
         }
 
-        let total_collections: usize = matching_keys
-            .iter()
-            .map(|k| self.namespaces.get(k).map_or(0, |c| c.len()))
-            .sum();
+        let schemas = self.storage.list_namespaces(&req.name)?;
+        let mut collections = Vec::new();
+        for schema in &schemas {
+            collections.extend(
+                self.storage
+                    .list_namespace_collections(&Namespace::new(&req.name, schema))?,
+            );
+        }
+        let total_collections = collections.len();
 
         if total_collections > 0 && !req.force {
             return Err(AxonError::InvalidOperation(format!(
@@ -1521,9 +1537,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
-        for key in &matching_keys {
-            self.namespaces.remove(key);
+        if req.force {
+            for collection in &collections {
+                let _ = self.drop_collection(DropCollectionRequest {
+                    name: collection.clone(),
+                    actor: None,
+                    confirm: true,
+                })?;
+            }
         }
+
+        self.storage.drop_database(&req.name)?;
 
         Ok(DropDatabaseResponse {
             name: req.name,
@@ -1536,15 +1560,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         _req: ListDatabasesRequest,
     ) -> Result<ListDatabasesResponse, AxonError> {
-        let mut databases: Vec<String> = self
-            .namespaces
-            .keys()
-            .filter_map(|k| k.split('.').next().map(String::from))
-            .collect::<HashSet<String>>()
-            .into_iter()
-            .collect();
-        databases.sort();
-        Ok(ListDatabasesResponse { databases })
+        Ok(ListDatabasesResponse {
+            databases: self.storage.list_databases()?,
+        })
     }
 
     /// Diff two schema versions for a collection (US-061).
@@ -2492,6 +2510,7 @@ fn check_unique_constraints<S: StorageAdapter>(
 }
 
 #[cfg(test)]
+#[allow(clippy::manual_string_new, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::fmt::Display;
@@ -5802,7 +5821,7 @@ link_types:
             .unwrap();
 
         // All gates pass.
-        for (_, gate) in &resp.gates {
+        for gate in resp.gates.values() {
             assert!(gate.pass, "gate {} should pass", gate.gate);
         }
         // No advisories.
@@ -6070,8 +6089,12 @@ link_types:
 
     #[test]
     fn create_namespace() {
-        use crate::request::CreateNamespaceRequest;
+        use crate::request::{CreateDatabaseRequest, CreateNamespaceRequest};
         let mut h = handler();
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
         let resp = h
             .create_namespace(CreateNamespaceRequest {
                 database: "prod".into(),
@@ -6084,8 +6107,12 @@ link_types:
 
     #[test]
     fn create_duplicate_namespace_fails() {
-        use crate::request::CreateNamespaceRequest;
+        use crate::request::{CreateDatabaseRequest, CreateNamespaceRequest};
         let mut h = handler();
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
         h.create_namespace(CreateNamespaceRequest {
             database: "prod".into(),
             schema: "billing".into(),
@@ -6100,8 +6127,14 @@ link_types:
 
     #[test]
     fn list_namespace_collections_empty() {
-        use crate::request::{CreateNamespaceRequest, ListNamespaceCollectionsRequest};
+        use crate::request::{
+            CreateDatabaseRequest, CreateNamespaceRequest, ListNamespaceCollectionsRequest,
+        };
         let mut h = handler();
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
         h.create_namespace(CreateNamespaceRequest {
             database: "prod".into(),
             schema: "billing".into(),
@@ -6118,8 +6151,12 @@ link_types:
 
     #[test]
     fn drop_empty_namespace() {
-        use crate::request::{CreateNamespaceRequest, DropNamespaceRequest};
+        use crate::request::{CreateDatabaseRequest, CreateNamespaceRequest, DropNamespaceRequest};
         let mut h = handler();
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
         h.create_namespace(CreateNamespaceRequest {
             database: "prod".into(),
             schema: "billing".into(),
@@ -6137,18 +6174,24 @@ link_types:
 
     #[test]
     fn drop_nonempty_namespace_without_force_fails() {
-        use crate::request::{CreateNamespaceRequest, DropNamespaceRequest};
+        use crate::request::{CreateDatabaseRequest, CreateNamespaceRequest, DropNamespaceRequest};
+        use axon_core::id::{CollectionId, Namespace};
         let mut h = handler();
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
         h.create_namespace(CreateNamespaceRequest {
             database: "prod".into(),
             schema: "billing".into(),
         })
         .unwrap();
-        // Manually add a collection to the namespace.
-        h.namespaces
-            .get_mut("prod.billing")
-            .unwrap()
-            .insert("invoices".into());
+        h.storage_mut()
+            .register_collection_in_namespace(
+                &CollectionId::new("invoices"),
+                &Namespace::new("prod", "billing"),
+            )
+            .unwrap();
 
         let result = h.drop_namespace(DropNamespaceRequest {
             database: "prod".into(),
@@ -6161,21 +6204,30 @@ link_types:
 
     #[test]
     fn drop_nonempty_namespace_with_force() {
-        use crate::request::{CreateNamespaceRequest, DropNamespaceRequest};
+        use crate::request::{CreateDatabaseRequest, CreateNamespaceRequest, DropNamespaceRequest};
+        use axon_core::id::{CollectionId, Namespace};
         let mut h = handler();
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
         h.create_namespace(CreateNamespaceRequest {
             database: "prod".into(),
             schema: "billing".into(),
         })
         .unwrap();
-        h.namespaces
-            .get_mut("prod.billing")
-            .unwrap()
-            .insert("invoices".into());
-        h.namespaces
-            .get_mut("prod.billing")
-            .unwrap()
-            .insert("receipts".into());
+        h.storage_mut()
+            .register_collection_in_namespace(
+                &CollectionId::new("invoices"),
+                &Namespace::new("prod", "billing"),
+            )
+            .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(
+                &CollectionId::new("receipts"),
+                &Namespace::new("prod", "billing"),
+            )
+            .unwrap();
 
         let resp = h
             .drop_namespace(DropNamespaceRequest {
@@ -7742,6 +7794,7 @@ link_types:
     #[test]
     fn drop_nonempty_database_requires_force() {
         use crate::request::{CreateDatabaseRequest, CreateNamespaceRequest, DropDatabaseRequest};
+        use axon_core::id::{CollectionId, Namespace};
         let mut h = handler();
         h.create_database(CreateDatabaseRequest {
             name: "prod".into(),
@@ -7753,12 +7806,12 @@ link_types:
             schema: "analytics".into(),
         })
         .unwrap();
-        // Manually track a collection in the namespace for the test.
-        // (In real usage, create_collection would register this.)
-        h.namespaces
-            .get_mut("prod.default")
-            .unwrap()
-            .insert("tasks".to_string());
+        h.storage_mut()
+            .register_collection_in_namespace(
+                &CollectionId::new("tasks"),
+                &Namespace::new("prod", "default"),
+            )
+            .unwrap();
 
         let err = h
             .drop_database(DropDatabaseRequest {
@@ -7970,7 +8023,7 @@ link_types:
         for i in 0..3 {
             h.create_entity(CreateEntityRequest {
                 collection: col.clone(),
-                id: EntityId::new(&format!("w-{i}")),
+                id: EntityId::new(format!("w-{i}")),
                 data: json!({"name": format!("widget-{i}")}),
                 actor: None,
                 audit_metadata: None,

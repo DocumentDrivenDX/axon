@@ -300,6 +300,13 @@ pub struct CreateNamespaceResponse {
     pub schema: String,
 }
 
+/// Response listing schema namespaces within a database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListNamespacesResponse {
+    pub database: String,
+    pub schemas: Vec<String>,
+}
+
 /// Response listing collections in a namespace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListNamespaceCollectionsResponse {

@@ -4,11 +4,15 @@
 //! stored in the database file specified by `--db` (default: `axon.db`).
 //! The audit log is in-memory and covers only the current command.
 
+#![allow(clippy::print_stdout)]
+
 use anyhow::{Context, Result};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DescribeCollectionRequest, DropCollectionRequest, GetEntityRequest, ListCollectionsRequest,
+    CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
+    CreateNamespaceRequest, DeleteEntityRequest, DescribeCollectionRequest, DropCollectionRequest,
+    DropDatabaseRequest, DropNamespaceRequest, GetEntityRequest, ListCollectionsRequest,
+    ListDatabasesRequest, ListNamespaceCollectionsRequest, ListNamespacesRequest,
     QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, TraverseRequest,
     UpdateEntityRequest,
 };
@@ -48,6 +52,14 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Database management.
+    #[command(subcommand)]
+    Database(DatabaseCmd),
+
+    /// Namespace management.
+    #[command(subcommand)]
+    Namespace(NamespaceCmd),
+
     /// Collection management.
     #[command(subcommand)]
     Collection(CollectionCmd),
@@ -74,6 +86,53 @@ enum Command {
     /// Bead (work item) management.
     #[command(subcommand)]
     Bead(BeadCmd),
+}
+
+#[derive(Subcommand)]
+enum DatabaseCmd {
+    /// Create a database and its default schema.
+    Create { name: String },
+    /// List databases.
+    List,
+    /// Drop a database.
+    Drop {
+        name: String,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        confirm: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum NamespaceCmd {
+    /// Create a schema namespace within a database.
+    Create {
+        #[arg(long)]
+        database: String,
+        schema: String,
+    },
+    /// List schemas within a database.
+    List {
+        #[arg(long)]
+        database: String,
+    },
+    /// List collections within a namespace.
+    Collections {
+        #[arg(long)]
+        database: String,
+        schema: String,
+    },
+    /// Drop a schema namespace.
+    Drop {
+        #[arg(long)]
+        database: String,
+        schema: String,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 // ── Collection commands ────────────────────────────────────────────────────────
@@ -319,12 +378,14 @@ enum BeadCmd {
 /// Serialize a value as JSON or YAML to stdout.
 fn print_serialized(value: &(impl serde::Serialize + ?Sized), format: &OutputFormat) {
     match format {
-        OutputFormat::Json | OutputFormat::Table => {
-            println!("{}", serde_json::to_string_pretty(value).unwrap());
-        }
-        OutputFormat::Yaml => {
-            println!("{}", serde_yaml::to_string(value).unwrap());
-        }
+        OutputFormat::Json | OutputFormat::Table => match serde_json::to_string_pretty(value) {
+            Ok(serialized) => println!("{serialized}"),
+            Err(err) => panic!("failed to serialize CLI output as JSON: {err}"),
+        },
+        OutputFormat::Yaml => match serde_yaml::to_string(value) {
+            Ok(serialized) => println!("{serialized}"),
+            Err(err) => panic!("failed to serialize CLI output as YAML: {err}"),
+        },
     }
 }
 
@@ -374,6 +435,8 @@ pub fn run(cli: Cli) -> Result<()> {
     let mut handler = AxonHandler::new(storage);
 
     match cli.command {
+        Command::Database(cmd) => run_database(cmd, &cli.output, &mut handler),
+        Command::Namespace(cmd) => run_namespace(cmd, &cli.output, &mut handler),
         Command::Collection(cmd) => run_collection(cmd, &cli.output, &mut handler),
         Command::Entity(cmd) => run_entity(cmd, &cli.output, &mut handler),
         Command::Link(cmd) => run_link(cmd, &cli.output, &mut handler),
@@ -389,6 +452,114 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Schema(cmd) => run_schema(cmd, &cli.output, &handler),
         Command::Audit(cmd) => run_audit(cmd, &cli.output, &mut handler),
         Command::Bead(cmd) => run_bead(cmd, &cli.output, &mut handler),
+    }
+}
+
+fn run_database(
+    cmd: DatabaseCmd,
+    format: &OutputFormat,
+    handler: &mut AxonHandler<SqliteStorageAdapter>,
+) -> Result<()> {
+    match cmd {
+        DatabaseCmd::Create { name } => {
+            let resp = handler.create_database(CreateDatabaseRequest { name })?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                OutputFormat::Table => println!("{}", resp.name),
+            }
+            Ok(())
+        }
+        DatabaseCmd::List => {
+            let resp = handler.list_databases(ListDatabasesRequest {})?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                OutputFormat::Table => {
+                    for database in resp.databases {
+                        println!("{database}");
+                    }
+                }
+            }
+            Ok(())
+        }
+        DatabaseCmd::Drop {
+            name,
+            force,
+            confirm,
+        } => {
+            anyhow::ensure!(confirm, "database drop requires --confirm");
+            let resp = handler.drop_database(DropDatabaseRequest { name, force })?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                OutputFormat::Table => println!(
+                    "{} ({} collections removed)",
+                    resp.name, resp.collections_removed
+                ),
+            }
+            Ok(())
+        }
+    }
+}
+
+fn run_namespace(
+    cmd: NamespaceCmd,
+    format: &OutputFormat,
+    handler: &mut AxonHandler<SqliteStorageAdapter>,
+) -> Result<()> {
+    match cmd {
+        NamespaceCmd::Create { database, schema } => {
+            let resp = handler.create_namespace(CreateNamespaceRequest { database, schema })?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                OutputFormat::Table => println!("{}.{}", resp.database, resp.schema),
+            }
+            Ok(())
+        }
+        NamespaceCmd::List { database } => {
+            let resp = handler.list_namespaces(ListNamespacesRequest { database })?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                OutputFormat::Table => {
+                    for schema in resp.schemas {
+                        println!("{schema}");
+                    }
+                }
+            }
+            Ok(())
+        }
+        NamespaceCmd::Collections { database, schema } => {
+            let resp = handler
+                .list_namespace_collections(ListNamespaceCollectionsRequest { database, schema })?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                OutputFormat::Table => {
+                    for collection in resp.collections {
+                        println!("{collection}");
+                    }
+                }
+            }
+            Ok(())
+        }
+        NamespaceCmd::Drop {
+            database,
+            schema,
+            force,
+            confirm,
+        } => {
+            anyhow::ensure!(confirm, "namespace drop requires --confirm");
+            let resp = handler.drop_namespace(DropNamespaceRequest {
+                database,
+                schema,
+                force,
+            })?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => print_serialized(&resp, format),
+                OutputFormat::Table => println!(
+                    "{}.{} ({} collections removed)",
+                    resp.database, resp.schema, resp.collections_removed
+                ),
+            }
+            Ok(())
+        }
     }
 }
 
@@ -646,7 +817,7 @@ fn run_entity(
             let filter_node = if filter.is_empty() {
                 None
             } else {
-                let field_filters: Vec<FilterNode> = filter
+                let mut field_filters: Vec<FilterNode> = filter
                     .iter()
                     .map(|f| {
                         let (field, value) = f.split_once('=').unwrap_or((f, ""));
@@ -658,7 +829,7 @@ fn run_entity(
                     })
                     .collect();
                 if field_filters.len() == 1 {
-                    Some(field_filters.into_iter().next().unwrap())
+                    Some(field_filters.remove(0))
                 } else {
                     Some(FilterNode::And {
                         filters: field_filters,
@@ -952,7 +1123,7 @@ fn print_audit_entries(entries: &[axon_audit::AuditEntry], format: &OutputFormat
     match format {
         OutputFormat::Json | OutputFormat::Yaml => {
             let json_entries: Vec<Value> = entries.iter().map(audit_entry_to_json).collect();
-            println!("{}", serde_json::to_string_pretty(&json_entries).unwrap());
+            print_serialized(&json_entries, format);
         }
         OutputFormat::Table => {
             if entries.is_empty() {
@@ -1110,10 +1281,7 @@ fn bead_to_json(b: &axon_api::bead::Bead) -> Value {
 
 fn print_bead(b: &axon_api::bead::Bead, format: &OutputFormat) {
     match format {
-        OutputFormat::Json | OutputFormat::Yaml => println!(
-            "{}",
-            serde_json::to_string_pretty(&bead_to_json(b)).unwrap()
-        ),
+        OutputFormat::Json | OutputFormat::Yaml => print_serialized(&bead_to_json(b), format),
         OutputFormat::Table => {
             println!(
                 "[{}] {} ({}) p{} {}",
@@ -1127,7 +1295,7 @@ fn print_beads(beads: &[axon_api::bead::Bead], format: &OutputFormat) {
     match format {
         OutputFormat::Json | OutputFormat::Yaml => {
             let json: Vec<Value> = beads.iter().map(bead_to_json).collect();
-            println!("{}", serde_json::to_string_pretty(&json).unwrap());
+            print_serialized(&json, format);
         }
         OutputFormat::Table => {
             if beads.is_empty() {
@@ -1147,6 +1315,7 @@ fn print_beads(beads: &[axon_api::bead::Bead], format: &OutputFormat) {
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use tempfile::NamedTempFile;
@@ -1171,6 +1340,25 @@ mod tests {
 
         let cli = make_cli(&db, &["collection", "describe", "tasks"]);
         run(cli).unwrap();
+    }
+
+    #[test]
+    fn database_and_namespace_commands_round_trip() {
+        let (_f, db) = tmp_db();
+
+        run(make_cli(&db, &["database", "create", "prod"])).unwrap();
+        run(make_cli(
+            &db,
+            &["namespace", "create", "--database", "prod", "billing"],
+        ))
+        .unwrap();
+        run(make_cli(&db, &["database", "list"])).unwrap();
+        run(make_cli(&db, &["namespace", "list", "--database", "prod"])).unwrap();
+        run(make_cli(
+            &db,
+            &["namespace", "collections", "--database", "prod", "billing"],
+        ))
+        .unwrap();
     }
 
     #[test]

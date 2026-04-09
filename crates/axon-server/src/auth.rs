@@ -111,6 +111,7 @@ pub fn resolve_identity(mode: &AuthMode) -> Identity {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
