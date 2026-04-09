@@ -787,6 +787,15 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         self.conn
             .execute(
+                "DELETE FROM entities
+                 WHERE collection IN (
+                     SELECT name FROM collections WHERE database_name = ?1
+                 )",
+                params![name],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute(
                 "DELETE FROM collection_views WHERE database_name = ?1",
                 params![name],
             )
@@ -855,6 +864,16 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
+        self.conn
+            .execute(
+                "DELETE FROM entities
+                 WHERE collection IN (
+                     SELECT name FROM collections
+                     WHERE database_name = ?1 AND schema_name = ?2
+                 )",
+                params![namespace.database.as_str(), namespace.schema.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.conn
             .execute(
                 "DELETE FROM collection_views
@@ -1454,6 +1473,114 @@ mod tests {
             s.list_namespace_collections(&Namespace::default_ns())
                 .expect("default list should survive prod drop"),
             vec![invoices]
+        );
+    }
+
+    #[test]
+    fn drop_namespace_purges_entities_for_removed_collections() {
+        let mut s = store();
+        let billing = Namespace::new("prod", "billing");
+        let engineering = Namespace::new("prod", "engineering");
+        let invoices = CollectionId::new("invoices");
+        let ledger = CollectionId::new("ledger");
+
+        s.create_database("prod")
+            .expect("database create should succeed");
+        s.create_namespace(&billing)
+            .expect("billing namespace create should succeed");
+        s.create_namespace(&engineering)
+            .expect("engineering namespace create should succeed");
+        s.register_collection_in_namespace(&invoices, &billing)
+            .expect("billing collection register should succeed");
+        s.register_collection_in_namespace(&ledger, &engineering)
+            .expect("engineering collection register should succeed");
+        s.put(Entity::new(
+            invoices.clone(),
+            EntityId::new("inv-001"),
+            json!({"title": "invoice"}),
+        ))
+        .expect("billing entity put should succeed");
+        s.put(Entity::new(
+            ledger.clone(),
+            EntityId::new("led-001"),
+            json!({"title": "ledger"}),
+        ))
+        .expect("engineering entity put should succeed");
+
+        s.drop_namespace(&billing)
+            .expect("billing drop should succeed");
+
+        assert!(
+            s.get(&invoices, &EntityId::new("inv-001"))
+                .expect("billing entity lookup should succeed")
+                .is_none(),
+            "dropped namespace entities must be purged"
+        );
+        assert!(
+            s.get(&ledger, &EntityId::new("led-001"))
+                .expect("surviving entity lookup should succeed")
+                .is_some(),
+            "entities in other namespaces must survive"
+        );
+    }
+
+    #[test]
+    fn drop_database_purges_entities_for_removed_collections() {
+        let mut s = store();
+        let analytics = Namespace::new("prod", "analytics");
+        let orders = CollectionId::new("orders");
+        let rollups = CollectionId::new("rollups");
+        let keep = CollectionId::new("keep");
+
+        s.create_database("prod")
+            .expect("database create should succeed");
+        s.create_namespace(&analytics)
+            .expect("analytics namespace create should succeed");
+        s.register_collection_in_namespace(&orders, &Namespace::new("prod", "default"))
+            .expect("prod default collection register should succeed");
+        s.register_collection_in_namespace(&rollups, &analytics)
+            .expect("analytics collection register should succeed");
+        s.register_collection_in_namespace(&keep, &Namespace::default_ns())
+            .expect("default collection register should succeed");
+        s.put(Entity::new(
+            orders.clone(),
+            EntityId::new("ord-001"),
+            json!({"title": "order"}),
+        ))
+        .expect("prod default entity put should succeed");
+        s.put(Entity::new(
+            rollups.clone(),
+            EntityId::new("sum-001"),
+            json!({"title": "rollup"}),
+        ))
+        .expect("analytics entity put should succeed");
+        s.put(Entity::new(
+            keep.clone(),
+            EntityId::new("keep-001"),
+            json!({"title": "keep"}),
+        ))
+        .expect("default entity put should succeed");
+
+        s.drop_database("prod")
+            .expect("database drop should succeed");
+
+        assert!(
+            s.get(&orders, &EntityId::new("ord-001"))
+                .expect("orders lookup should succeed")
+                .is_none(),
+            "dropped database entities must be purged"
+        );
+        assert!(
+            s.get(&rollups, &EntityId::new("sum-001"))
+                .expect("rollups lookup should succeed")
+                .is_none(),
+            "all namespace entities in the dropped database must be purged"
+        );
+        assert!(
+            s.get(&keep, &EntityId::new("keep-001"))
+                .expect("default lookup should succeed")
+                .is_some(),
+            "entities in other databases must survive"
         );
     }
 

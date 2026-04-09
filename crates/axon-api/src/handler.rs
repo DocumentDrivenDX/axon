@@ -1226,6 +1226,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
         })
     }
 
+    fn append_collection_drop_audit_entries(
+        &mut self,
+        collections: &[CollectionId],
+    ) -> Result<(), AxonError> {
+        for collection in collections {
+            self.audit.append(AuditEntry::new(
+                collection.clone(),
+                EntityId::new(""),
+                0,
+                MutationType::CollectionDrop,
+                None,
+                None,
+                None,
+            ))?;
+        }
+        Ok(())
+    }
+
     /// List all explicitly created collections with summary metadata.
     pub fn list_collections(
         &self,
@@ -1480,6 +1498,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         self.storage.drop_namespace(&namespace)?;
+        self.append_collection_drop_audit_entries(&collections)?;
         Ok(DropNamespaceResponse {
             database: req.database,
             schema: req.schema,
@@ -1531,6 +1550,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         self.storage.drop_database(&req.name)?;
+        self.append_collection_drop_audit_entries(&collections)?;
 
         Ok(DropDatabaseResponse {
             name: req.name,
@@ -6321,6 +6341,97 @@ link_types:
     }
 
     #[test]
+    fn drop_namespace_with_force_records_collection_drop_audits() {
+        use crate::request::{CreateDatabaseRequest, CreateNamespaceRequest, DropNamespaceRequest};
+        use axon_core::id::Namespace;
+        use axon_core::types::Entity;
+
+        let mut h = handler();
+        let billing = Namespace::new("prod", "billing");
+        let invoices = CollectionId::new("invoices");
+        let receipts = CollectionId::new("receipts");
+        let keep = CollectionId::new("keep");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&invoices, &billing)
+            .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&receipts, &billing)
+            .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&keep, &Namespace::default_ns())
+            .unwrap();
+        h.storage_mut()
+            .put(Entity::new(
+                invoices.clone(),
+                EntityId::new("inv-001"),
+                json!({"title": "invoice"}),
+            ))
+            .unwrap();
+        h.storage_mut()
+            .put(Entity::new(
+                receipts.clone(),
+                EntityId::new("rcpt-001"),
+                json!({"title": "receipt"}),
+            ))
+            .unwrap();
+        h.storage_mut()
+            .put(Entity::new(
+                keep.clone(),
+                EntityId::new("keep-001"),
+                json!({"title": "keep"}),
+            ))
+            .unwrap();
+
+        let resp = h
+            .drop_namespace(DropNamespaceRequest {
+                database: "prod".into(),
+                schema: "billing".into(),
+                force: true,
+            })
+            .unwrap();
+        assert_eq!(resp.collections_removed, 2);
+        assert!(h
+            .storage
+            .get(&invoices, &EntityId::new("inv-001"))
+            .unwrap()
+            .is_none());
+        assert!(h
+            .storage
+            .get(&receipts, &EntityId::new("rcpt-001"))
+            .unwrap()
+            .is_none());
+        assert!(h
+            .storage
+            .get(&keep, &EntityId::new("keep-001"))
+            .unwrap()
+            .is_some());
+
+        let drops = h
+            .audit_log()
+            .query_by_operation(&axon_audit::entry::MutationType::CollectionDrop)
+            .unwrap();
+        assert_eq!(drops.len(), 2);
+        let dropped: std::collections::BTreeSet<_> = drops
+            .iter()
+            .map(|entry| entry.collection.to_string())
+            .collect();
+        assert_eq!(
+            dropped,
+            std::collections::BTreeSet::from(["invoices".to_string(), "receipts".to_string()])
+        );
+    }
+
+    #[test]
     fn default_namespace_exists_on_startup() {
         use crate::request::ListNamespaceCollectionsRequest;
         let h = handler();
@@ -7910,6 +8021,96 @@ link_types:
             })
             .unwrap();
         assert_eq!(resp.collections_removed, 1);
+    }
+
+    #[test]
+    fn drop_database_with_force_records_collection_drop_audits() {
+        use crate::request::{CreateDatabaseRequest, CreateNamespaceRequest, DropDatabaseRequest};
+        use axon_core::id::Namespace;
+        use axon_core::types::Entity;
+
+        let mut h = handler();
+        let analytics = Namespace::new("prod", "analytics");
+        let orders = CollectionId::new("orders");
+        let rollups = CollectionId::new("rollups");
+        let keep = CollectionId::new("keep");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "analytics".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&orders, &Namespace::new("prod", "default"))
+            .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&rollups, &analytics)
+            .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&keep, &Namespace::default_ns())
+            .unwrap();
+        h.storage_mut()
+            .put(Entity::new(
+                orders.clone(),
+                EntityId::new("ord-001"),
+                json!({"title": "order"}),
+            ))
+            .unwrap();
+        h.storage_mut()
+            .put(Entity::new(
+                rollups.clone(),
+                EntityId::new("sum-001"),
+                json!({"title": "rollup"}),
+            ))
+            .unwrap();
+        h.storage_mut()
+            .put(Entity::new(
+                keep.clone(),
+                EntityId::new("keep-001"),
+                json!({"title": "keep"}),
+            ))
+            .unwrap();
+
+        let resp = h
+            .drop_database(DropDatabaseRequest {
+                name: "prod".into(),
+                force: true,
+            })
+            .unwrap();
+        assert_eq!(resp.collections_removed, 2);
+        assert!(h
+            .storage
+            .get(&orders, &EntityId::new("ord-001"))
+            .unwrap()
+            .is_none());
+        assert!(h
+            .storage
+            .get(&rollups, &EntityId::new("sum-001"))
+            .unwrap()
+            .is_none());
+        assert!(h
+            .storage
+            .get(&keep, &EntityId::new("keep-001"))
+            .unwrap()
+            .is_some());
+
+        let drops = h
+            .audit_log()
+            .query_by_operation(&axon_audit::entry::MutationType::CollectionDrop)
+            .unwrap();
+        assert_eq!(drops.len(), 2);
+        let dropped: std::collections::BTreeSet<_> = drops
+            .iter()
+            .map(|entry| entry.collection.to_string())
+            .collect();
+        assert_eq!(
+            dropped,
+            std::collections::BTreeSet::from(["orders".to_string(), "rollups".to_string()])
+        );
     }
 
     // ── Audit metadata (US-009) ─────────────────────────────────────────────
