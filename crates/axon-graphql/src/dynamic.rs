@@ -217,6 +217,43 @@ mod tests {
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
+    #[tokio::test]
+    async fn ui_helper_queries_do_not_match_current_dynamic_schema() {
+        let schema = build_schema(&[test_schema()]).expect("schema should build");
+        let helper_queries = [
+            ("fetchCollections", "{ collections { name entityCount } }"),
+            (
+                "fetchEntities",
+                r#"{
+                    entities(collection: "tasks", limit: 50) {
+                        edges { node { id version data } }
+                        pageInfo { hasNextPage endCursor }
+                    }
+                }"#,
+            ),
+            (
+                "fetchEntity",
+                r#"{
+                    entity(collection: "tasks", id: "task-1") {
+                        id
+                        version
+                        data
+                        createdAt
+                        updatedAt
+                    }
+                }"#,
+            ),
+        ];
+
+        for (name, query) in helper_queries {
+            let result = schema.schema.execute(query).await;
+            assert!(
+                !result.errors.is_empty(),
+                "{name} unexpectedly matched the current schema",
+            );
+        }
+    }
+
     #[test]
     fn empty_collections_builds_valid_schema() {
         // Empty schema should still be valid (query/mutation with no fields won't work
