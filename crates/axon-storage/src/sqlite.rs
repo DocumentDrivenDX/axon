@@ -4,7 +4,9 @@ use rusqlite::{params, Connection};
 
 use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
+use axon_core::id::{
+    CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
+};
 use axon_core::types::Entity;
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
@@ -71,24 +73,32 @@ impl SqliteStorageAdapter {
                     PRIMARY KEY (collection, id)
                 );
                 CREATE TABLE IF NOT EXISTS schema_versions (
-                    collection  TEXT NOT NULL,
-                    version     INTEGER NOT NULL,
-                    schema_json TEXT NOT NULL,
-                    created_at  INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (collection, version)
+                    collection    TEXT NOT NULL,
+                    database_name TEXT NOT NULL DEFAULT 'default',
+                    schema_name   TEXT NOT NULL DEFAULT 'default',
+                    version       INTEGER NOT NULL,
+                    schema_json   TEXT NOT NULL,
+                    created_at    INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (database_name, schema_name, collection, version)
                 );
                 CREATE TABLE IF NOT EXISTS collections (
-                    name          TEXT NOT NULL PRIMARY KEY,
+                    name          TEXT NOT NULL,
                     database_name TEXT NOT NULL DEFAULT 'default',
-                    schema_name   TEXT NOT NULL DEFAULT 'default'
+                    schema_name   TEXT NOT NULL DEFAULT 'default',
+                    PRIMARY KEY (database_name, schema_name, name)
                 );
                 CREATE TABLE IF NOT EXISTS collection_views (
-                    collection        TEXT NOT NULL PRIMARY KEY
-                                      REFERENCES collections(name) ON DELETE CASCADE,
+                    collection        TEXT NOT NULL,
+                    database_name     TEXT NOT NULL DEFAULT 'default',
+                    schema_name       TEXT NOT NULL DEFAULT 'default',
                     version           INTEGER NOT NULL,
                     view_json         TEXT NOT NULL,
                     updated_at_ns     INTEGER NOT NULL,
-                    updated_by        TEXT
+                    updated_by        TEXT,
+                    PRIMARY KEY (database_name, schema_name, collection),
+                    FOREIGN KEY (database_name, schema_name, collection)
+                        REFERENCES collections(database_name, schema_name, name)
+                        ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,16 +113,27 @@ impl SqliteStorageAdapter {
                 );",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.ensure_collection_namespace_columns()?;
+        self.ensure_namespace_catalog_tables()?;
         self.ensure_default_namespace()
     }
 
-    fn collection_exists(&self, collection: &CollectionId) -> Result<bool, AxonError> {
+    fn collection_exists_in_namespace(
+        &self,
+        collection: &CollectionId,
+        namespace: &Namespace,
+    ) -> Result<bool, AxonError> {
         let exists: i64 = self
             .conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM collections WHERE name = ?1)",
-                params![collection.as_str()],
+                "SELECT EXISTS(
+                    SELECT 1 FROM collections
+                    WHERE name = ?1 AND database_name = ?2 AND schema_name = ?3
+                )",
+                params![
+                    collection.as_str(),
+                    namespace.database.as_str(),
+                    namespace.schema.as_str()
+                ],
                 |row| row.get(0),
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -146,35 +167,271 @@ impl SqliteStorageAdapter {
         Ok(exists != 0)
     }
 
-    fn ensure_collection_namespace_columns(&self) -> Result<(), AxonError> {
+    fn table_info(&self, table: &str) -> Result<Vec<(String, i64)>, AxonError> {
         let mut stmt = self
             .conn
-            .prepare("PRAGMA table_info(collections)")
+            .prepare(&format!("PRAGMA table_info({table})"))
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let columns = stmt
-            .query_map([], |row| row.get::<_, String>(1))
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
+            })
             .map_err(|e| AxonError::Storage(e.to_string()))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows)
+    }
 
-        if !columns.iter().any(|column| column == "database_name") {
+    fn table_columns(&self, table: &str) -> Result<Vec<String>, AxonError> {
+        self.table_info(table)
+            .map(|rows| rows.into_iter().map(|(name, _)| name).collect())
+    }
+
+    fn table_pk_columns(&self, table: &str) -> Result<Vec<String>, AxonError> {
+        let mut rows = self.table_info(table)?;
+        rows.retain(|(_, pk)| *pk > 0);
+        rows.sort_by_key(|(_, pk)| *pk);
+        Ok(rows.into_iter().map(|(name, _)| name).collect())
+    }
+
+    fn rebuild_collections_table(
+        &self,
+        has_database_name: bool,
+        has_schema_name: bool,
+    ) -> Result<(), AxonError> {
+        self.conn
+            .execute_batch(
+                "ALTER TABLE collections RENAME TO collections_legacy;
+                 CREATE TABLE collections (
+                     name          TEXT NOT NULL,
+                     database_name TEXT NOT NULL DEFAULT 'default',
+                     schema_name   TEXT NOT NULL DEFAULT 'default',
+                     PRIMARY KEY (database_name, schema_name, name)
+                 );",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let select_sql = match (has_database_name, has_schema_name) {
+            (true, true) => {
+                "SELECT name, COALESCE(database_name, 'default'), COALESCE(schema_name, 'default')
+                 FROM collections_legacy"
+            }
+            (true, false) => {
+                "SELECT name, COALESCE(database_name, 'default'), 'default'
+                 FROM collections_legacy"
+            }
+            (false, true) => {
+                "SELECT name, 'default', COALESCE(schema_name, 'default')
+                 FROM collections_legacy"
+            }
+            (false, false) => {
+                "SELECT name, 'default', 'default'
+                 FROM collections_legacy"
+            }
+        };
+
+        self.conn
+            .execute(
+                &format!(
+                    "INSERT OR IGNORE INTO collections (name, database_name, schema_name) {select_sql}"
+                ),
+                [],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute("DROP TABLE collections_legacy", [])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn rebuild_schema_versions_table(
+        &self,
+        has_database_name: bool,
+        has_schema_name: bool,
+    ) -> Result<(), AxonError> {
+        self.conn
+            .execute_batch(
+                "ALTER TABLE schema_versions RENAME TO schema_versions_legacy;
+                 CREATE TABLE schema_versions (
+                     collection    TEXT NOT NULL,
+                     database_name TEXT NOT NULL DEFAULT 'default',
+                     schema_name   TEXT NOT NULL DEFAULT 'default',
+                     version       INTEGER NOT NULL,
+                     schema_json   TEXT NOT NULL,
+                     created_at    INTEGER NOT NULL DEFAULT 0,
+                     PRIMARY KEY (database_name, schema_name, collection, version)
+                 );",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let select_sql = match (has_database_name, has_schema_name) {
+            (true, true) => {
+                "SELECT collection,
+                        COALESCE(database_name, 'default'),
+                        COALESCE(schema_name, 'default'),
+                        version,
+                        schema_json,
+                        created_at
+                 FROM schema_versions_legacy"
+            }
+            (true, false) => {
+                "SELECT collection,
+                        COALESCE(database_name, 'default'),
+                        'default',
+                        version,
+                        schema_json,
+                        created_at
+                 FROM schema_versions_legacy"
+            }
+            (false, true) => {
+                "SELECT collection,
+                        'default',
+                        COALESCE(schema_name, 'default'),
+                        version,
+                        schema_json,
+                        created_at
+                 FROM schema_versions_legacy"
+            }
+            (false, false) => {
+                "SELECT collection, 'default', 'default', version, schema_json, created_at
+                 FROM schema_versions_legacy"
+            }
+        };
+
+        self.conn
+            .execute(
+                &format!(
+                    "INSERT INTO schema_versions
+                        (collection, database_name, schema_name, version, schema_json, created_at)
+                     {select_sql}"
+                ),
+                [],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute("DROP TABLE schema_versions_legacy", [])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn rebuild_collection_views_table(
+        &self,
+        has_database_name: bool,
+        has_schema_name: bool,
+    ) -> Result<(), AxonError> {
+        self.conn
+            .execute_batch(
+                "ALTER TABLE collection_views RENAME TO collection_views_legacy;
+                 CREATE TABLE collection_views (
+                     collection        TEXT NOT NULL,
+                     database_name     TEXT NOT NULL DEFAULT 'default',
+                     schema_name       TEXT NOT NULL DEFAULT 'default',
+                     version           INTEGER NOT NULL,
+                     view_json         TEXT NOT NULL,
+                     updated_at_ns     INTEGER NOT NULL,
+                     updated_by        TEXT,
+                     PRIMARY KEY (database_name, schema_name, collection),
+                     FOREIGN KEY (database_name, schema_name, collection)
+                         REFERENCES collections(database_name, schema_name, name)
+                         ON DELETE CASCADE
+                 );",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let select_sql = match (has_database_name, has_schema_name) {
+            (true, true) => {
+                "SELECT collection,
+                        COALESCE(database_name, 'default'),
+                        COALESCE(schema_name, 'default'),
+                        version,
+                        view_json,
+                        updated_at_ns,
+                        updated_by
+                 FROM collection_views_legacy"
+            }
+            _ => {
+                "SELECT v.collection,
+                        COALESCE(c.database_name, 'default'),
+                        COALESCE(c.schema_name, 'default'),
+                        v.version,
+                        v.view_json,
+                        v.updated_at_ns,
+                        v.updated_by
+                 FROM collection_views_legacy v
+                 LEFT JOIN collections c ON c.name = v.collection"
+            }
+        };
+
+        self.conn
+            .execute(
+                &format!(
+                    "INSERT OR REPLACE INTO collection_views
+                        (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
+                     {select_sql}"
+                ),
+                [],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute("DROP TABLE collection_views_legacy", [])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn ensure_namespace_catalog_tables(&self) -> Result<(), AxonError> {
+        let collections_columns = self.table_columns("collections")?;
+        let schema_columns = self.table_columns("schema_versions")?;
+        let view_columns = self.table_columns("collection_views")?;
+
+        let collections_ok =
+            self.table_pk_columns("collections")? == vec!["database_name", "schema_name", "name"];
+        let schema_ok = self.table_pk_columns("schema_versions")?
+            == vec!["database_name", "schema_name", "collection", "version"];
+        let views_ok = self.table_pk_columns("collection_views")?
+            == vec!["database_name", "schema_name", "collection"];
+
+        let rebuild_collections = !collections_ok;
+        let rebuild_schema = !schema_ok;
+        let rebuild_views = !views_ok;
+
+        if !(rebuild_collections || rebuild_schema || rebuild_views) {
             self.conn
                 .execute(
-                    "ALTER TABLE collections
-                     ADD COLUMN database_name TEXT NOT NULL DEFAULT 'default'",
+                    "CREATE INDEX IF NOT EXISTS idx_collections_namespace
+                     ON collections (database_name, schema_name, name)",
                     [],
                 )
                 .map_err(|e| AxonError::Storage(e.to_string()))?;
+            return Ok(());
         }
 
-        if !columns.iter().any(|column| column == "schema_name") {
-            self.conn
-                .execute(
-                    "ALTER TABLE collections
-                     ADD COLUMN schema_name TEXT NOT NULL DEFAULT 'default'",
-                    [],
-                )
-                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute_batch("PRAGMA foreign_keys = OFF")
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        if rebuild_collections {
+            self.rebuild_collections_table(
+                collections_columns
+                    .iter()
+                    .any(|column| column == "database_name"),
+                collections_columns
+                    .iter()
+                    .any(|column| column == "schema_name"),
+            )?;
+        }
+        if rebuild_schema {
+            self.rebuild_schema_versions_table(
+                schema_columns
+                    .iter()
+                    .any(|column| column == "database_name"),
+                schema_columns.iter().any(|column| column == "schema_name"),
+            )?;
+        }
+        if rebuild_views {
+            self.rebuild_collection_views_table(
+                view_columns.iter().any(|column| column == "database_name"),
+                view_columns.iter().any(|column| column == "schema_name"),
+            )?;
         }
 
         self.conn
@@ -184,8 +441,68 @@ impl SqliteStorageAdapter {
                 [],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-
+        self.conn
+            .execute_batch("PRAGMA foreign_keys = ON")
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
+    }
+
+    fn registered_collection_namespaces(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Vec<Namespace>, AxonError> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT database_name, schema_name FROM collections
+                 WHERE name = ?1
+                 ORDER BY CASE
+                     WHEN database_name = 'default' AND schema_name = 'default' THEN 0
+                     ELSE 1
+                 END,
+                 database_name,
+                 schema_name",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let namespaces = stmt
+            .query_map(params![collection.as_str()], |row| {
+                Ok(Namespace::new(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                ))
+            })
+            .map_err(|e| AxonError::Storage(e.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(namespaces)
+    }
+
+    fn resolve_catalog_key(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<QualifiedCollectionId, AxonError> {
+        let namespaces = self.registered_collection_namespaces(collection)?;
+        match namespaces.as_slice() {
+            [] => Ok(QualifiedCollectionId::from_parts(
+                &Namespace::default_ns(),
+                collection,
+            )),
+            [namespace] => Ok(QualifiedCollectionId::from_parts(namespace, collection)),
+            _ => {
+                let default_namespace = Namespace::default_ns();
+                if namespaces.contains(&default_namespace) {
+                    Ok(QualifiedCollectionId::from_parts(
+                        &default_namespace,
+                        collection,
+                    ))
+                } else {
+                    Err(AxonError::InvalidArgument(format!(
+                        "collection '{}' exists in multiple namespaces; qualify the namespace",
+                        collection.as_str()
+                    )))
+                }
+            }
+        }
     }
 
     fn ensure_default_namespace(&self) -> Result<(), AxonError> {
@@ -470,6 +787,18 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         self.conn
             .execute(
+                "DELETE FROM collection_views WHERE database_name = ?1",
+                params![name],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute(
+                "DELETE FROM schema_versions WHERE database_name = ?1",
+                params![name],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute(
                 "DELETE FROM collections WHERE database_name = ?1",
                 params![name],
             )
@@ -526,6 +855,20 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
+        self.conn
+            .execute(
+                "DELETE FROM collection_views
+                 WHERE database_name = ?1 AND schema_name = ?2",
+                params![namespace.database.as_str(), namespace.schema.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute(
+                "DELETE FROM schema_versions
+                 WHERE database_name = ?1 AND schema_name = ?2",
+                params![namespace.database.as_str(), namespace.schema.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.conn
             .execute(
                 "DELETE FROM collections
@@ -610,12 +953,18 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(&schema.collection)?;
         // Auto-increment: find current max version for this collection.
         let max_version: i64 = self
             .conn
             .query_row(
-                "SELECT COALESCE(MAX(version), 0) FROM schema_versions WHERE collection = ?1",
-                params![schema.collection.as_str()],
+                "SELECT COALESCE(MAX(version), 0) FROM schema_versions
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
+                params![
+                    schema.collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str()
+                ],
                 |row| row.get(0),
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -632,10 +981,13 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         self.conn
             .execute(
-                "INSERT INTO schema_versions (collection, version, schema_json, created_at)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT INTO schema_versions
+                    (collection, database_name, schema_name, version, schema_json, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
                     schema.collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str(),
                     next_version,
                     schema_json,
                     now_ns,
@@ -646,16 +998,22 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let mut stmt = self
             .conn
             .prepare_cached(
                 "SELECT schema_json FROM schema_versions
-                 WHERE collection = ?1 ORDER BY version DESC LIMIT 1",
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3
+                 ORDER BY version DESC LIMIT 1",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         let mut rows = stmt
-            .query(params![collection.as_str()])
+            .query(params![
+                collection.as_str(),
+                key.namespace.database.as_str(),
+                key.namespace.schema.as_str()
+            ])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
@@ -672,16 +1030,22 @@ impl StorageAdapter for SqliteStorageAdapter {
         collection: &CollectionId,
         version: u32,
     ) -> Result<Option<CollectionSchema>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let mut stmt = self
             .conn
             .prepare_cached(
                 "SELECT schema_json FROM schema_versions
-                 WHERE collection = ?1 AND version = ?2",
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND version = ?4",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         let mut rows = stmt
-            .query(params![collection.as_str(), version as i64])
+            .query(params![
+                collection.as_str(),
+                key.namespace.database.as_str(),
+                key.namespace.schema.as_str(),
+                version as i64
+            ])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
@@ -697,18 +1061,25 @@ impl StorageAdapter for SqliteStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Vec<(u32, u64)>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let mut stmt = self
             .conn
             .prepare_cached(
                 "SELECT version, created_at FROM schema_versions
-                 WHERE collection = ?1 ORDER BY version ASC",
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3
+                 ORDER BY version ASC",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         let rows = stmt
-            .query_map(params![collection.as_str()], |row| {
-                Ok((row.get::<_, i64>(0)? as u32, row.get::<_, i64>(1)? as u64))
-            })
+            .query_map(
+                params![
+                    collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str()
+                ],
+                |row| Ok((row.get::<_, i64>(0)? as u32, row.get::<_, i64>(1)? as u64)),
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         let mut result = vec![];
@@ -719,17 +1090,24 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         self.conn
             .execute(
-                "DELETE FROM schema_versions WHERE collection = ?1",
-                params![collection.as_str()],
+                "DELETE FROM schema_versions
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
+                params![
+                    collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str()
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
     }
 
     fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
-        if !self.collection_exists(&view.collection)? {
+        let key = self.resolve_catalog_key(&view.collection)?;
+        if !self.collection_exists_in_namespace(&view.collection, &key.namespace)? {
             return Err(AxonError::InvalidArgument(format!(
                 "collection '{}' is not registered",
                 view.collection.as_str()
@@ -739,8 +1117,13 @@ impl StorageAdapter for SqliteStorageAdapter {
         let current_version: i64 = self
             .conn
             .query_row(
-                "SELECT COALESCE(version, 0) FROM collection_views WHERE collection = ?1",
-                params![view.collection.as_str()],
+                "SELECT COALESCE(version, 0) FROM collection_views
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
+                params![
+                    view.collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str()
+                ],
                 |row| row.get(0),
             )
             .or_else(|_| Ok(0))
@@ -759,15 +1142,18 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         self.conn
             .execute(
-                "INSERT INTO collection_views (collection, version, view_json, updated_at_ns, updated_by)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(collection) DO UPDATE SET
+                "INSERT INTO collection_views
+                    (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(database_name, schema_name, collection) DO UPDATE SET
                      version = excluded.version,
                      view_json = excluded.view_json,
                      updated_at_ns = excluded.updated_at_ns,
                      updated_by = excluded.updated_by",
                 params![
                     view.collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str(),
                     next_version,
                     view_json,
                     updated_at_ns,
@@ -782,16 +1168,21 @@ impl StorageAdapter for SqliteStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Option<CollectionView>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let mut stmt = self
             .conn
             .prepare_cached(
                 "SELECT view_json FROM collection_views
-                 WHERE collection = ?1",
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         let mut rows = stmt
-            .query(params![collection.as_str()])
+            .query(params![
+                collection.as_str(),
+                key.namespace.database.as_str(),
+                key.namespace.schema.as_str()
+            ])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
@@ -804,10 +1195,16 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         self.conn
             .execute(
-                "DELETE FROM collection_views WHERE collection = ?1",
-                params![collection.as_str()],
+                "DELETE FROM collection_views
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
+                params![
+                    collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str()
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -837,19 +1234,41 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         // Older SQLite databases may have `collection_views` without the
         // `ON DELETE CASCADE` foreign key. Delete the dependent row explicitly
         // so upgraded databases do not retain stale collection views.
         self.conn
             .execute(
-                "DELETE FROM collection_views WHERE collection = ?1",
-                params![collection.as_str()],
+                "DELETE FROM collection_views
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
+                params![
+                    collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str()
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.conn
             .execute(
-                "DELETE FROM collections WHERE name = ?1",
-                params![collection.as_str()],
+                "DELETE FROM schema_versions
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
+                params![
+                    collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str()
+                ],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute(
+                "DELETE FROM collections
+                 WHERE name = ?1 AND database_name = ?2 AND schema_name = ?3",
+                params![
+                    collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str()
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -858,7 +1277,10 @@ impl StorageAdapter for SqliteStorageAdapter {
     fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
         let mut stmt = self
             .conn
-            .prepare_cached("SELECT name FROM collections ORDER BY name ASC")
+            .prepare_cached(
+                "SELECT name FROM collections
+                 ORDER BY database_name ASC, schema_name ASC, name ASC",
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         let rows = stmt
@@ -872,6 +1294,14 @@ impl StorageAdapter for SqliteStorageAdapter {
             ));
         }
         Ok(names)
+    }
+
+    fn collection_registered_in_namespace(
+        &self,
+        collection: &CollectionId,
+        namespace: &Namespace,
+    ) -> Result<bool, AxonError> {
+        self.collection_exists_in_namespace(collection, namespace)
     }
 }
 
@@ -972,6 +1402,59 @@ mod tests {
             .expect("namespace query should succeed")
             .iter()
             .any(|schema| schema == "billing"));
+    }
+
+    #[test]
+    fn namespace_catalogs_allow_same_name_without_cross_drop() {
+        let mut s = store();
+        let invoices = CollectionId::new("invoices");
+        let billing = Namespace::new("prod", "billing");
+        let engineering = Namespace::new("prod", "engineering");
+
+        s.create_database("prod")
+            .expect("database create should succeed");
+        s.create_namespace(&billing)
+            .expect("billing namespace create should succeed");
+        s.create_namespace(&engineering)
+            .expect("engineering namespace create should succeed");
+
+        s.register_collection_in_namespace(&invoices, &Namespace::default_ns())
+            .expect("default collection register should succeed");
+        s.register_collection_in_namespace(&invoices, &billing)
+            .expect("billing collection register should succeed");
+        s.register_collection_in_namespace(&invoices, &engineering)
+            .expect("engineering collection register should succeed");
+
+        assert_eq!(
+            s.list_namespace_collections(&billing)
+                .expect("billing list should succeed"),
+            vec![invoices.clone()]
+        );
+        assert_eq!(
+            s.list_namespace_collections(&engineering)
+                .expect("engineering list should succeed"),
+            vec![invoices.clone()]
+        );
+
+        s.drop_namespace(&billing)
+            .expect("billing drop should succeed");
+        assert_eq!(
+            s.list_namespace_collections(&engineering)
+                .expect("engineering list should survive billing drop"),
+            vec![invoices.clone()]
+        );
+        assert_eq!(
+            s.list_namespace_collections(&Namespace::default_ns())
+                .expect("default list should survive billing drop"),
+            vec![invoices.clone()]
+        );
+
+        s.drop_database("prod").expect("prod drop should succeed");
+        assert_eq!(
+            s.list_namespace_collections(&Namespace::default_ns())
+                .expect("default list should survive prod drop"),
+            vec![invoices]
+        );
     }
 
     #[test]

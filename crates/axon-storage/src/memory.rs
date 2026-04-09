@@ -3,7 +3,9 @@ use std::ops::Bound;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
+use axon_core::id::{
+    CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
+};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
@@ -13,6 +15,7 @@ use crate::adapter::{
 };
 
 type CollectionMap = HashMap<EntityId, Entity>;
+type CatalogKey = QualifiedCollectionId;
 
 /// A schema version entry: (schema, created_at_ns).
 type SchemaVersionEntry = (CollectionSchema, u64);
@@ -28,13 +31,13 @@ type CompoundIndexKey = (CollectionId, usize, CompoundKey);
 /// Bidirectional mapping between collection names and numeric IDs (ADR-010).
 #[derive(Debug, Clone, Default)]
 struct NumericIdCache {
-    name_to_id: HashMap<CollectionId, u64>,
-    id_to_name: HashMap<u64, CollectionId>,
+    name_to_id: HashMap<CatalogKey, u64>,
+    id_to_name: HashMap<u64, CatalogKey>,
     next_id: u64,
 }
 
 impl NumericIdCache {
-    fn assign(&mut self, collection: &CollectionId) -> u64 {
+    fn assign(&mut self, collection: &CatalogKey) -> u64 {
         if let Some(&id) = self.name_to_id.get(collection) {
             return id;
         }
@@ -45,7 +48,7 @@ impl NumericIdCache {
         id
     }
 
-    fn remove(&mut self, collection: &CollectionId) {
+    fn remove(&mut self, collection: &CatalogKey) {
         if let Some(id) = self.name_to_id.remove(collection) {
             self.id_to_name.remove(&id);
         }
@@ -59,12 +62,11 @@ type LinkKey = (CollectionId, EntityId, String, CollectionId, EntityId);
 #[derive(Debug, Clone)]
 struct TxSnapshot {
     data: HashMap<CollectionId, CollectionMap>,
-    schema_versions: HashMap<CollectionId, BTreeMap<u32, SchemaVersionEntry>>,
-    collection_views: HashMap<CollectionId, CollectionViewEntry>,
-    collections: HashSet<CollectionId>,
+    schema_versions: HashMap<CatalogKey, BTreeMap<u32, SchemaVersionEntry>>,
+    collection_views: HashMap<CatalogKey, CollectionViewEntry>,
+    collections: HashSet<CatalogKey>,
     databases: BTreeSet<String>,
     namespaces: BTreeMap<String, BTreeSet<String>>,
-    collection_namespaces: HashMap<CollectionId, Namespace>,
     /// Index snapshot for rollback.
     indexes: BTreeMap<IndexKey, BTreeSet<EntityId>>,
     /// Compound index snapshot for rollback.
@@ -88,17 +90,15 @@ struct TxSnapshot {
 pub struct MemoryStorageAdapter {
     data: HashMap<CollectionId, CollectionMap>,
     /// Schema version history keyed by (collection → version → schema).
-    schema_versions: HashMap<CollectionId, BTreeMap<u32, SchemaVersionEntry>>,
+    schema_versions: HashMap<CatalogKey, BTreeMap<u32, SchemaVersionEntry>>,
     /// Latest collection view keyed by collection.
-    collection_views: HashMap<CollectionId, CollectionViewEntry>,
+    collection_views: HashMap<CatalogKey, CollectionViewEntry>,
     /// Explicitly registered collections.
-    collections: HashSet<CollectionId>,
+    collections: HashSet<CatalogKey>,
     /// Known database names.
     databases: BTreeSet<String>,
     /// Database -> schema names.
     namespaces: BTreeMap<String, BTreeSet<String>>,
-    /// Collection -> namespace membership.
-    collection_namespaces: HashMap<CollectionId, Namespace>,
     /// Snapshot saved at `begin_tx`; `Some` means a transaction is active.
     tx_snapshot: Option<TxSnapshot>,
     /// EAV secondary index: (collection, field, value) → set of entity IDs.
@@ -146,7 +146,6 @@ impl Default for MemoryStorageAdapter {
             collections: HashSet::new(),
             databases,
             namespaces,
-            collection_namespaces: HashMap::new(),
             tx_snapshot: None,
             indexes: BTreeMap::new(),
             compound_indexes: BTreeMap::new(),
@@ -154,6 +153,49 @@ impl Default for MemoryStorageAdapter {
             links: BTreeMap::new(),
             gate_results: HashMap::new(),
         }
+    }
+}
+
+impl MemoryStorageAdapter {
+    fn catalog_key(namespace: &Namespace, collection: &CollectionId) -> CatalogKey {
+        CatalogKey::from_parts(namespace, collection)
+    }
+
+    fn registered_catalog_keys(&self, collection: &CollectionId) -> Vec<CatalogKey> {
+        let mut keys: Vec<_> = self
+            .collections
+            .iter()
+            .filter(|key| key.collection == *collection)
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    fn resolve_catalog_key(&self, collection: &CollectionId) -> Result<CatalogKey, AxonError> {
+        let keys = self.registered_catalog_keys(collection);
+        match keys.as_slice() {
+            [] => Ok(Self::catalog_key(&Namespace::default_ns(), collection)),
+            [key] => Ok(key.clone()),
+            _ => {
+                let default_key = Self::catalog_key(&Namespace::default_ns(), collection);
+                if keys.contains(&default_key) {
+                    Ok(default_key)
+                } else {
+                    Err(AxonError::InvalidArgument(format!(
+                        "collection '{}' exists in multiple namespaces; qualify the namespace",
+                        collection.as_str()
+                    )))
+                }
+            }
+        }
+    }
+
+    fn remove_catalog_key(&mut self, key: &CatalogKey) {
+        self.collections.remove(key);
+        self.schema_versions.remove(key);
+        self.collection_views.remove(key);
+        self.numeric_ids.remove(key);
     }
 }
 
@@ -266,7 +308,6 @@ impl StorageAdapter for MemoryStorageAdapter {
             collections: self.collections.clone(),
             databases: self.databases.clone(),
             namespaces: self.namespaces.clone(),
-            collection_namespaces: self.collection_namespaces.clone(),
             indexes: self.indexes.clone(),
             compound_indexes: self.compound_indexes.clone(),
             numeric_ids: self.numeric_ids.clone(),
@@ -291,7 +332,6 @@ impl StorageAdapter for MemoryStorageAdapter {
             self.collections = snapshot.collections;
             self.databases = snapshot.databases;
             self.namespaces = snapshot.namespaces;
-            self.collection_namespaces = snapshot.collection_namespaces;
             self.indexes = snapshot.indexes;
             self.compound_indexes = snapshot.compound_indexes;
             self.numeric_ids = snapshot.numeric_ids;
@@ -321,16 +361,14 @@ impl StorageAdapter for MemoryStorageAdapter {
         }
 
         self.namespaces.remove(name);
-        let doomed: Vec<CollectionId> = self
-            .collection_namespaces
+        let doomed: Vec<CatalogKey> = self
+            .collections
             .iter()
-            .filter(|(_, namespace)| namespace.database == name)
-            .map(|(collection, _)| collection.clone())
+            .filter(|key| key.namespace.database == name)
+            .cloned()
             .collect();
-        for collection in doomed {
-            self.collection_namespaces.remove(&collection);
-            self.collections.remove(&collection);
-            self.numeric_ids.remove(&collection);
+        for key in doomed {
+            self.remove_catalog_key(&key);
         }
         Ok(())
     }
@@ -364,16 +402,14 @@ impl StorageAdapter for MemoryStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
-        let doomed: Vec<CollectionId> = self
-            .collection_namespaces
+        let doomed: Vec<CatalogKey> = self
+            .collections
             .iter()
-            .filter(|(_, current)| *current == namespace)
-            .map(|(collection, _)| collection.clone())
+            .filter(|key| key.namespace == *namespace)
+            .cloned()
             .collect();
-        for collection in doomed {
-            self.collection_namespaces.remove(&collection);
-            self.collections.remove(&collection);
-            self.numeric_ids.remove(&collection);
+        for key in doomed {
+            self.remove_catalog_key(&key);
         }
         Ok(())
     }
@@ -391,20 +427,18 @@ impl StorageAdapter for MemoryStorageAdapter {
         }
 
         let mut collections: Vec<CollectionId> = self
-            .collection_namespaces
+            .collections
             .iter()
-            .filter(|(_, current)| *current == namespace)
-            .map(|(collection, _)| collection.clone())
+            .filter(|key| key.namespace == *namespace)
+            .map(|key| key.collection.clone())
             .collect();
         collections.sort();
         Ok(collections)
     }
 
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
-        let versions = self
-            .schema_versions
-            .entry(schema.collection.clone())
-            .or_default();
+        let key = self.resolve_catalog_key(&schema.collection)?;
+        let versions = self.schema_versions.entry(key).or_default();
         let next_version = versions.keys().last().map_or(1, |v| v + 1);
         let mut versioned = schema.clone();
         versioned.version = next_version;
@@ -413,9 +447,10 @@ impl StorageAdapter for MemoryStorageAdapter {
     }
 
     fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         Ok(self
             .schema_versions
-            .get(collection)
+            .get(&key)
             .and_then(|versions| versions.values().last())
             .map(|(schema, _)| schema.clone()))
     }
@@ -425,9 +460,10 @@ impl StorageAdapter for MemoryStorageAdapter {
         collection: &CollectionId,
         version: u32,
     ) -> Result<Option<CollectionSchema>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         Ok(self
             .schema_versions
-            .get(collection)
+            .get(&key)
             .and_then(|versions| versions.get(&version))
             .map(|(schema, _)| schema.clone()))
     }
@@ -436,33 +472,36 @@ impl StorageAdapter for MemoryStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Vec<(u32, u64)>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         Ok(self
             .schema_versions
-            .get(collection)
+            .get(&key)
             .map(|versions| versions.iter().map(|(v, (_, ts))| (*v, *ts)).collect())
             .unwrap_or_default())
     }
 
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
-        self.schema_versions.remove(collection);
+        let key = self.resolve_catalog_key(collection)?;
+        self.schema_versions.remove(&key);
         Ok(())
     }
 
     fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
-        if !self.collections.contains(&view.collection) {
+        let key = self.resolve_catalog_key(&view.collection)?;
+        if !self.collections.contains(&key) {
             return Err(unregistered_collection_error(&view.collection));
         }
 
         let next_version = self
             .collection_views
-            .get(&view.collection)
+            .get(&key)
             .map_or(1, |(existing, _)| existing.version + 1);
         let mut versioned = view.clone();
         let updated_at_ns = now_ns();
         versioned.version = next_version;
         versioned.updated_at_ns = Some(updated_at_ns);
         self.collection_views
-            .insert(view.collection.clone(), (versioned.clone(), updated_at_ns));
+            .insert(key, (versioned.clone(), updated_at_ns));
         Ok(versioned)
     }
 
@@ -470,14 +509,16 @@ impl StorageAdapter for MemoryStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Option<CollectionView>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         Ok(self
             .collection_views
-            .get(collection)
+            .get(&key)
             .map(|(view, _)| view.clone()))
     }
 
     fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
-        self.collection_views.remove(collection);
+        let key = self.resolve_catalog_key(collection)?;
+        self.collection_views.remove(&key);
         Ok(())
     }
 
@@ -494,34 +535,40 @@ impl StorageAdapter for MemoryStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
-        self.collections.insert(collection.clone());
-        self.collection_namespaces
-            .insert(collection.clone(), namespace.clone());
+        let key = Self::catalog_key(namespace, collection);
+        self.collections.insert(key.clone());
         // Auto-assign a numeric ID (ADR-010).
-        self.numeric_ids.assign(collection);
+        self.numeric_ids.assign(&key);
         Ok(())
     }
 
     fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
-        self.collections.remove(collection);
-        self.collection_namespaces.remove(collection);
-        self.collection_views.remove(collection);
-        self.numeric_ids.remove(collection);
+        let key = self.resolve_catalog_key(collection)?;
+        self.remove_catalog_key(&key);
         Ok(())
     }
 
     fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
-        let mut names: Vec<CollectionId> = self.collections.iter().cloned().collect();
-        names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        let mut names: Vec<CollectionId> = self
+            .collections
+            .iter()
+            .map(|key| key.collection.clone())
+            .collect();
+        names.sort();
         Ok(names)
     }
 
     fn collection_numeric_id(&self, collection: &CollectionId) -> Result<Option<u64>, AxonError> {
-        Ok(self.numeric_ids.name_to_id.get(collection).copied())
+        let key = self.resolve_catalog_key(collection)?;
+        Ok(self.numeric_ids.name_to_id.get(&key).copied())
     }
 
     fn collection_by_numeric_id(&self, numeric_id: u64) -> Result<Option<CollectionId>, AxonError> {
-        Ok(self.numeric_ids.id_to_name.get(&numeric_id).cloned())
+        Ok(self
+            .numeric_ids
+            .id_to_name
+            .get(&numeric_id)
+            .map(|key| key.collection.clone()))
     }
 
     // ── Secondary index operations (FEAT-013) ───────────────────────────
@@ -957,7 +1004,7 @@ impl StorageAdapter for MemoryStorageAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axon_core::id::{CollectionId, EntityId};
+    use axon_core::id::{CollectionId, EntityId, Namespace};
     use serde_json::json;
 
     fn tasks() -> CollectionId {
@@ -2193,6 +2240,73 @@ mod tests {
                 .list_outbound_links(&CollectionId::new("tasks"), &EntityId::new("t-001"), None)
                 .expect("test operation should succeed");
             assert!(outbound.is_empty());
+        }
+
+        #[test]
+        fn namespace_catalogs_allow_same_name_without_cross_drop() {
+            let mut store = MemoryStorageAdapter::default();
+            let invoices = CollectionId::new("invoices");
+            let billing = Namespace::new("prod", "billing");
+            let engineering = Namespace::new("prod", "engineering");
+
+            store
+                .create_database("prod")
+                .expect("database create should succeed");
+            store
+                .create_namespace(&billing)
+                .expect("billing namespace create should succeed");
+            store
+                .create_namespace(&engineering)
+                .expect("engineering namespace create should succeed");
+
+            store
+                .register_collection_in_namespace(&invoices, &Namespace::default_ns())
+                .expect("default collection register should succeed");
+            store
+                .register_collection_in_namespace(&invoices, &billing)
+                .expect("billing collection register should succeed");
+            store
+                .register_collection_in_namespace(&invoices, &engineering)
+                .expect("engineering collection register should succeed");
+
+            assert_eq!(
+                store
+                    .list_namespace_collections(&billing)
+                    .expect("billing list should succeed"),
+                vec![invoices.clone()]
+            );
+            assert_eq!(
+                store
+                    .list_namespace_collections(&engineering)
+                    .expect("engineering list should succeed"),
+                vec![invoices.clone()]
+            );
+
+            store
+                .drop_namespace(&billing)
+                .expect("billing drop should succeed");
+            assert_eq!(
+                store
+                    .list_namespace_collections(&engineering)
+                    .expect("engineering list should survive billing drop"),
+                vec![invoices.clone()]
+            );
+            assert_eq!(
+                store
+                    .list_namespace_collections(&Namespace::default_ns())
+                    .expect("default list should survive billing drop"),
+                vec![invoices.clone()]
+            );
+
+            store
+                .drop_database("prod")
+                .expect("prod drop should succeed");
+            assert_eq!(
+                store
+                    .list_namespace_collections(&Namespace::default_ns())
+                    .expect("default list should survive prod drop"),
+                vec![invoices]
+            );
         }
     }
 }

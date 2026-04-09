@@ -14,5 +14,8 @@ pub use auth::{
     CallerIdentity, DatabaseGrant, GrantRegistry, MaskPolicy, Operation, Role, WritePolicy,
 };
 pub use error::AxonError;
-pub use id::{CollectionId, EntityId, LinkId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
+pub use id::{
+    CollectionId, EntityId, LinkId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE,
+    DEFAULT_SCHEMA,
+};
 pub use types::{Entity, Link, LINKS_COLLECTION};

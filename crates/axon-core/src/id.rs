@@ -13,7 +13,7 @@ pub const DEFAULT_SCHEMA: &str = "default";
 /// Single-tenant deployments use `default.default` automatically.
 /// Collection names are resolved against a namespace to produce
 /// a fully qualified name: `{database}.{schema}.{collection}`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Namespace {
     pub database: String,
     pub schema: String,
@@ -88,6 +88,36 @@ impl CollectionId {
 impl fmt::Display for CollectionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+/// A namespace-qualified collection identifier: `{database}.{schema}.{collection}`.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct QualifiedCollectionId {
+    pub namespace: Namespace,
+    pub collection: CollectionId,
+}
+
+impl QualifiedCollectionId {
+    pub fn new(namespace: Namespace, collection: CollectionId) -> Self {
+        Self {
+            namespace,
+            collection,
+        }
+    }
+
+    pub fn from_parts(namespace: &Namespace, collection: &CollectionId) -> Self {
+        Self::new(namespace.clone(), collection.clone())
+    }
+
+    pub fn qualified_name(&self) -> String {
+        self.namespace.qualify(self.collection.as_str())
+    }
+}
+
+impl fmt::Display for QualifiedCollectionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.qualified_name())
     }
 }
 
@@ -175,6 +205,16 @@ mod tests {
         let id = CollectionId::new("tasks");
         assert_eq!(id.as_str(), "tasks");
         assert_eq!(id.to_string(), "tasks");
+    }
+
+    #[test]
+    fn qualified_collection_id_roundtrip() {
+        let qualified = QualifiedCollectionId::new(
+            Namespace::new("prod", "billing"),
+            CollectionId::new("invoices"),
+        );
+        assert_eq!(qualified.qualified_name(), "prod.billing.invoices");
+        assert_eq!(qualified.to_string(), "prod.billing.invoices");
     }
 
     #[test]

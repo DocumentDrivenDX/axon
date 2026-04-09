@@ -5,7 +5,9 @@ use postgres::{Client, NoTls};
 
 use axon_audit::entry::AuditEntry;
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
+use axon_core::id::{
+    CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
+};
 use axon_core::types::Entity;
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
@@ -60,22 +62,31 @@ impl PostgresStorageAdapter {
                     PRIMARY KEY (collection, id)
                 );
                 CREATE TABLE IF NOT EXISTS schemas (
-                    collection  TEXT NOT NULL PRIMARY KEY,
-                    version     INTEGER NOT NULL,
-                    schema_json JSONB NOT NULL
+                    collection    TEXT NOT NULL,
+                    database_name TEXT NOT NULL DEFAULT 'default',
+                    schema_name   TEXT NOT NULL DEFAULT 'default',
+                    version       INTEGER NOT NULL,
+                    schema_json   JSONB NOT NULL,
+                    PRIMARY KEY (database_name, schema_name, collection)
                 );
                 CREATE TABLE IF NOT EXISTS collections (
-                    name TEXT NOT NULL PRIMARY KEY,
+                    name TEXT NOT NULL,
                     database_name TEXT NOT NULL DEFAULT 'default',
-                    schema_name TEXT NOT NULL DEFAULT 'default'
+                    schema_name TEXT NOT NULL DEFAULT 'default',
+                    PRIMARY KEY (database_name, schema_name, name)
                 );
                 CREATE TABLE IF NOT EXISTS collection_views (
-                    collection    TEXT NOT NULL PRIMARY KEY
-                                  REFERENCES collections(name) ON DELETE CASCADE,
+                    collection    TEXT NOT NULL,
+                    database_name TEXT NOT NULL DEFAULT 'default',
+                    schema_name   TEXT NOT NULL DEFAULT 'default',
                     version       INTEGER NOT NULL,
                     view_json     JSONB NOT NULL,
                     updated_at_ns BIGINT NOT NULL,
-                    updated_by    TEXT
+                    updated_by    TEXT,
+                    PRIMARY KEY (database_name, schema_name, collection),
+                    FOREIGN KEY (database_name, schema_name, collection)
+                        REFERENCES collections(database_name, schema_name, name)
+                        ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id             BIGSERIAL PRIMARY KEY,
@@ -90,27 +101,24 @@ impl PostgresStorageAdapter {
                 );",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
-            .batch_execute(
-                "ALTER TABLE collections
-                     ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
-                 ALTER TABLE collections
-                     ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';
-                 CREATE INDEX IF NOT EXISTS idx_collections_namespace
-                     ON collections (database_name, schema_name, name);",
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.ensure_namespace_catalog_tables()?;
         self.ensure_default_namespace()
     }
 
-    fn collection_exists(&self, collection: &CollectionId) -> Result<bool, AxonError> {
+    fn collection_exists_in_namespace(
+        &self,
+        collection: &CollectionId,
+        namespace: &Namespace,
+    ) -> Result<bool, AxonError> {
         let row = self
             .client
             .borrow_mut()
             .query_one(
-                "SELECT EXISTS(SELECT 1 FROM collections WHERE name = $1)",
-                &[&collection.as_str()],
+                "SELECT EXISTS(
+                    SELECT 1 FROM collections
+                    WHERE name = $1 AND database_name = $2 AND schema_name = $3
+                )",
+                &[&collection.as_str(), &namespace.database, &namespace.schema],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(row.get(0))
@@ -141,6 +149,171 @@ impl PostgresStorageAdapter {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(row.get(0))
+    }
+
+    fn table_pk_columns(&self, table: &str) -> Result<Vec<String>, AxonError> {
+        let rows = self
+            .client
+            .borrow_mut()
+            .query(
+                "SELECT a.attname
+                 FROM pg_index i
+                 JOIN pg_class t ON t.oid = i.indrelid
+                 JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS cols(attnum, ord) ON TRUE
+                 JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = cols.attnum
+                 WHERE t.relname = $1 AND i.indisprimary
+                 ORDER BY cols.ord",
+                &[&table],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
+    }
+
+    fn ensure_namespace_catalog_tables(&mut self) -> Result<(), AxonError> {
+        self.client
+            .borrow_mut()
+            .batch_execute(
+                "ALTER TABLE collections
+                     ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
+                 ALTER TABLE collections
+                     ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';
+                 ALTER TABLE schemas
+                     ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
+                 ALTER TABLE schemas
+                     ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';
+                 ALTER TABLE collection_views
+                     ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
+                 ALTER TABLE collection_views
+                     ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        self.client
+            .borrow_mut()
+            .execute(
+                "UPDATE schemas s
+                 SET database_name = c.database_name,
+                     schema_name = c.schema_name
+                 FROM collections c
+                 WHERE s.collection = c.name
+                   AND (s.database_name = 'default' OR s.schema_name = 'default')",
+                &[],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.client
+            .borrow_mut()
+            .execute(
+                "UPDATE collection_views v
+                 SET database_name = c.database_name,
+                     schema_name = c.schema_name
+                 FROM collections c
+                 WHERE v.collection = c.name
+                   AND (v.database_name = 'default' OR v.schema_name = 'default')",
+                &[],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        if self.table_pk_columns("collections")? != vec!["database_name", "schema_name", "name"] {
+            self.client
+                .borrow_mut()
+                .batch_execute(
+                    "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_collection_fkey;
+                     ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_pkey;
+                     ALTER TABLE collections DROP CONSTRAINT IF EXISTS collections_pkey;
+                     ALTER TABLE collections ADD PRIMARY KEY (database_name, schema_name, name);",
+                )
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
+
+        if self.table_pk_columns("schemas")? != vec!["database_name", "schema_name", "collection"] {
+            self.client
+                .borrow_mut()
+                .batch_execute(
+                    "ALTER TABLE schemas DROP CONSTRAINT IF EXISTS schemas_pkey;
+                     ALTER TABLE schemas ADD PRIMARY KEY (database_name, schema_name, collection);",
+                )
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
+
+        if self.table_pk_columns("collection_views")?
+            != vec!["database_name", "schema_name", "collection"]
+        {
+            self.client
+                .borrow_mut()
+                .batch_execute(
+                    "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_pkey;
+                     ALTER TABLE collection_views ADD PRIMARY KEY (database_name, schema_name, collection);",
+                )
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
+
+        self.client
+            .borrow_mut()
+            .batch_execute(
+                "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_collection_fkey;
+                 ALTER TABLE collection_views
+                     ADD CONSTRAINT collection_views_collection_fkey
+                     FOREIGN KEY (database_name, schema_name, collection)
+                     REFERENCES collections(database_name, schema_name, name)
+                     ON DELETE CASCADE;
+                 CREATE INDEX IF NOT EXISTS idx_collections_namespace
+                     ON collections (database_name, schema_name, name);",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn registered_collection_namespaces(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Vec<Namespace>, AxonError> {
+        let rows = self
+            .client
+            .borrow_mut()
+            .query(
+                "SELECT database_name, schema_name FROM collections
+                 WHERE name = $1
+                 ORDER BY CASE
+                     WHEN database_name = 'default' AND schema_name = 'default' THEN 0
+                     ELSE 1
+                 END,
+                 database_name,
+                 schema_name",
+                &[&collection.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows
+            .iter()
+            .map(|row| Namespace::new(row.get::<_, String>(0), row.get::<_, String>(1)))
+            .collect())
+    }
+
+    fn resolve_catalog_key(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<QualifiedCollectionId, AxonError> {
+        let namespaces = self.registered_collection_namespaces(collection)?;
+        match namespaces.as_slice() {
+            [] => Ok(QualifiedCollectionId::from_parts(
+                &Namespace::default_ns(),
+                collection,
+            )),
+            [namespace] => Ok(QualifiedCollectionId::from_parts(namespace, collection)),
+            _ => {
+                let default_namespace = Namespace::default_ns();
+                if namespaces.contains(&default_namespace) {
+                    Ok(QualifiedCollectionId::from_parts(
+                        &default_namespace,
+                        collection,
+                    ))
+                } else {
+                    Err(AxonError::InvalidArgument(format!(
+                        "collection '{}' exists in multiple namespaces; qualify the namespace",
+                        collection.as_str()
+                    )))
+                }
+            }
+        }
     }
 
     fn ensure_default_namespace(&self) -> Result<(), AxonError> {
@@ -403,6 +576,17 @@ impl StorageAdapter for PostgresStorageAdapter {
 
         self.client
             .borrow_mut()
+            .execute(
+                "DELETE FROM collection_views WHERE database_name = $1",
+                &[&name],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.client
+            .borrow_mut()
+            .execute("DELETE FROM schemas WHERE database_name = $1", &[&name])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.client
+            .borrow_mut()
             .execute("DELETE FROM collections WHERE database_name = $1", &[&name])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.client
@@ -456,6 +640,22 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
+        self.client
+            .borrow_mut()
+            .execute(
+                "DELETE FROM collection_views
+                 WHERE database_name = $1 AND schema_name = $2",
+                &[&namespace.database, &namespace.schema],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.client
+            .borrow_mut()
+            .execute(
+                "DELETE FROM schemas
+                 WHERE database_name = $1 AND schema_name = $2",
+                &[&namespace.database, &namespace.schema],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.client
             .borrow_mut()
             .execute(
@@ -538,15 +738,37 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
-        let schema_json = serde_json::to_value(schema)?;
+        let key = self.resolve_catalog_key(&schema.collection)?;
+        let row = self
+            .client
+            .borrow_mut()
+            .query_one(
+                "SELECT COALESCE(MAX(version), 0) FROM schemas
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                &[
+                    &schema.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let next_version = row.get::<_, i32>(0) + 1;
+
+        let mut versioned = schema.clone();
+        versioned.version = next_version as u32;
+        let schema_json = serde_json::to_value(&versioned)?;
         self.client
             .borrow_mut()
             .execute(
-                "INSERT INTO schemas (collection, version, schema_json) VALUES ($1, $2, $3)
-                 ON CONFLICT (collection) DO UPDATE SET version = $2, schema_json = $3",
+                "INSERT INTO schemas (collection, database_name, schema_name, version, schema_json)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (database_name, schema_name, collection)
+                 DO UPDATE SET version = EXCLUDED.version, schema_json = EXCLUDED.schema_json",
                 &[
                     &schema.collection.as_str(),
-                    &(schema.version as i32),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                    &next_version,
                     &schema_json,
                 ],
             )
@@ -555,12 +777,18 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let rows = self
             .client
             .borrow_mut()
             .query(
-                "SELECT schema_json FROM schemas WHERE collection = $1",
-                &[&collection.as_str()],
+                "SELECT schema_json FROM schemas
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                &[
+                    &collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
@@ -575,18 +803,25 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         self.client
             .borrow_mut()
             .execute(
-                "DELETE FROM schemas WHERE collection = $1",
-                &[&collection.as_str()],
+                "DELETE FROM schemas
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                &[
+                    &collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
     }
 
     fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
-        if !self.collection_exists(&view.collection)? {
+        let key = self.resolve_catalog_key(&view.collection)?;
+        if !self.collection_exists_in_namespace(&view.collection, &key.namespace)? {
             return Err(AxonError::InvalidArgument(format!(
                 "collection '{}' is not registered",
                 view.collection.as_str()
@@ -597,8 +832,13 @@ impl StorageAdapter for PostgresStorageAdapter {
             .client
             .borrow_mut()
             .query_opt(
-                "SELECT version FROM collection_views WHERE collection = $1",
-                &[&view.collection.as_str()],
+                "SELECT version FROM collection_views
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                &[
+                    &view.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?
             .map_or(0, |row| row.get::<_, i32>("version"));
@@ -617,15 +857,18 @@ impl StorageAdapter for PostgresStorageAdapter {
         self.client
             .borrow_mut()
             .execute(
-                "INSERT INTO collection_views (collection, version, view_json, updated_at_ns, updated_by)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (collection) DO UPDATE SET
+                "INSERT INTO collection_views
+                    (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT (database_name, schema_name, collection) DO UPDATE SET
                      version = EXCLUDED.version,
                      view_json = EXCLUDED.view_json,
                      updated_at_ns = EXCLUDED.updated_at_ns,
                      updated_by = EXCLUDED.updated_by",
                 &[
                     &view.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
                     &next_version,
                     &view_json,
                     &updated_at_ns,
@@ -640,12 +883,18 @@ impl StorageAdapter for PostgresStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Option<CollectionView>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let rows = self
             .client
             .borrow_mut()
             .query(
-                "SELECT view_json FROM collection_views WHERE collection = $1",
-                &[&collection.as_str()],
+                "SELECT view_json FROM collection_views
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                &[
+                    &collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
@@ -660,11 +909,17 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         self.client
             .borrow_mut()
             .execute(
-                "DELETE FROM collection_views WHERE collection = $1",
-                &[&collection.as_str()],
+                "DELETE FROM collection_views
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                &[
+                    &collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -692,21 +947,44 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         // Upgraded databases may still have a pre-fix collection_views table
         // without the collection -> collections foreign key, so clean up the
         // view row explicitly instead of relying solely on ON DELETE CASCADE.
         self.client
             .borrow_mut()
             .execute(
-                "DELETE FROM collection_views WHERE collection = $1",
-                &[&collection.as_str()],
+                "DELETE FROM collection_views
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                &[
+                    &collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.client
             .borrow_mut()
             .execute(
-                "DELETE FROM collections WHERE name = $1",
-                &[&collection.as_str()],
+                "DELETE FROM schemas
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                &[
+                    &collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.client
+            .borrow_mut()
+            .execute(
+                "DELETE FROM collections
+                 WHERE name = $1 AND database_name = $2 AND schema_name = $3",
+                &[
+                    &collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -716,7 +994,11 @@ impl StorageAdapter for PostgresStorageAdapter {
         let rows = self
             .client
             .borrow_mut()
-            .query("SELECT name FROM collections ORDER BY name ASC", &[])
+            .query(
+                "SELECT name FROM collections
+                 ORDER BY database_name ASC, schema_name ASC, name ASC",
+                &[],
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         Ok(rows
@@ -726,6 +1008,14 @@ impl StorageAdapter for PostgresStorageAdapter {
                 CollectionId::new(name)
             })
             .collect())
+    }
+
+    fn collection_registered_in_namespace(
+        &self,
+        collection: &CollectionId,
+        namespace: &Namespace,
+    ) -> Result<bool, AxonError> {
+        self.collection_exists_in_namespace(collection, namespace)
     }
 }
 
@@ -824,6 +1114,8 @@ mod tests {
             .batch_execute(
                 "DROP TABLE IF EXISTS collection_views;
                  DROP TABLE IF EXISTS collections;
+                 DROP TABLE IF EXISTS namespaces;
+                 DROP TABLE IF EXISTS databases;
                  DROP TABLE IF EXISTS entities;
                  DROP TABLE IF EXISTS schemas;
                  DROP TABLE IF EXISTS audit_log;",
@@ -839,9 +1131,11 @@ mod tests {
             .client
             .borrow_mut()
             .batch_execute(
-                "TRUNCATE entities, schemas, collection_views, collections, audit_log RESTART IDENTITY CASCADE",
+                "TRUNCATE entities, schemas, collection_views, collections, namespaces, databases, audit_log
+                 RESTART IDENTITY CASCADE",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
+        adapter.ensure_default_namespace()?;
         Ok(TestStore {
             adapter,
             _database: database,
@@ -958,6 +1252,60 @@ mod tests {
         assert_eq!(
             remaining_views, 0,
             "stale collection view rows must be deleted"
+        );
+    }
+
+    #[test]
+    fn namespace_catalogs_allow_same_name_without_cross_drop() {
+        let _guard = postgres_test_guard();
+        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let invoices = CollectionId::new("invoices");
+        let billing = Namespace::new("prod", "billing");
+        let engineering = Namespace::new("prod", "engineering");
+
+        s.create_database("prod")
+            .expect("database create should succeed");
+        s.create_namespace(&billing)
+            .expect("billing namespace create should succeed");
+        s.create_namespace(&engineering)
+            .expect("engineering namespace create should succeed");
+
+        s.register_collection_in_namespace(&invoices, &Namespace::default_ns())
+            .expect("default collection register should succeed");
+        s.register_collection_in_namespace(&invoices, &billing)
+            .expect("billing collection register should succeed");
+        s.register_collection_in_namespace(&invoices, &engineering)
+            .expect("engineering collection register should succeed");
+
+        assert_eq!(
+            s.list_namespace_collections(&billing)
+                .expect("billing list should succeed"),
+            vec![invoices.clone()]
+        );
+        assert_eq!(
+            s.list_namespace_collections(&engineering)
+                .expect("engineering list should succeed"),
+            vec![invoices.clone()]
+        );
+
+        s.drop_namespace(&billing)
+            .expect("billing drop should succeed");
+        assert_eq!(
+            s.list_namespace_collections(&engineering)
+                .expect("engineering list should survive billing drop"),
+            vec![invoices.clone()]
+        );
+        assert_eq!(
+            s.list_namespace_collections(&Namespace::default_ns())
+                .expect("default list should survive billing drop"),
+            vec![invoices.clone()]
+        );
+
+        s.drop_database("prod").expect("prod drop should succeed");
+        assert_eq!(
+            s.list_namespace_collections(&Namespace::default_ns())
+                .expect("default list should survive prod drop"),
+            vec![invoices]
         );
     }
 }

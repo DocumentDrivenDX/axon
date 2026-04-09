@@ -1150,12 +1150,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
             compile_entity_schema(entity_schema)?;
         }
 
-        let existing = self.storage.list_collections()?;
-        if existing.contains(&req.name) {
+        let default_namespace = Namespace::default_ns();
+        if self
+            .storage
+            .collection_registered_in_namespace(&req.name, &default_namespace)?
+        {
             return Err(AxonError::AlreadyExists(req.name.to_string()));
         }
         self.storage
-            .register_collection_in_namespace(&req.name, &Namespace::default_ns())?;
+            .register_collection_in_namespace(&req.name, &default_namespace)?;
         self.put_schema(req.schema)?;
 
         self.audit.append(AuditEntry::new(
@@ -1476,16 +1479,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
-        if req.force {
-            for collection in &collections {
-                let _ = self.drop_collection(DropCollectionRequest {
-                    name: collection.clone(),
-                    actor: None,
-                    confirm: true,
-                })?;
-            }
-        }
-
         self.storage.drop_namespace(&namespace)?;
         Ok(DropNamespaceResponse {
             database: req.database,
@@ -1535,16 +1528,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 "database '{}' contains {total_collections} collections. Use force=true to drop",
                 req.name
             )));
-        }
-
-        if req.force {
-            for collection in &collections {
-                let _ = self.drop_collection(DropCollectionRequest {
-                    name: collection.clone(),
-                    actor: None,
-                    confirm: true,
-                })?;
-            }
         }
 
         self.storage.drop_database(&req.name)?;
@@ -6237,6 +6220,104 @@ link_types:
             })
             .unwrap();
         assert_eq!(resp.collections_removed, 2);
+    }
+
+    #[test]
+    fn create_collection_in_default_namespace_allows_same_name_elsewhere() {
+        use crate::request::{
+            CreateDatabaseRequest, CreateNamespaceRequest, ListNamespaceCollectionsRequest,
+        };
+        use axon_core::id::{CollectionId, Namespace};
+
+        let mut h = handler();
+        let invoices = CollectionId::new("invoices");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&invoices, &Namespace::new("prod", "billing"))
+            .unwrap();
+
+        h.create_collection(CreateCollectionRequest {
+            name: invoices.clone(),
+            schema: CollectionSchema::new(invoices.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            h.list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: "default".into(),
+                schema: "default".into(),
+            })
+            .unwrap()
+            .collections,
+            vec!["invoices".to_string()]
+        );
+        assert_eq!(
+            h.list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: "prod".into(),
+                schema: "billing".into(),
+            })
+            .unwrap()
+            .collections,
+            vec!["invoices".to_string()]
+        );
+    }
+
+    #[test]
+    fn drop_namespace_force_preserves_same_name_in_other_namespace() {
+        use crate::request::{
+            CreateDatabaseRequest, CreateNamespaceRequest, DropNamespaceRequest,
+            ListNamespaceCollectionsRequest,
+        };
+        use axon_core::id::{CollectionId, Namespace};
+
+        let mut h = handler();
+        let invoices = CollectionId::new("invoices");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        for schema in ["billing", "engineering"] {
+            h.create_namespace(CreateNamespaceRequest {
+                database: "prod".into(),
+                schema: schema.into(),
+            })
+            .unwrap();
+        }
+
+        h.storage_mut()
+            .register_collection_in_namespace(&invoices, &Namespace::new("prod", "billing"))
+            .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&invoices, &Namespace::new("prod", "engineering"))
+            .unwrap();
+
+        h.drop_namespace(DropNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+            force: true,
+        })
+        .unwrap();
+
+        assert_eq!(
+            h.list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: "prod".into(),
+                schema: "engineering".into(),
+            })
+            .unwrap()
+            .collections,
+            vec!["invoices".to_string()]
+        );
     }
 
     #[test]

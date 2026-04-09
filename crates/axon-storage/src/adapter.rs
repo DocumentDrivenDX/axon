@@ -383,6 +383,17 @@ pub trait StorageAdapter: Send + Sync {
         Ok(())
     }
 
+    /// Return whether a collection is registered within a specific namespace.
+    fn collection_registered_in_namespace(
+        &self,
+        collection: &CollectionId,
+        namespace: &Namespace,
+    ) -> Result<bool, AxonError> {
+        Ok(self
+            .list_namespace_collections(namespace)?
+            .contains(collection))
+    }
+
     /// Remove a collection from the registry.
     ///
     /// Returns `Ok(())` whether or not the collection was registered.
