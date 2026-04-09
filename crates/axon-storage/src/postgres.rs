@@ -1160,10 +1160,12 @@ impl StorageAdapter for PostgresStorageAdapter {
     fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let raw_collection = collection.as_str();
+        let default_namespace = Namespace::default_ns();
         // Upgraded databases may still have a pre-fix collection_views table
         // without the collection -> collections foreign key, and may still
-        // carry metadata rows keyed by the original qualified identifier, so
-        // clean them up explicitly instead of relying solely on ON DELETE
+        // carry metadata rows keyed by the original qualified identifier in
+        // either the resolved namespace or the old default/default namespace,
+        // so clean them up explicitly instead of relying solely on ON DELETE
         // CASCADE.
         self.client
             .borrow_mut()
@@ -1182,11 +1184,15 @@ impl StorageAdapter for PostgresStorageAdapter {
                 .borrow_mut()
                 .execute(
                     "DELETE FROM collection_views
-                     WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                     WHERE collection = $1
+                       AND ((database_name = $2 AND schema_name = $3)
+                            OR (database_name = $4 AND schema_name = $5))",
                     &[
                         &raw_collection,
                         &key.namespace.database,
                         &key.namespace.schema,
+                        &default_namespace.database,
+                        &default_namespace.schema,
                     ],
                 )
                 .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -1208,11 +1214,15 @@ impl StorageAdapter for PostgresStorageAdapter {
                 .borrow_mut()
                 .execute(
                     "DELETE FROM schemas
-                     WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                     WHERE collection = $1
+                       AND ((database_name = $2 AND schema_name = $3)
+                            OR (database_name = $4 AND schema_name = $5))",
                     &[
                         &raw_collection,
                         &key.namespace.database,
                         &key.namespace.schema,
+                        &default_namespace.database,
+                        &default_namespace.schema,
                     ],
                 )
                 .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -1229,6 +1239,24 @@ impl StorageAdapter for PostgresStorageAdapter {
                 ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
+        if raw_collection != key.collection.as_str() {
+            self.client
+                .borrow_mut()
+                .execute(
+                    "DELETE FROM collections
+                     WHERE name = $1
+                       AND ((database_name = $2 AND schema_name = $3)
+                            OR (database_name = $4 AND schema_name = $5))",
+                    &[
+                        &raw_collection,
+                        &key.namespace.database,
+                        &key.namespace.schema,
+                        &default_namespace.database,
+                        &default_namespace.schema,
+                    ],
+                )
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
         Ok(())
     }
 
@@ -2245,7 +2273,7 @@ mod tests {
     }
 
     #[test]
-    fn qualified_unregister_collection_removes_legacy_schema_rows_keyed_by_raw_name() {
+    fn qualified_unregister_collection_removes_default_namespaced_legacy_metadata_rows() {
         let _guard = postgres_test_guard();
         let mut s = store().expect("PostgreSQL test setup should succeed");
         let qualified = CollectionId::new("prod.billing.invoices");
@@ -2266,9 +2294,22 @@ mod tests {
         };
         s.put_schema(&schema)
             .expect("qualified schema put should succeed");
+        let view = CollectionView::new(qualified.clone(), "# {{title}}");
+        s.put_collection_view(&view)
+            .expect("qualified collection view put should succeed");
 
         let legacy_schema_json =
             serde_json::to_value(&schema).expect("legacy schema should serialize");
+        let legacy_view_json =
+            serde_json::to_value(&view).expect("legacy collection view should serialize");
+        s.client
+            .borrow_mut()
+            .execute(
+                "INSERT INTO collections (name, database_name, schema_name)
+                 VALUES ($1, $2, $3)",
+                &[&qualified.as_str(), &DEFAULT_DATABASE, &DEFAULT_SCHEMA],
+            )
+            .expect("legacy collection row should insert");
         s.client
             .borrow_mut()
             .execute(
@@ -2277,60 +2318,93 @@ mod tests {
                  VALUES ($1, $2, $3, $4, $5, $6)",
                 &[
                     &qualified.as_str(),
-                    &billing.database,
-                    &billing.schema,
+                    &DEFAULT_DATABASE,
+                    &DEFAULT_SCHEMA,
                     &99_i32,
                     &legacy_schema_json,
                     &42_i64,
                 ],
             )
             .expect("legacy schema row should insert");
+        s.client
+            .borrow_mut()
+            .execute(
+                "INSERT INTO collection_views
+                    (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                &[
+                    &qualified.as_str(),
+                    &DEFAULT_DATABASE,
+                    &DEFAULT_SCHEMA,
+                    &99_i32,
+                    &legacy_view_json,
+                    &42_i64,
+                    &Some("legacy"),
+                ],
+            )
+            .expect("legacy collection view row should insert");
 
         let before_unregister: i64 = s
             .client
             .borrow_mut()
             .query_one(
-                "SELECT COUNT(*) FROM schemas
-                 WHERE database_name = $1
-                   AND schema_name = $2
-                   AND collection IN ($3, $4)",
+                "SELECT
+                    (SELECT COUNT(*) FROM collections
+                     WHERE (name = $1 AND database_name = $2 AND schema_name = $3)
+                        OR (name = $4 AND database_name = $5 AND schema_name = $6)) +
+                    (SELECT COUNT(*) FROM schemas
+                     WHERE (collection = $1 AND database_name = $2 AND schema_name = $3)
+                        OR (collection = $4 AND database_name = $5 AND schema_name = $6)) +
+                    (SELECT COUNT(*) FROM collection_views
+                     WHERE (collection = $1 AND database_name = $2 AND schema_name = $3)
+                        OR (collection = $4 AND database_name = $5 AND schema_name = $6))",
                 &[
+                    &invoices.as_str(),
                     &billing.database,
                     &billing.schema,
-                    &invoices.as_str(),
                     &qualified.as_str(),
+                    &DEFAULT_DATABASE,
+                    &DEFAULT_SCHEMA,
                 ],
             )
-            .expect("schema row count before unregister should succeed")
+            .expect("metadata row count before unregister should succeed")
             .get(0);
         assert_eq!(
-            before_unregister, 2,
-            "test setup should include both normalized and legacy schema rows"
+            before_unregister, 6,
+            "test setup should include normalized and legacy rows across all catalog tables"
         );
 
         s.unregister_collection(&qualified)
             .expect("qualified unregister should succeed");
 
-        let remaining_schema_rows: i64 = s
+        let remaining_metadata_rows: i64 = s
             .client
             .borrow_mut()
             .query_one(
-                "SELECT COUNT(*) FROM schemas
-                 WHERE database_name = $1
-                   AND schema_name = $2
-                   AND collection IN ($3, $4)",
+                "SELECT
+                    (SELECT COUNT(*) FROM collections
+                     WHERE (name = $1 AND database_name = $2 AND schema_name = $3)
+                        OR (name = $4 AND database_name = $5 AND schema_name = $6)) +
+                    (SELECT COUNT(*) FROM schemas
+                     WHERE (collection = $1 AND database_name = $2 AND schema_name = $3)
+                        OR (collection = $4 AND database_name = $5 AND schema_name = $6)) +
+                    (SELECT COUNT(*) FROM collection_views
+                     WHERE (collection = $1 AND database_name = $2 AND schema_name = $3)
+                        OR (collection = $4 AND database_name = $5 AND schema_name = $6))",
                 &[
+                    &invoices.as_str(),
                     &billing.database,
                     &billing.schema,
-                    &invoices.as_str(),
                     &qualified.as_str(),
+                    &DEFAULT_DATABASE,
+                    &DEFAULT_SCHEMA,
                 ],
             )
-            .expect("schema row count after unregister should succeed")
+            .expect("metadata row count after unregister should succeed")
             .get(0);
         assert_eq!(
-            remaining_schema_rows, 0,
-            "qualified unregister must remove both normalized and legacy schema metadata"
+            remaining_metadata_rows, 0,
+            "qualified unregister must remove normalized and default-namespaced legacy metadata"
         );
     }
 }
