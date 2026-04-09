@@ -1289,8 +1289,11 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 }
 
-// The conformance test suite requires a running PostgreSQL instance.
-// Run with: AXON_TEST_POSTGRES="host=localhost user=axon dbname=axon_test" cargo test -p axon-storage postgres_conformance
+// The conformance test suite requires PostgreSQL.
+// Explicit verification path:
+// AXON_TEST_POSTGRES="host=localhost user=axon dbname=axon_test" cargo test -p axon-storage postgres::tests:: -- --nocapture
+// When `AXON_TEST_POSTGRES` is unset, these tests attempt to provision PostgreSQL
+// via testcontainers and skip cleanly if the container runtime is unavailable.
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1310,8 +1313,13 @@ mod tests {
         _container: Option<Container<postgres::Postgres>>,
     }
 
+    enum TestSetupError {
+        Skip(String),
+        Fail(AxonError),
+    }
+
     impl TestDatabase {
-        fn connect() -> Result<Self, AxonError> {
+        fn connect() -> Result<Self, TestSetupError> {
             if let Ok(url) = std::env::var("AXON_TEST_POSTGRES") {
                 return Ok(Self {
                     url,
@@ -1325,19 +1333,19 @@ mod tests {
                 .with_password("postgres")
                 .start()
                 .map_err(|error| {
-                    AxonError::Storage(format!(
-                        "failed to start PostgreSQL test container: {error}"
+                    TestSetupError::Skip(format!(
+                        "AXON_TEST_POSTGRES is unset and PostgreSQL test container startup failed: {error}"
                     ))
                 })?;
             let host = container.get_host().map_err(|error| {
-                AxonError::Storage(format!(
+                TestSetupError::Fail(AxonError::Storage(format!(
                     "failed to resolve PostgreSQL test container host: {error}"
-                ))
+                )))
             })?;
             let port = container.get_host_port_ipv4(5432).map_err(|error| {
-                AxonError::Storage(format!(
+                TestSetupError::Fail(AxonError::Storage(format!(
                     "failed to resolve PostgreSQL test container port: {error}"
-                ))
+                )))
             })?;
 
             Ok(Self {
@@ -1394,9 +1402,27 @@ mod tests {
             .map_err(|e| AxonError::Storage(e.to_string()))
     }
 
-    fn store() -> Result<TestStore, AxonError> {
+    fn skip_postgres_test(test_name: &str, reason: &str) {
+        tracing::warn!(test = test_name, reason, "skipping PostgreSQL storage test");
+    }
+
+    fn database_or_skip(test_name: &str) -> Option<TestDatabase> {
+        match TestDatabase::connect() {
+            Ok(database) => Some(database),
+            Err(TestSetupError::Skip(reason)) => {
+                skip_postgres_test(test_name, &reason);
+                None
+            }
+            Err(TestSetupError::Fail(error)) => {
+                panic!("PostgreSQL test setup should succeed: {error}");
+            }
+        }
+    }
+
+    fn store() -> Result<TestStore, TestSetupError> {
         let database = TestDatabase::connect()?;
-        let adapter = PostgresStorageAdapter::connect(database.url())?;
+        let adapter =
+            PostgresStorageAdapter::connect(database.url()).map_err(TestSetupError::Fail)?;
         // Clean tables for a fresh test.
         adapter
             .client
@@ -1405,12 +1431,27 @@ mod tests {
                 "TRUNCATE entities, schemas, collection_views, collections, namespaces, databases, audit_log
                  RESTART IDENTITY CASCADE",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        adapter.ensure_default_namespace()?;
+            .map_err(|e| TestSetupError::Fail(AxonError::Storage(e.to_string())))?;
+        adapter
+            .ensure_default_namespace()
+            .map_err(TestSetupError::Fail)?;
         Ok(TestStore {
             adapter,
             _database: database,
         })
+    }
+
+    fn store_or_skip(test_name: &str) -> Option<TestStore> {
+        match store() {
+            Ok(store) => Some(store),
+            Err(TestSetupError::Skip(reason)) => {
+                skip_postgres_test(test_name, &reason);
+                None
+            }
+            Err(TestSetupError::Fail(error)) => {
+                panic!("PostgreSQL test setup should succeed: {error}");
+            }
+        }
     }
 
     fn register_unique_namespaced_collection(
@@ -1436,7 +1477,9 @@ mod tests {
     #[test]
     fn postgres_roundtrip_when_available() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) = store_or_skip("postgres_roundtrip_when_available") else {
+            return;
+        };
 
         let col = CollectionId::new("tasks");
         let entity = Entity::new(
@@ -1456,7 +1499,11 @@ mod tests {
     #[test]
     fn unregister_collection_cleans_up_legacy_collection_views_when_available() {
         let _guard = postgres_test_guard();
-        let database = TestDatabase::connect().expect("PostgreSQL test setup should succeed");
+        let Some(database) = database_or_skip(
+            "unregister_collection_cleans_up_legacy_collection_views_when_available",
+        ) else {
+            return;
+        };
 
         let mut legacy_client = Client::connect(database.url(), NoTls)
             .expect("PostgreSQL test database should be reachable");
@@ -1549,7 +1596,10 @@ mod tests {
     #[test]
     fn namespace_catalogs_allow_same_name_without_cross_drop() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) = store_or_skip("namespace_catalogs_allow_same_name_without_cross_drop")
+        else {
+            return;
+        };
         let invoices = CollectionId::new("invoices");
         let billing = Namespace::new("prod", "billing");
         let engineering = Namespace::new("prod", "engineering");
@@ -1603,7 +1653,10 @@ mod tests {
     #[test]
     fn drop_namespace_purges_entities_for_removed_collections() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) = store_or_skip("drop_namespace_purges_entities_for_removed_collections")
+        else {
+            return;
+        };
         let billing = Namespace::new("prod", "billing");
         let engineering = Namespace::new("prod", "engineering");
         let invoices = CollectionId::new("invoices");
@@ -1652,7 +1705,11 @@ mod tests {
     #[test]
     fn drop_namespace_keeps_same_named_entities_in_surviving_namespaces() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) =
+            store_or_skip("drop_namespace_keeps_same_named_entities_in_surviving_namespaces")
+        else {
+            return;
+        };
         let billing = Namespace::new("prod", "billing");
         let engineering = Namespace::new("prod", "engineering");
         let invoices = CollectionId::new("invoices");
@@ -1705,7 +1762,10 @@ mod tests {
     #[test]
     fn drop_namespace_purges_links_for_removed_collections() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) = store_or_skip("drop_namespace_purges_links_for_removed_collections")
+        else {
+            return;
+        };
         let billing = Namespace::new("prod", "billing");
         let engineering = Namespace::new("prod", "engineering");
         let invoices = CollectionId::new("prod.billing.invoices");
@@ -1800,7 +1860,10 @@ mod tests {
     #[test]
     fn drop_database_purges_entities_for_removed_collections() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) = store_or_skip("drop_database_purges_entities_for_removed_collections")
+        else {
+            return;
+        };
         let analytics = Namespace::new("prod", "analytics");
         let orders = CollectionId::new("orders");
         let rollups = CollectionId::new("rollups");
@@ -1861,7 +1924,10 @@ mod tests {
     #[test]
     fn drop_database_purges_links_for_removed_collections() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) = store_or_skip("drop_database_purges_links_for_removed_collections")
+        else {
+            return;
+        };
         let analytics = Namespace::new("prod", "analytics");
         let orders = CollectionId::new("prod.default.orders");
         let rollups = CollectionId::new("prod.analytics.rollups");
@@ -1956,7 +2022,11 @@ mod tests {
     #[test]
     fn drop_database_keeps_same_named_entities_in_surviving_databases() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) =
+            store_or_skip("drop_database_keeps_same_named_entities_in_surviving_databases")
+        else {
+            return;
+        };
         let billing = Namespace::new("prod", "billing");
         let invoices = CollectionId::new("invoices");
         let orders = CollectionId::new("orders");
@@ -2003,7 +2073,10 @@ mod tests {
     #[test]
     fn qualified_entity_identity_isolated_across_namespaces() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) = store_or_skip("qualified_entity_identity_isolated_across_namespaces")
+        else {
+            return;
+        };
         let billing = Namespace::new("prod", "billing");
         let engineering = Namespace::new("prod", "engineering");
         let invoices = CollectionId::new("invoices");
@@ -2110,7 +2183,11 @@ mod tests {
     #[test]
     fn qualified_schema_write_is_readable_via_bare_unique_collection() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) =
+            store_or_skip("qualified_schema_write_is_readable_via_bare_unique_collection")
+        else {
+            return;
+        };
         let qualified = CollectionId::new("prod.billing.invoices");
         let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
 
@@ -2190,7 +2267,11 @@ mod tests {
     #[test]
     fn qualified_collection_view_write_is_readable_via_bare_unique_collection() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) =
+            store_or_skip("qualified_collection_view_write_is_readable_via_bare_unique_collection")
+        else {
+            return;
+        };
         let qualified = CollectionId::new("prod.billing.invoices");
         let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
 
@@ -2224,7 +2305,11 @@ mod tests {
     #[test]
     fn qualified_unregister_collection_removes_normalized_metadata_rows() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) =
+            store_or_skip("qualified_unregister_collection_removes_normalized_metadata_rows")
+        else {
+            return;
+        };
         let qualified = CollectionId::new("prod.billing.invoices");
         let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
 
@@ -2275,7 +2360,11 @@ mod tests {
     #[test]
     fn qualified_unregister_collection_removes_default_namespaced_legacy_metadata_rows() {
         let _guard = postgres_test_guard();
-        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let Some(mut s) = store_or_skip(
+            "qualified_unregister_collection_removes_default_namespaced_legacy_metadata_rows",
+        ) else {
+            return;
+        };
         let qualified = CollectionId::new("prod.billing.invoices");
         let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
 
