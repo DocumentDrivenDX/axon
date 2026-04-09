@@ -88,22 +88,34 @@ function hasFields(
 }
 
 async function assertGraphQLHelperContract(): Promise<void> {
-	helperContractCheck ??= (async () => {
-		const data = await gqlQuery<GraphQLHelperContractData>(GRAPHQL_HELPER_CONTRACT_QUERY);
-		const queryFieldNames = new Set(
-			(data.__schema.queryType?.fields ?? []).map((field) => field.name),
-		);
-		const supportsHelperContract =
-			queryFieldNames.has('collections') &&
-			queryFieldNames.has('entities') &&
-			queryFieldNames.has('entity') &&
-			hasFields(data.collectionMeta, ['name', 'entityCount']) &&
-			hasFields(data.entityConnection, ['edges', 'pageInfo']);
+	if (!helperContractCheck) {
+		const probe = (async () => {
+			const data = await gqlQuery<GraphQLHelperContractData>(GRAPHQL_HELPER_CONTRACT_QUERY);
+			const queryFieldNames = new Set(
+				(data.__schema.queryType?.fields ?? []).map((field) => field.name),
+			);
+			const supportsHelperContract =
+				queryFieldNames.has('collections') &&
+				queryFieldNames.has('entities') &&
+				queryFieldNames.has('entity') &&
+				hasFields(data.collectionMeta, ['name', 'entityCount']) &&
+				hasFields(data.entityConnection, ['edges', 'pageInfo']);
 
-		if (!supportsHelperContract) {
-			throw new Error(GRAPHQL_HELPER_CONTRACT_ERROR);
-		}
-	})();
+			if (!supportsHelperContract) {
+				throw new Error(GRAPHQL_HELPER_CONTRACT_ERROR);
+			}
+		})();
+
+		const cachedProbe = probe.catch((error) => {
+			if (helperContractCheck === cachedProbe) {
+				helperContractCheck = null;
+			}
+
+			throw error;
+		});
+
+		helperContractCheck = cachedProbe;
+	}
 
 	return helperContractCheck;
 }

@@ -116,6 +116,36 @@ test('fetchCollections uses the collections query once the backend advertises su
 	expect(requests[1]?.query).toContain('collections { name entityCount }');
 });
 
+test('fetchCollections retries the helper contract probe after a transient failure', async () => {
+	const requests: GraphQLRequest[] = [];
+
+	globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+		const request = parseRequest(init);
+		requests.push(request);
+
+		if (requests.length === 1) {
+			throw new Error('transient network error');
+		}
+
+		if (requests.length === 2) {
+			return createJsonResponse({ data: supportedHelperContract() });
+		}
+
+		return createJsonResponse({
+			data: {
+				collections: [{ name: 'tasks', entityCount: 3 }],
+			},
+		});
+	}) as unknown as typeof fetch;
+
+	await expect(fetchCollections()).rejects.toThrow(/transient network error/i);
+	await expect(fetchCollections()).resolves.toEqual([{ name: 'tasks', entityCount: 3 }]);
+	expect(requests).toHaveLength(3);
+	expect(requests[0]?.query).toContain('__schema');
+	expect(requests[1]?.query).toContain('__schema');
+	expect(requests[2]?.query).toContain('collections { name entityCount }');
+});
+
 test('fetchEntities uses the entities query once the backend advertises support', async () => {
 	const requests: GraphQLRequest[] = [];
 
