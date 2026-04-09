@@ -194,7 +194,11 @@ enum CollectionTemplateCmd {
     /// Show the markdown template for a collection.
     Get { collection: String },
     /// Delete the markdown template for a collection.
-    Delete { collection: String },
+    Delete {
+        collection: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
 }
 
 // ── Entity commands ────────────────────────────────────────────────────────────
@@ -821,11 +825,11 @@ fn run_collection_template(
                 }
             }
         }
-        CollectionTemplateCmd::Delete { collection } => {
+        CollectionTemplateCmd::Delete { collection, actor } => {
             let resp = handler
                 .delete_collection_template(DeleteCollectionTemplateRequest {
                     collection: CollectionId::new(&collection),
-                    actor: None,
+                    actor,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
@@ -1699,6 +1703,67 @@ mod tests {
 
         let entry = handler.audit_log().find_by_id(entries[0].id).unwrap();
         assert!(entry.is_some());
+    }
+
+    #[test]
+    fn collection_template_delete_preserves_actor_provenance() {
+        let (_f, db) = tmp_db();
+        let storage = SqliteStorageAdapter::open(&db).unwrap();
+        let mut handler = AxonHandler::new(storage);
+        let collection = CollectionId::new("tasks");
+
+        handler
+            .create_collection(CreateCollectionRequest {
+                name: collection.clone(),
+                schema: CollectionSchema {
+                    collection: collection.clone(),
+                    description: None,
+                    version: 1,
+                    entity_schema: None,
+                    link_types: Default::default(),
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                },
+                actor: None,
+            })
+            .unwrap();
+
+        handler
+            .put_collection_template(PutCollectionTemplateRequest {
+                collection: collection.clone(),
+                template: "# {{title}}".into(),
+                actor: Some("creator".into()),
+            })
+            .unwrap();
+
+        let cli = make_cli(
+            &db,
+            &[
+                "collection",
+                "template",
+                "delete",
+                "tasks",
+                "--actor",
+                "cleaner",
+            ],
+        );
+
+        let Command::Collection(CollectionCmd::Template(cmd)) = cli.command else {
+            panic!("expected collection template command");
+        };
+        run_collection_template(cmd, &OutputFormat::Json, &mut handler).unwrap();
+
+        let delete_entries = handler
+            .query_audit(QueryAuditRequest {
+                collection: Some(collection),
+                operation: Some("template.delete".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(delete_entries.entries.len(), 1);
+        assert_eq!(delete_entries.entries[0].actor, "cleaner");
     }
 
     #[test]
