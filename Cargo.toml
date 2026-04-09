@@ -77,6 +77,7 @@ ramhorns = { version = "1.0.1", default-features = false }
 
 # Async
 tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
 
 # Logging
 tracing = "0.1"

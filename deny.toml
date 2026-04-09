@@ -3,6 +3,10 @@
 
 [advisories]
 version = 2
+ignore = [
+    # `tailscale-localapi` has no maintained release without this transitive crate yet.
+    "RUSTSEC-2025-0134",
+]
 
 [licenses]
 version = 2
