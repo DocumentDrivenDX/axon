@@ -37,7 +37,7 @@ use axon_api::request::{
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE};
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 use axon_core::types::Entity;
 use axon_schema::schema::CollectionSchema;
 use axon_storage::adapter::StorageAdapter;
@@ -205,6 +205,31 @@ fn qualify_collection_name(collection: &str, current_database: &CurrentDatabase)
     CollectionId::new(Namespace::qualify_with_database(
         collection,
         current_database.as_str(),
+    ))
+}
+
+fn default_namespace_health<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    databases: &[String],
+) -> Result<(Option<String>, &'static str), AxonError> {
+    if !databases
+        .iter()
+        .any(|database| database == DEFAULT_DATABASE)
+    {
+        return Ok((None, "missing"));
+    }
+
+    let has_default_schema = handler
+        .list_namespaces(ListNamespacesRequest {
+            database: DEFAULT_DATABASE.to_string(),
+        })?
+        .schemas
+        .iter()
+        .any(|schema| schema == DEFAULT_SCHEMA);
+
+    Ok((
+        has_default_schema.then(|| format!("{DEFAULT_DATABASE}.{DEFAULT_SCHEMA}")),
+        if has_default_schema { "ok" } else { "missing" },
     ))
 }
 
@@ -1391,31 +1416,33 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
                 let handler = handler.clone();
                 let backend = backend.clone();
                 async move {
-                    let connectivity = handler
-                        .lock()
-                        .await
-                        .list_databases(ListDatabasesRequest {})
-                        .map(|resp| resp.databases)
-                        .map_err(axon_error_response);
+                    let guard = handler.lock().await;
+                    let databases = match guard.list_databases(ListDatabasesRequest {}) {
+                        Ok(resp) => resp.databases,
+                        Err(err) => return axon_error_response(err),
+                    };
+                    let (default_namespace, default_namespace_status) =
+                        match default_namespace_health(&guard, &databases) {
+                            Ok(health) => health,
+                            Err(err) => return axon_error_response(err),
+                        };
 
-                    match connectivity {
-                        Ok(databases) => (
-                            StatusCode::OK,
-                            Json(json!({
+                    (
+                        StatusCode::OK,
+                        Json(json!({
+                            "status": "ok",
+                            "version": env!("CARGO_PKG_VERSION"),
+                            "uptime_seconds": uptime,
+                            "backing_store": {
+                                "backend": backend,
                                 "status": "ok",
-                                "version": env!("CARGO_PKG_VERSION"),
-                                "uptime_seconds": uptime,
-                                "backing_store": {
-                                    "backend": backend,
-                                    "status": "ok",
-                                },
-                                "databases": databases,
-                                "default_namespace": "default.default",
-                            })),
-                        )
-                            .into_response(),
-                        Err(response) => response,
-                    }
+                            },
+                            "databases": databases,
+                            "default_namespace": default_namespace,
+                            "default_namespace_status": default_namespace_status,
+                        })),
+                    )
+                        .into_response()
                 }
             }),
         );
@@ -3004,7 +3031,74 @@ mod tests {
         assert_eq!(body["backing_store"]["backend"], "memory");
         assert_eq!(body["backing_store"]["status"], "ok");
         assert_eq!(body["default_namespace"], "default.default");
+        assert_eq!(body["default_namespace_status"], "ok");
         assert!(body["databases"].is_array());
+    }
+
+    #[tokio::test]
+    async fn http_health_reports_default_namespace_from_storage_state() {
+        let (server, handler) = test_server_with_handler();
+
+        handler
+            .lock()
+            .await
+            .storage_mut()
+            .drop_database(DEFAULT_DATABASE)
+            .expect("direct storage drop of default database should succeed for health regression");
+
+        let resp = server.get("/health").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert!(body["default_namespace"].is_null());
+        assert_eq!(body["default_namespace_status"], "missing");
+        let databases = body["databases"]
+            .as_array()
+            .expect("health databases should be an array");
+        assert!(!databases
+            .iter()
+            .any(|database| database.as_str() == Some(DEFAULT_DATABASE)));
+    }
+
+    #[tokio::test]
+    async fn http_rejects_dropping_default_database_and_preserves_zero_config_paths() {
+        let server = test_server();
+
+        let drop_resp = server.delete("/databases/default?force=true").await;
+        drop_resp.assert_status(StatusCode::BAD_REQUEST);
+        let drop_body: Value = drop_resp.json();
+        assert_eq!(drop_body["code"], "invalid_operation");
+        assert!(drop_body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("database 'default' is implicit and cannot be dropped"));
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let health_resp = server.get("/health").await;
+        health_resp.assert_status_ok();
+        let health_body: Value = health_resp.json();
+        assert_eq!(health_body["default_namespace"], "default.default");
+        assert_eq!(health_body["default_namespace_status"], "ok");
+        assert!(health_body["databases"]
+            .as_array()
+            .expect("health databases should be an array")
+            .iter()
+            .any(|database| database.as_str() == Some(DEFAULT_DATABASE)));
+
+        let collections_resp = server
+            .get("/databases/default/schemas/default/collections")
+            .await;
+        collections_resp.assert_status_ok();
+        let collections_body: Value = collections_resp.json();
+        assert!(collections_body["collections"]
+            .as_array()
+            .expect("default namespace collection list should be an array")
+            .iter()
+            .any(|collection| collection == "tasks"));
     }
 
     #[tokio::test]

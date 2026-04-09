@@ -14,7 +14,9 @@ fn now_ns() -> u64 {
 use axon_audit::entry::{AuditEntry, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_SCHEMA};
+use axon_core::id::{
+    CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
+};
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
 use axon_schema::schema::{CollectionSchema, CollectionView};
@@ -1873,6 +1875,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: DropDatabaseRequest,
     ) -> Result<DropDatabaseResponse, AxonError> {
+        if req.name == DEFAULT_DATABASE {
+            return Err(AxonError::InvalidOperation(format!(
+                "database '{DEFAULT_DATABASE}' is implicit and cannot be dropped"
+            )));
+        }
+
         if !self.storage.list_databases()?.contains(&req.name) {
             return Err(AxonError::NotFound(format!("database '{}'", req.name)));
         }
@@ -9412,6 +9420,27 @@ link_types:
 
         let dbs = h.list_databases(ListDatabasesRequest {}).unwrap();
         assert!(!dbs.databases.contains(&"temp".to_string()));
+    }
+
+    #[test]
+    fn drop_default_database_is_forbidden() {
+        use crate::request::{DropDatabaseRequest, ListDatabasesRequest};
+
+        let mut h = handler();
+        let err = h
+            .drop_database(DropDatabaseRequest {
+                name: DEFAULT_DATABASE.into(),
+                force: true,
+            })
+            .unwrap_err();
+
+        assert!(matches!(err, AxonError::InvalidOperation(_)));
+        assert!(err
+            .to_string()
+            .contains("database 'default' is implicit and cannot be dropped"));
+
+        let dbs = h.list_databases(ListDatabasesRequest {}).unwrap();
+        assert!(dbs.databases.contains(&DEFAULT_DATABASE.to_string()));
     }
 
     #[test]
