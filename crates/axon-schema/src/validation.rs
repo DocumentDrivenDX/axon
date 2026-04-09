@@ -184,11 +184,10 @@ fn enhance_json_schema_error(
     schema: &Value,
 ) -> SchemaValidationError {
     let field_path = error.instance_path.to_string();
-    let field_name = field_path
-        .rsplit('/')
-        .next()
-        .unwrap_or(&field_path)
-        .to_string();
+    let field_name = match field_path.rsplit('/').next() {
+        Some(segment) if !segment.is_empty() => segment.to_string(),
+        _ => field_path.clone(),
+    };
     let raw_msg = error.to_string();
 
     // Try to classify the error and produce better messages.
