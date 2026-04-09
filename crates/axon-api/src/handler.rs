@@ -12,7 +12,7 @@ fn now_ns() -> u64 {
 use axon_audit::entry::{AuditEntry, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
+use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_SCHEMA};
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
 use axon_schema::schema::CollectionSchema;
@@ -124,6 +124,26 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     fn invalidate_markdown_template(&self, collection: &CollectionId) -> Result<(), AxonError> {
         self.markdown_template_cache()?.entries.remove(collection);
+        Ok(())
+    }
+
+    fn invalidate_markdown_templates_for_collections(
+        &self,
+        collections: &[QualifiedCollectionId],
+    ) -> Result<(), AxonError> {
+        if collections.is_empty() {
+            return Ok(());
+        }
+
+        let doomed: HashSet<_> = collections.iter().cloned().collect();
+        self.markdown_template_cache()?
+            .entries
+            .retain(
+                |collection, _| match self.storage.resolve_collection_key(collection) {
+                    Ok(key) => !doomed.contains(&key),
+                    Err(_) => true,
+                },
+            );
         Ok(())
     }
 
@@ -1578,6 +1598,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
+        let doomed_collections: Vec<_> = collections
+            .iter()
+            .map(|collection| QualifiedCollectionId::from_parts(&namespace, collection))
+            .collect();
+        self.invalidate_markdown_templates_for_collections(&doomed_collections)?;
         self.storage.drop_namespace(&namespace)?;
         self.append_collection_drop_audit_entries(&collections)?;
         Ok(DropNamespaceResponse {
@@ -1615,11 +1640,16 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         let schemas = self.storage.list_namespaces(&req.name)?;
         let mut collections = Vec::new();
+        let mut doomed_collections = Vec::new();
         for schema in &schemas {
-            collections.extend(
-                self.storage
-                    .list_namespace_collections(&Namespace::new(&req.name, schema))?,
+            let namespace = Namespace::new(&req.name, schema);
+            let namespace_collections = self.storage.list_namespace_collections(&namespace)?;
+            doomed_collections.extend(
+                namespace_collections
+                    .iter()
+                    .map(|collection| QualifiedCollectionId::from_parts(&namespace, collection)),
             );
+            collections.extend(namespace_collections);
         }
         let total_collections = collections.len();
 
@@ -1630,6 +1660,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             )));
         }
 
+        self.invalidate_markdown_templates_for_collections(&doomed_collections)?;
         self.storage.drop_database(&req.name)?;
         self.append_collection_drop_audit_entries(&collections)?;
 
@@ -2652,6 +2683,17 @@ mod tests {
         match result {
             Ok(_) => panic!("{context}: expected error"),
             Err(err) => err,
+        }
+    }
+
+    fn assert_rendered_markdown(response: GetEntityMarkdownResponse, expected: &str) {
+        match response {
+            GetEntityMarkdownResponse::Rendered {
+                rendered_markdown, ..
+            } => assert_eq!(rendered_markdown, expected),
+            GetEntityMarkdownResponse::RenderFailed { detail, .. } => {
+                panic!("expected markdown render to succeed: {detail}")
+            }
         }
     }
 
@@ -6727,6 +6769,84 @@ link_types:
     }
 
     #[test]
+    fn drop_namespace_with_force_clears_compiled_markdown_cache_for_removed_collections() {
+        use crate::request::{
+            CreateDatabaseRequest, CreateEntityRequest, CreateNamespaceRequest,
+            DropNamespaceRequest,
+        };
+        use axon_core::id::Namespace;
+
+        let mut h = handler();
+        let qualified = CollectionId::new("prod.billing.notes");
+        let bare = CollectionId::new("notes");
+        let id = EntityId::new("note-001");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &Namespace::new("prod", "billing"))
+            .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: qualified.clone(),
+            id: id.clone(),
+            data: json!({"title": "old", "status": "open"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        let initial_view = h
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(qualified.clone(), "# {{title}}"))
+            .unwrap();
+        assert_eq!(initial_view.version, 1);
+        assert_rendered_markdown(h.get_entity_markdown(&qualified, &id).unwrap(), "# old");
+
+        h.drop_namespace(DropNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+            force: true,
+        })
+        .unwrap();
+
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &Namespace::new("prod", "billing"))
+            .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: qualified.clone(),
+            id: id.clone(),
+            data: json!({"title": "new", "status": "closed"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        let recreated_view = h
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(
+                qualified.clone(),
+                "Status: {{status}}",
+            ))
+            .unwrap();
+        assert_eq!(recreated_view.version, 1);
+
+        assert_rendered_markdown(
+            h.get_entity_markdown(&qualified, &id).unwrap(),
+            "Status: closed",
+        );
+    }
+
+    #[test]
     fn default_namespace_exists_on_startup() {
         use crate::request::ListNamespaceCollectionsRequest;
         let h = handler();
@@ -8620,6 +8740,86 @@ link_types:
         assert_eq!(
             archive_neighbors.groups[0].entities[0].id,
             EntityId::new("keep-001")
+        );
+    }
+
+    #[test]
+    fn drop_database_with_force_clears_compiled_markdown_cache_for_removed_collections() {
+        use crate::request::{
+            CreateDatabaseRequest, CreateEntityRequest, CreateNamespaceRequest, DropDatabaseRequest,
+        };
+        use axon_core::id::Namespace;
+
+        let mut h = handler();
+        let qualified = CollectionId::new("prod.analytics.reports");
+        let bare = CollectionId::new("reports");
+        let id = EntityId::new("report-001");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "analytics".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &Namespace::new("prod", "analytics"))
+            .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: qualified.clone(),
+            id: id.clone(),
+            data: json!({"title": "old", "status": "draft"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        let initial_view = h
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(qualified.clone(), "# {{title}}"))
+            .unwrap();
+        assert_eq!(initial_view.version, 1);
+        assert_rendered_markdown(h.get_entity_markdown(&qualified, &id).unwrap(), "# old");
+
+        h.drop_database(DropDatabaseRequest {
+            name: "prod".into(),
+            force: true,
+        })
+        .unwrap();
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "analytics".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &Namespace::new("prod", "analytics"))
+            .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: qualified.clone(),
+            id: id.clone(),
+            data: json!({"title": "new", "status": "published"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        let recreated_view = h
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(
+                qualified.clone(),
+                "Status: {{status}}",
+            ))
+            .unwrap();
+        assert_eq!(recreated_view.version, 1);
+
+        assert_rendered_markdown(
+            h.get_entity_markdown(&qualified, &id).unwrap(),
+            "Status: published",
         );
     }
 
