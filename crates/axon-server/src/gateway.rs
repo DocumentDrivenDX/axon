@@ -144,7 +144,7 @@ pub struct DeleteEntityBody {
     pub actor: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 pub struct DeleteCollectionTemplateBody {
     pub actor: Option<String>,
 }
@@ -263,6 +263,30 @@ fn parse_collection_template_request(
             actor: None,
         })
     }
+}
+
+fn parse_delete_collection_template_request(
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Result<DeleteCollectionTemplateBody, AxonError> {
+    if body.is_empty() {
+        return Ok(DeleteCollectionTemplateBody::default());
+    }
+
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+
+    if !content_type.starts_with("application/json") {
+        return Err(AxonError::InvalidArgument(
+            "delete template body must use application/json".into(),
+        ));
+    }
+
+    serde_json::from_slice::<DeleteCollectionTemplateBody>(&body).map_err(|error| {
+        AxonError::InvalidArgument(format!("invalid delete template JSON body: {error}"))
+    })
 }
 
 // ── Transaction request body ─────────────────────────────────────────────────
@@ -810,9 +834,13 @@ async fn get_collection_template<S: StorageAdapter>(
 async fn delete_collection_template<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Path(collection): Path<String>,
-    body: Option<Json<DeleteCollectionTemplateBody>>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
-    let actor = body.and_then(|b| b.0.actor);
+    let actor = match parse_delete_collection_template_request(&headers, body) {
+        Ok(body) => body.actor,
+        Err(error) => return axon_error_response(error),
+    };
     match handler
         .lock()
         .await
@@ -1441,6 +1469,35 @@ mod tests {
             .get("/collections/tasks/template")
             .await
             .assert_status(StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn http_collection_template_delete_accepts_empty_json_body() {
+        let server = test_server();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        server
+            .put("/collections/tasks/template")
+            .json(&json!({
+                "template": "# {{title}}"
+            }))
+            .await
+            .assert_status_ok();
+
+        let delete = server
+            .delete("/collections/tasks/template")
+            .content_type("application/json")
+            .bytes(Bytes::new())
+            .await;
+        delete.assert_status_ok();
+        let body: Value = delete.json();
+        assert_eq!(body["collection"], "tasks");
+        assert_eq!(body["status"], "deleted");
     }
 
     #[tokio::test]
