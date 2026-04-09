@@ -51,7 +51,14 @@ struct Args {
 
     /// Disable authentication — all requests succeed as admin with actor="anonymous".
     /// Intended for local development only.
-    #[arg(long, env = "AXON_NO_AUTH", default_value = "true")]
+    #[arg(
+        long,
+        env = "AXON_NO_AUTH",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
     no_auth: bool,
 
     /// Path to the local tailscaled socket for LocalAPI whois lookups.
@@ -108,16 +115,7 @@ async fn main() {
 
 async fn run(args: Args) -> Result<(), String> {
     // For MCP stdio mode, minimize logging to stderr so stdout is clean.
-    if args.mcp_stdio {
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .with_writer(std::io::stderr)
-            .init();
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(EnvFilter::from_default_env())
-            .init();
-    }
+    init_tracing(args.mcp_stdio);
 
     if args.no_auth {
         tracing::info!(
@@ -162,15 +160,7 @@ where
         return axon_server::run_mcp_stdio(handler, &[]).map_err(|error| error.to_string());
     }
 
-    let auth = if args.no_auth {
-        AuthContext::no_auth()
-    } else {
-        AuthContext::tailscale(
-            args.tailscale_default_role.clone().into(),
-            args.tailscale_socket.clone(),
-            Duration::from_secs(args.auth_cache_ttl_secs),
-        )
-    };
+    let auth = auth_context_from_args(args);
 
     auth.verify().await.map_err(|error| {
         format!(
@@ -226,9 +216,71 @@ where
     Ok(())
 }
 
+fn init_tracing(mcp_stdio: bool) {
+    let subscriber = tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env());
+    let result = if mcp_stdio {
+        subscriber.with_writer(std::io::stderr).try_init()
+    } else {
+        subscriber.try_init()
+    };
+    let _ = result;
+}
+
+fn auth_context_from_args(args: &Args) -> AuthContext {
+    if args.no_auth {
+        AuthContext::no_auth()
+    } else {
+        AuthContext::tailscale(
+            args.tailscale_default_role.clone().into(),
+            args.tailscale_socket.clone(),
+            Duration::from_secs(args.auth_cache_ttl_secs),
+        )
+    }
+}
+
 async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
         .expect("failed to install CTRL+C handler");
     tracing::info!("shutdown signal received, stopping server");
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::*;
+    use axon_server::AuthMode;
+
+    #[test]
+    fn cli_defaults_to_tailscale_auth() {
+        let args = Args::parse_from(["axon-server"]);
+
+        assert!(!args.no_auth, "default startup must keep auth enabled");
+        assert_eq!(
+            auth_context_from_args(&args).mode(),
+            &AuthMode::Tailscale {
+                default_role: Role::Read,
+            }
+        );
+    }
+
+    #[test]
+    fn cli_no_auth_flag_keeps_explicit_bypass() {
+        let args = Args::parse_from(["axon-server", "--no-auth"]);
+
+        assert!(args.no_auth, "--no-auth must remain an explicit bypass");
+        assert_eq!(auth_context_from_args(&args).mode(), &AuthMode::NoAuth);
+    }
+
+    #[test]
+    fn cli_no_auth_accepts_boolish_values() {
+        let args = Args::parse_from(["axon-server", "--no-auth=1"]);
+
+        assert!(
+            args.no_auth,
+            "boolish values must enable the no-auth bypass"
+        );
+        assert_eq!(auth_context_from_args(&args).mode(), &AuthMode::NoAuth);
+    }
 }
