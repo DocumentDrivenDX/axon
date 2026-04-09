@@ -13,12 +13,14 @@ use axon_api::request::{
 use axon_api::transaction::Transaction;
 use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE};
 use axon_storage::adapter::StorageAdapter;
 use axon_storage::memory::MemoryStorageAdapter;
 use serde_json::json;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
+
+const AXON_DATABASE_HEADER: &str = "x-axon-database";
 
 // Include the generated protobuf code.
 pub mod proto {
@@ -113,6 +115,26 @@ fn auth_to_status(error: AuthError) -> Status {
     }
 }
 
+fn grpc_current_database<T>(request: &Request<T>) -> &str {
+    request
+        .metadata()
+        .get(AXON_DATABASE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|database| !database.is_empty())
+        .unwrap_or(DEFAULT_DATABASE)
+}
+
+fn qualify_collection_name(collection: &str, current_database: &str) -> CollectionId {
+    if current_database == DEFAULT_DATABASE {
+        return CollectionId::new(collection);
+    }
+
+    CollectionId::new(Namespace::qualify_with_database(
+        collection,
+        current_database,
+    ))
+}
+
 /// Shared state for the gRPC service.
 ///
 /// Wraps an `AxonHandler` in a `Mutex` so multiple async tasks can call it.
@@ -164,6 +186,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoCreateEntityReq>,
     ) -> Result<Response<ProtoCreateEntityResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let data: serde_json::Value = serde_json::from_str(&req.data_json)
             .map_err(|e| Status::invalid_argument(format!("invalid data_json: {e}")))?;
@@ -173,7 +196,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .lock()
             .await
             .create_entity(CreateEntityRequest {
-                collection: CollectionId::new(&req.collection),
+                collection: qualify_collection_name(&req.collection, &current_database),
                 id: EntityId::new(&req.id),
                 data,
                 actor: Some(identity.actor),
@@ -191,13 +214,14 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoGetEntityReq>,
     ) -> Result<Response<ProtoGetEntityResp>, Status> {
         self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let resp = self
             .handler
             .lock()
             .await
             .get_entity(GetEntityRequest {
-                collection: CollectionId::new(&req.collection),
+                collection: qualify_collection_name(&req.collection, &current_database),
                 id: EntityId::new(&req.id),
             })
             .map_err(axon_to_status)?;
@@ -212,6 +236,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoUpdateEntityReq>,
     ) -> Result<Response<ProtoUpdateEntityResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let data: serde_json::Value = serde_json::from_str(&req.data_json)
             .map_err(|e| Status::invalid_argument(format!("invalid data_json: {e}")))?;
@@ -221,7 +246,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .lock()
             .await
             .update_entity(UpdateEntityRequest {
-                collection: CollectionId::new(&req.collection),
+                collection: qualify_collection_name(&req.collection, &current_database),
                 id: EntityId::new(&req.id),
                 data,
                 expected_version: req.expected_version,
@@ -240,6 +265,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoDeleteEntityReq>,
     ) -> Result<Response<ProtoDeleteEntityResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
 
         let resp = self
@@ -247,7 +273,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .lock()
             .await
             .delete_entity(DeleteEntityRequest {
-                collection: CollectionId::new(&req.collection),
+                collection: qualify_collection_name(&req.collection, &current_database),
                 id: EntityId::new(&req.id),
                 actor: Some(identity.actor),
                 audit_metadata: None,
@@ -266,6 +292,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoCreateLinkReq>,
     ) -> Result<Response<ProtoCreateLinkResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let metadata: serde_json::Value = if req.metadata_json.is_empty() {
             json!(null)
@@ -279,9 +306,15 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .lock()
             .await
             .create_link(CreateLinkRequest {
-                source_collection: CollectionId::new(&req.source_collection),
+                source_collection: qualify_collection_name(
+                    &req.source_collection,
+                    &current_database,
+                ),
                 source_id: EntityId::new(&req.source_id),
-                target_collection: CollectionId::new(&req.target_collection),
+                target_collection: qualify_collection_name(
+                    &req.target_collection,
+                    &current_database,
+                ),
                 target_id: EntityId::new(&req.target_id),
                 link_type: req.link_type.clone(),
                 metadata,
@@ -307,6 +340,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoDeleteLinkReq>,
     ) -> Result<Response<ProtoDeleteLinkResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
 
         let resp = self
@@ -314,9 +348,15 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .lock()
             .await
             .delete_link(DeleteLinkRequest {
-                source_collection: CollectionId::new(&req.source_collection),
+                source_collection: qualify_collection_name(
+                    &req.source_collection,
+                    &current_database,
+                ),
                 source_id: EntityId::new(&req.source_id),
-                target_collection: CollectionId::new(&req.target_collection),
+                target_collection: qualify_collection_name(
+                    &req.target_collection,
+                    &current_database,
+                ),
                 target_id: EntityId::new(&req.target_id),
                 link_type: req.link_type.clone(),
                 actor: Some(identity.actor),
@@ -337,6 +377,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoTraverseReq>,
     ) -> Result<Response<ProtoTraverseResp>, Status> {
         self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let link_type = if req.link_type.is_empty() {
             None
@@ -354,7 +395,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .lock()
             .await
             .traverse(TraverseRequest {
-                collection: CollectionId::new(&req.collection),
+                collection: qualify_collection_name(&req.collection, &current_database),
                 id: EntityId::new(&req.id),
                 link_type,
                 max_depth,
@@ -373,12 +414,13 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<QueryAuditByEntityRequest>,
     ) -> Result<Response<QueryAuditByEntityResponse>, Status> {
         self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let handler = self.handler.lock().await;
         let entries = handler
             .audit_log()
             .query_by_entity(
-                &CollectionId::new(&req.collection),
+                &qualify_collection_name(&req.collection, &current_database),
                 &EntityId::new(&req.entity_id),
             )
             .map_err(axon_to_status)?;
@@ -417,6 +459,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoCommitTxReq>,
     ) -> Result<Response<ProtoCommitTxResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let mut tx = Transaction::new();
 
@@ -426,7 +469,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     let data: serde_json::Value = serde_json::from_str(&op.data_json)
                         .map_err(|e| Status::invalid_argument(format!("invalid data_json: {e}")))?;
                     tx.create(axon_core::types::Entity::new(
-                        CollectionId::new(&op.collection),
+                        qualify_collection_name(&op.collection, &current_database),
                         EntityId::new(&op.id),
                         data,
                     ))
@@ -437,7 +480,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     let h = self.handler.lock().await;
                     let data_before = h
                         .get_entity(GetEntityRequest {
-                            collection: CollectionId::new(&op.collection),
+                            collection: qualify_collection_name(&op.collection, &current_database),
                             id: EntityId::new(&op.id),
                         })
                         .ok()
@@ -445,7 +488,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     drop(h);
                     tx.update(
                         axon_core::types::Entity::new(
-                            CollectionId::new(&op.collection),
+                            qualify_collection_name(&op.collection, &current_database),
                             EntityId::new(&op.id),
                             data,
                         ),
@@ -457,14 +500,14 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     let h = self.handler.lock().await;
                     let data_before = h
                         .get_entity(GetEntityRequest {
-                            collection: CollectionId::new(&op.collection),
+                            collection: qualify_collection_name(&op.collection, &current_database),
                             id: EntityId::new(&op.id),
                         })
                         .ok()
                         .map(|r| r.entity.data);
                     drop(h);
                     tx.delete(
-                        CollectionId::new(&op.collection),
+                        qualify_collection_name(&op.collection, &current_database),
                         EntityId::new(&op.id),
                         op.expected_version,
                         data_before,
@@ -497,6 +540,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoQueryEntitiesReq>,
     ) -> Result<Response<ProtoQueryEntitiesResp>, Status> {
         self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let filter = if req.filter_json.is_empty() {
             None
@@ -522,7 +566,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .lock()
             .await
             .query_entities(QueryEntitiesRequest {
-                collection: axon_core::id::CollectionId::new(&req.collection),
+                collection: qualify_collection_name(&req.collection, &current_database),
                 filter,
                 sort: vec![],
                 limit,
@@ -543,9 +587,12 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoPutSchemaReq>,
     ) -> Result<Response<ProtoPutSchemaResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
-        let schema: axon_schema::schema::CollectionSchema = serde_json::from_str(&req.schema_json)
-            .map_err(|e| Status::invalid_argument(format!("invalid schema_json: {e}")))?;
+        let mut schema: axon_schema::schema::CollectionSchema =
+            serde_json::from_str(&req.schema_json)
+                .map_err(|e| Status::invalid_argument(format!("invalid schema_json: {e}")))?;
+        schema.collection = qualify_collection_name(schema.collection.as_str(), &current_database);
 
         let resp = self
             .handler
@@ -578,13 +625,14 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoGetSchemaReq>,
     ) -> Result<Response<ProtoGetSchemaResp>, Status> {
         self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let resp = self
             .handler
             .lock()
             .await
             .handle_get_schema(GetSchemaRequest {
-                collection: axon_core::id::CollectionId::new(&req.collection),
+                collection: qualify_collection_name(&req.collection, &current_database),
             })
             .map_err(axon_to_status)?;
 
@@ -599,16 +647,20 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoCreateCollectionReq>,
     ) -> Result<Response<ProtoCreateCollectionResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
-        let schema: axon_schema::schema::CollectionSchema = serde_json::from_str(&req.schema_json)
-            .map_err(|e| Status::invalid_argument(format!("invalid schema_json: {e}")))?;
+        let mut schema: axon_schema::schema::CollectionSchema =
+            serde_json::from_str(&req.schema_json)
+                .map_err(|e| Status::invalid_argument(format!("invalid schema_json: {e}")))?;
+        let collection = qualify_collection_name(&req.name, &current_database);
+        schema.collection = qualify_collection_name(schema.collection.as_str(), &current_database);
 
         let resp = self
             .handler
             .lock()
             .await
             .create_collection(CreateCollectionRequest {
-                name: axon_core::id::CollectionId::new(&req.name),
+                name: collection,
                 schema,
                 actor: Some(identity.actor),
             })
@@ -622,6 +674,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoDropCollectionReq>,
     ) -> Result<Response<ProtoDropCollectionResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
 
         let resp = self
@@ -629,7 +682,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .lock()
             .await
             .drop_collection(DropCollectionRequest {
-                name: axon_core::id::CollectionId::new(&req.name),
+                name: qualify_collection_name(&req.name, &current_database),
                 actor: Some(identity.actor),
                 confirm: req.confirm,
             })
@@ -671,13 +724,14 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoDescribeCollectionReq>,
     ) -> Result<Response<ProtoDescribeCollectionResp>, Status> {
         self.authorize(request.remote_addr()).await?;
+        let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let resp = self
             .handler
             .lock()
             .await
             .describe_collection(DescribeCollectionRequest {
-                name: axon_core::id::CollectionId::new(&req.name),
+                name: qualify_collection_name(&req.name, &current_database),
             })
             .map_err(axon_to_status)?;
 
@@ -849,6 +903,7 @@ mod tests {
     };
     use axon_storage::MemoryStorageAdapter;
     use serde_json::json;
+    use tonic::metadata::MetadataValue;
     use tonic::transport::server::TcpConnectInfo;
     use tonic::Code;
 
@@ -899,6 +954,15 @@ mod tests {
             local_addr: None,
             remote_addr: Some(peer),
         });
+        request
+    }
+
+    fn request_with_database<T>(message: T, database: &str) -> Request<T> {
+        let mut request = Request::new(message);
+        request.metadata_mut().insert(
+            AXON_DATABASE_HEADER,
+            MetadataValue::try_from(database).expect("database metadata must be valid"),
+        );
         request
     }
 
@@ -1021,6 +1085,97 @@ mod tests {
             .expect("namespace list should succeed")
             .into_inner();
         assert!(namespaces.schemas.iter().any(|schema| schema == "billing"));
+    }
+
+    #[tokio::test]
+    async fn grpc_metadata_current_database_routes_unqualified_collection_operations() {
+        let svc = AxonServiceImpl::new_in_memory();
+        let default_schema = serde_json::to_string(&axon_schema::schema::CollectionSchema::new(
+            CollectionId::new("tasks"),
+        ))
+        .expect("default schema should serialize");
+
+        svc.create_collection(Request::new(ProtoCreateCollectionReq {
+            name: "tasks".into(),
+            schema_json: default_schema.clone(),
+            actor: String::new(),
+        }))
+        .await
+        .expect("default collection create should succeed");
+
+        svc.create_database(Request::new(ProtoCreateDatabaseReq {
+            name: "prod".into(),
+        }))
+        .await
+        .expect("database create should succeed");
+
+        svc.create_collection(request_with_database(
+            ProtoCreateCollectionReq {
+                name: "tasks".into(),
+                schema_json: default_schema,
+                actor: String::new(),
+            },
+            "prod",
+        ))
+        .await
+        .expect("prod collection create should succeed");
+
+        svc.create_entity(Request::new(ProtoCreateEntityReq {
+            collection: "tasks".into(),
+            id: "t-001".into(),
+            data_json: json!({"scope": "default"}).to_string(),
+            actor: String::new(),
+        }))
+        .await
+        .expect("default entity create should succeed");
+
+        svc.create_entity(request_with_database(
+            ProtoCreateEntityReq {
+                collection: "tasks".into(),
+                id: "t-001".into(),
+                data_json: json!({"scope": "prod"}).to_string(),
+                actor: String::new(),
+            },
+            "prod",
+        ))
+        .await
+        .expect("prod entity create should succeed");
+
+        let default_entity = svc
+            .get_entity(Request::new(ProtoGetEntityReq {
+                collection: "tasks".into(),
+                id: "t-001".into(),
+            }))
+            .await
+            .expect("default entity get should succeed")
+            .into_inner()
+            .entity
+            .expect("default entity should be present");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&default_entity.data_json)
+                .expect("default entity JSON should parse")["scope"],
+            "default"
+        );
+
+        let prod_entity = svc
+            .get_entity(request_with_database(
+                ProtoGetEntityReq {
+                    collection: "tasks".into(),
+                    id: "t-001".into(),
+                },
+                "prod",
+            ))
+            .await
+            .expect("prod entity get should succeed")
+            .into_inner()
+            .entity
+            .expect("prod entity should be present");
+        assert_eq!(prod_entity.collection, "prod.default.tasks");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&prod_entity.data_json)
+                .expect("prod entity JSON should parse")["scope"],
+            "prod"
+        );
     }
 
     #[tokio::test]

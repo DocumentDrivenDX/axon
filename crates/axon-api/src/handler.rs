@@ -1360,7 +1360,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: CreateCollectionRequest,
     ) -> Result<CreateCollectionResponse, AxonError> {
-        Self::validate_collection_name(&req.name)?;
+        let (namespace, bare_name) = Namespace::parse(req.name.as_str());
+        let bare_collection = CollectionId::new(&bare_name);
+
+        Self::validate_collection_name(&bare_collection)?;
 
         if req.schema.collection != req.name {
             return Err(AxonError::InvalidArgument(format!(
@@ -1375,15 +1378,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
             compile_entity_schema(entity_schema)?;
         }
 
-        let default_namespace = Namespace::default_ns();
         if self
             .storage
-            .collection_registered_in_namespace(&req.name, &default_namespace)?
+            .collection_registered_in_namespace(&bare_collection, &namespace)?
         {
             return Err(AxonError::AlreadyExists(req.name.to_string()));
         }
         self.storage
-            .register_collection_in_namespace(&req.name, &default_namespace)?;
+            .register_collection_in_namespace(&bare_collection, &namespace)?;
         self.put_schema(req.schema)?;
 
         self.audit.append(AuditEntry::new(
@@ -1415,8 +1417,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     .into(),
             ));
         }
-        let existing = self.storage.list_collections()?;
-        if !existing.contains(&req.name) {
+        let qualified = self.storage.resolve_collection_key(&req.name)?;
+        if !self
+            .storage
+            .collection_registered_in_namespace(&qualified.collection, &qualified.namespace)?
+        {
             return Err(AxonError::NotFound(req.name.to_string()));
         }
 
@@ -7247,6 +7252,77 @@ link_types:
             .unwrap()
             .collections,
             vec!["invoices".to_string()]
+        );
+    }
+
+    #[test]
+    fn create_collection_accepts_qualified_name_for_non_default_database() {
+        use crate::request::{
+            CreateCollectionRequest, CreateDatabaseRequest, ListNamespaceCollectionsRequest,
+        };
+
+        let mut h = handler();
+        let qualified = CollectionId::new("prod.default.invoices");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+
+        h.create_collection(CreateCollectionRequest {
+            name: qualified.clone(),
+            schema: CollectionSchema::new(qualified),
+            actor: None,
+        })
+        .unwrap();
+
+        assert_eq!(
+            h.list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: "prod".into(),
+                schema: "default".into(),
+            })
+            .unwrap()
+            .collections,
+            vec!["invoices".to_string()]
+        );
+    }
+
+    #[test]
+    fn drop_collection_accepts_qualified_name_for_non_default_database() {
+        use crate::request::{
+            CreateCollectionRequest, CreateDatabaseRequest, DropCollectionRequest,
+            ListNamespaceCollectionsRequest,
+        };
+
+        let mut h = handler();
+        let qualified = CollectionId::new("prod.default.invoices");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        h.create_collection(CreateCollectionRequest {
+            name: qualified.clone(),
+            schema: CollectionSchema::new(qualified.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        h.drop_collection(DropCollectionRequest {
+            name: qualified,
+            actor: None,
+            confirm: true,
+        })
+        .unwrap();
+
+        assert_eq!(
+            h.list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: "prod".into(),
+                schema: "default".into(),
+            })
+            .unwrap()
+            .collections,
+            Vec::<String>::new()
         );
     }
 

@@ -36,12 +36,13 @@ use axon_api::request::{
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE};
 use axon_core::types::Entity;
 use axon_schema::schema::CollectionSchema;
 use axon_storage::adapter::StorageAdapter;
 
 type SharedHandler<S> = Arc<Mutex<AxonHandler<S>>>;
+const AXON_DATABASE_HEADER: &str = "x-axon-database";
 
 // ── Error response ────────────────────────────────────────────────────────────
 
@@ -147,11 +148,57 @@ fn request_peer_address(request: &axum::extract::Request) -> Option<SocketAddr> 
         })
 }
 
+#[derive(Clone, Debug)]
+struct CurrentDatabase(String);
+
+impl CurrentDatabase {
+    fn new(database: impl Into<String>) -> Self {
+        Self(database.into())
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+fn request_current_database(request: &axum::extract::Request) -> CurrentDatabase {
+    if let Some(database) = request
+        .uri()
+        .path()
+        .strip_prefix("/db/")
+        .and_then(|rest| rest.split('/').next())
+        .filter(|database| !database.is_empty())
+    {
+        return CurrentDatabase::new(database);
+    }
+
+    let database = request
+        .headers()
+        .get(AXON_DATABASE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .filter(|database| !database.is_empty())
+        .unwrap_or(DEFAULT_DATABASE);
+    CurrentDatabase::new(database)
+}
+
+fn qualify_collection_name(collection: &str, current_database: &CurrentDatabase) -> CollectionId {
+    if current_database.as_str() == DEFAULT_DATABASE {
+        return CollectionId::new(collection);
+    }
+
+    CollectionId::new(Namespace::qualify_with_database(
+        collection,
+        current_database.as_str(),
+    ))
+}
+
 async fn authenticate_http_request(
     State(auth): State<AuthContext>,
     mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
+    let current_database = request_current_database(&request);
+    request.extensions_mut().insert(current_database);
     match auth.resolve_peer(request_peer_address(&request)).await {
         Ok(identity) => {
             request.extensions_mut().insert(identity);
@@ -217,6 +264,22 @@ pub struct ForceQuery {
 #[derive(Deserialize, Default)]
 pub struct GetEntityParams {
     pub format: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct CollectionEntityPath {
+    collection: String,
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct CollectionPath {
+    collection: String,
+}
+
+#[derive(Deserialize)]
+struct NamePath {
+    name: String,
 }
 
 /// Request body for `POST /collections/{name}`.
@@ -370,12 +433,13 @@ pub struct TransactionBody {
 
 async fn create_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
-    Path((collection, id)): Path<(String, String)>,
+    Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<CreateEntityBody>,
 ) -> Response {
     match handler.lock().await.create_entity(CreateEntityRequest {
-        collection: CollectionId::new(&collection),
+        collection: qualify_collection_name(&collection, &current_database),
         id: EntityId::new(&id),
         data: body.data,
         actor: Some(identity.actor),
@@ -399,10 +463,11 @@ async fn create_entity<S: StorageAdapter>(
 
 async fn get_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
-    Path((collection, id)): Path<(String, String)>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
 ) -> Response {
     match handler.lock().await.get_entity(GetEntityRequest {
-        collection: CollectionId::new(&collection),
+        collection: qualify_collection_name(&collection, &current_database),
         id: EntityId::new(&id),
     }) {
         Ok(resp) => Json(json!({
@@ -415,10 +480,11 @@ async fn get_entity<S: StorageAdapter>(
 
 async fn get_collection_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
-    Path((collection, id)): Path<(String, String)>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Query(params): Query<GetEntityParams>,
 ) -> Response {
-    let collection_id = CollectionId::new(&collection);
+    let collection_id = qualify_collection_name(&collection, &current_database);
     let entity_id = EntityId::new(&id);
 
     match params.format.as_deref() {
@@ -464,12 +530,13 @@ async fn get_collection_entity<S: StorageAdapter>(
 
 async fn update_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
-    Path((collection, id)): Path<(String, String)>,
+    Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<UpdateEntityBody>,
 ) -> Response {
     match handler.lock().await.update_entity(UpdateEntityRequest {
-        collection: CollectionId::new(&collection),
+        collection: qualify_collection_name(&collection, &current_database),
         id: EntityId::new(&id),
         data: body.data,
         expected_version: body.expected_version,
@@ -491,12 +558,13 @@ async fn update_entity<S: StorageAdapter>(
 
 async fn delete_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
-    Path((collection, id)): Path<(String, String)>,
+    Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     _body: Option<Json<DeleteEntityBody>>,
 ) -> Response {
     match handler.lock().await.delete_entity(DeleteEntityRequest {
-        collection: CollectionId::new(&collection),
+        collection: qualify_collection_name(&collection, &current_database),
         id: EntityId::new(&id),
         actor: Some(identity.actor),
         audit_metadata: None,
@@ -509,12 +577,13 @@ async fn delete_entity<S: StorageAdapter>(
 
 async fn query_entities<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
-    Path(collection): Path<String>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Path(CollectionPath { collection }): Path<CollectionPath>,
     Json(body): Json<QueryEntitiesRequest>,
 ) -> Response {
     // Allow the caller to omit the collection field in the body; the path wins.
     let req = QueryEntitiesRequest {
-        collection: axon_core::id::CollectionId::new(&collection),
+        collection: qualify_collection_name(&collection, &current_database),
         ..body
     };
     match handler.lock().await.query_entities(req) {
@@ -544,13 +613,14 @@ async fn query_entities<S: StorageAdapter>(
 
 async fn create_link<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Json(body): Json<CreateLinkBody>,
 ) -> Response {
     match handler.lock().await.create_link(CreateLinkRequest {
-        source_collection: CollectionId::new(&body.source_collection),
+        source_collection: qualify_collection_name(&body.source_collection, &current_database),
         source_id: EntityId::new(&body.source_id),
-        target_collection: CollectionId::new(&body.target_collection),
+        target_collection: qualify_collection_name(&body.target_collection, &current_database),
         target_id: EntityId::new(&body.target_id),
         link_type: body.link_type,
         metadata: body.metadata,
@@ -579,13 +649,14 @@ async fn create_link<S: StorageAdapter>(
 
 async fn delete_link<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Json(body): Json<DeleteLinkBody>,
 ) -> Response {
     match handler.lock().await.delete_link(DeleteLinkRequest {
-        source_collection: CollectionId::new(&body.source_collection),
+        source_collection: qualify_collection_name(&body.source_collection, &current_database),
         source_id: EntityId::new(&body.source_id),
-        target_collection: CollectionId::new(&body.target_collection),
+        target_collection: qualify_collection_name(&body.target_collection, &current_database),
         target_id: EntityId::new(&body.target_id),
         link_type: body.link_type,
         actor: Some(identity.actor),
@@ -604,14 +675,15 @@ async fn delete_link<S: StorageAdapter>(
 
 async fn traverse<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
-    Path((collection, id)): Path<(String, String)>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let link_type = params.get("link_type").cloned();
     let max_depth = params.get("max_depth").and_then(|s| s.parse().ok());
 
     match handler.lock().await.traverse(TraverseRequest {
-        collection: CollectionId::new(&collection),
+        collection: qualify_collection_name(&collection, &current_database),
         id: EntityId::new(&id),
         link_type,
         max_depth,
@@ -639,13 +711,17 @@ async fn traverse<S: StorageAdapter>(
 
 async fn query_audit_by_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
-    Path((collection, entity_id)): Path<(String, String)>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Path(CollectionEntityPath {
+        collection,
+        id: entity_id,
+    }): Path<CollectionEntityPath>,
 ) -> Response {
     let handler = handler.lock().await;
-    match handler
-        .audit_log()
-        .query_by_entity(&CollectionId::new(&collection), &EntityId::new(&entity_id))
-    {
+    match handler.audit_log().query_by_entity(
+        &qualify_collection_name(&collection, &current_database),
+        &EntityId::new(&entity_id),
+    ) {
         Ok(entries) => {
             let proto: Vec<Value> = entries
                 .iter()
@@ -672,10 +748,13 @@ async fn query_audit_by_entity<S: StorageAdapter>(
 
 async fn query_audit<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let req = QueryAuditRequest {
-        collection: params.get("collection").map(CollectionId::new),
+        collection: params
+            .get("collection")
+            .map(|collection| qualify_collection_name(collection, &current_database)),
         entity_id: params.get("entity_id").map(EntityId::new),
         actor: params.get("actor").cloned(),
         operation: params.get("operation").cloned(),
@@ -739,8 +818,9 @@ async fn revert_entity<S: StorageAdapter>(
 
 async fn create_collection<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
-    Path(name): Path<String>,
+    Path(NamePath { name }): Path<NamePath>,
     body: Option<Json<CreateCollectionBody>>,
 ) -> Response {
     let schema_body = match body.and_then(|Json(b)| b.schema) {
@@ -751,7 +831,7 @@ async fn create_collection<S: StorageAdapter>(
             ));
         }
     };
-    let collection_id = CollectionId::new(&name);
+    let collection_id = qualify_collection_name(&name, &current_database);
     let schema = CollectionSchema {
         collection: collection_id.clone(),
         description: schema_body.description,
@@ -778,12 +858,13 @@ async fn create_collection<S: StorageAdapter>(
 
 async fn drop_collection<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
-    Path(name): Path<String>,
+    Path(NamePath { name }): Path<NamePath>,
     _body: Option<Json<CollectionActorBody>>,
 ) -> Response {
     match handler.lock().await.drop_collection(DropCollectionRequest {
-        name: CollectionId::new(&name),
+        name: qualify_collection_name(&name, &current_database),
         actor: Some(identity.actor),
         confirm: true,
     }) {
@@ -809,13 +890,14 @@ async fn list_collections<S: StorageAdapter>(State(handler): State<SharedHandler
 
 async fn describe_collection<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
-    Path(name): Path<String>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Path(NamePath { name }): Path<NamePath>,
 ) -> Response {
     match handler
         .lock()
         .await
         .describe_collection(DescribeCollectionRequest {
-            name: CollectionId::new(&name),
+            name: qualify_collection_name(&name, &current_database),
         }) {
         Ok(resp) => Json(json!({
             "name": resp.name,
@@ -831,8 +913,9 @@ async fn describe_collection<S: StorageAdapter>(
 
 async fn put_collection_template<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
-    Path(collection): Path<String>,
+    Path(CollectionPath { collection }): Path<CollectionPath>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -845,7 +928,7 @@ async fn put_collection_template<S: StorageAdapter>(
         .lock()
         .await
         .put_collection_template(PutCollectionTemplateRequest {
-            collection: CollectionId::new(&collection),
+            collection: qualify_collection_name(&collection, &current_database),
             template: body.template,
             actor: Some(identity.actor),
         }) {
@@ -864,13 +947,14 @@ async fn put_collection_template<S: StorageAdapter>(
 
 async fn get_collection_template<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
-    Path(collection): Path<String>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Path(CollectionPath { collection }): Path<CollectionPath>,
 ) -> Response {
     match handler
         .lock()
         .await
         .get_collection_template(GetCollectionTemplateRequest {
-            collection: CollectionId::new(&collection),
+            collection: qualify_collection_name(&collection, &current_database),
         }) {
         Ok(resp) => Json(json!({
             "collection": resp.view.collection,
@@ -886,8 +970,9 @@ async fn get_collection_template<S: StorageAdapter>(
 
 async fn delete_collection_template<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
-    Path(collection): Path<String>,
+    Path(CollectionPath { collection }): Path<CollectionPath>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -898,7 +983,7 @@ async fn delete_collection_template<S: StorageAdapter>(
         .lock()
         .await
         .delete_collection_template(DeleteCollectionTemplateRequest {
-            collection: CollectionId::new(&collection),
+            collection: qualify_collection_name(&collection, &current_database),
             actor: Some(identity.actor),
         }) {
         Ok(resp) => {
@@ -910,13 +995,14 @@ async fn delete_collection_template<S: StorageAdapter>(
 
 async fn put_schema<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
-    Path(collection): Path<String>,
+    Path(NamePath { name: collection }): Path<NamePath>,
     Json(body): Json<PutSchemaBody>,
 ) -> Response {
     // Populate schema from body; collection always comes from the path.
     let schema = CollectionSchema {
-        collection: axon_core::id::CollectionId::new(&collection),
+        collection: qualify_collection_name(&collection, &current_database),
         description: body.description,
         version: body.version,
         entity_schema: body.entity_schema,
@@ -939,10 +1025,11 @@ async fn put_schema<S: StorageAdapter>(
 
 async fn get_schema<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
-    Path(collection): Path<String>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Path(NamePath { name: collection }): Path<NamePath>,
 ) -> Response {
     match handler.lock().await.handle_get_schema(GetSchemaRequest {
-        collection: axon_core::id::CollectionId::new(&collection),
+        collection: qualify_collection_name(&collection, &current_database),
     }) {
         Ok(resp) => Json(json!({ "schema": resp.schema })).into_response(),
         Err(e) => axon_error_response(e),
@@ -1076,6 +1163,7 @@ async fn drop_namespace<S: StorageAdapter>(
 
 async fn commit_transaction<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Json(body): Json<TransactionBody>,
 ) -> Response {
@@ -1092,7 +1180,7 @@ async fn commit_transaction<S: StorageAdapter>(
                 id,
                 data,
             } => tx.create(Entity::new(
-                CollectionId::new(&collection),
+                qualify_collection_name(&collection, &current_database),
                 EntityId::new(&id),
                 data,
             )),
@@ -1106,14 +1194,18 @@ async fn commit_transaction<S: StorageAdapter>(
                 let h = handler.lock().await;
                 let data_before = h
                     .get_entity(GetEntityRequest {
-                        collection: CollectionId::new(&collection),
+                        collection: qualify_collection_name(&collection, &current_database),
                         id: EntityId::new(&id),
                     })
                     .ok()
                     .map(|r| r.entity.data);
                 drop(h);
                 tx.update(
-                    Entity::new(CollectionId::new(&collection), EntityId::new(&id), data),
+                    Entity::new(
+                        qualify_collection_name(&collection, &current_database),
+                        EntityId::new(&id),
+                        data,
+                    ),
                     expected_version,
                     data_before,
                 )
@@ -1126,14 +1218,14 @@ async fn commit_transaction<S: StorageAdapter>(
                 let h = handler.lock().await;
                 let data_before = h
                     .get_entity(GetEntityRequest {
-                        collection: CollectionId::new(&collection),
+                        collection: qualify_collection_name(&collection, &current_database),
                         id: EntityId::new(&id),
                     })
                     .ok()
                     .map(|r| r.entity.data);
                 drop(h);
                 tx.delete(
-                    CollectionId::new(&collection),
+                    qualify_collection_name(&collection, &current_database),
                     EntityId::new(&id),
                     expected_version,
                     data_before,
@@ -1185,16 +1277,8 @@ pub fn build_router<S: StorageAdapter + 'static>(
     build_router_with_auth(handler, backend, ui_dir, AuthContext::no_auth())
 }
 
-/// Build the axum router for the HTTP gateway with request authentication.
-pub fn build_router_with_auth<S: StorageAdapter + 'static>(
-    handler: SharedHandler<S>,
-    backend: impl Into<String>,
-    ui_dir: Option<PathBuf>,
-    auth: AuthContext,
-) -> Router {
-    let start = Instant::now();
-    let backend = backend.into();
-    let mut router = Router::new()
+fn data_routes<S: StorageAdapter + 'static>() -> Router<SharedHandler<S>> {
+    Router::new()
         .route("/entities/{collection}/{id}", post(create_entity::<S>))
         .route("/entities/{collection}/{id}", get(get_entity::<S>))
         .route("/entities/{collection}/{id}", put(update_entity::<S>))
@@ -1231,6 +1315,21 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
         )
         .route("/collections/{name}/schema", put(put_schema::<S>))
         .route("/collections/{name}/schema", get(get_schema::<S>))
+        .route("/transactions", post(commit_transaction::<S>))
+}
+
+/// Build the axum router for the HTTP gateway with request authentication.
+pub fn build_router_with_auth<S: StorageAdapter + 'static>(
+    handler: SharedHandler<S>,
+    backend: impl Into<String>,
+    ui_dir: Option<PathBuf>,
+    auth: AuthContext,
+) -> Router {
+    let start = Instant::now();
+    let backend = backend.into();
+    let mut router = Router::new()
+        .merge(data_routes::<S>())
+        .nest("/db/{database}", data_routes::<S>())
         .route("/databases", get(list_databases::<S>))
         .route("/databases/{name}", post(create_database::<S>))
         .route("/databases/{name}", delete(drop_database::<S>))
@@ -1247,7 +1346,6 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
             "/databases/{database}/schemas/{schema}/collections",
             get(list_namespace_collections::<S>),
         )
-        .route("/transactions", post(commit_transaction::<S>))
         .with_state(handler.clone())
         .route(
             "/health",
@@ -2641,6 +2739,95 @@ mod tests {
             .get("/entities/prod.engineering.invoices/inv-001")
             .await
             .assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn http_header_current_database_routes_unqualified_collection_operations() {
+        let server = test_server();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/databases/prod")
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/collections/tasks")
+            .add_header(AXON_DATABASE_HEADER, "prod")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"scope": "default"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/entities/tasks/t-001")
+            .add_header(AXON_DATABASE_HEADER, "prod")
+            .json(&json!({"data": {"scope": "prod"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let default_resp = server.get("/entities/tasks/t-001").await;
+        default_resp.assert_status_ok();
+        let default_body: Value = default_resp.json();
+        assert_eq!(default_body["entity"]["data"]["scope"], "default");
+
+        let prod_resp = server
+            .get("/entities/tasks/t-001")
+            .add_header(AXON_DATABASE_HEADER, "prod")
+            .await;
+        prod_resp.assert_status_ok();
+        let prod_body: Value = prod_resp.json();
+        assert_eq!(prod_body["entity"]["collection"], "prod.default.tasks");
+        assert_eq!(prod_body["entity"]["data"]["scope"], "prod");
+    }
+
+    #[tokio::test]
+    async fn http_db_path_prefix_routes_unqualified_collection_operations() {
+        let server = test_server();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/databases/prod")
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/db/prod/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"scope": "default"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/db/prod/entities/tasks/t-001")
+            .json(&json!({"data": {"scope": "prod"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let prod_resp = server.get("/db/prod/entities/tasks/t-001").await;
+        prod_resp.assert_status_ok();
+        let prod_body: Value = prod_resp.json();
+        assert_eq!(prod_body["entity"]["collection"], "prod.default.tasks");
+        assert_eq!(prod_body["entity"]["data"]["scope"], "prod");
+
+        let default_resp = server.get("/entities/tasks/t-001").await;
+        default_resp.assert_status_ok();
+        let default_body: Value = default_resp.json();
+        assert_eq!(default_body["entity"]["data"]["scope"], "default");
     }
 
     #[tokio::test]

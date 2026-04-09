@@ -52,12 +52,32 @@ impl Namespace {
     /// Two-part names like `"billing.invoices"` resolve to
     /// `(default.billing, "invoices")`.
     pub fn parse(name: &str) -> (Self, String) {
+        Self::parse_with_database(name, DEFAULT_DATABASE)
+    }
+
+    /// Parse a potentially qualified name using a request-scoped current database.
+    ///
+    /// Accepts:
+    /// - `"beads"` -> `({current_db}.default, "beads")`
+    /// - `"billing.invoices"` -> `({current_db}.billing, "invoices")`
+    /// - `"mydb.public.beads"` -> `(mydb.public, "beads")`
+    pub fn parse_with_database(name: &str, current_database: &str) -> (Self, String) {
         let parts: Vec<&str> = name.split('.').collect();
         match parts.len() {
-            1 => (Self::default_ns(), parts[0].to_string()),
-            2 => (Self::new(DEFAULT_DATABASE, parts[0]), parts[1].to_string()),
+            1 => (
+                Self::new(current_database, DEFAULT_SCHEMA),
+                parts[0].to_string(),
+            ),
+            2 => (Self::new(current_database, parts[0]), parts[1].to_string()),
             _ => (Self::new(parts[0], parts[1]), parts[2..].join(".")),
         }
+    }
+
+    /// Resolve a collection name to a fully qualified string using a
+    /// request-scoped current database for one-part and two-part names.
+    pub fn qualify_with_database(name: &str, current_database: &str) -> String {
+        let (namespace, collection) = Self::parse_with_database(name, current_database);
+        namespace.qualify(&collection)
     }
 }
 
@@ -277,6 +297,36 @@ mod tests {
         assert_eq!(ns.database, "prod");
         assert_eq!(ns.schema, "public");
         assert_eq!(collection, "beads");
+    }
+
+    #[test]
+    fn parse_unqualified_name_uses_current_database_when_provided() {
+        let (ns, collection) = Namespace::parse_with_database("beads", "prod");
+        assert_eq!(ns, Namespace::new("prod", "default"));
+        assert_eq!(collection, "beads");
+    }
+
+    #[test]
+    fn parse_two_part_name_uses_current_database_when_provided() {
+        let (ns, collection) = Namespace::parse_with_database("billing.invoices", "prod");
+        assert_eq!(ns, Namespace::new("prod", "billing"));
+        assert_eq!(collection, "invoices");
+    }
+
+    #[test]
+    fn qualify_with_database_resolves_unqualified_and_two_part_names() {
+        assert_eq!(
+            Namespace::qualify_with_database("beads", "prod"),
+            "prod.default.beads"
+        );
+        assert_eq!(
+            Namespace::qualify_with_database("billing.invoices", "prod"),
+            "prod.billing.invoices"
+        );
+        assert_eq!(
+            Namespace::qualify_with_database("stage.analytics.rollups", "prod"),
+            "stage.analytics.rollups"
+        );
     }
 
     #[test]
