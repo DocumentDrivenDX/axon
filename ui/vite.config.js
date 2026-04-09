@@ -5,8 +5,10 @@ export default defineConfig({
 	plugins: [sveltekit()],
 	server: {
 		proxy: {
-			'/api': 'http://localhost:3000',
-			'/graphql': 'http://localhost:3000',
+			'/audit': 'http://localhost:3000',
+			'/collections': 'http://localhost:3000',
+			'/entities': 'http://localhost:3000',
+			'/health': 'http://localhost:3000',
 		},
 	},
 });

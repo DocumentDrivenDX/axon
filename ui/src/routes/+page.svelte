@@ -1,61 +1,102 @@
 <script lang="ts">
-/** US-040: Browse Axon data visually */
-// Collection list page — fetches collections via GraphQL (US-051)
+import { base } from '$app/paths';
+import { type CollectionSummary, fetchCollections } from '$lib/api';
 import { onMount } from 'svelte';
-
-type CollectionSummary = {
-	name: string;
-	entityCount: number;
-};
 
 let collections: CollectionSummary[] = [];
 let loading = true;
 let error: string | null = null;
+const schemasHref = `${base}/schemas`;
 
-onMount(async () => {
+function collectionHref(name: string): string {
+	return `${base}/collections/${encodeURIComponent(name)}`;
+}
+
+function schemaHref(name: string): string {
+	return `${schemasHref}?collection=${encodeURIComponent(name)}`;
+}
+
+async function loadCollections() {
 	try {
-		// Placeholder: in production, this calls the GraphQL endpoint
-		collections = [{ name: 'Loading...', entityCount: 0 }];
+		collections = await fetchCollections();
+		error = null;
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load collections';
 	} finally {
 		loading = false;
 	}
+}
+
+onMount(() => {
+	void loadCollections();
 });
 </script>
 
-<h1>Axon Collections</h1>
+<div class="page-header">
+	<div>
+		<h1>Collections</h1>
+		<p class="muted">Live collection metadata from the HTTP gateway.</p>
+	</div>
+	<div class="actions">
+		<button on:click={loadCollections}>Refresh</button>
+		<a class="button-link primary" href={schemasHref}>Create Collection</a>
+	</div>
+</div>
 
 {#if loading}
-	<p>Loading collections...</p>
+	<p class="message">Loading collections…</p>
 {:else if error}
-	<p class="error">Error: {error}</p>
+	<p class="message error">{error}</p>
+{:else if collections.length === 0}
+	<section class="panel">
+		<div class="panel-body stack">
+			<h2>No collections yet</h2>
+			<p class="muted">
+				Create one from the schema workspace to start browsing entities and audit history.
+			</p>
+			<div>
+				<a class="button-link primary" href={schemasHref}>Open schema workspace</a>
+			</div>
+		</div>
+	</section>
 {:else}
-	<table>
-		<thead>
-			<tr>
-				<th>Collection</th>
-				<th>Entities</th>
-				<th>Actions</th>
-			</tr>
-		</thead>
-		<tbody>
-			{#each collections as col}
-				<tr>
-					<td><a href="/collections/{col.name}">{col.name}</a></td>
-					<td>{col.entityCount}</td>
-					<td>
-						<a href="/collections/{col.name}">Browse</a>
-						<a href="/schemas?collection={col.name}">Schema</a>
-					</td>
-				</tr>
-			{/each}
-		</tbody>
-	</table>
+	<section class="panel">
+		<div class="panel-header">
+			<h2>Registered Collections</h2>
+			<span class="pill">{collections.length} loaded</span>
+		</div>
+		<div class="panel-body">
+			<table>
+				<thead>
+					<tr>
+						<th>Collection</th>
+						<th>Entities</th>
+						<th>Schema</th>
+						<th>Actions</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each collections as collection}
+						<tr>
+							<td>
+								<strong>{collection.name}</strong>
+							</td>
+							<td>{collection.entity_count}</td>
+							<td>{collection.schema_version ? `v${collection.schema_version}` : 'No schema'}</td>
+							<td>
+								<div class="actions">
+									<a class="button-link" href={collectionHref(collection.name)}>
+										Browse
+									</a>
+									<a class="button-link" href={schemaHref(collection.name)}>
+										Schema
+									</a>
+								</div>
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	</section>
 {/if}
-
-<style>
-	table { width: 100%; border-collapse: collapse; }
-	th, td { padding: 0.5rem; text-align: left; border-bottom: 1px solid #ddd; }
-	.error { color: red; }
-</style>

@@ -4,17 +4,19 @@
 //! use structured JSON. Errors are returned as `{"code": "...", "detail": "..."}`
 //! JSON objects with appropriate HTTP status codes.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, get_service, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
+use tower_http::services::{ServeDir, ServeFile};
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
@@ -978,10 +980,11 @@ async fn commit_transaction<S: StorageAdapter>(
 pub fn build_router<S: StorageAdapter + 'static>(
     handler: SharedHandler<S>,
     backend: impl Into<String>,
+    ui_dir: Option<PathBuf>,
 ) -> Router {
     let start = Instant::now();
     let backend = backend.into();
-    Router::new()
+    let mut router = Router::new()
         .route("/entities/{collection}/{id}", post(create_entity::<S>))
         .route("/entities/{collection}/{id}", get(get_entity::<S>))
         .route("/entities/{collection}/{id}", put(update_entity::<S>))
@@ -1058,7 +1061,15 @@ pub fn build_router<S: StorageAdapter + 'static>(
                     }
                 }
             }),
-        )
+        );
+
+    if let Some(ui_dir) = ui_dir {
+        let index_path = ui_dir.join("index.html");
+        let ui_service = get_service(ServeDir::new(ui_dir).fallback(ServeFile::new(index_path)));
+        router = router.nest_service("/ui", ui_service);
+    }
+
+    router
 }
 
 #[cfg(test)]
@@ -1078,7 +1089,7 @@ mod tests {
         let handler = Arc::new(Mutex::new(
             AxonHandler::new(MemoryStorageAdapter::default()),
         ));
-        let app = build_router(handler.clone(), "memory");
+        let app = build_router(handler.clone(), "memory", None);
         (TestServer::new(app), handler)
     }
 
@@ -2089,6 +2100,52 @@ mod tests {
         assert_eq!(body["backing_store"]["status"], "ok");
         assert_eq!(body["default_namespace"], "default.default");
         assert!(body["databases"].is_array());
+    }
+
+    #[tokio::test]
+    async fn http_serves_ui_assets_under_ui_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<html><body>Axon UI</body></html>",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("_app")).unwrap();
+        std::fs::write(dir.path().join("_app/app.js"), "console.log('ui');").unwrap();
+
+        let handler = Arc::new(Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ));
+        let app = build_router(handler, "memory", Some(dir.path().to_path_buf()));
+        let server = TestServer::new(app);
+
+        let index = server.get("/ui").await;
+        index.assert_status_ok();
+        assert!(index.text().contains("Axon UI"));
+
+        let asset = server.get("/ui/_app/app.js").await;
+        asset.assert_status_ok();
+        assert!(asset.text().contains("console.log"));
+    }
+
+    #[tokio::test]
+    async fn http_ui_nested_routes_fallback_to_index_html() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            "<html><body>Axon UI Shell</body></html>",
+        )
+        .unwrap();
+
+        let handler = Arc::new(Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ));
+        let app = build_router(handler, "memory", Some(dir.path().to_path_buf()));
+        let server = TestServer::new(app);
+
+        let resp = server.get("/ui/collections/tasks").await;
+        resp.assert_status_ok();
+        assert!(resp.text().contains("Axon UI Shell"));
     }
 
     #[tokio::test]

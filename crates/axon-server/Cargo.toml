@@ -26,12 +26,14 @@ tonic.workspace = true
 prost.workspace = true
 axum.workspace = true
 clap.workspace = true
+tower-http = { version = "0.6", features = ["fs"] }
 
 [build-dependencies]
 tonic-build.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true
+tempfile.workspace = true
 tokio = { version = "1", features = ["full"] }
 tonic = { version = "0.13", features = ["transport"] }
 tokio-stream = "0.1"

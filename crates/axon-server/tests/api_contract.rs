@@ -375,7 +375,7 @@ async fn parity_create_get_entity() {
     let http_handler = Arc::new(Mutex::new(
         AxonHandler::new(MemoryStorageAdapter::default()),
     ));
-    let http_app = build_router(http_handler, "memory");
+    let http_app = build_router(http_handler, "memory", None);
     let http = axum_test::TestServer::new(http_app);
 
     let http_create = http
@@ -437,7 +437,7 @@ async fn parity_update_entity() {
     let http_handler = Arc::new(Mutex::new(
         AxonHandler::new(MemoryStorageAdapter::default()),
     ));
-    let http_app = build_router(http_handler, "memory");
+    let http_app = build_router(http_handler, "memory", None);
     let http = axum_test::TestServer::new(http_app);
 
     http.post("/entities/tasks/t-001")
@@ -491,7 +491,7 @@ async fn parity_link_traverse() {
     let http_handler = Arc::new(Mutex::new(
         AxonHandler::new(MemoryStorageAdapter::default()),
     ));
-    let http_app = build_router(http_handler, "memory");
+    let http_app = build_router(http_handler, "memory", None);
     let http = axum_test::TestServer::new(http_app);
 
     http.post("/entities/users/u-001")

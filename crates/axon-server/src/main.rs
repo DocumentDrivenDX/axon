@@ -1,6 +1,7 @@
 //! Axon server binary — starts HTTP gateway, gRPC service, or MCP stdio.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -50,6 +51,10 @@ struct Args {
     /// PostgreSQL DSN when `--storage=postgres`.
     #[arg(long, env = "AXON_POSTGRES_DSN")]
     postgres_dsn: Option<String>,
+
+    /// Serve built admin UI assets from this directory under the `/ui` path prefix.
+    #[arg(long, env = "AXON_UI_DIR")]
+    ui_dir: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -118,7 +123,8 @@ where
     }
 
     let handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(storage)));
-    let http_app = axon_server::gateway::build_router(handler.clone(), backend.clone());
+    let http_app =
+        axon_server::gateway::build_router(handler.clone(), backend.clone(), args.ui_dir.clone());
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
     let grpc_svc = AxonServiceImpl::from_shared(handler);
