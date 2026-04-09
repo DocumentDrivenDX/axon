@@ -1436,6 +1436,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http_collection_template_responses_preserve_qualified_collection_id() {
+        let (server, handler) = test_server_with_handler();
+        let qualified = CollectionId::new("prod.billing.tasks");
+        let bare = CollectionId::new("tasks");
+        let billing = Namespace::new("prod", "billing");
+
+        {
+            let mut handler = handler.lock().await;
+            ok_or_panic(
+                handler.storage_mut().create_database("prod"),
+                "creating database for qualified template HTTP test",
+            );
+            ok_or_panic(
+                handler.storage_mut().create_namespace(&billing),
+                "creating namespace for qualified template HTTP test",
+            );
+            ok_or_panic(
+                handler
+                    .storage_mut()
+                    .register_collection_in_namespace(&bare, &billing),
+                "registering collection in namespace for qualified template HTTP test",
+            );
+            ok_or_panic(
+                handler.storage_mut().put_schema(&CollectionSchema {
+                    collection: qualified.clone(),
+                    description: None,
+                    version: 1,
+                    entity_schema: Some(json!({
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"}
+                        },
+                        "required": ["title"]
+                    })),
+                    link_types: Default::default(),
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                }),
+                "storing qualified schema for template HTTP test",
+            );
+        }
+
+        let put = server
+            .put("/collections/prod.billing.tasks/template")
+            .json(&json!({
+                "template": "# {{title}}",
+                "actor": "operator"
+            }))
+            .await;
+        put.assert_status_ok();
+        let body: Value = put.json();
+        assert_eq!(body["collection"], "prod.billing.tasks");
+        assert_eq!(body["template"], "# {{title}}");
+
+        let get = server.get("/collections/prod.billing.tasks/template").await;
+        get.assert_status_ok();
+        let body: Value = get.json();
+        assert_eq!(body["collection"], "prod.billing.tasks");
+        assert_eq!(body["template"], "# {{title}}");
+    }
+
+    #[tokio::test]
     async fn http_collection_template_put_accepts_text_plain_body() {
         let server = test_server();
 

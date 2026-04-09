@@ -1,6 +1,10 @@
 use std::process::Command;
 
 use axon_api::response::GetEntityMarkdownResponse;
+use axon_core::id::{CollectionId, Namespace};
+use axon_schema::schema::CollectionSchema;
+use axon_storage::{adapter::StorageAdapter, SqliteStorageAdapter};
+use serde_json::json;
 use tempfile::NamedTempFile;
 
 fn axon_bin() -> &'static str {
@@ -38,6 +42,42 @@ fn run_err(db: &str, args: &[&str]) -> String {
     String::from_utf8(output.stderr).expect("stderr should be valid UTF-8")
 }
 
+fn seed_namespaced_collection(db: &str, qualified: &str) {
+    let mut storage = SqliteStorageAdapter::open(db).expect("open sqlite db");
+    let qualified = CollectionId::new(qualified);
+    let bare = CollectionId::new("tasks");
+    let namespace = Namespace::new("prod", "billing");
+
+    storage
+        .create_database("prod")
+        .expect("create database should succeed");
+    storage
+        .create_namespace(&namespace)
+        .expect("create namespace should succeed");
+    storage
+        .register_collection_in_namespace(&bare, &namespace)
+        .expect("register collection should succeed");
+    storage
+        .put_schema(&CollectionSchema {
+            collection: qualified,
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"}
+                },
+                "required": ["title"]
+            })),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+        })
+        .expect("put schema should succeed");
+}
+
 #[test]
 fn collection_template_commands_round_trip() {
     let db = NamedTempFile::new().expect("temp db").into_temp_path();
@@ -71,6 +111,46 @@ fn collection_template_commands_round_trip() {
         &["--output", "json", "collection", "template", "get", "tasks"],
     );
     assert!(err_output.contains("has no markdown template defined"));
+}
+
+#[test]
+fn qualified_collection_template_commands_preserve_namespace_identity() {
+    let db = NamedTempFile::new().expect("temp db").into_temp_path();
+    let db_path = db.to_string_lossy().into_owned();
+    let qualified = "prod.billing.tasks";
+
+    seed_namespaced_collection(&db_path, qualified);
+
+    let put_output = run_ok(
+        &db_path,
+        &[
+            "--output",
+            "json",
+            "collection",
+            "template",
+            "put",
+            qualified,
+            "--template",
+            "# {{title}}",
+        ],
+    );
+    assert!(put_output.contains(r#""collection": "prod.billing.tasks""#));
+
+    let get_json = run_ok(
+        &db_path,
+        &[
+            "--output",
+            "json",
+            "collection",
+            "template",
+            "get",
+            qualified,
+        ],
+    );
+    assert!(get_json.contains(r#""collection": "prod.billing.tasks""#));
+
+    let get_table = run_ok(&db_path, &["collection", "template", "get", qualified]);
+    assert!(get_table.contains("collection: prod.billing.tasks"));
 }
 
 #[test]

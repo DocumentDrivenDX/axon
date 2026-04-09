@@ -164,6 +164,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
         schema
     }
 
+    fn present_collection_view(
+        requested: &CollectionId,
+        mut view: CollectionView,
+    ) -> CollectionView {
+        view.collection = requested.clone();
+        view
+    }
+
     pub fn new(storage: S) -> Self {
         Self::new_with_markdown_template_cache_capacity(
             storage,
@@ -1532,7 +1540,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let mut view = CollectionView::new(req.collection.clone(), req.template);
         view.updated_by = req.actor;
 
-        let view = self.storage.put_collection_view(&view)?;
+        let view = Self::present_collection_view(
+            &req.collection,
+            self.storage.put_collection_view(&view)?,
+        );
         self.invalidate_markdown_template(&req.collection)?;
 
         Ok(PutCollectionTemplateResponse {
@@ -1560,7 +1571,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     req.collection
                 ))
             })?;
-        Ok(GetCollectionTemplateResponse { view })
+        Ok(GetCollectionTemplateResponse {
+            view: Self::present_collection_view(&req.collection, view),
+        })
     }
 
     /// Delete the current markdown template for a collection.
@@ -3382,7 +3395,7 @@ mod tests {
             }),
             "storing qualified collection template through handler",
         );
-        assert_eq!(stored.view.collection, bare);
+        assert_eq!(stored.view.collection, qualified);
         assert_eq!(stored.view.version, 1);
 
         let retrieved = ok_or_panic(
