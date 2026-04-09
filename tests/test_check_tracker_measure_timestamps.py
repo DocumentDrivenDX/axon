@@ -156,6 +156,32 @@ class CheckTrackerMeasureTimestampsCliTests(unittest.TestCase):
             result.stderr,
         )
 
+    def test_scoped_validation_fails_when_measure_results_block_is_unclosed(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-unclosed-measure-results",
+                    "updated_at": "2026-04-09T19:00:00Z",
+                    "notes": (
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:59:11Z</timestamp>"
+                    ),
+                }
+            ],
+            "hx-unclosed-measure-results",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            (
+                "hx-unclosed-measure-results has measure-results block with "
+                "missing closing </measure-results>"
+            ),
+            result.stderr,
+        )
+
     def test_scoped_validation_ignores_quoted_timestamp_text_in_evidence_attribute(
         self,
     ) -> None:

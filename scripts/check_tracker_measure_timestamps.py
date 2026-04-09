@@ -21,19 +21,21 @@ class MeasureResultsTimestampParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._stack: list[str] = []
-        self._measure_results_timestamps: list[list[list[str]]] = []
+        self._closed_measure_results_timestamps: list[list[list[str]]] = []
+        self._open_measure_results_timestamps: list[list[str]] | None = None
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
         if not self._stack and tag == "measure-results":
-            self._measure_results_timestamps.append([])
+            self._open_measure_results_timestamps = []
         elif (
             len(self._stack) == 1
             and self._stack[0] == "measure-results"
             and tag == "timestamp"
+            and self._open_measure_results_timestamps is not None
         ):
-            self._measure_results_timestamps[-1].append([])
+            self._open_measure_results_timestamps.append([])
         self._stack.append(tag)
 
     def handle_startendtag(
@@ -43,11 +45,21 @@ class MeasureResultsTimestampParser(HTMLParser):
             len(self._stack) == 1
             and self._stack[0] == "measure-results"
             and tag == "timestamp"
-            and self._measure_results_timestamps
+            and self._open_measure_results_timestamps is not None
         ):
-            self._measure_results_timestamps[-1].append([])
+            self._open_measure_results_timestamps.append([])
 
     def handle_endtag(self, tag: str) -> None:
+        if (
+            len(self._stack) == 1
+            and self._stack[0] == "measure-results"
+            and tag == "measure-results"
+            and self._open_measure_results_timestamps is not None
+        ):
+            self._closed_measure_results_timestamps.append(
+                self._open_measure_results_timestamps
+            )
+            self._open_measure_results_timestamps = None
         for index in range(len(self._stack) - 1, -1, -1):
             if self._stack[index] == tag:
                 del self._stack[index:]
@@ -58,16 +70,27 @@ class MeasureResultsTimestampParser(HTMLParser):
             len(self._stack) == 2
             and self._stack[0] == "measure-results"
             and self._stack[1] == "timestamp"
-            and self._measure_results_timestamps
-            and self._measure_results_timestamps[-1]
+            and self._open_measure_results_timestamps
         ):
-            self._measure_results_timestamps[-1][-1].append(data)
+            self._open_measure_results_timestamps[-1].append(data)
 
-    def top_level_measure_results_timestamps(self) -> list[list[str]]:
-        return [
-            ["".join(chunks).strip() for chunks in block if "".join(chunks).strip()]
-            for block in self._measure_results_timestamps
+    def top_level_measure_results_timestamps(
+        self,
+    ) -> list[tuple[list[str], str | None]]:
+        blocks = [
+            (
+                [
+                    "".join(chunks).strip()
+                    for chunks in block
+                    if "".join(chunks).strip()
+                ],
+                None,
+            )
+            for block in self._closed_measure_results_timestamps
         ]
+        if self._open_measure_results_timestamps is not None:
+            blocks.append(([], "missing closing </measure-results>"))
+        return blocks
 
 
 def iter_measure_timestamps(notes: str) -> list[tuple[str | None, str | None]]:
@@ -76,7 +99,10 @@ def iter_measure_timestamps(notes: str) -> list[tuple[str | None, str | None]]:
     parser.close()
 
     timestamps: list[tuple[str | None, str | None]] = []
-    for matches in parser.top_level_measure_results_timestamps():
+    for matches, malformed_reason in parser.top_level_measure_results_timestamps():
+        if malformed_reason is not None:
+            timestamps.append((None, malformed_reason))
+            continue
         if len(matches) == 1:
             timestamps.append((matches[0], None))
         else:
