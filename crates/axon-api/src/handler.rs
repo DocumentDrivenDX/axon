@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde_json::Value;
+
 fn now_ns() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -170,6 +172,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> CollectionView {
         view.collection = requested.clone();
         view
+    }
+
+    fn collection_view_audit_state(
+        requested: &CollectionId,
+        view: CollectionView,
+    ) -> Result<Value, AxonError> {
+        Ok(serde_json::to_value(Self::present_collection_view(
+            requested, view,
+        ))?)
     }
 
     pub fn new(storage: S) -> Self {
@@ -1177,6 +1188,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
             Some("link.delete") => Some(MT::LinkDelete),
             Some("collection.create") => Some(MT::CollectionCreate),
             Some("collection.drop") => Some(MT::CollectionDrop),
+            Some("template.create") => Some(MT::TemplateCreate),
+            Some("template.update") => Some(MT::TemplateUpdate),
+            Some("template.delete") => Some(MT::TemplateDelete),
             Some("schema.update") => Some(MT::SchemaUpdate),
             Some(unknown) => {
                 return Err(AxonError::InvalidOperation(format!(
@@ -1518,6 +1532,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: PutCollectionTemplateRequest,
     ) -> Result<PutCollectionTemplateResponse, AxonError> {
         self.ensure_collection_exists(&req.collection)?;
+        let before_view = self.storage.get_collection_view(&req.collection)?;
         axon_render::compile(req.template.clone())?;
 
         let schema = self.storage.get_schema(&req.collection)?;
@@ -1538,13 +1553,28 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         let mut view = CollectionView::new(req.collection.clone(), req.template);
-        view.updated_by = req.actor;
+        view.updated_by = req.actor.clone();
 
         let view = Self::present_collection_view(
             &req.collection,
             self.storage.put_collection_view(&view)?,
         );
         self.invalidate_markdown_template(&req.collection)?;
+        self.audit.append(AuditEntry::new(
+            req.collection.clone(),
+            EntityId::new(""),
+            u64::from(view.version),
+            if before_view.is_some() {
+                MutationType::TemplateUpdate
+            } else {
+                MutationType::TemplateCreate
+            },
+            before_view
+                .map(|view| Self::collection_view_audit_state(&req.collection, view))
+                .transpose()?,
+            Some(serde_json::to_value(view.clone())?),
+            req.actor,
+        ))?;
 
         Ok(PutCollectionTemplateResponse {
             view,
@@ -1582,8 +1612,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req: DeleteCollectionTemplateRequest,
     ) -> Result<DeleteCollectionTemplateResponse, AxonError> {
         self.ensure_collection_exists(&req.collection)?;
+        let before_view = self.storage.get_collection_view(&req.collection)?;
         self.storage.delete_collection_view(&req.collection)?;
         self.invalidate_markdown_template(&req.collection)?;
+        if let Some(before_view) = before_view {
+            let version = before_view.version;
+            self.audit.append(AuditEntry::new(
+                req.collection.clone(),
+                EntityId::new(""),
+                u64::from(version),
+                MutationType::TemplateDelete,
+                Some(Self::collection_view_audit_state(
+                    &req.collection,
+                    before_view,
+                )?),
+                None,
+                req.actor,
+            ))?;
+        }
         Ok(DeleteCollectionTemplateResponse {
             collection: req.collection.to_string(),
         })
@@ -3328,6 +3374,7 @@ mod tests {
         let deleted = ok_or_panic(
             h.delete_collection_template(DeleteCollectionTemplateRequest {
                 collection: col.clone(),
+                actor: None,
             }),
             "deleting collection template through handler",
         );
@@ -3339,6 +3386,150 @@ mod tests {
             "rejecting markdown render after template delete",
         );
         assert!(matches!(error, AxonError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn collection_template_crud_produces_audited_create_update_delete_entries() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+
+        ok_or_panic(
+            h.create_collection(CreateCollectionRequest {
+                name: col.clone(),
+                schema: CollectionSchema {
+                    collection: col.clone(),
+                    description: None,
+                    version: 1,
+                    entity_schema: Some(json!({
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "notes": {"type": "string"},
+                            "status": {"type": "string"}
+                        },
+                        "required": ["title"]
+                    })),
+                    link_types: Default::default(),
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                },
+                actor: None,
+            }),
+            "creating collection for template audit test",
+        );
+
+        let created = ok_or_panic(
+            h.put_collection_template(PutCollectionTemplateRequest {
+                collection: col.clone(),
+                template: "# {{title}}".into(),
+                actor: Some("creator".into()),
+            }),
+            "creating template for audit test",
+        );
+        let updated = ok_or_panic(
+            h.put_collection_template(PutCollectionTemplateRequest {
+                collection: col.clone(),
+                template: "## {{title}}\n\nStatus: {{status}}".into(),
+                actor: Some("editor".into()),
+            }),
+            "updating template for audit test",
+        );
+        ok_or_panic(
+            h.delete_collection_template(DeleteCollectionTemplateRequest {
+                collection: col.clone(),
+                actor: Some("cleaner".into()),
+            }),
+            "deleting template for audit test",
+        );
+
+        let created_entries = ok_or_panic(
+            h.query_audit(QueryAuditRequest {
+                collection: Some(col.clone()),
+                operation: Some("template.create".into()),
+                ..Default::default()
+            }),
+            "querying template create audit entries",
+        );
+        assert_eq!(created_entries.entries.len(), 1);
+        let created_entry = &created_entries.entries[0];
+        assert_eq!(created_entry.actor, "creator");
+        assert!(created_entry.timestamp_ns > 0);
+        assert_eq!(created_entry.mutation, MutationType::TemplateCreate);
+        assert_eq!(created_entry.version, 1);
+        assert!(created_entry.data_before.is_none());
+        assert_eq!(
+            created_entry.data_after,
+            Some(json!({
+                "collection": "tasks",
+                "markdown_template": "# {{title}}",
+                "version": 1,
+                "updated_at_ns": created.view.updated_at_ns,
+                "updated_by": "creator",
+            }))
+        );
+
+        let updated_entries = ok_or_panic(
+            h.query_audit(QueryAuditRequest {
+                collection: Some(col.clone()),
+                operation: Some("template.update".into()),
+                ..Default::default()
+            }),
+            "querying template update audit entries",
+        );
+        assert_eq!(updated_entries.entries.len(), 1);
+        let updated_entry = &updated_entries.entries[0];
+        assert_eq!(updated_entry.actor, "editor");
+        assert!(updated_entry.timestamp_ns > 0);
+        assert_eq!(updated_entry.mutation, MutationType::TemplateUpdate);
+        assert_eq!(updated_entry.version, 2);
+        assert_eq!(
+            updated_entry.data_before,
+            Some(json!({
+                "collection": "tasks",
+                "markdown_template": "# {{title}}",
+                "version": 1,
+                "updated_at_ns": created.view.updated_at_ns,
+                "updated_by": "creator",
+            }))
+        );
+        assert_eq!(
+            updated_entry.data_after,
+            Some(json!({
+                "collection": "tasks",
+                "markdown_template": "## {{title}}\n\nStatus: {{status}}",
+                "version": 2,
+                "updated_at_ns": updated.view.updated_at_ns,
+                "updated_by": "editor",
+            }))
+        );
+
+        let deleted_entries = ok_or_panic(
+            h.query_audit(QueryAuditRequest {
+                collection: Some(col),
+                operation: Some("template.delete".into()),
+                ..Default::default()
+            }),
+            "querying template delete audit entries",
+        );
+        assert_eq!(deleted_entries.entries.len(), 1);
+        let deleted_entry = &deleted_entries.entries[0];
+        assert_eq!(deleted_entry.actor, "cleaner");
+        assert!(deleted_entry.timestamp_ns > 0);
+        assert_eq!(deleted_entry.mutation, MutationType::TemplateDelete);
+        assert_eq!(deleted_entry.version, 2);
+        assert_eq!(
+            deleted_entry.data_before,
+            Some(json!({
+                "collection": "tasks",
+                "markdown_template": "## {{title}}\n\nStatus: {{status}}",
+                "version": 2,
+                "updated_at_ns": updated.view.updated_at_ns,
+                "updated_by": "editor",
+            }))
+        );
+        assert!(deleted_entry.data_after.is_none());
     }
 
     #[test]
@@ -3417,6 +3608,7 @@ mod tests {
         let deleted = ok_or_panic(
             h.delete_collection_template(DeleteCollectionTemplateRequest {
                 collection: qualified.clone(),
+                actor: None,
             }),
             "deleting qualified collection template through handler",
         );

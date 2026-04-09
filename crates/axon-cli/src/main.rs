@@ -825,6 +825,7 @@ fn run_collection_template(
             let resp = handler
                 .delete_collection_template(DeleteCollectionTemplateRequest {
                     collection: CollectionId::new(&collection),
+                    actor: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {

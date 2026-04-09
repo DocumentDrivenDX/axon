@@ -145,6 +145,11 @@ pub struct DeleteEntityBody {
 }
 
 #[derive(Deserialize)]
+pub struct DeleteCollectionTemplateBody {
+    pub actor: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct RevertEntityBody {
     pub audit_entry_id: u64,
     pub actor: Option<String>,
@@ -805,12 +810,15 @@ async fn get_collection_template<S: StorageAdapter>(
 async fn delete_collection_template<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Path(collection): Path<String>,
+    body: Option<Json<DeleteCollectionTemplateBody>>,
 ) -> Response {
+    let actor = body.and_then(|b| b.0.actor);
     match handler
         .lock()
         .await
         .delete_collection_template(DeleteCollectionTemplateRequest {
             collection: CollectionId::new(&collection),
+            actor,
         }) {
         Ok(resp) => {
             Json(json!({ "collection": resp.collection, "status": "deleted" })).into_response()

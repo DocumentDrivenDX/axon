@@ -27,6 +27,10 @@ pub enum MutationType {
     // ── Collection lifecycle ─────────────────────────────────────────────────
     CollectionCreate,
     CollectionDrop,
+    // ── Collection view / template operations ───────────────────────────────
+    TemplateCreate,
+    TemplateUpdate,
+    TemplateDelete,
     // ── Schema operations ────────────────────────────────────────────────────
     SchemaUpdate,
 }
@@ -42,6 +46,9 @@ impl std::fmt::Display for MutationType {
             MutationType::LinkDelete => "link.delete",
             MutationType::CollectionCreate => "collection.create",
             MutationType::CollectionDrop => "collection.drop",
+            MutationType::TemplateCreate => "template.create",
+            MutationType::TemplateUpdate => "template.update",
+            MutationType::TemplateDelete => "template.delete",
             MutationType::SchemaUpdate => "schema.update",
         };
         f.write_str(s)
@@ -197,6 +204,9 @@ mod tests {
             "collection.create"
         );
         assert_eq!(MutationType::CollectionDrop.to_string(), "collection.drop");
+        assert_eq!(MutationType::TemplateCreate.to_string(), "template.create");
+        assert_eq!(MutationType::TemplateUpdate.to_string(), "template.update");
+        assert_eq!(MutationType::TemplateDelete.to_string(), "template.delete");
         assert_eq!(MutationType::SchemaUpdate.to_string(), "schema.update");
     }
 

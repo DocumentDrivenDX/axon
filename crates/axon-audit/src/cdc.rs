@@ -397,7 +397,7 @@ mod tests {
 
         let data = buf.lock().unwrap();
         let output = String::from_utf8(data.clone()).unwrap();
-        let lines: Vec<&str> = output.trim().split('\n').collect();
+        let lines: Vec<&str> = output.lines().collect();
         assert_eq!(lines.len(), 2, "should have 2 JSONL lines");
 
         // Each line should be valid JSON.

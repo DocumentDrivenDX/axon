@@ -382,6 +382,7 @@ pub struct GetCollectionTemplateRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteCollectionTemplateRequest {
     pub collection: CollectionId,
+    pub actor: Option<String>,
 }
 
 // ── Schema requests ──────────────────────────────────────────────────────────
