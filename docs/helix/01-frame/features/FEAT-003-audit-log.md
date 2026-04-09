@@ -34,7 +34,7 @@ When agents modify state, there is no trace of what happened, who/what did it, o
   - `id`: Unique, monotonically increasing audit entry ID
   - `timestamp`: Server-assigned UTC timestamp (nanosecond precision)
   - `actor`: Who/what performed the operation (user ID, agent ID, API key ID, or "system")
-  - `operation`: Dot-namespaced mutation type. Core V1 operations include `entity.create`, `entity.update`, `entity.delete`, `collection.create`, `collection.drop`, `schema.update`, `template.create`, `template.update`, and `template.delete`. Feature-specific operations may extend this taxonomy when defined by their owning feature spec; FEAT-026 uses the `template.*` operations for markdown template lifecycle provenance
+  - `operation`: Dot-namespaced mutation type. Core V1 operations include `entity.create`, `entity.update`, `entity.delete`, `entity.revert`, `link.create`, `link.delete`, `collection.create`, `collection.drop`, `schema.update`, `template.create`, `template.update`, and `template.delete`. `entity.revert` covers the entity-level rollback flow defined here and extended by FEAT-023. `link.create` and `link.delete` cover the audited link lifecycle defined by FEAT-007. Feature-specific operations may extend this taxonomy when defined by their owning feature spec; FEAT-026 uses the `template.*` operations for markdown template lifecycle provenance
   - `collection`: Collection name
   - `entity_id`: Entity ID (for entity operations)
   - `before`: Full entity state before the operation (null for creates)
