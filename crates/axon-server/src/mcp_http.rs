@@ -124,7 +124,7 @@ impl McpHttpSessions {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
 
         if let Some(session) = sessions.get(&session_key).cloned() {
-            if Self::session_needs_sse_reset(&session) {
+            if Self::session_is_stale(&session) {
                 sessions.remove(&session_key);
             } else {
                 return Ok(session);
@@ -255,15 +255,6 @@ impl McpHttpSessions {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         listeners.senders.retain(|listener| !listener.is_closed());
         listeners.had_listener && listeners.senders.is_empty()
-    }
-
-    fn session_needs_sse_reset(session: &McpHttpSession) -> bool {
-        let mut listeners = session
-            .listeners
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        listeners.senders.retain(|listener| !listener.is_closed());
-        listeners.had_listener
     }
 
     #[cfg(test)]
@@ -1144,13 +1135,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_mcp_immediate_reconnect_does_not_inherit_subscriptions() {
+    async fn http_mcp_overlapping_reconnect_preserves_subscriptions_until_old_listener_closes() {
         let sessions = McpHttpSessions::default();
         let session_id = "transport-reconnect";
         let session_key = McpHttpSessions::test_session_key(DEFAULT_DATABASE, session_id);
         let server = test_mcp_transport_server(sessions.clone());
 
-        let first_listener = connect_sse(&server, &format!("/mcp/sse?session={session_id}")).await;
+        let mut first_listener =
+            connect_sse(&server, &format!("/mcp/sse?session={session_id}")).await;
 
         let subscribe = server
             .post(&format!("/mcp?session={session_id}"))
@@ -1167,11 +1159,9 @@ mod tests {
         subscribe.assert_status_ok();
         assert_eq!(sessions.subscription_count(&session_key), Some(1));
 
-        drop(first_listener);
-
         let mut second_listener =
             connect_sse(&server, &format!("/mcp/sse?session={session_id}")).await;
-        assert_eq!(sessions.subscription_count(&session_key), Some(0));
+        assert_eq!(sessions.subscription_count(&session_key), Some(1));
         notify_entity_change_by_parts(
             &sessions,
             &CurrentDatabase::new(DEFAULT_DATABASE),
@@ -1179,14 +1169,38 @@ mod tests {
             "t-001",
         );
 
-        assert!(
-            tokio::time::timeout(
-                Duration::from_millis(100),
-                read_sse_event(&mut second_listener)
-            )
-            .await
-            .is_err(),
-            "reconnected listener should not inherit prior subscriptions"
+        let first_payload =
+            tokio::time::timeout(Duration::from_secs(1), read_sse_event(&mut first_listener))
+                .await
+                .expect("original listener should receive updates while still connected");
+        let second_payload =
+            tokio::time::timeout(Duration::from_secs(1), read_sse_event(&mut second_listener))
+                .await
+                .expect("overlapping reconnect should preserve subscriptions");
+        for payload in [first_payload, second_payload] {
+            let payload: Value =
+                serde_json::from_str(&payload.data).expect("notification payload should be JSON");
+            assert_eq!(payload["method"], "resource_updated");
+            assert_eq!(payload["params"]["uri"], "axon://tasks/t-001");
+        }
+
+        drop(first_listener);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        notify_entity_change_by_parts(
+            &sessions,
+            &CurrentDatabase::new(DEFAULT_DATABASE),
+            "tasks",
+            "t-001",
         );
+
+        let payload =
+            tokio::time::timeout(Duration::from_secs(1), read_sse_event(&mut second_listener))
+                .await
+                .expect("replacement listener should stay subscribed after old listener closes");
+        let payload: Value =
+            serde_json::from_str(&payload.data).expect("notification payload should be JSON");
+        assert_eq!(payload["method"], "resource_updated");
+        assert_eq!(payload["params"]["uri"], "axon://tasks/t-001");
     }
 }
