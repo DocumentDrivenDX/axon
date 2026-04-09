@@ -110,14 +110,48 @@ impl McpHttpSessions {
         session_key: SessionKey,
         handler: SharedHandler<S>,
     ) -> Result<mpsc::UnboundedReceiver<String>, McpError> {
-        let session = self.get_or_create(session_key, handler)?;
+        let session = self.get_or_create(session_key.clone(), handler)?;
         let (sender, receiver) = mpsc::unbounded_channel();
         session
             .listeners
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .push(sender);
+            .push(sender.clone());
+
+        let sessions = self.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            sender.closed().await;
+            sessions.disconnect_listener(&session_key, &sender);
+        });
+
         Ok(receiver)
+    }
+
+    fn disconnect_listener(
+        &self,
+        session_key: &SessionKey,
+        disconnected: &mpsc::UnboundedSender<String>,
+    ) {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(session) = sessions.get(session_key).cloned() else {
+            return;
+        };
+
+        let should_remove = {
+            let mut listeners = session
+                .listeners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            listeners.retain(|listener| !listener.same_channel(disconnected));
+            listeners.is_empty()
+        };
+
+        if should_remove {
+            sessions.remove(session_key);
+        }
     }
 
     fn publish_entity_change(
@@ -784,5 +818,73 @@ mod tests {
             serde_json::from_str(&payload).expect("notification payload should be valid JSON");
         assert_eq!(payload["method"], "resource_updated");
         assert_eq!(payload["params"]["uri"], "axon://tasks/t-001");
+    }
+
+    #[tokio::test]
+    async fn http_mcp_disconnect_clears_subscriptions_before_reconnect() {
+        let handler = Arc::new(Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ));
+        let sessions = McpHttpSessions::default();
+        let session_key = McpHttpSessions::test_session_key(DEFAULT_DATABASE, "anonymous");
+
+        handle_mcp(
+            State(handler.clone()),
+            Extension(sessions.clone()),
+            Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
+            Extension(Identity::anonymous_admin()),
+            Query(McpSessionQuery::default()),
+            HeaderMap::new(),
+            Bytes::from(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "resources/subscribe",
+                    "params": { "uri": "axon://tasks/t-001" }
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+        assert_eq!(sessions.subscription_count(&session_key), Some(1));
+
+        let receiver = sessions
+            .connect(session_key.clone(), handler.clone())
+            .expect("session should accept an SSE listener");
+        drop(receiver);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while sessions.subscription_count(&session_key).is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("disconnect should remove the cached session");
+
+        let mut receiver = tokio::task::spawn_blocking({
+            let sessions = sessions.clone();
+            let handler = handler.clone();
+            let session_key = session_key.clone();
+            move || {
+                sessions
+                    .connect(session_key, handler)
+                    .expect("reconnect should create a fresh session")
+            }
+        })
+        .await
+        .expect("reconnect worker should not panic");
+        notify_entity_change_by_parts(
+            &sessions,
+            &CurrentDatabase::new(DEFAULT_DATABASE),
+            "tasks",
+            "t-001",
+        );
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), receiver.recv())
+                .await
+                .is_err(),
+            "reconnected listener should not inherit prior subscriptions"
+        );
     }
 }
