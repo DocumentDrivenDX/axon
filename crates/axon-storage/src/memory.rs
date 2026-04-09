@@ -22,11 +22,11 @@ type SchemaVersionEntry = (CollectionSchema, u64);
 /// A collection view version entry: (view, updated_at_ns).
 type CollectionViewEntry = (CollectionView, u64);
 
-/// Key for the EAV index: (collection, field_name, indexed_value).
-type IndexKey = (CollectionId, String, IndexValue);
+/// Key for the EAV index: (qualified collection, field_name, indexed_value).
+type IndexKey = (CatalogKey, String, IndexValue);
 
-/// Key for compound indexes: (collection, index_position, compound_key).
-type CompoundIndexKey = (CollectionId, usize, CompoundKey);
+/// Key for compound indexes: (qualified collection, index_position, compound_key).
+type CompoundIndexKey = (CatalogKey, usize, CompoundKey);
 
 /// Bidirectional mapping between collection names and numeric IDs (ADR-010).
 #[derive(Debug, Clone, Default)]
@@ -61,7 +61,7 @@ type LinkKey = (CollectionId, EntityId, String, CollectionId, EntityId);
 /// Combined snapshot of mutable state captured at transaction start.
 #[derive(Debug, Clone)]
 struct TxSnapshot {
-    data: HashMap<CollectionId, CollectionMap>,
+    data: HashMap<CatalogKey, CollectionMap>,
     schema_versions: HashMap<CatalogKey, BTreeMap<u32, SchemaVersionEntry>>,
     collection_views: HashMap<CatalogKey, CollectionViewEntry>,
     collections: HashSet<CatalogKey>,
@@ -88,7 +88,7 @@ struct TxSnapshot {
 /// needed.
 #[derive(Debug)]
 pub struct MemoryStorageAdapter {
-    data: HashMap<CollectionId, CollectionMap>,
+    data: HashMap<CatalogKey, CollectionMap>,
     /// Schema version history keyed by (collection → version → schema).
     schema_versions: HashMap<CatalogKey, BTreeMap<u32, SchemaVersionEntry>>,
     /// Latest collection view keyed by collection.
@@ -110,8 +110,8 @@ pub struct MemoryStorageAdapter {
     /// Dedicated link store (ADR-010): replaces __axon_links__ pseudo-collection
     /// for new code paths. Keyed by (source_col, source_id, link_type, target_col, target_id).
     links: BTreeMap<LinkKey, Link>,
-    /// Materialized gate results: (collection, entity_id) → (gate_name → pass).
-    gate_results: HashMap<(CollectionId, EntityId), HashMap<String, bool>>,
+    /// Materialized gate results: (qualified collection, entity_id) → (gate_name → pass).
+    gate_results: HashMap<(CatalogKey, EntityId), HashMap<String, bool>>,
 }
 
 fn now_ns() -> u64 {
@@ -173,6 +173,14 @@ impl MemoryStorageAdapter {
     }
 
     fn resolve_catalog_key(&self, collection: &CollectionId) -> Result<CatalogKey, AxonError> {
+        let (namespace, bare_collection) = Namespace::parse(collection.as_str());
+        if bare_collection != collection.as_str() {
+            return Ok(Self::catalog_key(
+                &namespace,
+                &CollectionId::new(bare_collection),
+            ));
+        }
+
         let keys = self.registered_catalog_keys(collection);
         match keys.as_slice() {
             [] => Ok(Self::catalog_key(&Namespace::default_ns(), collection)),
@@ -196,57 +204,54 @@ impl MemoryStorageAdapter {
         self.schema_versions.remove(key);
         self.collection_views.remove(key);
         self.numeric_ids.remove(key);
+        self.indexes
+            .retain(|(collection, _, _), _| collection != key);
+        self.compound_indexes
+            .retain(|(collection, _, _), _| collection != key);
+        self.gate_results
+            .retain(|(collection, _), _| collection != key);
     }
 
-    fn purge_collection_entities(&mut self, collection: &CollectionId) {
+    fn purge_collection_entities(&mut self, collection: &CatalogKey) {
         self.data.remove(collection);
         self.gate_results.retain(|(col, _), _| col != collection);
     }
 
     fn purge_doomed_collection_entities(&mut self, doomed: &[CatalogKey]) {
-        let doomed_set: HashSet<_> = doomed.iter().cloned().collect();
-        let purge_names: HashSet<_> = doomed
-            .iter()
-            .filter(|key| {
-                !self.collections.iter().any(|candidate| {
-                    candidate.collection == key.collection && !doomed_set.contains(candidate)
-                })
-            })
-            .map(|key| key.collection.clone())
-            .collect();
-
-        for collection in purge_names {
-            self.purge_collection_entities(&collection);
+        for collection in doomed {
+            self.purge_collection_entities(collection);
         }
     }
 }
 
 impl StorageAdapter for MemoryStorageAdapter {
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
-        Ok(self
-            .data
-            .get(collection)
-            .and_then(|col| col.get(id))
-            .cloned())
+        let key = self.resolve_catalog_key(collection)?;
+        Ok(self.data.get(&key).and_then(|col| col.get(id)).cloned())
     }
 
     fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(&entity.collection)?;
+        let mut stored = entity;
+        stored.collection = key.collection.clone();
         self.data
-            .entry(entity.collection.clone())
+            .entry(key)
             .or_default()
-            .insert(entity.id.clone(), entity);
+            .insert(stored.id.clone(), stored);
         Ok(())
     }
 
     fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
-        if let Some(col) = self.data.get_mut(collection) {
+        let key = self.resolve_catalog_key(collection)?;
+        if let Some(col) = self.data.get_mut(&key) {
             col.remove(id);
         }
         Ok(())
     }
 
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
-        Ok(self.data.get(collection).map_or(0, |col| col.len()))
+        let key = self.resolve_catalog_key(collection)?;
+        Ok(self.data.get(&key).map_or(0, |col| col.len()))
     }
 
     fn range_scan(
@@ -256,7 +261,8 @@ impl StorageAdapter for MemoryStorageAdapter {
         end: Option<&EntityId>,
         limit: Option<usize>,
     ) -> Result<Vec<Entity>, AxonError> {
-        let Some(col) = self.data.get(collection) else {
+        let key = self.resolve_catalog_key(collection)?;
+        let Some(col) = self.data.get(&key) else {
             return Ok(vec![]);
         };
 
@@ -282,9 +288,10 @@ impl StorageAdapter for MemoryStorageAdapter {
         entity: Entity,
         expected_version: u64,
     ) -> Result<Entity, AxonError> {
+        let key = self.resolve_catalog_key(&entity.collection)?;
         let current = self
             .data
-            .get(&entity.collection)
+            .get(&key)
             .and_then(|col| col.get(&entity.id))
             .cloned();
 
@@ -307,12 +314,13 @@ impl StorageAdapter for MemoryStorageAdapter {
         }
 
         let updated = Entity {
+            collection: key.collection.clone(),
             version: expected_version + 1,
             ..entity
         };
 
         self.data
-            .entry(updated.collection.clone())
+            .entry(key)
             .or_default()
             .insert(updated.id.clone(), updated.clone());
 
@@ -465,6 +473,13 @@ impl StorageAdapter for MemoryStorageAdapter {
         let versions = self.schema_versions.entry(key).or_default();
         let next_version = versions.keys().last().map_or(1, |v| v + 1);
         let mut versioned = schema.clone();
+        versioned.collection = schema
+            .collection
+            .as_str()
+            .split('.')
+            .next_back()
+            .map(CollectionId::new)
+            .unwrap_or_else(|| schema.collection.clone());
         versioned.version = next_version;
         versions.insert(next_version, (versioned, now_ns()));
         Ok(())
@@ -524,6 +539,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         let updated_at_ns = now_ns();
         versioned.version = next_version;
         versioned.updated_at_ns = Some(updated_at_ns);
+        versioned.collection = key.collection.clone();
         self.collection_views
             .insert(key, (versioned.clone(), updated_at_ns));
         Ok(versioned)
@@ -605,13 +621,14 @@ impl StorageAdapter for MemoryStorageAdapter {
         new_data: &serde_json::Value,
         indexes: &[axon_schema::schema::IndexDef],
     ) -> Result<(), AxonError> {
+        let collection_key = self.resolve_catalog_key(collection)?;
         // Remove old entries.
         if let Some(old) = old_data {
             for idx in indexes {
                 if let Some(val) = resolve_field_path(old, &idx.field)
                     .and_then(|v| extract_index_value(v, &idx.index_type))
                 {
-                    let key = (collection.clone(), idx.field.clone(), val);
+                    let key = (collection_key.clone(), idx.field.clone(), val);
                     if let Some(set) = self.indexes.get_mut(&key) {
                         set.remove(entity_id);
                         if set.is_empty() {
@@ -628,7 +645,7 @@ impl StorageAdapter for MemoryStorageAdapter {
                 .and_then(|v| extract_index_value(v, &idx.index_type))
             {
                 if idx.unique {
-                    let key = (collection.clone(), idx.field.clone(), val.clone());
+                    let key = (collection_key.clone(), idx.field.clone(), val.clone());
                     if let Some(existing) = self.indexes.get(&key) {
                         if existing.iter().any(|eid| eid != entity_id) {
                             return Err(AxonError::UniqueViolation {
@@ -638,7 +655,7 @@ impl StorageAdapter for MemoryStorageAdapter {
                         }
                     }
                 }
-                let key = (collection.clone(), idx.field.clone(), val);
+                let key = (collection_key.clone(), idx.field.clone(), val);
                 self.indexes
                     .entry(key)
                     .or_default()
@@ -655,11 +672,12 @@ impl StorageAdapter for MemoryStorageAdapter {
         data: &serde_json::Value,
         indexes: &[axon_schema::schema::IndexDef],
     ) -> Result<(), AxonError> {
+        let collection_key = self.resolve_catalog_key(collection)?;
         for idx in indexes {
             if let Some(val) = resolve_field_path(data, &idx.field)
                 .and_then(|v| extract_index_value(v, &idx.index_type))
             {
-                let key = (collection.clone(), idx.field.clone(), val);
+                let key = (collection_key.clone(), idx.field.clone(), val);
                 if let Some(set) = self.indexes.get_mut(&key) {
                     set.remove(entity_id);
                     if set.is_empty() {
@@ -677,7 +695,8 @@ impl StorageAdapter for MemoryStorageAdapter {
         field: &str,
         value: &IndexValue,
     ) -> Result<Vec<EntityId>, AxonError> {
-        let key = (collection.clone(), field.to_string(), value.clone());
+        let collection_key = self.resolve_catalog_key(collection)?;
+        let key = (collection_key, field.to_string(), value.clone());
         Ok(self
             .indexes
             .get(&key)
@@ -692,19 +711,20 @@ impl StorageAdapter for MemoryStorageAdapter {
         lower: Bound<&IndexValue>,
         upper: Bound<&IndexValue>,
     ) -> Result<Vec<EntityId>, AxonError> {
+        let collection_key = self.resolve_catalog_key(collection)?;
         // Build range bounds for the BTreeMap key.
         let lower_key = match lower {
             Bound::Included(v) => {
-                Bound::Included((collection.clone(), field.to_string(), v.clone()))
+                Bound::Included((collection_key.clone(), field.to_string(), v.clone()))
             }
             Bound::Excluded(v) => {
-                Bound::Excluded((collection.clone(), field.to_string(), v.clone()))
+                Bound::Excluded((collection_key.clone(), field.to_string(), v.clone()))
             }
             Bound::Unbounded => {
                 // Start from (collection, field, min-possible-value).
                 // We use Included with a synthetic minimum key.
                 Bound::Included((
-                    collection.clone(),
+                    collection_key.clone(),
                     field.to_string(),
                     IndexValue::Boolean(false),
                 ))
@@ -712,17 +732,17 @@ impl StorageAdapter for MemoryStorageAdapter {
         };
         let upper_key = match upper {
             Bound::Included(v) => {
-                Bound::Included((collection.clone(), field.to_string(), v.clone()))
+                Bound::Included((collection_key.clone(), field.to_string(), v.clone()))
             }
             Bound::Excluded(v) => {
-                Bound::Excluded((collection.clone(), field.to_string(), v.clone()))
+                Bound::Excluded((collection_key.clone(), field.to_string(), v.clone()))
             }
             Bound::Unbounded => {
                 // We need a key that is strictly after all values for this (collection, field).
                 // Since field is a String, we append a char that sorts after all values.
                 let mut upper_field = field.to_string();
                 upper_field.push('\x7f');
-                Bound::Excluded((collection.clone(), upper_field, IndexValue::Boolean(false)))
+                Bound::Excluded((collection_key, upper_field, IndexValue::Boolean(false)))
             }
         };
 
@@ -743,7 +763,8 @@ impl StorageAdapter for MemoryStorageAdapter {
         value: &IndexValue,
         exclude_entity: &EntityId,
     ) -> Result<bool, AxonError> {
-        let key = (collection.clone(), field.to_string(), value.clone());
+        let collection_key = self.resolve_catalog_key(collection)?;
+        let key = (collection_key, field.to_string(), value.clone());
         Ok(self
             .indexes
             .get(&key)
@@ -752,9 +773,9 @@ impl StorageAdapter for MemoryStorageAdapter {
     }
 
     fn drop_indexes(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
-        self.indexes.retain(|(col, _, _), _| col != collection);
-        self.compound_indexes
-            .retain(|(col, _, _), _| col != collection);
+        let key = self.resolve_catalog_key(collection)?;
+        self.indexes.retain(|(col, _, _), _| col != &key);
+        self.compound_indexes.retain(|(col, _, _), _| col != &key);
         Ok(())
     }
 
@@ -768,11 +789,12 @@ impl StorageAdapter for MemoryStorageAdapter {
         new_data: &serde_json::Value,
         indexes: &[axon_schema::schema::CompoundIndexDef],
     ) -> Result<(), AxonError> {
+        let collection_key = self.resolve_catalog_key(collection)?;
         // Remove old entries.
         if let Some(old) = old_data {
             for (idx_pos, idx) in indexes.iter().enumerate() {
                 if let Some(key) = extract_compound_key(old, &idx.fields) {
-                    let ckey = (collection.clone(), idx_pos, key);
+                    let ckey = (collection_key.clone(), idx_pos, key);
                     if let Some(set) = self.compound_indexes.get_mut(&ckey) {
                         set.remove(entity_id);
                         if set.is_empty() {
@@ -787,7 +809,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         for (idx_pos, idx) in indexes.iter().enumerate() {
             if let Some(key) = extract_compound_key(new_data, &idx.fields) {
                 if idx.unique {
-                    let ckey = (collection.clone(), idx_pos, key.clone());
+                    let ckey = (collection_key.clone(), idx_pos, key.clone());
                     if let Some(existing) = self.compound_indexes.get(&ckey) {
                         if existing.iter().any(|eid| eid != entity_id) {
                             let field_names: Vec<&str> =
@@ -799,7 +821,7 @@ impl StorageAdapter for MemoryStorageAdapter {
                         }
                     }
                 }
-                let ckey = (collection.clone(), idx_pos, key);
+                let ckey = (collection_key.clone(), idx_pos, key);
                 self.compound_indexes
                     .entry(ckey)
                     .or_default()
@@ -816,9 +838,10 @@ impl StorageAdapter for MemoryStorageAdapter {
         data: &serde_json::Value,
         indexes: &[axon_schema::schema::CompoundIndexDef],
     ) -> Result<(), AxonError> {
+        let collection_key = self.resolve_catalog_key(collection)?;
         for (idx_pos, idx) in indexes.iter().enumerate() {
             if let Some(key) = extract_compound_key(data, &idx.fields) {
-                let ckey = (collection.clone(), idx_pos, key);
+                let ckey = (collection_key.clone(), idx_pos, key);
                 if let Some(set) = self.compound_indexes.get_mut(&ckey) {
                     set.remove(entity_id);
                     if set.is_empty() {
@@ -836,7 +859,8 @@ impl StorageAdapter for MemoryStorageAdapter {
         index_idx: usize,
         key: &CompoundKey,
     ) -> Result<Vec<EntityId>, AxonError> {
-        let ckey = (collection.clone(), index_idx, key.clone());
+        let collection_key = self.resolve_catalog_key(collection)?;
+        let ckey = (collection_key, index_idx, key.clone());
         Ok(self
             .compound_indexes
             .get(&ckey)
@@ -850,11 +874,12 @@ impl StorageAdapter for MemoryStorageAdapter {
         index_idx: usize,
         prefix: &CompoundKey,
     ) -> Result<Vec<EntityId>, AxonError> {
+        let collection_key = self.resolve_catalog_key(collection)?;
         let mut result = Vec::new();
         // Range from prefix..(prefix with all possible suffixes).
-        let start = (collection.clone(), index_idx, prefix.clone());
+        let start = (collection_key.clone(), index_idx, prefix.clone());
         for ((col, idx, key), ids) in self.compound_indexes.range(start..) {
-            if col != collection || *idx != index_idx {
+            if col != &collection_key || *idx != index_idx {
                 break;
             }
             // Check if this key starts with the prefix.
@@ -978,8 +1003,9 @@ impl StorageAdapter for MemoryStorageAdapter {
         entity_id: &EntityId,
         gates: &std::collections::HashMap<String, bool>,
     ) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         self.gate_results
-            .insert((collection.clone(), entity_id.clone()), gates.clone());
+            .insert((key, entity_id.clone()), gates.clone());
         Ok(())
     }
 
@@ -988,10 +1014,8 @@ impl StorageAdapter for MemoryStorageAdapter {
         collection: &CollectionId,
         entity_id: &EntityId,
     ) -> Result<Option<std::collections::HashMap<String, bool>>, AxonError> {
-        Ok(self
-            .gate_results
-            .get(&(collection.clone(), entity_id.clone()))
-            .cloned())
+        let key = self.resolve_catalog_key(collection)?;
+        Ok(self.gate_results.get(&(key, entity_id.clone())).cloned())
     }
 
     fn gate_lookup(
@@ -1000,9 +1024,10 @@ impl StorageAdapter for MemoryStorageAdapter {
         gate: &str,
         pass: bool,
     ) -> Result<Vec<EntityId>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let mut result = Vec::new();
         for ((col, eid), gates) in &self.gate_results {
-            if col == collection {
+            if col == &key {
                 if let Some(&gate_pass) = gates.get(gate) {
                     if gate_pass == pass {
                         result.push(eid.clone());
@@ -1019,8 +1044,8 @@ impl StorageAdapter for MemoryStorageAdapter {
         collection: &CollectionId,
         entity_id: &EntityId,
     ) -> Result<(), AxonError> {
-        self.gate_results
-            .remove(&(collection.clone(), entity_id.clone()));
+        let key = self.resolve_catalog_key(collection)?;
+        self.gate_results.remove(&(key, entity_id.clone()));
         Ok(())
     }
 }
@@ -2581,6 +2606,129 @@ mod tests {
                     .expect("dropped database entity lookup should succeed")
                     .is_none(),
                 "entities in the dropped database must be purged"
+            );
+        }
+
+        #[test]
+        fn qualified_entity_identity_isolated_across_namespaces() {
+            let mut store = MemoryStorageAdapter::default();
+            let billing = Namespace::new("prod", "billing");
+            let engineering = Namespace::new("prod", "engineering");
+            let invoices = CollectionId::new("invoices");
+            let billing_invoices = CollectionId::new("prod.billing.invoices");
+            let engineering_invoices = CollectionId::new("prod.engineering.invoices");
+            let entity_id = EntityId::new("inv-001");
+
+            store
+                .create_database("prod")
+                .expect("database create should succeed");
+            store
+                .create_namespace(&billing)
+                .expect("billing namespace create should succeed");
+            store
+                .create_namespace(&engineering)
+                .expect("engineering namespace create should succeed");
+            store
+                .register_collection_in_namespace(&invoices, &billing)
+                .expect("billing collection register should succeed");
+            store
+                .register_collection_in_namespace(&invoices, &engineering)
+                .expect("engineering collection register should succeed");
+
+            store
+                .put(Entity::new(
+                    billing_invoices.clone(),
+                    entity_id.clone(),
+                    json!({"scope": "billing"}),
+                ))
+                .expect("billing entity put should succeed");
+            store
+                .put(Entity::new(
+                    engineering_invoices.clone(),
+                    entity_id.clone(),
+                    json!({"scope": "engineering"}),
+                ))
+                .expect("engineering entity put should succeed");
+
+            assert_eq!(
+                store
+                    .get(&billing_invoices, &entity_id)
+                    .expect("billing get should succeed")
+                    .expect("billing entity should exist")
+                    .data["scope"],
+                json!("billing")
+            );
+            assert_eq!(
+                store
+                    .get(&engineering_invoices, &entity_id)
+                    .expect("engineering get should succeed")
+                    .expect("engineering entity should exist")
+                    .data["scope"],
+                json!("engineering")
+            );
+            assert_eq!(
+                store
+                    .count(&billing_invoices)
+                    .expect("billing count should succeed"),
+                1
+            );
+            assert_eq!(
+                store
+                    .count(&engineering_invoices)
+                    .expect("engineering count should succeed"),
+                1
+            );
+
+            let updated = store
+                .compare_and_swap(
+                    Entity::new(
+                        billing_invoices.clone(),
+                        entity_id.clone(),
+                        json!({"scope": "billing-updated"}),
+                    ),
+                    1,
+                )
+                .expect("billing compare_and_swap should succeed");
+            assert_eq!(updated.version, 2);
+            assert_eq!(
+                store
+                    .range_scan(&billing_invoices, None, None, None)
+                    .expect("billing range scan should succeed")
+                    .len(),
+                1
+            );
+            assert_eq!(
+                store
+                    .range_scan(&engineering_invoices, None, None, None)
+                    .expect("engineering range scan should succeed")
+                    .len(),
+                1
+            );
+            assert_eq!(
+                store
+                    .get(&engineering_invoices, &entity_id)
+                    .expect("engineering get after billing update should succeed")
+                    .expect("engineering entity should still exist")
+                    .version,
+                1
+            );
+
+            store
+                .delete(&billing_invoices, &entity_id)
+                .expect("billing delete should succeed");
+            assert!(
+                store
+                    .get(&billing_invoices, &entity_id)
+                    .expect("billing get after delete should succeed")
+                    .is_none(),
+                "billing entity should be removed"
+            );
+            assert!(
+                store
+                    .get(&engineering_invoices, &entity_id)
+                    .expect("engineering get after billing delete should succeed")
+                    .is_some(),
+                "engineering entity should survive"
             );
         }
     }

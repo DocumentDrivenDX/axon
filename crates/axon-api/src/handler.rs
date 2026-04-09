@@ -54,6 +54,23 @@ pub struct AxonHandler<S: StorageAdapter> {
 }
 
 impl<S: StorageAdapter> AxonHandler<S> {
+    fn present_entity(requested: &CollectionId, mut entity: Entity) -> Entity {
+        entity.collection = requested.clone();
+        entity
+    }
+
+    fn present_entities(requested: &CollectionId, entities: Vec<Entity>) -> Vec<Entity> {
+        entities
+            .into_iter()
+            .map(|entity| Self::present_entity(requested, entity))
+            .collect()
+    }
+
+    fn present_schema(requested: &CollectionId, mut schema: CollectionSchema) -> CollectionSchema {
+        schema.collection = requested.clone();
+        schema
+    }
+
     pub fn new(storage: S) -> Self {
         Self {
             storage,
@@ -259,7 +276,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     pub fn get_entity(&self, req: GetEntityRequest) -> Result<GetEntityResponse, AxonError> {
         match self.storage.get(&req.collection, &req.id)? {
-            Some(entity) => Ok(GetEntityResponse { entity }),
+            Some(entity) => Ok(GetEntityResponse {
+                entity: Self::present_entity(&req.collection, entity),
+            }),
             None => Err(AxonError::NotFound(req.id.to_string())),
         }
     }
@@ -291,11 +310,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(
             match axon_render::render(&entity, &view.markdown_template) {
                 Ok(rendered_markdown) => GetEntityMarkdownResponse::Rendered {
-                    entity,
+                    entity: Self::present_entity(collection, entity),
                     rendered_markdown,
                 },
                 Err(error) => GetEntityMarkdownResponse::RenderFailed {
-                    entity,
+                    entity: Self::present_entity(collection, entity),
                     detail: format!(
                         "failed to render markdown for collection '{}': {error}",
                         collection
@@ -755,7 +774,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None
         };
 
-        let entities = if req.count_only { vec![] } else { matched };
+        let entities = if req.count_only {
+            vec![]
+        } else {
+            Self::present_entities(&req.collection, matched)
+        };
 
         Ok(QueryEntitiesResponse {
             entities,
@@ -1385,7 +1408,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
     pub fn handle_get_schema(&self, req: GetSchemaRequest) -> Result<GetSchemaResponse, AxonError> {
         self.storage
             .get_schema(&req.collection)?
-            .map(|schema| GetSchemaResponse { schema })
+            .map(|schema| GetSchemaResponse {
+                schema: Self::present_schema(&req.collection, schema),
+            })
             .ok_or_else(|| {
                 AxonError::NotFound(format!("schema for collection '{}'", req.collection))
             })

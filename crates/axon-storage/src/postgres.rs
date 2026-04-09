@@ -55,11 +55,13 @@ impl PostgresStorageAdapter {
                     PRIMARY KEY (database_name, name)
                 );
                 CREATE TABLE IF NOT EXISTS entities (
-                    collection TEXT NOT NULL,
-                    id         TEXT NOT NULL,
-                    version    BIGINT NOT NULL,
-                    data       JSONB NOT NULL,
-                    PRIMARY KEY (collection, id)
+                    collection    TEXT NOT NULL,
+                    database_name TEXT NOT NULL DEFAULT 'default',
+                    schema_name   TEXT NOT NULL DEFAULT 'default',
+                    id            TEXT NOT NULL,
+                    version       BIGINT NOT NULL,
+                    data          JSONB NOT NULL,
+                    PRIMARY KEY (database_name, schema_name, collection, id)
                 );
                 CREATE TABLE IF NOT EXISTS schemas (
                     collection    TEXT NOT NULL,
@@ -173,7 +175,11 @@ impl PostgresStorageAdapter {
         self.client
             .borrow_mut()
             .batch_execute(
-                "ALTER TABLE collections
+                "ALTER TABLE entities
+                     ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
+                 ALTER TABLE entities
+                     ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';
+                 ALTER TABLE collections
                      ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
                  ALTER TABLE collections
                      ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';
@@ -187,6 +193,18 @@ impl PostgresStorageAdapter {
                      ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        if self.table_pk_columns("entities")?
+            != vec!["database_name", "schema_name", "collection", "id"]
+        {
+            self.client
+                .borrow_mut()
+                .batch_execute(
+                    "ALTER TABLE entities DROP CONSTRAINT IF EXISTS entities_pkey;
+                     ALTER TABLE entities ADD PRIMARY KEY (database_name, schema_name, collection, id);",
+                )
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+        }
 
         self.client
             .borrow_mut()
@@ -222,7 +240,7 @@ impl PostgresStorageAdapter {
                      ALTER TABLE collections DROP CONSTRAINT IF EXISTS collections_pkey;
                      ALTER TABLE collections ADD PRIMARY KEY (database_name, schema_name, name);",
                 )
-                .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
         }
 
         if self.table_pk_columns("schemas")? != vec!["database_name", "schema_name", "collection"] {
@@ -292,6 +310,14 @@ impl PostgresStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<QualifiedCollectionId, AxonError> {
+        let (namespace, bare_collection) = Namespace::parse(collection.as_str());
+        if bare_collection != collection.as_str() {
+            return Ok(QualifiedCollectionId::from_parts(
+                &namespace,
+                &CollectionId::new(bare_collection),
+            ));
+        }
+
         let namespaces = self.registered_collection_namespaces(collection)?;
         match namespaces.as_slice() {
             [] => Ok(QualifiedCollectionId::from_parts(
@@ -364,11 +390,20 @@ unsafe impl Sync for PostgresStorageAdapter {}
 
 impl StorageAdapter for PostgresStorageAdapter {
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let rows = self
-            .client.borrow_mut()
+            .client
+            .borrow_mut()
             .query(
-                "SELECT collection, id, version, data FROM entities WHERE collection = $1 AND id = $2",
-                &[&collection.as_str(), &id.as_str()],
+                "SELECT collection, id, version, data
+                 FROM entities
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3 AND id = $4",
+                &[
+                    &key.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                    &id.as_str(),
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
@@ -379,14 +414,19 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_value(&entity.data)?;
         self.client
             .borrow_mut()
             .execute(
-                "INSERT INTO entities (collection, id, version, data) VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (collection, id) DO UPDATE SET version = $3, data = $4",
+                "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (database_name, schema_name, collection, id)
+                 DO UPDATE SET version = $5, data = $6",
                 &[
-                    &entity.collection.as_str(),
+                    &key.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
                     &entity.id.as_str(),
                     &(entity.version as i64),
                     &data_json,
@@ -397,23 +437,36 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         self.client
             .borrow_mut()
             .execute(
-                "DELETE FROM entities WHERE collection = $1 AND id = $2",
-                &[&collection.as_str(), &id.as_str()],
+                "DELETE FROM entities
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3 AND id = $4",
+                &[
+                    &key.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                    &id.as_str(),
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
     }
 
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let row = self
             .client
             .borrow_mut()
             .query_one(
-                "SELECT COUNT(*) FROM entities WHERE collection = $1",
-                &[&collection.as_str()],
+                "SELECT COUNT(*) FROM entities
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                &[
+                    &key.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let count: i64 = row.get(0);
@@ -427,6 +480,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         end: Option<&EntityId>,
         limit: Option<usize>,
     ) -> Result<Vec<Entity>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let start_str = start.map(|s| s.as_str().to_string());
         let end_str = end.map(|e| e.as_str().to_string());
         let limit_val = limit.map(|l| l as i64);
@@ -437,12 +491,16 @@ impl StorageAdapter for PostgresStorageAdapter {
             .query(
                 "SELECT collection, id, version, data FROM entities
                  WHERE collection = $1
-                   AND ($2::text IS NULL OR id >= $2)
-                   AND ($3::text IS NULL OR id <= $3)
+                   AND database_name = $2
+                   AND schema_name = $3
+                   AND ($4::text IS NULL OR id >= $4)
+                   AND ($5::text IS NULL OR id <= $5)
                  ORDER BY id ASC
-                 LIMIT $4",
+                 LIMIT $6",
                 &[
-                    &collection.as_str(),
+                    &key.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
                     &start_str.as_deref(),
                     &end_str.as_deref(),
                     &limit_val,
@@ -458,6 +516,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         entity: Entity,
         expected_version: u64,
     ) -> Result<Entity, AxonError> {
+        let key = self.resolve_catalog_key(&entity.collection)?;
         // Read current version.
         let current = self.get(&entity.collection, &entity.id)?;
         let actual_version = current.as_ref().map(|e| e.version).unwrap_or(0);
@@ -478,12 +537,14 @@ impl StorageAdapter for PostgresStorageAdapter {
             .borrow_mut()
             .execute(
                 "UPDATE entities SET version = $3, data = $4
-                 WHERE collection = $1 AND id = $2 AND version = $5",
+                 WHERE collection = $1 AND database_name = $5 AND schema_name = $6 AND id = $2 AND version = $7",
                 &[
-                    &entity.collection.as_str(),
+                    &key.collection.as_str(),
                     &entity.id.as_str(),
                     &(new_version as i64),
                     &data_json,
+                    &key.namespace.database,
+                    &key.namespace.schema,
                     &(expected_version as i64),
                 ],
             )
@@ -500,6 +561,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         }
 
         Ok(Entity {
+            collection: key.collection,
             version: new_version,
             ..entity
         })
@@ -576,21 +638,7 @@ impl StorageAdapter for PostgresStorageAdapter {
 
         self.client
             .borrow_mut()
-            .execute(
-                "DELETE FROM entities
-                 WHERE collection IN (
-                     SELECT doomed.name
-                     FROM collections doomed
-                     WHERE doomed.database_name = $1
-                       AND NOT EXISTS (
-                           SELECT 1
-                           FROM collections surviving
-                           WHERE surviving.name = doomed.name
-                             AND surviving.database_name <> $1
-                       )
-                 )",
-                &[&name],
-            )
+            .execute("DELETE FROM entities WHERE database_name = $1", &[&name])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.client
             .borrow_mut()
@@ -662,20 +710,7 @@ impl StorageAdapter for PostgresStorageAdapter {
             .borrow_mut()
             .execute(
                 "DELETE FROM entities
-                 WHERE collection IN (
-                     SELECT doomed.name
-                     FROM collections doomed
-                     WHERE doomed.database_name = $1 AND doomed.schema_name = $2
-                       AND NOT EXISTS (
-                           SELECT 1
-                           FROM collections surviving
-                           WHERE surviving.name = doomed.name
-                             AND (
-                                 surviving.database_name <> $1
-                                 OR surviving.schema_name <> $2
-                             )
-                       )
-                 )",
+                 WHERE database_name = $1 AND schema_name = $2",
                 &[&namespace.database, &namespace.schema],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -794,6 +829,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         let next_version = row.get::<_, i32>(0) + 1;
 
         let mut versioned = schema.clone();
+        versioned.collection = key.collection.clone();
         versioned.version = next_version as u32;
         let schema_json = serde_json::to_value(&versioned)?;
         self.client
@@ -889,6 +925,7 @@ impl StorageAdapter for PostgresStorageAdapter {
             .as_nanos() as i64;
 
         let mut versioned = view.clone();
+        versioned.collection = key.collection.clone();
         versioned.version = next_version as u32;
         versioned.updated_at_ns = Some(updated_at_ns as u64);
         let view_json = serde_json::to_value(&versioned)?;
@@ -1555,6 +1592,113 @@ mod tests {
                 .expect("dropped database entity lookup should succeed")
                 .is_none(),
             "entities in the dropped database must be purged"
+        );
+    }
+
+    #[test]
+    fn qualified_entity_identity_isolated_across_namespaces() {
+        let _guard = postgres_test_guard();
+        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let billing = Namespace::new("prod", "billing");
+        let engineering = Namespace::new("prod", "engineering");
+        let invoices = CollectionId::new("invoices");
+        let billing_invoices = CollectionId::new("prod.billing.invoices");
+        let engineering_invoices = CollectionId::new("prod.engineering.invoices");
+        let entity_id = EntityId::new("inv-001");
+
+        s.create_database("prod")
+            .expect("database create should succeed");
+        s.create_namespace(&billing)
+            .expect("billing namespace create should succeed");
+        s.create_namespace(&engineering)
+            .expect("engineering namespace create should succeed");
+        s.register_collection_in_namespace(&invoices, &billing)
+            .expect("billing collection register should succeed");
+        s.register_collection_in_namespace(&invoices, &engineering)
+            .expect("engineering collection register should succeed");
+
+        s.put(Entity::new(
+            billing_invoices.clone(),
+            entity_id.clone(),
+            serde_json::json!({"scope": "billing"}),
+        ))
+        .expect("billing entity put should succeed");
+        s.put(Entity::new(
+            engineering_invoices.clone(),
+            entity_id.clone(),
+            serde_json::json!({"scope": "engineering"}),
+        ))
+        .expect("engineering entity put should succeed");
+
+        assert_eq!(
+            s.get(&billing_invoices, &entity_id)
+                .expect("billing get should succeed")
+                .expect("billing entity should exist")
+                .data["scope"],
+            serde_json::json!("billing")
+        );
+        assert_eq!(
+            s.get(&engineering_invoices, &entity_id)
+                .expect("engineering get should succeed")
+                .expect("engineering entity should exist")
+                .data["scope"],
+            serde_json::json!("engineering")
+        );
+        assert_eq!(
+            s.count(&billing_invoices)
+                .expect("billing count should succeed"),
+            1
+        );
+        assert_eq!(
+            s.count(&engineering_invoices)
+                .expect("engineering count should succeed"),
+            1
+        );
+
+        let updated = s
+            .compare_and_swap(
+                Entity::new(
+                    billing_invoices.clone(),
+                    entity_id.clone(),
+                    serde_json::json!({"scope": "billing-updated"}),
+                ),
+                1,
+            )
+            .expect("billing compare_and_swap should succeed");
+        assert_eq!(updated.version, 2);
+        assert_eq!(
+            s.get(&engineering_invoices, &entity_id)
+                .expect("engineering get after billing update should succeed")
+                .expect("engineering entity should exist")
+                .version,
+            1
+        );
+        assert_eq!(
+            s.range_scan(&billing_invoices, None, None, None)
+                .expect("billing range scan should succeed")
+                .len(),
+            1
+        );
+        assert_eq!(
+            s.range_scan(&engineering_invoices, None, None, None)
+                .expect("engineering range scan should succeed")
+                .len(),
+            1
+        );
+
+        s.delete(&billing_invoices, &entity_id)
+            .expect("billing delete should succeed");
+        assert!(
+            s.get(&billing_invoices, &entity_id)
+                .expect("billing get after delete should succeed")
+                .is_none(),
+            "billing entity should be removed"
+        );
+        assert!(
+            s.get(&engineering_invoices, &entity_id)
+                .expect("engineering get after billing delete should succeed")
+                .is_some(),
+            "engineering entity should survive"
         );
     }
 }

@@ -1067,7 +1067,8 @@ mod tests {
     use std::fmt::Display;
 
     use super::*;
-    use axon_schema::schema::CollectionView;
+    use axon_core::id::{CollectionId, Namespace};
+    use axon_schema::schema::{CollectionSchema, CollectionView, IndexDef, IndexType};
     use axon_storage::adapter::StorageAdapter;
     use axon_storage::MemoryStorageAdapter;
     use axum_test::TestServer;
@@ -1971,6 +1972,108 @@ mod tests {
             .get("/entities/temp/d-001")
             .await
             .assert_status_not_found();
+    }
+
+    #[tokio::test]
+    async fn http_namespaced_entity_paths_isolate_same_named_collections() {
+        let (server, handler) = test_server_with_handler();
+        let billing = Namespace::new("prod", "billing");
+        let engineering = Namespace::new("prod", "engineering");
+        let invoices = CollectionId::new("invoices");
+        let billing_invoices = CollectionId::new("prod.billing.invoices");
+        let engineering_invoices = CollectionId::new("prod.engineering.invoices");
+
+        {
+            let mut guard = handler.lock().await;
+            let storage = guard.storage_mut();
+            storage
+                .create_database("prod")
+                .expect("database create should succeed");
+            storage
+                .create_namespace(&billing)
+                .expect("billing namespace create should succeed");
+            storage
+                .create_namespace(&engineering)
+                .expect("engineering namespace create should succeed");
+            storage
+                .register_collection_in_namespace(&invoices, &billing)
+                .expect("billing collection register should succeed");
+            storage
+                .register_collection_in_namespace(&invoices, &engineering)
+                .expect("engineering collection register should succeed");
+
+            let schema = |collection: CollectionId| CollectionSchema {
+                collection,
+                description: None,
+                version: 1,
+                entity_schema: None,
+                link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: vec![IndexDef {
+                    field: "external_id".into(),
+                    index_type: IndexType::String,
+                    unique: true,
+                }],
+                compound_indexes: Default::default(),
+            };
+            storage
+                .put_schema(&schema(billing_invoices.clone()))
+                .expect("billing schema put should succeed");
+            storage
+                .put_schema(&schema(engineering_invoices.clone()))
+                .expect("engineering schema put should succeed");
+        }
+
+        server
+            .post("/entities/prod.billing.invoices/inv-001")
+            .json(&json!({"data": {"external_id": "shared-1", "scope": "billing"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/entities/prod.engineering.invoices/inv-001")
+            .json(&json!({"data": {"external_id": "shared-1", "scope": "engineering"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let resp = server.get("/entities/prod.billing.invoices/inv-001").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["entity"]["collection"], "prod.billing.invoices");
+        assert_eq!(body["entity"]["data"]["scope"], "billing");
+
+        let resp = server
+            .post("/collections/prod.engineering.invoices/query")
+            .json(&json!({
+                "filter": {
+                    "type": "field",
+                    "field": "external_id",
+                    "op": "eq",
+                    "value": "shared-1"
+                }
+            }))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["total_count"], 1);
+        assert_eq!(
+            body["entities"][0]["collection"],
+            "prod.engineering.invoices"
+        );
+        assert_eq!(body["entities"][0]["data"]["scope"], "engineering");
+
+        server
+            .delete("/entities/prod.billing.invoices/inv-001")
+            .await
+            .assert_status_ok();
+        server
+            .get("/entities/prod.billing.invoices/inv-001")
+            .await
+            .assert_status_not_found();
+        server
+            .get("/entities/prod.engineering.invoices/inv-001")
+            .await
+            .assert_status_ok();
     }
 
     #[tokio::test]

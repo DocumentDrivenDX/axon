@@ -66,11 +66,13 @@ impl SqliteStorageAdapter {
                     FOREIGN KEY (database_name) REFERENCES databases(name) ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS entities (
-                    collection TEXT NOT NULL,
-                    id         TEXT NOT NULL,
-                    version    INTEGER NOT NULL,
-                    data       TEXT NOT NULL,
-                    PRIMARY KEY (collection, id)
+                    collection    TEXT NOT NULL,
+                    database_name TEXT NOT NULL DEFAULT 'default',
+                    schema_name   TEXT NOT NULL DEFAULT 'default',
+                    id            TEXT NOT NULL,
+                    version       INTEGER NOT NULL,
+                    data          TEXT NOT NULL,
+                    PRIMARY KEY (database_name, schema_name, collection, id)
                 );
                 CREATE TABLE IF NOT EXISTS schema_versions (
                     collection    TEXT NOT NULL,
@@ -244,6 +246,59 @@ impl SqliteStorageAdapter {
         Ok(())
     }
 
+    fn rebuild_entities_table(
+        &self,
+        has_database_name: bool,
+        has_schema_name: bool,
+    ) -> Result<(), AxonError> {
+        self.conn
+            .execute_batch(
+                "ALTER TABLE entities RENAME TO entities_legacy;
+                 CREATE TABLE entities (
+                     collection    TEXT NOT NULL,
+                     database_name TEXT NOT NULL DEFAULT 'default',
+                     schema_name   TEXT NOT NULL DEFAULT 'default',
+                     id            TEXT NOT NULL,
+                     version       INTEGER NOT NULL,
+                     data          TEXT NOT NULL,
+                     PRIMARY KEY (database_name, schema_name, collection, id)
+                 );",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let select_sql = match (has_database_name, has_schema_name) {
+            (true, true) => {
+                "SELECT collection, COALESCE(database_name, 'default'), COALESCE(schema_name, 'default'), id, version, data
+                 FROM entities_legacy"
+            }
+            (true, false) => {
+                "SELECT collection, COALESCE(database_name, 'default'), 'default', id, version, data
+                 FROM entities_legacy"
+            }
+            (false, true) => {
+                "SELECT collection, 'default', COALESCE(schema_name, 'default'), id, version, data
+                 FROM entities_legacy"
+            }
+            (false, false) => {
+                "SELECT collection, 'default', 'default', id, version, data
+                 FROM entities_legacy"
+            }
+        };
+
+        self.conn
+            .execute(
+                &format!(
+                    "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data) {select_sql}"
+                ),
+                [],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.conn
+            .execute("DROP TABLE entities_legacy", [])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
     fn rebuild_schema_versions_table(
         &self,
         has_database_name: bool,
@@ -379,10 +434,13 @@ impl SqliteStorageAdapter {
     }
 
     fn ensure_namespace_catalog_tables(&self) -> Result<(), AxonError> {
+        let entity_columns = self.table_columns("entities")?;
         let collections_columns = self.table_columns("collections")?;
         let schema_columns = self.table_columns("schema_versions")?;
         let view_columns = self.table_columns("collection_views")?;
 
+        let entities_ok = self.table_pk_columns("entities")?
+            == vec!["database_name", "schema_name", "collection", "id"];
         let collections_ok =
             self.table_pk_columns("collections")? == vec!["database_name", "schema_name", "name"];
         let schema_ok = self.table_pk_columns("schema_versions")?
@@ -390,11 +448,12 @@ impl SqliteStorageAdapter {
         let views_ok = self.table_pk_columns("collection_views")?
             == vec!["database_name", "schema_name", "collection"];
 
+        let rebuild_entities = !entities_ok;
         let rebuild_collections = !collections_ok;
         let rebuild_schema = !schema_ok;
         let rebuild_views = !views_ok;
 
-        if !(rebuild_collections || rebuild_schema || rebuild_views) {
+        if !(rebuild_entities || rebuild_collections || rebuild_schema || rebuild_views) {
             self.conn
                 .execute(
                     "CREATE INDEX IF NOT EXISTS idx_collections_namespace
@@ -409,6 +468,14 @@ impl SqliteStorageAdapter {
             .execute_batch("PRAGMA foreign_keys = OFF")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
+        if rebuild_entities {
+            self.rebuild_entities_table(
+                entity_columns
+                    .iter()
+                    .any(|column| column == "database_name"),
+                entity_columns.iter().any(|column| column == "schema_name"),
+            )?;
+        }
         if rebuild_collections {
             self.rebuild_collections_table(
                 collections_columns
@@ -481,6 +548,14 @@ impl SqliteStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<QualifiedCollectionId, AxonError> {
+        let (namespace, bare_collection) = Namespace::parse(collection.as_str());
+        if bare_collection != collection.as_str() {
+            return Ok(QualifiedCollectionId::from_parts(
+                &namespace,
+                &CollectionId::new(bare_collection),
+            ));
+        }
+
         let namespaces = self.registered_collection_namespaces(collection)?;
         match namespaces.as_slice() {
             [] => Ok(QualifiedCollectionId::from_parts(
@@ -552,16 +627,22 @@ unsafe impl Sync for SqliteStorageAdapter {}
 
 impl StorageAdapter for SqliteStorageAdapter {
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let mut stmt = self
             .conn
             .prepare_cached(
                 "SELECT collection, id, version, data FROM entities
-                 WHERE collection = ?1 AND id = ?2",
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND id = ?4",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         let mut rows = stmt
-            .query(params![collection.as_str(), id.as_str()])
+            .query(params![
+                key.collection.as_str(),
+                key.namespace.database.as_str(),
+                key.namespace.schema.as_str(),
+                id.as_str()
+            ])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
@@ -579,13 +660,16 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_string(&entity.data)?;
         self.conn
             .execute(
-                "INSERT OR REPLACE INTO entities (collection, id, version, data)
-                 VALUES (?1, ?2, ?3, ?4)",
+                "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    entity.collection.as_str(),
+                    key.collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str(),
                     entity.id.as_str(),
                     entity.version as i64,
                     data_json,
@@ -596,21 +680,34 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         self.conn
             .execute(
-                "DELETE FROM entities WHERE collection = ?1 AND id = ?2",
-                params![collection.as_str(), id.as_str()],
+                "DELETE FROM entities
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND id = ?4",
+                params![
+                    key.collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str(),
+                    id.as_str()
+                ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
     }
 
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         let n: i64 = self
             .conn
             .query_row(
-                "SELECT COUNT(*) FROM entities WHERE collection = ?1",
-                params![collection.as_str()],
+                "SELECT COUNT(*) FROM entities
+                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
+                params![
+                    key.collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str()
+                ],
                 |row| row.get(0),
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -624,6 +721,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         end: Option<&EntityId>,
         limit: Option<usize>,
     ) -> Result<Vec<Entity>, AxonError> {
+        let key = self.resolve_catalog_key(collection)?;
         // Build a query with optional start/end bounds. SQLite does not support
         // binding NULL in place of a comparison, so we use conditional predicates.
         let start_str = start.map(|s| s.as_str().to_owned());
@@ -632,10 +730,12 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         let sql = "SELECT collection, id, version, data FROM entities
                    WHERE collection = ?1
-                     AND (?2 IS NULL OR id >= ?2)
-                     AND (?3 IS NULL OR id <= ?3)
+                     AND database_name = ?2
+                     AND schema_name = ?3
+                     AND (?4 IS NULL OR id >= ?4)
+                     AND (?5 IS NULL OR id <= ?5)
                    ORDER BY id ASC
-                   LIMIT ?4";
+                   LIMIT ?6";
 
         let mut stmt = self
             .conn
@@ -644,7 +744,14 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         let rows = stmt
             .query_map(
-                params![collection.as_str(), start_str, end_str, limit_val],
+                params![
+                    key.collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str(),
+                    start_str,
+                    end_str,
+                    limit_val
+                ],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -670,6 +777,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         entity: Entity,
         expected_version: u64,
     ) -> Result<Entity, AxonError> {
+        let key = self.resolve_catalog_key(&entity.collection)?;
         // Check current version first.
         let current = self.get(&entity.collection, &entity.id)?;
         let actual_version = current.as_ref().map(|e| e.version).unwrap_or(0);
@@ -689,11 +797,13 @@ impl StorageAdapter for SqliteStorageAdapter {
             .conn
             .execute(
                 "UPDATE entities SET version = ?1, data = ?2
-                 WHERE collection = ?3 AND id = ?4 AND version = ?5",
+                 WHERE collection = ?3 AND database_name = ?4 AND schema_name = ?5 AND id = ?6 AND version = ?7",
                 params![
                     new_version as i64,
                     data_json,
-                    entity.collection.as_str(),
+                    key.collection.as_str(),
+                    key.namespace.database.as_str(),
+                    key.namespace.schema.as_str(),
                     entity.id.as_str(),
                     expected_version as i64,
                 ],
@@ -712,6 +822,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         }
 
         Ok(Entity {
+            collection: key.collection,
             version: new_version,
             ..entity
         })
@@ -787,18 +898,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         self.conn
             .execute(
-                "DELETE FROM entities
-                 WHERE collection IN (
-                     SELECT doomed.name
-                     FROM collections doomed
-                     WHERE doomed.database_name = ?1
-                       AND NOT EXISTS (
-                           SELECT 1
-                           FROM collections surviving
-                           WHERE surviving.name = doomed.name
-                             AND surviving.database_name <> ?1
-                       )
-                 )",
+                "DELETE FROM entities WHERE database_name = ?1",
                 params![name],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -875,20 +975,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         self.conn
             .execute(
                 "DELETE FROM entities
-                 WHERE collection IN (
-                     SELECT doomed.name
-                     FROM collections doomed
-                     WHERE doomed.database_name = ?1 AND doomed.schema_name = ?2
-                       AND NOT EXISTS (
-                           SELECT 1
-                           FROM collections surviving
-                           WHERE surviving.name = doomed.name
-                             AND (
-                                 surviving.database_name <> ?1
-                                 OR surviving.schema_name <> ?2
-                             )
-                       )
-                 )",
+                 WHERE database_name = ?1 AND schema_name = ?2",
                 params![namespace.database.as_str(), namespace.schema.as_str()],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
@@ -1008,6 +1095,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         let next_version = max_version + 1;
 
         let mut versioned = schema.clone();
+        versioned.collection = key.collection.clone();
         versioned.version = next_version as u32;
         let schema_json = serde_json::to_string(&versioned)?;
 
@@ -1173,6 +1261,7 @@ impl StorageAdapter for SqliteStorageAdapter {
             .as_nanos() as i64;
 
         let mut versioned = view.clone();
+        versioned.collection = key.collection.clone();
         versioned.version = next_version as u32;
         versioned.updated_at_ns = Some(updated_at_ns as u64);
         let view_json = serde_json::to_string(&versioned)?;
@@ -2120,6 +2209,112 @@ mod tests {
         assert_eq!(
             count, 1,
             "audit entry must persist when transaction commits"
+        );
+    }
+
+    #[test]
+    fn qualified_entity_identity_isolated_across_namespaces() {
+        let mut s = store();
+        let billing = Namespace::new("prod", "billing");
+        let engineering = Namespace::new("prod", "engineering");
+        let invoices = CollectionId::new("invoices");
+        let billing_invoices = CollectionId::new("prod.billing.invoices");
+        let engineering_invoices = CollectionId::new("prod.engineering.invoices");
+        let entity_id = EntityId::new("inv-001");
+
+        s.create_database("prod")
+            .expect("database create should succeed");
+        s.create_namespace(&billing)
+            .expect("billing namespace create should succeed");
+        s.create_namespace(&engineering)
+            .expect("engineering namespace create should succeed");
+        s.register_collection_in_namespace(&invoices, &billing)
+            .expect("billing collection register should succeed");
+        s.register_collection_in_namespace(&invoices, &engineering)
+            .expect("engineering collection register should succeed");
+
+        s.put(Entity::new(
+            billing_invoices.clone(),
+            entity_id.clone(),
+            json!({"scope": "billing"}),
+        ))
+        .expect("billing entity put should succeed");
+        s.put(Entity::new(
+            engineering_invoices.clone(),
+            entity_id.clone(),
+            json!({"scope": "engineering"}),
+        ))
+        .expect("engineering entity put should succeed");
+
+        assert_eq!(
+            s.get(&billing_invoices, &entity_id)
+                .expect("billing get should succeed")
+                .expect("billing entity should exist")
+                .data["scope"],
+            json!("billing")
+        );
+        assert_eq!(
+            s.get(&engineering_invoices, &entity_id)
+                .expect("engineering get should succeed")
+                .expect("engineering entity should exist")
+                .data["scope"],
+            json!("engineering")
+        );
+        assert_eq!(
+            s.count(&billing_invoices)
+                .expect("billing count should succeed"),
+            1
+        );
+        assert_eq!(
+            s.count(&engineering_invoices)
+                .expect("engineering count should succeed"),
+            1
+        );
+
+        let updated = s
+            .compare_and_swap(
+                Entity::new(
+                    billing_invoices.clone(),
+                    entity_id.clone(),
+                    json!({"scope": "billing-updated"}),
+                ),
+                1,
+            )
+            .expect("billing compare_and_swap should succeed");
+        assert_eq!(updated.version, 2);
+        assert_eq!(
+            s.get(&engineering_invoices, &entity_id)
+                .expect("engineering get after billing update should succeed")
+                .expect("engineering entity should exist")
+                .version,
+            1
+        );
+        assert_eq!(
+            s.range_scan(&billing_invoices, None, None, None)
+                .expect("billing range scan should succeed")
+                .len(),
+            1
+        );
+        assert_eq!(
+            s.range_scan(&engineering_invoices, None, None, None)
+                .expect("engineering range scan should succeed")
+                .len(),
+            1
+        );
+
+        s.delete(&billing_invoices, &entity_id)
+            .expect("billing delete should succeed");
+        assert!(
+            s.get(&billing_invoices, &entity_id)
+                .expect("billing get after delete should succeed")
+                .is_none(),
+            "billing entity should be removed"
+        );
+        assert!(
+            s.get(&engineering_invoices, &entity_id)
+                .expect("engineering get after billing delete should succeed")
+                .is_some(),
+            "engineering entity should survive"
         );
     }
 }
