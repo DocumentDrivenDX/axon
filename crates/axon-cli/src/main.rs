@@ -884,18 +884,26 @@ fn run_entity(
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
                     print_entity(entity_to_json(&resp.entity), format);
                 }
-                EntityRenderFormat::Markdown => match handler
-                    .get_entity_markdown(&collection_id, &entity_id)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?
-                {
-                    axon_api::response::GetEntityMarkdownResponse::Rendered {
-                        rendered_markdown,
-                        ..
-                    } => println!("{rendered_markdown}"),
-                    axon_api::response::GetEntityMarkdownResponse::RenderFailed {
-                        detail, ..
-                    } => anyhow::bail!("{detail}"),
-                },
+                EntityRenderFormat::Markdown => {
+                    let response = handler
+                        .get_entity_markdown(&collection_id, &entity_id)
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    match &response {
+                        axon_api::response::GetEntityMarkdownResponse::Rendered {
+                            rendered_markdown,
+                            ..
+                        } => match format {
+                            OutputFormat::Json | OutputFormat::Yaml => {
+                                print_serialized(&response, format);
+                            }
+                            OutputFormat::Table => println!("{rendered_markdown}"),
+                        },
+                        axon_api::response::GetEntityMarkdownResponse::RenderFailed {
+                            detail,
+                            ..
+                        } => anyhow::bail!("{detail}"),
+                    }
+                }
             }
         }
         EntityCmd::List { collection, limit } => {

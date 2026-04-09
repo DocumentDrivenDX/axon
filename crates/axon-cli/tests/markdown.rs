@@ -1,5 +1,6 @@
 use std::process::Command;
 
+use axon_api::response::GetEntityMarkdownResponse;
 use tempfile::NamedTempFile;
 
 fn axon_bin() -> &'static str {
@@ -105,4 +106,106 @@ fn entity_get_can_render_markdown() {
         &["entity", "get", "tasks", "t-001", "--render", "markdown"],
     );
     assert_eq!(markdown.trim(), "# hello\n\nStatus: open");
+}
+
+#[test]
+fn entity_get_markdown_honors_json_output() {
+    let db = NamedTempFile::new().expect("temp db").into_temp_path();
+    let db_path = db.to_string_lossy().into_owned();
+
+    run_ok(&db_path, &["collection", "create", "tasks"]);
+    run_ok(
+        &db_path,
+        &[
+            "collection",
+            "template",
+            "put",
+            "tasks",
+            "--template",
+            "# {{title}}\n\nStatus: {{status}}",
+        ],
+    );
+    run_ok(
+        &db_path,
+        &[
+            "entity",
+            "create",
+            "tasks",
+            "t-001",
+            r#"{"title":"hello","status":"open"}"#,
+        ],
+    );
+
+    let output = run_ok(
+        &db_path,
+        &[
+            "--output", "json", "entity", "get", "tasks", "t-001", "--render", "markdown",
+        ],
+    );
+    let response: GetEntityMarkdownResponse =
+        serde_json::from_str(&output).expect("stdout should be valid JSON");
+    match response {
+        GetEntityMarkdownResponse::Rendered {
+            entity,
+            rendered_markdown,
+        } => {
+            assert_eq!(rendered_markdown, "# hello\n\nStatus: open");
+            assert_eq!(entity.collection.to_string(), "tasks");
+            assert_eq!(entity.id.to_string(), "t-001");
+        }
+        GetEntityMarkdownResponse::RenderFailed { detail, .. } => {
+            panic!("expected rendered markdown, got failure: {detail}");
+        }
+    }
+}
+
+#[test]
+fn entity_get_markdown_honors_yaml_output() {
+    let db = NamedTempFile::new().expect("temp db").into_temp_path();
+    let db_path = db.to_string_lossy().into_owned();
+
+    run_ok(&db_path, &["collection", "create", "tasks"]);
+    run_ok(
+        &db_path,
+        &[
+            "collection",
+            "template",
+            "put",
+            "tasks",
+            "--template",
+            "# {{title}}\n\nStatus: {{status}}",
+        ],
+    );
+    run_ok(
+        &db_path,
+        &[
+            "entity",
+            "create",
+            "tasks",
+            "t-001",
+            r#"{"title":"hello","status":"open"}"#,
+        ],
+    );
+
+    let output = run_ok(
+        &db_path,
+        &[
+            "--output", "yaml", "entity", "get", "tasks", "t-001", "--render", "markdown",
+        ],
+    );
+    let response: GetEntityMarkdownResponse =
+        serde_yaml::from_str(&output).expect("stdout should be valid YAML");
+    match response {
+        GetEntityMarkdownResponse::Rendered {
+            entity,
+            rendered_markdown,
+        } => {
+            assert_eq!(rendered_markdown, "# hello\n\nStatus: open");
+            assert_eq!(entity.collection.to_string(), "tasks");
+            assert_eq!(entity.id.to_string(), "t-001");
+        }
+        GetEntityMarkdownResponse::RenderFailed { detail, .. } => {
+            panic!("expected rendered markdown, got failure: {detail}");
+        }
+    }
 }
