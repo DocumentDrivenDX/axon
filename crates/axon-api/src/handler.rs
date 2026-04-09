@@ -136,14 +136,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         let doomed: HashSet<_> = collections.iter().cloned().collect();
+        let doomed_bare_names: HashSet<_> = collections
+            .iter()
+            .map(|collection| collection.collection.clone())
+            .collect();
         self.markdown_template_cache()?
             .entries
-            .retain(
-                |collection, _| match self.storage.resolve_collection_key(collection) {
-                    Ok(key) => !doomed.contains(&key),
-                    Err(_) => true,
-                },
-            );
+            .retain(|collection, _| {
+                let (namespace, bare_collection) = Namespace::parse(collection.as_str());
+                if bare_collection == collection.as_str() {
+                    !doomed_bare_names.contains(collection)
+                } else {
+                    let key = QualifiedCollectionId::from_parts(
+                        &namespace,
+                        &CollectionId::new(bare_collection),
+                    );
+                    !doomed.contains(&key)
+                }
+            });
         Ok(())
     }
 
@@ -6847,6 +6857,82 @@ link_types:
     }
 
     #[test]
+    fn drop_namespace_with_force_clears_compiled_markdown_cache_for_ambiguous_bare_aliases() {
+        use crate::request::{
+            CreateDatabaseRequest, CreateEntityRequest, CreateNamespaceRequest,
+            DropNamespaceRequest,
+        };
+        use axon_core::id::Namespace;
+
+        let mut h = handler();
+        let bare = CollectionId::new("notes");
+        let billing = CollectionId::new("prod.billing.notes");
+        let engineering = CollectionId::new("prod.engineering.notes");
+        let id = EntityId::new("note-001");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &Namespace::new("prod", "billing"))
+            .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: billing.clone(),
+            id: id.clone(),
+            data: json!({"title": "old", "status": "open"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        let initial_view = h
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(billing.clone(), "# {{title}}"))
+            .unwrap();
+        assert_eq!(initial_view.version, 1);
+        assert_rendered_markdown(h.get_entity_markdown(&bare, &id).unwrap(), "# old");
+
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "engineering".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &Namespace::new("prod", "engineering"))
+            .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: engineering.clone(),
+            id: id.clone(),
+            data: json!({"title": "new", "status": "closed"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        let sibling_view = h
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(
+                engineering.clone(),
+                "Status: {{status}}",
+            ))
+            .unwrap();
+        assert_eq!(sibling_view.version, 1);
+
+        h.drop_namespace(DropNamespaceRequest {
+            database: "prod".into(),
+            schema: "billing".into(),
+            force: true,
+        })
+        .unwrap();
+
+        assert_rendered_markdown(h.get_entity_markdown(&bare, &id).unwrap(), "Status: closed");
+    }
+
+    #[test]
     fn default_namespace_exists_on_startup() {
         use crate::request::ListNamespaceCollectionsRequest;
         let h = handler();
@@ -8819,6 +8905,84 @@ link_types:
 
         assert_rendered_markdown(
             h.get_entity_markdown(&qualified, &id).unwrap(),
+            "Status: published",
+        );
+    }
+
+    #[test]
+    fn drop_database_with_force_clears_compiled_markdown_cache_for_ambiguous_bare_aliases() {
+        use crate::request::{
+            CreateDatabaseRequest, CreateEntityRequest, CreateNamespaceRequest, DropDatabaseRequest,
+        };
+        use axon_core::id::Namespace;
+
+        let mut h = handler();
+        let bare = CollectionId::new("reports");
+        let prod = CollectionId::new("prod.analytics.reports");
+        let stage = CollectionId::new("stage.analytics.reports");
+        let id = EntityId::new("report-001");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "prod".into(),
+        })
+        .unwrap();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "prod".into(),
+            schema: "analytics".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &Namespace::new("prod", "analytics"))
+            .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: prod.clone(),
+            id: id.clone(),
+            data: json!({"title": "old", "status": "draft"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        let initial_view = h
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(prod.clone(), "# {{title}}"))
+            .unwrap();
+        assert_eq!(initial_view.version, 1);
+        assert_rendered_markdown(h.get_entity_markdown(&bare, &id).unwrap(), "# old");
+
+        h.create_database(CreateDatabaseRequest {
+            name: "stage".into(),
+        })
+        .unwrap();
+        h.create_namespace(CreateNamespaceRequest {
+            database: "stage".into(),
+            schema: "analytics".into(),
+        })
+        .unwrap();
+        h.storage_mut()
+            .register_collection_in_namespace(&bare, &Namespace::new("stage", "analytics"))
+            .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: stage.clone(),
+            id: id.clone(),
+            data: json!({"title": "new", "status": "published"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        let sibling_view = h
+            .storage_mut()
+            .put_collection_view(&CollectionView::new(stage.clone(), "Status: {{status}}"))
+            .unwrap();
+        assert_eq!(sibling_view.version, 1);
+
+        h.drop_database(DropDatabaseRequest {
+            name: "prod".into(),
+            force: true,
+        })
+        .unwrap();
+
+        assert_rendered_markdown(
+            h.get_entity_markdown(&bare, &id).unwrap(),
             "Status: published",
         );
     }
