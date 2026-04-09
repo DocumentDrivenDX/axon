@@ -183,6 +183,60 @@ class CheckTrackerMeasureTimestampsCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("all measure timestamps are <= updated_at", result.stdout)
 
+    def test_scoped_validation_ignores_fake_measure_results_before_real_block(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-fake-before-real",
+                    "updated_at": "2026-04-09T19:00:00Z",
+                    "notes": (
+                        "<report-summary>"
+                        "quoted prior "
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:53:00Z</timestamp>"
+                        "</measure-results>"
+                        "</report-summary>"
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:59:11Z</timestamp>"
+                        "</measure-results>"
+                    ),
+                }
+            ],
+            "hx-fake-before-real",
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("all measure timestamps are <= updated_at", result.stdout)
+
+    def test_scoped_validation_ignores_fake_measure_results_after_real_block(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-fake-after-real",
+                    "updated_at": "2026-04-09T19:00:00Z",
+                    "notes": (
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:59:11Z</timestamp>"
+                        "</measure-results>"
+                        "<report-summary>"
+                        "quoted later "
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:53:00Z</timestamp>"
+                        "</measure-results>"
+                        "</report-summary>"
+                    ),
+                }
+            ],
+            "hx-fake-after-real",
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("all measure timestamps are <= updated_at", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

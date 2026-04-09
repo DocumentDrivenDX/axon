@@ -6,13 +6,9 @@ from __future__ import annotations
 import argparse
 from html.parser import HTMLParser
 import json
-import re
 import sys
 from datetime import datetime
 from pathlib import Path
-
-
-MEASURE_RESULTS_RE = re.compile(r"<measure-results>(.*?)</measure-results>", re.DOTALL)
 
 
 def parse_timestamp(value: str) -> datetime:
@@ -25,20 +21,31 @@ class MeasureResultsTimestampParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self._stack: list[str] = []
-        self._timestamp_chunks: list[list[str]] = []
+        self._measure_results_timestamps: list[list[list[str]]] = []
 
     def handle_starttag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
-        if len(self._stack) == 1 and self._stack[0] == "measure-results" and tag == "timestamp":
-            self._timestamp_chunks.append([])
+        if not self._stack and tag == "measure-results":
+            self._measure_results_timestamps.append([])
+        elif (
+            len(self._stack) == 1
+            and self._stack[0] == "measure-results"
+            and tag == "timestamp"
+        ):
+            self._measure_results_timestamps[-1].append([])
         self._stack.append(tag)
 
     def handle_startendtag(
         self, tag: str, attrs: list[tuple[str, str | None]]
     ) -> None:
-        if len(self._stack) == 1 and self._stack[0] == "measure-results" and tag == "timestamp":
-            self._timestamp_chunks.append([])
+        if (
+            len(self._stack) == 1
+            and self._stack[0] == "measure-results"
+            and tag == "timestamp"
+            and self._measure_results_timestamps
+        ):
+            self._measure_results_timestamps[-1].append([])
 
     def handle_endtag(self, tag: str) -> None:
         for index in range(len(self._stack) - 1, -1, -1):
@@ -51,29 +58,25 @@ class MeasureResultsTimestampParser(HTMLParser):
             len(self._stack) == 2
             and self._stack[0] == "measure-results"
             and self._stack[1] == "timestamp"
-            and self._timestamp_chunks
+            and self._measure_results_timestamps
+            and self._measure_results_timestamps[-1]
         ):
-            self._timestamp_chunks[-1].append(data)
+            self._measure_results_timestamps[-1][-1].append(data)
 
-    def direct_child_timestamps(self) -> list[str]:
-        return ["".join(chunks).strip() for chunks in self._timestamp_chunks]
-
-
-def extract_measure_results_timestamps(block: str) -> list[str]:
-    parser = MeasureResultsTimestampParser()
-    parser.feed(f"<measure-results>{block}</measure-results>")
-    parser.close()
-    return [
-        timestamp
-        for timestamp in parser.direct_child_timestamps()
-        if timestamp
-    ]
+    def top_level_measure_results_timestamps(self) -> list[list[str]]:
+        return [
+            ["".join(chunks).strip() for chunks in block if "".join(chunks).strip()]
+            for block in self._measure_results_timestamps
+        ]
 
 
 def iter_measure_timestamps(notes: str) -> list[tuple[str | None, str | None]]:
+    parser = MeasureResultsTimestampParser()
+    parser.feed(notes)
+    parser.close()
+
     timestamps: list[tuple[str | None, str | None]] = []
-    for block in MEASURE_RESULTS_RE.findall(notes):
-        matches = extract_measure_results_timestamps(block)
+    for matches in parser.top_level_measure_results_timestamps():
         if len(matches) == 1:
             timestamps.append((matches[0], None))
         else:
