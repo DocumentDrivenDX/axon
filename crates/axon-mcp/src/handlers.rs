@@ -23,6 +23,7 @@ use axon_core::id::{CollectionId, EntityId};
 use axon_storage::adapter::StorageAdapter;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{Map, Value};
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::tools::{ToolDef, ToolError};
 
@@ -192,14 +193,13 @@ fn graphql_optional_filter(
 }
 
 fn graphql_root_field_response<S: StorageAdapter>(
-    handler: &Mutex<AxonHandler<S>>,
+    handler: &AxonHandler<S>,
     field: &GraphQlField,
     variables: &Map<String, Value>,
 ) -> Result<Value, ToolError> {
     match field.name.node.as_str() {
         "collections" => {
-            let guard = lock_handler(handler)?;
-            let response = guard
+            let response = handler
                 .list_collections(ListCollectionsRequest::default())
                 .map_err(to_tool_error)?;
             Ok(Value::Array(
@@ -221,8 +221,7 @@ fn graphql_root_field_response<S: StorageAdapter>(
         "entity" => {
             let collection: String = graphql_required(field, "collection", variables)?;
             let id: String = graphql_required(field, "id", variables)?;
-            let guard = lock_handler(handler)?;
-            let response = guard
+            let response = handler
                 .get_entity(GetEntityRequest {
                     collection: CollectionId::new(&collection),
                     id: EntityId::new(&id),
@@ -236,8 +235,7 @@ fn graphql_root_field_response<S: StorageAdapter>(
             let limit = graphql_optional(field, "limit", variables)?;
             let after = graphql_optional::<String>(field, "after", variables)?
                 .map(|cursor| EntityId::new(&cursor));
-            let guard = lock_handler(handler)?;
-            let response = guard
+            let response = handler
                 .query_entities(QueryEntitiesRequest {
                     collection: CollectionId::new(&collection),
                     filter,
@@ -272,8 +270,7 @@ fn graphql_root_field_response<S: StorageAdapter>(
             let collection: String = graphql_required(field, "collection", variables)?;
             let filter = graphql_optional_filter(field, "filter", variables)?;
             let group_by = graphql_optional(field, "groupBy", variables)?;
-            let guard = lock_handler(handler)?;
-            let response = guard
+            let response = handler
                 .count_entities(CountEntitiesRequest {
                     collection: CollectionId::new(&collection),
                     filter,
@@ -300,8 +297,7 @@ fn graphql_root_field_response<S: StorageAdapter>(
 
             if let Some(function) = aggregate_function {
                 let field_name: String = graphql_required(field, "field", variables)?;
-                let guard = lock_handler(handler)?;
-                let response = guard
+                let response = handler
                     .aggregate(AggregateRequest {
                         collection: CollectionId::new(&collection),
                         function,
@@ -321,8 +317,7 @@ fn graphql_root_field_response<S: StorageAdapter>(
                     }).collect::<Vec<_>>()
                 }))
             } else {
-                let guard = lock_handler(handler)?;
-                let count = guard
+                let count = handler
                     .count_entities(CountEntitiesRequest {
                         collection: CollectionId::new(&collection),
                         filter,
@@ -356,8 +351,7 @@ fn graphql_root_field_response<S: StorageAdapter>(
             let link_type: String = graphql_required(field, "linkType", variables)?;
             let filter = graphql_optional_filter(field, "filter", variables)?;
             let limit = graphql_optional(field, "limit", variables)?;
-            let guard = lock_handler(handler)?;
-            let response = guard
+            let response = handler
                 .find_link_candidates(FindLinkCandidatesRequest {
                     source_collection: CollectionId::new(&source_collection),
                     source_id: EntityId::new(&source_id),
@@ -387,8 +381,7 @@ fn graphql_root_field_response<S: StorageAdapter>(
             let direction = get_direction(
                 graphql_optional::<String>(field, "direction", variables)?.as_deref(),
             )?;
-            let guard = lock_handler(handler)?;
-            let response = guard
+            let response = handler
                 .list_neighbors(ListNeighborsRequest {
                     collection: CollectionId::new(&collection),
                     id: EntityId::new(&id),
@@ -447,7 +440,7 @@ fn select_value(value: Value, selection_set: &SelectionSet) -> Result<Value, Too
 }
 
 fn execute_graphql_query<S: StorageAdapter>(
-    handler: &Mutex<AxonHandler<S>>,
+    handler: &AxonHandler<S>,
     query: &str,
     variables: &Value,
 ) -> Result<Value, ToolError> {
@@ -495,6 +488,196 @@ fn execute_graphql_query<S: StorageAdapter>(
     Ok(Value::Object(data))
 }
 
+fn execute_create<S: StorageAdapter>(
+    handler: &mut AxonHandler<S>,
+    collection: &str,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    let id = args
+        .get("id")
+        .and_then(|value| value.as_str())
+        .map(EntityId::new)
+        .unwrap_or_else(EntityId::generate);
+    let data = args
+        .get("data")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let response = handler
+        .create_entity(CreateEntityRequest {
+            collection: CollectionId::new(collection),
+            id,
+            data,
+            actor: Some("mcp".into()),
+            audit_metadata: None,
+        })
+        .map_err(to_tool_error)?;
+    text_tool_response(&response.entity)
+}
+
+fn execute_get<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    collection: &str,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    let id = get_required_string(args, "id")?;
+    let response = handler
+        .get_entity(GetEntityRequest {
+            collection: CollectionId::new(collection),
+            id: EntityId::new(&id),
+        })
+        .map_err(to_tool_error)?;
+    text_tool_response(&response.entity)
+}
+
+fn execute_patch<S: StorageAdapter>(
+    handler: &mut AxonHandler<S>,
+    collection: &str,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    let id = get_required_string(args, "id")?;
+    let data = args
+        .get("data")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let expected_version = args
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| ToolError::InvalidArgument("missing 'expected_version'".into()))?;
+
+    let response = handler
+        .update_entity(UpdateEntityRequest {
+            collection: CollectionId::new(collection),
+            id: EntityId::new(&id),
+            data,
+            expected_version,
+            actor: Some("mcp".into()),
+            audit_metadata: None,
+        })
+        .map_err(to_tool_error)?;
+    text_tool_response(&response.entity)
+}
+
+fn execute_delete<S: StorageAdapter>(
+    handler: &mut AxonHandler<S>,
+    collection: &str,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    let id = get_required_string(args, "id")?;
+    let response = handler
+        .delete_entity(DeleteEntityRequest {
+            collection: CollectionId::new(collection),
+            id: EntityId::new(&id),
+            actor: Some("mcp".into()),
+            audit_metadata: None,
+            force: false,
+        })
+        .map_err(to_tool_error)?;
+    text_tool_response(&serde_json::json!({
+        "collection": response.collection,
+        "id": response.id,
+        "status": "deleted",
+    }))
+}
+
+fn execute_query<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    let query = args
+        .get("query")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::InvalidArgument("missing 'query' string".into()))?;
+    let variables = args
+        .get("variables")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({}));
+    let data = execute_graphql_query(handler, query, &variables)?;
+    text_tool_response(&serde_json::json!({ "data": data }))
+}
+
+fn execute_aggregate<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    collection: &str,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    let function_name = get_required_string(args, "function")?;
+    let aggregate_function = get_aggregate_function(&function_name)?;
+    let filter = parse_optional_filter(args.get("filter").cloned())?;
+    let group_by = get_optional_string(args, "group_by");
+
+    let result = if let Some(function) = aggregate_function {
+        let field = get_required_string(args, "field")?;
+        let response = handler
+            .aggregate(AggregateRequest {
+                collection: CollectionId::new(collection),
+                function,
+                field,
+                filter,
+                group_by,
+            })
+            .map_err(to_tool_error)?;
+        serde_json::json!({ "results": response.results })
+    } else {
+        let response = handler
+            .count_entities(CountEntitiesRequest {
+                collection: CollectionId::new(collection),
+                filter,
+                group_by,
+            })
+            .map_err(to_tool_error)?;
+        return text_tool_response(&response);
+    };
+
+    text_tool_response(&result)
+}
+
+fn execute_link_candidates<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    collection: &str,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    let source_id = args
+        .get("source_id")
+        .and_then(Value::as_str)
+        .or_else(|| args.get("id").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| ToolError::InvalidArgument("missing 'source_id'".into()))?;
+    let link_type = get_required_string(args, "link_type")?;
+    let filter = parse_optional_filter(args.get("filter").cloned())?;
+    let limit = get_optional_usize(args, "limit")?;
+
+    let response = handler
+        .find_link_candidates(FindLinkCandidatesRequest {
+            source_collection: CollectionId::new(collection),
+            source_id: EntityId::new(&source_id),
+            link_type,
+            filter,
+            limit,
+        })
+        .map_err(to_tool_error)?;
+    text_tool_response(&response)
+}
+
+fn execute_neighbors<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    collection: &str,
+    args: &Value,
+) -> Result<Value, ToolError> {
+    let id = get_required_string(args, "id")?;
+    let link_type = get_optional_string(args, "link_type");
+    let direction = get_direction(args.get("direction").and_then(Value::as_str))?;
+
+    let response = handler
+        .list_neighbors(ListNeighborsRequest {
+            collection: CollectionId::new(collection),
+            id: EntityId::new(&id),
+            link_type,
+            direction,
+        })
+        .map_err(to_tool_error)?;
+    text_tool_response(&response)
+}
+
 fn build_create_tool<S: StorageAdapter + 'static>(
     collection: &str,
     handler: Arc<Mutex<AxonHandler<S>>>,
@@ -512,34 +695,8 @@ fn build_create_tool<S: StorageAdapter + 'static>(
             "required": ["data"]
         }),
         handler: Box::new(move |args| {
-            let id_str = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .map(EntityId::new)
-                .unwrap_or_else(EntityId::generate);
-            let data = args
-                .get("data")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-
             let mut guard = lock_handler(&handler)?;
-            let result = guard.create_entity(CreateEntityRequest {
-                collection: CollectionId::new(&col),
-                id: id_str,
-                data,
-                actor: Some("mcp".into()),
-                audit_metadata: None,
-            });
-
-            match result {
-                Ok(resp) => Ok(serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": serde_json::to_string(&resp.entity).unwrap_or_default()
-                    }]
-                })),
-                Err(e) => Err(to_tool_error(e)),
-            }
+            execute_create(&mut guard, &col, args)
         }),
     }
 }
@@ -560,26 +717,8 @@ fn build_get_tool<S: StorageAdapter + 'static>(
             "required": ["id"]
         }),
         handler: Box::new(move |args| {
-            let id = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArgument("missing 'id'".into()))?;
-
             let guard = lock_handler(&handler)?;
-            let result = guard.get_entity(GetEntityRequest {
-                collection: CollectionId::new(&col),
-                id: EntityId::new(id),
-            });
-
-            match result {
-                Ok(resp) => Ok(serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": serde_json::to_string(&resp.entity).unwrap_or_default()
-                    }]
-                })),
-                Err(e) => Err(to_tool_error(e)),
-            }
+            execute_get(&guard, &col, args)
         }),
     }
 }
@@ -602,38 +741,8 @@ fn build_patch_tool<S: StorageAdapter + 'static>(
             "required": ["id", "data", "expected_version"]
         }),
         handler: Box::new(move |args| {
-            let id = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArgument("missing 'id'".into()))?;
-            let data = args
-                .get("data")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-            let expected_version = args
-                .get("expected_version")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| ToolError::InvalidArgument("missing 'expected_version'".into()))?;
-
             let mut guard = lock_handler(&handler)?;
-            let result = guard.update_entity(UpdateEntityRequest {
-                collection: CollectionId::new(&col),
-                id: EntityId::new(id),
-                data,
-                expected_version,
-                actor: Some("mcp".into()),
-                audit_metadata: None,
-            });
-
-            match result {
-                Ok(resp) => Ok(serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": serde_json::to_string(&resp.entity).unwrap_or_default()
-                    }]
-                })),
-                Err(e) => Err(to_tool_error(e)),
-            }
+            execute_patch(&mut guard, &col, args)
         }),
     }
 }
@@ -654,29 +763,8 @@ fn build_delete_tool<S: StorageAdapter + 'static>(
             "required": ["id"]
         }),
         handler: Box::new(move |args| {
-            let id = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArgument("missing 'id'".into()))?;
-
             let mut guard = lock_handler(&handler)?;
-            let result = guard.delete_entity(DeleteEntityRequest {
-                collection: CollectionId::new(&col),
-                id: EntityId::new(id),
-                actor: Some("mcp".into()),
-                audit_metadata: None,
-                force: false,
-            });
-
-            match result {
-                Ok(resp) => Ok(serde_json::json!({
-                    "content": [{
-                        "type": "text",
-                        "text": format!("Deleted {}/{}", resp.collection, resp.id)
-                    }]
-                })),
-                Err(e) => Err(to_tool_error(e)),
-            }
+            execute_delete(&mut guard, &col, args)
         }),
     }
 }
@@ -706,18 +794,8 @@ pub fn build_query_tool<S: StorageAdapter + 'static>(
             "required": ["query"]
         }),
         handler: Box::new(move |args| {
-            let query = args
-                .get("query")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArgument("missing 'query' string".into()))?;
-
-            let variables = args
-                .get("variables")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({}));
-
-            let data = execute_graphql_query(&handler, query, &variables)?;
-            text_tool_response(&serde_json::json!({ "data": data }))
+            let guard = lock_handler(&handler)?;
+            execute_query(&guard, args)
         }),
     }
 }
@@ -757,34 +835,8 @@ pub fn build_aggregate_tool<S: StorageAdapter + 'static>(
             "required": ["function"]
         }),
         handler: Box::new(move |args| {
-            let function_name = get_required_string(args, "function")?;
-            let filter = parse_optional_filter(args.get("filter").cloned())?;
-            let group_by = get_optional_string(args, "group_by");
-
-            if let Some(function) = get_aggregate_function(&function_name)? {
-                let field = get_required_string(args, "field")?;
-                let guard = lock_handler(&handler)?;
-                let response = guard
-                    .aggregate(AggregateRequest {
-                        collection: CollectionId::new(&col),
-                        function,
-                        field,
-                        filter,
-                        group_by,
-                    })
-                    .map_err(to_tool_error)?;
-                text_tool_response(&response)
-            } else {
-                let guard = lock_handler(&handler)?;
-                let response = guard
-                    .count_entities(CountEntitiesRequest {
-                        collection: CollectionId::new(&col),
-                        filter,
-                        group_by,
-                    })
-                    .map_err(to_tool_error)?;
-                text_tool_response(&response)
-            }
+            let guard = lock_handler(&handler)?;
+            execute_aggregate(&guard, &col, args)
         }),
     }
 }
@@ -811,22 +863,8 @@ pub fn build_link_candidates_tool<S: StorageAdapter + 'static>(
             "required": ["id", "link_type"]
         }),
         handler: Box::new(move |args| {
-            let id = get_required_string(args, "id")?;
-            let link_type = get_required_string(args, "link_type")?;
-            let filter = parse_optional_filter(args.get("filter").cloned())?;
-            let limit = get_optional_usize(args, "limit")?;
-
             let guard = lock_handler(&handler)?;
-            let response = guard
-                .find_link_candidates(FindLinkCandidatesRequest {
-                    source_collection: CollectionId::new(&col),
-                    source_id: EntityId::new(&id),
-                    link_type,
-                    filter,
-                    limit,
-                })
-                .map_err(to_tool_error)?;
-            text_tool_response(&response)
+            execute_link_candidates(&guard, &col, args)
         }),
     }
 }
@@ -856,20 +894,224 @@ pub fn build_neighbors_tool<S: StorageAdapter + 'static>(
             "required": ["id"]
         }),
         handler: Box::new(move |args| {
-            let id = get_required_string(args, "id")?;
-            let link_type = get_optional_string(args, "link_type");
-            let direction = get_direction(args.get("direction").and_then(Value::as_str))?;
-
             let guard = lock_handler(&handler)?;
-            let response = guard
-                .list_neighbors(ListNeighborsRequest {
-                    collection: CollectionId::new(&col),
-                    id: EntityId::new(&id),
-                    link_type,
-                    direction,
+            execute_neighbors(&guard, &col, args)
+        }),
+    }
+}
+
+/// Build CRUD tools backed by a Tokio mutex.
+pub fn build_crud_tools_tokio<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<TokioMutex<AxonHandler<S>>>,
+) -> Vec<ToolDef> {
+    let col = collection.to_string();
+    vec![
+        ToolDef {
+            name: format!("{col}.create"),
+            description: format!("Create a new entity in the {col} collection"),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Entity ID (optional, auto-generated UUIDv7 if omitted)" },
+                    "data": { "type": "object", "description": "Entity data" }
+                },
+                "required": ["data"]
+            }),
+            handler: {
+                let handler = Arc::clone(&handler);
+                let col = col.clone();
+                Box::new(move |args| {
+                    let mut guard = handler.blocking_lock();
+                    execute_create(&mut guard, &col, args)
                 })
-                .map_err(to_tool_error)?;
-            text_tool_response(&response)
+            },
+        },
+        ToolDef {
+            name: format!("{col}.get"),
+            description: format!("Get an entity from the {col} collection by ID"),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Entity ID" }
+                },
+                "required": ["id"]
+            }),
+            handler: {
+                let handler = Arc::clone(&handler);
+                let col = col.clone();
+                Box::new(move |args| {
+                    let guard = handler.blocking_lock();
+                    execute_get(&guard, &col, args)
+                })
+            },
+        },
+        ToolDef {
+            name: format!("{col}.patch"),
+            description: format!("Merge-patch an entity in the {col} collection"),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Entity ID" },
+                    "data": { "type": "object", "description": "Merge-patch data" },
+                    "expected_version": { "type": "integer", "description": "Expected version for OCC" }
+                },
+                "required": ["id", "data", "expected_version"]
+            }),
+            handler: {
+                let handler = Arc::clone(&handler);
+                let col = col.clone();
+                Box::new(move |args| {
+                    let mut guard = handler.blocking_lock();
+                    execute_patch(&mut guard, &col, args)
+                })
+            },
+        },
+        ToolDef {
+            name: format!("{col}.delete"),
+            description: format!("Delete an entity from the {col} collection"),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Entity ID" }
+                },
+                "required": ["id"]
+            }),
+            handler: {
+                let handler = Arc::clone(&handler);
+                Box::new(move |args| {
+                    let mut guard = handler.blocking_lock();
+                    execute_delete(&mut guard, &col, args)
+                })
+            },
+        },
+    ]
+}
+
+/// Build the `axon.query` tool backed by a Tokio mutex.
+pub fn build_query_tool_tokio<S: StorageAdapter + 'static>(
+    handler: Arc<TokioMutex<AxonHandler<S>>>,
+) -> ToolDef {
+    ToolDef {
+        name: "axon.query".into(),
+        description: "Execute a live GraphQL read query against Axon. Accepts a query string and optional variables.".into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "GraphQL query string"
+                },
+                "variables": {
+                    "type": "object",
+                    "description": "Optional variables for the query"
+                }
+            },
+            "required": ["query"]
+        }),
+        handler: Box::new(move |args| {
+            let guard = handler.blocking_lock();
+            execute_query(&guard, args)
+        }),
+    }
+}
+
+/// Build a collection aggregate tool backed by a Tokio mutex.
+pub fn build_aggregate_tool_tokio<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<TokioMutex<AxonHandler<S>>>,
+) -> ToolDef {
+    let col = collection.to_string();
+    ToolDef {
+        name: format!("{col}.aggregate"),
+        description: format!("Run an aggregation query on the {col} collection"),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "function": {
+                    "type": "string",
+                    "enum": ["count", "sum", "avg", "min", "max"],
+                    "description": "Aggregation function"
+                },
+                "field": {
+                    "type": "string",
+                    "description": "Field to aggregate"
+                },
+                "filter": {
+                    "type": "object",
+                    "description": "Optional filter to restrict entities"
+                },
+                "group_by": {
+                    "type": "string",
+                    "description": "Optional field to group results by"
+                }
+            },
+            "required": ["function"]
+        }),
+        handler: Box::new(move |args| {
+            let guard = handler.blocking_lock();
+            execute_aggregate(&guard, &col, args)
+        }),
+    }
+}
+
+/// Build `{collection}.link_candidates` backed by a Tokio mutex.
+pub fn build_link_candidates_tool_tokio<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<TokioMutex<AxonHandler<S>>>,
+) -> ToolDef {
+    let col = collection.to_string();
+    ToolDef {
+        name: format!("{col}.link_candidates"),
+        description: format!("Find candidate target entities for a link from the {col} collection"),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "Source entity ID" },
+                "link_type": { "type": "string", "description": "Link type to discover candidates for" },
+                "filter": { "type": "object", "description": "Optional filter applied to candidate entities" },
+                "limit": { "type": "integer", "description": "Maximum number of candidates to return" }
+            },
+            "required": ["id", "link_type"]
+        }),
+        handler: Box::new(move |args| {
+            let translated = serde_json::json!({
+                "source_id": args.get("id").cloned().unwrap_or(Value::Null),
+                "link_type": args.get("link_type").cloned().unwrap_or(Value::Null),
+                "filter": args.get("filter").cloned().unwrap_or(Value::Null),
+                "limit": args.get("limit").cloned().unwrap_or(Value::Null),
+            });
+            let guard = handler.blocking_lock();
+            execute_link_candidates(&guard, &col, &translated)
+        }),
+    }
+}
+
+/// Build `{collection}.neighbors` backed by a Tokio mutex.
+pub fn build_neighbors_tool_tokio<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<TokioMutex<AxonHandler<S>>>,
+) -> ToolDef {
+    let col = collection.to_string();
+    ToolDef {
+        name: format!("{col}.neighbors"),
+        description: format!("Find entities linked to a {col} entity"),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "string", "description": "Entity ID" },
+                "link_type": { "type": "string", "description": "Optional link type filter" },
+                "direction": {
+                    "type": "string",
+                    "enum": ["outbound", "inbound", "both"],
+                    "description": "Link direction (default: both)"
+                }
+            },
+            "required": ["id"]
+        }),
+        handler: Box::new(move |args| {
+            let guard = handler.blocking_lock();
+            execute_neighbors(&guard, &col, args)
         }),
     }
 }

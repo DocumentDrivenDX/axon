@@ -150,14 +150,14 @@ fn request_peer_address(request: &axum::extract::Request) -> Option<SocketAddr> 
 }
 
 #[derive(Clone, Debug)]
-struct CurrentDatabase(String);
+pub(crate) struct CurrentDatabase(String);
 
 impl CurrentDatabase {
     fn new(database: impl Into<String>) -> Self {
         Self(database.into())
     }
 
-    fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -1336,6 +1336,7 @@ pub fn build_router<S: StorageAdapter + 'static>(
 
 fn data_routes<S: StorageAdapter + 'static>() -> Router<SharedHandler<S>> {
     Router::new()
+        .merge(crate::mcp_http::routes::<S>())
         .route("/entities/{collection}/{id}", post(create_entity::<S>))
         .route("/entities/{collection}/{id}", get(get_entity::<S>))
         .route("/entities/{collection}/{id}", put(update_entity::<S>))

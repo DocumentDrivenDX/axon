@@ -8,12 +8,17 @@ use std::io::{self, BufRead, Write};
 use std::sync::{Arc, Mutex};
 
 use axon_api::handler::AxonHandler;
-use axon_api::request::ListCollectionsRequest;
+use axon_core::id::DEFAULT_DATABASE;
 use axon_mcp::handlers::{
     build_aggregate_tool, build_crud_tools, build_link_candidates_tool, build_neighbors_tool,
     build_query_tool,
 };
+use axon_mcp::prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
 use axon_mcp::protocol::McpServer;
+use axon_mcp::resources::{
+    discover_collections, read_resource_from_handler, resource_infos, resource_template_infos,
+    ResourceRegistry,
+};
 use axon_mcp::tools::ToolRegistry;
 use axon_storage::adapter::StorageAdapter;
 
@@ -28,14 +33,8 @@ fn collection_names_for_mcp<S: StorageAdapter>(
     let guard = handler
         .lock()
         .map_err(|e| io::Error::other(format!("failed to lock handler: {e}")))?;
-    let response = guard
-        .list_collections(ListCollectionsRequest::default())
-        .map_err(|e| io::Error::other(format!("failed to list collections: {e}")))?;
-    Ok(response
-        .collections
-        .into_iter()
-        .map(|collection| collection.name)
-        .collect())
+    discover_collections(&guard, DEFAULT_DATABASE)
+        .map_err(|e| io::Error::other(format!("failed to discover collections: {e}")))
 }
 
 fn build_registry<S: StorageAdapter + 'static>(
@@ -59,6 +58,37 @@ fn build_registry<S: StorageAdapter + 'static>(
     Ok(registry)
 }
 
+fn build_resource_registry<S: StorageAdapter + 'static>(
+    handler: Arc<Mutex<AxonHandler<S>>>,
+    collections: &[String],
+) -> io::Result<ResourceRegistry> {
+    let collection_names = collection_names_for_mcp(&handler, collections)?;
+    Ok(ResourceRegistry::new(
+        resource_infos(&collection_names),
+        resource_template_infos(),
+        Box::new(move |uri| {
+            let guard = handler.lock().map_err(|e| {
+                axon_mcp::McpError::Internal(format!("failed to lock handler: {e}"))
+            })?;
+            read_resource_from_handler(&guard, DEFAULT_DATABASE, uri)
+        }),
+    ))
+}
+
+fn build_prompt_registry<S: StorageAdapter + 'static>(
+    handler: Arc<Mutex<AxonHandler<S>>>,
+) -> PromptRegistry {
+    PromptRegistry::new(
+        prompt_infos(),
+        Box::new(move |name, arguments| {
+            let guard = handler.lock().map_err(|e| {
+                axon_mcp::McpError::Internal(format!("failed to lock handler: {e}"))
+            })?;
+            get_prompt_from_handler(&guard, DEFAULT_DATABASE, name, arguments)
+        }),
+    )
+}
+
 /// Run the MCP stdio loop: read lines from stdin, process, write to stdout.
 ///
 /// This blocks the calling thread until stdin is closed or an I/O error occurs.
@@ -67,8 +97,10 @@ pub fn run_mcp_stdio<S: StorageAdapter + 'static>(
     handler: Arc<Mutex<AxonHandler<S>>>,
     collections: &[String],
 ) -> io::Result<()> {
-    let registry = build_registry(handler, collections)?;
-    let mut server = McpServer::new(registry);
+    let registry = build_registry(Arc::clone(&handler), collections)?;
+    let resources = build_resource_registry(Arc::clone(&handler), collections)?;
+    let prompts = build_prompt_registry(handler);
+    let mut server = McpServer::new(registry, resources, prompts);
 
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -107,9 +139,12 @@ mod tests {
     #[test]
     fn mcp_stdio_server_initializes() {
         let handler = make_handler();
-        let registry = build_registry(handler, &[String::from("tasks")]).unwrap();
+        let registry = build_registry(Arc::clone(&handler), &[String::from("tasks")]).unwrap();
+        let resources =
+            build_resource_registry(Arc::clone(&handler), &[String::from("tasks")]).unwrap();
+        let prompts = build_prompt_registry(handler);
 
-        let mut server = McpServer::new(registry);
+        let mut server = McpServer::new(registry, resources, prompts);
 
         // Test initialize
         let req = serde_json::json!({
@@ -130,9 +165,12 @@ mod tests {
     #[test]
     fn mcp_stdio_lists_collection_tools_and_query() {
         let handler = make_handler();
-        let registry = build_registry(handler, &[String::from("tasks")]).unwrap();
+        let registry = build_registry(Arc::clone(&handler), &[String::from("tasks")]).unwrap();
+        let resources =
+            build_resource_registry(Arc::clone(&handler), &[String::from("tasks")]).unwrap();
+        let prompts = build_prompt_registry(handler);
 
-        let mut server = McpServer::new(registry);
+        let mut server = McpServer::new(registry, resources, prompts);
 
         let req = serde_json::json!({
             "jsonrpc": "2.0",
@@ -159,9 +197,12 @@ mod tests {
     #[test]
     fn mcp_stdio_crud_roundtrip() {
         let handler = make_handler();
-        let registry = build_registry(handler, &[String::from("items")]).unwrap();
+        let registry = build_registry(Arc::clone(&handler), &[String::from("items")]).unwrap();
+        let resources =
+            build_resource_registry(Arc::clone(&handler), &[String::from("items")]).unwrap();
+        let prompts = build_prompt_registry(handler);
 
-        let mut server = McpServer::new(registry);
+        let mut server = McpServer::new(registry, resources, prompts);
 
         // Create via tools/call
         let req = serde_json::json!({
@@ -206,9 +247,12 @@ mod tests {
         // Verify that no auth check happens for stdio connections.
         // Just verify we can create entities without any identity header.
         let handler = make_handler();
-        let registry = build_registry(handler, &[String::from("noauth")]).unwrap();
+        let registry = build_registry(Arc::clone(&handler), &[String::from("noauth")]).unwrap();
+        let resources =
+            build_resource_registry(Arc::clone(&handler), &[String::from("noauth")]).unwrap();
+        let prompts = build_prompt_registry(handler);
 
-        let mut server = McpServer::new(registry);
+        let mut server = McpServer::new(registry, resources, prompts);
         let req = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -250,5 +294,58 @@ mod tests {
         assert!(names.iter().any(|name| name == "tasks.create"));
         assert!(names.iter().any(|name| name == "tasks.aggregate"));
         assert!(names.iter().any(|name| name == "axon.query"));
+    }
+
+    #[test]
+    fn mcp_stdio_lists_resources_and_prompts() {
+        let handler = make_handler();
+        handler
+            .lock()
+            .unwrap()
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("tasks"),
+                schema: CollectionSchema::new(CollectionId::new("tasks")),
+                actor: Some("test".into()),
+            })
+            .unwrap();
+
+        let registry = build_registry(Arc::clone(&handler), &[]).unwrap();
+        let resources = build_resource_registry(Arc::clone(&handler), &[]).unwrap();
+        let prompts = build_prompt_registry(handler);
+        let mut server = McpServer::new(registry, resources, prompts);
+
+        let resources_resp = server
+            .handle_message(
+                &serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "resources/list"
+                })
+                .to_string(),
+            )
+            .unwrap();
+        let resources_json: serde_json::Value = serde_json::from_str(&resources_resp).unwrap();
+        assert!(resources_json["result"]["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|resource| resource["uri"] == "axon://tasks"));
+
+        let prompts_resp = server
+            .handle_message(
+                &serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "prompts/list"
+                })
+                .to_string(),
+            )
+            .unwrap();
+        let prompts_json: serde_json::Value = serde_json::from_str(&prompts_resp).unwrap();
+        assert!(prompts_json["result"]["prompts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|prompt| prompt["name"] == "axon.schema_review"));
     }
 }

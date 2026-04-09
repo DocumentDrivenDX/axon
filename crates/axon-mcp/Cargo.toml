@@ -19,6 +19,7 @@ async-graphql.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 pretty_assertions.workspace = true

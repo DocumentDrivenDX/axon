@@ -13,12 +13,20 @@
 //! - `notifications/initialized` — client ack (no response)
 
 pub mod handlers;
+pub mod prompts;
 pub mod protocol;
+pub mod resources;
 pub mod tools;
 
 pub use handlers::{
-    build_aggregate_tool, build_crud_tools, build_link_candidates_tool, build_neighbors_tool,
-    build_query_tool,
+    build_aggregate_tool, build_aggregate_tool_tokio, build_crud_tools, build_crud_tools_tokio,
+    build_link_candidates_tool, build_link_candidates_tool_tokio, build_neighbors_tool,
+    build_neighbors_tool_tokio, build_query_tool, build_query_tool_tokio,
 };
+pub use prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
 pub use protocol::{McpError, McpServer};
+pub use resources::{
+    discover_collections, read_resource_from_handler, resource_infos, resource_template_infos,
+    ResourceRegistry,
+};
 pub use tools::ToolRegistry;

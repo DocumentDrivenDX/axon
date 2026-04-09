@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::prompts::PromptRegistry;
+use crate::resources::ResourceRegistry;
 use crate::tools::ToolRegistry;
 
 /// MCP protocol error.
@@ -17,8 +19,50 @@ pub enum McpError {
     #[error("invalid params: {0}")]
     InvalidParams(String),
 
+    #[error("not found: {0}")]
+    NotFound(String),
+
     #[error("internal error: {0}")]
     Internal(String),
+}
+
+impl McpError {
+    fn jsonrpc_code(&self) -> i64 {
+        match self {
+            Self::Parse(_) => -32700,
+            Self::MethodNotFound(_) => -32601,
+            Self::InvalidParams(_) | Self::NotFound(_) => -32602,
+            Self::Internal(_) => -32603,
+        }
+    }
+
+    fn jsonrpc_message(&self) -> String {
+        match self {
+            Self::Parse(message) => format!("Parse error: {message}"),
+            Self::MethodNotFound(method) => format!("Method not found: {method}"),
+            Self::InvalidParams(message) => format!("Invalid params: {message}"),
+            Self::NotFound(message) => format!("Not found: {message}"),
+            Self::Internal(message) => format!("Internal error: {message}"),
+        }
+    }
+
+    fn jsonrpc_data(&self) -> Option<Value> {
+        match self {
+            Self::NotFound(detail) => Some(serde_json::json!({
+                "code": "not_found",
+                "detail": detail,
+            })),
+            Self::InvalidParams(detail) => Some(serde_json::json!({
+                "code": "invalid_params",
+                "detail": detail,
+            })),
+            Self::Internal(detail) => Some(serde_json::json!({
+                "code": "internal_error",
+                "detail": detail,
+            })),
+            Self::Parse(_) | Self::MethodNotFound(_) => None,
+        }
+    }
 }
 
 /// JSON-RPC 2.0 request.
@@ -62,7 +106,7 @@ impl JsonRpcResponse {
         }
     }
 
-    fn error(id: Option<Value>, code: i64, message: String) -> Self {
+    fn error(id: Option<Value>, code: i64, message: String, data: Option<Value>) -> Self {
         Self {
             jsonrpc: "2.0".into(),
             id,
@@ -70,9 +114,18 @@ impl JsonRpcResponse {
             error: Some(JsonRpcError {
                 code,
                 message,
-                data: None,
+                data,
             }),
         }
+    }
+
+    fn from_mcp_error(id: Option<Value>, error: McpError) -> Self {
+        Self::error(
+            id,
+            error.jsonrpc_code(),
+            error.jsonrpc_message(),
+            error.jsonrpc_data(),
+        )
     }
 }
 
@@ -87,12 +140,32 @@ pub struct ServerInfo {
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerCapabilities {
     pub tools: ToolsCapability,
+    pub resources: ResourcesCapability,
+    pub prompts: PromptsCapability,
 }
 
 /// Tool-related capabilities.
 #[derive(Debug, Clone, Serialize)]
 pub struct ToolsCapability {
     /// Whether the server supports tools/list_changed notifications.
+    #[serde(rename = "listChanged")]
+    pub list_changed: bool,
+}
+
+/// Resource-related capabilities.
+#[derive(Debug, Clone, Serialize)]
+pub struct ResourcesCapability {
+    /// Whether the server supports resources/list_changed notifications.
+    #[serde(rename = "listChanged")]
+    pub list_changed: bool,
+    /// Whether the server supports resource subscriptions.
+    pub subscribe: bool,
+}
+
+/// Prompt-related capabilities.
+#[derive(Debug, Clone, Serialize)]
+pub struct PromptsCapability {
+    /// Whether the server supports prompts/list_changed notifications.
     #[serde(rename = "listChanged")]
     pub list_changed: bool,
 }
@@ -109,6 +182,8 @@ pub struct ResourceSubscription {
 /// The MCP server: processes JSON-RPC requests and returns responses.
 pub struct McpServer {
     tool_registry: ToolRegistry,
+    resource_registry: ResourceRegistry,
+    prompt_registry: PromptRegistry,
     initialized: bool,
     /// Active resource subscriptions.
     subscriptions: Vec<ResourceSubscription>,
@@ -117,9 +192,15 @@ pub struct McpServer {
 
 impl McpServer {
     /// Create a new MCP server with the given tool registry.
-    pub fn new(tool_registry: ToolRegistry) -> Self {
+    pub fn new(
+        tool_registry: ToolRegistry,
+        resource_registry: ResourceRegistry,
+        prompt_registry: PromptRegistry,
+    ) -> Self {
         Self {
             tool_registry,
+            resource_registry,
+            prompt_registry,
             initialized: false,
             subscriptions: Vec::new(),
             next_sub_id: 0,
@@ -133,7 +214,7 @@ impl McpServer {
         let request: JsonRpcRequest = match serde_json::from_str(input) {
             Ok(r) => r,
             Err(e) => {
-                let resp = JsonRpcResponse::error(None, -32700, format!("Parse error: {e}"));
+                let resp = JsonRpcResponse::error(None, -32700, format!("Parse error: {e}"), None);
                 return Some(serde_json::to_string(&resp).unwrap_or_default());
             }
         };
@@ -150,13 +231,17 @@ impl McpServer {
             "initialize" => self.handle_initialize(request),
             "tools/list" => self.handle_tools_list(request),
             "tools/call" => self.handle_tools_call(request),
+            "resources/list" => self.handle_resources_list(request),
+            "resources/templates/list" => self.handle_resource_templates_list(request),
+            "resources/read" => self.handle_resources_read(request),
             "resources/subscribe" => self.handle_resource_subscribe(request),
             "resources/unsubscribe" => self.handle_resource_unsubscribe(request),
+            "prompts/list" => self.handle_prompts_list(request),
+            "prompts/get" => self.handle_prompts_get(request),
             "ping" => JsonRpcResponse::success(request.id.clone(), serde_json::json!({})),
-            _ => JsonRpcResponse::error(
+            _ => JsonRpcResponse::from_mcp_error(
                 request.id.clone(),
-                -32601,
-                format!("Method not found: {}", request.method),
+                McpError::MethodNotFound(request.method.clone()),
             ),
         }
     }
@@ -170,7 +255,11 @@ impl McpServer {
                     "listChanged": true
                 },
                 "resources": {
+                    "listChanged": false,
                     "subscribe": true
+                },
+                "prompts": {
+                    "listChanged": false
                 }
             },
             "serverInfo": {
@@ -191,17 +280,19 @@ impl McpServer {
         let params = match &request.params {
             Some(p) => p,
             None => {
-                return JsonRpcResponse::error(request.id.clone(), -32602, "Missing params".into());
+                return JsonRpcResponse::from_mcp_error(
+                    request.id.clone(),
+                    McpError::InvalidParams("missing params".into()),
+                );
             }
         };
 
         let tool_name = match params.get("name").and_then(|v| v.as_str()) {
             Some(n) => n,
             None => {
-                return JsonRpcResponse::error(
+                return JsonRpcResponse::from_mcp_error(
                     request.id.clone(),
-                    -32602,
-                    "Missing 'name' in params".into(),
+                    McpError::InvalidParams("missing 'name' in params".into()),
                 );
             }
         };
@@ -226,21 +317,70 @@ impl McpServer {
         }
     }
 
+    fn handle_resources_list(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+        let resources = self.resource_registry.list_resources();
+        JsonRpcResponse::success(
+            request.id.clone(),
+            serde_json::json!({
+                "resources": resources,
+            }),
+        )
+    }
+
+    fn handle_resource_templates_list(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+        let resource_templates = self.resource_registry.list_resource_templates();
+        JsonRpcResponse::success(
+            request.id.clone(),
+            serde_json::json!({
+                "resourceTemplates": resource_templates,
+            }),
+        )
+    }
+
+    fn handle_resources_read(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+        let params = match &request.params {
+            Some(p) => p,
+            None => {
+                return JsonRpcResponse::from_mcp_error(
+                    request.id.clone(),
+                    McpError::InvalidParams("missing params".into()),
+                );
+            }
+        };
+
+        let uri = match params.get("uri").and_then(|value| value.as_str()) {
+            Some(uri) => uri,
+            None => {
+                return JsonRpcResponse::from_mcp_error(
+                    request.id.clone(),
+                    McpError::InvalidParams("missing 'uri' in params".into()),
+                );
+            }
+        };
+
+        match self.resource_registry.read_resource(uri) {
+            Ok(result) => JsonRpcResponse::success(request.id.clone(), result),
+            Err(error) => JsonRpcResponse::from_mcp_error(request.id.clone(), error),
+        }
+    }
+
     fn handle_resource_subscribe(&mut self, request: &JsonRpcRequest) -> JsonRpcResponse {
         let params = match &request.params {
             Some(p) => p,
             None => {
-                return JsonRpcResponse::error(request.id.clone(), -32602, "Missing params".into());
+                return JsonRpcResponse::from_mcp_error(
+                    request.id.clone(),
+                    McpError::InvalidParams("missing params".into()),
+                );
             }
         };
 
         let uri = match params.get("uri").and_then(|v| v.as_str()) {
             Some(u) => u.to_string(),
             None => {
-                return JsonRpcResponse::error(
+                return JsonRpcResponse::from_mcp_error(
                     request.id.clone(),
-                    -32602,
-                    "Missing 'uri' in params".into(),
+                    McpError::InvalidParams("missing 'uri' in params".into()),
                 );
             }
         };
@@ -262,17 +402,19 @@ impl McpServer {
         let params = match &request.params {
             Some(p) => p,
             None => {
-                return JsonRpcResponse::error(request.id.clone(), -32602, "Missing params".into());
+                return JsonRpcResponse::from_mcp_error(
+                    request.id.clone(),
+                    McpError::InvalidParams("missing params".into()),
+                );
             }
         };
 
         let uri = match params.get("uri").and_then(|v| v.as_str()) {
             Some(u) => u,
             None => {
-                return JsonRpcResponse::error(
+                return JsonRpcResponse::from_mcp_error(
                     request.id.clone(),
-                    -32602,
-                    "Missing 'uri' in params".into(),
+                    McpError::InvalidParams("missing 'uri' in params".into()),
                 );
             }
         };
@@ -284,6 +426,48 @@ impl McpServer {
     /// Get active subscription count.
     pub fn subscription_count(&self) -> usize {
         self.subscriptions.len()
+    }
+
+    fn handle_prompts_list(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+        let prompts = self.prompt_registry.list_prompts();
+        JsonRpcResponse::success(
+            request.id.clone(),
+            serde_json::json!({
+                "prompts": prompts,
+            }),
+        )
+    }
+
+    fn handle_prompts_get(&self, request: &JsonRpcRequest) -> JsonRpcResponse {
+        let params = match &request.params {
+            Some(params) => params,
+            None => {
+                return JsonRpcResponse::from_mcp_error(
+                    request.id.clone(),
+                    McpError::InvalidParams("missing params".into()),
+                );
+            }
+        };
+
+        let name = match params.get("name").and_then(|value| value.as_str()) {
+            Some(name) => name,
+            None => {
+                return JsonRpcResponse::from_mcp_error(
+                    request.id.clone(),
+                    McpError::InvalidParams("missing 'name' in params".into()),
+                );
+            }
+        };
+
+        let arguments = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        match self.prompt_registry.get_prompt(name, &arguments) {
+            Ok(result) => JsonRpcResponse::success(request.id.clone(), result),
+            Err(error) => JsonRpcResponse::from_mcp_error(request.id.clone(), error),
+        }
     }
 
     /// Update the tool registry (e.g., after schema changes).
@@ -300,10 +484,16 @@ impl McpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prompts::PromptRegistry;
+    use crate::resources::ResourceRegistry;
     use crate::tools::ToolDef;
 
     fn empty_server() -> McpServer {
-        McpServer::new(ToolRegistry::new())
+        McpServer::new(
+            ToolRegistry::new(),
+            ResourceRegistry::default(),
+            PromptRegistry::default(),
+        )
     }
 
     fn response_json(server: &mut McpServer, request: Value) -> Value {
@@ -353,7 +543,11 @@ mod tests {
             }),
         });
 
-        let mut server = McpServer::new(registry);
+        let mut server = McpServer::new(
+            registry,
+            ResourceRegistry::default(),
+            PromptRegistry::default(),
+        );
         let req = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 2,
@@ -384,7 +578,11 @@ mod tests {
             }),
         });
 
-        let mut server = McpServer::new(registry);
+        let mut server = McpServer::new(
+            registry,
+            ResourceRegistry::default(),
+            PromptRegistry::default(),
+        );
         let req = serde_json::json!({
             "jsonrpc": "2.0",
             "id": 3,

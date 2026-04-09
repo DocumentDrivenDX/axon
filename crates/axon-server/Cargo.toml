@@ -28,6 +28,7 @@ axum.workspace = true
 clap.workspace = true
 tailscale-localapi = "0.5"
 tower-http = { version = "0.6", features = ["fs"] }
+tokio-stream = "0.1"
 
 [package.metadata.cargo-machete]
 ignored = ["prost"]
