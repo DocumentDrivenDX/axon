@@ -4,21 +4,25 @@
 //! use structured JSON. Errors are returned as `{"code": "...", "detail": "..."}`
 //! JSON objects with appropriate HTTP status codes.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use axum::body::Bytes;
+use axum::extract::connect_info::MockConnectInfo;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, get_service, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
 
+use crate::auth::{AuthContext, AuthError, Identity};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
@@ -112,6 +116,48 @@ fn axon_error_response(err: AxonError) -> Response {
             )),
         )
             .into_response(),
+    }
+}
+
+fn auth_error_response(err: AuthError) -> Response {
+    match err {
+        AuthError::MissingPeerAddress | AuthError::Unauthorized(_) => (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError::new("unauthorized", err.to_string())),
+        )
+            .into_response(),
+        AuthError::ProviderUnavailable(_) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError::new("auth_unavailable", err.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+fn request_peer_address(request: &axum::extract::Request) -> Option<SocketAddr> {
+    request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|connect_info| connect_info.0)
+        .or_else(|| {
+            request
+                .extensions()
+                .get::<MockConnectInfo<SocketAddr>>()
+                .map(|connect_info| connect_info.0)
+        })
+}
+
+async fn authenticate_http_request(
+    State(auth): State<AuthContext>,
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    match auth.resolve_peer(request_peer_address(&request)).await {
+        Ok(identity) => {
+            request.extensions_mut().insert(identity);
+            next.run(request).await
+        }
+        Err(error) => auth_error_response(error),
     }
 }
 
@@ -324,6 +370,7 @@ pub struct TransactionBody {
 
 async fn create_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path((collection, id)): Path<(String, String)>,
     Json(body): Json<CreateEntityBody>,
 ) -> Response {
@@ -331,7 +378,7 @@ async fn create_entity<S: StorageAdapter>(
         collection: CollectionId::new(&collection),
         id: EntityId::new(&id),
         data: body.data,
-        actor: body.actor,
+        actor: Some(identity.actor),
         audit_metadata: None,
     }) {
         Ok(resp) => (
@@ -417,6 +464,7 @@ async fn get_collection_entity<S: StorageAdapter>(
 
 async fn update_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path((collection, id)): Path<(String, String)>,
     Json(body): Json<UpdateEntityBody>,
 ) -> Response {
@@ -425,7 +473,7 @@ async fn update_entity<S: StorageAdapter>(
         id: EntityId::new(&id),
         data: body.data,
         expected_version: body.expected_version,
-        actor: body.actor,
+        actor: Some(identity.actor),
         audit_metadata: None,
     }) {
         Ok(resp) => Json(json!({
@@ -443,14 +491,14 @@ async fn update_entity<S: StorageAdapter>(
 
 async fn delete_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path((collection, id)): Path<(String, String)>,
-    body: Option<Json<DeleteEntityBody>>,
+    _body: Option<Json<DeleteEntityBody>>,
 ) -> Response {
-    let actor = body.and_then(|b| b.0.actor);
     match handler.lock().await.delete_entity(DeleteEntityRequest {
         collection: CollectionId::new(&collection),
         id: EntityId::new(&id),
-        actor,
+        actor: Some(identity.actor),
         audit_metadata: None,
         force: false,
     }) {
@@ -496,6 +544,7 @@ async fn query_entities<S: StorageAdapter>(
 
 async fn create_link<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Json(body): Json<CreateLinkBody>,
 ) -> Response {
     match handler.lock().await.create_link(CreateLinkRequest {
@@ -505,7 +554,7 @@ async fn create_link<S: StorageAdapter>(
         target_id: EntityId::new(&body.target_id),
         link_type: body.link_type,
         metadata: body.metadata,
-        actor: body.actor,
+        actor: Some(identity.actor),
     }) {
         Ok(resp) => {
             let link = resp.link;
@@ -530,6 +579,7 @@ async fn create_link<S: StorageAdapter>(
 
 async fn delete_link<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Json(body): Json<DeleteLinkBody>,
 ) -> Response {
     match handler.lock().await.delete_link(DeleteLinkRequest {
@@ -538,7 +588,7 @@ async fn delete_link<S: StorageAdapter>(
         target_collection: CollectionId::new(&body.target_collection),
         target_id: EntityId::new(&body.target_id),
         link_type: body.link_type,
-        actor: body.actor,
+        actor: Some(identity.actor),
     }) {
         Ok(resp) => Json(json!({
             "source_collection": resp.source_collection,
@@ -662,6 +712,7 @@ async fn query_audit<S: StorageAdapter>(
 
 async fn revert_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Json(body): Json<RevertEntityBody>,
 ) -> Response {
     match handler
@@ -669,7 +720,7 @@ async fn revert_entity<S: StorageAdapter>(
         .await
         .revert_entity_to_audit_entry(RevertEntityRequest {
             audit_entry_id: body.audit_entry_id,
-            actor: body.actor,
+            actor: Some(identity.actor),
             force: body.force,
         }) {
         Ok(resp) => Json(json!({
@@ -688,11 +739,12 @@ async fn revert_entity<S: StorageAdapter>(
 
 async fn create_collection<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path(name): Path<String>,
     body: Option<Json<CreateCollectionBody>>,
 ) -> Response {
-    let (actor, schema_body) = match body.and_then(|Json(b)| b.schema.map(|s| (b.actor, s))) {
-        Some((actor, schema_body)) => (actor, schema_body),
+    let schema_body = match body.and_then(|Json(b)| b.schema) {
+        Some(schema_body) => schema_body,
         None => {
             return axon_error_response(AxonError::InvalidArgument(
                 "'schema' field is required to create a collection".into(),
@@ -717,7 +769,7 @@ async fn create_collection<S: StorageAdapter>(
         .create_collection(CreateCollectionRequest {
             name: collection_id,
             schema,
-            actor,
+            actor: Some(identity.actor),
         }) {
         Ok(resp) => (StatusCode::CREATED, Json(json!({ "name": resp.name }))).into_response(),
         Err(e) => axon_error_response(e),
@@ -726,13 +778,13 @@ async fn create_collection<S: StorageAdapter>(
 
 async fn drop_collection<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path(name): Path<String>,
-    body: Option<Json<CollectionActorBody>>,
+    _body: Option<Json<CollectionActorBody>>,
 ) -> Response {
-    let actor = body.and_then(|b| b.0.actor);
     match handler.lock().await.drop_collection(DropCollectionRequest {
         name: CollectionId::new(&name),
-        actor,
+        actor: Some(identity.actor),
         confirm: true,
     }) {
         Ok(resp) => Json(json!({
@@ -779,6 +831,7 @@ async fn describe_collection<S: StorageAdapter>(
 
 async fn put_collection_template<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path(collection): Path<String>,
     headers: HeaderMap,
     body: Bytes,
@@ -794,7 +847,7 @@ async fn put_collection_template<S: StorageAdapter>(
         .put_collection_template(PutCollectionTemplateRequest {
             collection: CollectionId::new(&collection),
             template: body.template,
-            actor: body.actor,
+            actor: Some(identity.actor),
         }) {
         Ok(resp) => Json(json!({
             "collection": resp.view.collection,
@@ -833,20 +886,20 @@ async fn get_collection_template<S: StorageAdapter>(
 
 async fn delete_collection_template<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path(collection): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let actor = match parse_delete_collection_template_request(&headers, body) {
-        Ok(body) => body.actor,
-        Err(error) => return axon_error_response(error),
-    };
+    if let Err(error) = parse_delete_collection_template_request(&headers, body) {
+        return axon_error_response(error);
+    }
     match handler
         .lock()
         .await
         .delete_collection_template(DeleteCollectionTemplateRequest {
             collection: CollectionId::new(&collection),
-            actor,
+            actor: Some(identity.actor),
         }) {
         Ok(resp) => {
             Json(json!({ "collection": resp.collection, "status": "deleted" })).into_response()
@@ -857,6 +910,7 @@ async fn delete_collection_template<S: StorageAdapter>(
 
 async fn put_schema<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path(collection): Path<String>,
     Json(body): Json<PutSchemaBody>,
 ) -> Response {
@@ -874,7 +928,7 @@ async fn put_schema<S: StorageAdapter>(
     };
     match handler.lock().await.handle_put_schema(PutSchemaRequest {
         schema,
-        actor: body.actor,
+        actor: Some(identity.actor),
         force: false,
         dry_run: false,
     }) {
@@ -1022,6 +1076,7 @@ async fn drop_namespace<S: StorageAdapter>(
 
 async fn commit_transaction<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Json(body): Json<TransactionBody>,
 ) -> Response {
     use axon_api::transaction::Transaction;
@@ -1094,7 +1149,7 @@ async fn commit_transaction<S: StorageAdapter>(
     let tx_id = tx.id.clone();
     let mut h = handler.lock().await;
     let (storage, audit) = h.storage_and_audit_mut();
-    match tx.commit(storage, audit, body.actor) {
+    match tx.commit(storage, audit, Some(identity.actor)) {
         Ok(written) => {
             let entities: Vec<Value> = written
                 .iter()
@@ -1126,6 +1181,16 @@ pub fn build_router<S: StorageAdapter + 'static>(
     handler: SharedHandler<S>,
     backend: impl Into<String>,
     ui_dir: Option<PathBuf>,
+) -> Router {
+    build_router_with_auth(handler, backend, ui_dir, AuthContext::no_auth())
+}
+
+/// Build the axum router for the HTTP gateway with request authentication.
+pub fn build_router_with_auth<S: StorageAdapter + 'static>(
+    handler: SharedHandler<S>,
+    backend: impl Into<String>,
+    ui_dir: Option<PathBuf>,
+    auth: AuthContext,
 ) -> Router {
     let start = Instant::now();
     let backend = backend.into();
@@ -1226,21 +1291,75 @@ pub fn build_router<S: StorageAdapter + 'static>(
         router = router.nest_service("/ui", ui_service);
     }
 
-    router
+    router.layer(middleware::from_fn_with_state(
+        auth,
+        authenticate_http_request,
+    ))
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
+    use std::collections::HashMap;
     use std::fmt::Display;
+    use std::future::Future;
+    use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
 
     use super::*;
+    use crate::auth::{
+        AuthContext, AuthError, AuthMode, Role, TailscaleWhoisProvider, TailscaleWhoisResponse,
+    };
     use axon_core::id::{CollectionId, Namespace};
     use axon_schema::schema::{CollectionSchema, CollectionView, IndexDef, IndexType};
     use axon_storage::adapter::StorageAdapter;
     use axon_storage::MemoryStorageAdapter;
+    use axum::extract::connect_info::MockConnectInfo;
     use axum_test::TestServer;
     use serde_json::json;
+
+    struct FakeWhoisProvider {
+        results: StdMutex<HashMap<SocketAddr, Result<TailscaleWhoisResponse, AuthError>>>,
+    }
+
+    impl FakeWhoisProvider {
+        fn with_result(
+            peer: SocketAddr,
+            result: Result<TailscaleWhoisResponse, AuthError>,
+        ) -> Self {
+            let mut results = HashMap::new();
+            results.insert(peer, result);
+            Self {
+                results: StdMutex::new(results),
+            }
+        }
+    }
+
+    impl TailscaleWhoisProvider for FakeWhoisProvider {
+        fn verify(&self) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn whois(
+            &self,
+            address: SocketAddr,
+        ) -> Pin<Box<dyn Future<Output = Result<TailscaleWhoisResponse, AuthError>> + Send + '_>>
+        {
+            Box::pin(async move {
+                let results = match self.results.lock() {
+                    Ok(results) => results,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                results.get(&address).cloned().unwrap_or_else(|| {
+                    Err(AuthError::Unauthorized(
+                        "peer is not a recognized tailnet address".into(),
+                    ))
+                })
+            })
+        }
+    }
 
     fn test_server_with_handler() -> (TestServer, SharedHandler<MemoryStorageAdapter>) {
         let handler = Arc::new(Mutex::new(
@@ -1252,6 +1371,15 @@ mod tests {
 
     fn test_server() -> TestServer {
         test_server_with_handler().0
+    }
+
+    fn test_server_with_auth(peer: SocketAddr, auth: AuthContext) -> TestServer {
+        let handler = Arc::new(Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ));
+        let app =
+            build_router_with_auth(handler, "memory", None, auth).layer(MockConnectInfo(peer));
+        TestServer::new(app)
     }
 
     fn ok_or_panic<T, E: Display>(result: Result<T, E>, context: &str) -> T {
@@ -1451,7 +1579,7 @@ mod tests {
         assert_eq!(body["collection"], "tasks");
         assert_eq!(body["template"], "# {{title}}\n\n{{notes}}");
         assert_eq!(body["version"], 1);
-        assert_eq!(body["updated_by"], "operator");
+        assert_eq!(body["updated_by"], "anonymous");
         assert_eq!(body["warnings"].as_array().map_or(0, Vec::len), 1);
 
         let get = server.get("/collections/tasks/template").await;
@@ -1810,7 +1938,7 @@ mod tests {
         let body: Value = resp.json();
         let entries = body["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["actor"], "agent-1");
+        assert_eq!(entries[0]["actor"], "anonymous");
     }
 
     #[tokio::test]
@@ -1829,18 +1957,77 @@ mod tests {
             .assert_status(StatusCode::CREATED);
 
         // Filter by actor.
-        let resp = server.get("/audit/query?actor=alice").await;
+        let resp = server.get("/audit/query?actor=anonymous").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         let entries = body["entries"].as_array().unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["actor"], "alice");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["actor"], "anonymous");
 
         // Filter by collection.
         let resp = server.get("/audit/query?collection=tasks").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entries"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn http_tailscale_identity_overrides_body_actor_in_audit() {
+        let peer = SocketAddr::from(([100, 64, 0, 10], 3000));
+        let auth = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            Arc::new(FakeWhoisProvider::with_result(
+                peer,
+                Ok(TailscaleWhoisResponse {
+                    node_name: "ts-agent".into(),
+                    user_login: "agent@example.com".into(),
+                    tags: vec!["tag:axon-write".into()],
+                }),
+            )),
+            Duration::from_secs(60),
+        );
+        let server = test_server_with_auth(peer, auth);
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1"}, "actor": "spoofed"}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let resp = server.get("/audit/query?actor=ts-agent").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["actor"], "ts-agent");
+    }
+
+    #[tokio::test]
+    async fn http_tailscale_rejects_non_tailnet_peer() {
+        let peer = SocketAddr::from(([127, 0, 0, 1], 3000));
+        let auth = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            Arc::new(FakeWhoisProvider::with_result(
+                peer,
+                Err(AuthError::Unauthorized(
+                    "peer is not a recognized tailnet address".into(),
+                )),
+            )),
+            Duration::from_secs(60),
+        );
+        let server = test_server_with_auth(peer, auth);
+
+        let resp = server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1"}, "actor": "spoofed"}))
+            .await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "unauthorized");
     }
 
     #[tokio::test]
@@ -2137,13 +2324,13 @@ mod tests {
             .await
             .assert_status_ok();
 
-        // Audit log must contain a SchemaUpdate entry with the provided actor.
+        // Audit log must contain a SchemaUpdate entry with the resolved actor.
         let resp = server.get("/audit/query?collection=invoices").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         let entries = body["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["actor"], "schema-admin");
+        assert_eq!(entries[0]["actor"], "anonymous");
         assert_eq!(entries[0]["mutation"], "schema.update");
     }
 

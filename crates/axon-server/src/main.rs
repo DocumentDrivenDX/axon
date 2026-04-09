@@ -3,12 +3,14 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use axon_api::handler::AxonHandler;
 use axon_server::service::{AxonServiceImpl, AxonServiceServer};
+use axon_server::{AuthContext, Role};
 use axon_storage::{MemoryStorageAdapter, PostgresStorageAdapter, SqliteStorageAdapter};
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -16,6 +18,23 @@ enum StorageBackend {
     Memory,
     Sqlite,
     Postgres,
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum DefaultRoleArg {
+    Admin,
+    Write,
+    Read,
+}
+
+impl From<DefaultRoleArg> for Role {
+    fn from(value: DefaultRoleArg) -> Self {
+        match value {
+            DefaultRoleArg::Admin => Role::Admin,
+            DefaultRoleArg::Write => Role::Write,
+            DefaultRoleArg::Read => Role::Read,
+        }
+    }
 }
 
 /// Axon server — schema-first transactional data store for agentic applications.
@@ -34,6 +53,27 @@ struct Args {
     /// Intended for local development only.
     #[arg(long, env = "AXON_NO_AUTH", default_value = "true")]
     no_auth: bool,
+
+    /// Path to the local tailscaled socket for LocalAPI whois lookups.
+    #[arg(
+        long,
+        env = "AXON_TAILSCALE_SOCKET",
+        default_value = "/run/tailscale/tailscaled.sock"
+    )]
+    tailscale_socket: PathBuf,
+
+    /// Default role assigned to Tailscale nodes without a recognized ACL tag.
+    #[arg(
+        long,
+        env = "AXON_TAILSCALE_DEFAULT_ROLE",
+        value_enum,
+        default_value = "read"
+    )]
+    tailscale_default_role: DefaultRoleArg,
+
+    /// TTL in seconds for cached Tailscale whois identity lookups.
+    #[arg(long, env = "AXON_AUTH_CACHE_TTL_SECS", default_value = "60")]
+    auth_cache_ttl_secs: u64,
 
     /// Run MCP server over stdin/stdout instead of HTTP/gRPC.
     /// No authentication is applied for stdio connections.
@@ -122,12 +162,33 @@ where
         return axon_server::run_mcp_stdio(handler, &[]).map_err(|error| error.to_string());
     }
 
+    let auth = if args.no_auth {
+        AuthContext::no_auth()
+    } else {
+        AuthContext::tailscale(
+            args.tailscale_default_role.clone().into(),
+            args.tailscale_socket.clone(),
+            Duration::from_secs(args.auth_cache_ttl_secs),
+        )
+    };
+
+    auth.verify().await.map_err(|error| {
+        format!(
+            "failed to initialize auth via {}: {error}",
+            args.tailscale_socket.display()
+        )
+    })?;
+
     let handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(storage)));
-    let http_app =
-        axon_server::gateway::build_router(handler.clone(), backend.clone(), args.ui_dir.clone());
+    let http_app = axon_server::gateway::build_router_with_auth(
+        handler.clone(),
+        backend.clone(),
+        args.ui_dir.clone(),
+        auth.clone(),
+    );
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
-    let grpc_svc = AxonServiceImpl::from_shared(handler);
+    let grpc_svc = AxonServiceImpl::from_shared_with_auth(handler, auth);
     let grpc_addr: SocketAddr = ([0, 0, 0, 0], args.grpc_port).into();
 
     tracing::info!("HTTP gateway listening on {http_addr}");
@@ -137,10 +198,13 @@ where
         let listener = tokio::net::TcpListener::bind(http_addr)
             .await
             .map_err(|error| format!("failed to bind HTTP listener: {error}"))?;
-        axum::serve(listener, http_app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-            .map_err(|error| format!("HTTP server error: {error}"))
+        axum::serve(
+            listener,
+            http_app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|error| format!("HTTP server error: {error}"))
     });
 
     let grpc_handle = tokio::spawn(async move {

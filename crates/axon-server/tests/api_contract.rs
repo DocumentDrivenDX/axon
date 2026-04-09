@@ -357,7 +357,7 @@ async fn grpc_query_audit_by_entity() {
 
     let entries = resp.into_inner().entries;
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].actor, "agent-1");
+    assert_eq!(entries[0].actor, "anonymous");
     assert_eq!(entries[0].mutation, "EntityCreate");
 }
 

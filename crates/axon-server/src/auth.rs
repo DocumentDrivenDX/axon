@@ -1,10 +1,21 @@
 //! Authentication and identity resolution for Axon server.
 //!
-//! In `--no-auth` mode, all requests succeed as admin with actor="anonymous".
-//! When auth is enabled (future: Tailscale whois), identity is resolved from
-//! the incoming request.
+//! In `--no-auth` mode, all requests succeed as admin with actor="anonymous"`.
+//! When auth is enabled, identity is resolved from the incoming request via
+//! Tailscale LocalAPI `whois`.
+
+use std::collections::HashMap;
+use std::fmt;
+use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use tailscale_localapi::{LocalApi, UnixStreamClient};
+use tokio::sync::RwLock;
 
 /// Authentication mode for the server.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33,8 +44,10 @@ pub enum Role {
     Read,
 }
 
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 /// Resolved identity for a request.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Identity {
     /// The actor name for audit log entries.
     pub actor: String,
@@ -64,18 +77,203 @@ pub struct TailscaleWhoisResponse {
     pub tags: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthError {
+    MissingPeerAddress,
+    Unauthorized(String),
+    ProviderUnavailable(String),
+}
+
+impl AuthError {
+    #[must_use]
+    pub fn detail(&self) -> &str {
+        match self {
+            Self::MissingPeerAddress => "missing peer address",
+            Self::Unauthorized(detail) | Self::ProviderUnavailable(detail) => detail,
+        }
+    }
+}
+
+impl fmt::Display for AuthError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.detail())
+    }
+}
+
+impl std::error::Error for AuthError {}
+
+#[derive(Debug, Clone)]
+struct CachedIdentity {
+    identity: Identity,
+    expires_at: Instant,
+}
+
+pub(crate) trait TailscaleWhoisProvider: Send + Sync {
+    fn verify(&self) -> BoxFuture<'_, Result<(), AuthError>>;
+
+    fn whois(
+        &self,
+        address: SocketAddr,
+    ) -> BoxFuture<'_, Result<TailscaleWhoisResponse, AuthError>>;
+}
+
+#[derive(Clone)]
+struct LocalApiWhoisProvider {
+    client: LocalApi<UnixStreamClient>,
+}
+
+impl LocalApiWhoisProvider {
+    fn new(socket_path: impl AsRef<Path>) -> Self {
+        Self {
+            client: LocalApi::new_with_socket_path(socket_path),
+        }
+    }
+}
+
+impl TailscaleWhoisProvider for LocalApiWhoisProvider {
+    fn verify(&self) -> BoxFuture<'_, Result<(), AuthError>> {
+        Box::pin(async move {
+            self.client
+                .status()
+                .await
+                .map(|_| ())
+                .map_err(map_localapi_error)
+        })
+    }
+
+    fn whois(
+        &self,
+        address: SocketAddr,
+    ) -> BoxFuture<'_, Result<TailscaleWhoisResponse, AuthError>> {
+        Box::pin(async move {
+            self.client
+                .whois(address)
+                .await
+                .map(TailscaleWhoisResponse::from)
+                .map_err(map_localapi_error)
+        })
+    }
+}
+
+/// Request authentication state shared by the HTTP and gRPC frontends.
+#[derive(Clone)]
+pub struct AuthContext {
+    mode: AuthMode,
+    provider: Option<Arc<dyn TailscaleWhoisProvider>>,
+    cache: Arc<RwLock<HashMap<IpAddr, CachedIdentity>>>,
+    cache_ttl: Duration,
+}
+
+impl Default for AuthContext {
+    fn default() -> Self {
+        Self::no_auth()
+    }
+}
+
+impl AuthContext {
+    #[must_use]
+    pub fn no_auth() -> Self {
+        Self {
+            mode: AuthMode::NoAuth,
+            provider: None,
+            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_ttl: Duration::from_secs(60),
+        }
+    }
+
+    #[must_use]
+    pub fn tailscale(
+        default_role: Role,
+        socket_path: impl Into<PathBuf>,
+        cache_ttl: Duration,
+    ) -> Self {
+        let mode = AuthMode::Tailscale { default_role };
+        let provider = Arc::new(LocalApiWhoisProvider::new(socket_path.into()));
+        Self::with_provider(mode, provider, cache_ttl)
+    }
+
+    #[must_use]
+    pub fn mode(&self) -> &AuthMode {
+        &self.mode
+    }
+
+    pub async fn verify(&self) -> Result<(), AuthError> {
+        match &self.provider {
+            Some(provider) => provider.verify().await,
+            None => Ok(()),
+        }
+    }
+
+    pub async fn resolve_peer(&self, peer: Option<SocketAddr>) -> Result<Identity, AuthError> {
+        match &self.mode {
+            AuthMode::NoAuth => Ok(Identity::anonymous_admin()),
+            AuthMode::Tailscale { default_role } => {
+                let peer = peer.ok_or(AuthError::MissingPeerAddress)?;
+                let peer_ip = peer.ip();
+
+                if let Some(identity) = self.cached_identity(peer_ip).await {
+                    return Ok(identity);
+                }
+
+                let provider = self.provider.as_ref().ok_or_else(|| {
+                    AuthError::ProviderUnavailable(
+                        "tailscale auth is enabled but no LocalAPI provider is configured".into(),
+                    )
+                })?;
+                let identity = identity_from_tailscale(&provider.whois(peer).await?, default_role);
+                self.store_cached_identity(peer_ip, identity.clone()).await;
+                Ok(identity)
+            }
+        }
+    }
+
+    async fn cached_identity(&self, peer_ip: IpAddr) -> Option<Identity> {
+        let cache = self.cache.read().await;
+        cache.get(&peer_ip).and_then(|entry| {
+            if entry.expires_at > Instant::now() {
+                Some(entry.identity.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    async fn store_cached_identity(&self, peer_ip: IpAddr, identity: Identity) {
+        self.cache.write().await.insert(
+            peer_ip,
+            CachedIdentity {
+                identity,
+                expires_at: Instant::now() + self.cache_ttl,
+            },
+        );
+    }
+
+    pub(crate) fn with_provider(
+        mode: AuthMode,
+        provider: Arc<dyn TailscaleWhoisProvider>,
+        cache_ttl: Duration,
+    ) -> Self {
+        Self {
+            mode,
+            provider: Some(provider),
+            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_ttl,
+        }
+    }
+}
+
 /// Map Tailscale ACL tags to an Axon role.
 ///
-/// - `tag:admin` -> Admin
-/// - `tag:write` -> Write
-/// - `tag:read` -> Read
+/// - `tag:axon-admin` -> Admin
+/// - `tag:axon-write` / `tag:axon-agent` -> Write
+/// - `tag:axon-read` -> Read
 /// - No matching tags -> default_role
 pub fn role_from_tags(tags: &[String], default_role: &Role) -> Role {
     for tag in tags {
         match tag.as_str() {
-            "tag:admin" => return Role::Admin,
-            "tag:write" => return Role::Write,
-            "tag:read" => return Role::Read,
+            "tag:admin" | "tag:axon-admin" => return Role::Admin,
+            "tag:write" | "tag:axon-write" | "tag:axon-agent" => return Role::Write,
+            "tag:read" | "tag:axon-read" => return Role::Read,
             _ => {}
         }
     }
@@ -90,34 +288,125 @@ pub fn identity_from_tailscale(whois: &TailscaleWhoisResponse, default_role: &Ro
     }
 }
 
-/// Resolve identity based on auth mode.
-///
-/// In `NoAuth` mode, always returns the anonymous admin identity.
-/// In `Tailscale` mode, returns a stub identity (actual whois call
-/// requires an HTTP request to the local Tailscale API).
-pub fn resolve_identity(mode: &AuthMode) -> Identity {
-    match mode {
-        AuthMode::NoAuth => Identity::anonymous_admin(),
-        AuthMode::Tailscale { default_role } => {
-            // In the real implementation, this would call the Tailscale
-            // local API at /localapi/v0/whois with the peer address.
-            // For now, return a placeholder that signals auth is active.
-            Identity {
-                actor: "tailscale-pending".into(),
-                role: default_role.clone(),
-            }
+impl From<tailscale_localapi::Whois> for TailscaleWhoisResponse {
+    fn from(whois: tailscale_localapi::Whois) -> Self {
+        Self {
+            node_name: preferred_node_name(&whois.node),
+            user_login: whois.user_profile.login_name,
+            tags: whois.node.tags,
         }
     }
 }
 
+fn preferred_node_name(node: &tailscale_localapi::Node) -> String {
+    if !node.computed_name.is_empty() {
+        return node.computed_name.clone();
+    }
+
+    if let Some(hostname) = &node.hostinfo.hostname {
+        if !hostname.is_empty() {
+            return hostname.clone();
+        }
+    }
+
+    if !node.computed_name_with_host.is_empty() {
+        return node.computed_name_with_host.clone();
+    }
+
+    short_node_name(&node.name)
+}
+
+fn short_node_name(name: &str) -> String {
+    match name.split('.').next() {
+        Some(short) if !short.is_empty() => short.to_string(),
+        _ => name.to_string(),
+    }
+}
+
+fn map_localapi_error(error: tailscale_localapi::Error) -> AuthError {
+    match error {
+        tailscale_localapi::Error::UnprocessableEntity => {
+            AuthError::Unauthorized("peer is not a recognized tailnet address".into())
+        }
+        other => AuthError::ProviderUnavailable(other.to_string()),
+    }
+}
+
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex as StdMutex;
+
     use super::*;
 
-    #[test]
-    fn no_auth_returns_anonymous_admin() {
-        let identity = resolve_identity(&AuthMode::NoAuth);
+    struct FakeWhoisProvider {
+        calls: AtomicUsize,
+        verification: StdMutex<Result<(), AuthError>>,
+        results: StdMutex<HashMap<SocketAddr, Result<TailscaleWhoisResponse, AuthError>>>,
+    }
+
+    impl FakeWhoisProvider {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                verification: StdMutex::new(Ok(())),
+                results: StdMutex::new(HashMap::new()),
+            }
+        }
+
+        fn with_result(
+            address: SocketAddr,
+            result: Result<TailscaleWhoisResponse, AuthError>,
+        ) -> Self {
+            let mut results = HashMap::new();
+            results.insert(address, result);
+            Self {
+                calls: AtomicUsize::new(0),
+                verification: StdMutex::new(Ok(())),
+                results: StdMutex::new(results),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl TailscaleWhoisProvider for FakeWhoisProvider {
+        fn verify(&self) -> BoxFuture<'_, Result<(), AuthError>> {
+            Box::pin(async move {
+                let verification = match self.verification.lock() {
+                    Ok(verification) => verification,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                verification.clone()
+            })
+        }
+
+        fn whois(
+            &self,
+            address: SocketAddr,
+        ) -> BoxFuture<'_, Result<TailscaleWhoisResponse, AuthError>> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let results = match self.results.lock() {
+                    Ok(results) => results,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                results.get(&address).cloned().unwrap_or_else(|| {
+                    Err(AuthError::Unauthorized(
+                        "peer is not a recognized tailnet address".into(),
+                    ))
+                })
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn no_auth_returns_anonymous_admin() {
+        let context = AuthContext::no_auth();
+        let identity = context.resolve_peer(None).await.expect("no auth succeeds");
         assert_eq!(identity.actor, "anonymous");
         assert_eq!(identity.role, Role::Admin);
     }
@@ -134,33 +423,7 @@ mod tests {
         assert_eq!(id.role, Role::Admin);
     }
 
-    #[test]
-    fn no_auth_all_requests_succeed_as_admin() {
-        // Verify that in NoAuth mode, resolve_identity always returns admin.
-        // This satisfies the acceptance criterion: "All requests succeed as admin."
-        for _ in 0..10 {
-            let id = resolve_identity(&AuthMode::NoAuth);
-            assert_eq!(id.role, Role::Admin);
-        }
-    }
-
-    #[test]
-    fn audit_actor_is_anonymous_in_no_auth() {
-        // Verify the audit actor name is "anonymous" in no-auth mode.
-        let id = resolve_identity(&AuthMode::NoAuth);
-        assert_eq!(id.actor, "anonymous");
-    }
-
     // ── Tailscale auth tests (US-043) ──────────────────────────────────
-
-    #[test]
-    fn tailscale_mode_returns_pending_identity() {
-        let id = resolve_identity(&AuthMode::Tailscale {
-            default_role: Role::Read,
-        });
-        assert_eq!(id.actor, "tailscale-pending");
-        assert_eq!(id.role, Role::Read);
-    }
 
     #[test]
     fn role_from_admin_tag() {
@@ -178,6 +441,12 @@ mod tests {
     fn role_from_read_tag() {
         let role = role_from_tags(&["tag:read".into()], &Role::Admin);
         assert_eq!(role, Role::Read);
+    }
+
+    #[test]
+    fn role_from_axon_agent_tag_maps_to_write() {
+        let role = role_from_tags(&["tag:axon-agent".into()], &Role::Read);
+        assert_eq!(role, Role::Write);
     }
 
     #[test]
@@ -223,22 +492,101 @@ mod tests {
             user_login: "svc@example.com".into(),
             tags: vec!["tag:write".into()],
         };
-        let json = serde_json::to_string(&whois).unwrap();
-        let parsed: TailscaleWhoisResponse = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&whois).expect("whois should serialize");
+        let parsed: TailscaleWhoisResponse =
+            serde_json::from_str(&json).expect("whois should deserialize");
         assert_eq!(parsed.node_name, "server");
         assert_eq!(parsed.tags, vec!["tag:write"]);
     }
 
-    #[test]
-    fn reject_non_tailnet_connection_pattern() {
-        // In the real implementation, non-tailnet connections would fail
-        // the whois lookup. Verify we can detect this case.
-        let mode = AuthMode::Tailscale {
-            default_role: Role::Read,
-        };
-        // The resolve_identity returns a pending identity, which would
-        // be replaced by actual whois result or rejected.
-        let id = resolve_identity(&mode);
-        assert_eq!(id.actor, "tailscale-pending");
+    #[tokio::test]
+    async fn tailscale_mode_resolves_and_caches_identity() {
+        let address = SocketAddr::from(([100, 101, 102, 103], 443));
+        let provider = Arc::new(FakeWhoisProvider::with_result(
+            address,
+            Ok(TailscaleWhoisResponse {
+                node_name: "erik-laptop".into(),
+                user_login: "erik@example.com".into(),
+                tags: vec!["tag:axon-admin".into()],
+            }),
+        ));
+        let context = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            provider.clone(),
+            Duration::from_secs(60),
+        );
+
+        let first = context
+            .resolve_peer(Some(address))
+            .await
+            .expect("whois should resolve");
+        let second = context
+            .resolve_peer(Some(address))
+            .await
+            .expect("cached whois should resolve");
+
+        assert_eq!(first.actor, "erik-laptop");
+        assert_eq!(first.role, Role::Admin);
+        assert_eq!(second, first);
+        assert_eq!(provider.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn reject_non_tailnet_connection() {
+        let address = SocketAddr::from(([127, 0, 0, 1], 3000));
+        let provider = Arc::new(FakeWhoisProvider::with_result(
+            address,
+            Err(AuthError::Unauthorized(
+                "peer is not a recognized tailnet address".into(),
+            )),
+        ));
+        let context = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            provider,
+            Duration::from_secs(60),
+        );
+
+        let error = context
+            .resolve_peer(Some(address))
+            .await
+            .expect_err("non-tailnet peers must be rejected");
+        assert_eq!(
+            error,
+            AuthError::Unauthorized("peer is not a recognized tailnet address".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_surfaces_provider_unavailability() {
+        let provider = FakeWhoisProvider::new();
+        {
+            let mut verification = match provider.verification.lock() {
+                Ok(verification) => verification,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            *verification = Err(AuthError::ProviderUnavailable(
+                "tailscaled unavailable".into(),
+            ));
+        }
+        let context = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            Arc::new(provider),
+            Duration::from_secs(60),
+        );
+
+        let error = context
+            .verify()
+            .await
+            .expect_err("verification should fail");
+        assert_eq!(
+            error,
+            AuthError::ProviderUnavailable("tailscaled unavailable".into())
+        );
     }
 }

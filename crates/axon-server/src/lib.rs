@@ -5,6 +5,6 @@ pub mod mcp_stdio;
 pub mod schema_registry;
 pub mod service;
 
-pub use auth::{AuthMode, Identity};
+pub use auth::{AuthContext, AuthMode, Identity, Role};
 pub use mcp_stdio::run_mcp_stdio;
 pub use service::AxonServiceImpl;

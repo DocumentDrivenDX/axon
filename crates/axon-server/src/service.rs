@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::auth::{AuthContext, AuthError, Identity};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
@@ -103,17 +104,32 @@ fn entity_to_proto(e: axon_core::types::Entity) -> EntityProto {
     }
 }
 
+fn auth_to_status(error: AuthError) -> Status {
+    match error {
+        AuthError::MissingPeerAddress | AuthError::Unauthorized(_) => {
+            Status::unauthenticated(error.to_string())
+        }
+        AuthError::ProviderUnavailable(_) => Status::unavailable(error.to_string()),
+    }
+}
+
 /// Shared state for the gRPC service.
 ///
 /// Wraps an `AxonHandler` in a `Mutex` so multiple async tasks can call it.
 pub struct AxonServiceImpl<S: StorageAdapter> {
     handler: Arc<Mutex<AxonHandler<S>>>,
+    auth: AuthContext,
 }
 
 impl<S: StorageAdapter> AxonServiceImpl<S> {
     pub fn from_handler(handler: AxonHandler<S>) -> Self {
+        Self::from_handler_with_auth(handler, AuthContext::no_auth())
+    }
+
+    pub fn from_handler_with_auth(handler: AxonHandler<S>, auth: AuthContext) -> Self {
         Self {
             handler: Arc::new(Mutex::new(handler)),
+            auth,
         }
     }
 
@@ -121,18 +137,23 @@ impl<S: StorageAdapter> AxonServiceImpl<S> {
     ///
     /// Use this to share state between the gRPC service and the HTTP gateway.
     pub fn from_shared(handler: Arc<Mutex<AxonHandler<S>>>) -> Self {
-        Self { handler }
+        Self::from_shared_with_auth(handler, AuthContext::no_auth())
+    }
+
+    /// Create a service sharing an existing handler reference and auth policy.
+    pub fn from_shared_with_auth(handler: Arc<Mutex<AxonHandler<S>>>, auth: AuthContext) -> Self {
+        Self { handler, auth }
+    }
+
+    async fn authorize(&self, peer: Option<std::net::SocketAddr>) -> Result<Identity, Status> {
+        self.auth.resolve_peer(peer).await.map_err(auth_to_status)
     }
 }
 
 impl AxonServiceImpl<MemoryStorageAdapter> {
     /// Create a service backed by an in-memory storage adapter.
     pub fn new_in_memory() -> Self {
-        Self {
-            handler: Arc::new(Mutex::new(
-                AxonHandler::new(MemoryStorageAdapter::default()),
-            )),
-        }
+        Self::from_handler(AxonHandler::new(MemoryStorageAdapter::default()))
     }
 }
 
@@ -142,14 +163,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoCreateEntityReq>,
     ) -> Result<Response<ProtoCreateEntityResp>, Status> {
+        let identity = self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let data: serde_json::Value = serde_json::from_str(&req.data_json)
             .map_err(|e| Status::invalid_argument(format!("invalid data_json: {e}")))?;
-        let actor = if req.actor.is_empty() {
-            None
-        } else {
-            Some(req.actor.clone())
-        };
 
         let resp = self
             .handler
@@ -159,7 +176,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                 collection: CollectionId::new(&req.collection),
                 id: EntityId::new(&req.id),
                 data,
-                actor,
+                actor: Some(identity.actor),
                 audit_metadata: None,
             })
             .map_err(axon_to_status)?;
@@ -173,6 +190,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoGetEntityReq>,
     ) -> Result<Response<ProtoGetEntityResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -193,14 +211,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoUpdateEntityReq>,
     ) -> Result<Response<ProtoUpdateEntityResp>, Status> {
+        let identity = self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let data: serde_json::Value = serde_json::from_str(&req.data_json)
             .map_err(|e| Status::invalid_argument(format!("invalid data_json: {e}")))?;
-        let actor = if req.actor.is_empty() {
-            None
-        } else {
-            Some(req.actor.clone())
-        };
 
         let resp = self
             .handler
@@ -211,7 +225,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                 id: EntityId::new(&req.id),
                 data,
                 expected_version: req.expected_version,
-                actor,
+                actor: Some(identity.actor),
                 audit_metadata: None,
             })
             .map_err(axon_to_status)?;
@@ -225,12 +239,8 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoDeleteEntityReq>,
     ) -> Result<Response<ProtoDeleteEntityResp>, Status> {
+        let identity = self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
-        let actor = if req.actor.is_empty() {
-            None
-        } else {
-            Some(req.actor.clone())
-        };
 
         let resp = self
             .handler
@@ -239,7 +249,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .delete_entity(DeleteEntityRequest {
                 collection: CollectionId::new(&req.collection),
                 id: EntityId::new(&req.id),
-                actor,
+                actor: Some(identity.actor),
                 audit_metadata: None,
                 force: false,
             })
@@ -255,17 +265,13 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoCreateLinkReq>,
     ) -> Result<Response<ProtoCreateLinkResp>, Status> {
+        let identity = self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let metadata: serde_json::Value = if req.metadata_json.is_empty() {
             json!(null)
         } else {
             serde_json::from_str(&req.metadata_json)
                 .map_err(|e| Status::invalid_argument(format!("invalid metadata_json: {e}")))?
-        };
-        let actor = if req.actor.is_empty() {
-            None
-        } else {
-            Some(req.actor.clone())
         };
 
         let resp = self
@@ -279,7 +285,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                 target_id: EntityId::new(&req.target_id),
                 link_type: req.link_type.clone(),
                 metadata,
-                actor,
+                actor: Some(identity.actor),
             })
             .map_err(axon_to_status)?;
 
@@ -300,12 +306,8 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoDeleteLinkReq>,
     ) -> Result<Response<ProtoDeleteLinkResp>, Status> {
+        let identity = self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
-        let actor = if req.actor.is_empty() {
-            None
-        } else {
-            Some(req.actor.clone())
-        };
 
         let resp = self
             .handler
@@ -317,7 +319,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                 target_collection: CollectionId::new(&req.target_collection),
                 target_id: EntityId::new(&req.target_id),
                 link_type: req.link_type.clone(),
-                actor,
+                actor: Some(identity.actor),
             })
             .map_err(axon_to_status)?;
 
@@ -334,6 +336,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoTraverseReq>,
     ) -> Result<Response<ProtoTraverseResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let link_type = if req.link_type.is_empty() {
             None
@@ -369,6 +372,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<QueryAuditByEntityRequest>,
     ) -> Result<Response<QueryAuditByEntityResponse>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let handler = self.handler.lock().await;
         let entries = handler
@@ -412,6 +416,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoCommitTxReq>,
     ) -> Result<Response<ProtoCommitTxResp>, Status> {
+        let identity = self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let mut tx = Transaction::new();
 
@@ -475,15 +480,11 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         }
 
         let tx_id = tx.id.clone();
-        let actor = if req.actor.is_empty() {
-            None
-        } else {
-            Some(req.actor)
-        };
-
         let mut h = self.handler.lock().await;
         let (storage, audit) = h.storage_and_audit_mut();
-        let written = tx.commit(storage, audit, actor).map_err(axon_to_status)?;
+        let written = tx
+            .commit(storage, audit, Some(identity.actor))
+            .map_err(axon_to_status)?;
 
         Ok(Response::new(ProtoCommitTxResp {
             transaction_id: tx_id,
@@ -495,6 +496,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoQueryEntitiesReq>,
     ) -> Result<Response<ProtoQueryEntitiesResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let filter = if req.filter_json.is_empty() {
             None
@@ -540,14 +542,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoPutSchemaReq>,
     ) -> Result<Response<ProtoPutSchemaResp>, Status> {
+        let identity = self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let schema: axon_schema::schema::CollectionSchema = serde_json::from_str(&req.schema_json)
             .map_err(|e| Status::invalid_argument(format!("invalid schema_json: {e}")))?;
-        let actor = if req.actor.is_empty() {
-            None
-        } else {
-            Some(req.actor.clone())
-        };
 
         let resp = self
             .handler
@@ -555,7 +553,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .await
             .handle_put_schema(PutSchemaRequest {
                 schema,
-                actor,
+                actor: Some(identity.actor),
                 force: req.force,
                 dry_run: req.dry_run,
             })
@@ -579,6 +577,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoGetSchemaReq>,
     ) -> Result<Response<ProtoGetSchemaResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -599,14 +598,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoCreateCollectionReq>,
     ) -> Result<Response<ProtoCreateCollectionResp>, Status> {
+        let identity = self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let schema: axon_schema::schema::CollectionSchema = serde_json::from_str(&req.schema_json)
             .map_err(|e| Status::invalid_argument(format!("invalid schema_json: {e}")))?;
-        let actor = if req.actor.is_empty() {
-            None
-        } else {
-            Some(req.actor.clone())
-        };
 
         let resp = self
             .handler
@@ -615,7 +610,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .create_collection(CreateCollectionRequest {
                 name: axon_core::id::CollectionId::new(&req.name),
                 schema,
-                actor,
+                actor: Some(identity.actor),
             })
             .map_err(axon_to_status)?;
 
@@ -626,12 +621,8 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoDropCollectionReq>,
     ) -> Result<Response<ProtoDropCollectionResp>, Status> {
+        let identity = self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
-        let actor = if req.actor.is_empty() {
-            None
-        } else {
-            Some(req.actor.clone())
-        };
 
         let resp = self
             .handler
@@ -639,7 +630,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .await
             .drop_collection(DropCollectionRequest {
                 name: axon_core::id::CollectionId::new(&req.name),
-                actor,
+                actor: Some(identity.actor),
                 confirm: req.confirm,
             })
             .map_err(axon_to_status)?;
@@ -652,8 +643,9 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
 
     async fn list_collections(
         &self,
-        _request: Request<ProtoListCollectionsReq>,
+        request: Request<ProtoListCollectionsReq>,
     ) -> Result<Response<ProtoListCollectionsResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let resp = self
             .handler
             .lock()
@@ -678,6 +670,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoDescribeCollectionReq>,
     ) -> Result<Response<ProtoDescribeCollectionResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -705,6 +698,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoCreateDatabaseReq>,
     ) -> Result<Response<ProtoCreateDatabaseResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -717,8 +711,9 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
 
     async fn list_databases(
         &self,
-        _request: Request<ProtoListDatabasesReq>,
+        request: Request<ProtoListDatabasesReq>,
     ) -> Result<Response<ProtoListDatabasesResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let resp = self
             .handler
             .lock()
@@ -734,6 +729,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoDropDatabaseReq>,
     ) -> Result<Response<ProtoDropDatabaseResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -754,6 +750,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoCreateNamespaceReq>,
     ) -> Result<Response<ProtoCreateNamespaceResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -774,6 +771,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoListNamespacesReq>,
     ) -> Result<Response<ProtoListNamespacesResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -793,6 +791,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoListNamespaceCollectionsReq>,
     ) -> Result<Response<ProtoListNamespaceCollectionsResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -814,6 +813,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoDropNamespaceReq>,
     ) -> Result<Response<ProtoDropNamespaceResp>, Status> {
+        self.authorize(request.remote_addr()).await?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -835,10 +835,72 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::future::Future;
+    use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::sync::Mutex as StdMutex;
+    use std::time::Duration;
+
     use super::*;
+    use crate::auth::{
+        AuthContext, AuthError, AuthMode, Role, TailscaleWhoisProvider, TailscaleWhoisResponse,
+    };
     use axon_storage::MemoryStorageAdapter;
     use serde_json::json;
+    use tonic::transport::server::TcpConnectInfo;
     use tonic::Code;
+
+    struct FakeWhoisProvider {
+        results: StdMutex<HashMap<SocketAddr, Result<TailscaleWhoisResponse, AuthError>>>,
+    }
+
+    impl FakeWhoisProvider {
+        fn with_result(
+            peer: SocketAddr,
+            result: Result<TailscaleWhoisResponse, AuthError>,
+        ) -> Self {
+            let mut results = HashMap::new();
+            results.insert(peer, result);
+            Self {
+                results: StdMutex::new(results),
+            }
+        }
+    }
+
+    impl TailscaleWhoisProvider for FakeWhoisProvider {
+        fn verify(&self) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn whois(
+            &self,
+            address: SocketAddr,
+        ) -> Pin<Box<dyn Future<Output = Result<TailscaleWhoisResponse, AuthError>> + Send + '_>>
+        {
+            Box::pin(async move {
+                let results = match self.results.lock() {
+                    Ok(results) => results,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                results.get(&address).cloned().unwrap_or_else(|| {
+                    Err(AuthError::Unauthorized(
+                        "peer is not a recognized tailnet address".into(),
+                    ))
+                })
+            })
+        }
+    }
+
+    fn request_with_peer<T>(message: T, peer: SocketAddr) -> Request<T> {
+        let mut request = Request::new(message);
+        request.extensions_mut().insert(TcpConnectInfo {
+            local_addr: None,
+            remote_addr: Some(peer),
+        });
+        request
+    }
 
     /// Build a service instance and create one entity in collection `col` with id `id`.
     async fn make_service_with_entity(
@@ -959,5 +1021,89 @@ mod tests {
             .expect("namespace list should succeed")
             .into_inner();
         assert!(namespaces.schemas.iter().any(|schema| schema == "billing"));
+    }
+
+    #[tokio::test]
+    async fn grpc_tailscale_identity_overrides_body_actor_in_audit() {
+        let peer = SocketAddr::from(([100, 64, 0, 11], 50051));
+        let auth = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            Arc::new(FakeWhoisProvider::with_result(
+                peer,
+                Ok(TailscaleWhoisResponse {
+                    node_name: "grpc-agent".into(),
+                    user_login: "agent@example.com".into(),
+                    tags: vec!["tag:axon-write".into()],
+                }),
+            )),
+            Duration::from_secs(60),
+        );
+        let svc = AxonServiceImpl::from_handler_with_auth(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+            auth,
+        );
+
+        svc.create_entity(request_with_peer(
+            ProtoCreateEntityReq {
+                collection: "tasks".into(),
+                id: "t-001".into(),
+                data_json: json!({"title": "hello"}).to_string(),
+                actor: "spoofed".into(),
+            },
+            peer,
+        ))
+        .await
+        .expect("create should succeed");
+
+        let resp = svc
+            .query_audit_by_entity(request_with_peer(
+                QueryAuditByEntityRequest {
+                    collection: "tasks".into(),
+                    entity_id: "t-001".into(),
+                },
+                peer,
+            ))
+            .await
+            .expect("audit query should succeed")
+            .into_inner();
+
+        assert_eq!(resp.entries.len(), 1);
+        assert_eq!(resp.entries[0].actor, "grpc-agent");
+    }
+
+    #[tokio::test]
+    async fn grpc_tailscale_rejects_non_tailnet_peer() {
+        let peer = SocketAddr::from(([127, 0, 0, 1], 50051));
+        let auth = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            Arc::new(FakeWhoisProvider::with_result(
+                peer,
+                Err(AuthError::Unauthorized(
+                    "peer is not a recognized tailnet address".into(),
+                )),
+            )),
+            Duration::from_secs(60),
+        );
+        let svc = AxonServiceImpl::from_handler_with_auth(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+            auth,
+        );
+
+        let error = svc
+            .get_entity(request_with_peer(
+                ProtoGetEntityReq {
+                    collection: "tasks".into(),
+                    id: "t-001".into(),
+                },
+                peer,
+            ))
+            .await
+            .expect_err("non-tailnet peers must be rejected");
+
+        assert_eq!(error.code(), Code::Unauthenticated);
     }
 }
