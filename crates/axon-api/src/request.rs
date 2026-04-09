@@ -194,6 +194,11 @@ pub struct ListNeighborsRequest {
 /// Request to query the audit log with optional filters and cursor-based pagination.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct QueryAuditRequest {
+    /// Restrict to entries visible within this database scope.
+    ///
+    /// This is only set when the transport explicitly selected a current
+    /// database (for example, `X-Axon-Database` or `/db/{database}`).
+    pub database: Option<String>,
     /// Restrict to entries for this collection.
     pub collection: Option<CollectionId>,
     /// Restrict to entries for this entity.

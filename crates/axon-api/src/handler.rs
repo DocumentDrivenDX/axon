@@ -1200,6 +1200,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         };
 
         let query = AuditQuery {
+            database: req.database,
             collection: req.collection,
             entity_id: req.entity_id,
             actor: req.actor,
@@ -4464,6 +4465,47 @@ entity_schema:
 
         assert_eq!(resp.entries.len(), 1);
         assert_eq!(resp.entries[0].actor, "alice");
+    }
+
+    #[test]
+    fn query_audit_filters_by_explicit_database_scope() {
+        let mut h = handler();
+        let default = CollectionId::new("tasks");
+        let (prod, _) = register_prod_billing_and_engineering_collection(&mut h, "tasks");
+
+        h.create_collection(CreateCollectionRequest {
+            name: default.clone(),
+            schema: CollectionSchema::new(default.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        h.create_entity(CreateEntityRequest {
+            collection: default,
+            id: EntityId::new("t-001"),
+            data: json!({"scope": "default"}),
+            actor: Some("default-agent".into()),
+            audit_metadata: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: prod.clone(),
+            id: EntityId::new("t-001"),
+            data: json!({"scope": "prod"}),
+            actor: Some("prod-agent".into()),
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .query_audit(QueryAuditRequest {
+                database: Some("prod".into()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert!(!resp.entries.is_empty());
+        assert!(resp.entries.iter().all(|entry| entry.collection == prod));
     }
 
     #[test]

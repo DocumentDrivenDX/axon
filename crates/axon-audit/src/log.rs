@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axon_core::error::AxonError;
-use axon_core::id::{CollectionId, EntityId};
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE};
 
 use crate::entry::{AuditEntry, MutationType};
 
@@ -12,6 +12,8 @@ use crate::entry::{AuditEntry, MutationType};
 /// All fields are optional. Specified fields are ANDed together.
 #[derive(Debug, Clone, Default)]
 pub struct AuditQuery {
+    /// Restrict to entries within this database scope.
+    pub database: Option<String>,
     /// Restrict to entries for this collection.
     pub collection: Option<CollectionId>,
     /// Restrict to entries for this entity.
@@ -32,6 +34,11 @@ pub struct AuditQuery {
 }
 
 const DEFAULT_PAGE_SIZE: usize = 100;
+
+fn collection_is_in_database(collection: &CollectionId, database: &str) -> bool {
+    let (namespace, _) = Namespace::parse_with_database(collection.as_str(), DEFAULT_DATABASE);
+    namespace.database == database
+}
 
 /// A page of audit entries returned by [`AuditLog::query_paginated`].
 #[derive(Debug, Clone)]
@@ -216,6 +223,11 @@ impl AuditLog for MemoryAuditLog {
             .filter(|e| {
                 if e.id <= after_id {
                     return false;
+                }
+                if let Some(database) = &query.database {
+                    if !collection_is_in_database(&e.collection, database) {
+                        return false;
+                    }
                 }
                 if let Some(col) = &query.collection {
                     if &e.collection != col {
@@ -556,6 +568,61 @@ mod tests {
         );
         assert_eq!(alice_page.entries.len(), 2);
         assert!(alice_page.entries.iter().all(|e| e.actor == "alice"));
+    }
+
+    #[test]
+    fn query_paginated_filters_by_database_scope() {
+        let mut log = MemoryAuditLog::default();
+        must_ok(
+            log.append(AuditEntry::new(
+                CollectionId::new("tasks"),
+                EntityId::new("t-001"),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({"scope": "default"})),
+                None,
+            )),
+            "default-database append should succeed",
+        );
+        must_ok(
+            log.append(AuditEntry::new(
+                CollectionId::new("prod.default.tasks"),
+                EntityId::new("t-001"),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({"scope": "prod"})),
+                None,
+            )),
+            "prod-database append should succeed",
+        );
+
+        let prod_page = must_ok(
+            log.query_paginated(AuditQuery {
+                database: Some("prod".into()),
+                ..Default::default()
+            }),
+            "database-filtered page query should succeed",
+        );
+        assert_eq!(prod_page.entries.len(), 1);
+        assert_eq!(
+            prod_page.entries[0].collection,
+            CollectionId::new("prod.default.tasks")
+        );
+
+        let default_page = must_ok(
+            log.query_paginated(AuditQuery {
+                database: Some("default".into()),
+                ..Default::default()
+            }),
+            "default-database page query should succeed",
+        );
+        assert_eq!(default_page.entries.len(), 1);
+        assert_eq!(
+            default_page.entries[0].collection,
+            CollectionId::new("tasks")
+        );
     }
 
     #[test]
