@@ -202,6 +202,23 @@ impl MemoryStorageAdapter {
         self.data.remove(collection);
         self.gate_results.retain(|(col, _), _| col != collection);
     }
+
+    fn purge_doomed_collection_entities(&mut self, doomed: &[CatalogKey]) {
+        let doomed_set: HashSet<_> = doomed.iter().cloned().collect();
+        let purge_names: HashSet<_> = doomed
+            .iter()
+            .filter(|key| {
+                !self.collections.iter().any(|candidate| {
+                    candidate.collection == key.collection && !doomed_set.contains(candidate)
+                })
+            })
+            .map(|key| key.collection.clone())
+            .collect();
+
+        for collection in purge_names {
+            self.purge_collection_entities(&collection);
+        }
+    }
 }
 
 impl StorageAdapter for MemoryStorageAdapter {
@@ -372,8 +389,8 @@ impl StorageAdapter for MemoryStorageAdapter {
             .filter(|key| key.namespace.database == name)
             .cloned()
             .collect();
+        self.purge_doomed_collection_entities(&doomed);
         for key in doomed {
-            self.purge_collection_entities(&key.collection);
             self.remove_catalog_key(&key);
         }
         Ok(())
@@ -414,8 +431,8 @@ impl StorageAdapter for MemoryStorageAdapter {
             .filter(|key| key.namespace == *namespace)
             .cloned()
             .collect();
+        self.purge_doomed_collection_entities(&doomed);
         for key in doomed {
-            self.purge_collection_entities(&key.collection);
             self.remove_catalog_key(&key);
         }
         Ok(())
@@ -2375,6 +2392,70 @@ mod tests {
         }
 
         #[test]
+        fn drop_namespace_keeps_same_named_entities_in_surviving_namespaces() {
+            let mut store = MemoryStorageAdapter::default();
+            let billing = Namespace::new("prod", "billing");
+            let engineering = Namespace::new("prod", "engineering");
+            let invoices = CollectionId::new("invoices");
+            let ledger = CollectionId::new("ledger");
+
+            store
+                .create_database("prod")
+                .expect("database create should succeed");
+            store
+                .create_namespace(&billing)
+                .expect("billing namespace create should succeed");
+            store
+                .create_namespace(&engineering)
+                .expect("engineering namespace create should succeed");
+            store
+                .register_collection_in_namespace(&invoices, &Namespace::default_ns())
+                .expect("default collection register should succeed");
+            store
+                .register_collection_in_namespace(&invoices, &billing)
+                .expect("billing collection register should succeed");
+            store
+                .register_collection_in_namespace(&invoices, &engineering)
+                .expect("engineering collection register should succeed");
+            store
+                .register_collection_in_namespace(&ledger, &billing)
+                .expect("billing ledger register should succeed");
+            store
+                .put(Entity::new(
+                    invoices.clone(),
+                    EntityId::new("inv-default-001"),
+                    json!({"title": "default invoice"}),
+                ))
+                .expect("default entity put should succeed");
+            store
+                .put(Entity::new(
+                    ledger.clone(),
+                    EntityId::new("led-billing-001"),
+                    json!({"title": "billing ledger"}),
+                ))
+                .expect("billing ledger put should succeed");
+
+            store
+                .drop_namespace(&billing)
+                .expect("billing drop should succeed");
+
+            assert!(
+                store
+                    .get(&invoices, &EntityId::new("inv-default-001"))
+                    .expect("default entity lookup should succeed")
+                    .is_some(),
+                "same-named entities in surviving namespaces must be preserved"
+            );
+            assert!(
+                store
+                    .get(&ledger, &EntityId::new("led-billing-001"))
+                    .expect("billing ledger lookup should succeed")
+                    .is_none(),
+                "entities in the dropped namespace must be purged"
+            );
+        }
+
+        #[test]
         fn drop_database_purges_entities_for_removed_collections() {
             let mut store = MemoryStorageAdapter::default();
             let analytics = Namespace::new("prod", "analytics");
@@ -2443,6 +2524,63 @@ mod tests {
                     .expect("default lookup should succeed")
                     .is_some(),
                 "entities in other databases must survive"
+            );
+        }
+
+        #[test]
+        fn drop_database_keeps_same_named_entities_in_surviving_databases() {
+            let mut store = MemoryStorageAdapter::default();
+            let billing = Namespace::new("prod", "billing");
+            let invoices = CollectionId::new("invoices");
+            let orders = CollectionId::new("orders");
+
+            store
+                .create_database("prod")
+                .expect("database create should succeed");
+            store
+                .create_namespace(&billing)
+                .expect("billing namespace create should succeed");
+            store
+                .register_collection_in_namespace(&invoices, &Namespace::default_ns())
+                .expect("default collection register should succeed");
+            store
+                .register_collection_in_namespace(&invoices, &billing)
+                .expect("billing collection register should succeed");
+            store
+                .register_collection_in_namespace(&orders, &Namespace::new("prod", "default"))
+                .expect("prod orders register should succeed");
+            store
+                .put(Entity::new(
+                    invoices.clone(),
+                    EntityId::new("inv-default-001"),
+                    json!({"title": "default invoice"}),
+                ))
+                .expect("default entity put should succeed");
+            store
+                .put(Entity::new(
+                    orders.clone(),
+                    EntityId::new("ord-prod-001"),
+                    json!({"title": "prod order"}),
+                ))
+                .expect("prod orders put should succeed");
+
+            store
+                .drop_database("prod")
+                .expect("prod drop should succeed");
+
+            assert!(
+                store
+                    .get(&invoices, &EntityId::new("inv-default-001"))
+                    .expect("default entity lookup should succeed")
+                    .is_some(),
+                "same-named entities in surviving databases must be preserved"
+            );
+            assert!(
+                store
+                    .get(&orders, &EntityId::new("ord-prod-001"))
+                    .expect("dropped database entity lookup should succeed")
+                    .is_none(),
+                "entities in the dropped database must be purged"
             );
         }
     }

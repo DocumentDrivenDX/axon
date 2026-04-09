@@ -579,7 +579,15 @@ impl StorageAdapter for PostgresStorageAdapter {
             .execute(
                 "DELETE FROM entities
                  WHERE collection IN (
-                     SELECT name FROM collections WHERE database_name = $1
+                     SELECT doomed.name
+                     FROM collections doomed
+                     WHERE doomed.database_name = $1
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM collections surviving
+                           WHERE surviving.name = doomed.name
+                             AND surviving.database_name <> $1
+                       )
                  )",
                 &[&name],
             )
@@ -655,8 +663,18 @@ impl StorageAdapter for PostgresStorageAdapter {
             .execute(
                 "DELETE FROM entities
                  WHERE collection IN (
-                     SELECT name FROM collections
-                     WHERE database_name = $1 AND schema_name = $2
+                     SELECT doomed.name
+                     FROM collections doomed
+                     WHERE doomed.database_name = $1 AND doomed.schema_name = $2
+                       AND NOT EXISTS (
+                           SELECT 1
+                           FROM collections surviving
+                           WHERE surviving.name = doomed.name
+                             AND (
+                                 surviving.database_name <> $1
+                                 OR surviving.schema_name <> $2
+                             )
+                       )
                  )",
                 &[&namespace.database, &namespace.schema],
             )
@@ -1380,6 +1398,59 @@ mod tests {
     }
 
     #[test]
+    fn drop_namespace_keeps_same_named_entities_in_surviving_namespaces() {
+        let _guard = postgres_test_guard();
+        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let billing = Namespace::new("prod", "billing");
+        let engineering = Namespace::new("prod", "engineering");
+        let invoices = CollectionId::new("invoices");
+        let ledger = CollectionId::new("ledger");
+
+        s.create_database("prod")
+            .expect("database create should succeed");
+        s.create_namespace(&billing)
+            .expect("billing namespace create should succeed");
+        s.create_namespace(&engineering)
+            .expect("engineering namespace create should succeed");
+        s.register_collection_in_namespace(&invoices, &Namespace::default_ns())
+            .expect("default collection register should succeed");
+        s.register_collection_in_namespace(&invoices, &billing)
+            .expect("billing collection register should succeed");
+        s.register_collection_in_namespace(&invoices, &engineering)
+            .expect("engineering collection register should succeed");
+        s.register_collection_in_namespace(&ledger, &billing)
+            .expect("billing ledger register should succeed");
+        s.put(Entity::new(
+            invoices.clone(),
+            EntityId::new("inv-default-001"),
+            serde_json::json!({"title": "default invoice"}),
+        ))
+        .expect("default entity put should succeed");
+        s.put(Entity::new(
+            ledger.clone(),
+            EntityId::new("led-billing-001"),
+            serde_json::json!({"title": "billing ledger"}),
+        ))
+        .expect("billing ledger put should succeed");
+
+        s.drop_namespace(&billing)
+            .expect("billing drop should succeed");
+
+        assert!(
+            s.get(&invoices, &EntityId::new("inv-default-001"))
+                .expect("default entity lookup should succeed")
+                .is_some(),
+            "same-named entities in surviving namespaces must be preserved"
+        );
+        assert!(
+            s.get(&ledger, &EntityId::new("led-billing-001"))
+                .expect("billing ledger lookup should succeed")
+                .is_none(),
+            "entities in the dropped namespace must be purged"
+        );
+    }
+
+    #[test]
     fn drop_database_purges_entities_for_removed_collections() {
         let _guard = postgres_test_guard();
         let mut s = store().expect("PostgreSQL test setup should succeed");
@@ -1437,6 +1508,53 @@ mod tests {
                 .expect("default lookup should succeed")
                 .is_some(),
             "entities in other databases must survive"
+        );
+    }
+
+    #[test]
+    fn drop_database_keeps_same_named_entities_in_surviving_databases() {
+        let _guard = postgres_test_guard();
+        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let billing = Namespace::new("prod", "billing");
+        let invoices = CollectionId::new("invoices");
+        let orders = CollectionId::new("orders");
+
+        s.create_database("prod")
+            .expect("database create should succeed");
+        s.create_namespace(&billing)
+            .expect("billing namespace create should succeed");
+        s.register_collection_in_namespace(&invoices, &Namespace::default_ns())
+            .expect("default collection register should succeed");
+        s.register_collection_in_namespace(&invoices, &billing)
+            .expect("billing collection register should succeed");
+        s.register_collection_in_namespace(&orders, &Namespace::new("prod", "default"))
+            .expect("prod orders register should succeed");
+        s.put(Entity::new(
+            invoices.clone(),
+            EntityId::new("inv-default-001"),
+            serde_json::json!({"title": "default invoice"}),
+        ))
+        .expect("default entity put should succeed");
+        s.put(Entity::new(
+            orders.clone(),
+            EntityId::new("ord-prod-001"),
+            serde_json::json!({"title": "prod order"}),
+        ))
+        .expect("prod orders put should succeed");
+
+        s.drop_database("prod").expect("prod drop should succeed");
+
+        assert!(
+            s.get(&invoices, &EntityId::new("inv-default-001"))
+                .expect("default entity lookup should succeed")
+                .is_some(),
+            "same-named entities in surviving databases must be preserved"
+        );
+        assert!(
+            s.get(&orders, &EntityId::new("ord-prod-001"))
+                .expect("dropped database entity lookup should succeed")
+                .is_none(),
+            "entities in the dropped database must be purged"
         );
     }
 }
