@@ -190,6 +190,93 @@ function supportedEntityHelperContract() {
 	};
 }
 
+function supportedCustomEntityHelperContract() {
+	return {
+		__schema: {
+			queryType: {
+				fields: [
+					{
+						name: 'collections',
+						args: [],
+						type: nonNullType(listType(nonNullType(namedType('CollectionMeta')))),
+					},
+					{
+						name: 'entity',
+						args: [
+							{ name: 'collection', type: nonNullType(scalarType('String')) },
+							{ name: 'id', type: nonNullType(scalarType('ID')) },
+						],
+						type: namedType('TaskRecord'),
+					},
+					{
+						name: 'entities',
+						args: [
+							{ name: 'collection', type: nonNullType(scalarType('String')) },
+							{ name: 'limit', type: scalarType('Int') },
+							{ name: 'after', type: scalarType('String') },
+						],
+						type: nonNullType(namedType('TaskConnection')),
+					},
+				],
+			},
+		},
+		collectionMeta: {
+			name: 'CollectionMeta',
+			fields: [
+				{ name: 'name', type: nonNullType(scalarType('String')) },
+				{ name: 'entityCount', type: nonNullType(scalarType('Int')) },
+			],
+		},
+		entityRecord: null,
+		entityConnection: null,
+		entityEdge: null,
+		pageInfo: {
+			name: 'PageInfo',
+			fields: [
+				{ name: 'hasNextPage', type: nonNullType(scalarType('Boolean')) },
+				{ name: 'endCursor', type: scalarType('String') },
+			],
+		},
+	};
+}
+
+function namedTypeResponse(name: string) {
+	switch (name) {
+		case 'TaskRecord':
+			return {
+				name: 'TaskRecord',
+				fields: [
+					{ name: 'id', type: nonNullType(scalarType('ID')) },
+					{ name: 'version', type: nonNullType(scalarType('Int')) },
+					{ name: 'data', type: nonNullType(scalarType('JSON')) },
+					{ name: 'createdAt', type: nonNullType(scalarType('DateTime')) },
+					{ name: 'updatedAt', type: nonNullType(scalarType('DateTime')) },
+				],
+			};
+		case 'TaskConnection':
+			return {
+				name: 'TaskConnection',
+				fields: [
+					{
+						name: 'edges',
+						type: nonNullType(listType(nonNullType(namedType('TaskEdge')))),
+					},
+					{ name: 'pageInfo', type: nonNullType(namedType('PageInfo')) },
+				],
+			};
+		case 'TaskEdge':
+			return {
+				name: 'TaskEdge',
+				fields: [
+					{ name: 'node', type: nonNullType(namedType('TaskRecord')) },
+					{ name: 'cursor', type: nonNullType(scalarType('String')) },
+				],
+			};
+		default:
+			return null;
+	}
+}
+
 beforeEach(() => {
 	__resetGraphQLHelperContractForTests();
 });
@@ -394,4 +481,69 @@ test('fetchEntity uses the entity query once the backend advertises support', as
 	expect(requests).toHaveLength(2);
 	expect(requests[1]?.query).toContain('entity(collection: $collection, id: $id)');
 	expect(requests[1]?.variables).toEqual({ collection: 'tasks', id: 'task-1' });
+});
+
+test('fetchEntity and fetchEntities accept shape-compatible helper types with custom names', async () => {
+	const requests: GraphQLRequest[] = [];
+
+	globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+		const request = parseRequest(init);
+		requests.push(request);
+
+		if (requests.length === 1) {
+			return createJsonResponse({ data: supportedCustomEntityHelperContract() });
+		}
+
+		if (request.query.includes('namedType: __type(name: $name)')) {
+			return createJsonResponse({
+				data: {
+					namedType: namedTypeResponse(String(request.variables?.name)),
+				},
+			});
+		}
+
+		if (request.query.includes('entity(collection: $collection, id: $id)')) {
+			return createJsonResponse({
+				data: {
+					entity: {
+						id: 'task-1',
+						version: 2,
+						data: { title: 'Ship it' },
+						createdAt: '2026-04-08T00:00:00Z',
+						updatedAt: '2026-04-08T00:00:00Z',
+					},
+				},
+			});
+		}
+
+		return createJsonResponse({
+			data: {
+				entities: {
+					edges: [{ node: { id: 'task-1', version: 2, data: { title: 'Ship it' } } }],
+					pageInfo: { hasNextPage: false, endCursor: null },
+				},
+			},
+		});
+	}) as unknown as typeof fetch;
+
+	await expect(fetchEntity('tasks', 'task-1')).resolves.toEqual({
+		id: 'task-1',
+		version: 2,
+		data: { title: 'Ship it' },
+		createdAt: '2026-04-08T00:00:00Z',
+		updatedAt: '2026-04-08T00:00:00Z',
+	});
+	await expect(fetchEntities('tasks', { limit: 10 })).resolves.toEqual({
+		edges: [{ node: { id: 'task-1', version: 2, data: { title: 'Ship it' } } }],
+		pageInfo: { hasNextPage: false, endCursor: null },
+	});
+
+	expect(requests[0]?.query).not.toContain('types {');
+	expect(
+		requests
+			.filter((request) => request.query.includes('namedType: __type(name: $name)'))
+			.map((request) => request.variables?.name)
+			.sort(),
+	).toEqual(['TaskConnection', 'TaskEdge', 'TaskRecord']);
+	expect(requests.at(-1)?.variables).toEqual({ collection: 'tasks', limit: 10, after: null });
 });

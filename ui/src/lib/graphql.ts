@@ -193,6 +193,35 @@ const GRAPHQL_HELPER_CONTRACT_QUERY = `query AxonUiGraphQLHelperContract {
 	}
 }`;
 
+const GRAPHQL_NAMED_TYPE_QUERY = `query AxonUiGraphQLNamedType($name: String!) {
+	namedType: __type(name: $name) {
+		name
+		fields {
+			name
+			type {
+				kind
+				name
+				ofType {
+					kind
+					name
+					ofType {
+						kind
+						name
+						ofType {
+							kind
+							name
+							ofType {
+								kind
+								name
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}`;
+
 type GraphQLError = {
 	message: string;
 };
@@ -237,6 +266,15 @@ type GraphQLHelperContractData = {
 	pageInfo?: GraphQLNamedTypeMetadata | null;
 };
 
+type GraphQLNamedTypeData = {
+	namedType?: GraphQLNamedTypeMetadata | null;
+};
+
+type GraphQLHelperContractCache = {
+	data: GraphQLHelperContractData;
+	namedTypes: Map<string, Promise<GraphQLNamedTypeMetadata | null>>;
+};
+
 export type CollectionSummary = {
 	name: string;
 	entityCount: number;
@@ -258,7 +296,7 @@ export type EntityConnection = {
 	};
 };
 
-let helperContractMetadata: Promise<GraphQLHelperContractData> | null = null;
+let helperContractMetadata: Promise<GraphQLHelperContractCache> | null = null;
 
 function hasFields(
 	typeMetadata: GraphQLNamedTypeMetadata | null | undefined,
@@ -270,11 +308,17 @@ function hasFields(
 }
 
 function unwrapNamedType(typeMetadata: GraphQLTypeRefMetadata | null | undefined): string | null {
+	return unwrapNamedTypeRef(typeMetadata)?.name ?? null;
+}
+
+function unwrapNamedTypeRef(
+	typeMetadata: GraphQLTypeRefMetadata | null | undefined,
+): GraphQLTypeRefMetadata | null {
 	let currentType = typeMetadata ?? null;
 
 	while (currentType) {
 		if (currentType.name) {
-			return currentType.name;
+			return currentType;
 		}
 
 		currentType = currentType.ofType ?? null;
@@ -305,46 +349,94 @@ function hasArgumentType(
 	return unwrapNamedType(getArgument(fieldMetadata, argumentName)?.type) === expectedTypeName;
 }
 
-function getNamedType(
-	helperContractMetadata: GraphQLHelperContractData,
-	typeName: string | null,
-): GraphQLNamedTypeMetadata | null {
-	switch (typeName) {
-		case 'CollectionMeta':
-			return helperContractMetadata.collectionMeta ?? null;
-		case 'EntityRecord':
-			return helperContractMetadata.entityRecord ?? null;
-		case 'EntityConnection':
-			return helperContractMetadata.entityConnection ?? null;
-		case 'EntityEdge':
-			return helperContractMetadata.entityEdge ?? null;
-		case 'PageInfo':
-			return helperContractMetadata.pageInfo ?? null;
-		default:
-			return null;
+function seedNamedTypes(
+	helperContractData: GraphQLHelperContractData,
+): Map<string, Promise<GraphQLNamedTypeMetadata | null>> {
+	const namedTypes = new Map<string, Promise<GraphQLNamedTypeMetadata | null>>();
+
+	for (const typeMetadata of [
+		helperContractData.collectionMeta,
+		helperContractData.entityRecord,
+		helperContractData.entityConnection,
+		helperContractData.entityEdge,
+		helperContractData.pageInfo,
+	]) {
+		if (typeMetadata?.name) {
+			namedTypes.set(typeMetadata.name, Promise.resolve(typeMetadata));
+		}
 	}
+
+	return namedTypes;
 }
 
-function fieldReferencesTypeWithFields(
-	helperContractMetadata: GraphQLHelperContractData,
+async function getNamedType(
+	helperContractMetadata: GraphQLHelperContractCache,
+	typeName: string | null,
+): Promise<GraphQLNamedTypeMetadata | null> {
+	if (!typeName) {
+		return null;
+	}
+
+	const cachedType = helperContractMetadata.namedTypes.get(typeName);
+
+	if (cachedType) {
+		return cachedType;
+	}
+
+	const probe = gqlQuery<GraphQLNamedTypeData>(GRAPHQL_NAMED_TYPE_QUERY, { name: typeName }).then(
+		(result) => result.namedType ?? null,
+	);
+	const cachedProbe = probe.catch((error) => {
+		if (helperContractMetadata.namedTypes.get(typeName) === cachedProbe) {
+			helperContractMetadata.namedTypes.delete(typeName);
+		}
+
+		throw error;
+	});
+
+	helperContractMetadata.namedTypes.set(typeName, cachedProbe);
+
+	return cachedProbe;
+}
+
+async function getFieldNamedType(
+	helperContractMetadata: GraphQLHelperContractCache,
+	fieldMetadata: GraphQLFieldMetadata | null | undefined,
+): Promise<GraphQLNamedTypeMetadata | null> {
+	const namedTypeRef = unwrapNamedTypeRef(fieldMetadata?.type);
+
+	if (namedTypeRef?.kind !== 'OBJECT') {
+		return null;
+	}
+
+	return getNamedType(helperContractMetadata, namedTypeRef.name ?? null);
+}
+
+async function fieldReferencesTypeWithFields(
+	helperContractMetadata: GraphQLHelperContractCache,
 	fieldMetadata: GraphQLFieldMetadata | null | undefined,
 	requiredFields: string[],
-): boolean {
-	const typeMetadata = getNamedType(helperContractMetadata, unwrapNamedType(fieldMetadata?.type));
+): Promise<boolean> {
+	const typeMetadata = await getFieldNamedType(helperContractMetadata, fieldMetadata);
 
 	return hasFields(typeMetadata, requiredFields);
 }
 
-async function loadGraphQLHelperContractMetadata(): Promise<GraphQLHelperContractData> {
+async function loadGraphQLHelperContractMetadata(): Promise<GraphQLHelperContractCache> {
 	if (!helperContractMetadata) {
 		const probe = gqlQuery<GraphQLHelperContractData>(GRAPHQL_HELPER_CONTRACT_QUERY);
-		const cachedProbe = probe.catch((error) => {
-			if (helperContractMetadata === cachedProbe) {
-				helperContractMetadata = null;
-			}
+		const cachedProbe = probe
+			.then((data) => ({
+				data,
+				namedTypes: seedNamedTypes(data),
+			}))
+			.catch((error) => {
+				if (helperContractMetadata === cachedProbe) {
+					helperContractMetadata = null;
+				}
 
-			throw error;
-		});
+				throw error;
+			});
 
 		helperContractMetadata = cachedProbe;
 	}
@@ -353,10 +445,10 @@ async function loadGraphQLHelperContractMetadata(): Promise<GraphQLHelperContrac
 }
 
 async function assertCollectionsHelperContract(): Promise<void> {
-	const data = await loadGraphQLHelperContractMetadata();
-	const collectionsField = getField(data.__schema.queryType, 'collections');
+	const metadata = await loadGraphQLHelperContractMetadata();
+	const collectionsField = getField(metadata.data.__schema.queryType, 'collections');
 	const supportsCollectionsHelperContract =
-		fieldReferencesTypeWithFields(data, collectionsField, ['name', 'entityCount']) &&
+		(await fieldReferencesTypeWithFields(metadata, collectionsField, ['name', 'entityCount'])) &&
 		(collectionsField?.args ?? []).length === 0;
 
 	if (!supportsCollectionsHelperContract) {
@@ -365,30 +457,30 @@ async function assertCollectionsHelperContract(): Promise<void> {
 }
 
 async function assertEntityHelperContract(): Promise<void> {
-	const data = await loadGraphQLHelperContractMetadata();
-	const entityField = getField(data.__schema.queryType, 'entity');
-	const entitiesField = getField(data.__schema.queryType, 'entities');
-	const entityConnectionType = getNamedType(data, unwrapNamedType(entitiesField?.type));
+	const metadata = await loadGraphQLHelperContractMetadata();
+	const entityField = getField(metadata.data.__schema.queryType, 'entity');
+	const entitiesField = getField(metadata.data.__schema.queryType, 'entities');
+	const entityConnectionType = await getFieldNamedType(metadata, entitiesField);
 	const entityEdgeField = getField(entityConnectionType, 'edges');
-	const entityEdgeType = getNamedType(data, unwrapNamedType(entityEdgeField?.type));
+	const entityEdgeType = await getFieldNamedType(metadata, entityEdgeField);
 	const entityNodeField = getField(entityEdgeType, 'node');
 	const pageInfoField = getField(entityConnectionType, 'pageInfo');
 	const supportsEntityHelperContract =
 		hasArgumentType(entityField, 'collection', 'String') &&
 		hasArgumentType(entityField, 'id', 'ID') &&
-		fieldReferencesTypeWithFields(data, entityField, [
+		(await fieldReferencesTypeWithFields(metadata, entityField, [
 			'id',
 			'version',
 			'data',
 			'createdAt',
 			'updatedAt',
-		]) &&
+		])) &&
 		hasArgumentType(entitiesField, 'collection', 'String') &&
 		hasArgumentType(entitiesField, 'limit', 'Int') &&
 		hasArgumentType(entitiesField, 'after', 'String') &&
 		hasFields(entityConnectionType, ['edges', 'pageInfo']) &&
-		fieldReferencesTypeWithFields(data, entityNodeField, ['id', 'version', 'data']) &&
-		fieldReferencesTypeWithFields(data, pageInfoField, ['hasNextPage', 'endCursor']);
+		(await fieldReferencesTypeWithFields(metadata, entityNodeField, ['id', 'version', 'data'])) &&
+		(await fieldReferencesTypeWithFields(metadata, pageInfoField, ['hasNextPage', 'endCursor']));
 
 	if (!supportsEntityHelperContract) {
 		throw new Error(GRAPHQL_ENTITY_HELPER_CONTRACT_ERROR);
