@@ -22,8 +22,9 @@ def parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
 
-def validate_tracker(path: Path) -> int:
+def validate_tracker(path: Path, included_ids: set[str] | None = None) -> int:
     failures: list[str] = []
+    matched_ids: set[str] = set()
 
     with path.open(encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
@@ -31,11 +32,12 @@ def validate_tracker(path: Path) -> int:
             notes = record.get("notes")
             updated_at = record.get("updated_at")
             bead_id = record.get("id", "<unknown>")
-            included_ids = getattr(validate_tracker, "included_ids", None)
 
-            if not notes or not updated_at:
-                continue
             if included_ids and bead_id not in included_ids:
+                continue
+            if included_ids:
+                matched_ids.add(bead_id)
+            if not notes or not updated_at:
                 continue
 
             try:
@@ -67,6 +69,13 @@ def validate_tracker(path: Path) -> int:
                         )
                     )
 
+    if included_ids:
+        missing_ids = sorted(included_ids - matched_ids)
+        if missing_ids:
+            failures.append(
+                f"{path}: requested bead IDs not found: {', '.join(missing_ids)}"
+            )
+
     if failures:
         for failure in failures:
             print(failure, file=sys.stderr)
@@ -94,8 +103,8 @@ def main() -> int:
         help="Restrict validation to specific bead IDs (repeatable)",
     )
     args = parser.parse_args()
-    validate_tracker.included_ids = set(args.ids)
-    return validate_tracker(Path(args.path))
+    included_ids = set(args.ids) or None
+    return validate_tracker(Path(args.path), included_ids=included_ids)
 
 
 if __name__ == "__main__":
