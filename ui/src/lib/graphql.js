@@ -17,7 +17,7 @@ export async function gqlQuery(query, variables = {}) {
 	const response = await fetch(GRAPHQL_ENDPOINT, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({ query, variables })
+		body: JSON.stringify({ query, variables }),
 	});
 
 	if (!response.ok) {
@@ -26,7 +26,7 @@ export async function gqlQuery(query, variables = {}) {
 
 	const result = await response.json();
 	if (result.errors) {
-		throw new Error(result.errors.map(e => e.message).join(', '));
+		throw new Error(result.errors.map((e) => e.message).join(', '));
 	}
 
 	return result.data;
@@ -36,7 +36,7 @@ export async function gqlQuery(query, variables = {}) {
  * Fetch all collections.
  */
 export async function fetchCollections() {
-	return gqlQuery(`{ collections { name entityCount } }`);
+	return gqlQuery('{ collections { name entityCount } }');
 }
 
 /**
@@ -50,7 +50,7 @@ export async function fetchEntities(collection, { limit = 50, after = null } = {
 				pageInfo { hasNextPage endCursor }
 			}
 		}`,
-		{ collection, limit, after }
+		{ collection, limit, after },
 	);
 }
 
@@ -64,6 +64,6 @@ export async function fetchEntity(collection, id) {
 				id version data createdAt updatedAt
 			}
 		}`,
-		{ collection, id }
+		{ collection, id },
 	);
 }

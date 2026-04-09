@@ -25,7 +25,9 @@ available via CLI and API: browsing collections, inspecting entities,
 viewing and editing schemas, and reading the audit log.
 
 The UI is a SvelteKit application built with Bun, served as static files
-by the axon-server HTTP gateway (see ADR-006).
+by the axon-server HTTP gateway (see ADR-006). The cross-cutting concern
+for the UI surface is `typescript-bun`, with ADR-006 providing the
+SvelteKit and Vite-specific overrides.
 
 ## Problem Statement
 
@@ -165,6 +167,9 @@ history.
   components, TypeScript
 - **Bun** — package manager, script runner, Vite runtime
 - **Vite** — bundler, dev server with API proxy
+- **Concern package**: `typescript-bun` governs the runtime, package manager,
+  and quality gates; ADR-006 fixes the framework/bundler choice to
+  SvelteKit + Vite for `ui/`
 
 ### Key Implementation Details
 
@@ -210,6 +215,8 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 - **FEAT-004** (Entity Operations): UI CRUDs entities
 - **FEAT-005** (API Surface): UI calls HTTP gateway endpoints
 - **ADR-006**: Technology choices (SvelteKit, Bun, Vite)
+- **Cross-cutting concern**: `typescript-bun` with ADR-006 overrides for
+  the admin UI surface
 - **Bun runtime**: Required at build time, not at runtime
 
 ## Out of Scope
@@ -229,7 +236,8 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 - **Parent PRD Section**: Requirements Overview > P1 #8 (Admin web UI)
 - **User Stories**: US-040, US-041, US-042
 - **Architecture**: ADR-006 (SvelteKit + Bun + Vite)
-- **Cross-cutting concern**: svelte-bun in `concerns.md`
+- **Cross-cutting concern**: `typescript-bun` in `concerns.md`, scoped to
+  `area:ui` beads with ADR-006 overrides
 - **Implementation**: `ui/` at project root
 
 ### Feature Dependencies

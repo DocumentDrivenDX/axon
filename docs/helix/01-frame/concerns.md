@@ -2,7 +2,7 @@
 
 ## Active Concerns
 - rust-cargo (tech-stack)
-- svelte-bun (tech-stack, admin UI)
+- typescript-bun (tech-stack, admin UI)
 
 ## Area Labels
 
@@ -22,13 +22,16 @@
 - **Workspace lints**: `[workspace.lints]` configured with clippy pedantic+nursery (resolved)
 - **cargo-deny**: `deny.toml` configured for license, advisory, ban, source checks (resolved)
 
-### svelte-bun
-- **Framework**: SvelteKit (Svelte 5, runes) with adapter-static
+### typescript-bun
+- **Scope**: `area:ui` beads only. Rust crates remain governed by `rust-cargo`.
+- **Framework override**: SvelteKit (Svelte 5, runes) with adapter-static
 - **Runtime**: Bun (package manager + script runner)
-- **Bundler**: Vite (SvelteKit default)
-- **Language**: TypeScript throughout
+- **Bundler override**: Vite (SvelteKit default)
+- **Language override**: TypeScript throughout
 - **Location**: `ui/` at project root
-- **Build**: `cd ui && bun install && bun run build`
+- **Quality gates**: `cd ui && bun run typecheck && bun run lint && bun test && bun run build`
 - **Dev**: `cd ui && bun run dev` (Vite on :5173, proxies API to :3000)
+- **Build**: `cd ui && bun install && bun run build`
 - **Serving**: axum serves static files from `--ui-dir` path; Phase 2 embeds in binary
 - **Design reference**: ADR-006
+- **Concern package**: `/home/erik/Projects/helix/workflows/concerns/typescript-bun`

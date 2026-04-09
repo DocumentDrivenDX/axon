@@ -1,0 +1,14 @@
+{
+	"extends": "./.svelte-kit/tsconfig.json",
+	"compilerOptions": {
+		"allowJs": true,
+		"checkJs": false,
+		"exactOptionalPropertyTypes": true,
+		"moduleResolution": "bundler",
+		"noUncheckedIndexedAccess": true,
+		"skipLibCheck": true,
+		"strict": true,
+		"types": ["node"],
+		"verbatimModuleSyntax": true
+	}
+}
