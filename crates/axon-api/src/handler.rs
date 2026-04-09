@@ -8984,7 +8984,7 @@ link_types:
             .unwrap();
 
         assert_eq!(response.entity.collection, billing);
-        assert_eq!(response.gates["complete"].pass, true);
+        assert!(response.gates["complete"].pass);
         assert_eq!(
             h.storage_mut()
                 .get_gate_results(&billing, &entity_id)
