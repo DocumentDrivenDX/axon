@@ -85,6 +85,77 @@ class CheckTrackerMeasureTimestampsCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("all measure timestamps are <= updated_at", result.stdout)
 
+    def test_scoped_validation_fails_when_any_measure_results_block_is_malformed(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-malformed-and-valid",
+                    "updated_at": "2026-04-09T18:00:00Z",
+                    "notes": (
+                        "<measure-results><status>PASS</status></measure-results>"
+                        "<measure-results><timestamp>2026-04-09T17:59:59Z</timestamp>"
+                        "</measure-results>"
+                    ),
+                }
+            ],
+            "hx-malformed-and-valid",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "hx-malformed-and-valid has measure-results block with missing timestamp",
+            result.stderr,
+        )
+
+    def test_scoped_validation_succeeds_when_all_measure_results_blocks_are_valid(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-two-valid-measure-results",
+                    "updated_at": "2026-04-09T18:00:00Z",
+                    "notes": (
+                        "<measure-results><timestamp>2026-04-09T17:58:59Z</timestamp>"
+                        "</measure-results>"
+                        "<measure-results><timestamp>2026-04-09T17:59:59Z</timestamp>"
+                        "</measure-results>"
+                    ),
+                }
+            ],
+            "hx-two-valid-measure-results",
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("all measure timestamps are <= updated_at", result.stdout)
+
+    def test_scoped_validation_fails_when_measure_results_block_has_multiple_timestamps(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-multiple-timestamps",
+                    "updated_at": "2026-04-09T18:00:00Z",
+                    "notes": (
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T17:58:59Z</timestamp>"
+                        "<timestamp>2026-04-09T17:59:59Z</timestamp>"
+                        "</measure-results>"
+                    ),
+                }
+            ],
+            "hx-multiple-timestamps",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "hx-multiple-timestamps has measure-results block with multiple timestamps",
+            result.stderr,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

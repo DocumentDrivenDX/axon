@@ -11,15 +11,26 @@ from datetime import datetime
 from pathlib import Path
 
 
-MEASURE_TIMESTAMP_RE = re.compile(
-    r"<measure-results>.*?<timestamp>([^<]+)</timestamp>", re.DOTALL
-)
+MEASURE_RESULTS_RE = re.compile(r"<measure-results>(.*?)</measure-results>", re.DOTALL)
+TIMESTAMP_TAG_RE = re.compile(r"<timestamp>([^<]+)</timestamp>")
 
 
 def parse_timestamp(value: str) -> datetime:
     if value.endswith("Z"):
         value = f"{value[:-1]}+00:00"
     return datetime.fromisoformat(value)
+
+
+def iter_measure_timestamps(notes: str) -> list[tuple[str | None, str | None]]:
+    timestamps: list[tuple[str | None, str | None]] = []
+    for block in MEASURE_RESULTS_RE.findall(notes):
+        matches = [match.strip() for match in TIMESTAMP_TAG_RE.findall(block)]
+        if len(matches) == 1:
+            timestamps.append((matches[0], None))
+        else:
+            reason = "missing timestamp" if not matches else "multiple timestamps"
+            timestamps.append((None, reason))
+    return timestamps
 
 
 def validate_tracker(path: Path, included_ids: set[str] | None = None) -> int:
@@ -59,10 +70,20 @@ def validate_tracker(path: Path, included_ids: set[str] | None = None) -> int:
                     unvalidated_reasons[bead_id] = "invalid updated_at"
                 continue
 
-            matched_measure = False
-            for match in MEASURE_TIMESTAMP_RE.finditer(notes):
-                matched_measure = True
-                measure_timestamp = match.group(1).strip()
+            measure_timestamps = iter_measure_timestamps(notes)
+            for measure_timestamp, malformed_reason in measure_timestamps:
+                if measure_timestamp is None:
+                    failures.append(
+                        (
+                            f"{path}:{line_number}: bead {bead_id} has "
+                            f"measure-results block with {malformed_reason}"
+                        )
+                    )
+                    if included_ids:
+                        unvalidated_reasons.setdefault(
+                            bead_id, f"measure-results block with {malformed_reason}"
+                        )
+                    continue
                 try:
                     measure_timestamp_dt = parse_timestamp(measure_timestamp)
                 except ValueError:
@@ -93,7 +114,7 @@ def validate_tracker(path: Path, included_ids: set[str] | None = None) -> int:
                 if included_ids:
                     validated_counts[bead_id] += 1
 
-            if included_ids and not matched_measure:
+            if included_ids and not measure_timestamps:
                 unvalidated_reasons[bead_id] = (
                     "missing <measure-results> timestamp evidence"
                 )
