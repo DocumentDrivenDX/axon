@@ -46,5 +46,5 @@ tokio-stream.workspace = true
 axum-test = "20"
 axum = { version = "0.8", features = [] }
 tower = "0.5"
-reqwest = { version = "0.12", features = ["stream"] }
+reqwest.workspace = true
 serde_json.workspace = true
