@@ -409,7 +409,11 @@ fn nearest_match(input: &str, candidates: &[String]) -> Option<String> {
         if dist == 0 {
             continue; // Exact match, not useful as suggestion.
         }
-        if dist <= threshold && (best.is_none() || dist < best.unwrap().0) {
+        let is_better_match = match best {
+            Some((best_dist, _)) => dist < best_dist,
+            None => true,
+        };
+        if dist <= threshold && is_better_match {
             best = Some((dist, candidate));
         }
     }
@@ -452,9 +456,9 @@ entity_schema:
 
     fn invoice_schema() -> CollectionSchema {
         EsfDocument::parse(INVOICE_ESF)
-            .unwrap()
+            .expect("invoice ESF fixture should parse")
             .into_collection_schema()
-            .unwrap()
+            .expect("invoice ESF fixture should convert to collection schema")
     }
 
     #[test]
@@ -484,7 +488,8 @@ entity_schema:
         let schema = invoice_schema();
         // Missing all required fields.
         let entity = json!({});
-        let errs = validate_entity(&schema, &entity).unwrap_err();
+        let errs = validate_entity(&schema, &entity)
+            .expect_err("validation should fail when required fields are missing");
         assert!(!errs.is_empty(), "should have validation errors");
 
         // Each error has a field_path and message.
@@ -507,7 +512,8 @@ entity_schema:
             "amount": { "value": 50.0, "currency": "JPY" },  // JPY not in enum
             "status": "draft"
         });
-        let errs = validate_entity(&schema, &entity).unwrap_err();
+        let errs = validate_entity(&schema, &entity)
+            .expect_err("validation should fail for invalid enum values");
         assert!(!errs.is_empty());
         // At least one error should reference the currency field.
         let has_currency_error = errs.0.iter().any(|e| e.field_path.contains("currency"));
@@ -525,7 +531,8 @@ entity_schema:
             "amount": { "value": 10.0, "currency": "USD" },
             "status": "unknown_status"
         });
-        let errs = validate_entity(&schema, &entity).unwrap_err();
+        let errs = validate_entity(&schema, &entity)
+            .expect_err("validation should fail for missing nested required fields");
         assert!(errs.len() >= 2, "expected at least 2 errors, got: {errs}");
     }
 
@@ -535,7 +542,8 @@ entity_schema:
     fn required_field_error_names_field_and_suggests_fix() {
         let schema = invoice_schema();
         let entity = json!({});
-        let errs = validate_entity(&schema, &entity).unwrap_err();
+        let errs = validate_entity(&schema, &entity)
+            .expect_err("validation should fail for fields below minimum");
 
         // Should have errors for all three required fields.
         let required_errors: Vec<_> = errs
@@ -564,7 +572,8 @@ entity_schema:
             "amount": { "value": 50.0, "currency": "JPY" },
             "status": "draft"
         });
-        let errs = validate_entity(&schema, &entity).unwrap_err();
+        let errs = validate_entity(&schema, &entity)
+            .expect_err("validation should fail when additional properties are present");
 
         let enum_err = errs
             .0
@@ -596,7 +605,8 @@ entity_schema:
             "amount": { "value": 50.0, "currency": "USD" },
             "status": "drafy"
         });
-        let errs = validate_entity(&schema, &entity).unwrap_err();
+        let errs = validate_entity(&schema, &entity)
+            .expect_err("validation should fail for malformed nested objects");
 
         let status_err = errs
             .0
@@ -639,7 +649,8 @@ entity_schema:
             compound_indexes: Default::default(),
         };
         let entity = json!({"count": "not-a-number"});
-        let errs = validate_entity(&schema, &entity).unwrap_err();
+        let errs = validate_entity(&schema, &entity)
+            .expect_err("validation should fail when nested arrays contain invalid items");
 
         let type_err = &errs.0[0];
         assert!(
@@ -657,7 +668,8 @@ entity_schema:
             "status": "INVALID",
             "amount": { "value": "bad", "currency": "ZZZ" }
         });
-        let errs = validate_entity(&schema, &entity).unwrap_err();
+        let errs = validate_entity(&schema, &entity)
+            .expect_err("validation should fail when list items miss required fields");
 
         for e in &errs.0 {
             assert_eq!(e.severity, "error", "all errors should have severity=error");
@@ -684,7 +696,8 @@ entity_schema:
             compound_indexes: Default::default(),
         };
         let entity = json!({});
-        let errs = validate_entity(&schema, &entity).unwrap_err();
+        let errs = validate_entity(&schema, &entity)
+            .expect_err("validation should fail for duplicate or invalid enum values");
 
         let status_err = errs
             .0

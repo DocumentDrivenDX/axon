@@ -161,8 +161,9 @@ mod tests {
             entities: vec![serde_json::json!({"id": "t-002", "title": "Task 2"})],
             total_count: 1,
         };
-        let json = serde_json::to_string(&rel).unwrap();
-        let parsed: ResolvedRelationship = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&rel).expect("relationship should serialize");
+        let parsed: ResolvedRelationship =
+            serde_json::from_str(&json).expect("relationship JSON should deserialize");
         assert_eq!(parsed.link_type, "depends-on");
         assert_eq!(parsed.entities.len(), 1);
     }

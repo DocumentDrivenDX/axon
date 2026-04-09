@@ -125,8 +125,9 @@ mod tests {
             filter: Some(json!({"status": "open"})),
             group_by: Some("assignee".into()),
         };
-        let json = serde_json::to_string(&req).unwrap();
-        let parsed: GqlAggregateRequest = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&req).expect("aggregate request should serialize to JSON");
+        let parsed: GqlAggregateRequest =
+            serde_json::from_str(&json).expect("aggregate request JSON should deserialize");
         assert_eq!(parsed.function, GqlAggregateFunction::Sum);
         assert_eq!(parsed.field, "priority");
         assert_eq!(parsed.group_by.as_deref(), Some("assignee"));
@@ -138,8 +139,9 @@ mod tests {
             group_key: Some(json!("open")),
             value: json!(42),
         };
-        let json = serde_json::to_string(&group).unwrap();
-        let parsed: GqlAggregateGroup = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&group).expect("aggregate group should serialize");
+        let parsed: GqlAggregateGroup =
+            serde_json::from_str(&json).expect("aggregate group JSON should deserialize");
         assert_eq!(parsed.value, json!(42));
     }
 
@@ -149,7 +151,8 @@ mod tests {
             group_key: None,
             value: json!(100.5),
         };
-        let json = serde_json::to_string(&group).unwrap();
+        let json =
+            serde_json::to_string(&group).expect("aggregate group without key should serialize");
         assert!(!json.contains("group_key"));
     }
 }

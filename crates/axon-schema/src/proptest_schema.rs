@@ -104,7 +104,7 @@ proptest! {
             result.is_err(),
             "entity missing a required field should fail validation"
         );
-        let errs = result.unwrap_err();
+        let errs = result.expect_err("missing required invoice fields should fail validation");
         prop_assert!(
             !errs.is_empty(),
             "validation error list must not be empty"

@@ -134,7 +134,9 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         indexes: Default::default(),
         compound_indexes: Default::default(),
     };
-    handler.put_schema(schema).unwrap();
+    handler
+        .put_schema(schema)
+        .expect("schema registration should succeed for the workload fixture");
 
     let attempts = write_attempts();
     let valid_attempted = attempts.iter().filter(|a| a.should_succeed).count();
@@ -180,7 +182,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
                 collection: col.clone(),
                 id: EntityId::new("v-001"),
             })
-            .unwrap();
+            .expect("valid entity should remain readable after schema registration");
         let update_result = handler.update_entity(UpdateEntityRequest {
             collection: col.clone(),
             id: EntityId::new("v-001"),

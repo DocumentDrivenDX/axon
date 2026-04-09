@@ -90,11 +90,17 @@ mod tests {
         // System fields + 3 user fields.
         assert!(fields.len() >= 7);
 
-        let title = fields.iter().find(|(n, _, _)| n == "title").unwrap();
+        let title = fields
+            .iter()
+            .find(|(n, _, _)| n == "title")
+            .expect("title field should be exposed in the GraphQL schema");
         assert_eq!(title.1, "String");
         assert!(title.2); // required
 
-        let priority = fields.iter().find(|(n, _, _)| n == "priority").unwrap();
+        let priority = fields
+            .iter()
+            .find(|(n, _, _)| n == "priority")
+            .expect("priority field should be exposed in the GraphQL schema");
         assert_eq!(priority.1, "Int");
         assert!(!priority.2); // not required
     }

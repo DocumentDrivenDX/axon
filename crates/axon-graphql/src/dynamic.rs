@@ -181,7 +181,8 @@ mod tests {
             }]
         }
 
-        async fn entity(&self, _collection: String, _id: ID) -> Json<Value> {
+        async fn entity(&self, collection: String, id: ID) -> Json<Value> {
+            let _ = (collection, id);
             Json(json!({
                 "id": "task-1",
                 "version": 2,
@@ -193,10 +194,11 @@ mod tests {
 
         async fn entities(
             &self,
-            _collection: String,
-            _limit: Option<i32>,
-            _after: Option<String>,
+            collection: String,
+            limit: Option<i32>,
+            after: Option<String>,
         ) -> Feat015EntityConnection {
+            let _ = (collection, limit, after);
             Feat015EntityConnection {
                 edges: vec![Feat015EntityEdge {
                     node: Json(json!({

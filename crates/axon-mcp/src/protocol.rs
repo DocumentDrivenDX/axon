@@ -306,6 +306,13 @@ mod tests {
         McpServer::new(ToolRegistry::new())
     }
 
+    fn response_json(server: &mut McpServer, request: Value) -> Value {
+        let response = server
+            .handle_message(&request.to_string())
+            .expect("request should produce a protocol response");
+        serde_json::from_str(&response).expect("protocol response should be valid JSON")
+    }
+
     #[test]
     fn initialize_returns_capabilities() {
         let mut server = empty_server();
@@ -319,14 +326,13 @@ mod tests {
                 "clientInfo": { "name": "test", "version": "0.1" }
             }
         });
-        let resp_str = server.handle_message(&req.to_string()).unwrap();
-        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+        let resp = response_json(&mut server, req);
 
         assert_eq!(resp["result"]["protocolVersion"], "2024-11-05");
         assert_eq!(resp["result"]["serverInfo"]["name"], "axon-mcp");
         assert!(resp["result"]["capabilities"]["tools"]["listChanged"]
             .as_bool()
-            .unwrap());
+            .expect("initialize response should include tools.listChanged"));
         assert!(server.is_initialized());
     }
 
@@ -353,10 +359,11 @@ mod tests {
             "id": 2,
             "method": "tools/list"
         });
-        let resp_str = server.handle_message(&req.to_string()).unwrap();
-        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+        let resp = response_json(&mut server, req);
 
-        let tools = resp["result"]["tools"].as_array().unwrap();
+        let tools = resp["result"]["tools"]
+            .as_array()
+            .expect("tools/list response should include a tools array");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "axon.test");
         assert_eq!(tools[0]["description"], "A test tool");
@@ -387,8 +394,7 @@ mod tests {
                 "arguments": { "text": "hello" }
             }
         });
-        let resp_str = server.handle_message(&req.to_string()).unwrap();
-        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+        let resp = response_json(&mut server, req);
 
         assert_eq!(resp["result"]["content"][0]["text"], "hello");
     }
@@ -402,10 +408,11 @@ mod tests {
             "method": "tools/call",
             "params": { "name": "nonexistent" }
         });
-        let resp_str = server.handle_message(&req.to_string()).unwrap();
-        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+        let resp = response_json(&mut server, req);
 
-        assert!(resp["result"]["isError"].as_bool().unwrap());
+        assert!(resp["result"]["isError"]
+            .as_bool()
+            .expect("error tool response should include isError"));
     }
 
     #[test]
@@ -427,8 +434,7 @@ mod tests {
             "id": 5,
             "method": "bogus/method"
         });
-        let resp_str = server.handle_message(&req.to_string()).unwrap();
-        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+        let resp = response_json(&mut server, req);
 
         assert_eq!(resp["error"]["code"], -32601);
     }
@@ -441,16 +447,19 @@ mod tests {
             "id": 6,
             "method": "ping"
         });
-        let resp_str = server.handle_message(&req.to_string()).unwrap();
-        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+        let resp = response_json(&mut server, req);
         assert_eq!(resp["result"], serde_json::json!({}));
     }
 
     #[test]
     fn invalid_json_returns_parse_error() {
         let mut server = empty_server();
-        let resp_str = server.handle_message("not json").unwrap();
-        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+        let resp = serde_json::from_str::<Value>(
+            &server
+                .handle_message("not json")
+                .expect("invalid JSON should still yield a parse error response"),
+        )
+        .expect("parse error response should be valid JSON");
         assert_eq!(resp["error"]["code"], -32700);
     }
 
@@ -465,11 +474,10 @@ mod tests {
             "method": "initialize",
             "params": {}
         });
-        let resp_str = server.handle_message(&req.to_string()).unwrap();
-        let resp: Value = serde_json::from_str(&resp_str).unwrap();
+        let resp = response_json(&mut server, req);
         assert!(resp["result"]["capabilities"]["resources"]["subscribe"]
             .as_bool()
-            .unwrap());
+            .expect("initialize response should advertise resource subscribe support"));
     }
 
     #[test]
@@ -481,9 +489,13 @@ mod tests {
             "method": "resources/subscribe",
             "params": { "uri": "axon://collections/tasks/entities/t-001" }
         });
-        let resp_str = server.handle_message(&req.to_string()).unwrap();
-        let resp: Value = serde_json::from_str(&resp_str).unwrap();
-        assert!(resp["result"]["subscriptionId"].as_u64().unwrap() > 0);
+        let resp = response_json(&mut server, req);
+        assert!(
+            resp["result"]["subscriptionId"]
+                .as_u64()
+                .expect("subscribe response should include a numeric subscription id")
+                > 0
+        );
         assert_eq!(server.subscription_count(), 1);
     }
 

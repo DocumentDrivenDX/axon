@@ -466,7 +466,7 @@ mod tests {
         let mut new = schema_v1();
         new["properties"]
             .as_object_mut()
-            .unwrap()
+            .expect("schema fixture should expose properties as an object")
             .remove("description");
 
         let diff = diff_schemas(Some(&old), Some(&new));

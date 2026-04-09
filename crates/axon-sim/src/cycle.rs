@@ -185,7 +185,7 @@ pub fn run_cycle_test(config: &CycleConfig) -> CycleResult {
             node_i.version,
             Some(node_i.data.clone()),
         )
-        .unwrap();
+        .expect("first node update should stage successfully");
         tx.update(
             Entity {
                 collection: col.clone(),
@@ -200,7 +200,7 @@ pub fn run_cycle_test(config: &CycleConfig) -> CycleResult {
             node_j.version,
             Some(node_j.data.clone()),
         )
-        .unwrap();
+        .expect("second node update should stage successfully");
 
         match handler.commit_transaction(tx, Some("sim".into())) {
             Ok(_) => swaps_committed += 1,
@@ -303,7 +303,7 @@ pub fn setup_cycle_handler(ring_size: usize) -> AxonHandler<MemoryStorageAdapter
                 actor: None,
                 audit_metadata: None,
             })
-            .unwrap();
+            .expect("cycle setup should create each node");
     }
     for i in 0..ring_size {
         let next = (i + 1) % ring_size;
@@ -317,7 +317,7 @@ pub fn setup_cycle_handler(ring_size: usize) -> AxonHandler<MemoryStorageAdapter
                 metadata: json!(null),
                 actor: None,
             })
-            .unwrap();
+            .expect("cycle setup should create each link");
     }
     handler
 }

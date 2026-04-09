@@ -196,7 +196,9 @@ mod tests {
 
         broker.publish(make_event("tasks", "t-001", "create"));
 
-        let events = broker.poll(id).unwrap();
+        let events = broker
+            .poll(id)
+            .expect("active subscription should return a poll buffer");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].entity_id, "t-001");
     }
@@ -207,11 +209,15 @@ mod tests {
         let id = broker.subscribe(SubscriptionFilter::default());
 
         broker.publish(make_event("tasks", "t-001", "create"));
-        let events = broker.poll(id).unwrap();
+        let events = broker
+            .poll(id)
+            .expect("active subscription should return a poll buffer");
         assert_eq!(events.len(), 1);
 
         // Second poll returns empty.
-        let events = broker.poll(id).unwrap();
+        let events = broker
+            .poll(id)
+            .expect("active subscription should return a poll buffer");
         assert!(events.is_empty());
     }
 
@@ -226,7 +232,9 @@ mod tests {
         broker.publish(make_event("tasks", "t-001", "create"));
         broker.publish(make_event("users", "u-001", "create"));
 
-        let events = broker.poll(id).unwrap();
+        let events = broker
+            .poll(id)
+            .expect("active subscription should return a poll buffer");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].collection, "tasks");
     }
@@ -248,7 +256,9 @@ mod tests {
             ..make_event("tasks", "t-002", "create")
         });
 
-        let events = broker.poll(id).unwrap();
+        let events = broker
+            .poll(id)
+            .expect("active subscription should return a poll buffer");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].entity_id, "t-001");
     }
@@ -302,15 +312,28 @@ mod tests {
 
         broker.publish(make_event("tasks", "t-001", "create"));
 
-        assert_eq!(broker.poll(id1).unwrap().len(), 1);
-        assert_eq!(broker.poll(id2).unwrap().len(), 1);
+        assert_eq!(
+            broker
+                .poll(id1)
+                .expect("first active subscription should receive the event")
+                .len(),
+            1
+        );
+        assert_eq!(
+            broker
+                .poll(id2)
+                .expect("second active subscription should receive the event")
+                .len(),
+            1
+        );
     }
 
     #[test]
     fn change_event_serialization() {
         let event = make_event("tasks", "t-001", "update");
-        let json = serde_json::to_string(&event).unwrap();
-        let parsed: ChangeEvent = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&event).expect("change event should serialize");
+        let parsed: ChangeEvent =
+            serde_json::from_str(&json).expect("change event JSON should deserialize");
         assert_eq!(parsed.collection, "tasks");
         assert_eq!(parsed.operation, "update");
     }

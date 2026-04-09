@@ -598,7 +598,7 @@ mod tests {
         let data = json!({"status": "approved"});
         let violation = evaluate_rule(&rule, &data);
         assert!(violation.is_some());
-        let v = violation.unwrap();
+        let v = violation.expect("approved status without approver should violate the rule");
         assert_eq!(v.rule, "approved-needs-approver");
         assert_eq!(v.field, "approver_id");
     }
@@ -627,7 +627,10 @@ mod tests {
         let data = json!({"title": "TODO"});
         let v = evaluate_rule(&rule, &data);
         assert!(v.is_some());
-        assert!(v.unwrap().advisory);
+        assert!(
+            v.expect("placeholder title should produce an advisory violation")
+                .advisory
+        );
     }
 
     #[test]
@@ -799,8 +802,13 @@ mod tests {
         };
 
         let data = json!({"start_date": "2026-01-01", "end_date": "2025-12-01"});
-        let v = evaluate_rule(&rule, &data).unwrap();
-        assert_eq!(v.fix.unwrap(), "Set end_date after 2026-01-01");
+        let v = evaluate_rule(&rule, &data)
+            .expect("violating gt_field rule should produce a fixable violation");
+        assert_eq!(
+            v.fix
+                .expect("gt_field violation should include the interpolated fix"),
+            "Set end_date after 2026-01-01"
+        );
     }
 
     // ── Dot-path field access ──────────────────────────────────────────
@@ -838,7 +846,7 @@ mod tests {
     fn entity_schema_with_fields(fields: &[&str]) -> Value {
         let mut props = serde_json::Map::new();
         for f in fields {
-            props.insert(f.to_string(), json!({"type": "string"}));
+            props.insert((*f).to_string(), json!({"type": "string"}));
         }
         json!({
             "type": "object",

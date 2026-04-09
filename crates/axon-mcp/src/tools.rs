@@ -255,7 +255,7 @@ mod tests {
 
         let result = registry
             .call_tool("add", &serde_json::json!({"a": 3, "b": 4}))
-            .unwrap();
+            .expect("registered tool should dispatch successfully");
         assert_eq!(result["sum"], 7);
     }
 
@@ -264,7 +264,7 @@ mod tests {
         let registry = ToolRegistry::new();
         let err = registry
             .call_tool("nope", &serde_json::json!({}))
-            .unwrap_err();
+            .expect_err("unknown tools should return a not-found error");
         assert!(matches!(err, ToolError::NotFound(_)));
     }
 
@@ -301,7 +301,7 @@ mod tests {
 
         let result = registry
             .call_tool("items.create", &serde_json::json!({"data": {"name": "x"}}))
-            .unwrap();
+            .expect("collection tool should respond successfully");
         assert!(result["content"][0]["text"].as_str().is_some());
     }
 
@@ -319,16 +319,8 @@ mod tests {
         assert_eq!(updated.tool_count(), 8);
 
         // The old and new registries differ in tool count.
-        let old_names: Vec<String> = registry
-            .list_tools()
-            .iter()
-            .map(|t| t.name.clone())
-            .collect();
-        let new_names: Vec<String> = updated
-            .list_tools()
-            .iter()
-            .map(|t| t.name.clone())
-            .collect();
-        assert!(new_names.len() > old_names.len());
+        let old_tool_count = registry.list_tools().len();
+        let new_tool_count = updated.list_tools().len();
+        assert!(new_tool_count > old_tool_count);
     }
 }

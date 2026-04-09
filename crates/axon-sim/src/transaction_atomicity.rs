@@ -161,7 +161,7 @@ pub fn run_transaction_atomicity_workload(
             a.version,
             Some(a.data.clone()),
         )
-        .unwrap();
+        .expect("debit operation should stage successfully");
         tx.update(
             Entity {
                 collection: col.clone(),
@@ -176,7 +176,7 @@ pub fn run_transaction_atomicity_workload(
             b.version,
             Some(b.data.clone()),
         )
-        .unwrap();
+        .expect("credit operation should stage successfully");
 
         match handler.commit_transaction(tx, Some("sim".into())) {
             Ok(_) => {

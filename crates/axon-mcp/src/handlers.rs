@@ -907,6 +907,7 @@ fn to_tool_error(err: axon_core::error::AxonError) -> ToolError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::ToolDef;
     use axon_api::handler::AxonHandler;
     use axon_api::request::{CreateCollectionRequest, CreateLinkRequest};
     use axon_schema::schema::{Cardinality, CollectionSchema, LinkTypeDef};
@@ -939,14 +940,14 @@ mod tests {
                 schema: tasks_schema,
                 actor: Some("test".into()),
             })
-            .unwrap();
+            .expect("tasks collection fixture should be created");
         handler
             .create_collection(CreateCollectionRequest {
                 name: CollectionId::new("users"),
                 schema: CollectionSchema::new(CollectionId::new("users")),
                 actor: Some("test".into()),
             })
-            .unwrap();
+            .expect("users collection fixture should be created");
 
         for (collection, id, title, status, points) in [
             ("tasks", "t-001", "First task", "ready", 10),
@@ -965,7 +966,7 @@ mod tests {
                     actor: None,
                     audit_metadata: None,
                 })
-                .unwrap();
+                .expect("graph fixture entities should be created");
         }
 
         handler
@@ -976,7 +977,7 @@ mod tests {
                 actor: None,
                 audit_metadata: None,
             })
-            .unwrap();
+            .expect("users entity fixture should be created");
 
         for (source_collection, source_id, target_collection, target_id, link_type) in [
             ("tasks", "t-001", "tasks", "t-002", "depends-on"),
@@ -993,14 +994,27 @@ mod tests {
                     metadata: Value::Null,
                     actor: None,
                 })
-                .unwrap();
+                .expect("graph fixture links should be created");
         }
 
         Arc::new(Mutex::new(handler))
     }
 
     fn parse_tool_payload(result: &Value) -> Value {
-        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
+        serde_json::from_str(
+            result["content"][0]["text"]
+                .as_str()
+                .expect("tool response should contain text content"),
+        )
+        .expect("tool response payload should be valid JSON")
+    }
+
+    fn invoke_tool(tool: &ToolDef, args: Value) -> Value {
+        (tool.handler)(&args).expect("tool invocation should succeed")
+    }
+
+    fn invoke_tool_err(tool: &ToolDef, args: Value) -> ToolError {
+        (tool.handler)(&args).expect_err("tool invocation should fail")
     }
 
     #[test]
@@ -1011,22 +1025,22 @@ mod tests {
         // Create
         let create_tool = &tools[0];
         assert_eq!(create_tool.name, "tasks.create");
-        let result = (create_tool.handler)(&serde_json::json!({
-            "id": "t-001",
-            "data": {"title": "Test task"}
-        }))
-        .unwrap();
-        let text = result["content"][0]["text"].as_str().unwrap();
-        let entity: Value = serde_json::from_str(text).unwrap();
+        let result = invoke_tool(
+            create_tool,
+            serde_json::json!({
+                "id": "t-001",
+                "data": {"title": "Test task"}
+            }),
+        );
+        let entity = parse_tool_payload(&result);
         assert_eq!(entity["id"], "t-001");
         assert_eq!(entity["data"]["title"], "Test task");
 
         // Get
         let get_tool = &tools[1];
         assert_eq!(get_tool.name, "tasks.get");
-        let result = (get_tool.handler)(&serde_json::json!({"id": "t-001"})).unwrap();
-        let text = result["content"][0]["text"].as_str().unwrap();
-        let entity: Value = serde_json::from_str(text).unwrap();
+        let result = invoke_tool(get_tool, serde_json::json!({"id": "t-001"}));
+        let entity = parse_tool_payload(&result);
         assert_eq!(entity["data"]["title"], "Test task");
     }
 
@@ -1036,22 +1050,25 @@ mod tests {
         let tools = build_crud_tools("tasks", Arc::clone(&handler));
 
         // Create first
-        (tools[0].handler)(&serde_json::json!({
-            "id": "t-001",
-            "data": {"title": "Original"}
-        }))
-        .unwrap();
+        invoke_tool(
+            &tools[0],
+            serde_json::json!({
+                "id": "t-001",
+                "data": {"title": "Original"}
+            }),
+        );
 
         // Patch
         let patch_tool = &tools[2];
-        let result = (patch_tool.handler)(&serde_json::json!({
-            "id": "t-001",
-            "data": {"title": "Updated"},
-            "expected_version": 1
-        }))
-        .unwrap();
-        let text = result["content"][0]["text"].as_str().unwrap();
-        let entity: Value = serde_json::from_str(text).unwrap();
+        let result = invoke_tool(
+            patch_tool,
+            serde_json::json!({
+                "id": "t-001",
+                "data": {"title": "Updated"},
+                "expected_version": 1
+            }),
+        );
+        let entity = parse_tool_payload(&result);
         assert_eq!(entity["data"]["title"], "Updated");
         assert_eq!(entity["version"], 2);
     }
@@ -1062,16 +1079,20 @@ mod tests {
         let tools = build_crud_tools("tasks", Arc::clone(&handler));
 
         // Create
-        (tools[0].handler)(&serde_json::json!({
-            "id": "t-001",
-            "data": {"title": "Delete me"}
-        }))
-        .unwrap();
+        invoke_tool(
+            &tools[0],
+            serde_json::json!({
+                "id": "t-001",
+                "data": {"title": "Delete me"}
+            }),
+        );
 
         // Delete
         let delete_tool = &tools[3];
-        let result = (delete_tool.handler)(&serde_json::json!({"id": "t-001"})).unwrap();
-        let text = result["content"][0]["text"].as_str().unwrap();
+        let result = invoke_tool(delete_tool, serde_json::json!({"id": "t-001"}));
+        let text = result["content"][0]["text"]
+            .as_str()
+            .expect("delete tool should return text content");
         assert!(text.contains("t-001"));
 
         // Verify deleted
@@ -1085,19 +1106,23 @@ mod tests {
         let tools = build_crud_tools("tasks", Arc::clone(&handler));
 
         // Create
-        (tools[0].handler)(&serde_json::json!({
-            "id": "t-001",
-            "data": {"title": "V1"}
-        }))
-        .unwrap();
+        invoke_tool(
+            &tools[0],
+            serde_json::json!({
+                "id": "t-001",
+                "data": {"title": "V1"}
+            }),
+        );
 
         // Patch with wrong version
-        let err = (tools[2].handler)(&serde_json::json!({
-            "id": "t-001",
-            "data": {"title": "V2"},
-            "expected_version": 99
-        }))
-        .unwrap_err();
+        let err = invoke_tool_err(
+            &tools[2],
+            serde_json::json!({
+                "id": "t-001",
+                "data": {"title": "V2"},
+                "expected_version": 99
+            }),
+        );
 
         match err {
             ToolError::Conflict(msg) => {
@@ -1113,7 +1138,7 @@ mod tests {
         let handler = make_handler();
         let tools = build_crud_tools("tasks", Arc::clone(&handler));
 
-        let err = (tools[1].handler)(&serde_json::json!({})).unwrap_err();
+        let err = invoke_tool_err(&tools[1], serde_json::json!({}));
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 
@@ -1124,8 +1149,10 @@ mod tests {
         let handler = make_graph_handler();
         let tool = build_query_tool(Arc::clone(&handler));
         assert_eq!(tool.name, "axon.query");
-        let result = (tool.handler)(&serde_json::json!({
-            "query": r#"query($collection: String!, $id: String!) {
+        let result = invoke_tool(
+            &tool,
+            serde_json::json!({
+                "query": r"query($collection: String!, $id: String!) {
                 collections { name entityCount }
                 entity(collection: $collection, id: $id) { id data }
                 entities(collection: $collection, limit: 2) {
@@ -1133,13 +1160,13 @@ mod tests {
                     pageInfo { hasNextPage endCursor }
                     edges { cursor node { id data } }
                 }
-            }"#,
-            "variables": {
-                "collection": "tasks",
-                "id": "t-001"
-            }
-        }))
-        .unwrap();
+            }",
+                "variables": {
+                    "collection": "tasks",
+                    "id": "t-001"
+                }
+            }),
+        );
         let parsed = parse_tool_payload(&result);
         assert_eq!(parsed["data"]["collections"][0]["name"], "tasks");
         assert_eq!(parsed["data"]["collections"][0]["entityCount"], 3);
@@ -1155,37 +1182,43 @@ mod tests {
     #[test]
     fn query_tool_rejects_invalid_graphql_syntax() {
         let tool = build_query_tool(make_graph_handler());
-        let err = (tool.handler)(&serde_json::json!({
-            "query": "{ collections { name }"
-        }))
-        .unwrap_err();
+        let err = invoke_tool_err(
+            &tool,
+            serde_json::json!({
+                "query": "{ collections { name }"
+            }),
+        );
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 
     #[test]
     fn query_tool_rejects_unsupported_root_fields() {
         let tool = build_query_tool(make_graph_handler());
-        let err = (tool.handler)(&serde_json::json!({
-            "query": "{ tasks { id } }"
-        }))
-        .unwrap_err();
+        let err = invoke_tool_err(
+            &tool,
+            serde_json::json!({
+                "query": "{ tasks { id } }"
+            }),
+        );
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 
     #[test]
     fn query_tool_rejects_mutations_until_graphql_writes_exist() {
         let tool = build_query_tool(make_graph_handler());
-        let err = (tool.handler)(&serde_json::json!({
-            "query": "mutation { collections { name } }"
-        }))
-        .unwrap_err();
+        let err = invoke_tool_err(
+            &tool,
+            serde_json::json!({
+                "query": "mutation { collections { name } }"
+            }),
+        );
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 
     #[test]
     fn query_tool_rejects_missing_query() {
         let tool = build_query_tool(make_graph_handler());
-        let err = (tool.handler)(&serde_json::json!({})).unwrap_err();
+        let err = invoke_tool_err(&tool, serde_json::json!({}));
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 
@@ -1196,25 +1229,35 @@ mod tests {
         let handler = make_graph_handler();
         let tool = build_aggregate_tool("tasks", Arc::clone(&handler));
         assert_eq!(tool.name, "tasks.aggregate");
-        let result = (tool.handler)(&serde_json::json!({
-            "function": "count",
-            "group_by": "status"
-        }))
-        .unwrap();
+        let result = invoke_tool(
+            &tool,
+            serde_json::json!({
+                "function": "count",
+                "group_by": "status"
+            }),
+        );
         let parsed = parse_tool_payload(&result);
         assert_eq!(parsed["total_count"], 3);
-        assert_eq!(parsed["groups"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            parsed["groups"]
+                .as_array()
+                .expect("aggregate groups should be an array")
+                .len(),
+            2
+        );
     }
 
     #[test]
     fn aggregate_tool_returns_live_numeric_aggregates() {
         let handler = make_graph_handler();
         let tool = build_aggregate_tool("tasks", Arc::clone(&handler));
-        let result = (tool.handler)(&serde_json::json!({
-            "function": "sum",
-            "field": "points"
-        }))
-        .unwrap();
+        let result = invoke_tool(
+            &tool,
+            serde_json::json!({
+                "function": "sum",
+                "field": "points"
+            }),
+        );
         let parsed = parse_tool_payload(&result);
         assert_eq!(parsed["results"][0]["value"], 35.0);
         assert_eq!(parsed["results"][0]["count"], 3);
@@ -1223,18 +1266,20 @@ mod tests {
     #[test]
     fn aggregate_tool_rejects_unknown_function() {
         let tool = build_aggregate_tool("tasks", make_graph_handler());
-        let err = (tool.handler)(&serde_json::json!({
-            "function": "median",
-            "field": "x"
-        }))
-        .unwrap_err();
+        let err = invoke_tool_err(
+            &tool,
+            serde_json::json!({
+                "function": "median",
+                "field": "x"
+            }),
+        );
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 
     #[test]
     fn aggregate_tool_requires_function() {
         let tool = build_aggregate_tool("tasks", make_graph_handler());
-        let err = (tool.handler)(&serde_json::json!({"field": "x"})).unwrap_err();
+        let err = invoke_tool_err(&tool, serde_json::json!({"field": "x"}));
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 
@@ -1245,31 +1290,37 @@ mod tests {
         let handler = make_graph_handler();
         let tool = build_link_candidates_tool("tasks", Arc::clone(&handler));
         assert_eq!(tool.name, "tasks.link_candidates");
-        let result = (tool.handler)(&serde_json::json!({
-            "id": "t-001",
-            "link_type": "depends-on"
-        }))
-        .unwrap();
+        let result = invoke_tool(
+            &tool,
+            serde_json::json!({
+                "id": "t-001",
+                "link_type": "depends-on"
+            }),
+        );
         let parsed = parse_tool_payload(&result);
         assert_eq!(parsed["target_collection"], "tasks");
         assert_eq!(parsed["existing_link_count"], 2);
         let already_linked = parsed["candidates"]
             .as_array()
-            .unwrap()
+            .expect("link candidate payload should include a candidates array")
             .iter()
             .find(|candidate| candidate["entity"]["id"] == "t-002")
-            .unwrap();
-        assert!(already_linked["already_linked"].as_bool().unwrap());
+            .expect("existing linked entity should appear in the candidates list");
+        assert!(already_linked["already_linked"]
+            .as_bool()
+            .expect("candidate payload should include already_linked"));
     }
 
     #[test]
     fn link_candidates_tool_maps_not_found_errors() {
         let tool = build_link_candidates_tool("tasks", make_graph_handler());
-        let err = (tool.handler)(&serde_json::json!({
-            "id": "ghost",
-            "link_type": "depends-on"
-        }))
-        .unwrap_err();
+        let err = invoke_tool_err(
+            &tool,
+            serde_json::json!({
+                "id": "ghost",
+                "link_type": "depends-on"
+            }),
+        );
         assert!(matches!(err, ToolError::NotFound(_)));
     }
 
@@ -1278,20 +1329,28 @@ mod tests {
         let handler = make_graph_handler();
         let tool = build_neighbors_tool("tasks", Arc::clone(&handler));
         assert_eq!(tool.name, "tasks.neighbors");
-        let result = (tool.handler)(&serde_json::json!({"id": "t-001"})).unwrap();
+        let result = invoke_tool(&tool, serde_json::json!({"id": "t-001"}));
         let parsed = parse_tool_payload(&result);
         assert_eq!(parsed["total_count"], 3);
-        assert_eq!(parsed["groups"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            parsed["groups"]
+                .as_array()
+                .expect("neighbors payload should include grouped results")
+                .len(),
+            2
+        );
     }
 
     #[test]
     fn neighbors_tool_rejects_invalid_direction() {
         let tool = build_neighbors_tool("tasks", make_graph_handler());
-        let err = (tool.handler)(&serde_json::json!({
-            "id": "t-001",
-            "direction": "sideways"
-        }))
-        .unwrap_err();
+        let err = invoke_tool_err(
+            &tool,
+            serde_json::json!({
+                "id": "t-001",
+                "direction": "sideways"
+            }),
+        );
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 }

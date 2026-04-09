@@ -167,7 +167,10 @@ pub fn run_audit_completeness_workload(
 
         // On even rounds, delete one entity from col_b (last one to keep it simple).
         if round % 4 == 3 && !entity_ids_b.is_empty() {
-            let eid = entity_ids_b.last().unwrap().clone();
+            let eid = entity_ids_b
+                .last()
+                .expect("non-empty entity list should have a last element")
+                .clone();
             if handler
                 .delete_entity(DeleteEntityRequest {
                     collection: col_b.clone(),

@@ -279,7 +279,7 @@ mod tests {
     }
 
     /// Sample ESF document derived from ADR-002 (invoice collection).
-    pub(crate) const INVOICE_ESF: &str = r#"
+    const INVOICE_ESF: &str = r#"
 esf_version: "1.0"
 collection: invoices
 entity_schema:
@@ -320,15 +320,20 @@ entity_schema:
 
     #[test]
     fn parse_esf_from_adr_002() {
-        let doc = EsfDocument::parse(INVOICE_ESF).unwrap();
+        let doc = EsfDocument::parse(INVOICE_ESF).expect("invoice ESF fixture should parse");
         assert_eq!(doc.esf_version, "1.0");
         assert_eq!(doc.collection, "invoices");
         assert!(
             doc.entity_schema.is_some(),
             "entity_schema should be present"
         );
-        let schema = doc.entity_schema.as_ref().unwrap();
-        let required = schema["required"].as_array().unwrap();
+        let schema = doc
+            .entity_schema
+            .as_ref()
+            .expect("invoice ESF fixture should include an entity schema");
+        let required = schema["required"]
+            .as_array()
+            .expect("invoice ESF fixture should mark required fields");
         assert!(required.iter().any(|v| v == "vendor_id"));
         assert!(required.iter().any(|v| v == "amount"));
         assert!(required.iter().any(|v| v == "status"));
@@ -336,8 +341,10 @@ entity_schema:
 
     #[test]
     fn esf_into_collection_schema() {
-        let doc = EsfDocument::parse(INVOICE_ESF).unwrap();
-        let schema = doc.into_collection_schema().unwrap();
+        let doc = EsfDocument::parse(INVOICE_ESF).expect("invoice ESF fixture should parse");
+        let schema = doc
+            .into_collection_schema()
+            .expect("invoice ESF fixture should convert to collection schema");
         assert_eq!(schema.collection.as_str(), "invoices");
         assert_eq!(schema.version, 1);
         assert!(schema.entity_schema.is_some());

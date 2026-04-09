@@ -279,7 +279,10 @@ mod tests {
         // Save passes (no save-gate rules).
         assert!(eval.save_passes());
         // Complete gate fails.
-        let complete = eval.gate_results.get("complete").unwrap();
+        let complete = eval
+            .gate_results
+            .get("complete")
+            .expect("complete gate result should be present");
         assert!(!complete.pass);
         assert_eq!(complete.failures.len(), 1);
         assert_eq!(complete.failures[0].rule, "need-desc");
@@ -304,7 +307,10 @@ mod tests {
         let data = json!({"description": "Some text"});
 
         let eval = evaluate_gates(&rules, &gates, &data);
-        let complete = eval.gate_results.get("complete").unwrap();
+        let complete = eval
+            .gate_results
+            .get("complete")
+            .expect("complete gate result should be present");
         assert!(complete.pass);
         assert!(complete.failures.is_empty());
     }
@@ -378,12 +384,18 @@ mod tests {
         let eval = evaluate_gates(&rules, &gates, &data);
 
         // Complete gate: 1 failure (its own rule).
-        let complete = eval.gate_results.get("complete").unwrap();
+        let complete = eval
+            .gate_results
+            .get("complete")
+            .expect("complete gate result should be present");
         assert!(!complete.pass);
         assert_eq!(complete.failures.len(), 1);
 
         // Review gate: 2 failures (its own + inherited from complete).
-        let review = eval.gate_results.get("review").unwrap();
+        let review = eval
+            .gate_results
+            .get("review")
+            .expect("review gate result should be present");
         assert!(!review.pass);
         assert_eq!(review.failures.len(), 2);
         let review_rules: Vec<&str> = review.failures.iter().map(|f| f.rule.as_str()).collect();
@@ -426,8 +438,18 @@ mod tests {
         let data = json!({"description": "Done", "acceptance": "Tests pass"});
 
         let eval = evaluate_gates(&rules, &gates, &data);
-        assert!(eval.gate_results.get("complete").unwrap().pass);
-        assert!(eval.gate_results.get("review").unwrap().pass);
+        assert!(
+            eval.gate_results
+                .get("complete")
+                .expect("complete gate result should be present")
+                .pass
+        );
+        assert!(
+            eval.gate_results
+                .get("review")
+                .expect("review gate result should be present")
+                .pass
+        );
     }
 
     // ── Write response includes all gate results ───────────────────────
@@ -491,12 +513,23 @@ mod tests {
         // Condition met, requirement fails.
         let data = json!({"bead_type": "bug"});
         let eval = evaluate_gates(&rules, &gates, &data);
-        assert!(!eval.gate_results.get("complete").unwrap().pass);
+        assert!(
+            !eval
+                .gate_results
+                .get("complete")
+                .expect("complete gate result should be present")
+                .pass
+        );
 
         // Condition not met (different type).
         let data = json!({"bead_type": "task"});
         let eval = evaluate_gates(&rules, &gates, &data);
-        assert!(eval.gate_results.get("complete").unwrap().pass);
+        assert!(
+            eval.gate_results
+                .get("complete")
+                .expect("complete gate result should be present")
+                .pass
+        );
     }
 
     // ── Transitive gate inclusion ──────────────────────────────────────
@@ -536,11 +569,32 @@ mod tests {
         let eval = evaluate_gates(&rules, &gates, &data);
 
         // basic: 1 failure.
-        assert_eq!(eval.gate_results.get("basic").unwrap().failures.len(), 1);
+        assert_eq!(
+            eval.gate_results
+                .get("basic")
+                .expect("basic gate result should be present")
+                .failures
+                .len(),
+            1
+        );
         // complete: 2 failures (own + basic).
-        assert_eq!(eval.gate_results.get("complete").unwrap().failures.len(), 2);
+        assert_eq!(
+            eval.gate_results
+                .get("complete")
+                .expect("complete gate result should be present")
+                .failures
+                .len(),
+            2
+        );
         // review: 3 failures (own + complete + basic).
-        assert_eq!(eval.gate_results.get("review").unwrap().failures.len(), 3);
+        assert_eq!(
+            eval.gate_results
+                .get("review")
+                .expect("review gate result should be present")
+                .failures
+                .len(),
+            3
+        );
     }
 
     // ── Empty rules produce empty results ──────────────────────────────

@@ -12,18 +12,17 @@ allow = [
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
-    "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
-    "OpenSSL",
     "Zlib",
-    "CC0-1.0",
     "BSL-1.0",
     "MPL-2.0",
 ]
 
 [bans]
-multiple-versions = "warn"
+# The current dependency graph legitimately pulls mixed major versions from
+# unrelated ecosystems (notably async-graphql, postgres, and testcontainers).
+# We still audit the tree, but we do not fail or warn CI on that transitive churn.
+multiple-versions = "allow"
 # Workspace dependencies appear as wildcards to cargo-deny; allow them.
 wildcards = "allow"
 
