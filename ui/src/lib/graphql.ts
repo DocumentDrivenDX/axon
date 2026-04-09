@@ -275,6 +275,8 @@ type GraphQLHelperContractCache = {
 	namedTypes: Map<string, Promise<GraphQLNamedTypeMetadata | null>>;
 };
 
+type GraphQLHelperContractCheck = Promise<void>;
+
 export type CollectionSummary = {
 	name: string;
 	entityCount: number;
@@ -297,6 +299,16 @@ export type EntityConnection = {
 };
 
 let helperContractMetadata: Promise<GraphQLHelperContractCache> | null = null;
+let collectionsHelperContractCheck: GraphQLHelperContractCheck | null = null;
+let entityHelperContractCheck: GraphQLHelperContractCheck | null = null;
+
+function isGraphQLHelperContractError(error: unknown): boolean {
+	return (
+		error instanceof Error &&
+		(error.message === GRAPHQL_COLLECTIONS_HELPER_CONTRACT_ERROR ||
+			error.message === GRAPHQL_ENTITY_HELPER_CONTRACT_ERROR)
+	);
+}
 
 function hasFields(
 	typeMetadata: GraphQLNamedTypeMetadata | null | undefined,
@@ -444,51 +456,103 @@ async function loadGraphQLHelperContractMetadata(): Promise<GraphQLHelperContrac
 	return helperContractMetadata;
 }
 
-async function assertCollectionsHelperContract(): Promise<void> {
-	const metadata = await loadGraphQLHelperContractMetadata();
-	const collectionsField = getField(metadata.data.__schema.queryType, 'collections');
-	const supportsCollectionsHelperContract =
-		(await fieldReferencesTypeWithFields(metadata, collectionsField, ['name', 'entityCount'])) &&
-		(collectionsField?.args ?? []).length === 0;
+function cacheHelperContractCheck(
+	getCachedCheck: () => GraphQLHelperContractCheck | null,
+	setCachedCheck: (check: GraphQLHelperContractCheck | null) => void,
+	checkContract: () => Promise<void>,
+): GraphQLHelperContractCheck {
+	const cachedCheck = getCachedCheck();
 
-	if (!supportsCollectionsHelperContract) {
-		throw new Error(GRAPHQL_COLLECTIONS_HELPER_CONTRACT_ERROR);
+	if (cachedCheck) {
+		return cachedCheck;
 	}
+
+	const check = checkContract();
+	const storedCheck = check.catch((error) => {
+		if (!isGraphQLHelperContractError(error) && getCachedCheck() === storedCheck) {
+			setCachedCheck(null);
+		}
+
+		throw error;
+	});
+
+	setCachedCheck(storedCheck);
+
+	return storedCheck;
+}
+
+async function assertCollectionsHelperContract(): Promise<void> {
+	await cacheHelperContractCheck(
+		() => collectionsHelperContractCheck,
+		(check) => {
+			collectionsHelperContractCheck = check;
+		},
+		async () => {
+			const metadata = await loadGraphQLHelperContractMetadata();
+			const collectionsField = getField(metadata.data.__schema.queryType, 'collections');
+			const supportsCollectionsHelperContract =
+				(await fieldReferencesTypeWithFields(metadata, collectionsField, [
+					'name',
+					'entityCount',
+				])) && (collectionsField?.args ?? []).length === 0;
+
+			if (!supportsCollectionsHelperContract) {
+				throw new Error(GRAPHQL_COLLECTIONS_HELPER_CONTRACT_ERROR);
+			}
+		},
+	);
 }
 
 async function assertEntityHelperContract(): Promise<void> {
-	const metadata = await loadGraphQLHelperContractMetadata();
-	const entityField = getField(metadata.data.__schema.queryType, 'entity');
-	const entitiesField = getField(metadata.data.__schema.queryType, 'entities');
-	const entityConnectionType = await getFieldNamedType(metadata, entitiesField);
-	const entityEdgeField = getField(entityConnectionType, 'edges');
-	const entityEdgeType = await getFieldNamedType(metadata, entityEdgeField);
-	const entityNodeField = getField(entityEdgeType, 'node');
-	const pageInfoField = getField(entityConnectionType, 'pageInfo');
-	const supportsEntityHelperContract =
-		hasArgumentType(entityField, 'collection', 'String') &&
-		hasArgumentType(entityField, 'id', 'ID') &&
-		(await fieldReferencesTypeWithFields(metadata, entityField, [
-			'id',
-			'version',
-			'data',
-			'createdAt',
-			'updatedAt',
-		])) &&
-		hasArgumentType(entitiesField, 'collection', 'String') &&
-		hasArgumentType(entitiesField, 'limit', 'Int') &&
-		hasArgumentType(entitiesField, 'after', 'String') &&
-		hasFields(entityConnectionType, ['edges', 'pageInfo']) &&
-		(await fieldReferencesTypeWithFields(metadata, entityNodeField, ['id', 'version', 'data'])) &&
-		(await fieldReferencesTypeWithFields(metadata, pageInfoField, ['hasNextPage', 'endCursor']));
+	await cacheHelperContractCheck(
+		() => entityHelperContractCheck,
+		(check) => {
+			entityHelperContractCheck = check;
+		},
+		async () => {
+			const metadata = await loadGraphQLHelperContractMetadata();
+			const entityField = getField(metadata.data.__schema.queryType, 'entity');
+			const entitiesField = getField(metadata.data.__schema.queryType, 'entities');
+			const entityConnectionType = await getFieldNamedType(metadata, entitiesField);
+			const entityEdgeField = getField(entityConnectionType, 'edges');
+			const entityEdgeType = await getFieldNamedType(metadata, entityEdgeField);
+			const entityNodeField = getField(entityEdgeType, 'node');
+			const pageInfoField = getField(entityConnectionType, 'pageInfo');
+			const supportsEntityHelperContract =
+				hasArgumentType(entityField, 'collection', 'String') &&
+				hasArgumentType(entityField, 'id', 'ID') &&
+				(await fieldReferencesTypeWithFields(metadata, entityField, [
+					'id',
+					'version',
+					'data',
+					'createdAt',
+					'updatedAt',
+				])) &&
+				hasArgumentType(entitiesField, 'collection', 'String') &&
+				hasArgumentType(entitiesField, 'limit', 'Int') &&
+				hasArgumentType(entitiesField, 'after', 'String') &&
+				hasFields(entityConnectionType, ['edges', 'pageInfo']) &&
+				(await fieldReferencesTypeWithFields(metadata, entityNodeField, [
+					'id',
+					'version',
+					'data',
+				])) &&
+				(await fieldReferencesTypeWithFields(metadata, pageInfoField, [
+					'hasNextPage',
+					'endCursor',
+				]));
 
-	if (!supportsEntityHelperContract) {
-		throw new Error(GRAPHQL_ENTITY_HELPER_CONTRACT_ERROR);
-	}
+			if (!supportsEntityHelperContract) {
+				throw new Error(GRAPHQL_ENTITY_HELPER_CONTRACT_ERROR);
+			}
+		},
+	);
 }
 
 export function __resetGraphQLHelperContractForTests(): void {
 	helperContractMetadata = null;
+	collectionsHelperContractCheck = null;
+	entityHelperContractCheck = null;
 }
 
 /**

@@ -323,6 +323,34 @@ test('fetchCollections fails fast when the backend schema lacks the helper contr
 	expect(requests[0]?.query).toContain('__schema');
 });
 
+test('fetchCollections caches unsupported helper-contract failures across repeated calls', async () => {
+	const requests: GraphQLRequest[] = [];
+
+	globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+		const request = parseRequest(init);
+		requests.push(request);
+
+		return createJsonResponse({
+			data: {
+				__schema: {
+					queryType: {
+						fields: [{ name: 'tasks' }],
+					},
+				},
+			},
+		});
+	}) as unknown as typeof fetch;
+
+	await expect(fetchCollections()).rejects.toThrow(
+		/does not expose the collections helper contract/i,
+	);
+	await expect(fetchCollections()).rejects.toThrow(
+		/does not expose the collections helper contract/i,
+	);
+	expect(requests).toHaveLength(1);
+	expect(requests[0]?.query).toContain('__schema');
+});
+
 test('fetchCollections uses the collections query once the backend advertises support', async () => {
 	const requests: GraphQLRequest[] = [];
 
