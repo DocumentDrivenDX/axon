@@ -267,17 +267,45 @@ impl AuthContext {
 /// - `tag:axon-admin` -> Admin
 /// - `tag:axon-write` / `tag:axon-agent` -> Write
 /// - `tag:axon-read` -> Read
+/// - Multiple matching tags -> highest-privilege role wins
 /// - No matching tags -> default_role
 pub fn role_from_tags(tags: &[String], default_role: &Role) -> Role {
+    let mut highest_role: Option<Role> = None;
+
     for tag in tags {
-        match tag.as_str() {
-            "tag:admin" | "tag:axon-admin" => return Role::Admin,
-            "tag:write" | "tag:axon-write" | "tag:axon-agent" => return Role::Write,
-            "tag:read" | "tag:axon-read" => return Role::Read,
-            _ => {}
+        if let Some(role) = role_for_tag(tag) {
+            let should_replace = match &highest_role {
+                Some(current) => role_priority(&role) > role_priority(current),
+                None => true,
+            };
+
+            if should_replace {
+                highest_role = Some(role);
+            }
         }
     }
-    default_role.clone()
+
+    match highest_role {
+        Some(role) => role,
+        None => default_role.clone(),
+    }
+}
+
+fn role_for_tag(tag: &str) -> Option<Role> {
+    match tag {
+        "tag:admin" | "tag:axon-admin" => Some(Role::Admin),
+        "tag:write" | "tag:axon-write" | "tag:axon-agent" => Some(Role::Write),
+        "tag:read" | "tag:axon-read" => Some(Role::Read),
+        _ => None,
+    }
+}
+
+const fn role_priority(role: &Role) -> u8 {
+    match role {
+        Role::Admin => 3,
+        Role::Write => 2,
+        Role::Read => 1,
+    }
 }
 
 /// Resolve identity from a Tailscale whois response.
@@ -459,6 +487,36 @@ mod tests {
     fn role_from_unknown_tags_uses_default() {
         let role = role_from_tags(&["tag:custom".into()], &Role::Read);
         assert_eq!(role, Role::Read);
+    }
+
+    #[test]
+    fn role_from_mixed_tags_prefers_admin_regardless_of_order() {
+        let read_then_admin = role_from_tags(
+            &["tag:axon-read".into(), "tag:axon-admin".into()],
+            &Role::Read,
+        );
+        let admin_then_read = role_from_tags(
+            &["tag:axon-admin".into(), "tag:axon-read".into()],
+            &Role::Read,
+        );
+
+        assert_eq!(read_then_admin, Role::Admin);
+        assert_eq!(admin_then_read, Role::Admin);
+    }
+
+    #[test]
+    fn role_from_mixed_tags_prefers_write_regardless_of_order() {
+        let read_then_write = role_from_tags(
+            &["tag:axon-read".into(), "tag:axon-write".into()],
+            &Role::Admin,
+        );
+        let write_then_read = role_from_tags(
+            &["tag:axon-write".into(), "tag:axon-read".into()],
+            &Role::Admin,
+        );
+
+        assert_eq!(read_then_write, Role::Write);
+        assert_eq!(write_then_read, Role::Write);
     }
 
     #[test]
