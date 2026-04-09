@@ -15,30 +15,33 @@ use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_SCHEMA};
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
-use axon_schema::schema::CollectionSchema;
+use axon_schema::schema::{CollectionSchema, CollectionView};
 use axon_schema::validation::{compile_entity_schema, validate, validate_link_metadata};
 use axon_storage::adapter::{extract_index_value, resolve_field_path, StorageAdapter};
 
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
     CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
-    DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest, DiffSchemaRequest,
-    DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest, FieldFilter, FilterNode,
-    FilterOp, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
-    ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest, PutSchemaRequest,
-    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevalidateRequest,
-    RevertEntityRequest, SortDirection, TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    DeleteCollectionTemplateRequest, DeleteEntityRequest, DeleteLinkRequest,
+    DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest, DropDatabaseRequest,
+    DropNamespaceRequest, FieldFilter, FilterNode, FilterOp, GetCollectionTemplateRequest,
+    GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
+    ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest,
+    PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
+    ReachableRequest, RevalidateRequest, RevertEntityRequest, SortDirection, TraverseDirection,
+    TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
     CreateCollectionResponse, CreateDatabaseResponse, CreateEntityResponse, CreateLinkResponse,
-    CreateNamespaceResponse, DeleteEntityResponse, DeleteLinkResponse, DescribeCollectionResponse,
-    DiffSchemaResponse, DropCollectionResponse, DropDatabaseResponse, DropNamespaceResponse,
+    CreateNamespaceResponse, DeleteCollectionTemplateResponse, DeleteEntityResponse,
+    DeleteLinkResponse, DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse,
+    DropDatabaseResponse, DropNamespaceResponse, GetCollectionTemplateResponse,
     GetEntityMarkdownResponse, GetEntityResponse, GetSchemaResponse, InvalidEntity,
     ListCollectionsResponse, ListDatabasesResponse, ListNamespaceCollectionsResponse,
-    ListNamespacesResponse, PatchEntityResponse, PutSchemaResponse, QueryAuditResponse,
-    QueryEntitiesResponse, ReachableResponse, RevalidateResponse, RevertEntityResponse,
-    TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
+    ListNamespacesResponse, PatchEntityResponse, PutCollectionTemplateResponse, PutSchemaResponse,
+    QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevalidateResponse,
+    RevertEntityResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -322,6 +325,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
         actor: Option<String>,
     ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
         tx.commit(&mut self.storage, &mut self.audit, actor)
+    }
+
+    fn ensure_collection_exists(&self, collection: &CollectionId) -> Result<(), AxonError> {
+        let existing = self.storage.list_collections()?;
+        if existing.contains(collection) {
+            Ok(())
+        } else {
+            Err(AxonError::NotFound(collection.to_string()))
+        }
     }
 
     // ── Entity operations ────────────────────────────────────────────────────
@@ -1472,10 +1484,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: DescribeCollectionRequest,
     ) -> Result<DescribeCollectionResponse, AxonError> {
-        let existing = self.storage.list_collections()?;
-        if !existing.contains(&req.name) {
-            return Err(AxonError::NotFound(req.name.to_string()));
-        }
+        self.ensure_collection_exists(&req.name)?;
 
         let entity_count = self.storage.count(&req.name)?;
         let schema = self.storage.get_schema(&req.name)?;
@@ -1489,6 +1498,78 @@ impl<S: StorageAdapter> AxonHandler<S> {
             schema,
             created_at_ns,
             updated_at_ns,
+        })
+    }
+
+    /// Store or replace the markdown template for a collection.
+    pub fn put_collection_template(
+        &mut self,
+        req: PutCollectionTemplateRequest,
+    ) -> Result<PutCollectionTemplateResponse, AxonError> {
+        self.ensure_collection_exists(&req.collection)?;
+        axon_render::compile(req.template.clone())?;
+
+        let schema = self.storage.get_schema(&req.collection)?;
+        let validation = axon_render::validate_template(
+            &req.template,
+            schema
+                .as_ref()
+                .and_then(|schema| schema.entity_schema.as_ref()),
+        );
+        if !validation.is_valid() {
+            let detail = validation
+                .errors
+                .iter()
+                .map(|error| error.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(AxonError::SchemaValidation(detail));
+        }
+
+        let mut view = CollectionView::new(req.collection.clone(), req.template);
+        view.updated_by = req.actor;
+
+        let view = self.storage.put_collection_view(&view)?;
+        self.invalidate_markdown_template(&req.collection)?;
+
+        Ok(PutCollectionTemplateResponse {
+            view,
+            warnings: validation
+                .warnings
+                .into_iter()
+                .map(|warning| warning.message)
+                .collect(),
+        })
+    }
+
+    /// Retrieve the current markdown template for a collection.
+    pub fn get_collection_template(
+        &self,
+        req: GetCollectionTemplateRequest,
+    ) -> Result<GetCollectionTemplateResponse, AxonError> {
+        self.ensure_collection_exists(&req.collection)?;
+        let view = self
+            .storage
+            .get_collection_view(&req.collection)?
+            .ok_or_else(|| {
+                AxonError::NotFound(format!(
+                    "collection '{}' has no markdown template defined",
+                    req.collection
+                ))
+            })?;
+        Ok(GetCollectionTemplateResponse { view })
+    }
+
+    /// Delete the current markdown template for a collection.
+    pub fn delete_collection_template(
+        &mut self,
+        req: DeleteCollectionTemplateRequest,
+    ) -> Result<DeleteCollectionTemplateResponse, AxonError> {
+        self.ensure_collection_exists(&req.collection)?;
+        self.storage.delete_collection_view(&req.collection)?;
+        self.invalidate_markdown_template(&req.collection)?;
+        Ok(DeleteCollectionTemplateResponse {
+            collection: req.collection.to_string(),
         })
     }
 
@@ -3086,6 +3167,162 @@ mod tests {
         assert!(error
             .to_string()
             .contains("has no markdown template defined"));
+    }
+
+    #[test]
+    fn put_collection_template_round_trips_and_reports_optional_field_warnings() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+
+        ok_or_panic(
+            h.create_collection(CreateCollectionRequest {
+                name: col.clone(),
+                schema: CollectionSchema {
+                    collection: col.clone(),
+                    description: None,
+                    version: 1,
+                    entity_schema: Some(json!({
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "notes": {"type": "string"}
+                        },
+                        "required": ["title"]
+                    })),
+                    link_types: Default::default(),
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                },
+                actor: None,
+            }),
+            "creating collection for template round-trip test",
+        );
+
+        let stored = ok_or_panic(
+            h.put_collection_template(PutCollectionTemplateRequest {
+                collection: col.clone(),
+                template: "# {{title}}\n\n{{notes}}".into(),
+                actor: Some("operator".into()),
+            }),
+            "storing collection template through handler",
+        );
+        assert_eq!(stored.view.markdown_template, "# {{title}}\n\n{{notes}}");
+        assert_eq!(stored.view.version, 1);
+        assert_eq!(stored.view.updated_by.as_deref(), Some("operator"));
+        assert_eq!(stored.warnings.len(), 1);
+        assert!(stored.warnings[0].contains("field 'notes' is optional"));
+
+        let retrieved = ok_or_panic(
+            h.get_collection_template(GetCollectionTemplateRequest {
+                collection: col.clone(),
+            }),
+            "retrieving collection template through handler",
+        );
+        assert_eq!(retrieved.view, stored.view);
+    }
+
+    #[test]
+    fn put_collection_template_rejects_unknown_schema_fields() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+
+        ok_or_panic(
+            h.create_collection(CreateCollectionRequest {
+                name: col.clone(),
+                schema: CollectionSchema {
+                    collection: col.clone(),
+                    description: None,
+                    version: 1,
+                    entity_schema: Some(json!({
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"}
+                        },
+                        "required": ["title"]
+                    })),
+                    link_types: Default::default(),
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                },
+                actor: None,
+            }),
+            "creating collection for invalid template test",
+        );
+
+        let error = err_or_panic(
+            h.put_collection_template(PutCollectionTemplateRequest {
+                collection: col,
+                template: "{{ghost}}".into(),
+                actor: None,
+            }),
+            "rejecting template with unknown schema fields",
+        );
+        assert!(matches!(error, AxonError::SchemaValidation(_)));
+        assert!(error
+            .to_string()
+            .contains("template references field 'ghost'"));
+    }
+
+    #[test]
+    fn delete_collection_template_clears_template_and_cache() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        ok_or_panic(
+            h.create_collection(CreateCollectionRequest {
+                name: col.clone(),
+                schema: CollectionSchema::new(col.clone()),
+                actor: None,
+            }),
+            "creating collection for template delete test",
+        );
+        ok_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                data: json!({"title": "hello"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating entity for template delete test",
+        );
+        ok_or_panic(
+            h.put_collection_template(PutCollectionTemplateRequest {
+                collection: col.clone(),
+                template: "# {{title}}".into(),
+                actor: None,
+            }),
+            "storing template for delete test",
+        );
+
+        assert_rendered_markdown(
+            ok_or_panic(
+                h.get_entity_markdown(&col, &id),
+                "rendering markdown before template delete",
+            ),
+            "# hello",
+        );
+        assert!(is_template_cached(&h, &col));
+
+        let deleted = ok_or_panic(
+            h.delete_collection_template(DeleteCollectionTemplateRequest {
+                collection: col.clone(),
+            }),
+            "deleting collection template through handler",
+        );
+        assert_eq!(deleted.collection, col.to_string());
+        assert!(!is_template_cached(&h, &col));
+
+        let error = err_or_panic(
+            h.get_entity_markdown(&col, &id),
+            "rejecting markdown render after template delete",
+        );
+        assert!(matches!(error, AxonError::InvalidArgument(_)));
     }
 
     #[test]

@@ -8,8 +8,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, get_service, post, put};
 use axum::{Json, Router};
@@ -21,10 +22,11 @@ use tower_http::services::{ServeDir, ServeFile};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
-    CreateNamespaceRequest, DeleteEntityRequest, DeleteLinkRequest, DescribeCollectionRequest,
-    DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest, GetEntityRequest,
-    GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
-    ListNamespaceCollectionsRequest, ListNamespacesRequest, PutSchemaRequest, QueryAuditRequest,
+    CreateNamespaceRequest, DeleteCollectionTemplateRequest, DeleteEntityRequest,
+    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, DropDatabaseRequest,
+    DropNamespaceRequest, GetCollectionTemplateRequest, GetEntityRequest, GetSchemaRequest,
+    ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
+    ListNamespacesRequest, PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest,
     QueryEntitiesRequest, RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
@@ -220,6 +222,42 @@ pub struct PutSchemaBody {
     pub entity_schema: Option<Value>,
     pub link_types: Option<std::collections::HashMap<String, axon_schema::LinkTypeDef>>,
     pub actor: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct PutCollectionTemplateBody {
+    pub template: String,
+    pub actor: Option<String>,
+}
+
+fn parse_collection_template_request(
+    headers: &HeaderMap,
+    body: Bytes,
+) -> Result<PutCollectionTemplateBody, AxonError> {
+    if body.is_empty() {
+        return Err(AxonError::InvalidArgument(
+            "template body must not be empty".into(),
+        ));
+    }
+
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+
+    if content_type.starts_with("application/json") {
+        serde_json::from_slice::<PutCollectionTemplateBody>(&body).map_err(|error| {
+            AxonError::InvalidArgument(format!("invalid template JSON body: {error}"))
+        })
+    } else {
+        let template = std::str::from_utf8(&body).map_err(|error| {
+            AxonError::InvalidArgument(format!("template body must be valid UTF-8: {error}"))
+        })?;
+        Ok(PutCollectionTemplateBody {
+            template: template.to_string(),
+            actor: None,
+        })
+    }
 }
 
 // ── Transaction request body ─────────────────────────────────────────────────
@@ -710,6 +748,77 @@ async fn describe_collection<S: StorageAdapter>(
     }
 }
 
+async fn put_collection_template<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Path(collection): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let body = match parse_collection_template_request(&headers, body) {
+        Ok(body) => body,
+        Err(error) => return axon_error_response(error),
+    };
+
+    match handler
+        .lock()
+        .await
+        .put_collection_template(PutCollectionTemplateRequest {
+            collection: CollectionId::new(&collection),
+            template: body.template,
+            actor: body.actor,
+        }) {
+        Ok(resp) => Json(json!({
+            "collection": resp.view.collection,
+            "template": resp.view.markdown_template,
+            "version": resp.view.version,
+            "updated_at_ns": resp.view.updated_at_ns,
+            "updated_by": resp.view.updated_by,
+            "warnings": resp.warnings,
+        }))
+        .into_response(),
+        Err(e) => axon_error_response(e),
+    }
+}
+
+async fn get_collection_template<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Path(collection): Path<String>,
+) -> Response {
+    match handler
+        .lock()
+        .await
+        .get_collection_template(GetCollectionTemplateRequest {
+            collection: CollectionId::new(&collection),
+        }) {
+        Ok(resp) => Json(json!({
+            "collection": resp.view.collection,
+            "template": resp.view.markdown_template,
+            "version": resp.view.version,
+            "updated_at_ns": resp.view.updated_at_ns,
+            "updated_by": resp.view.updated_by,
+        }))
+        .into_response(),
+        Err(e) => axon_error_response(e),
+    }
+}
+
+async fn delete_collection_template<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Path(collection): Path<String>,
+) -> Response {
+    match handler
+        .lock()
+        .await
+        .delete_collection_template(DeleteCollectionTemplateRequest {
+            collection: CollectionId::new(&collection),
+        }) {
+        Ok(resp) => {
+            Json(json!({ "collection": resp.collection, "status": "deleted" })).into_response()
+        }
+        Err(e) => axon_error_response(e),
+    }
+}
+
 async fn put_schema<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Path(collection): Path<String>,
@@ -1007,6 +1116,18 @@ pub fn build_router<S: StorageAdapter + 'static>(
         .route("/collections/{name}", post(create_collection::<S>))
         .route("/collections/{name}", get(describe_collection::<S>))
         .route("/collections/{name}", delete(drop_collection::<S>))
+        .route(
+            "/collections/{collection}/template",
+            put(put_collection_template::<S>),
+        )
+        .route(
+            "/collections/{collection}/template",
+            get(get_collection_template::<S>),
+        )
+        .route(
+            "/collections/{collection}/template",
+            delete(delete_collection_template::<S>),
+        )
         .route("/collections/{name}/schema", put(put_schema::<S>))
         .route("/collections/{name}/schema", get(get_schema::<S>))
         .route("/databases", get(list_databases::<S>))
@@ -1259,6 +1380,125 @@ mod tests {
         assert_eq!(body["entity"]["version"], 1);
         assert_eq!(body["entity"]["data"]["title"], "hello");
         assert_eq!(body["entity"]["data"]["status"], "open");
+    }
+
+    #[tokio::test]
+    async fn http_collection_template_crud_round_trip_uses_public_surface() {
+        let server = test_server();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({
+                "schema": {
+                    "entity_schema": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "notes": {"type": "string"}
+                        },
+                        "required": ["title"]
+                    }
+                }
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let put = server
+            .put("/collections/tasks/template")
+            .json(&json!({
+                "template": "# {{title}}\n\n{{notes}}",
+                "actor": "operator"
+            }))
+            .await;
+        put.assert_status_ok();
+        let body: Value = put.json();
+        assert_eq!(body["collection"], "tasks");
+        assert_eq!(body["template"], "# {{title}}\n\n{{notes}}");
+        assert_eq!(body["version"], 1);
+        assert_eq!(body["updated_by"], "operator");
+        assert_eq!(body["warnings"].as_array().map_or(0, Vec::len), 1);
+
+        let get = server.get("/collections/tasks/template").await;
+        get.assert_status_ok();
+        let body: Value = get.json();
+        assert_eq!(body["template"], "# {{title}}\n\n{{notes}}");
+
+        let delete = server.delete("/collections/tasks/template").await;
+        delete.assert_status_ok();
+        let body: Value = delete.json();
+        assert_eq!(body["collection"], "tasks");
+        assert_eq!(body["status"], "deleted");
+
+        server
+            .get("/collections/tasks/template")
+            .await
+            .assert_status(StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn http_collection_template_put_accepts_text_plain_body() {
+        let server = test_server();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let put = server
+            .put("/collections/tasks/template")
+            .text("# {{title}}")
+            .await;
+        put.assert_status_ok();
+        let body: Value = put.json();
+        assert_eq!(body["template"], "# {{title}}");
+        assert_eq!(body["warnings"], json!([]));
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "hello"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let markdown = server
+            .get("/collections/tasks/entities/t-001?format=markdown")
+            .await;
+        markdown.assert_status_ok();
+        assert_eq!(markdown.text(), "# hello");
+    }
+
+    #[tokio::test]
+    async fn http_collection_template_put_rejects_unknown_schema_fields() {
+        let server = test_server();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({
+                "schema": {
+                    "entity_schema": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"}
+                        },
+                        "required": ["title"]
+                    }
+                }
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let resp = server
+            .put("/collections/tasks/template")
+            .json(&json!({"template": "{{ghost}}"}))
+            .await;
+
+        resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "schema_validation");
+        assert!(body["detail"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("template references field 'ghost'"));
     }
 
     #[tokio::test]

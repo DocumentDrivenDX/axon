@@ -364,6 +364,26 @@ pub struct DescribeCollectionRequest {
     pub name: CollectionId,
 }
 
+/// Request to store or replace a collection markdown template.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutCollectionTemplateRequest {
+    pub collection: CollectionId,
+    pub template: String,
+    pub actor: Option<String>,
+}
+
+/// Request to retrieve the markdown template for a collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetCollectionTemplateRequest {
+    pub collection: CollectionId,
+}
+
+/// Request to delete the markdown template for a collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteCollectionTemplateRequest {
+    pub collection: CollectionId,
+}
+
 // ── Schema requests ──────────────────────────────────────────────────────────
 
 /// Request to store or replace the schema for a collection.

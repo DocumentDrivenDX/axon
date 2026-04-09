@@ -10,9 +10,10 @@ use anyhow::{Context, Result};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
-    CreateNamespaceRequest, DeleteEntityRequest, DescribeCollectionRequest, DropCollectionRequest,
-    DropDatabaseRequest, DropNamespaceRequest, GetEntityRequest, ListCollectionsRequest,
-    ListDatabasesRequest, ListNamespaceCollectionsRequest, ListNamespacesRequest,
+    CreateNamespaceRequest, DeleteCollectionTemplateRequest, DeleteEntityRequest,
+    DescribeCollectionRequest, DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest,
+    GetCollectionTemplateRequest, GetEntityRequest, ListCollectionsRequest, ListDatabasesRequest,
+    ListNamespaceCollectionsRequest, ListNamespacesRequest, PutCollectionTemplateRequest,
     QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, TraverseRequest,
     UpdateEntityRequest,
 };
@@ -31,6 +32,13 @@ enum OutputFormat {
     Table,
     Json,
     Yaml,
+}
+
+#[derive(Clone, Debug, ValueEnum, Default)]
+enum EntityRenderFormat {
+    #[default]
+    Json,
+    Markdown,
 }
 
 // ── CLI structure ──────────────────────────────────────────────────────────────
@@ -166,6 +174,27 @@ enum CollectionCmd {
         /// Collection name.
         name: String,
     },
+    /// Manage a collection's markdown template.
+    #[command(subcommand)]
+    Template(CollectionTemplateCmd),
+}
+
+#[derive(Subcommand)]
+enum CollectionTemplateCmd {
+    /// Save or replace the markdown template for a collection.
+    Put {
+        collection: String,
+        #[arg(long)]
+        template: Option<String>,
+        #[arg(long)]
+        file: Option<String>,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// Show the markdown template for a collection.
+    Get { collection: String },
+    /// Delete the markdown template for a collection.
+    Delete { collection: String },
 }
 
 // ── Entity commands ────────────────────────────────────────────────────────────
@@ -182,7 +211,12 @@ enum EntityCmd {
         actor: Option<String>,
     },
     /// Retrieve an entity.
-    Get { collection: String, id: String },
+    Get {
+        collection: String,
+        id: String,
+        #[arg(long, default_value = "json")]
+        render: EntityRenderFormat,
+    },
     /// List entities in a collection.
     List {
         collection: String,
@@ -401,6 +435,30 @@ fn print_entity(entity_json: Value, format: &OutputFormat) {
             );
             println!("data: {}", entity_json["data"]);
         }
+    }
+}
+
+fn collection_template_to_json(
+    view: &axon_schema::schema::CollectionView,
+    warnings: &[String],
+) -> Value {
+    serde_json::json!({
+        "collection": view.collection.to_string(),
+        "template": view.markdown_template,
+        "version": view.version,
+        "updated_at_ns": view.updated_at_ns,
+        "updated_by": view.updated_by,
+        "warnings": warnings,
+    })
+}
+
+fn read_template_source(template: Option<String>, file: Option<String>) -> Result<String> {
+    match (template, file) {
+        (Some(template), None) => Ok(template),
+        (None, Some(path)) => std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read template file: {path}")),
+        (Some(_), Some(_)) => anyhow::bail!("provide either --template or --file, not both"),
+        (None, None) => anyhow::bail!("template content is required via --template or --file"),
     }
 }
 
@@ -701,6 +759,85 @@ fn run_collection(
                 }
             }
         }
+        CollectionCmd::Template(cmd) => run_collection_template(cmd, format, handler)?,
+    }
+    Ok(())
+}
+
+fn run_collection_template(
+    cmd: CollectionTemplateCmd,
+    format: &OutputFormat,
+    handler: &mut AxonHandler<SqliteStorageAdapter>,
+) -> Result<()> {
+    match cmd {
+        CollectionTemplateCmd::Put {
+            collection,
+            template,
+            file,
+            actor,
+        } => {
+            let template = read_template_source(template, file)?;
+            let resp = handler
+                .put_collection_template(PutCollectionTemplateRequest {
+                    collection: CollectionId::new(&collection),
+                    template,
+                    actor,
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    print_serialized(
+                        &collection_template_to_json(&resp.view, &resp.warnings),
+                        format,
+                    );
+                }
+                OutputFormat::Table => {
+                    println!("collection: {}", resp.view.collection);
+                    println!("version:    {}", resp.view.version);
+                    println!("{}", resp.view.markdown_template);
+                    if !resp.warnings.is_empty() {
+                        println!("warnings:");
+                        for warning in &resp.warnings {
+                            println!("- {warning}");
+                        }
+                    }
+                }
+            }
+        }
+        CollectionTemplateCmd::Get { collection } => {
+            let resp = handler
+                .get_collection_template(GetCollectionTemplateRequest {
+                    collection: CollectionId::new(&collection),
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    print_serialized(&collection_template_to_json(&resp.view, &[]), format);
+                }
+                OutputFormat::Table => {
+                    println!("collection: {}", resp.view.collection);
+                    println!("version:    {}", resp.view.version);
+                    println!("{}", resp.view.markdown_template);
+                }
+            }
+        }
+        CollectionTemplateCmd::Delete { collection } => {
+            let resp = handler
+                .delete_collection_template(DeleteCollectionTemplateRequest {
+                    collection: CollectionId::new(&collection),
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => print_serialized(
+                    &serde_json::json!({
+                        "collection": resp.collection,
+                        "status": "deleted"
+                    }),
+                    format,
+                ),
+                OutputFormat::Table => println!("deleted template for '{}'", resp.collection),
+            }
+        }
     }
     Ok(())
 }
@@ -730,14 +867,36 @@ fn run_entity(
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_entity(entity_to_json(&resp.entity), format);
         }
-        EntityCmd::Get { collection, id } => {
-            let resp = handler
-                .get_entity(GetEntityRequest {
-                    collection: CollectionId::new(&collection),
-                    id: EntityId::new(&id),
-                })
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
-            print_entity(entity_to_json(&resp.entity), format);
+        EntityCmd::Get {
+            collection,
+            id,
+            render,
+        } => {
+            let collection_id = CollectionId::new(&collection);
+            let entity_id = EntityId::new(&id);
+            match render {
+                EntityRenderFormat::Json => {
+                    let resp = handler
+                        .get_entity(GetEntityRequest {
+                            collection: collection_id,
+                            id: entity_id,
+                        })
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    print_entity(entity_to_json(&resp.entity), format);
+                }
+                EntityRenderFormat::Markdown => match handler
+                    .get_entity_markdown(&collection_id, &entity_id)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                {
+                    axon_api::response::GetEntityMarkdownResponse::Rendered {
+                        rendered_markdown,
+                        ..
+                    } => println!("{rendered_markdown}"),
+                    axon_api::response::GetEntityMarkdownResponse::RenderFailed {
+                        detail, ..
+                    } => anyhow::bail!("{detail}"),
+                },
+            }
         }
         EntityCmd::List { collection, limit } => {
             let resp = handler

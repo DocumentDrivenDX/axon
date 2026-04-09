@@ -257,6 +257,26 @@ pub struct DescribeCollectionResponse {
     pub updated_at_ns: Option<u64>,
 }
 
+/// Response after storing or updating a collection markdown template.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PutCollectionTemplateResponse {
+    pub view: axon_schema::schema::CollectionView,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// Response after retrieving a collection markdown template.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetCollectionTemplateResponse {
+    pub view: axon_schema::schema::CollectionView,
+}
+
+/// Response after deleting a collection markdown template.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteCollectionTemplateResponse {
+    pub collection: String,
+}
+
 // ── Schema responses ─────────────────────────────────────────────────────────
 
 /// Response after storing or updating a collection schema.

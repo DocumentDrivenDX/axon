@@ -9,7 +9,7 @@ dun:
 # Feature Specification: FEAT-026 - Markdown Template Rendering
 
 **Feature ID**: FEAT-026
-**Status**: Deferred
+**Status**: In Progress
 **Priority**: P2
 **Owner**: Core Team
 **Created**: 2026-04-07
@@ -129,16 +129,11 @@ US-069): catch errors at definition time, not render time.
 
 #### API Surface
 
-The repository currently includes an internal/test-only markdown render
-path behind the entity GET endpoint with a `format` query parameter,
-but that path is **not yet a user-reachable shipped surface**. External
-clients cannot rely on `GET /collections/{collection}/entities/{id}?format=markdown`
-until template management APIs or CLI support land, because there is
-no public way to create, read, or delete the required collection
-template. Markdown rendering over gRPC also remains deferred for a
-later slice.
+The markdown rendering path is shipped on the HTTP gateway and the CLI.
+Operators can manage templates publicly, then request rendered markdown
+for single-entity inspection.
 
-**Planned HTTP surface once template management lands:**
+**Shipped HTTP surface:**
 ```
 GET /collections/{collection}/entities/{id}?format=markdown
 Accept: text/markdown
@@ -164,7 +159,7 @@ Content-Type: text/markdown; charset=utf-8
   field are deferred until the protobuf contract and service
   implementation are extended together
 
-**Planned shipped behavior:**
+**Shipped behavior:**
 - If `format=markdown` and the collection has no template: return
   `400 Bad Request` with error "collection 'X' has no markdown
   template defined"
@@ -173,35 +168,36 @@ Content-Type: text/markdown; charset=utf-8
   caller has the data even if rendering failed
 - Default format remains JSON. The `format` parameter is opt-in
 
-**Deferred surfaces** (required before markdown rendering is a
-user-reachable feature):
-- Public template management over HTTP or CLI
+**Shipped template management:**
+```
+PUT    /collections/{collection}/template  — save/update template
+GET    /collections/{collection}/template  — retrieve current template
+DELETE /collections/{collection}/template  — remove template
+```
+
+`PUT` accepts either:
+- `Content-Type: text/plain` with the raw Mustache template body
+- `Content-Type: application/json` with `{ "template": "..." }`
+
+`PUT` validates Mustache syntax and schema field references before
+persisting the template. Optional-field warnings are returned to the
+caller but do not block the save.
+
+**Shipped CLI surface:**
+```bash
+axon collection template put <collection> --template '# {{title}}'
+axon collection template get <collection>
+axon collection template delete <collection>
+axon entity get <collection> <id> --render markdown
+```
+
+**Deferred surfaces:**
 - gRPC `GetEntity` markdown format selection and `rendered_markdown`
   response field
 - List/query responses with markdown rendering
 - GraphQL `renderedMarkdown` field
 - MCP tool returning markdown
-- CLI `axon entity show --format markdown`
 - Batch/transaction response rendering
-
-#### Planned Template Management API
-
-```
-PUT  /collections/{collection}/template    — save/update template
-GET  /collections/{collection}/template    — retrieve current template
-DELETE /collections/{collection}/template  — remove template
-```
-
-These endpoints must ship before the markdown GET path is described as
-publicly reachable. PUT validates the template against the schema
-before saving. The request body is the raw Mustache template string
-with content type `text/plain` or a JSON wrapper:
-
-```json
-{
-  "template": "# {{title}}\n\n**Status:** {{status}}\n..."
-}
-```
 
 ### Non-Functional Requirements
 
