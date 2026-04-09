@@ -119,7 +119,9 @@ mod tests {
         let mut registry = NodeRegistry::default();
         registry.register(make_node("node-1"));
         registry.place("mydb".into(), "node-1".into(), true);
-        let node = registry.find_database("mydb").unwrap();
+        let node = registry
+            .find_database("mydb")
+            .expect("placed database should resolve to its node");
         assert_eq!(node.node_id, "node-1");
     }
 
@@ -132,8 +134,9 @@ mod tests {
     #[test]
     fn node_status_serialization() {
         let node = make_node("n1");
-        let json = serde_json::to_string(&node).unwrap();
-        let parsed: NodeInfo = serde_json::from_str(&json).unwrap();
+        let json = serde_json::to_string(&node).expect("node info should serialize to JSON");
+        let parsed: NodeInfo =
+            serde_json::from_str(&json).expect("node info JSON should deserialize");
         assert_eq!(parsed.status, NodeStatus::Active);
     }
 }

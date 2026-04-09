@@ -46,14 +46,16 @@ impl Namespace {
     ///
     /// Accepts:
     /// - `"beads"` -> `(default.default, "beads")`
+    /// - `"billing.invoices"` -> `(default.billing, "invoices")`
     /// - `"mydb.public.beads"` -> `(mydb.public, "beads")`
     ///
-    /// Two-part names like `"mydb.beads"` resolve to `(mydb.default, "beads")`.
+    /// Two-part names like `"billing.invoices"` resolve to
+    /// `(default.billing, "invoices")`.
     pub fn parse(name: &str) -> (Self, String) {
         let parts: Vec<&str> = name.split('.').collect();
         match parts.len() {
             1 => (Self::default_ns(), parts[0].to_string()),
-            2 => (Self::new(parts[0], DEFAULT_SCHEMA), parts[1].to_string()),
+            2 => (Self::new(DEFAULT_DATABASE, parts[0]), parts[1].to_string()),
             _ => (Self::new(parts[0], parts[1]), parts[2..].join(".")),
         }
     }
@@ -263,10 +265,10 @@ mod tests {
 
     #[test]
     fn parse_two_part_name() {
-        let (ns, collection) = Namespace::parse("mydb.beads");
-        assert_eq!(ns.database, "mydb");
-        assert_eq!(ns.schema, "default");
-        assert_eq!(collection, "beads");
+        let (ns, collection) = Namespace::parse("billing.invoices");
+        assert_eq!(ns.database, "default");
+        assert_eq!(ns.schema, "billing");
+        assert_eq!(collection, "invoices");
     }
 
     #[test]
@@ -291,7 +293,9 @@ mod tests {
     fn generate_produces_valid_uuid() {
         let id = EntityId::generate();
         assert!(id.is_uuid(), "generated id should be a valid UUID");
-        let uuid = id.as_uuid().unwrap();
+        let uuid = id
+            .as_uuid()
+            .expect("generated entity id should parse as a UUID");
         assert_eq!(uuid.get_version(), Some(uuid::Version::SortRand));
     }
 

@@ -363,7 +363,9 @@ mod tests {
     #[test]
     fn write_denied_error_is_descriptive() {
         let reader = CallerIdentity::new("charlie", Role::Read);
-        let err = reader.check(Operation::Write).unwrap_err();
+        let err = reader
+            .check(Operation::Write)
+            .expect_err("read role should not be allowed to write");
         let msg = err.to_string();
         assert!(msg.contains("permission denied"), "msg: {msg}");
         assert!(msg.contains("read"), "msg: {msg}");

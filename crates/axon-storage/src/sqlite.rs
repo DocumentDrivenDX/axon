@@ -2600,6 +2600,47 @@ mod tests {
     }
 
     #[test]
+    fn two_part_collection_names_resolve_to_default_database_schema() {
+        let mut s = store();
+        let billing = Namespace::new("default", "billing");
+        let invoices = CollectionId::new("invoices");
+        let schema_qualified = CollectionId::new("billing.invoices");
+        let fully_qualified = CollectionId::new("default.billing.invoices");
+        let entity_id = EntityId::new("inv-001");
+
+        s.create_namespace(&billing)
+            .expect("billing namespace create should succeed");
+        s.register_collection_in_namespace(&invoices, &billing)
+            .expect("billing collection register should succeed");
+        s.put(Entity::new(
+            schema_qualified.clone(),
+            entity_id.clone(),
+            json!({"scope": "billing"}),
+        ))
+        .expect("two-part entity put should succeed");
+
+        assert_eq!(
+            s.get(&schema_qualified, &entity_id)
+                .expect("two-part get should succeed")
+                .expect("two-part entity should exist")
+                .data["scope"],
+            json!("billing")
+        );
+        assert_eq!(
+            s.get(&fully_qualified, &entity_id)
+                .expect("fully qualified get should succeed")
+                .expect("fully qualified entity should exist")
+                .data["scope"],
+            json!("billing")
+        );
+        assert_eq!(
+            s.count(&fully_qualified)
+                .expect("fully qualified count should succeed"),
+            1
+        );
+    }
+
+    #[test]
     fn qualified_entity_identity_isolated_across_namespaces() {
         let mut s = store();
         let billing = Namespace::new("prod", "billing");
