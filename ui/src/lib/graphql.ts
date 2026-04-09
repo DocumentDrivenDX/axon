@@ -60,11 +60,15 @@ const GRAPHQL_HELPER_CONTRACT_QUERY = `query AxonUiGraphQLHelperContract {
 				}
 			}
 		}
-		types {
+	}
+	collectionMeta: __type(name: "CollectionMeta") {
+		name
+		fields {
 			name
-			fields {
+			type {
+				kind
 				name
-				type {
+				ofType {
 					kind
 					name
 					ofType {
@@ -76,10 +80,110 @@ const GRAPHQL_HELPER_CONTRACT_QUERY = `query AxonUiGraphQLHelperContract {
 							ofType {
 								kind
 								name
-								ofType {
-									kind
-									name
-								}
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	entityRecord: __type(name: "EntityRecord") {
+		name
+		fields {
+			name
+			type {
+				kind
+				name
+				ofType {
+					kind
+					name
+					ofType {
+						kind
+						name
+						ofType {
+							kind
+							name
+							ofType {
+								kind
+								name
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	entityConnection: __type(name: "EntityConnection") {
+		name
+		fields {
+			name
+			type {
+				kind
+				name
+				ofType {
+					kind
+					name
+					ofType {
+						kind
+						name
+						ofType {
+							kind
+							name
+							ofType {
+								kind
+								name
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	entityEdge: __type(name: "EntityEdge") {
+		name
+		fields {
+			name
+			type {
+				kind
+				name
+				ofType {
+					kind
+					name
+					ofType {
+						kind
+						name
+						ofType {
+							kind
+							name
+							ofType {
+								kind
+								name
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	pageInfo: __type(name: "PageInfo") {
+		name
+		fields {
+			name
+			type {
+				kind
+				name
+				ofType {
+					kind
+					name
+					ofType {
+						kind
+						name
+						ofType {
+							kind
+							name
+							ofType {
+								kind
+								name
 							}
 						}
 					}
@@ -125,8 +229,12 @@ type GraphQLHelperContractData = {
 		queryType?: {
 			fields?: GraphQLFieldMetadata[] | null;
 		} | null;
-		types?: GraphQLNamedTypeMetadata[] | null;
 	};
+	collectionMeta?: GraphQLNamedTypeMetadata | null;
+	entityRecord?: GraphQLNamedTypeMetadata | null;
+	entityConnection?: GraphQLNamedTypeMetadata | null;
+	entityEdge?: GraphQLNamedTypeMetadata | null;
+	pageInfo?: GraphQLNamedTypeMetadata | null;
 };
 
 export type CollectionSummary = {
@@ -198,22 +306,31 @@ function hasArgumentType(
 }
 
 function getNamedType(
-	schemaMetadata: GraphQLHelperContractData['__schema'],
+	helperContractMetadata: GraphQLHelperContractData,
 	typeName: string | null,
 ): GraphQLNamedTypeMetadata | null {
-	if (!typeName) {
-		return null;
+	switch (typeName) {
+		case 'CollectionMeta':
+			return helperContractMetadata.collectionMeta ?? null;
+		case 'EntityRecord':
+			return helperContractMetadata.entityRecord ?? null;
+		case 'EntityConnection':
+			return helperContractMetadata.entityConnection ?? null;
+		case 'EntityEdge':
+			return helperContractMetadata.entityEdge ?? null;
+		case 'PageInfo':
+			return helperContractMetadata.pageInfo ?? null;
+		default:
+			return null;
 	}
-
-	return (schemaMetadata.types ?? []).find((type) => type.name === typeName) ?? null;
 }
 
 function fieldReferencesTypeWithFields(
-	schemaMetadata: GraphQLHelperContractData['__schema'],
+	helperContractMetadata: GraphQLHelperContractData,
 	fieldMetadata: GraphQLFieldMetadata | null | undefined,
 	requiredFields: string[],
 ): boolean {
-	const typeMetadata = getNamedType(schemaMetadata, unwrapNamedType(fieldMetadata?.type));
+	const typeMetadata = getNamedType(helperContractMetadata, unwrapNamedType(fieldMetadata?.type));
 
 	return hasFields(typeMetadata, requiredFields);
 }
@@ -239,7 +356,7 @@ async function assertCollectionsHelperContract(): Promise<void> {
 	const data = await loadGraphQLHelperContractMetadata();
 	const collectionsField = getField(data.__schema.queryType, 'collections');
 	const supportsCollectionsHelperContract =
-		fieldReferencesTypeWithFields(data.__schema, collectionsField, ['name', 'entityCount']) &&
+		fieldReferencesTypeWithFields(data, collectionsField, ['name', 'entityCount']) &&
 		(collectionsField?.args ?? []).length === 0;
 
 	if (!supportsCollectionsHelperContract) {
@@ -251,15 +368,15 @@ async function assertEntityHelperContract(): Promise<void> {
 	const data = await loadGraphQLHelperContractMetadata();
 	const entityField = getField(data.__schema.queryType, 'entity');
 	const entitiesField = getField(data.__schema.queryType, 'entities');
-	const entityConnectionType = getNamedType(data.__schema, unwrapNamedType(entitiesField?.type));
+	const entityConnectionType = getNamedType(data, unwrapNamedType(entitiesField?.type));
 	const entityEdgeField = getField(entityConnectionType, 'edges');
-	const entityEdgeType = getNamedType(data.__schema, unwrapNamedType(entityEdgeField?.type));
+	const entityEdgeType = getNamedType(data, unwrapNamedType(entityEdgeField?.type));
 	const entityNodeField = getField(entityEdgeType, 'node');
 	const pageInfoField = getField(entityConnectionType, 'pageInfo');
 	const supportsEntityHelperContract =
 		hasArgumentType(entityField, 'collection', 'String') &&
 		hasArgumentType(entityField, 'id', 'ID') &&
-		fieldReferencesTypeWithFields(data.__schema, entityField, [
+		fieldReferencesTypeWithFields(data, entityField, [
 			'id',
 			'version',
 			'data',
@@ -270,8 +387,8 @@ async function assertEntityHelperContract(): Promise<void> {
 		hasArgumentType(entitiesField, 'limit', 'Int') &&
 		hasArgumentType(entitiesField, 'after', 'String') &&
 		hasFields(entityConnectionType, ['edges', 'pageInfo']) &&
-		fieldReferencesTypeWithFields(data.__schema, entityNodeField, ['id', 'version', 'data']) &&
-		fieldReferencesTypeWithFields(data.__schema, pageInfoField, ['hasNextPage', 'endCursor']);
+		fieldReferencesTypeWithFields(data, entityNodeField, ['id', 'version', 'data']) &&
+		fieldReferencesTypeWithFields(data, pageInfoField, ['hasNextPage', 'endCursor']);
 
 	if (!supportsEntityHelperContract) {
 		throw new Error(GRAPHQL_ENTITY_HELPER_CONTRACT_ERROR);

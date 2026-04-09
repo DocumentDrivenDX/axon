@@ -81,38 +81,36 @@ function supportedCollectionContract() {
 					},
 				],
 			},
-			types: [
+		},
+		collectionMeta: {
+			name: 'CollectionMeta',
+			fields: [
+				{ name: 'name', type: nonNullType(scalarType('String')) },
+				{ name: 'entityCount', type: nonNullType(scalarType('Int')) },
+			],
+		},
+		entityConnection: {
+			name: 'EntityConnection',
+			fields: [
 				{
-					name: 'CollectionMeta',
-					fields: [
-						{ name: 'name', type: nonNullType(scalarType('String')) },
-						{ name: 'entityCount', type: nonNullType(scalarType('Int')) },
-					],
+					name: 'edges',
+					type: nonNullType(listType(nonNullType(namedType('EntityEdge')))),
 				},
-				{
-					name: 'PageInfo',
-					fields: [
-						{ name: 'hasNextPage', type: nonNullType(scalarType('Boolean')) },
-						{ name: 'endCursor', type: scalarType('String') },
-					],
-				},
-				{
-					name: 'EntityEdge',
-					fields: [
-						{ name: 'node', type: scalarType('JSON') },
-						{ name: 'cursor', type: nonNullType(scalarType('String')) },
-					],
-				},
-				{
-					name: 'EntityConnection',
-					fields: [
-						{
-							name: 'edges',
-							type: nonNullType(listType(nonNullType(namedType('EntityEdge')))),
-						},
-						{ name: 'pageInfo', type: nonNullType(namedType('PageInfo')) },
-					],
-				},
+				{ name: 'pageInfo', type: nonNullType(namedType('PageInfo')) },
+			],
+		},
+		entityEdge: {
+			name: 'EntityEdge',
+			fields: [
+				{ name: 'node', type: scalarType('JSON') },
+				{ name: 'cursor', type: nonNullType(scalarType('String')) },
+			],
+		},
+		pageInfo: {
+			name: 'PageInfo',
+			fields: [
+				{ name: 'hasNextPage', type: nonNullType(scalarType('Boolean')) },
+				{ name: 'endCursor', type: scalarType('String') },
 			],
 		},
 	};
@@ -147,48 +145,46 @@ function supportedEntityHelperContract() {
 					},
 				],
 			},
-			types: [
+		},
+		collectionMeta: {
+			name: 'CollectionMeta',
+			fields: [
+				{ name: 'name', type: nonNullType(scalarType('String')) },
+				{ name: 'entityCount', type: nonNullType(scalarType('Int')) },
+			],
+		},
+		entityRecord: {
+			name: 'EntityRecord',
+			fields: [
+				{ name: 'id', type: nonNullType(scalarType('ID')) },
+				{ name: 'version', type: nonNullType(scalarType('Int')) },
+				{ name: 'data', type: nonNullType(scalarType('JSON')) },
+				{ name: 'createdAt', type: nonNullType(scalarType('DateTime')) },
+				{ name: 'updatedAt', type: nonNullType(scalarType('DateTime')) },
+			],
+		},
+		entityConnection: {
+			name: 'EntityConnection',
+			fields: [
 				{
-					name: 'CollectionMeta',
-					fields: [
-						{ name: 'name', type: nonNullType(scalarType('String')) },
-						{ name: 'entityCount', type: nonNullType(scalarType('Int')) },
-					],
+					name: 'edges',
+					type: nonNullType(listType(nonNullType(namedType('EntityEdge')))),
 				},
-				{
-					name: 'EntityRecord',
-					fields: [
-						{ name: 'id', type: nonNullType(scalarType('ID')) },
-						{ name: 'version', type: nonNullType(scalarType('Int')) },
-						{ name: 'data', type: nonNullType(scalarType('JSON')) },
-						{ name: 'createdAt', type: nonNullType(scalarType('DateTime')) },
-						{ name: 'updatedAt', type: nonNullType(scalarType('DateTime')) },
-					],
-				},
-				{
-					name: 'PageInfo',
-					fields: [
-						{ name: 'hasNextPage', type: nonNullType(scalarType('Boolean')) },
-						{ name: 'endCursor', type: scalarType('String') },
-					],
-				},
-				{
-					name: 'EntityEdge',
-					fields: [
-						{ name: 'node', type: nonNullType(namedType('EntityRecord')) },
-						{ name: 'cursor', type: nonNullType(scalarType('String')) },
-					],
-				},
-				{
-					name: 'EntityConnection',
-					fields: [
-						{
-							name: 'edges',
-							type: nonNullType(listType(nonNullType(namedType('EntityEdge')))),
-						},
-						{ name: 'pageInfo', type: nonNullType(namedType('PageInfo')) },
-					],
-				},
+				{ name: 'pageInfo', type: nonNullType(namedType('PageInfo')) },
+			],
+		},
+		entityEdge: {
+			name: 'EntityEdge',
+			fields: [
+				{ name: 'node', type: nonNullType(namedType('EntityRecord')) },
+				{ name: 'cursor', type: nonNullType(scalarType('String')) },
+			],
+		},
+		pageInfo: {
+			name: 'PageInfo',
+			fields: [
+				{ name: 'hasNextPage', type: nonNullType(scalarType('Boolean')) },
+				{ name: 'endCursor', type: scalarType('String') },
 			],
 		},
 	};
@@ -260,6 +256,12 @@ test('fetchCollections uses the collections query once the backend advertises su
 
 	await expect(fetchCollections()).resolves.toEqual([{ name: 'tasks', entityCount: 3 }]);
 	expect(requests).toHaveLength(2);
+	expect(requests[0]?.query).not.toContain('types {');
+	expect(requests[0]?.query).toContain('collectionMeta: __type(name: "CollectionMeta")');
+	expect(requests[0]?.query).toContain('entityRecord: __type(name: "EntityRecord")');
+	expect(requests[0]?.query).toContain('entityConnection: __type(name: "EntityConnection")');
+	expect(requests[0]?.query).toContain('entityEdge: __type(name: "EntityEdge")');
+	expect(requests[0]?.query).toContain('pageInfo: __type(name: "PageInfo")');
 	expect(requests[1]?.query).toContain('collections { name entityCount }');
 });
 
