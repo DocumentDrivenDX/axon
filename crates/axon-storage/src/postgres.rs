@@ -1168,7 +1168,7 @@ impl StorageAdapter for PostgresStorageAdapter {
                 "DELETE FROM collection_views
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
                 &[
-                    &collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                 ],
@@ -1180,7 +1180,7 @@ impl StorageAdapter for PostgresStorageAdapter {
                 "DELETE FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
                 &[
-                    &collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                 ],
@@ -1192,7 +1192,7 @@ impl StorageAdapter for PostgresStorageAdapter {
                 "DELETE FROM collections
                  WHERE name = $1 AND database_name = $2 AND schema_name = $3",
                 &[
-                    &collection.as_str(),
+                    &key.collection.as_str(),
                     &key.namespace.database,
                     &key.namespace.schema,
                 ],
@@ -2160,5 +2160,56 @@ mod tests {
         assert_eq!(retrieved.collection, invoices);
         assert_eq!(retrieved.markdown_template, "# {{title}}");
         assert_eq!(retrieved.version, 1);
+    }
+
+    #[test]
+    fn qualified_unregister_collection_removes_normalized_metadata_rows() {
+        let _guard = postgres_test_guard();
+        let mut s = store().expect("PostgreSQL test setup should succeed");
+        let qualified = CollectionId::new("prod.billing.invoices");
+        let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
+
+        s.put_schema(&CollectionSchema {
+            collection: qualified.clone(),
+            description: Some("v1".into()),
+            version: 1,
+            entity_schema: Some(
+                serde_json::json!({"type": "object", "properties": {"title": {"type": "string"}}}),
+            ),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+        })
+        .expect("qualified schema put should succeed");
+        s.put_collection_view(&CollectionView::new(qualified.clone(), "# {{title}}"))
+            .expect("qualified collection view put should succeed");
+
+        s.unregister_collection(&qualified)
+            .expect("qualified unregister should succeed");
+
+        let row_counts = s
+            .client
+            .borrow_mut()
+            .query_one(
+                "SELECT
+                    (SELECT COUNT(*) FROM collections
+                     WHERE name = $1 AND database_name = $2 AND schema_name = $3) AS collections_count,
+                    (SELECT COUNT(*) FROM schemas
+                     WHERE collection = $1 AND database_name = $2 AND schema_name = $3) AS schemas_count,
+                    (SELECT COUNT(*) FROM collection_views
+                     WHERE collection = $1 AND database_name = $2 AND schema_name = $3) AS views_count",
+                &[&invoices.as_str(), &billing.database, &billing.schema],
+            )
+            .expect("metadata row count query should succeed");
+
+        let collections_count: i64 = row_counts.get("collections_count");
+        let schemas_count: i64 = row_counts.get("schemas_count");
+        let views_count: i64 = row_counts.get("views_count");
+
+        assert_eq!(collections_count, 0, "collection row should be removed");
+        assert_eq!(schemas_count, 0, "schema rows should be removed");
+        assert_eq!(views_count, 0, "collection view row should be removed");
     }
 }
