@@ -1313,6 +1313,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: RollbackEntityRequest,
     ) -> Result<RollbackEntityResponse, AxonError> {
+        struct DeletedEntityContext {
+            deleted_version: u64,
+            created_at_ns: Option<u64>,
+            created_by: Option<String>,
+        }
+
         let source = self.resolve_rollback_source_entry(&req.collection, &req.id, &req.target)?;
         let target_data = source.data_after.clone().ok_or_else(|| match &req.target {
             RollbackEntityTarget::Version(version) => AxonError::NotFound(format!(
@@ -1339,21 +1345,29 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 .find(|entry| entry.data_after.is_some())
                 .cloned()
                 .unwrap_or_else(|| latest_entry.clone());
-            Some((latest_entry, created_entry))
+            Some(DeletedEntityContext {
+                deleted_version: latest_entry.version,
+                created_at_ns: Some(created_entry.timestamp_ns),
+                created_by: (created_entry.actor != "anonymous")
+                    .then(|| created_entry.actor.clone()),
+            })
         } else {
             None
         };
-
-        let actual_version = current.as_ref().map_or_else(
-            || {
-                deleted_entity_context
-                    .as_ref()
-                    .expect("deleted context")
-                    .0
-                    .version
-            },
-            |entity| entity.version,
-        );
+        let (actual_version, created_at_ns, created_by) =
+            match (current.as_ref(), deleted_entity_context.as_ref()) {
+                (Some(entity), _) => (
+                    entity.version,
+                    entity.created_at_ns,
+                    entity.created_by.clone(),
+                ),
+                (None, Some(context)) => (
+                    context.deleted_version,
+                    context.created_at_ns,
+                    context.created_by.clone(),
+                ),
+                (None, None) => return Err(AxonError::NotFound(req.id.to_string())),
+            };
         let expected_version = req.expected_version.unwrap_or(actual_version);
         if expected_version != actual_version {
             return Err(AxonError::ConflictingVersion {
@@ -1400,26 +1414,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
             id: req.id.clone(),
             version: actual_version + 1,
             data: target_data.clone(),
-            created_at_ns: current
-                .as_ref()
-                .and_then(|entity| entity.created_at_ns)
-                .or_else(|| {
-                    deleted_entity_context
-                        .as_ref()
-                        .map(|(_, created_entry)| created_entry.timestamp_ns)
-                }),
+            created_at_ns,
             updated_at_ns: current.as_ref().and_then(|entity| entity.updated_at_ns),
-            created_by: current
-                .as_ref()
-                .and_then(|entity| entity.created_by.clone())
-                .or_else(|| {
-                    deleted_entity_context
-                        .as_ref()
-                        .and_then(|(_, created_entry)| {
-                            (created_entry.actor != "anonymous")
-                                .then(|| created_entry.actor.clone())
-                        })
-                }),
+            created_by: created_by.clone(),
             updated_by: req.actor.clone(),
         };
 
@@ -1451,18 +1448,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 expected_version,
             )?
         } else {
-            let (_, created_entry) = deleted_entity_context
-                .as_ref()
-                .expect("deleted context must exist when current entity is missing");
             let recreated = Entity {
                 collection: req.collection.clone(),
                 id: req.id.clone(),
                 version: expected_version + 1,
                 data: target_data.clone(),
-                created_at_ns: Some(created_entry.timestamp_ns),
+                created_at_ns,
                 updated_at_ns: Some(now_ns()),
-                created_by: (created_entry.actor != "anonymous")
-                    .then(|| created_entry.actor.clone()),
+                created_by,
                 updated_by: req.actor.clone(),
             };
             self.storage.put(recreated.clone())?;
