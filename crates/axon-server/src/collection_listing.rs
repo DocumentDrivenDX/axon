@@ -41,6 +41,11 @@ pub fn list_collections_for_database<S: StorageAdapter>(
     Ok(collections)
 }
 
+pub fn collection_belongs_to_database(name: &str, database: &str) -> bool {
+    let (namespace, _) = Namespace::parse(name);
+    namespace.database == database
+}
+
 fn scoped_collection_id(database: &str, schema: &str, collection: &str) -> CollectionId {
     match (database == DEFAULT_DATABASE, schema == DEFAULT_SCHEMA) {
         (true, true) => CollectionId::new(collection),
