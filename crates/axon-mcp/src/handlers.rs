@@ -7,12 +7,22 @@
 
 use std::sync::{Arc, Mutex};
 
+use async_graphql::parser::{
+    parse_query,
+    types::{Field as GraphQlField, OperationType, Selection, SelectionSet},
+};
+use async_graphql::Value as GraphQlConstValue;
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateEntityRequest, DeleteEntityRequest, GetEntityRequest, UpdateEntityRequest,
+    AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateEntityRequest,
+    DeleteEntityRequest, FilterNode, FindLinkCandidatesRequest, GetEntityRequest,
+    ListCollectionsRequest, ListNeighborsRequest, QueryEntitiesRequest, TraverseDirection,
+    UpdateEntityRequest,
 };
 use axon_core::id::{CollectionId, EntityId};
 use axon_storage::adapter::StorageAdapter;
+use serde::{de::DeserializeOwned, Serialize};
+use serde_json::{Map, Value};
 
 use crate::tools::{ToolDef, ToolError};
 
@@ -38,6 +48,451 @@ fn lock_handler<S: StorageAdapter>(
     handler
         .lock()
         .map_err(|e| ToolError::Internal(format!("mutex poisoned: {e}")))
+}
+
+fn text_tool_response<T: Serialize>(payload: &T) -> Result<Value, ToolError> {
+    let text = serde_json::to_string(payload).map_err(|e| ToolError::Internal(e.to_string()))?;
+    Ok(serde_json::json!({
+        "content": [{
+            "type": "text",
+            "text": text
+        }]
+    }))
+}
+
+fn parse_optional_filter(value: Option<Value>) -> Result<Option<FilterNode>, ToolError> {
+    value
+        .map(|raw| {
+            serde_json::from_value(raw)
+                .map_err(|e| ToolError::InvalidArgument(format!("invalid 'filter': {e}")))
+        })
+        .transpose()
+}
+
+fn get_required_string(args: &Value, key: &str) -> Result<String, ToolError> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| ToolError::InvalidArgument(format!("missing '{key}'")))
+}
+
+fn get_optional_string(args: &Value, key: &str) -> Option<String> {
+    args.get(key).and_then(Value::as_str).map(ToOwned::to_owned)
+}
+
+fn get_optional_usize(args: &Value, key: &str) -> Result<Option<usize>, ToolError> {
+    args.get(key)
+        .map(|value| {
+            value.as_u64().ok_or_else(|| {
+                ToolError::InvalidArgument(format!("'{key}' must be an unsigned integer"))
+            })
+        })
+        .transpose()
+        .and_then(|value| {
+            value
+                .map(|raw| {
+                    usize::try_from(raw)
+                        .map_err(|_| ToolError::InvalidArgument(format!("'{key}' is too large")))
+                })
+                .transpose()
+        })
+}
+
+fn get_direction(direction: Option<&str>) -> Result<Option<TraverseDirection>, ToolError> {
+    match direction.map(|value| value.to_ascii_lowercase()) {
+        None => Ok(None),
+        Some(value) if value == "both" => Ok(None),
+        Some(value) if value == "outbound" || value == "forward" => {
+            Ok(Some(TraverseDirection::Forward))
+        }
+        Some(value) if value == "inbound" || value == "reverse" => {
+            Ok(Some(TraverseDirection::Reverse))
+        }
+        Some(other) => Err(ToolError::InvalidArgument(format!(
+            "unsupported direction: {other}"
+        ))),
+    }
+}
+
+fn get_aggregate_function(function: &str) -> Result<Option<AggregateFunction>, ToolError> {
+    match function.to_ascii_lowercase().as_str() {
+        "count" => Ok(None),
+        "sum" => Ok(Some(AggregateFunction::Sum)),
+        "avg" => Ok(Some(AggregateFunction::Avg)),
+        "min" => Ok(Some(AggregateFunction::Min)),
+        "max" => Ok(Some(AggregateFunction::Max)),
+        other => Err(ToolError::InvalidArgument(format!(
+            "unknown aggregation function: {other}"
+        ))),
+    }
+}
+
+fn graphql_variables(variables: &Value) -> Result<&Map<String, Value>, ToolError> {
+    variables.as_object().ok_or_else(|| {
+        ToolError::InvalidArgument("'variables' must be an object when provided".into())
+    })
+}
+
+fn graphql_argument_json(
+    field: &GraphQlField,
+    name: &str,
+    variables: &Map<String, Value>,
+) -> Result<Option<Value>, ToolError> {
+    let Some(argument) = field.get_argument(name) else {
+        return Ok(None);
+    };
+
+    let resolved = argument.node.clone().into_const_with(|variable_name| {
+        let key = variable_name.to_string();
+        let value = variables.get(&key).cloned().ok_or_else(|| {
+            ToolError::InvalidArgument(format!("missing GraphQL variable '${key}'"))
+        })?;
+        GraphQlConstValue::from_json(value).map_err(|e| {
+            ToolError::InvalidArgument(format!("invalid GraphQL variable '${key}': {e}"))
+        })
+    })?;
+
+    resolved
+        .into_json()
+        .map(Some)
+        .map_err(|e| ToolError::InvalidArgument(format!("invalid GraphQL argument '{name}': {e}")))
+}
+
+fn graphql_required<T: DeserializeOwned>(
+    field: &GraphQlField,
+    name: &str,
+    variables: &Map<String, Value>,
+) -> Result<T, ToolError> {
+    let value = graphql_argument_json(field, name, variables)?
+        .ok_or_else(|| ToolError::InvalidArgument(format!("missing GraphQL argument '{name}'")))?;
+    serde_json::from_value(value)
+        .map_err(|e| ToolError::InvalidArgument(format!("invalid GraphQL argument '{name}': {e}")))
+}
+
+fn graphql_optional<T: DeserializeOwned>(
+    field: &GraphQlField,
+    name: &str,
+    variables: &Map<String, Value>,
+) -> Result<Option<T>, ToolError> {
+    graphql_argument_json(field, name, variables)?
+        .map(|value| {
+            serde_json::from_value(value).map_err(|e| {
+                ToolError::InvalidArgument(format!("invalid GraphQL argument '{name}': {e}"))
+            })
+        })
+        .transpose()
+}
+
+fn graphql_optional_filter(
+    field: &GraphQlField,
+    name: &str,
+    variables: &Map<String, Value>,
+) -> Result<Option<FilterNode>, ToolError> {
+    parse_optional_filter(graphql_argument_json(field, name, variables)?)
+}
+
+fn graphql_root_field_response<S: StorageAdapter>(
+    handler: &Mutex<AxonHandler<S>>,
+    field: &GraphQlField,
+    variables: &Map<String, Value>,
+) -> Result<Value, ToolError> {
+    match field.name.node.as_str() {
+        "collections" => {
+            let guard = lock_handler(handler)?;
+            let response = guard
+                .list_collections(ListCollectionsRequest::default())
+                .map_err(to_tool_error)?;
+            Ok(Value::Array(
+                response
+                    .collections
+                    .into_iter()
+                    .map(|collection| {
+                        serde_json::json!({
+                            "name": collection.name,
+                            "entityCount": collection.entity_count,
+                            "schemaVersion": collection.schema_version,
+                            "createdAtNs": collection.created_at_ns,
+                            "updatedAtNs": collection.updated_at_ns
+                        })
+                    })
+                    .collect(),
+            ))
+        }
+        "entity" => {
+            let collection: String = graphql_required(field, "collection", variables)?;
+            let id: String = graphql_required(field, "id", variables)?;
+            let guard = lock_handler(handler)?;
+            let response = guard
+                .get_entity(GetEntityRequest {
+                    collection: CollectionId::new(&collection),
+                    id: EntityId::new(&id),
+                })
+                .map_err(to_tool_error)?;
+            serde_json::to_value(response.entity).map_err(|e| ToolError::Internal(e.to_string()))
+        }
+        "entities" => {
+            let collection: String = graphql_required(field, "collection", variables)?;
+            let filter = graphql_optional_filter(field, "filter", variables)?;
+            let limit = graphql_optional(field, "limit", variables)?;
+            let after = graphql_optional::<String>(field, "after", variables)?
+                .map(|cursor| EntityId::new(&cursor));
+            let guard = lock_handler(handler)?;
+            let response = guard
+                .query_entities(QueryEntitiesRequest {
+                    collection: CollectionId::new(&collection),
+                    filter,
+                    sort: Vec::new(),
+                    limit,
+                    after_id: after,
+                    count_only: false,
+                })
+                .map_err(to_tool_error)?;
+
+            let edges: Vec<Value> = response
+                .entities
+                .into_iter()
+                .map(|entity| {
+                    serde_json::json!({
+                        "node": entity,
+                        "cursor": entity.id
+                    })
+                })
+                .collect();
+
+            Ok(serde_json::json!({
+                "edges": edges,
+                "pageInfo": {
+                    "hasNextPage": response.next_cursor.is_some(),
+                    "endCursor": response.next_cursor
+                },
+                "totalCount": response.total_count
+            }))
+        }
+        "countEntities" => {
+            let collection: String = graphql_required(field, "collection", variables)?;
+            let filter = graphql_optional_filter(field, "filter", variables)?;
+            let group_by = graphql_optional(field, "groupBy", variables)?;
+            let guard = lock_handler(handler)?;
+            let response = guard
+                .count_entities(CountEntitiesRequest {
+                    collection: CollectionId::new(&collection),
+                    filter,
+                    group_by,
+                })
+                .map_err(to_tool_error)?;
+
+            Ok(serde_json::json!({
+                "totalCount": response.total_count,
+                "groups": response.groups.into_iter().map(|group| {
+                    serde_json::json!({
+                        "key": group.key,
+                        "count": group.count
+                    })
+                }).collect::<Vec<_>>()
+            }))
+        }
+        "aggregate" => {
+            let collection: String = graphql_required(field, "collection", variables)?;
+            let function: String = graphql_required(field, "function", variables)?;
+            let aggregate_function = get_aggregate_function(&function)?;
+            let filter = graphql_optional_filter(field, "filter", variables)?;
+            let group_by = graphql_optional(field, "groupBy", variables)?;
+
+            if let Some(function) = aggregate_function {
+                let field_name: String = graphql_required(field, "field", variables)?;
+                let guard = lock_handler(handler)?;
+                let response = guard
+                    .aggregate(AggregateRequest {
+                        collection: CollectionId::new(&collection),
+                        function,
+                        field: field_name,
+                        filter,
+                        group_by,
+                    })
+                    .map_err(to_tool_error)?;
+
+                Ok(serde_json::json!({
+                    "results": response.results.into_iter().map(|result| {
+                        serde_json::json!({
+                            "key": result.key,
+                            "value": result.value,
+                            "count": result.count
+                        })
+                    }).collect::<Vec<_>>()
+                }))
+            } else {
+                let guard = lock_handler(handler)?;
+                let count = guard
+                    .count_entities(CountEntitiesRequest {
+                        collection: CollectionId::new(&collection),
+                        filter,
+                        group_by,
+                    })
+                    .map_err(to_tool_error)?;
+                let mut results: Vec<Value> = count
+                    .groups
+                    .into_iter()
+                    .map(|group| {
+                        serde_json::json!({
+                            "key": group.key,
+                            "value": group.count,
+                            "count": group.count
+                        })
+                    })
+                    .collect();
+                if results.is_empty() {
+                    results.push(serde_json::json!({
+                        "key": Value::Null,
+                        "value": count.total_count,
+                        "count": count.total_count
+                    }));
+                }
+                Ok(serde_json::json!({ "results": results }))
+            }
+        }
+        "linkCandidates" => {
+            let source_collection: String = graphql_required(field, "sourceCollection", variables)?;
+            let source_id: String = graphql_required(field, "sourceId", variables)?;
+            let link_type: String = graphql_required(field, "linkType", variables)?;
+            let filter = graphql_optional_filter(field, "filter", variables)?;
+            let limit = graphql_optional(field, "limit", variables)?;
+            let guard = lock_handler(handler)?;
+            let response = guard
+                .find_link_candidates(FindLinkCandidatesRequest {
+                    source_collection: CollectionId::new(&source_collection),
+                    source_id: EntityId::new(&source_id),
+                    link_type,
+                    filter,
+                    limit,
+                })
+                .map_err(to_tool_error)?;
+
+            Ok(serde_json::json!({
+                "targetCollection": response.target_collection,
+                "linkType": response.link_type,
+                "cardinality": response.cardinality,
+                "existingLinkCount": response.existing_link_count,
+                "candidates": response.candidates.into_iter().map(|candidate| {
+                    serde_json::json!({
+                        "entity": candidate.entity,
+                        "alreadyLinked": candidate.already_linked
+                    })
+                }).collect::<Vec<_>>()
+            }))
+        }
+        "neighbors" => {
+            let collection: String = graphql_required(field, "collection", variables)?;
+            let id: String = graphql_required(field, "id", variables)?;
+            let link_type = graphql_optional(field, "linkType", variables)?;
+            let direction = get_direction(
+                graphql_optional::<String>(field, "direction", variables)?.as_deref(),
+            )?;
+            let guard = lock_handler(handler)?;
+            let response = guard
+                .list_neighbors(ListNeighborsRequest {
+                    collection: CollectionId::new(&collection),
+                    id: EntityId::new(&id),
+                    link_type,
+                    direction,
+                })
+                .map_err(to_tool_error)?;
+
+            Ok(serde_json::json!({
+                "groups": response.groups.into_iter().map(|group| {
+                    serde_json::json!({
+                        "linkType": group.link_type,
+                        "direction": group.direction,
+                        "entities": group.entities
+                    })
+                }).collect::<Vec<_>>(),
+                "totalCount": response.total_count
+            }))
+        }
+        other => Err(ToolError::InvalidArgument(format!(
+            "unsupported GraphQL root field: {other}"
+        ))),
+    }
+}
+
+fn select_value(value: Value, selection_set: &SelectionSet) -> Result<Value, ToolError> {
+    if selection_set.items.is_empty() {
+        return Ok(value);
+    }
+
+    match value {
+        Value::Array(items) => items
+            .into_iter()
+            .map(|item| select_value(item, selection_set))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        Value::Object(map) => {
+            let mut selected = Map::new();
+            for selection in &selection_set.items {
+                let Selection::Field(field) = &selection.node else {
+                    return Err(ToolError::InvalidArgument(
+                        "GraphQL fragments are not supported by axon.query".into(),
+                    ));
+                };
+
+                let response_key = field.node.response_key().node.to_string();
+                let field_name = field.node.name.node.to_string();
+                let value = map.get(&field_name).cloned().unwrap_or(Value::Null);
+                let projected = select_value(value, &field.node.selection_set.node)?;
+                selected.insert(response_key, projected);
+            }
+            Ok(Value::Object(selected))
+        }
+        primitive => Ok(primitive),
+    }
+}
+
+fn execute_graphql_query<S: StorageAdapter>(
+    handler: &Mutex<AxonHandler<S>>,
+    query: &str,
+    variables: &Value,
+) -> Result<Value, ToolError> {
+    if query.trim().is_empty() {
+        return Err(ToolError::InvalidArgument("empty query string".into()));
+    }
+
+    let document = parse_query(query)
+        .map_err(|e| ToolError::InvalidArgument(format!("GraphQL syntax error: {e}")))?;
+    let mut operations = document.operations.iter();
+    let (_, operation) = operations.next().ok_or_else(|| {
+        ToolError::InvalidArgument("GraphQL document must contain an operation".into())
+    })?;
+    if operations.next().is_some() {
+        return Err(ToolError::InvalidArgument(
+            "multiple GraphQL operations are not supported".into(),
+        ));
+    }
+    if operation.node.ty != OperationType::Query {
+        return Err(ToolError::InvalidArgument(format!(
+            "unsupported GraphQL operation: {}",
+            operation.node.ty
+        )));
+    }
+    if !document.fragments.is_empty() {
+        return Err(ToolError::InvalidArgument(
+            "GraphQL fragments are not supported by axon.query".into(),
+        ));
+    }
+
+    let variables = graphql_variables(variables)?;
+    let mut data = Map::new();
+    for selection in &operation.node.selection_set.node.items {
+        let Selection::Field(field) = &selection.node else {
+            return Err(ToolError::InvalidArgument(
+                "GraphQL fragments are not supported by axon.query".into(),
+            ));
+        };
+        let response_key = field.node.response_key().node.to_string();
+        let value = graphql_root_field_response(handler, &field.node, variables)?;
+        let projected = select_value(value, &field.node.selection_set.node)?;
+        data.insert(response_key, projected);
+    }
+
+    Ok(Value::Object(data))
 }
 
 fn build_create_tool<S: StorageAdapter + 'static>(
@@ -228,18 +683,20 @@ fn build_delete_tool<S: StorageAdapter + 'static>(
 
 /// Build the `axon.query` tool for GraphQL queries via MCP.
 ///
-/// Accepts a `query` string and optional `variables` object. Validates
-/// basic GraphQL syntax (brace matching) before forwarding.
-pub fn build_query_tool() -> ToolDef {
+/// Accepts a `query` string and optional `variables` object and executes a
+/// limited GraphQL read surface against the live handler.
+pub fn build_query_tool<S: StorageAdapter + 'static>(
+    handler: Arc<Mutex<AxonHandler<S>>>,
+) -> ToolDef {
     ToolDef {
         name: "axon.query".into(),
-        description: "Execute a GraphQL query or mutation against Axon. Accepts a query string and optional variables.".into(),
+        description: "Execute a live GraphQL read query against Axon. Accepts a query string and optional variables.".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "GraphQL query or mutation string"
+                    "description": "GraphQL query string"
                 },
                 "variables": {
                     "type": "object",
@@ -248,46 +705,19 @@ pub fn build_query_tool() -> ToolDef {
             },
             "required": ["query"]
         }),
-        handler: Box::new(|args| {
+        handler: Box::new(move |args| {
             let query = args
                 .get("query")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| ToolError::InvalidArgument("missing 'query' string".into()))?;
-
-            // Basic syntax validation: check brace balance.
-            let open = query.chars().filter(|&c| c == '{').count();
-            let close = query.chars().filter(|&c| c == '}').count();
-            if open != close {
-                return Err(ToolError::InvalidArgument(format!(
-                    "GraphQL syntax error: mismatched braces ({{={open}, }}={close})"
-                )));
-            }
-
-            if query.trim().is_empty() {
-                return Err(ToolError::InvalidArgument(
-                    "empty query string".into(),
-                ));
-            }
 
             let variables = args
                 .get("variables")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
 
-            // In the full implementation, this would execute against the
-            // async-graphql schema. For now, return a stub response that
-            // confirms the query was parsed and accepted.
-            Ok(serde_json::json!({
-                "content": [{
-                    "type": "text",
-                    "text": serde_json::json!({
-                        "data": null,
-                        "info": "GraphQL execution stub — query accepted",
-                        "query": query,
-                        "variables": variables
-                    }).to_string()
-                }]
-            }))
+            let data = execute_graphql_query(&handler, query, &variables)?;
+            text_tool_response(&serde_json::json!({ "data": data }))
         }),
     }
 }
@@ -295,7 +725,10 @@ pub fn build_query_tool() -> ToolDef {
 /// Build a `{collection}.aggregate` tool for MCP.
 ///
 /// Accepts structured aggregation requests: function, field, optional filter and group_by.
-pub fn build_aggregate_tool(collection: &str) -> ToolDef {
+pub fn build_aggregate_tool<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<Mutex<AxonHandler<S>>>,
+) -> ToolDef {
     let col = collection.to_string();
     ToolDef {
         name: format!("{col}.aggregate"),
@@ -321,79 +754,79 @@ pub fn build_aggregate_tool(collection: &str) -> ToolDef {
                     "description": "Optional field to group results by"
                 }
             },
-            "required": ["function", "field"]
+            "required": ["function"]
         }),
         handler: Box::new(move |args| {
-            let function = args
-                .get("function")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArgument("missing 'function'".into()))?;
-            let field = args
-                .get("field")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArgument("missing 'field'".into()))?;
+            let function_name = get_required_string(args, "function")?;
+            let filter = parse_optional_filter(args.get("filter").cloned())?;
+            let group_by = get_optional_string(args, "group_by");
 
-            // Validate function name.
-            match function {
-                "count" | "sum" | "avg" | "min" | "max" => {}
-                other => {
-                    return Err(ToolError::InvalidArgument(format!(
-                        "unknown aggregation function: {other}"
-                    )));
-                }
+            if let Some(function) = get_aggregate_function(&function_name)? {
+                let field = get_required_string(args, "field")?;
+                let guard = lock_handler(&handler)?;
+                let response = guard
+                    .aggregate(AggregateRequest {
+                        collection: CollectionId::new(&col),
+                        function,
+                        field,
+                        filter,
+                        group_by,
+                    })
+                    .map_err(to_tool_error)?;
+                text_tool_response(&response)
+            } else {
+                let guard = lock_handler(&handler)?;
+                let response = guard
+                    .count_entities(CountEntitiesRequest {
+                        collection: CollectionId::new(&col),
+                        filter,
+                        group_by,
+                    })
+                    .map_err(to_tool_error)?;
+                text_tool_response(&response)
             }
-
-            // Stub response — in full implementation, this would call
-            // AxonHandler::aggregate_entities.
-            Ok(serde_json::json!({
-                "content": [{
-                    "type": "text",
-                    "text": serde_json::json!({
-                        "collection": col,
-                        "function": function,
-                        "field": field,
-                        "result": null,
-                        "info": "aggregation stub — handler integration pending"
-                    }).to_string()
-                }]
-            }))
         }),
     }
 }
 
 /// Build `{collection}.link_candidates` tool.
 ///
-/// Returns possible link types for a collection (from schema link definitions).
-pub fn build_link_candidates_tool(collection: &str) -> ToolDef {
+/// Returns candidate entities that can be linked from the given source entity.
+pub fn build_link_candidates_tool<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<Mutex<AxonHandler<S>>>,
+) -> ToolDef {
     let col = collection.to_string();
     ToolDef {
         name: format!("{col}.link_candidates"),
-        description: format!("Discover available link types for entities in the {col} collection"),
+        description: format!("Find candidate target entities for a link from the {col} collection"),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "id": { "type": "string", "description": "Entity ID to find link candidates for" }
+                "id": { "type": "string", "description": "Source entity ID" },
+                "link_type": { "type": "string", "description": "Link type to discover candidates for" },
+                "filter": { "type": "object", "description": "Optional filter applied to candidate entities" },
+                "limit": { "type": "integer", "description": "Maximum number of candidates to return" }
             },
-            "required": ["id"]
+            "required": ["id", "link_type"]
         }),
         handler: Box::new(move |args| {
-            let id = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArgument("missing 'id'".into()))?;
+            let id = get_required_string(args, "id")?;
+            let link_type = get_required_string(args, "link_type")?;
+            let filter = parse_optional_filter(args.get("filter").cloned())?;
+            let limit = get_optional_usize(args, "limit")?;
 
-            // Stub: return empty candidates list.
-            Ok(serde_json::json!({
-                "content": [{
-                    "type": "text",
-                    "text": serde_json::json!({
-                        "collection": col,
-                        "entity_id": id,
-                        "candidates": [],
-                        "info": "link candidates stub — schema integration pending"
-                    }).to_string()
-                }]
-            }))
+            let guard = lock_handler(&handler)?;
+            let response = guard
+                .find_link_candidates(FindLinkCandidatesRequest {
+                    source_collection: CollectionId::new(&col),
+                    source_id: EntityId::new(&id),
+                    link_type,
+                    filter,
+                    limit,
+                })
+                .map_err(to_tool_error)?;
+            text_tool_response(&response)
         }),
     }
 }
@@ -401,7 +834,10 @@ pub fn build_link_candidates_tool(collection: &str) -> ToolDef {
 /// Build `{collection}.neighbors` tool.
 ///
 /// Returns linked entities for a given entity.
-pub fn build_neighbors_tool(collection: &str) -> ToolDef {
+pub fn build_neighbors_tool<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<Mutex<AxonHandler<S>>>,
+) -> ToolDef {
     let col = collection.to_string();
     ToolDef {
         name: format!("{col}.neighbors"),
@@ -420,28 +856,20 @@ pub fn build_neighbors_tool(collection: &str) -> ToolDef {
             "required": ["id"]
         }),
         handler: Box::new(move |args| {
-            let id = args
-                .get("id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArgument("missing 'id'".into()))?;
-            let direction = args
-                .get("direction")
-                .and_then(|v| v.as_str())
-                .unwrap_or("both");
+            let id = get_required_string(args, "id")?;
+            let link_type = get_optional_string(args, "link_type");
+            let direction = get_direction(args.get("direction").and_then(Value::as_str))?;
 
-            // Stub response
-            Ok(serde_json::json!({
-                "content": [{
-                    "type": "text",
-                    "text": serde_json::json!({
-                        "collection": col,
-                        "entity_id": id,
-                        "direction": direction,
-                        "neighbors": [],
-                        "info": "neighbors stub — handler integration pending"
-                    }).to_string()
-                }]
-            }))
+            let guard = lock_handler(&handler)?;
+            let response = guard
+                .list_neighbors(ListNeighborsRequest {
+                    collection: CollectionId::new(&col),
+                    id: EntityId::new(&id),
+                    link_type,
+                    direction,
+                })
+                .map_err(to_tool_error)?;
+            text_tool_response(&response)
         }),
     }
 }
@@ -480,13 +908,99 @@ fn to_tool_error(err: axon_core::error::AxonError) -> ToolError {
 mod tests {
     use super::*;
     use axon_api::handler::AxonHandler;
+    use axon_api::request::{CreateCollectionRequest, CreateLinkRequest};
+    use axon_schema::schema::{Cardinality, CollectionSchema, LinkTypeDef};
     use axon_storage::memory::MemoryStorageAdapter;
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     fn make_handler() -> Arc<Mutex<AxonHandler<MemoryStorageAdapter>>> {
         Arc::new(Mutex::new(
             AxonHandler::new(MemoryStorageAdapter::default()),
         ))
+    }
+
+    fn make_graph_handler() -> Arc<Mutex<AxonHandler<MemoryStorageAdapter>>> {
+        let mut handler = AxonHandler::new(MemoryStorageAdapter::default());
+
+        let mut tasks_schema = CollectionSchema::new(CollectionId::new("tasks"));
+        tasks_schema.link_types.insert(
+            "depends-on".into(),
+            LinkTypeDef {
+                target_collection: "tasks".into(),
+                cardinality: Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: None,
+            },
+        );
+
+        handler
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("tasks"),
+                schema: tasks_schema,
+                actor: Some("test".into()),
+            })
+            .unwrap();
+        handler
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("users"),
+                schema: CollectionSchema::new(CollectionId::new("users")),
+                actor: Some("test".into()),
+            })
+            .unwrap();
+
+        for (collection, id, title, status, points) in [
+            ("tasks", "t-001", "First task", "ready", 10),
+            ("tasks", "t-002", "Second task", "in_progress", 20),
+            ("tasks", "t-003", "Third task", "ready", 5),
+        ] {
+            handler
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new(collection),
+                    id: EntityId::new(id),
+                    data: json!({
+                        "title": title,
+                        "status": status,
+                        "points": points
+                    }),
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .unwrap();
+        }
+
+        handler
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("users"),
+                id: EntityId::new("u-001"),
+                data: json!({ "title": "Owner" }),
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+
+        for (source_collection, source_id, target_collection, target_id, link_type) in [
+            ("tasks", "t-001", "tasks", "t-002", "depends-on"),
+            ("tasks", "t-001", "tasks", "t-003", "depends-on"),
+            ("users", "u-001", "tasks", "t-001", "assigned-to"),
+        ] {
+            handler
+                .create_link(CreateLinkRequest {
+                    source_collection: CollectionId::new(source_collection),
+                    source_id: EntityId::new(source_id),
+                    target_collection: CollectionId::new(target_collection),
+                    target_id: EntityId::new(target_id),
+                    link_type: link_type.into(),
+                    metadata: Value::Null,
+                    actor: None,
+                })
+                .unwrap();
+        }
+
+        Arc::new(Mutex::new(handler))
+    }
+
+    fn parse_tool_payload(result: &Value) -> Value {
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
     }
 
     #[test]
@@ -606,34 +1120,63 @@ mod tests {
     // ── axon.query tool tests ──────────────────────────────────────────
 
     #[test]
-    fn query_tool_accepts_valid_graphql() {
-        let tool = build_query_tool();
+    fn query_tool_executes_live_handler_queries() {
+        let handler = make_graph_handler();
+        let tool = build_query_tool(Arc::clone(&handler));
         assert_eq!(tool.name, "axon.query");
         let result = (tool.handler)(&serde_json::json!({
-            "query": "{ tasks { id title } }"
+            "query": r#"query($collection: String!, $id: String!) {
+                collections { name entityCount }
+                entity(collection: $collection, id: $id) { id data }
+                entities(collection: $collection, limit: 2) {
+                    totalCount
+                    pageInfo { hasNextPage endCursor }
+                    edges { cursor node { id data } }
+                }
+            }"#,
+            "variables": {
+                "collection": "tasks",
+                "id": "t-001"
+            }
         }))
         .unwrap();
-        let text = result["content"][0]["text"].as_str().unwrap();
-        let parsed: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(parsed["info"], "GraphQL execution stub — query accepted");
-        assert!(parsed["query"].as_str().unwrap().contains("tasks"));
+        let parsed = parse_tool_payload(&result);
+        assert_eq!(parsed["data"]["collections"][0]["name"], "tasks");
+        assert_eq!(parsed["data"]["collections"][0]["entityCount"], 3);
+        assert_eq!(parsed["data"]["entity"]["id"], "t-001");
+        assert_eq!(parsed["data"]["entity"]["data"]["title"], "First task");
+        assert_eq!(parsed["data"]["entities"]["totalCount"], 3);
+        assert_eq!(
+            parsed["data"]["entities"]["edges"][0]["node"]["id"],
+            "t-001"
+        );
     }
 
     #[test]
-    fn query_tool_rejects_mismatched_braces() {
-        let tool = build_query_tool();
+    fn query_tool_rejects_invalid_graphql_syntax() {
+        let tool = build_query_tool(make_graph_handler());
         let err = (tool.handler)(&serde_json::json!({
-            "query": "{ tasks { id }"
+            "query": "{ collections { name }"
         }))
         .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 
     #[test]
-    fn query_tool_rejects_empty_query() {
-        let tool = build_query_tool();
+    fn query_tool_rejects_unsupported_root_fields() {
+        let tool = build_query_tool(make_graph_handler());
         let err = (tool.handler)(&serde_json::json!({
-            "query": ""
+            "query": "{ tasks { id } }"
+        }))
+        .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn query_tool_rejects_mutations_until_graphql_writes_exist() {
+        let tool = build_query_tool(make_graph_handler());
+        let err = (tool.handler)(&serde_json::json!({
+            "query": "mutation { collections { name } }"
         }))
         .unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgument(_)));
@@ -641,44 +1184,45 @@ mod tests {
 
     #[test]
     fn query_tool_rejects_missing_query() {
-        let tool = build_query_tool();
+        let tool = build_query_tool(make_graph_handler());
         let err = (tool.handler)(&serde_json::json!({})).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgument(_)));
-    }
-
-    #[test]
-    fn query_tool_passes_variables() {
-        let tool = build_query_tool();
-        let result = (tool.handler)(&serde_json::json!({
-            "query": "query($id: ID!) { task(id: $id) { title } }",
-            "variables": {"id": "t-001"}
-        }))
-        .unwrap();
-        let text = result["content"][0]["text"].as_str().unwrap();
-        let parsed: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(parsed["variables"]["id"], "t-001");
     }
 
     // ── aggregate tool tests ───────────────────────────────────────────
 
     #[test]
-    fn aggregate_tool_accepts_valid_request() {
-        let tool = build_aggregate_tool("tasks");
+    fn aggregate_tool_returns_live_count_results() {
+        let handler = make_graph_handler();
+        let tool = build_aggregate_tool("tasks", Arc::clone(&handler));
         assert_eq!(tool.name, "tasks.aggregate");
         let result = (tool.handler)(&serde_json::json!({
             "function": "count",
-            "field": "status"
+            "group_by": "status"
         }))
         .unwrap();
-        let text = result["content"][0]["text"].as_str().unwrap();
-        let parsed: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(parsed["function"], "count");
-        assert_eq!(parsed["collection"], "tasks");
+        let parsed = parse_tool_payload(&result);
+        assert_eq!(parsed["total_count"], 3);
+        assert_eq!(parsed["groups"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn aggregate_tool_returns_live_numeric_aggregates() {
+        let handler = make_graph_handler();
+        let tool = build_aggregate_tool("tasks", Arc::clone(&handler));
+        let result = (tool.handler)(&serde_json::json!({
+            "function": "sum",
+            "field": "points"
+        }))
+        .unwrap();
+        let parsed = parse_tool_payload(&result);
+        assert_eq!(parsed["results"][0]["value"], 35.0);
+        assert_eq!(parsed["results"][0]["count"], 3);
     }
 
     #[test]
     fn aggregate_tool_rejects_unknown_function() {
-        let tool = build_aggregate_tool("tasks");
+        let tool = build_aggregate_tool("tasks", make_graph_handler());
         let err = (tool.handler)(&serde_json::json!({
             "function": "median",
             "field": "x"
@@ -689,7 +1233,7 @@ mod tests {
 
     #[test]
     fn aggregate_tool_requires_function() {
-        let tool = build_aggregate_tool("tasks");
+        let tool = build_aggregate_tool("tasks", make_graph_handler());
         let err = (tool.handler)(&serde_json::json!({"field": "x"})).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
@@ -697,35 +1241,57 @@ mod tests {
     // ── link tools tests ───────────────────────────────────────────────
 
     #[test]
-    fn link_candidates_tool() {
-        let tool = build_link_candidates_tool("tasks");
+    fn link_candidates_tool_returns_live_candidates() {
+        let handler = make_graph_handler();
+        let tool = build_link_candidates_tool("tasks", Arc::clone(&handler));
         assert_eq!(tool.name, "tasks.link_candidates");
-        let result = (tool.handler)(&serde_json::json!({"id": "t-001"})).unwrap();
-        let text = result["content"][0]["text"].as_str().unwrap();
-        let parsed: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(parsed["entity_id"], "t-001");
-    }
-
-    #[test]
-    fn neighbors_tool() {
-        let tool = build_neighbors_tool("tasks");
-        assert_eq!(tool.name, "tasks.neighbors");
-        let result = (tool.handler)(&serde_json::json!({"id": "t-001"})).unwrap();
-        let text = result["content"][0]["text"].as_str().unwrap();
-        let parsed: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(parsed["direction"], "both");
-    }
-
-    #[test]
-    fn neighbors_tool_with_direction() {
-        let tool = build_neighbors_tool("tasks");
         let result = (tool.handler)(&serde_json::json!({
             "id": "t-001",
-            "direction": "outbound"
+            "link_type": "depends-on"
         }))
         .unwrap();
-        let text = result["content"][0]["text"].as_str().unwrap();
-        let parsed: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(parsed["direction"], "outbound");
+        let parsed = parse_tool_payload(&result);
+        assert_eq!(parsed["target_collection"], "tasks");
+        assert_eq!(parsed["existing_link_count"], 2);
+        let already_linked = parsed["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|candidate| candidate["entity"]["id"] == "t-002")
+            .unwrap();
+        assert!(already_linked["already_linked"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn link_candidates_tool_maps_not_found_errors() {
+        let tool = build_link_candidates_tool("tasks", make_graph_handler());
+        let err = (tool.handler)(&serde_json::json!({
+            "id": "ghost",
+            "link_type": "depends-on"
+        }))
+        .unwrap_err();
+        assert!(matches!(err, ToolError::NotFound(_)));
+    }
+
+    #[test]
+    fn neighbors_tool_returns_live_neighbors() {
+        let handler = make_graph_handler();
+        let tool = build_neighbors_tool("tasks", Arc::clone(&handler));
+        assert_eq!(tool.name, "tasks.neighbors");
+        let result = (tool.handler)(&serde_json::json!({"id": "t-001"})).unwrap();
+        let parsed = parse_tool_payload(&result);
+        assert_eq!(parsed["total_count"], 3);
+        assert_eq!(parsed["groups"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn neighbors_tool_rejects_invalid_direction() {
+        let tool = build_neighbors_tool("tasks", make_graph_handler());
+        let err = (tool.handler)(&serde_json::json!({
+            "id": "t-001",
+            "direction": "sideways"
+        }))
+        .unwrap_err();
+        assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 }

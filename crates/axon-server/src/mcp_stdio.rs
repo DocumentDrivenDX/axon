@@ -8,10 +8,56 @@ use std::io::{self, BufRead, Write};
 use std::sync::{Arc, Mutex};
 
 use axon_api::handler::AxonHandler;
-use axon_mcp::handlers::{build_crud_tools, build_query_tool};
+use axon_api::request::ListCollectionsRequest;
+use axon_mcp::handlers::{
+    build_aggregate_tool, build_crud_tools, build_link_candidates_tool, build_neighbors_tool,
+    build_query_tool,
+};
 use axon_mcp::protocol::McpServer;
 use axon_mcp::tools::ToolRegistry;
 use axon_storage::adapter::StorageAdapter;
+
+fn collection_names_for_mcp<S: StorageAdapter>(
+    handler: &Arc<Mutex<AxonHandler<S>>>,
+    collections: &[String],
+) -> io::Result<Vec<String>> {
+    if !collections.is_empty() {
+        return Ok(collections.to_vec());
+    }
+
+    let guard = handler
+        .lock()
+        .map_err(|e| io::Error::other(format!("failed to lock handler: {e}")))?;
+    let response = guard
+        .list_collections(ListCollectionsRequest::default())
+        .map_err(|e| io::Error::other(format!("failed to list collections: {e}")))?;
+    Ok(response
+        .collections
+        .into_iter()
+        .map(|collection| collection.name)
+        .collect())
+}
+
+fn build_registry<S: StorageAdapter + 'static>(
+    handler: Arc<Mutex<AxonHandler<S>>>,
+    collections: &[String],
+) -> io::Result<ToolRegistry> {
+    let mut registry = ToolRegistry::new();
+    let collection_names = collection_names_for_mcp(&handler, collections)?;
+
+    for col in &collection_names {
+        let tools = build_crud_tools(col, Arc::clone(&handler));
+        for tool in tools {
+            registry.register(tool);
+        }
+        registry.register(build_aggregate_tool(col, Arc::clone(&handler)));
+        registry.register(build_link_candidates_tool(col, Arc::clone(&handler)));
+        registry.register(build_neighbors_tool(col, Arc::clone(&handler)));
+    }
+
+    registry.register(build_query_tool(handler));
+    Ok(registry)
+}
 
 /// Run the MCP stdio loop: read lines from stdin, process, write to stdout.
 ///
@@ -21,19 +67,7 @@ pub fn run_mcp_stdio<S: StorageAdapter + 'static>(
     handler: Arc<Mutex<AxonHandler<S>>>,
     collections: &[String],
 ) -> io::Result<()> {
-    let mut registry = ToolRegistry::new();
-
-    // Register CRUD tools for each known collection.
-    for col in collections {
-        let tools = build_crud_tools(col, Arc::clone(&handler));
-        for tool in tools {
-            registry.register(tool);
-        }
-    }
-
-    // Register the GraphQL query tool.
-    registry.register(build_query_tool());
-
+    let registry = build_registry(handler, collections)?;
     let mut server = McpServer::new(registry);
 
     let stdin = io::stdin();
@@ -59,6 +93,9 @@ pub fn run_mcp_stdio<S: StorageAdapter + 'static>(
 mod tests {
     use super::*;
     use axon_api::handler::AxonHandler;
+    use axon_api::request::CreateCollectionRequest;
+    use axon_core::id::CollectionId;
+    use axon_schema::schema::CollectionSchema;
     use axon_storage::memory::MemoryStorageAdapter;
 
     fn make_handler() -> Arc<Mutex<AxonHandler<MemoryStorageAdapter>>> {
@@ -70,12 +107,7 @@ mod tests {
     #[test]
     fn mcp_stdio_server_initializes() {
         let handler = make_handler();
-        let mut registry = ToolRegistry::new();
-        let tools = build_crud_tools("tasks", Arc::clone(&handler));
-        for tool in tools {
-            registry.register(tool);
-        }
-        registry.register(build_query_tool());
+        let registry = build_registry(handler, &[String::from("tasks")]).unwrap();
 
         let mut server = McpServer::new(registry);
 
@@ -98,12 +130,7 @@ mod tests {
     #[test]
     fn mcp_stdio_lists_collection_tools_and_query() {
         let handler = make_handler();
-        let mut registry = ToolRegistry::new();
-        let tools = build_crud_tools("tasks", Arc::clone(&handler));
-        for tool in tools {
-            registry.register(tool);
-        }
-        registry.register(build_query_tool());
+        let registry = build_registry(handler, &[String::from("tasks")]).unwrap();
 
         let mut server = McpServer::new(registry);
 
@@ -115,25 +142,24 @@ mod tests {
         let resp_str = server.handle_message(&req.to_string()).unwrap();
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
-        // 4 CRUD tools + 1 query tool
-        assert_eq!(tools.len(), 5);
+        // 4 CRUD tools + aggregate + link_candidates + neighbors + query
+        assert_eq!(tools.len(), 8);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"tasks.create"));
         assert!(names.contains(&"tasks.get"));
         assert!(names.contains(&"tasks.patch"));
         assert!(names.contains(&"tasks.delete"));
+        assert!(names.contains(&"tasks.aggregate"));
+        assert!(names.contains(&"tasks.link_candidates"));
+        assert!(names.contains(&"tasks.neighbors"));
         assert!(names.contains(&"axon.query"));
     }
 
     #[test]
     fn mcp_stdio_crud_roundtrip() {
         let handler = make_handler();
-        let mut registry = ToolRegistry::new();
-        let tools = build_crud_tools("items", Arc::clone(&handler));
-        for tool in tools {
-            registry.register(tool);
-        }
+        let registry = build_registry(handler, &[String::from("items")]).unwrap();
 
         let mut server = McpServer::new(registry);
 
@@ -180,11 +206,7 @@ mod tests {
         // Verify that no auth check happens for stdio connections.
         // Just verify we can create entities without any identity header.
         let handler = make_handler();
-        let mut registry = ToolRegistry::new();
-        let tools = build_crud_tools("noauth", Arc::clone(&handler));
-        for tool in tools {
-            registry.register(tool);
-        }
+        let registry = build_registry(handler, &[String::from("noauth")]).unwrap();
 
         let mut server = McpServer::new(registry);
         let req = serde_json::json!({
@@ -204,5 +226,29 @@ mod tests {
         // Should succeed without auth.
         assert!(resp["error"].is_null());
         assert!(resp["result"]["content"].is_array());
+    }
+
+    #[test]
+    fn mcp_stdio_discovers_existing_collections_when_none_are_provided() {
+        let handler = make_handler();
+        handler
+            .lock()
+            .unwrap()
+            .create_collection(CreateCollectionRequest {
+                name: CollectionId::new("tasks"),
+                schema: CollectionSchema::new(CollectionId::new("tasks")),
+                actor: Some("test".into()),
+            })
+            .unwrap();
+
+        let registry = build_registry(Arc::clone(&handler), &[]).unwrap();
+        let names: Vec<String> = registry
+            .list_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert!(names.iter().any(|name| name == "tasks.create"));
+        assert!(names.iter().any(|name| name == "tasks.aggregate"));
+        assert!(names.iter().any(|name| name == "axon.query"));
     }
 }
