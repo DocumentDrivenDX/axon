@@ -11,6 +11,7 @@ use axon_storage::adapter::StorageAdapter;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::error_mapping::map_axon_error;
 use crate::protocol::McpError;
 
 const DEFAULT_COLLECTION_LIMIT: usize = 50;
@@ -139,7 +140,7 @@ pub fn discover_collections<S: StorageAdapter>(
         .list_namespaces(ListNamespacesRequest {
             database: current_database.to_string(),
         })
-        .map_err(|error| McpError::Internal(error.to_string()))?;
+        .map_err(map_axon_error)?;
 
     let mut collections = Vec::new();
     for schema in namespaces.schemas {
@@ -148,7 +149,7 @@ pub fn discover_collections<S: StorageAdapter>(
                 database: current_database.to_string(),
                 schema: schema.clone(),
             })
-            .map_err(|error| McpError::Internal(error.to_string()))?;
+            .map_err(map_axon_error)?;
 
         for collection in namespace_collections.collections {
             collections.push(
@@ -375,10 +376,7 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
             let mut schemas = Vec::new();
             for collection in collections {
                 let collection_id = qualify_collection_name(&collection, current_database);
-                if let Some(schema) = handler
-                    .get_schema(&collection_id)
-                    .map_err(|error| McpError::Internal(error.to_string()))?
-                {
+                if let Some(schema) = handler.get_schema(&collection_id).map_err(map_axon_error)? {
                     schemas.push(json!({
                         "collection": collection,
                         "schema": schema,
@@ -391,7 +389,7 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
             let collection_id = qualify_collection_name(&collection, current_database);
             let schema = handler
                 .get_schema(&collection_id)
-                .map_err(|error| McpError::Internal(error.to_string()))?
+                .map_err(map_axon_error)?
                 .ok_or_else(|| {
                     McpError::NotFound(format!("schema for collection `{collection}`"))
                 })?;
@@ -403,7 +401,7 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
                 .describe_collection(DescribeCollectionRequest {
                     name: collection_id.clone(),
                 })
-                .map_err(|error| McpError::NotFound(error.to_string()))?;
+                .map_err(map_axon_error)?;
             let entities = handler
                 .query_entities(QueryEntitiesRequest {
                     collection: collection_id,
@@ -413,7 +411,7 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
                     after_id: None,
                     count_only: false,
                 })
-                .map_err(|error| McpError::Internal(error.to_string()))?;
+                .map_err(map_axon_error)?;
             let payload = json!({
                 "collection": visible_collection_name(&describe.name, current_database),
                 "entity_count": describe.entity_count,
@@ -430,7 +428,7 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
                     collection: qualify_collection_name(&collection, current_database),
                     id: EntityId::new(&id),
                 })
-                .map_err(|error| McpError::NotFound(error.to_string()))?;
+                .map_err(map_axon_error)?;
             resource_result(uri, &json!({ "entity": response.entity }))
         }
         ParsedResource::Links {
@@ -448,7 +446,7 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
                         LinkView::Inbound => TraverseDirection::Reverse,
                     }),
                 })
-                .map_err(|error| McpError::NotFound(error.to_string()))?;
+                .map_err(map_axon_error)?;
             resource_result(
                 uri,
                 &json!({
@@ -474,7 +472,7 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
                     after_id: None,
                     limit: Some(DEFAULT_AUDIT_LIMIT),
                 })
-                .map_err(|error| McpError::Internal(error.to_string()))?;
+                .map_err(map_axon_error)?;
             resource_result(
                 uri,
                 &json!({

@@ -12,6 +12,8 @@
 //! - `tools/call` — dispatch to the appropriate handler
 //! - `notifications/initialized` — client ack (no response)
 
+pub(crate) mod error_mapping;
+
 pub mod handlers;
 pub mod prompts;
 pub mod protocol;

@@ -7,6 +7,7 @@ use axon_storage::adapter::StorageAdapter;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use crate::error_mapping::map_axon_error;
 use crate::protocol::McpError;
 
 const DEFAULT_PROMPT_LIMIT: usize = 20;
@@ -211,7 +212,7 @@ pub fn get_prompt_from_handler<S: StorageAdapter>(
             let collection_id = qualify_collection_name(&collection, current_database);
             let schema = handler
                 .get_schema(&collection_id)
-                .map_err(|error| McpError::Internal(error.to_string()))?
+                .map_err(map_axon_error)?
                 .ok_or_else(|| {
                     McpError::NotFound(format!("schema for collection `{collection}`"))
                 })?;
@@ -224,7 +225,7 @@ pub fn get_prompt_from_handler<S: StorageAdapter>(
                     after_id: None,
                     count_only: false,
                 })
-                .map_err(|error| McpError::Internal(error.to_string()))?;
+                .map_err(map_axon_error)?;
 
             Ok(prompt_text_result(
                 "Explore an Axon collection using its schema and sample entities",
@@ -246,7 +247,7 @@ pub fn get_prompt_from_handler<S: StorageAdapter>(
                     collection: collection_id.clone(),
                     id: EntityId::new(&id),
                 })
-                .map_err(|error| McpError::NotFound(error.to_string()))?;
+                .map_err(map_axon_error)?;
             let neighbors = handler
                 .list_neighbors(axon_api::request::ListNeighborsRequest {
                     collection: collection_id,
@@ -254,7 +255,7 @@ pub fn get_prompt_from_handler<S: StorageAdapter>(
                     link_type: optional_string(arguments, "link_type"),
                     direction: None,
                 })
-                .map_err(|error| McpError::Internal(error.to_string()))?;
+                .map_err(map_axon_error)?;
 
             Ok(prompt_text_result(
                 "Analyze dependencies around a specific Axon entity",
@@ -282,7 +283,7 @@ pub fn get_prompt_from_handler<S: StorageAdapter>(
                     after_id: None,
                     limit: Some(limit),
                 })
-                .map_err(|error| McpError::Internal(error.to_string()))?;
+                .map_err(map_axon_error)?;
 
             Ok(prompt_text_result(
                 "Review recent Axon audit activity",
@@ -301,7 +302,7 @@ pub fn get_prompt_from_handler<S: StorageAdapter>(
             let collection_id = qualify_collection_name(&collection, current_database);
             let schema = handler
                 .get_schema(&collection_id)
-                .map_err(|error| McpError::Internal(error.to_string()))?
+                .map_err(map_axon_error)?
                 .ok_or_else(|| {
                     McpError::NotFound(format!("schema for collection `{collection}`"))
                 })?;
