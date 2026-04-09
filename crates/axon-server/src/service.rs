@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::auth::{AuthContext, AuthError, Identity};
-use crate::collection_listing::list_collections_for_database;
+use crate::collection_listing::{filter_audit_entries_to_database, list_collections_for_database};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
@@ -418,6 +418,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<QueryAuditByEntityRequest>,
     ) -> Result<Response<QueryAuditByEntityResponse>, Status> {
         self.authorize(request.remote_addr()).await?;
+        let requested_database = grpc_requested_database(&request).map(str::to_string);
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let handler = self.handler.lock().await;
@@ -428,6 +429,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                 &EntityId::new(&req.entity_id),
             )
             .map_err(axon_to_status)?;
+        let entries = filter_audit_entries_to_database(entries, requested_database.as_deref());
 
         let proto_entries = entries
             .into_iter()
@@ -1180,6 +1182,92 @@ mod tests {
                 .expect("prod entity JSON should parse")["scope"],
             "prod"
         );
+    }
+
+    #[tokio::test]
+    async fn grpc_query_audit_by_entity_scopes_to_requested_database() {
+        let svc = AxonServiceImpl::new_in_memory();
+        let schema = serde_json::to_string(&axon_schema::schema::CollectionSchema::new(
+            CollectionId::new("tasks"),
+        ))
+        .expect("schema should serialize");
+
+        svc.create_collection(Request::new(ProtoCreateCollectionReq {
+            name: "tasks".into(),
+            schema_json: schema.clone(),
+            actor: String::new(),
+        }))
+        .await
+        .expect("default collection create should succeed");
+
+        svc.create_database(Request::new(ProtoCreateDatabaseReq {
+            name: "prod".into(),
+        }))
+        .await
+        .expect("database create should succeed");
+
+        svc.create_collection(request_with_database(
+            ProtoCreateCollectionReq {
+                name: "tasks".into(),
+                schema_json: schema,
+                actor: String::new(),
+            },
+            "prod",
+        ))
+        .await
+        .expect("prod collection create should succeed");
+
+        svc.create_entity(Request::new(ProtoCreateEntityReq {
+            collection: "tasks".into(),
+            id: "t-001".into(),
+            data_json: json!({"scope": "default"}).to_string(),
+            actor: String::new(),
+        }))
+        .await
+        .expect("default entity create should succeed");
+
+        svc.create_entity(request_with_database(
+            ProtoCreateEntityReq {
+                collection: "tasks".into(),
+                id: "t-001".into(),
+                data_json: json!({"scope": "prod"}).to_string(),
+                actor: String::new(),
+            },
+            "prod",
+        ))
+        .await
+        .expect("prod entity create should succeed");
+
+        let prod_entries = svc
+            .query_audit_by_entity(request_with_database(
+                QueryAuditByEntityRequest {
+                    collection: "tasks".into(),
+                    entity_id: "t-001".into(),
+                },
+                "prod",
+            ))
+            .await
+            .expect("prod-scoped audit query should succeed")
+            .into_inner()
+            .entries;
+        assert!(!prod_entries.is_empty());
+        assert!(prod_entries
+            .iter()
+            .all(|entry| entry.collection == "prod.default.tasks"));
+
+        let cross_database_entries = svc
+            .query_audit_by_entity(request_with_database(
+                QueryAuditByEntityRequest {
+                    collection: "default.default.tasks".into(),
+                    entity_id: "t-001".into(),
+                },
+                "prod",
+            ))
+            .await
+            .expect("cross-database audit query should succeed")
+            .into_inner()
+            .entries;
+        assert!(cross_database_entries.is_empty());
     }
 
     #[tokio::test]

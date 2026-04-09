@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{AuthContext, AuthError, Identity};
-use crate::collection_listing::{collection_belongs_to_database, list_collections_for_database};
+use crate::collection_listing::{filter_audit_entries_to_database, list_collections_for_database};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
@@ -755,6 +755,7 @@ async fn traverse<S: StorageAdapter>(
 async fn query_audit_by_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(current_database): Extension<CurrentDatabase>,
+    Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
     Path(CollectionEntityPath {
         collection,
         id: entity_id,
@@ -766,6 +767,8 @@ async fn query_audit_by_entity<S: StorageAdapter>(
         &EntityId::new(&entity_id),
     ) {
         Ok(entries) => {
+            let entries =
+                filter_audit_entries_to_database(entries, requested_database_scope.database());
             let proto: Vec<Value> = entries
                 .iter()
                 .map(|e: &axon_audit::AuditEntry| {
@@ -811,16 +814,8 @@ async fn query_audit<S: StorageAdapter>(
     match handler.lock().await.query_audit(req) {
         Ok(resp) => {
             let next_cursor = resp.next_cursor;
-            let entries = match requested_database_scope.database() {
-                Some(database) => resp
-                    .entries
-                    .into_iter()
-                    .filter(|entry| {
-                        collection_belongs_to_database(entry.collection.as_str(), database)
-                    })
-                    .collect(),
-                None => resp.entries,
-            };
+            let entries =
+                filter_audit_entries_to_database(resp.entries, requested_database_scope.database());
             let proto: Vec<Value> = entries
                 .iter()
                 .map(|e: &axon_audit::AuditEntry| {
@@ -2101,6 +2096,73 @@ mod tests {
         let entries = body["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["actor"], "anonymous");
+    }
+
+    #[tokio::test]
+    async fn http_query_audit_by_entity_scopes_to_requested_database() {
+        let server = test_server();
+
+        server
+            .post("/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/databases/prod")
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/db/prod/collections/tasks")
+            .json(&json!({"schema": {}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"scope": "default"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .post("/db/prod/entities/tasks/t-001")
+            .json(&json!({"data": {"scope": "prod"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let path_scoped_resp = server.get("/db/prod/audit/entity/tasks/t-001").await;
+        path_scoped_resp.assert_status_ok();
+        let path_scoped_body: Value = path_scoped_resp.json();
+        let path_scoped_entries = path_scoped_body["entries"]
+            .as_array()
+            .expect("path-scoped audit/entity should return an entries array");
+        assert!(!path_scoped_entries.is_empty());
+        assert!(path_scoped_entries
+            .iter()
+            .all(|entry| entry["collection"] == "prod.default.tasks"));
+
+        let header_scoped_resp = server
+            .get("/audit/entity/tasks/t-001")
+            .add_header(AXON_DATABASE_HEADER, "prod")
+            .await;
+        header_scoped_resp.assert_status_ok();
+        let header_scoped_body: Value = header_scoped_resp.json();
+        let header_scoped_entries = header_scoped_body["entries"]
+            .as_array()
+            .expect("header-scoped audit/entity should return an entries array");
+        assert!(!header_scoped_entries.is_empty());
+        assert!(header_scoped_entries
+            .iter()
+            .all(|entry| entry["collection"] == "prod.default.tasks"));
+
+        let cross_database_resp = server
+            .get("/audit/entity/default.default.tasks/t-001")
+            .add_header(AXON_DATABASE_HEADER, "prod")
+            .await;
+        cross_database_resp.assert_status_ok();
+        let cross_database_body: Value = cross_database_resp.json();
+        let cross_database_entries = cross_database_body["entries"]
+            .as_array()
+            .expect("cross-database audit/entity should return an entries array");
+        assert!(cross_database_entries.is_empty());
     }
 
     #[tokio::test]

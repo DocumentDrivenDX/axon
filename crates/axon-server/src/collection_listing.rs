@@ -3,6 +3,7 @@ use axon_api::request::{
     DescribeCollectionRequest, ListNamespaceCollectionsRequest, ListNamespacesRequest,
 };
 use axon_api::response::CollectionMetadata;
+use axon_audit::AuditEntry;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 use axon_storage::adapter::StorageAdapter;
@@ -44,6 +45,19 @@ pub fn list_collections_for_database<S: StorageAdapter>(
 pub fn collection_belongs_to_database(name: &str, database: &str) -> bool {
     let (namespace, _) = Namespace::parse(name);
     namespace.database == database
+}
+
+pub fn filter_audit_entries_to_database(
+    entries: Vec<AuditEntry>,
+    database: Option<&str>,
+) -> Vec<AuditEntry> {
+    match database {
+        Some(database) => entries
+            .into_iter()
+            .filter(|entry| collection_belongs_to_database(entry.collection.as_str(), database))
+            .collect(),
+        None => entries,
+    }
 }
 
 fn scoped_collection_id(database: &str, schema: &str, collection: &str) -> CollectionId {
