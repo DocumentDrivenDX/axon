@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
-use crate::auth::Identity;
 use crate::gateway::CurrentDatabase;
 use axon_api::handler::AxonHandler;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
@@ -35,9 +34,11 @@ use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tokio_stream::StreamExt;
+use uuid::Uuid;
 
 type SharedHandler<S> = Arc<Mutex<AxonHandler<S>>>;
 const MCP_SESSION_HEADER: &str = "x-axon-mcp-session";
+const MCP_SESSION_COOKIE: &str = "axon_mcp_session";
 
 pub fn routes<S: StorageAdapter + 'static>() -> Router<SharedHandler<S>> {
     Router::new()
@@ -49,6 +50,12 @@ pub fn routes<S: StorageAdapter + 'static>() -> Router<SharedHandler<S>> {
 struct SessionKey {
     database: String,
     session_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResolvedSession {
+    key: SessionKey,
+    issued_session_id: Option<String>,
 }
 
 struct McpHttpSession {
@@ -73,6 +80,17 @@ struct McpSessionQuery {
 }
 
 impl McpHttpSessions {
+    fn new_session<S: StorageAdapter + 'static>(
+        session_key: &SessionKey,
+        handler: SharedHandler<S>,
+    ) -> Result<Arc<McpHttpSession>, McpError> {
+        let server = build_mcp_server(handler, &session_key.database)?;
+        Ok(Arc::new(McpHttpSession {
+            server: StdMutex::new(server),
+            listeners: StdMutex::new(SessionListeners::default()),
+        }))
+    }
+
     fn get_or_create<S: StorageAdapter + 'static>(
         &self,
         session_key: SessionKey,
@@ -90,11 +108,30 @@ impl McpHttpSessions {
             sessions.remove(&session_key);
         }
 
-        let server = build_mcp_server(handler, &session_key.database)?;
-        let session = Arc::new(McpHttpSession {
-            server: StdMutex::new(server),
-            listeners: StdMutex::new(SessionListeners::default()),
-        });
+        let session = Self::new_session(&session_key, handler)?;
+        sessions.insert(session_key, Arc::clone(&session));
+        Ok(session)
+    }
+
+    fn connect_session<S: StorageAdapter + 'static>(
+        &self,
+        session_key: SessionKey,
+        handler: SharedHandler<S>,
+    ) -> Result<Arc<McpHttpSession>, McpError> {
+        let mut sessions = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+        if let Some(session) = sessions.get(&session_key).cloned() {
+            if Self::session_needs_sse_reset(&session) {
+                sessions.remove(&session_key);
+            } else {
+                return Ok(session);
+            }
+        }
+
+        let session = Self::new_session(&session_key, handler)?;
         sessions.insert(session_key, Arc::clone(&session));
         Ok(session)
     }
@@ -119,7 +156,7 @@ impl McpHttpSessions {
         session_key: SessionKey,
         handler: SharedHandler<S>,
     ) -> Result<mpsc::UnboundedReceiver<String>, McpError> {
-        let session = self.get_or_create(session_key.clone(), handler)?;
+        let session = self.connect_session(session_key.clone(), handler)?;
         let (sender, receiver) = mpsc::unbounded_channel();
         let mut listeners = session
             .listeners
@@ -218,6 +255,15 @@ impl McpHttpSessions {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         listeners.senders.retain(|listener| !listener.is_closed());
         listeners.had_listener && listeners.senders.is_empty()
+    }
+
+    fn session_needs_sse_reset(session: &McpHttpSession) -> bool {
+        let mut listeners = session
+            .listeners
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        listeners.senders.retain(|listener| !listener.is_closed());
+        listeners.had_listener
     }
 
     #[cfg(test)]
@@ -334,14 +380,12 @@ fn refresh_mcp_server<S: StorageAdapter + 'static>(
     Ok(())
 }
 
-fn session_id_from_request(
-    headers: &HeaderMap,
-    query: &McpSessionQuery,
-    identity: &Identity,
-) -> String {
+fn requested_session_id(headers: &HeaderMap, query: &McpSessionQuery) -> Option<String> {
     query
         .session
-        .clone()
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
         .or_else(|| {
             headers
                 .get(MCP_SESSION_HEADER)
@@ -349,18 +393,58 @@ fn session_id_from_request(
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
-        .unwrap_or_else(|| identity.actor.clone())
+        .or_else(|| {
+            headers
+                .get_all(header::COOKIE)
+                .iter()
+                .filter_map(|value| value.to_str().ok())
+                .flat_map(|value| value.split(';'))
+                .map(str::trim)
+                .filter_map(|cookie| cookie.split_once('='))
+                .find_map(|(name, value)| {
+                    (name == MCP_SESSION_COOKIE && !value.is_empty()).then(|| value.to_string())
+                })
+        })
 }
 
-fn session_key_from_request(
+fn resolve_session_from_request(
     current_database: &CurrentDatabase,
     headers: &HeaderMap,
     query: &McpSessionQuery,
-    identity: &Identity,
-) -> SessionKey {
-    SessionKey {
-        database: current_database.as_str().to_string(),
-        session_id: session_id_from_request(headers, query, identity),
+) -> ResolvedSession {
+    let (session_id, issued_session_id) =
+        if let Some(session_id) = requested_session_id(headers, query) {
+            (session_id, None)
+        } else {
+            let session_id = Uuid::now_v7().to_string();
+            (session_id.clone(), Some(session_id))
+        };
+
+    ResolvedSession {
+        key: SessionKey {
+            database: current_database.as_str().to_string(),
+            session_id,
+        },
+        issued_session_id,
+    }
+}
+
+fn apply_session_metadata(response: &mut Response, session: &ResolvedSession) {
+    let Some(session_id) = session.issued_session_id.as_deref() else {
+        return;
+    };
+
+    if let Ok(header_value) = HeaderValue::from_str(session_id) {
+        response
+            .headers_mut()
+            .insert(MCP_SESSION_HEADER, header_value);
+    }
+
+    let cookie = format!("{MCP_SESSION_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax");
+    if let Ok(cookie_value) = HeaderValue::from_str(&cookie) {
+        response
+            .headers_mut()
+            .append(header::SET_COOKIE, cookie_value);
     }
 }
 
@@ -471,7 +555,6 @@ async fn handle_mcp<S: StorageAdapter + 'static>(
     State(handler): State<SharedHandler<S>>,
     Extension(sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
-    Extension(identity): Extension<Identity>,
     Query(query): Query<McpSessionQuery>,
     headers: HeaderMap,
     body: Bytes,
@@ -485,7 +568,8 @@ async fn handle_mcp<S: StorageAdapter + 'static>(
         }
     };
 
-    let session_key = session_key_from_request(&current_database, &headers, &query, &identity);
+    let session = resolve_session_from_request(&current_database, &headers, &query);
+    let session_key = session.key.clone();
     let response = match tokio::task::spawn_blocking(move || {
         sessions.handle_message(session_key, handler, &input)
     })
@@ -499,7 +583,7 @@ async fn handle_mcp<S: StorageAdapter + 'static>(
         }
     };
 
-    match response {
+    let mut response = match response {
         Ok(Some(payload)) => (
             StatusCode::OK,
             [(
@@ -511,18 +595,20 @@ async fn handle_mcp<S: StorageAdapter + 'static>(
             .into_response(),
         Ok(None) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => json_rpc_error_response(error),
-    }
+    };
+    apply_session_metadata(&mut response, &session);
+    response
 }
 
 async fn handle_mcp_sse<S: StorageAdapter + 'static>(
     State(handler): State<SharedHandler<S>>,
     Extension(sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
-    Extension(identity): Extension<Identity>,
     Query(query): Query<McpSessionQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let session_key = session_key_from_request(&current_database, &headers, &query, &identity);
+    let session = resolve_session_from_request(&current_database, &headers, &query);
+    let session_key = session.key.clone();
     let receiver =
         match tokio::task::spawn_blocking(move || sessions.connect(session_key, handler)).await {
             Ok(Ok(receiver)) => receiver,
@@ -538,31 +624,160 @@ async fn handle_mcp_sse<S: StorageAdapter + 'static>(
     let updates = UnboundedReceiverStream::new(receiver)
         .map(|payload| Ok::<Event, Infallible>(Event::default().event("message").data(payload)));
 
-    Sse::new(ready.chain(updates))
+    let mut response = Sse::new(ready.chain(updates))
         .keep_alive(
             KeepAlive::new()
                 .interval(Duration::from_secs(15))
                 .text("keepalive"),
         )
-        .into_response()
+        .into_response();
+    apply_session_metadata(&mut response, &session);
+    response
 }
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::auth::Identity;
     use crate::gateway::build_router;
     use axon_api::handler::AxonHandler;
     use axon_core::id::DEFAULT_DATABASE;
     use axon_storage::MemoryStorageAdapter;
+    use axum::Router;
     use axum_test::TestServer;
+    use reqwest::Response as ReqwestResponse;
     use serde_json::{json, Value};
+
+    struct SseEventFrame {
+        event: Option<String>,
+        data: String,
+    }
+
+    struct LiveSseConnection {
+        response: ReqwestResponse,
+        buffer: Vec<u8>,
+    }
 
     fn test_server() -> TestServer {
         let handler = Arc::new(Mutex::new(
             AxonHandler::new(MemoryStorageAdapter::default()),
         ));
         TestServer::new(build_router(handler, "memory", None))
+    }
+
+    fn issued_session_id(response: &Response) -> String {
+        response
+            .headers()
+            .get(MCP_SESSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .expect("response should expose an MCP session id")
+    }
+
+    fn session_cookie_headers(session_id: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        let cookie = format!("{MCP_SESSION_COOKIE}={session_id}");
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&cookie).expect("cookie header should be valid"),
+        );
+        headers
+    }
+
+    fn test_mcp_transport_server(sessions: McpHttpSessions) -> TestServer {
+        let handler = Arc::new(Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ));
+        let app = Router::new()
+            .merge(routes::<MemoryStorageAdapter>())
+            .with_state(handler)
+            .layer(Extension(sessions))
+            .layer(Extension(CurrentDatabase::new(DEFAULT_DATABASE)))
+            .layer(Extension(Identity::anonymous_admin()));
+        TestServer::builder().http_transport().build(app)
+    }
+
+    async fn connect_sse(server: &TestServer, path: &str) -> LiveSseConnection {
+        let url = server
+            .server_url(path)
+            .expect("test server should expose an HTTP transport URL");
+        let response = reqwest::Client::new()
+            .get(url)
+            .header(header::ACCEPT, "text/event-stream")
+            .send()
+            .await
+            .expect("SSE client should connect")
+            .error_for_status()
+            .expect("SSE request should succeed");
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(
+            content_type.starts_with("text/event-stream"),
+            "SSE response should declare event-stream"
+        );
+
+        let mut connection = LiveSseConnection {
+            response,
+            buffer: Vec::new(),
+        };
+        let ready = read_sse_event(&mut connection).await;
+        assert_eq!(ready.event.as_deref(), Some("ready"));
+        assert_eq!(ready.data, "{}");
+        connection
+    }
+
+    fn find_sse_frame_end(buffer: &[u8]) -> Option<(usize, usize)> {
+        buffer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .map(|index| (index, 4))
+            .or_else(|| {
+                buffer
+                    .windows(2)
+                    .position(|window| window == b"\n\n")
+                    .map(|index| (index, 2))
+            })
+    }
+
+    async fn read_sse_event(connection: &mut LiveSseConnection) -> SseEventFrame {
+        loop {
+            if let Some((frame_end, delimiter_len)) = find_sse_frame_end(&connection.buffer) {
+                let frame_bytes = connection
+                    .buffer
+                    .drain(..frame_end + delimiter_len)
+                    .collect::<Vec<_>>();
+                let frame = String::from_utf8(frame_bytes[..frame_end].to_vec())
+                    .expect("SSE frame should be valid UTF-8")
+                    .replace("\r\n", "\n");
+                let mut event = None;
+                let mut data_lines = Vec::new();
+                for line in frame.lines() {
+                    if let Some(value) = line.strip_prefix("event: ") {
+                        event = Some(value.to_string());
+                        continue;
+                    }
+                    if let Some(value) = line.strip_prefix("data: ") {
+                        data_lines.push(value.to_string());
+                    }
+                }
+                return SseEventFrame {
+                    event,
+                    data: data_lines.join("\n"),
+                };
+            }
+
+            let chunk = connection
+                .response
+                .chunk()
+                .await
+                .expect("SSE chunk should be readable")
+                .expect("SSE stream ended before the next frame");
+            connection.buffer.extend_from_slice(&chunk);
+        }
     }
 
     #[tokio::test]
@@ -733,7 +948,6 @@ mod tests {
             State(handler),
             Extension(McpHttpSessions::default()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
-            Extension(Identity::anonymous_admin()),
             Query(McpSessionQuery::default()),
             HeaderMap::new(),
         )
@@ -743,6 +957,8 @@ mod tests {
             response.headers().get(header::CONTENT_TYPE).unwrap(),
             "text/event-stream"
         );
+        assert!(response.headers().contains_key(MCP_SESSION_HEADER));
+        assert!(response.headers().contains_key(header::SET_COOKIE));
     }
 
     #[tokio::test]
@@ -751,12 +967,10 @@ mod tests {
             AxonHandler::new(MemoryStorageAdapter::default()),
         ));
         let sessions = McpHttpSessions::default();
-        let session_key = McpHttpSessions::test_session_key(DEFAULT_DATABASE, "anonymous");
         let subscribe = handle_mcp(
             State(handler.clone()),
             Extension(sessions.clone()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
-            Extension(Identity::anonymous_admin()),
             Query(McpSessionQuery::default()),
             HeaderMap::new(),
             Bytes::from(
@@ -771,15 +985,16 @@ mod tests {
         )
         .await;
         assert_eq!(subscribe.status(), StatusCode::OK);
+        let session_id = issued_session_id(&subscribe);
+        let session_key = McpHttpSessions::test_session_key(DEFAULT_DATABASE, &session_id);
         assert_eq!(sessions.subscription_count(&session_key), Some(1));
 
         let ping = handle_mcp(
             State(handler),
             Extension(sessions.clone()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
-            Extension(Identity::anonymous_admin()),
             Query(McpSessionQuery::default()),
-            HeaderMap::new(),
+            session_cookie_headers(&session_id),
             Bytes::from(
                 json!({
                     "jsonrpc": "2.0",
@@ -800,13 +1015,11 @@ mod tests {
             AxonHandler::new(MemoryStorageAdapter::default()),
         ));
         let sessions = McpHttpSessions::default();
-        let session_key = McpHttpSessions::test_session_key(DEFAULT_DATABASE, "anonymous");
 
-        handle_mcp(
+        let subscribe = handle_mcp(
             State(handler.clone()),
             Extension(sessions.clone()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
-            Extension(Identity::anonymous_admin()),
             Query(McpSessionQuery::default()),
             HeaderMap::new(),
             Bytes::from(
@@ -820,6 +1033,8 @@ mod tests {
             ),
         )
         .await;
+        let session_key =
+            McpHttpSessions::test_session_key(DEFAULT_DATABASE, &issued_session_id(&subscribe));
 
         let mut receiver = sessions
             .connect(session_key, handler)
@@ -842,20 +1057,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn http_mcp_immediate_reconnect_does_not_inherit_subscriptions() {
+    async fn http_mcp_issued_sessions_isolate_subscriptions_for_same_actor() {
         let handler = Arc::new(Mutex::new(
             AxonHandler::new(MemoryStorageAdapter::default()),
         ));
         let sessions = McpHttpSessions::default();
-        let session_key = McpHttpSessions::test_session_key(DEFAULT_DATABASE, "anonymous");
+        let current_database = CurrentDatabase::new(DEFAULT_DATABASE);
 
-        handle_mcp(
+        let first_session = resolve_session_from_request(
+            &current_database,
+            &HeaderMap::new(),
+            &McpSessionQuery::default(),
+        );
+        let second_session = resolve_session_from_request(
+            &current_database,
+            &HeaderMap::new(),
+            &McpSessionQuery::default(),
+        );
+        assert_ne!(first_session.key.session_id, second_session.key.session_id);
+
+        let mut first_receiver = tokio::task::spawn_blocking({
+            let sessions = sessions.clone();
+            let handler = handler.clone();
+            let session_key = first_session.key.clone();
+            move || {
+                sessions
+                    .connect(session_key, handler)
+                    .expect("first session should accept an SSE listener")
+            }
+        })
+        .await
+        .expect("first session worker should not panic");
+        let mut second_receiver = tokio::task::spawn_blocking({
+            let sessions = sessions.clone();
+            let handler = handler.clone();
+            let session_key = second_session.key.clone();
+            move || {
+                sessions
+                    .connect(session_key, handler)
+                    .expect("second session should accept an SSE listener")
+            }
+        })
+        .await
+        .expect("second session worker should not panic");
+
+        let subscribe = handle_mcp(
             State(handler.clone()),
             Extension(sessions.clone()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
-            Extension(Identity::anonymous_admin()),
             Query(McpSessionQuery::default()),
-            HeaderMap::new(),
+            session_cookie_headers(&first_session.key.session_id),
             Bytes::from(
                 json!({
                     "jsonrpc": "2.0",
@@ -867,25 +1118,59 @@ mod tests {
             ),
         )
         .await;
+        assert_eq!(subscribe.status(), StatusCode::OK);
+
+        notify_entity_change_by_parts(
+            &sessions,
+            &CurrentDatabase::new(DEFAULT_DATABASE),
+            "tasks",
+            "t-001",
+        );
+
+        let payload = tokio::time::timeout(Duration::from_secs(1), first_receiver.recv())
+            .await
+            .expect("first session should receive the notification in time")
+            .expect("first session listener should remain open");
+        let payload: Value =
+            serde_json::from_str(&payload).expect("notification payload should be valid JSON");
+        assert_eq!(payload["method"], "resource_updated");
+        assert_eq!(payload["params"]["uri"], "axon://tasks/t-001");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), second_receiver.recv())
+                .await
+                .is_err(),
+            "independent anonymous sessions must not receive each other's updates"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_mcp_immediate_reconnect_does_not_inherit_subscriptions() {
+        let sessions = McpHttpSessions::default();
+        let session_id = "transport-reconnect";
+        let session_key = McpHttpSessions::test_session_key(DEFAULT_DATABASE, session_id);
+        let server = test_mcp_transport_server(sessions.clone());
+
+        let first_listener = connect_sse(&server, &format!("/mcp/sse?session={session_id}")).await;
+
+        let subscribe = server
+            .post(&format!("/mcp?session={session_id}"))
+            .text(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "resources/subscribe",
+                    "params": { "uri": "axon://tasks/t-001" }
+                })
+                .to_string(),
+            )
+            .await;
+        subscribe.assert_status_ok();
         assert_eq!(sessions.subscription_count(&session_key), Some(1));
 
-        let receiver = sessions
-            .connect(session_key.clone(), handler.clone())
-            .expect("session should accept an SSE listener");
-        drop(receiver);
+        drop(first_listener);
 
-        let mut receiver = tokio::task::spawn_blocking({
-            let sessions = sessions.clone();
-            let handler = handler.clone();
-            let session_key = session_key.clone();
-            move || {
-                sessions
-                    .connect(session_key, handler)
-                    .expect("reconnect should create a fresh session")
-            }
-        })
-        .await
-        .expect("reconnect worker should not panic");
+        let mut second_listener =
+            connect_sse(&server, &format!("/mcp/sse?session={session_id}")).await;
         assert_eq!(sessions.subscription_count(&session_key), Some(0));
         notify_entity_change_by_parts(
             &sessions,
@@ -895,9 +1180,12 @@ mod tests {
         );
 
         assert!(
-            tokio::time::timeout(Duration::from_millis(100), receiver.recv())
-                .await
-                .is_err(),
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                read_sse_event(&mut second_listener)
+            )
+            .await
+            .is_err(),
             "reconnected listener should not inherit prior subscriptions"
         );
     }

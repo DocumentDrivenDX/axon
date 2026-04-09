@@ -29,6 +29,7 @@ clap.workspace = true
 tailscale-localapi = "0.5"
 tower-http = { version = "0.6", features = ["fs"] }
 tokio-stream.workspace = true
+uuid.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["prost"]
@@ -45,4 +46,5 @@ tokio-stream.workspace = true
 axum-test = "20"
 axum = { version = "0.8", features = [] }
 tower = "0.5"
+reqwest = { version = "0.12", features = ["stream"] }
 serde_json.workspace = true
