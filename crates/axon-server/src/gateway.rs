@@ -2430,6 +2430,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http_entity_rollback_recreates_deleted_entity_on_v1_route() {
+        let server = test_server();
+
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1"}, "actor": "creator"}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .put("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v2"}, "expected_version": 1, "actor": "editor"}))
+            .await
+            .assert_status_ok();
+        server
+            .delete("/entities/tasks/t-001")
+            .await
+            .assert_status_ok();
+
+        let resp = server
+            .post("/v1/collections/tasks/entities/t-001/rollback")
+            .json(&json!({"to_version": 1}))
+            .await;
+        resp.assert_status_ok();
+
+        let body: Value = resp.json();
+        assert_eq!(body["entity"]["version"], 3);
+        assert_eq!(body["entity"]["data"]["title"], "v1");
+        assert_eq!(body["audit_entry"]["operation"], "entity.revert");
+        assert_eq!(body["audit_entry"]["data_before"], Value::Null);
+        assert_eq!(body["audit_entry"]["data_after"]["title"], "v1");
+        assert_eq!(
+            body["audit_entry"]["metadata"]["reverted_from_entry_id"],
+            "1"
+        );
+
+        let restored = server.get("/entities/tasks/t-001").await;
+        restored.assert_status_ok();
+        let restored_body: Value = restored.json();
+        assert_eq!(restored_body["entity"]["version"], 3);
+        assert_eq!(restored_body["entity"]["data"]["title"], "v1");
+    }
+
+    #[tokio::test]
     async fn http_entity_rollback_dry_run_returns_preview_without_write() {
         let server = test_server();
 

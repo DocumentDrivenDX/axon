@@ -1313,20 +1313,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: RollbackEntityRequest,
     ) -> Result<RollbackEntityResponse, AxonError> {
-        let current = self
-            .storage
-            .get(&req.collection, &req.id)?
-            .ok_or_else(|| AxonError::NotFound(req.id.to_string()))?;
-
-        let expected_version = req.expected_version.unwrap_or(current.version);
-        if expected_version != current.version {
-            return Err(AxonError::ConflictingVersion {
-                expected: expected_version,
-                actual: current.version,
-                current_entity: Some(Box::new(Self::present_entity(&req.collection, current))),
-            });
-        }
-
         let source = self.resolve_rollback_source_entry(&req.collection, &req.id, &req.target)?;
         let target_data = source.data_after.clone().ok_or_else(|| match &req.target {
             RollbackEntityTarget::Version(version) => AxonError::NotFound(format!(
@@ -1338,6 +1324,46 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 audit_entry_id
             )),
         })?;
+        let audit_history = self.audit.query_by_entity(&req.collection, &req.id)?;
+        let latest_entry = audit_history
+            .last()
+            .cloned()
+            .ok_or_else(|| AxonError::NotFound(req.id.to_string()))?;
+        let current = self.storage.get(&req.collection, &req.id)?;
+        let deleted_entity_context = if current.is_none() {
+            if latest_entry.mutation != MutationType::EntityDelete {
+                return Err(AxonError::NotFound(req.id.to_string()));
+            }
+            let created_entry = audit_history
+                .iter()
+                .find(|entry| entry.data_after.is_some())
+                .cloned()
+                .unwrap_or_else(|| latest_entry.clone());
+            Some((latest_entry, created_entry))
+        } else {
+            None
+        };
+
+        let actual_version = current.as_ref().map_or_else(
+            || {
+                deleted_entity_context
+                    .as_ref()
+                    .expect("deleted context")
+                    .0
+                    .version
+            },
+            |entity| entity.version,
+        );
+        let expected_version = req.expected_version.unwrap_or(actual_version);
+        if expected_version != actual_version {
+            return Err(AxonError::ConflictingVersion {
+                expected: expected_version,
+                actual: actual_version,
+                current_entity: current
+                    .clone()
+                    .map(|entity| Box::new(Self::present_entity(&req.collection, entity))),
+            });
+        }
 
         let schema = self.storage.get_schema(&req.collection)?;
         if let Some(schema) = &schema {
@@ -1372,15 +1398,37 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let target = Entity {
             collection: req.collection.clone(),
             id: req.id.clone(),
-            version: current.version + 1,
+            version: actual_version + 1,
             data: target_data.clone(),
-            created_at_ns: current.created_at_ns,
-            updated_at_ns: current.updated_at_ns,
-            created_by: current.created_by.clone(),
+            created_at_ns: current
+                .as_ref()
+                .and_then(|entity| entity.created_at_ns)
+                .or_else(|| {
+                    deleted_entity_context
+                        .as_ref()
+                        .map(|(_, created_entry)| created_entry.timestamp_ns)
+                }),
+            updated_at_ns: current.as_ref().and_then(|entity| entity.updated_at_ns),
+            created_by: current
+                .as_ref()
+                .and_then(|entity| entity.created_by.clone())
+                .or_else(|| {
+                    deleted_entity_context
+                        .as_ref()
+                        .and_then(|(_, created_entry)| {
+                            (created_entry.actor != "anonymous")
+                                .then(|| created_entry.actor.clone())
+                        })
+                }),
             updated_by: req.actor.clone(),
         };
 
         if req.dry_run {
+            let Some(current) = current else {
+                return Err(AxonError::InvalidOperation(
+                    "dry-run rollback preview is unavailable for deleted entities".into(),
+                ));
+            };
             return Ok(RollbackEntityResponse::DryRun {
                 current: Self::present_entity(&req.collection, current.clone()),
                 target,
@@ -1388,26 +1436,45 @@ impl<S: StorageAdapter> AxonHandler<S> {
             });
         }
 
-        let stored = self.storage.compare_and_swap(
-            Entity {
+        let stored = if let Some(current) = current.as_ref() {
+            self.storage.compare_and_swap(
+                Entity {
+                    collection: req.collection.clone(),
+                    id: req.id.clone(),
+                    version: expected_version,
+                    data: target_data.clone(),
+                    created_at_ns: current.created_at_ns,
+                    updated_at_ns: Some(now_ns()),
+                    created_by: current.created_by.clone(),
+                    updated_by: req.actor.clone(),
+                },
+                expected_version,
+            )?
+        } else {
+            let (_, created_entry) = deleted_entity_context
+                .as_ref()
+                .expect("deleted context must exist when current entity is missing");
+            let recreated = Entity {
                 collection: req.collection.clone(),
                 id: req.id.clone(),
-                version: expected_version,
+                version: expected_version + 1,
                 data: target_data.clone(),
-                created_at_ns: current.created_at_ns,
+                created_at_ns: Some(created_entry.timestamp_ns),
                 updated_at_ns: Some(now_ns()),
-                created_by: current.created_by.clone(),
+                created_by: (created_entry.actor != "anonymous")
+                    .then(|| created_entry.actor.clone()),
                 updated_by: req.actor.clone(),
-            },
-            expected_version,
-        )?;
+            };
+            self.storage.put(recreated.clone())?;
+            recreated
+        };
 
         if let Some(ref s) = schema {
             if !s.indexes.is_empty() {
                 self.storage.update_indexes(
                     &req.collection,
                     &stored.id,
-                    Some(&current.data),
+                    current.as_ref().map(|entity| &entity.data),
                     &stored.data,
                     &s.indexes,
                 )?;
@@ -1416,7 +1483,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 self.storage.update_compound_indexes(
                     &req.collection,
                     &stored.id,
-                    Some(&current.data),
+                    current.as_ref().map(|entity| &entity.data),
                     &stored.data,
                     &s.compound_indexes,
                 )?;
@@ -1441,7 +1508,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entity.id.clone(),
             entity.version,
             MutationType::EntityRevert,
-            Some(current.data.clone()),
+            current.as_ref().map(|entity| entity.data.clone()),
             Some(entity.data.clone()),
             req.actor,
         );
@@ -5005,6 +5072,84 @@ entity_schema:
             .unwrap_err();
 
         assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn rollback_entity_recreates_deleted_entity_from_audit_snapshot() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v1"}),
+            actor: Some("alice".into()),
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v2"}),
+            expected_version: 1,
+            actor: Some("alice".into()),
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.delete_entity(DeleteEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            actor: Some("alice".into()),
+            force: false,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                target: RollbackEntityTarget::Version(1),
+                expected_version: None,
+                actor: Some("admin".into()),
+                dry_run: false,
+            })
+            .unwrap();
+
+        let RollbackEntityResponse::Applied {
+            entity,
+            audit_entry,
+        } = resp
+        else {
+            panic!("rollback should recreate deleted entity");
+        };
+
+        assert_eq!(entity.version, 3);
+        assert_eq!(entity.data["title"], "v1");
+        assert_eq!(entity.created_by.as_deref(), Some("alice"));
+        assert_eq!(entity.updated_by.as_deref(), Some("admin"));
+        assert_eq!(audit_entry.mutation, MutationType::EntityRevert);
+        assert_eq!(audit_entry.data_before, None);
+        assert_eq!(audit_entry.data_after, Some(json!({"title": "v1"})));
+        assert_eq!(
+            audit_entry
+                .metadata
+                .get("reverted_from_entry_id")
+                .map(String::as_str),
+            Some("1")
+        );
+
+        let stored = h
+            .get_entity(GetEntityRequest {
+                collection: col,
+                id,
+            })
+            .unwrap();
+        assert_eq!(stored.entity.version, 3);
+        assert_eq!(stored.entity.data["title"], "v1");
     }
 
     #[test]
