@@ -156,6 +156,33 @@ class CheckTrackerMeasureTimestampsCliTests(unittest.TestCase):
             result.stderr,
         )
 
+    def test_scoped_validation_ignores_quoted_timestamp_text_in_evidence_attribute(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-quoted-timestamp-snippet",
+                    "updated_at": "2026-04-09T19:00:00Z",
+                    "notes": (
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:59:11Z</timestamp>"
+                        "<review-passes>"
+                        "<pass name='correctness' status='issue' "
+                        "evidence='quoted prior note "
+                        "<measure-results><timestamp>2026-04-09T18:53:00Z</timestamp>"
+                        "</measure-results>'/>"
+                        "</review-passes>"
+                        "</measure-results>"
+                    ),
+                }
+            ],
+            "hx-quoted-timestamp-snippet",
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("all measure timestamps are <= updated_at", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
