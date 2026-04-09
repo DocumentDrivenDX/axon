@@ -140,6 +140,69 @@ macro_rules! storage_conformance_tests {
                 );
             }
 
+            #[test]
+            fn create_if_absent_inserts_missing_entity() {
+                let mut s = store();
+                let recreated = Entity {
+                    collection: tasks(),
+                    id: EntityId::new("t-001"),
+                    version: 3,
+                    data: json!({"title": "restored"}),
+                    created_at_ns: None,
+                    updated_at_ns: None,
+                    created_by: None,
+                    updated_by: None,
+                };
+
+                let inserted = s
+                    .create_if_absent(recreated.clone(), 2)
+                    .expect("test operation should succeed");
+                assert_eq!(inserted.version, 3);
+                assert_eq!(inserted.data["title"], "restored");
+
+                let stored = s
+                    .get(&tasks(), &EntityId::new("t-001"))
+                    .expect("test operation should succeed")
+                    .expect("test operation should succeed");
+                assert_eq!(stored.version, 3);
+                assert_eq!(stored.data["title"], "restored");
+            }
+
+            #[test]
+            fn create_if_absent_rejects_existing_entity() {
+                let mut s = store();
+                s.put(entity("t-001", "current"))
+                    .expect("test operation should succeed");
+
+                let err = s
+                    .create_if_absent(
+                        Entity {
+                            collection: tasks(),
+                            id: EntityId::new("t-001"),
+                            version: 3,
+                            data: json!({"title": "restored"}),
+                            created_at_ns: None,
+                            updated_at_ns: None,
+                            created_by: None,
+                            updated_by: None,
+                        },
+                        2,
+                    )
+                    .expect_err("test operation should fail");
+
+                assert!(
+                    matches!(
+                        err,
+                        AxonError::ConflictingVersion {
+                            expected: 2,
+                            actual: 1,
+                            ..
+                        }
+                    ),
+                    "expected ConflictingVersion, got: {err}"
+                );
+            }
+
             // ── Transaction control ─────────────────────────────────────
 
             #[test]

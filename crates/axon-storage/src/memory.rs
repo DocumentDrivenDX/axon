@@ -350,6 +350,37 @@ impl StorageAdapter for MemoryStorageAdapter {
         Ok(updated)
     }
 
+    fn create_if_absent(
+        &mut self,
+        entity: Entity,
+        expected_absent_version: u64,
+    ) -> Result<Entity, AxonError> {
+        let key = self.resolve_catalog_key(&entity.collection)?;
+        let current = self
+            .data
+            .get(&key)
+            .and_then(|col| col.get(&entity.id))
+            .cloned();
+
+        if let Some(current) = current {
+            return Err(AxonError::ConflictingVersion {
+                expected: expected_absent_version,
+                actual: current.version,
+                current_entity: Some(Box::new(current)),
+            });
+        }
+
+        let inserted = Entity {
+            collection: key.collection.clone(),
+            ..entity
+        };
+        self.data
+            .entry(key)
+            .or_default()
+            .insert(inserted.id.clone(), inserted.clone());
+        Ok(inserted)
+    }
+
     fn begin_tx(&mut self) -> Result<(), AxonError> {
         if self.tx_snapshot.is_some() {
             return Err(AxonError::Storage("transaction already active".into()));

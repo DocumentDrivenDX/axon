@@ -1458,8 +1458,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 created_by,
                 updated_by: req.actor.clone(),
             };
-            self.storage.put(recreated.clone())?;
-            recreated
+            self.storage.create_if_absent(recreated, expected_version)?
         };
 
         if let Some(ref s) = schema {
@@ -3140,6 +3139,74 @@ mod tests {
             MemoryStorageAdapter::default(),
             capacity,
         )
+    }
+
+    #[derive(Default)]
+    struct RaceOnCreateIfAbsentAdapter {
+        inner: MemoryStorageAdapter,
+        injected_conflict: bool,
+    }
+
+    impl StorageAdapter for RaceOnCreateIfAbsentAdapter {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
+            self.inner.get(collection, id)
+        }
+
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.inner.put(entity)
+        }
+
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+            self.inner.delete(collection, id)
+        }
+
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.inner.count(collection)
+        }
+
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.inner.range_scan(collection, start, end, limit)
+        }
+
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            if !self.injected_conflict {
+                self.injected_conflict = true;
+                self.inner.put(Entity {
+                    collection: entity.collection.clone(),
+                    id: entity.id.clone(),
+                    version: expected_absent_version + 1,
+                    data: json!({"title": "concurrent"}),
+                    created_at_ns: entity.created_at_ns,
+                    updated_at_ns: entity.updated_at_ns,
+                    created_by: Some("racer".into()),
+                    updated_by: Some("racer".into()),
+                })?;
+            }
+
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
     }
 
     fn register_prod_billing_and_engineering_collection(
@@ -5144,6 +5211,87 @@ entity_schema:
             .unwrap();
         assert_eq!(stored.entity.version, 3);
         assert_eq!(stored.entity.data["title"], "v1");
+    }
+
+    #[test]
+    fn rollback_entity_recreate_conflicts_when_another_writer_restores_first() {
+        let mut h = AxonHandler::new(RaceOnCreateIfAbsentAdapter::default());
+        let col = CollectionId::new("tasks");
+        let id = EntityId::new("t-001");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v1"}),
+            actor: Some("alice".into()),
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            data: json!({"title": "v2"}),
+            expected_version: 1,
+            actor: Some("alice".into()),
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.delete_entity(DeleteEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            actor: Some("alice".into()),
+            force: false,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let err = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                target: RollbackEntityTarget::Version(1),
+                expected_version: None,
+                actor: Some("admin".into()),
+                dry_run: false,
+            })
+            .expect_err("stale deleted-entity rollback should conflict");
+
+        assert!(matches!(
+            err,
+            AxonError::ConflictingVersion {
+                expected: 2,
+                actual: 3,
+                ..
+            }
+        ));
+        if let AxonError::ConflictingVersion {
+            current_entity: Some(current_entity),
+            ..
+        } = err
+        {
+            assert_eq!(current_entity.version, 3);
+            assert_eq!(current_entity.data["title"], "concurrent");
+        } else {
+            panic!("expected current entity snapshot on rollback conflict");
+        }
+
+        let stored = h
+            .storage_mut()
+            .get(&col, &id)
+            .unwrap()
+            .expect("concurrent recreate should survive");
+        assert_eq!(stored.version, 3);
+        assert_eq!(stored.data["title"], "concurrent");
+        assert_eq!(
+            h.audit_log()
+                .query_by_operation(&MutationType::EntityRevert)
+                .unwrap()
+                .len(),
+            0,
+            "failed rollback must not append revert audit entries"
+        );
     }
 
     #[test]

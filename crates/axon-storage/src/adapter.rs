@@ -187,6 +187,19 @@ pub trait StorageAdapter: Send + Sync {
         expected_version: u64,
     ) -> Result<Entity, AxonError>;
 
+    /// Atomically inserts `entity` only if no live entity currently exists.
+    ///
+    /// This is used for rollback/recovery flows that recreate a deleted entity
+    /// after the caller has already validated the deleted version via audit
+    /// history. `expected_absent_version` is echoed back in
+    /// [`AxonError::ConflictingVersion`] when another writer recreated the
+    /// entity first.
+    fn create_if_absent(
+        &mut self,
+        entity: Entity,
+        expected_absent_version: u64,
+    ) -> Result<Entity, AxonError>;
+
     /// Begin a storage-level transaction.
     ///
     /// After this call, all writes are buffered or protected until [`commit_tx`]

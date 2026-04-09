@@ -81,6 +81,14 @@ mod tests {
         ) -> Result<Entity, AxonError> {
             self.inner.compare_and_swap(entity, expected_version)
         }
+
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
     }
 
     #[test]

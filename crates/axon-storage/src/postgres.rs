@@ -630,6 +630,50 @@ impl StorageAdapter for PostgresStorageAdapter {
         })
     }
 
+    fn create_if_absent(
+        &mut self,
+        entity: Entity,
+        expected_absent_version: u64,
+    ) -> Result<Entity, AxonError> {
+        let key = self.resolve_catalog_key(&entity.collection)?;
+        let data_json = serde_json::to_value(&entity.data)?;
+        let changed = self
+            .client
+            .borrow_mut()
+            .execute(
+                "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (database_name, schema_name, collection, id) DO NOTHING",
+                &[
+                    &key.collection.as_str(),
+                    &key.namespace.database,
+                    &key.namespace.schema,
+                    &entity.id.as_str(),
+                    &(entity.version as i64),
+                    &data_json,
+                ],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        if changed == 0 {
+            let current = self.get(&entity.collection, &entity.id)?;
+            let actual = current
+                .as_ref()
+                .map(|existing| existing.version)
+                .unwrap_or(0);
+            return Err(AxonError::ConflictingVersion {
+                expected: expected_absent_version,
+                actual,
+                current_entity: current.map(Box::new),
+            });
+        }
+
+        Ok(Entity {
+            collection: key.collection,
+            ..entity
+        })
+    }
+
     fn begin_tx(&mut self) -> Result<(), AxonError> {
         if self.in_tx {
             return Err(AxonError::Storage("transaction already active".into()));
