@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{AuthContext, AuthError, Identity};
-use crate::collection_listing::{collection_belongs_to_database, list_collections_for_database};
+use crate::collection_listing::list_collections_for_database;
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
@@ -771,6 +771,7 @@ async fn query_audit<S: StorageAdapter>(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     let req = QueryAuditRequest {
+        database: requested_database_scope.database().map(str::to_string),
         collection: params
             .get("collection")
             .map(|collection| qualify_collection_name(collection, &current_database)),
@@ -784,18 +785,8 @@ async fn query_audit<S: StorageAdapter>(
     };
     match handler.lock().await.query_audit(req) {
         Ok(resp) => {
-            let next_cursor = resp.next_cursor;
-            let entries = match requested_database_scope.database() {
-                Some(database) => resp
-                    .entries
-                    .into_iter()
-                    .filter(|entry| {
-                        collection_belongs_to_database(entry.collection.as_str(), database)
-                    })
-                    .collect(),
-                None => resp.entries,
-            };
-            let proto: Vec<Value> = entries
+            let entries: Vec<Value> = resp
+                .entries
                 .iter()
                 .map(|e: &axon_audit::AuditEntry| {
                     json!({
@@ -812,7 +803,7 @@ async fn query_audit<S: StorageAdapter>(
                     })
                 })
                 .collect();
-            Json(json!({ "entries": proto, "next_cursor": next_cursor })).into_response()
+            Json(json!({ "entries": entries, "next_cursor": resp.next_cursor })).into_response()
         }
         Err(e) => axon_error_response(e),
     }
