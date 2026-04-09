@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 
-import { fetchCollections, fetchEntities, fetchEntity, gqlQuery } from './graphql.js';
+import { fetchCollections, fetchEntities, fetchEntity, gqlQuery } from './graphql';
 
 test('graphql client exports the UI query helpers', () => {
 	expect(typeof gqlQuery).toBe('function');

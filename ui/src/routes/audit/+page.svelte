@@ -1,16 +1,34 @@
-<script>
+<script lang="ts">
 /** US-042: Inspect audit log visually */
 // Audit table with filter by collection/actor, date range, before/after detail
-const entries = [];
+type AuditEntry = {
+	id: string;
+	timestamp_ns: number;
+	collection: string;
+	entity_id: string;
+	mutation: string;
+	actor: string;
+	data_before: unknown;
+	data_after: unknown;
+};
+
+type AuditFilters = {
+	collection: string;
+	actor: string;
+	startDate: string;
+	endDate: string;
+};
+
+const entries: AuditEntry[] = [];
 const filters = {
 	collection: '',
 	actor: '',
 	startDate: '',
 	endDate: '',
-};
-let selectedEntry = null;
+} satisfies AuditFilters;
+let selectedEntry: AuditEntry | null = null;
 
-function selectEntry(entry) {
+function selectEntry(entry: AuditEntry) {
 	selectedEntry = entry;
 }
 </script>

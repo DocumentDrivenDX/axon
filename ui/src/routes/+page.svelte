@@ -1,18 +1,23 @@
-<script>
-/** @type {string} US-040: Browse Axon data visually */
+<script lang="ts">
+/** US-040: Browse Axon data visually */
 // Collection list page — fetches collections via GraphQL (US-051)
 import { onMount } from 'svelte';
 
-let collections = [];
+type CollectionSummary = {
+	name: string;
+	entityCount: number;
+};
+
+let collections: CollectionSummary[] = [];
 let loading = true;
-let error = null;
+let error: string | null = null;
 
 onMount(async () => {
 	try {
 		// Placeholder: in production, this calls the GraphQL endpoint
 		collections = [{ name: 'Loading...', entityCount: 0 }];
-	} catch (e) {
-		error = e.message;
+	} catch (errorValue: unknown) {
+		error = errorValue instanceof Error ? errorValue.message : 'Failed to load collections';
 	} finally {
 		loading = false;
 	}

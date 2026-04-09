@@ -1,13 +1,18 @@
-<script>
+<script lang="ts">
 /** US-041: Manage schemas visually */
 // Schema list, view formatted JSON, edit and save, inline validation
-const schemas = [];
-let selectedSchema = null;
+type SchemaSummary = {
+	collection: string;
+	[key: string]: unknown;
+};
+
+const schemas: SchemaSummary[] = [];
+let selectedSchema: SchemaSummary | null = null;
 let editMode = false;
 let editJson = '';
-let validationError = null;
+let validationError: string | null = null;
 
-function selectSchema(schema) {
+function selectSchema(schema: SchemaSummary) {
 	selectedSchema = schema;
 	editJson = JSON.stringify(schema, null, 2);
 	editMode = false;
@@ -19,8 +24,8 @@ function validateJson() {
 		JSON.parse(editJson);
 		validationError = null;
 		return true;
-	} catch (e) {
-		validationError = e.message;
+	} catch (errorValue: unknown) {
+		validationError = errorValue instanceof Error ? errorValue.message : 'Invalid JSON';
 		return false;
 	}
 }
