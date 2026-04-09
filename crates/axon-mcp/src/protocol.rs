@@ -475,6 +475,26 @@ impl McpServer {
         self.tool_registry = registry;
     }
 
+    /// Refresh all discoverable registries while preserving session state.
+    pub fn refresh_registries(
+        &mut self,
+        tool_registry: ToolRegistry,
+        resource_registry: ResourceRegistry,
+        prompt_registry: PromptRegistry,
+    ) {
+        self.tool_registry = tool_registry;
+        self.resource_registry = resource_registry;
+        self.prompt_registry = prompt_registry;
+    }
+
+    /// Return the currently subscribed resource URIs.
+    pub fn subscribed_resource_uris(&self) -> Vec<String> {
+        self.subscriptions
+            .iter()
+            .map(|subscription| subscription.uri.clone())
+            .collect()
+    }
+
     /// Check if the server has been initialized via the handshake.
     pub fn is_initialized(&self) -> bool {
         self.initialized

@@ -24,6 +24,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::auth::{AuthContext, AuthError, Identity};
 use crate::collection_listing::{filter_audit_entries_to_database, list_collections_for_database};
+use crate::mcp_http::{notify_entity_change, notify_entity_change_by_parts, McpHttpSessions};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
@@ -154,7 +155,7 @@ fn request_peer_address(request: &axum::extract::Request) -> Option<SocketAddr> 
 pub(crate) struct CurrentDatabase(String);
 
 impl CurrentDatabase {
-    fn new(database: impl Into<String>) -> Self {
+    pub(crate) fn new(database: impl Into<String>) -> Self {
         Self(database.into())
     }
 
@@ -504,6 +505,7 @@ pub struct TransactionBody {
 
 async fn create_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
@@ -516,18 +518,21 @@ async fn create_entity<S: StorageAdapter>(
         actor: Some(identity.actor),
         audit_metadata: None,
     }) {
-        Ok(resp) => (
-            StatusCode::CREATED,
-            Json(json!({
-                "entity": {
-                    "collection": resp.entity.collection.to_string(),
-                    "id": resp.entity.id.to_string(),
-                    "version": resp.entity.version,
-                    "data": resp.entity.data,
-                }
-            })),
-        )
-            .into_response(),
+        Ok(resp) => {
+            notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "entity": {
+                        "collection": resp.entity.collection.to_string(),
+                        "id": resp.entity.id.to_string(),
+                        "version": resp.entity.version,
+                        "data": resp.entity.data,
+                    }
+                })),
+            )
+                .into_response()
+        }
         Err(e) => axon_error_response(e),
     }
 }
@@ -601,6 +606,7 @@ async fn get_collection_entity<S: StorageAdapter>(
 
 async fn update_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
@@ -614,21 +620,25 @@ async fn update_entity<S: StorageAdapter>(
         actor: Some(identity.actor),
         audit_metadata: None,
     }) {
-        Ok(resp) => Json(json!({
-            "entity": {
-                "collection": resp.entity.collection.to_string(),
-                "id": resp.entity.id.to_string(),
-                "version": resp.entity.version,
-                "data": resp.entity.data,
-            }
-        }))
-        .into_response(),
+        Ok(resp) => {
+            notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
+            Json(json!({
+                "entity": {
+                    "collection": resp.entity.collection.to_string(),
+                    "id": resp.entity.id.to_string(),
+                    "version": resp.entity.version,
+                    "data": resp.entity.data,
+                }
+            }))
+            .into_response()
+        }
         Err(e) => axon_error_response(e),
     }
 }
 
 async fn delete_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
@@ -641,7 +651,10 @@ async fn delete_entity<S: StorageAdapter>(
         audit_metadata: None,
         force: false,
     }) {
-        Ok(resp) => Json(json!({"collection": resp.collection, "id": resp.id})).into_response(),
+        Ok(resp) => {
+            notify_entity_change_by_parts(&mcp_sessions, &current_database, &collection, &id);
+            Json(json!({"collection": resp.collection, "id": resp.id})).into_response()
+        }
         Err(e) => axon_error_response(e),
     }
 }
@@ -869,6 +882,8 @@ async fn query_audit<S: StorageAdapter>(
 
 async fn revert_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(mcp_sessions): Extension<McpHttpSessions>,
+    Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Json(body): Json<RevertEntityBody>,
 ) -> Response {
@@ -880,16 +895,19 @@ async fn revert_entity<S: StorageAdapter>(
             actor: Some(identity.actor),
             force: body.force,
         }) {
-        Ok(resp) => Json(json!({
-            "entity": {
-                "collection": resp.entity.collection.to_string(),
-                "id": resp.entity.id.to_string(),
-                "version": resp.entity.version,
-                "data": resp.entity.data,
-            },
-            "audit_entry_id": resp.audit_entry.id,
-        }))
-        .into_response(),
+        Ok(resp) => {
+            notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
+            Json(json!({
+                "entity": {
+                    "collection": resp.entity.collection.to_string(),
+                    "id": resp.entity.id.to_string(),
+                    "version": resp.entity.version,
+                    "data": resp.entity.data,
+                },
+                "audit_entry_id": resp.audit_entry.id,
+            }))
+            .into_response()
+        }
         Err(e) => axon_error_response(e),
     }
 }
@@ -925,6 +943,7 @@ fn rollback_target_from_body(body: &RollbackEntityBody) -> Result<RollbackEntity
 
 async fn rollback_collection_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
@@ -946,11 +965,14 @@ async fn rollback_collection_entity<S: StorageAdapter>(
         Ok(axon_api::response::RollbackEntityResponse::Applied {
             entity,
             audit_entry,
-        }) => Json(json!({
-            "entity": entity_payload(&entity),
-            "audit_entry": audit_entry_payload(&audit_entry),
-        }))
-        .into_response(),
+        }) => {
+            notify_entity_change(&mcp_sessions, &current_database, &entity);
+            Json(json!({
+                "entity": entity_payload(&entity),
+                "audit_entry": audit_entry_payload(&audit_entry),
+            }))
+            .into_response()
+        }
         Ok(axon_api::response::RollbackEntityResponse::DryRun {
             current,
             target,
@@ -1319,6 +1341,7 @@ async fn drop_namespace<S: StorageAdapter>(
 
 async fn commit_transaction<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Json(body): Json<TransactionBody>,
@@ -1399,6 +1422,9 @@ async fn commit_transaction<S: StorageAdapter>(
     let (storage, audit) = h.storage_and_audit_mut();
     match tx.commit(storage, audit, Some(identity.actor)) {
         Ok(written) => {
+            for entity in &written {
+                notify_entity_change(&mcp_sessions, &current_database, entity);
+            }
             let entities: Vec<Value> = written
                 .iter()
                 .map(|e| {
@@ -1488,6 +1514,7 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
 ) -> Router {
     let start = Instant::now();
     let backend = backend.into();
+    let mcp_sessions = McpHttpSessions::default();
     let mut router = Router::new()
         .merge(data_routes::<S>())
         .nest("/db/{database}", data_routes::<S>())
@@ -1510,6 +1537,7 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
             get(list_namespace_collections::<S>),
         )
         .with_state(handler.clone())
+        .layer(Extension(mcp_sessions))
         .route(
             "/health",
             get(move || {
