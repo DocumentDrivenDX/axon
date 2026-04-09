@@ -1085,7 +1085,7 @@ impl StorageAdapter for SqliteStorageAdapter {
                 "SELECT COALESCE(MAX(version), 0) FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
                 params![
-                    schema.collection.as_str(),
+                    key.collection.as_str(),
                     key.namespace.database.as_str(),
                     key.namespace.schema.as_str()
                 ],
@@ -1110,7 +1110,7 @@ impl StorageAdapter for SqliteStorageAdapter {
                     (collection, database_name, schema_name, version, schema_json, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![
-                    schema.collection.as_str(),
+                    key.collection.as_str(),
                     key.namespace.database.as_str(),
                     key.namespace.schema.as_str(),
                     next_version,
@@ -1135,7 +1135,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         let mut rows = stmt
             .query(params![
-                collection.as_str(),
+                key.collection.as_str(),
                 key.namespace.database.as_str(),
                 key.namespace.schema.as_str()
             ])
@@ -1166,7 +1166,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         let mut rows = stmt
             .query(params![
-                collection.as_str(),
+                key.collection.as_str(),
                 key.namespace.database.as_str(),
                 key.namespace.schema.as_str(),
                 version as i64
@@ -1199,7 +1199,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         let rows = stmt
             .query_map(
                 params![
-                    collection.as_str(),
+                    key.collection.as_str(),
                     key.namespace.database.as_str(),
                     key.namespace.schema.as_str()
                 ],
@@ -1221,7 +1221,7 @@ impl StorageAdapter for SqliteStorageAdapter {
                 "DELETE FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
                 params![
-                    collection.as_str(),
+                    key.collection.as_str(),
                     key.namespace.database.as_str(),
                     key.namespace.schema.as_str()
                 ],
@@ -1232,7 +1232,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 
     fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
         let key = self.resolve_catalog_key(&view.collection)?;
-        if !self.collection_exists_in_namespace(&view.collection, &key.namespace)? {
+        if !self.collection_exists_in_namespace(&key.collection, &key.namespace)? {
             return Err(AxonError::InvalidArgument(format!(
                 "collection '{}' is not registered",
                 view.collection.as_str()
@@ -1245,7 +1245,7 @@ impl StorageAdapter for SqliteStorageAdapter {
                 "SELECT COALESCE(version, 0) FROM collection_views
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
                 params![
-                    view.collection.as_str(),
+                    key.collection.as_str(),
                     key.namespace.database.as_str(),
                     key.namespace.schema.as_str()
                 ],
@@ -1277,7 +1277,7 @@ impl StorageAdapter for SqliteStorageAdapter {
                      updated_at_ns = excluded.updated_at_ns,
                      updated_by = excluded.updated_by",
                 params![
-                    view.collection.as_str(),
+                    key.collection.as_str(),
                     key.namespace.database.as_str(),
                     key.namespace.schema.as_str(),
                     next_version,
@@ -1305,7 +1305,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         let mut rows = stmt
             .query(params![
-                collection.as_str(),
+                key.collection.as_str(),
                 key.namespace.database.as_str(),
                 key.namespace.schema.as_str()
             ])
@@ -1327,7 +1327,7 @@ impl StorageAdapter for SqliteStorageAdapter {
                 "DELETE FROM collection_views
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
                 params![
-                    collection.as_str(),
+                    key.collection.as_str(),
                     key.namespace.database.as_str(),
                     key.namespace.schema.as_str()
                 ],
@@ -1447,6 +1447,26 @@ mod tests {
 
     fn store() -> SqliteStorageAdapter {
         SqliteStorageAdapter::open_in_memory().expect("test operation should succeed")
+    }
+
+    fn register_unique_namespaced_collection(
+        store: &mut SqliteStorageAdapter,
+        qualified: &CollectionId,
+    ) -> (Namespace, CollectionId) {
+        let (namespace, bare_collection) = Namespace::parse(qualified.as_str());
+        let bare_collection = CollectionId::new(bare_collection);
+
+        store
+            .create_database(namespace.database.as_str())
+            .expect("database create should succeed");
+        store
+            .create_namespace(&namespace)
+            .expect("namespace create should succeed");
+        store
+            .register_collection_in_namespace(&bare_collection, &namespace)
+            .expect("collection register should succeed");
+
+        (namespace, bare_collection)
     }
 
     fn legacy_collection_views_db(collection: &CollectionId, template: &str) -> NamedTempFile {
@@ -2102,6 +2122,121 @@ mod tests {
             .get_schema(&col)
             .expect("test operation should succeed")
             .is_none());
+    }
+
+    #[test]
+    fn qualified_schema_write_is_readable_via_bare_unique_collection() {
+        let mut s = store();
+        let qualified = CollectionId::new("prod.billing.invoices");
+        let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
+
+        let v1 = CollectionSchema {
+            collection: qualified.clone(),
+            description: Some("v1".into()),
+            version: 99,
+            entity_schema: Some(
+                json!({"type": "object", "properties": {"title": {"type": "string"}}}),
+            ),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+        };
+        let v2 = CollectionSchema {
+            collection: qualified,
+            description: Some("v2".into()),
+            version: 100,
+            entity_schema: Some(
+                json!({"type": "object", "properties": {"amount": {"type": "number"}}}),
+            ),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+        };
+
+        s.put_schema(&v1).expect("schema v1 put should succeed");
+        s.put_schema(&v2).expect("schema v2 put should succeed");
+
+        let stored_collections: Vec<String> = {
+            let mut stmt = s
+                .conn
+                .prepare(
+                    "SELECT collection FROM schema_versions
+                     WHERE database_name = ?1 AND schema_name = ?2
+                     ORDER BY version ASC",
+                )
+                .expect("schema version query should prepare");
+            stmt.query_map(
+                params![billing.database.as_str(), billing.schema.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("schema version query should succeed")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("schema version rows should decode")
+        };
+        assert_eq!(
+            stored_collections,
+            vec!["invoices".to_string(), "invoices".to_string()]
+        );
+
+        let latest = s
+            .get_schema(&invoices)
+            .expect("latest schema lookup should succeed")
+            .expect("latest schema should exist");
+        assert_eq!(latest.collection, invoices);
+        assert_eq!(latest.version, 2);
+        assert_eq!(latest.description.as_deref(), Some("v2"));
+
+        let version_one = s
+            .get_schema_version(&invoices, 1)
+            .expect("versioned schema lookup should succeed")
+            .expect("schema version one should exist");
+        assert_eq!(version_one.collection, invoices);
+        assert_eq!(version_one.description.as_deref(), Some("v1"));
+
+        assert_eq!(
+            s.list_schema_versions(&invoices)
+                .expect("schema version list should succeed")
+                .into_iter()
+                .map(|(version, _)| version)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn qualified_collection_view_write_is_readable_via_bare_unique_collection() {
+        let mut s = store();
+        let qualified = CollectionId::new("prod.billing.invoices");
+        let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
+
+        let stored = s
+            .put_collection_view(&CollectionView::new(qualified, "# {{title}}"))
+            .expect("qualified collection view put should succeed");
+        assert_eq!(stored.collection, invoices);
+        assert_eq!(stored.version, 1);
+
+        let stored_collection: String = s
+            .conn
+            .query_row(
+                "SELECT collection FROM collection_views
+                 WHERE database_name = ?1 AND schema_name = ?2",
+                params![billing.database.as_str(), billing.schema.as_str()],
+                |row| row.get(0),
+            )
+            .expect("stored collection view lookup should succeed");
+        assert_eq!(stored_collection, "invoices");
+
+        let retrieved = s
+            .get_collection_view(&invoices)
+            .expect("bare collection view lookup should succeed")
+            .expect("collection view should exist");
+        assert_eq!(retrieved.collection, invoices);
+        assert_eq!(retrieved.markdown_template, "# {{title}}");
+        assert_eq!(retrieved.version, 1);
     }
 
     // ── Audit co-location ────────────────────────────────────────────────────
