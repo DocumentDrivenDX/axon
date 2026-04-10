@@ -259,12 +259,16 @@ async fn authenticate_http_request(
 }
 
 fn entity_payload(entity: &Entity) -> Value {
-    json!({
+    let mut payload = json!({
         "collection": entity.collection.to_string(),
         "id": entity.id.to_string(),
         "version": entity.version,
         "data": &entity.data,
-    })
+    });
+    if let Some(sv) = entity.schema_version {
+        payload["schema_version"] = json!(sv);
+    }
+    payload
 }
 
 fn audit_entry_payload(entry: &axon_audit::AuditEntry) -> Value {
@@ -537,12 +541,7 @@ async fn create_entity<S: StorageAdapter>(
             (
                 StatusCode::CREATED,
                 Json(json!({
-                    "entity": {
-                        "collection": resp.entity.collection.to_string(),
-                        "id": resp.entity.id.to_string(),
-                        "version": resp.entity.version,
-                        "data": resp.entity.data,
-                    }
+                    "entity": entity_payload(&resp.entity)
                 })),
             )
                 .into_response()
@@ -640,12 +639,7 @@ async fn update_entity<S: StorageAdapter>(
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
             Json(json!({
-                "entity": {
-                    "collection": resp.entity.collection.to_string(),
-                    "id": resp.entity.id.to_string(),
-                    "version": resp.entity.version,
-                    "data": resp.entity.data,
-                }
+                "entity": entity_payload(&resp.entity)
             }))
             .into_response()
         }
@@ -927,12 +921,7 @@ async fn revert_entity<S: StorageAdapter>(
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
             Json(json!({
-                "entity": {
-                    "collection": resp.entity.collection.to_string(),
-                    "id": resp.entity.id.to_string(),
-                    "version": resp.entity.version,
-                    "data": resp.entity.data,
-                },
+                "entity": entity_payload(&resp.entity),
                 "audit_entry_id": resp.audit_entry.id,
             }))
             .into_response()
@@ -3696,5 +3685,593 @@ mod tests {
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["collections"], json!([]));
+    }
+
+    // ── RBAC role boundary enforcement tests ──────────────────────────────────
+
+    /// Build a test server where every request is authenticated with the given role.
+    fn test_server_with_role(role: Role) -> TestServer {
+        let peer: SocketAddr = "100.64.0.1:12345".parse().unwrap();
+        let provider = Arc::new(FakeWhoisProvider::with_result(
+            peer,
+            Ok(TailscaleWhoisResponse {
+                node_name: "test-node".into(),
+                user_login: "test@example.com".into(),
+                tags: match role {
+                    Role::Admin => vec!["tag:axon-admin".into()],
+                    Role::Write => vec!["tag:axon-write".into()],
+                    Role::Read => vec!["tag:axon-read".into()],
+                },
+            }),
+        ));
+        let auth = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            provider,
+            Duration::from_secs(300),
+        );
+        let handler = Arc::new(Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ));
+        let app = build_router_with_auth(handler, "memory", None, auth)
+            .layer(MockConnectInfo(peer));
+        TestServer::new(app)
+    }
+
+    /// Seed an entity and a collection with schema using an admin test server,
+    /// then return a new test server with the given role for boundary testing.
+    /// Returns the server and the seed collection name ("tasks").
+    async fn seeded_server_with_role(
+        role: Role,
+    ) -> TestServer {
+        let peer: SocketAddr = "100.64.0.1:12345".parse().unwrap();
+        let provider = Arc::new(FakeWhoisProvider::with_result(
+            peer,
+            Ok(TailscaleWhoisResponse {
+                node_name: "test-node".into(),
+                user_login: "test@example.com".into(),
+                tags: match role {
+                    Role::Admin => vec!["tag:axon-admin".into()],
+                    Role::Write => vec!["tag:axon-write".into()],
+                    Role::Read => vec!["tag:axon-read".into()],
+                },
+            }),
+        ));
+        let auth = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            provider,
+            Duration::from_secs(300),
+        );
+        let handler = Arc::new(Mutex::new(
+            AxonHandler::new(MemoryStorageAdapter::default()),
+        ));
+
+        // Seed data directly via the handler (bypasses RBAC).
+        {
+            use axon_api::request::{CreateCollectionRequest, CreateEntityRequest};
+            let mut guard = handler.lock().await;
+            guard
+                .create_collection(CreateCollectionRequest {
+                    name: CollectionId::new("tasks"),
+                    schema: axon_schema::schema::CollectionSchema::new(CollectionId::new("tasks")),
+                    actor: None,
+                })
+                .unwrap();
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: axon_core::id::EntityId::new("t-001"),
+                    data: json!({"title": "seed entity"}),
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .unwrap();
+            // Create a second entity for link tests.
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: axon_core::id::EntityId::new("t-002"),
+                    data: json!({"title": "link target"}),
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .unwrap();
+        }
+
+        let app = build_router_with_auth(handler, "memory", None, auth)
+            .layer(MockConnectInfo(peer));
+        TestServer::new(app)
+    }
+
+    // ── Admin role: all operations succeed ────────────────────────────────
+
+    #[tokio::test]
+    async fn rbac_admin_can_create_entity() {
+        let server = test_server_with_role(Role::Admin);
+        let resp = server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "hello"}}))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_can_get_entity() {
+        let server = seeded_server_with_role(Role::Admin).await;
+        let resp = server.get("/entities/tasks/t-001").await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_can_update_entity() {
+        let server = seeded_server_with_role(Role::Admin).await;
+        let resp = server
+            .put("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "updated"}, "expected_version": 1}))
+            .await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_can_delete_entity() {
+        let server = seeded_server_with_role(Role::Admin).await;
+        let resp = server.delete("/entities/tasks/t-001").await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_can_create_collection() {
+        let server = test_server_with_role(Role::Admin);
+        let resp = server
+            .post("/collections/new-col")
+            .json(&json!({"schema": {}}))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_can_drop_collection() {
+        let server = seeded_server_with_role(Role::Admin).await;
+        let resp = server.delete("/collections/tasks").await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_can_put_schema() {
+        let server = seeded_server_with_role(Role::Admin).await;
+        let resp = server
+            .put("/collections/tasks/schema")
+            .json(&json!({
+                "version": 2,
+                "entity_schema": {"type": "object"}
+            }))
+            .await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_can_create_link() {
+        let server = seeded_server_with_role(Role::Admin).await;
+        let resp = server
+            .post("/links")
+            .json(&json!({
+                "source_collection": "tasks",
+                "source_id": "t-001",
+                "target_collection": "tasks",
+                "target_id": "t-002",
+                "link_type": "blocks"
+            }))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_can_delete_link() {
+        let server = seeded_server_with_role(Role::Admin).await;
+        // Create a link first.
+        server
+            .post("/links")
+            .json(&json!({
+                "source_collection": "tasks",
+                "source_id": "t-001",
+                "target_collection": "tasks",
+                "target_id": "t-002",
+                "link_type": "blocks"
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+        let resp = server
+            .delete("/links")
+            .json(&json!({
+                "source_collection": "tasks",
+                "source_id": "t-001",
+                "target_collection": "tasks",
+                "target_id": "t-002",
+                "link_type": "blocks"
+            }))
+            .await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_can_put_template() {
+        let server = seeded_server_with_role(Role::Admin).await;
+        let resp = server
+            .put("/collections/tasks/template")
+            .json(&json!({"template": "# {{title}}"}))
+            .await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_admin_can_delete_template() {
+        let server = seeded_server_with_role(Role::Admin).await;
+        server
+            .put("/collections/tasks/template")
+            .json(&json!({"template": "# {{title}}"}))
+            .await
+            .assert_status_ok();
+        let resp = server.delete("/collections/tasks/template").await;
+        resp.assert_status_ok();
+    }
+
+    // ── Write role: write ops succeed, admin ops return 403 ──────────────
+
+    #[tokio::test]
+    async fn rbac_write_can_create_entity() {
+        let server = test_server_with_role(Role::Write);
+        let resp = server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "hello"}}))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn rbac_write_can_get_entity() {
+        let server = seeded_server_with_role(Role::Write).await;
+        let resp = server.get("/entities/tasks/t-001").await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_write_can_update_entity() {
+        let server = seeded_server_with_role(Role::Write).await;
+        let resp = server
+            .put("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "updated"}, "expected_version": 1}))
+            .await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_write_can_delete_entity() {
+        let server = seeded_server_with_role(Role::Write).await;
+        let resp = server.delete("/entities/tasks/t-001").await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_write_can_create_link() {
+        let server = seeded_server_with_role(Role::Write).await;
+        let resp = server
+            .post("/links")
+            .json(&json!({
+                "source_collection": "tasks",
+                "source_id": "t-001",
+                "target_collection": "tasks",
+                "target_id": "t-002",
+                "link_type": "blocks"
+            }))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+    }
+
+    #[tokio::test]
+    async fn rbac_write_can_delete_link() {
+        let server = seeded_server_with_role(Role::Write).await;
+        server
+            .post("/links")
+            .json(&json!({
+                "source_collection": "tasks",
+                "source_id": "t-001",
+                "target_collection": "tasks",
+                "target_id": "t-002",
+                "link_type": "blocks"
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+        let resp = server
+            .delete("/links")
+            .json(&json!({
+                "source_collection": "tasks",
+                "source_id": "t-001",
+                "target_collection": "tasks",
+                "target_id": "t-002",
+                "link_type": "blocks"
+            }))
+            .await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_write_cannot_create_collection() {
+        let server = test_server_with_role(Role::Write);
+        let resp = server
+            .post("/collections/new-col")
+            .json(&json!({"schema": {}}))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn rbac_write_cannot_drop_collection() {
+        let server = seeded_server_with_role(Role::Write).await;
+        let resp = server.delete("/collections/tasks").await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_write_cannot_put_schema() {
+        let server = seeded_server_with_role(Role::Write).await;
+        let resp = server
+            .put("/collections/tasks/schema")
+            .json(&json!({
+                "version": 2,
+                "entity_schema": {"type": "object"}
+            }))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_write_cannot_put_template() {
+        let server = seeded_server_with_role(Role::Write).await;
+        let resp = server
+            .put("/collections/tasks/template")
+            .json(&json!({"template": "# {{title}}"}))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_write_cannot_delete_template() {
+        let server = seeded_server_with_role(Role::Write).await;
+        let resp = server.delete("/collections/tasks/template").await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    // ── Read role: only read ops succeed, write/admin ops return 403 ─────
+
+    #[tokio::test]
+    async fn rbac_read_can_get_entity() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server.get("/entities/tasks/t-001").await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_read_can_list_collections() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server.get("/collections").await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_read_can_describe_collection() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server.get("/collections/tasks").await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_read_can_get_schema() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server.get("/collections/tasks/schema").await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_read_can_traverse() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server
+            .get("/traverse/tasks/t-001?link_type=blocks")
+            .await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_read_can_query_audit() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server.get("/audit/entity/tasks/t-001").await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_read_can_query_entities() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server
+            .post("/collections/tasks/query")
+            .json(&json!({}))
+            .await;
+        resp.assert_status_ok();
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_create_entity() {
+        let server = test_server_with_role(Role::Read);
+        let resp = server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "hello"}}))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_update_entity() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server
+            .put("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "updated"}, "expected_version": 1}))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_delete_entity() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server.delete("/entities/tasks/t-001").await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_create_link() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server
+            .post("/links")
+            .json(&json!({
+                "source_collection": "tasks",
+                "source_id": "t-001",
+                "target_collection": "tasks",
+                "target_id": "t-002",
+                "link_type": "blocks"
+            }))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_delete_link() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server
+            .delete("/links")
+            .json(&json!({
+                "source_collection": "tasks",
+                "source_id": "t-001",
+                "target_collection": "tasks",
+                "target_id": "t-002",
+                "link_type": "blocks"
+            }))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_create_collection() {
+        let server = test_server_with_role(Role::Read);
+        let resp = server
+            .post("/collections/new-col")
+            .json(&json!({"schema": {}}))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_drop_collection() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server.delete("/collections/tasks").await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_put_schema() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server
+            .put("/collections/tasks/schema")
+            .json(&json!({
+                "version": 2,
+                "entity_schema": {"type": "object"}
+            }))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_put_template() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server
+            .put("/collections/tasks/template")
+            .json(&json!({"template": "# {{title}}"}))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_delete_template() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server.delete("/collections/tasks/template").await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn rbac_read_cannot_commit_transaction() {
+        let server = seeded_server_with_role(Role::Read).await;
+        let resp = server
+            .post("/transactions")
+            .json(&json!({
+                "operations": [{
+                    "op": "create",
+                    "collection": "tasks",
+                    "id": "tx-1",
+                    "data": {"title": "txn"}
+                }]
+            }))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+    }
+
+    // ── Cross-role boundary: forbidden error contains descriptive message ─
+
+    #[tokio::test]
+    async fn rbac_forbidden_response_is_descriptive() {
+        let server = test_server_with_role(Role::Read);
+        let resp = server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "nope"}}))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "forbidden");
+        let detail = body["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains("permission denied"),
+            "forbidden detail should mention 'permission denied': {detail}"
+        );
+        assert!(
+            detail.contains("read"),
+            "forbidden detail should mention role: {detail}"
+        );
+    }
+
+    #[tokio::test]
+    async fn rbac_write_forbidden_for_admin_op_is_descriptive() {
+        let server = test_server_with_role(Role::Write);
+        let resp = server
+            .post("/collections/new-col")
+            .json(&json!({"schema": {}}))
+            .await;
+        resp.assert_status(StatusCode::FORBIDDEN);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "forbidden");
+        let detail = body["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains("permission denied"),
+            "forbidden detail should mention 'permission denied': {detail}"
+        );
+        assert!(
+            detail.contains("write"),
+            "forbidden detail should mention role 'write': {detail}"
+        );
+        assert!(
+            detail.contains("admin"),
+            "forbidden detail should mention required role 'admin': {detail}"
+        );
     }
 }

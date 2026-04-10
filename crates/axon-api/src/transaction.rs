@@ -144,6 +144,7 @@ impl Transaction {
             updated_at_ns: None,
             created_by: None,
             updated_by: None,
+            schema_version: None,
         };
         self.ops.push(WriteOp {
             entity: sentinel,
