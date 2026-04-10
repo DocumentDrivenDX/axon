@@ -7,29 +7,40 @@ import {
 	fetchCollection,
 	fetchEntities,
 	fetchEntity,
+	updateEntity,
 } from '$lib/api';
+// biome-ignore lint/correctness/noUnusedImports: Used in template for entity data tree.
+import JsonTree from '$lib/components/JsonTree.svelte';
+// biome-ignore lint/correctness/noUnusedImports: Used in template for casting entity data.
+import type { JsonValue } from '$lib/components/json-tree-types';
 import { validateEntityData } from '$lib/schema-validation';
 import { onMount } from 'svelte';
 
-let collectionName = '';
-let collection: CollectionDetail | null = null;
-let entities: EntityRecord[] = [];
-let selectedEntity: EntityRecord | null = null;
-let loading = true;
-let error: string | null = null;
-let nextCursor: string | null = null;
-let paginationHistory: Array<string | null> = [null];
-let pageIndex = 0;
+let collectionName = $state('');
+let collection = $state<CollectionDetail | null>(null);
+let entities = $state<EntityRecord[]>([]);
+let selectedEntity = $state<EntityRecord | null>(null);
+let loading = $state(true);
+let error = $state<string | null>(null);
+let nextCursor = $state<string | null>(null);
+let paginationHistory = $state<Array<string | null>>([null]);
+let pageIndex = $state(0);
 
-let createOpen = false;
+let createOpen = $state(false);
 // biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
-let createId = '';
+let createId = $state('');
 // biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
-let createJson = `{
+let createJson = $state(`{
   "title": ""
-}`;
-let createErrors: string[] = [];
-let createMessage: string | null = null;
+}`);
+let createErrors = $state<string[]>([]);
+let createMessage = $state<string | null>(null);
+
+let editMode = $state(false);
+let editData = $state<Record<string, unknown> | null>(null);
+let saveError = $state<string | null>(null);
+let saveMessage = $state<string | null>(null);
+let saving = $state(false);
 
 async function loadCollection(targetCollection: string, afterId: string | null) {
 	loading = true;
@@ -42,6 +53,8 @@ async function loadCollection(targetCollection: string, afterId: string | null) 
 		entities = result.entities;
 		nextCursor = result.next_cursor;
 		selectedEntity = entities[0] ? await fetchEntity(targetCollection, entities[0].id) : null;
+		editMode = false;
+		editData = null;
 		error = null;
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load collection';
@@ -57,9 +70,68 @@ async function openEntity(id: string) {
 
 	try {
 		selectedEntity = await fetchEntity(collectionName, id);
+		editMode = false;
+		editData = null;
+		saveError = null;
+		saveMessage = null;
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load entity';
 	}
+}
+
+function startEdit() {
+	if (!selectedEntity) return;
+	editData = structuredClone(selectedEntity.data);
+	editMode = true;
+	saveError = null;
+	saveMessage = null;
+}
+
+function cancelEdit() {
+	editMode = false;
+	editData = null;
+	saveError = null;
+}
+
+async function saveEntity() {
+	if (!selectedEntity || !editData || !collectionName) return;
+	saving = true;
+	saveError = null;
+	saveMessage = null;
+
+	if (collection?.schema?.entity_schema) {
+		const issues = validateEntityData(collection.schema.entity_schema, editData);
+		if (issues.length > 0) {
+			saveError = issues.join('; ');
+			saving = false;
+			return;
+		}
+	}
+
+	try {
+		const updated = await updateEntity(
+			collectionName,
+			selectedEntity.id,
+			editData,
+			selectedEntity.version,
+		);
+		selectedEntity = updated;
+		editMode = false;
+		editData = null;
+		saveMessage = `Saved v${updated.version}.`;
+		const idx = entities.findIndex((e) => e.id === updated.id);
+		if (idx >= 0) {
+			entities[idx] = updated;
+		}
+	} catch (errorValue: unknown) {
+		saveError = errorValue instanceof Error ? errorValue.message : 'Failed to save entity';
+	} finally {
+		saving = false;
+	}
+}
+
+function handleTreeUpdate(value: unknown) {
+	editData = value as Record<string, unknown>;
 }
 
 function validateCreateForm(): Record<string, unknown> | null {
@@ -151,10 +223,10 @@ afterNavigate(() => {
 <div class="page-header">
 	<div>
 		<h1>{collectionName}</h1>
-		<p class="muted">Entity browser with 50-row pagination and JSON detail.</p>
+		<p class="muted">Entity browser with 50-row pagination and tree-style JSON detail.</p>
 	</div>
 	<div class="actions">
-		<button on:click={() => (createOpen = !createOpen)}>
+		<button onclick={() => (createOpen = !createOpen)}>
 			{createOpen ? 'Hide Create Entity' : 'Create Entity'}
 		</button>
 	</div>
@@ -198,7 +270,7 @@ afterNavigate(() => {
 				</div>
 			{/if}
 			<div class="actions">
-				<button class="primary" on:click={submitCreateEntity}>Create Entity</button>
+				<button class="primary" onclick={submitCreateEntity}>Create Entity</button>
 			</div>
 		</div>
 	</section>
@@ -209,13 +281,13 @@ afterNavigate(() => {
 		<div class="panel-header">
 			<h2>Entities</h2>
 			<div class="actions">
-				<button disabled={pageIndex === 0} on:click={previousPage}>Previous</button>
-				<button disabled={!nextCursor} on:click={nextPage}>Next</button>
+				<button disabled={pageIndex === 0} onclick={previousPage}>Previous</button>
+				<button disabled={!nextCursor} onclick={nextPage}>Next</button>
 			</div>
 		</div>
 		<div class="panel-body">
 			{#if loading}
-				<p class="message">Loading entities…</p>
+				<p class="message">Loading entities...</p>
 			{:else if entities.length === 0}
 				<p class="muted">No entities yet.</p>
 			{:else}
@@ -229,7 +301,10 @@ afterNavigate(() => {
 					</thead>
 					<tbody>
 						{#each entities as entity}
-							<tr on:click={() => openEntity(entity.id)}>
+							<tr
+								class:selected={selectedEntity?.id === entity.id}
+								onclick={() => openEntity(entity.id)}
+							>
 								<td>{entity.id}</td>
 								<td>{entity.version}</td>
 								<td><code>{JSON.stringify(entity.data).slice(0, 80)}</code></td>
@@ -245,20 +320,146 @@ afterNavigate(() => {
 		<div class="panel-header">
 			<h2>{selectedEntity ? selectedEntity.id : 'Entity Detail'}</h2>
 			{#if selectedEntity}
-				<span class="pill">v{selectedEntity.version}</span>
+				<div class="actions">
+					<span class="pill">v{selectedEntity.version}</span>
+					{#if editMode}
+						<button onclick={cancelEdit}>Cancel</button>
+						<button class="primary" disabled={saving} onclick={saveEntity}>
+							{saving ? 'Saving...' : 'Save'}
+						</button>
+					{:else}
+						<button onclick={startEdit}>Edit</button>
+					{/if}
+				</div>
 			{/if}
 		</div>
 		<div class="panel-body stack">
 			{#if collection}
 				<p class="muted">
-					{collection.entity_count} entities · {collection.schema ? `schema v${collection.schema.version}` : 'no schema'}
+					{collection.entity_count} entities · {collection.schema
+						? `schema v${collection.schema.version}`
+						: 'no schema'}
 				</p>
 			{/if}
+
+			{#if saveMessage}
+				<p class="message success">{saveMessage}</p>
+			{/if}
+			{#if saveError}
+				<p class="message error">{saveError}</p>
+			{/if}
+
 			{#if selectedEntity}
-				<pre>{JSON.stringify(selectedEntity, null, 2)}</pre>
+				<div class="entity-meta">
+					<div class="meta-row">
+						<span class="meta-label">ID</span>
+						<span class="meta-value"><code>{selectedEntity.id}</code></span>
+					</div>
+					<div class="meta-row">
+						<span class="meta-label">Collection</span>
+						<span class="meta-value"><code>{selectedEntity.collection}</code></span>
+					</div>
+					<div class="meta-row">
+						<span class="meta-label">Version</span>
+						<span class="meta-value">{selectedEntity.version}</span>
+					</div>
+					{#if selectedEntity.schema_version != null}
+						<div class="meta-row">
+							<span class="meta-label">Schema Version</span>
+							<span class="meta-value">{selectedEntity.schema_version}</span>
+						</div>
+					{/if}
+				</div>
+
+				<div class="tree-container">
+					<div class="tree-header">
+						<span class="tree-title">Data</span>
+						<span class="type-badge">object{'{' + Object.keys(editMode && editData ? editData : selectedEntity.data).length + '}'}</span>
+					</div>
+					{#if editMode && editData}
+						<JsonTree data={editData as unknown as JsonValue} editing={true} onupdate={handleTreeUpdate} />
+					{:else}
+						<JsonTree data={selectedEntity.data as unknown as JsonValue} />
+					{/if}
+				</div>
 			{:else}
-				<p class="muted">Select an entity row to inspect its full JSON payload.</p>
+				<p class="muted">Select an entity row to inspect its data.</p>
 			{/if}
 		</div>
 	</section>
 </div>
+
+<style>
+	tr {
+		cursor: pointer;
+		transition: background 80ms ease;
+	}
+
+	tr:hover {
+		background: rgba(125, 211, 252, 0.06);
+	}
+
+	tr.selected {
+		background: rgba(125, 211, 252, 0.1);
+		border-left: 2px solid var(--accent-strong);
+	}
+
+	.entity-meta {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem 1.5rem;
+		padding: 0.75rem 0;
+		border-bottom: 1px solid rgba(47, 55, 66, 0.5);
+	}
+
+	.meta-row {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+
+	.meta-label {
+		color: var(--muted);
+		font-size: 0.82rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.meta-value {
+		font-size: 0.88rem;
+	}
+
+	.meta-value code {
+		font-size: 0.85rem;
+	}
+
+	.tree-container {
+		padding: 0.5rem 0;
+	}
+
+	.tree-header {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		padding-bottom: 0.4rem;
+		border-bottom: 1px solid rgba(47, 55, 66, 0.4);
+		margin-bottom: 0.3rem;
+	}
+
+	.tree-title {
+		font-weight: 600;
+		font-size: 0.9rem;
+	}
+
+	.type-badge {
+		display: inline-flex;
+		align-items: center;
+		border: 1px solid rgba(125, 211, 252, 0.2);
+		border-radius: 999px;
+		padding: 0.05rem 0.45rem;
+		color: var(--muted);
+		font-size: 0.72rem;
+		font-weight: 500;
+	}
+</style>

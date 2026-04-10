@@ -32,6 +32,7 @@ export type EntityRecord = {
 	id: string;
 	version: number;
 	data: Record<string, unknown>;
+	schema_version?: number | null;
 };
 
 export type QueryEntitiesResult = {
@@ -152,6 +153,22 @@ export async function createEntity(
 		{
 			method: 'POST',
 			body: JSON.stringify({ data, actor: 'ui' }),
+		},
+	);
+	return response.entity;
+}
+
+export async function updateEntity(
+	collection: string,
+	id: string,
+	data: Record<string, unknown>,
+	expectedVersion: number,
+): Promise<EntityRecord> {
+	const response = await request<{ entity: EntityRecord }>(
+		`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
+		{
+			method: 'PUT',
+			body: JSON.stringify({ data, expected_version: expectedVersion, actor: 'ui' }),
 		},
 	);
 	return response.entity;
