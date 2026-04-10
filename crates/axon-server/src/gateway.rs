@@ -130,6 +130,11 @@ fn auth_error_response(err: AuthError) -> Response {
             Json(ApiError::new("unauthorized", err.to_string())),
         )
             .into_response(),
+        AuthError::Forbidden(_) => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError::new("forbidden", err.to_string())),
+        )
+            .into_response(),
         AuthError::ProviderUnavailable(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ApiError::new("auth_unavailable", err.to_string())),
@@ -511,6 +516,9 @@ async fn create_entity<S: StorageAdapter>(
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<CreateEntityBody>,
 ) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
     match handler.lock().await.create_entity(CreateEntityRequest {
         collection: qualify_collection_name(&collection, &current_database),
         id: EntityId::new(&id),
@@ -612,6 +620,9 @@ async fn update_entity<S: StorageAdapter>(
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<UpdateEntityBody>,
 ) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
     match handler.lock().await.update_entity(UpdateEntityRequest {
         collection: qualify_collection_name(&collection, &current_database),
         id: EntityId::new(&id),
@@ -644,6 +655,9 @@ async fn delete_entity<S: StorageAdapter>(
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     _body: Option<Json<DeleteEntityBody>>,
 ) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
     match handler.lock().await.delete_entity(DeleteEntityRequest {
         collection: qualify_collection_name(&collection, &current_database),
         id: EntityId::new(&id),
@@ -701,6 +715,9 @@ async fn create_link<S: StorageAdapter>(
     Extension(identity): Extension<Identity>,
     Json(body): Json<CreateLinkBody>,
 ) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
     match handler.lock().await.create_link(CreateLinkRequest {
         source_collection: qualify_collection_name(&body.source_collection, &current_database),
         source_id: EntityId::new(&body.source_id),
@@ -737,6 +754,9 @@ async fn delete_link<S: StorageAdapter>(
     Extension(identity): Extension<Identity>,
     Json(body): Json<DeleteLinkBody>,
 ) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
     match handler.lock().await.delete_link(DeleteLinkRequest {
         source_collection: qualify_collection_name(&body.source_collection, &current_database),
         source_id: EntityId::new(&body.source_id),
@@ -887,6 +907,9 @@ async fn revert_entity<S: StorageAdapter>(
     Extension(identity): Extension<Identity>,
     Json(body): Json<RevertEntityBody>,
 ) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
     match handler
         .lock()
         .await
@@ -949,6 +972,9 @@ async fn rollback_collection_entity<S: StorageAdapter>(
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<RollbackEntityBody>,
 ) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
     let target = match rollback_target_from_body(&body) {
         Ok(target) => target,
         Err(error) => return axon_error_response(error),
@@ -994,6 +1020,9 @@ async fn create_collection<S: StorageAdapter>(
     Path(NamePath { name }): Path<NamePath>,
     body: Option<Json<CreateCollectionBody>>,
 ) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
     let schema_body = match body.and_then(|Json(b)| b.schema) {
         Some(schema_body) => schema_body,
         None => {
@@ -1034,6 +1063,9 @@ async fn drop_collection<S: StorageAdapter>(
     Path(NamePath { name }): Path<NamePath>,
     _body: Option<Json<CollectionActorBody>>,
 ) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
     match handler.lock().await.drop_collection(DropCollectionRequest {
         name: qualify_collection_name(&name, &current_database),
         actor: Some(identity.actor),
@@ -1097,6 +1129,9 @@ async fn put_collection_template<S: StorageAdapter>(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
     let body = match parse_collection_template_request(&headers, body) {
         Ok(body) => body,
         Err(error) => return axon_error_response(error),
@@ -1154,6 +1189,9 @@ async fn delete_collection_template<S: StorageAdapter>(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
     if let Err(error) = parse_delete_collection_template_request(&headers, body) {
         return axon_error_response(error);
     }
@@ -1178,6 +1216,9 @@ async fn put_schema<S: StorageAdapter>(
     Path(NamePath { name: collection }): Path<NamePath>,
     Json(body): Json<PutSchemaBody>,
 ) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
     // Populate schema from body; collection always comes from the path.
     let schema = CollectionSchema {
         collection: qualify_collection_name(&collection, &current_database),
@@ -1216,8 +1257,12 @@ async fn get_schema<S: StorageAdapter>(
 
 async fn create_database<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path(name): Path<String>,
 ) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
     match handler
         .lock()
         .await
@@ -1237,9 +1282,13 @@ async fn list_databases<S: StorageAdapter>(State(handler): State<SharedHandler<S
 
 async fn drop_database<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path(name): Path<String>,
     Query(force): Query<ForceQuery>,
 ) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
     match handler.lock().await.drop_database(DropDatabaseRequest {
         name,
         force: force.force,
@@ -1258,8 +1307,12 @@ async fn drop_database<S: StorageAdapter>(
 
 async fn create_namespace<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path((database, schema)): Path<(String, String)>,
 ) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
     match handler
         .lock()
         .await
@@ -1316,9 +1369,13 @@ async fn list_namespace_collections<S: StorageAdapter>(
 
 async fn drop_namespace<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
     Path((database, schema)): Path<(String, String)>,
     Query(force): Query<ForceQuery>,
 ) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
     match handler.lock().await.drop_namespace(DropNamespaceRequest {
         database,
         schema,
@@ -1346,6 +1403,9 @@ async fn commit_transaction<S: StorageAdapter>(
     Extension(identity): Extension<Identity>,
     Json(body): Json<TransactionBody>,
 ) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
     use axon_api::transaction::Transaction;
     use axon_core::types::Entity;
 

@@ -63,6 +63,35 @@ impl Identity {
             role: Role::Admin,
         }
     }
+
+    /// Check that this identity has at least read-level access.
+    pub fn require_read(&self) -> Result<(), AuthError> {
+        // All authenticated roles (Read, Write, Admin) can read.
+        Ok(())
+    }
+
+    /// Check that this identity has at least write-level access.
+    pub fn require_write(&self) -> Result<(), AuthError> {
+        match self.role {
+            Role::Write | Role::Admin => Ok(()),
+            Role::Read => Err(AuthError::Forbidden(
+                "permission denied: role 'read' cannot perform write operations (requires 'write')".into(),
+            )),
+        }
+    }
+
+    /// Check that this identity has admin-level access.
+    pub fn require_admin(&self) -> Result<(), AuthError> {
+        match self.role {
+            Role::Admin => Ok(()),
+            Role::Write => Err(AuthError::Forbidden(
+                "permission denied: role 'write' cannot perform admin operations (requires 'admin')".into(),
+            )),
+            Role::Read => Err(AuthError::Forbidden(
+                "permission denied: role 'read' cannot perform admin operations (requires 'admin')".into(),
+            )),
+        }
+    }
 }
 
 /// Tailscale whois response (subset of fields we use).
@@ -81,6 +110,8 @@ pub struct TailscaleWhoisResponse {
 pub enum AuthError {
     MissingPeerAddress,
     Unauthorized(String),
+    /// The caller is authenticated but lacks the required role.
+    Forbidden(String),
     ProviderUnavailable(String),
 }
 
@@ -89,7 +120,9 @@ impl AuthError {
     pub fn detail(&self) -> &str {
         match self {
             Self::MissingPeerAddress => "missing peer address",
-            Self::Unauthorized(detail) | Self::ProviderUnavailable(detail) => detail,
+            Self::Unauthorized(detail)
+            | Self::Forbidden(detail)
+            | Self::ProviderUnavailable(detail) => detail,
         }
     }
 }
@@ -646,5 +679,65 @@ mod tests {
             error,
             AuthError::ProviderUnavailable("tailscaled unavailable".into())
         );
+    }
+
+    // ── RBAC role enforcement tests (US-044) ──────────────────────────
+
+    #[test]
+    fn admin_passes_all_checks() {
+        let id = Identity {
+            actor: "alice".into(),
+            role: Role::Admin,
+        };
+        assert!(id.require_read().is_ok());
+        assert!(id.require_write().is_ok());
+        assert!(id.require_admin().is_ok());
+    }
+
+    #[test]
+    fn write_can_read_and_write_but_not_admin() {
+        let id = Identity {
+            actor: "bob".into(),
+            role: Role::Write,
+        };
+        assert!(id.require_read().is_ok());
+        assert!(id.require_write().is_ok());
+        assert!(id.require_admin().is_err());
+    }
+
+    #[test]
+    fn read_can_only_read() {
+        let id = Identity {
+            actor: "charlie".into(),
+            role: Role::Read,
+        };
+        assert!(id.require_read().is_ok());
+        assert!(id.require_write().is_err());
+        assert!(id.require_admin().is_err());
+    }
+
+    #[test]
+    fn forbidden_error_is_descriptive() {
+        let id = Identity {
+            actor: "reader".into(),
+            role: Role::Read,
+        };
+        let err = id.require_write().expect_err("read should not write");
+        match err {
+            AuthError::Forbidden(msg) => {
+                assert!(msg.contains("permission denied"), "msg: {msg}");
+                assert!(msg.contains("read"), "msg: {msg}");
+                assert!(msg.contains("write"), "msg: {msg}");
+            }
+            other => panic!("expected Forbidden, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anonymous_admin_passes_all_checks() {
+        let id = Identity::anonymous_admin();
+        assert!(id.require_read().is_ok());
+        assert!(id.require_write().is_ok());
+        assert!(id.require_admin().is_ok());
     }
 }

@@ -112,6 +112,7 @@ fn auth_to_status(error: AuthError) -> Status {
         AuthError::MissingPeerAddress | AuthError::Unauthorized(_) => {
             Status::unauthenticated(error.to_string())
         }
+        AuthError::Forbidden(_) => Status::permission_denied(error.to_string()),
         AuthError::ProviderUnavailable(_) => Status::unavailable(error.to_string()),
     }
 }
@@ -190,6 +191,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoCreateEntityReq>,
     ) -> Result<Response<ProtoCreateEntityResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_write().map_err(auth_to_status)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let data: serde_json::Value = serde_json::from_str(&req.data_json)
@@ -240,6 +242,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoUpdateEntityReq>,
     ) -> Result<Response<ProtoUpdateEntityResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_write().map_err(auth_to_status)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let data: serde_json::Value = serde_json::from_str(&req.data_json)
@@ -269,6 +272,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoDeleteEntityReq>,
     ) -> Result<Response<ProtoDeleteEntityResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_write().map_err(auth_to_status)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
 
@@ -296,6 +300,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoCreateLinkReq>,
     ) -> Result<Response<ProtoCreateLinkResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_write().map_err(auth_to_status)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let metadata: serde_json::Value = if req.metadata_json.is_empty() {
@@ -344,6 +349,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoDeleteLinkReq>,
     ) -> Result<Response<ProtoDeleteLinkResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_write().map_err(auth_to_status)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
 
@@ -465,6 +471,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoCommitTxReq>,
     ) -> Result<Response<ProtoCommitTxResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_write().map_err(auth_to_status)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let mut tx = Transaction::new();
@@ -593,6 +600,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoPutSchemaReq>,
     ) -> Result<Response<ProtoPutSchemaResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_admin().map_err(auth_to_status)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let mut schema: axon_schema::schema::CollectionSchema =
@@ -653,6 +661,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoCreateCollectionReq>,
     ) -> Result<Response<ProtoCreateCollectionResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_admin().map_err(auth_to_status)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let mut schema: axon_schema::schema::CollectionSchema =
@@ -680,6 +689,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         request: Request<ProtoDropCollectionReq>,
     ) -> Result<Response<ProtoDropCollectionResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_admin().map_err(auth_to_status)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
 
@@ -758,7 +768,8 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoCreateDatabaseReq>,
     ) -> Result<Response<ProtoCreateDatabaseResp>, Status> {
-        self.authorize(request.remote_addr()).await?;
+        let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_admin().map_err(auth_to_status)?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -789,7 +800,8 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoDropDatabaseReq>,
     ) -> Result<Response<ProtoDropDatabaseResp>, Status> {
-        self.authorize(request.remote_addr()).await?;
+        let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_admin().map_err(auth_to_status)?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -810,7 +822,8 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoCreateNamespaceReq>,
     ) -> Result<Response<ProtoCreateNamespaceResp>, Status> {
-        self.authorize(request.remote_addr()).await?;
+        let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_admin().map_err(auth_to_status)?;
         let req = request.into_inner();
         let resp = self
             .handler
@@ -873,7 +886,8 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         &self,
         request: Request<ProtoDropNamespaceReq>,
     ) -> Result<Response<ProtoDropNamespaceResp>, Status> {
-        self.authorize(request.remote_addr()).await?;
+        let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_admin().map_err(auth_to_status)?;
         let req = request.into_inner();
         let resp = self
             .handler
