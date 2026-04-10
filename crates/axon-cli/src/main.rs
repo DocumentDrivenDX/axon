@@ -14,8 +14,8 @@ use axon_api::request::{
     DescribeCollectionRequest, DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest,
     GetCollectionTemplateRequest, GetEntityRequest, ListCollectionsRequest, ListDatabasesRequest,
     ListNamespaceCollectionsRequest, ListNamespacesRequest, PutCollectionTemplateRequest,
-    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, TraverseRequest,
-    UpdateEntityRequest,
+    QueryAuditRequest, QueryEntitiesRequest, RevalidateRequest, RevertEntityRequest,
+    TraverseRequest, UpdateEntityRequest,
 };
 use axon_audit::AuditLog;
 use axon_core::id::{CollectionId, EntityId};
@@ -343,6 +343,11 @@ enum SchemaCmd {
         collection: String,
         /// Path to a JSON file containing entity data.
         file: String,
+    },
+    /// Revalidate all entities in a collection against the current schema.
+    Revalidate {
+        /// Collection name.
+        collection: String,
     },
 }
 
@@ -1188,6 +1193,53 @@ fn run_schema(
                         &serde_json::json!({"valid": true, "note": "no entity_schema defined"}),
                         format,
                     ),
+                }
+            }
+        }
+        SchemaCmd::Revalidate { collection } => {
+            let col_id = CollectionId::new(&collection);
+            let resp = handler
+                .revalidate(RevalidateRequest {
+                    collection: col_id,
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            match format {
+                OutputFormat::Table => {
+                    println!(
+                        "Revalidation complete: {} scanned, {} valid, {} invalid",
+                        resp.total_scanned, resp.valid_count, resp.invalid.len()
+                    );
+                    for inv in &resp.invalid {
+                        println!("  FAIL {} (v{})", inv.id, inv.version);
+                        for err in &inv.errors {
+                            println!("    - {err}");
+                        }
+                    }
+                    if !resp.invalid.is_empty() {
+                        std::process::exit(1);
+                    }
+                }
+                _ => {
+                    let has_failures = !resp.invalid.is_empty();
+                    print_serialized(
+                        &serde_json::json!({
+                            "total_scanned": resp.total_scanned,
+                            "valid_count": resp.valid_count,
+                            "invalid_count": resp.invalid.len(),
+                            "invalid": resp.invalid.iter().map(|inv| {
+                                serde_json::json!({
+                                    "id": inv.id,
+                                    "version": inv.version,
+                                    "errors": inv.errors,
+                                })
+                            }).collect::<Vec<_>>(),
+                        }),
+                        format,
+                    );
+                    if has_failures {
+                        std::process::exit(1);
+                    }
                 }
             }
         }
