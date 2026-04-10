@@ -1956,15 +1956,45 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         self.put_schema(req.schema.clone())?;
-        self.audit.append(AuditEntry::new(
-            collection,
-            EntityId::new(""),
-            0,
-            MutationType::SchemaUpdate,
-            None,
-            None,
-            req.actor,
-        ))?;
+
+        // Build audit metadata with compatibility classification and impact counts.
+        let mut audit_meta = HashMap::new();
+        let compat_str = match &compatibility {
+            axon_schema::Compatibility::Compatible => "compatible",
+            axon_schema::Compatibility::Breaking => "breaking",
+            axon_schema::Compatibility::MetadataOnly => "metadata_only",
+        };
+        audit_meta.insert("compatibility".to_string(), compat_str.to_string());
+
+        let fields_added = diff
+            .changes
+            .iter()
+            .filter(|c| c.kind == axon_schema::FieldChangeKind::Added)
+            .count();
+        let fields_removed = diff
+            .changes
+            .iter()
+            .filter(|c| c.kind == axon_schema::FieldChangeKind::Removed)
+            .count();
+        let fields_modified = diff.changes.len() - fields_added - fields_removed;
+
+        audit_meta.insert("fields_added".to_string(), fields_added.to_string());
+        audit_meta.insert("fields_removed".to_string(), fields_removed.to_string());
+        audit_meta.insert("fields_modified".to_string(), fields_modified.to_string());
+        audit_meta.insert("total_changes".to_string(), diff.changes.len().to_string());
+
+        self.audit.append(
+            AuditEntry::new(
+                collection,
+                EntityId::new(""),
+                0,
+                MutationType::SchemaUpdate,
+                None,
+                None,
+                req.actor,
+            )
+            .with_metadata(audit_meta),
+        )?;
         Ok(PutSchemaResponse {
             schema: req.schema,
             compatibility: Some(compatibility),
