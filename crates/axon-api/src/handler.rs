@@ -407,6 +407,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         entity.updated_at_ns = Some(now);
         entity.created_by = req.actor.clone();
         entity.updated_by = req.actor.clone();
+        entity.schema_version = schema.as_ref().map(|s| s.version);
         self.storage.put(entity.clone())?;
 
         // Index maintenance (FEAT-013).
@@ -577,6 +578,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             updated_at_ns: Some(now_ns()),
             created_by: existing.as_ref().and_then(|e| e.created_by.clone()),
             updated_by: req.actor.clone(),
+            schema_version: schema.as_ref().map(|s| s.version),
         };
         let stored = self
             .storage
@@ -708,6 +710,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             updated_at_ns: Some(now_ns()),
             created_by: existing.created_by,
             updated_by: req.actor.clone(),
+            schema_version: schema.as_ref().map(|s| s.version),
         };
         let stored = self
             .storage
@@ -1242,9 +1245,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         })?;
 
         // Validate against current schema unless force=true.
+        let schema = self.storage.get_schema(&source.collection)?;
         if !req.force {
-            if let Some(schema) = self.storage.get_schema(&source.collection)? {
-                validate(&schema, &before_data).map_err(|e| {
+            if let Some(schema) = &schema {
+                validate(schema, &before_data).map_err(|e| {
                     AxonError::SchemaValidation(format!(
                         "before state from audit entry {} does not validate against current schema: {}",
                         req.audit_entry_id, e
@@ -1267,15 +1271,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     updated_at_ns: Some(now_ns()),
                     created_by: existing.created_by.clone(),
                     updated_by: req.actor.clone(),
+                    schema_version: schema.as_ref().map(|s| s.version),
                 };
                 self.storage.compare_and_swap(candidate, existing.version)?
             }
             None => {
-                let entity = Entity::new(
+                let mut entity = Entity::new(
                     source.collection.clone(),
                     source.entity_id.clone(),
                     before_data.clone(),
                 );
+                entity.schema_version = schema.as_ref().map(|s| s.version);
                 self.storage.put(entity.clone())?;
                 entity
             }
@@ -1418,6 +1424,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             updated_at_ns: current.as_ref().and_then(|entity| entity.updated_at_ns),
             created_by: created_by.clone(),
             updated_by: req.actor.clone(),
+            schema_version: schema.as_ref().map(|s| s.version),
         };
 
         if req.dry_run {
@@ -1444,6 +1451,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     updated_at_ns: Some(now_ns()),
                     created_by: current.created_by.clone(),
                     updated_by: req.actor.clone(),
+                    schema_version: schema.as_ref().map(|s| s.version),
                 },
                 expected_version,
             )?
@@ -1457,6 +1465,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 updated_at_ns: Some(now_ns()),
                 created_by,
                 updated_by: req.actor.clone(),
+                schema_version: schema.as_ref().map(|s| s.version),
             };
             self.storage.create_if_absent(recreated, expected_version)?
         };
@@ -3202,6 +3211,7 @@ mod tests {
                     updated_at_ns: entity.updated_at_ns,
                     created_by: Some("racer".into()),
                     updated_by: Some("racer".into()),
+                    schema_version: None,
                 })?;
             }
 

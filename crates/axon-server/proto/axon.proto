@@ -52,6 +52,7 @@ message EntityProto {
   string id = 2;
   uint64 version = 3;
   string data_json = 4;
+  optional uint32 schema_version = 5;
 }
 
 // ── Link operations ───────────────────────────────────────────────────────────

@@ -432,6 +432,7 @@ impl PostgresStorageAdapter {
             updated_at_ns: None,
             created_by: None,
             updated_by: None,
+            schema_version: None,
         })
     }
 }

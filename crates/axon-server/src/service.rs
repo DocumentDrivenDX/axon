@@ -104,6 +104,7 @@ fn entity_to_proto(e: axon_core::types::Entity) -> EntityProto {
         id: e.id.to_string(),
         version: e.version,
         data_json: e.data.to_string(),
+        schema_version: e.schema_version,
     }
 }
 

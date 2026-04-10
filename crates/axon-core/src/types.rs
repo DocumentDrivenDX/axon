@@ -144,6 +144,9 @@ pub struct Entity {
     /// Actor that last updated this entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_by: Option<String>,
+    /// Schema version that validated this entity on create/update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<u32>,
 }
 
 impl Entity {
@@ -157,6 +160,7 @@ impl Entity {
             updated_at_ns: None,
             created_by: None,
             updated_by: None,
+            schema_version: None,
         }
     }
 }

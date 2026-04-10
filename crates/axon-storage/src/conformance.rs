@@ -152,6 +152,7 @@ macro_rules! storage_conformance_tests {
                     updated_at_ns: None,
                     created_by: None,
                     updated_by: None,
+                    schema_version: None,
                 };
 
                 let inserted = s
@@ -185,6 +186,7 @@ macro_rules! storage_conformance_tests {
                             updated_at_ns: None,
                             created_by: None,
                             updated_by: None,
+                            schema_version: None,
                         },
                         2,
                     )
