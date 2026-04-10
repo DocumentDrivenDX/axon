@@ -8,6 +8,7 @@ import { onMount } from 'svelte';
 let health: HealthStatus | null = null;
 let healthError: string | null = null;
 const homeHref = `${base}/`;
+const collectionsHref = `${base}/collections`;
 const schemasHref = `${base}/schemas`;
 const auditHref = `${base}/audit`;
 
@@ -38,7 +39,7 @@ onMount(() => {
 		</div>
 
 		<nav class="stack">
-			<a class="button-link" href={homeHref}>Collections</a>
+			<a class="button-link" href={collectionsHref}>Collections</a>
 			<a class="button-link" href={schemasHref}>Schemas</a>
 			<a class="button-link" href={auditHref}>Audit Log</a>
 		</nav>
