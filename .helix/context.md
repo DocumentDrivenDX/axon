@@ -2,7 +2,7 @@
 
 Project root: /home/erik/Projects/axon
 Tracker: /home/erik/Projects/axon/.ddx/beads.jsonl
-Issue counts: ready=37, open=38, in-progress=0, closed=639
+Issue counts: ready=14, open=17, in-progress=0, closed=80
 
 ## Key Rules
 
