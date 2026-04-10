@@ -32,8 +32,9 @@ use crate::request::{
     GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
     ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest,
     PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
-    ReachableRequest, RevalidateRequest, RevertEntityRequest, RollbackEntityRequest,
-    RollbackEntityTarget, SortDirection, TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    ReachableRequest, RevalidateRequest, RevertEntityRequest, RollbackCollectionRequest,
+    RollbackEntityRequest, RollbackEntityTarget, SortDirection, TraverseDirection, TraverseRequest,
+    UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
@@ -45,8 +46,8 @@ use crate::response::{
     ListCollectionsResponse, ListDatabasesResponse, ListNamespaceCollectionsResponse,
     ListNamespacesResponse, PatchEntityResponse, PutCollectionTemplateResponse, PutSchemaResponse,
     QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevalidateResponse,
-    RevertEntityResponse, RollbackEntityResponse, TraverseHop, TraversePath, TraverseResponse,
-    UpdateEntityResponse,
+    RevertEntityResponse, RollbackCollectionEntityResult, RollbackCollectionResponse,
+    RollbackEntityResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -1555,6 +1556,262 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 Ok(entry)
             }
         }
+    }
+
+    // ── Collection-level rollback ─────────────────────────────────────────────
+
+    /// Roll back every entity in a collection to its state at a given point in
+    /// time. Mutations recorded after `timestamp_ns` are reverted by replaying
+    /// each affected entity to its last known state at-or-before the timestamp.
+    ///
+    /// When `dry_run` is `true`, the method returns a preview without writing.
+    pub fn rollback_collection(
+        &mut self,
+        req: RollbackCollectionRequest,
+    ) -> Result<RollbackCollectionResponse, AxonError> {
+        // 1. Query the audit log for all entity-level mutations in this
+        //    collection that occurred strictly after the target timestamp.
+        let page = self.audit.query_paginated(AuditQuery {
+            collection: Some(req.collection.clone()),
+            since_ns: Some(req.timestamp_ns + 1),
+            ..AuditQuery::default()
+        })?;
+
+        let entity_mutations: Vec<&AuditEntry> = page
+            .entries
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.mutation,
+                    MutationType::EntityCreate
+                        | MutationType::EntityUpdate
+                        | MutationType::EntityDelete
+                        | MutationType::EntityRevert
+                )
+            })
+            .collect();
+
+        // 2. Collect the distinct entity IDs that were mutated.
+        let mut seen = HashSet::new();
+        let affected_entity_ids: Vec<EntityId> = entity_mutations
+            .iter()
+            .filter_map(|e| {
+                if e.entity_id.as_str().is_empty() {
+                    None
+                } else if seen.insert(e.entity_id.clone()) {
+                    Some(e.entity_id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        let entities_affected = affected_entity_ids.len();
+
+        // 3. For each affected entity, find its state at the target timestamp
+        //    and roll it back.
+        let mut details = Vec::with_capacity(entities_affected);
+        let mut entities_rolled_back: usize = 0;
+        let mut errors: usize = 0;
+
+        for entity_id in &affected_entity_ids {
+            let result = self.rollback_single_entity_to_timestamp(
+                &req.collection,
+                entity_id,
+                req.timestamp_ns,
+                req.actor.as_deref(),
+                req.dry_run,
+            );
+
+            match result {
+                Ok(()) => {
+                    entities_rolled_back += 1;
+                    details.push(RollbackCollectionEntityResult {
+                        id: entity_id.to_string(),
+                        success: true,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    errors += 1;
+                    details.push(RollbackCollectionEntityResult {
+                        id: entity_id.to_string(),
+                        success: false,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+        }
+
+        Ok(RollbackCollectionResponse {
+            entities_affected,
+            entities_rolled_back,
+            errors,
+            dry_run: req.dry_run,
+            details,
+        })
+    }
+
+    /// Roll a single entity back to its state at the given timestamp.
+    ///
+    /// If the entity did not exist at the timestamp (i.e., it was created after
+    /// the timestamp), it is deleted. If it existed at the timestamp, it is
+    /// restored to the snapshot recorded in the last audit entry at-or-before
+    /// the timestamp.
+    fn rollback_single_entity_to_timestamp(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        timestamp_ns: u64,
+        actor: Option<&str>,
+        dry_run: bool,
+    ) -> Result<(), AxonError> {
+        let history = self.audit.query_by_entity(collection, entity_id)?;
+
+        // Find the last audit entry whose timestamp is <= the target timestamp.
+        // That entry's `data_after` is the entity state at that point in time.
+        let state_at_timestamp: Option<&AuditEntry> = history
+            .iter()
+            .rev()
+            .find(|entry| entry.timestamp_ns <= timestamp_ns);
+
+        let current = self.storage.get(collection, entity_id)?;
+
+        match state_at_timestamp {
+            Some(target_entry) => {
+                // Entity existed at the timestamp — restore its data_after snapshot.
+                let target_data = match &target_entry.data_after {
+                    Some(data) => data.clone(),
+                    None => {
+                        // The entry is a delete — entity should not exist at this point.
+                        // If it currently exists, delete it.
+                        if current.is_some() && !dry_run {
+                            self.storage.delete(collection, entity_id)?;
+                            let mut audit_entry = AuditEntry::new(
+                                collection.clone(),
+                                entity_id.clone(),
+                                current.as_ref().map_or(0, |e| e.version) + 1,
+                                MutationType::EntityDelete,
+                                current.map(|e| e.data),
+                                None,
+                                actor.map(String::from),
+                            );
+                            audit_entry
+                                .metadata
+                                .insert("collection_rollback".into(), "true".into());
+                            audit_entry.metadata.insert(
+                                "rollback_timestamp_ns".into(),
+                                timestamp_ns.to_string(),
+                            );
+                            self.audit.append(audit_entry)?;
+                        }
+                        return Ok(());
+                    }
+                };
+
+                if let Some(ref cur) = current {
+                    // Entity exists — check if it already matches.
+                    if cur.data == target_data {
+                        return Ok(());
+                    }
+                }
+
+                if dry_run {
+                    return Ok(());
+                }
+
+                // Write the restored state.
+                let schema = self.storage.get_schema(collection)?;
+                match current {
+                    Some(existing) => {
+                        let restored = Entity {
+                            collection: collection.clone(),
+                            id: entity_id.clone(),
+                            version: existing.version,
+                            data: target_data.clone(),
+                            created_at_ns: existing.created_at_ns,
+                            updated_at_ns: Some(now_ns()),
+                            created_by: existing.created_by.clone(),
+                            updated_by: actor.map(String::from),
+                            schema_version: schema.as_ref().map(|s| s.version),
+                        };
+                        let stored =
+                            self.storage.compare_and_swap(restored, existing.version)?;
+                        let mut audit_entry = AuditEntry::new(
+                            collection.clone(),
+                            entity_id.clone(),
+                            stored.version,
+                            MutationType::EntityRevert,
+                            Some(existing.data),
+                            Some(target_data),
+                            actor.map(String::from),
+                        );
+                        audit_entry
+                            .metadata
+                            .insert("collection_rollback".into(), "true".into());
+                        audit_entry.metadata.insert(
+                            "rollback_timestamp_ns".into(),
+                            timestamp_ns.to_string(),
+                        );
+                        self.audit.append(audit_entry)?;
+                    }
+                    None => {
+                        // Entity was deleted — recreate it.
+                        let mut entity =
+                            Entity::new(collection.clone(), entity_id.clone(), target_data.clone());
+                        entity.schema_version = schema.as_ref().map(|s| s.version);
+                        entity.updated_by = actor.map(String::from);
+                        self.storage.put(entity.clone())?;
+                        let mut audit_entry = AuditEntry::new(
+                            collection.clone(),
+                            entity_id.clone(),
+                            entity.version,
+                            MutationType::EntityRevert,
+                            None,
+                            Some(target_data),
+                            actor.map(String::from),
+                        );
+                        audit_entry
+                            .metadata
+                            .insert("collection_rollback".into(), "true".into());
+                        audit_entry.metadata.insert(
+                            "rollback_timestamp_ns".into(),
+                            timestamp_ns.to_string(),
+                        );
+                        self.audit.append(audit_entry)?;
+                    }
+                }
+            }
+            None => {
+                // Entity did not exist at the target timestamp — it was created after.
+                // If it currently exists, delete it.
+                if let Some(existing) = current {
+                    if dry_run {
+                        return Ok(());
+                    }
+                    self.storage.delete(collection, entity_id)?;
+                    let mut audit_entry = AuditEntry::new(
+                        collection.clone(),
+                        entity_id.clone(),
+                        existing.version + 1,
+                        MutationType::EntityDelete,
+                        Some(existing.data),
+                        None,
+                        actor.map(String::from),
+                    );
+                    audit_entry
+                        .metadata
+                        .insert("collection_rollback".into(), "true".into());
+                    audit_entry.metadata.insert(
+                        "rollback_timestamp_ns".into(),
+                        timestamp_ns.to_string(),
+                    );
+                    self.audit.append(audit_entry)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     // ── Collection lifecycle ─────────────────────────────────────────────────
@@ -5517,6 +5774,262 @@ entity_schema:
 
         assert!(matches!(err, AxonError::SchemaValidation(_)));
         assert!(err.to_string().contains("save gate failed"));
+    }
+
+    // ── Collection-level rollback ────────────────────────────────────────────
+
+    #[test]
+    fn rollback_collection_reverts_entities_created_after_timestamp() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+
+        // Create entity e1 — this will be "before" the rollback timestamp.
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("e1"),
+            data: json!({"title": "original"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        // Record the timestamp after e1 creation (the audit entry timestamp).
+        let entries = h.audit.query_by_entity(&col, &EntityId::new("e1")).unwrap();
+        let cutoff_ns = entries.last().unwrap().timestamp_ns;
+
+        // Mutate e1 after the cutoff.
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("e1"),
+            data: json!({"title": "modified"}),
+            expected_version: 1,
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        // Create entity e2 after the cutoff (should be deleted on rollback).
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("e2"),
+            data: json!({"title": "new entity"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        // Perform collection rollback to the cutoff.
+        let resp = h
+            .rollback_collection(RollbackCollectionRequest {
+                collection: col.clone(),
+                timestamp_ns: cutoff_ns,
+                actor: Some("admin".into()),
+                dry_run: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities_affected, 2);
+        assert_eq!(resp.entities_rolled_back, 2);
+        assert_eq!(resp.errors, 0);
+        assert!(!resp.dry_run);
+
+        // e1 should be rolled back to "original".
+        let e1 = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("e1"),
+            })
+            .unwrap();
+        assert_eq!(e1.entity.data["title"], "original");
+
+        // e2 should no longer exist.
+        let e2_err = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("e2"),
+            })
+            .unwrap_err();
+        assert!(matches!(e2_err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn rollback_collection_dry_run_does_not_modify_data() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("e1"),
+            data: json!({"title": "v1"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let entries = h.audit.query_by_entity(&col, &EntityId::new("e1")).unwrap();
+        let cutoff_ns = entries.last().unwrap().timestamp_ns;
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("e1"),
+            data: json!({"title": "v2"}),
+            expected_version: 1,
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let resp = h
+            .rollback_collection(RollbackCollectionRequest {
+                collection: col.clone(),
+                timestamp_ns: cutoff_ns,
+                actor: Some("admin".into()),
+                dry_run: true,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities_affected, 1);
+        assert_eq!(resp.entities_rolled_back, 1);
+        assert!(resp.dry_run);
+
+        // Data should remain unchanged because dry_run=true.
+        let e1 = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("e1"),
+            })
+            .unwrap();
+        assert_eq!(e1.entity.data["title"], "v2");
+    }
+
+    #[test]
+    fn rollback_collection_no_mutations_after_timestamp() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("e1"),
+            data: json!({"title": "v1"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        // Use a timestamp far in the future — nothing to roll back.
+        let resp = h
+            .rollback_collection(RollbackCollectionRequest {
+                collection: col.clone(),
+                timestamp_ns: u64::MAX - 1,
+                actor: Some("admin".into()),
+                dry_run: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities_affected, 0);
+        assert_eq!(resp.entities_rolled_back, 0);
+        assert_eq!(resp.errors, 0);
+    }
+
+    #[test]
+    fn rollback_collection_restores_deleted_entity() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("e1"),
+            data: json!({"title": "alive"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let entries = h.audit.query_by_entity(&col, &EntityId::new("e1")).unwrap();
+        let cutoff_ns = entries.last().unwrap().timestamp_ns;
+
+        // Delete e1 after the cutoff.
+        h.delete_entity(DeleteEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("e1"),
+            actor: None,
+            force: false,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        // Rollback should restore e1.
+        let resp = h
+            .rollback_collection(RollbackCollectionRequest {
+                collection: col.clone(),
+                timestamp_ns: cutoff_ns,
+                actor: Some("admin".into()),
+                dry_run: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities_affected, 1);
+        assert_eq!(resp.entities_rolled_back, 1);
+
+        let e1 = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("e1"),
+            })
+            .unwrap();
+        assert_eq!(e1.entity.data["title"], "alive");
+    }
+
+    #[test]
+    fn rollback_collection_audit_entries_contain_metadata() {
+        let mut h = handler();
+        let col = CollectionId::new("tasks");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("e1"),
+            data: json!({"title": "v1"}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let entries = h.audit.query_by_entity(&col, &EntityId::new("e1")).unwrap();
+        let cutoff_ns = entries.last().unwrap().timestamp_ns;
+
+        h.update_entity(UpdateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("e1"),
+            data: json!({"title": "v2"}),
+            expected_version: 1,
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        h.rollback_collection(RollbackCollectionRequest {
+            collection: col.clone(),
+            timestamp_ns: cutoff_ns,
+            actor: Some("admin".into()),
+            dry_run: false,
+        })
+        .unwrap();
+
+        // The latest audit entry for e1 should be the rollback revert.
+        let entries = h.audit.query_by_entity(&col, &EntityId::new("e1")).unwrap();
+        let last = entries.last().unwrap();
+        assert_eq!(last.mutation, MutationType::EntityRevert);
+        assert_eq!(
+            last.metadata.get("collection_rollback").map(String::as_str),
+            Some("true")
+        );
+        let expected_ts = cutoff_ns.to_string();
+        assert_eq!(
+            last.metadata
+                .get("rollback_timestamp_ns")
+                .map(String::as_str),
+            Some(expected_ts.as_str())
+        );
     }
 
     // ── Collection lifecycle ─────────────────────────────────────────────────

@@ -484,6 +484,23 @@ pub struct DropNamespaceRequest {
     pub force: bool,
 }
 
+/// Roll an entire collection back to its state at a given point in time.
+///
+/// All entity mutations recorded after `timestamp_ns` are reverted.
+/// When `dry_run` is `true`, a preview of the affected entities is returned
+/// without modifying data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackCollectionRequest {
+    pub collection: CollectionId,
+    /// Nanoseconds since Unix epoch — the point in time to roll back to.
+    pub timestamp_ns: u64,
+    /// Actor performing the rollback.
+    pub actor: Option<String>,
+    /// When true, return a preview without writing changes.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
 /// Request to diff two schema versions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffSchemaRequest {
