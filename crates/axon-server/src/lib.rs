@@ -4,6 +4,7 @@ mod collection_listing;
 pub mod gateway;
 pub(crate) mod mcp_http;
 pub mod mcp_stdio;
+pub mod rate_limit;
 pub mod schema_registry;
 pub mod service;
 

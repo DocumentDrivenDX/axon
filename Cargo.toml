@@ -109,6 +109,9 @@ uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 
+# Time
+humantime = "2"
+
 # Testing
 pretty_assertions = "1"
 tempfile = "3"

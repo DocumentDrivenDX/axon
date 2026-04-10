@@ -25,6 +25,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use crate::auth::{AuthContext, AuthError, Identity};
 use crate::collection_listing::{filter_audit_entries_to_database, list_collections_for_database};
 use crate::mcp_http::{notify_entity_change, notify_entity_change_by_parts, McpHttpSessions};
+use crate::rate_limit::{RateLimited, WriteRateLimiter};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
@@ -33,8 +34,8 @@ use axon_api::request::{
     DropNamespaceRequest, GetCollectionTemplateRequest, GetEntityRequest, GetSchemaRequest,
     ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
     ListNamespacesRequest, PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest,
-    QueryEntitiesRequest, RevertEntityRequest, RollbackEntityRequest, RollbackEntityTarget,
-    TraverseRequest, UpdateEntityRequest,
+    QueryEntitiesRequest, RevertEntityRequest, RollbackCollectionRequest,
+    RollbackEntityRequest, RollbackEntityTarget, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
@@ -141,6 +142,24 @@ fn auth_error_response(err: AuthError) -> Response {
         )
             .into_response(),
     }
+}
+
+fn rate_limit_response(limited: &RateLimited) -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(
+            header::RETRY_AFTER,
+            limited.retry_after_secs.to_string(),
+        )],
+        Json(ApiError::new(
+            "rate_limited",
+            format!(
+                "write rate limit exceeded, retry after {} seconds",
+                limited.retry_after_secs
+            ),
+        )),
+    )
+        .into_response()
 }
 
 fn request_peer_address(request: &axum::extract::Request) -> Option<SocketAddr> {
@@ -523,11 +542,15 @@ async fn create_entity<S: StorageAdapter>(
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(rate_limiter): Extension<WriteRateLimiter>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<CreateEntityBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
         return auth_error_response(e);
+    }
+    if let Err(limited) = rate_limiter.check(&identity.actor).await {
+        return rate_limit_response(&limited);
     }
     match handler.lock().await.create_entity(CreateEntityRequest {
         collection: qualify_collection_name(&collection, &current_database),
@@ -622,11 +645,15 @@ async fn update_entity<S: StorageAdapter>(
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(rate_limiter): Extension<WriteRateLimiter>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<UpdateEntityBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
         return auth_error_response(e);
+    }
+    if let Err(limited) = rate_limiter.check(&identity.actor).await {
+        return rate_limit_response(&limited);
     }
     match handler.lock().await.update_entity(UpdateEntityRequest {
         collection: qualify_collection_name(&collection, &current_database),
@@ -652,11 +679,15 @@ async fn delete_entity<S: StorageAdapter>(
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(rate_limiter): Extension<WriteRateLimiter>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     _body: Option<Json<DeleteEntityBody>>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
         return auth_error_response(e);
+    }
+    if let Err(limited) = rate_limiter.check(&identity.actor).await {
+        return rate_limit_response(&limited);
     }
     match handler.lock().await.delete_entity(DeleteEntityRequest {
         collection: qualify_collection_name(&collection, &current_database),
@@ -713,10 +744,14 @@ async fn create_link<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(rate_limiter): Extension<WriteRateLimiter>,
     Json(body): Json<CreateLinkBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
         return auth_error_response(e);
+    }
+    if let Err(limited) = rate_limiter.check(&identity.actor).await {
+        return rate_limit_response(&limited);
     }
     match handler.lock().await.create_link(CreateLinkRequest {
         source_collection: qualify_collection_name(&body.source_collection, &current_database),
@@ -752,10 +787,14 @@ async fn delete_link<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(rate_limiter): Extension<WriteRateLimiter>,
     Json(body): Json<DeleteLinkBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
         return auth_error_response(e);
+    }
+    if let Err(limited) = rate_limiter.check(&identity.actor).await {
+        return rate_limit_response(&limited);
     }
     match handler.lock().await.delete_link(DeleteLinkRequest {
         source_collection: qualify_collection_name(&body.source_collection, &current_database),
@@ -905,10 +944,14 @@ async fn revert_entity<S: StorageAdapter>(
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(rate_limiter): Extension<WriteRateLimiter>,
     Json(body): Json<RevertEntityBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
         return auth_error_response(e);
+    }
+    if let Err(limited) = rate_limiter.check(&identity.actor).await {
+        return rate_limit_response(&limited);
     }
     match handler
         .lock()
@@ -964,11 +1007,15 @@ async fn rollback_collection_entity<S: StorageAdapter>(
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(rate_limiter): Extension<WriteRateLimiter>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<RollbackEntityBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
         return auth_error_response(e);
+    }
+    if let Err(limited) = rate_limiter.check(&identity.actor).await {
+        return rate_limit_response(&limited);
     }
     let target = match rollback_target_from_body(&body) {
         Ok(target) => target,
@@ -1005,6 +1052,143 @@ async fn rollback_collection_entity<S: StorageAdapter>(
         }))
         .into_response(),
         Err(error) => rollback_error_response(error),
+    }
+}
+
+// ── Collection-level rollback ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RollbackCollectionBody {
+    /// ISO 8601 timestamp *or* nanoseconds since Unix epoch.
+    pub timestamp: String,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+/// Parse a timestamp string into nanoseconds since Unix epoch.
+///
+/// Accepts:
+/// - Raw nanosecond integer as a string (e.g. `"1712750400000000000"`)
+/// - RFC 3339 / ISO 8601 with `Z` suffix (e.g. `"2026-04-10T12:00:00Z"`)
+/// - RFC 3339 with fractional seconds (e.g. `"2026-04-10T12:00:00.123456789Z"`)
+fn parse_timestamp_ns(input: &str) -> Result<u64, AxonError> {
+    // Try parsing as a raw u64 first (nanoseconds since epoch).
+    if let Ok(ns) = input.parse::<u64>() {
+        return Ok(ns);
+    }
+
+    // Minimal RFC 3339 parser: YYYY-MM-DDThh:mm:ss[.frac]Z
+    // Only UTC (Z suffix) is supported.
+    let err = || {
+        AxonError::InvalidArgument(format!(
+            "invalid timestamp '{}': expected RFC 3339 (UTC) or nanoseconds since epoch",
+            input
+        ))
+    };
+
+    let s = input.trim();
+    if !s.ends_with('Z') && !s.ends_with('z') {
+        return Err(err());
+    }
+    let s = &s[..s.len() - 1]; // strip trailing Z
+
+    let (datetime_part, frac_ns) = if let Some(dot_pos) = s.find('.') {
+        let frac_str = &s[dot_pos + 1..];
+        // Pad or truncate to 9 digits for nanoseconds.
+        let padded: String = if frac_str.len() >= 9 {
+            frac_str[..9].to_string()
+        } else {
+            format!("{:0<9}", frac_str)
+        };
+        let ns: u64 = padded.parse().map_err(|_| err())?;
+        (&s[..dot_pos], ns)
+    } else {
+        (s, 0u64)
+    };
+
+    // Parse "YYYY-MM-DDThh:mm:ss"
+    let parts: Vec<&str> = datetime_part.split('T').collect();
+    if parts.len() != 2 {
+        return Err(err());
+    }
+    let date_parts: Vec<u64> = parts[0]
+        .split('-')
+        .map(|p| p.parse::<u64>().map_err(|_| err()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let time_parts: Vec<u64> = parts[1]
+        .split(':')
+        .map(|p| p.parse::<u64>().map_err(|_| err()))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    if date_parts.len() != 3 || time_parts.len() != 3 {
+        return Err(err());
+    }
+
+    let (year, month, day) = (date_parts[0], date_parts[1], date_parts[2]);
+    let (hour, minute, second) = (time_parts[0], time_parts[1], time_parts[2]);
+
+    // Convert to days since Unix epoch using a simple calendar calculation.
+    let days = days_since_epoch(year, month, day).ok_or_else(err)?;
+    let total_seconds = days * 86400 + hour * 3600 + minute * 60 + second;
+    Ok(total_seconds * 1_000_000_000 + frac_ns)
+}
+
+/// Compute days since 1970-01-01 for a given date.
+fn days_since_epoch(year: u64, month: u64, day: u64) -> Option<u64> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || year < 1970 {
+        return None;
+    }
+    // Cumulative days before each month (non-leap year).
+    const MONTH_DAYS: [u64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let mut days: u64 = 0;
+    for y in 1970..year {
+        days += if is_leap(y) { 366 } else { 365 };
+    }
+    days += MONTH_DAYS[(month - 1) as usize];
+    if month > 2 && is_leap(year) {
+        days += 1;
+    }
+    days += day - 1;
+    Some(days)
+}
+
+fn is_leap(y: u64) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+async fn rollback_collection_handler<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Extension(identity): Extension<Identity>,
+    Path(CollectionPath { collection }): Path<CollectionPath>,
+    Json(body): Json<RollbackCollectionBody>,
+) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
+    let timestamp_ns = match parse_timestamp_ns(&body.timestamp) {
+        Ok(ns) => ns,
+        Err(e) => return axon_error_response(e),
+    };
+
+    match handler
+        .lock()
+        .await
+        .rollback_collection(RollbackCollectionRequest {
+            collection: qualify_collection_name(&collection, &current_database),
+            timestamp_ns,
+            actor: Some(identity.actor),
+            dry_run: body.dry_run,
+        }) {
+        Ok(resp) => Json(json!({
+            "entities_affected": resp.entities_affected,
+            "entities_rolled_back": resp.entities_rolled_back,
+            "errors": resp.errors,
+            "dry_run": resp.dry_run,
+            "details": resp.details,
+        }))
+        .into_response(),
+        Err(error) => axon_error_response(error),
     }
 }
 
@@ -1413,10 +1597,14 @@ async fn commit_transaction<S: StorageAdapter>(
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(rate_limiter): Extension<WriteRateLimiter>,
     Json(body): Json<TransactionBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
         return auth_error_response(e);
+    }
+    if let Err(limited) = rate_limiter.check(&identity.actor).await {
+        return rate_limit_response(&limited);
     }
     use axon_api::transaction::Transaction;
     use axon_core::types::Entity;
@@ -1591,7 +1779,13 @@ pub fn build_router<S: StorageAdapter + 'static>(
     backend: impl Into<String>,
     ui_dir: Option<PathBuf>,
 ) -> Router {
-    build_router_with_auth(handler, backend, ui_dir, AuthContext::no_auth())
+    build_router_with_auth(
+        handler,
+        backend,
+        ui_dir,
+        AuthContext::no_auth(),
+        crate::rate_limit::RateLimitConfig::default(),
+    )
 }
 
 fn data_routes<S: StorageAdapter + 'static>() -> Router<SharedHandler<S>> {
@@ -1608,6 +1802,10 @@ fn data_routes<S: StorageAdapter + 'static>() -> Router<SharedHandler<S>> {
         .route(
             "/collections/{collection}/entities/{id}/rollback",
             post(rollback_collection_entity::<S>),
+        )
+        .route(
+            "/collections/{collection}/rollback",
+            post(rollback_collection_handler::<S>),
         )
         .route("/collections/{collection}/query", post(query_entities::<S>))
         .route("/links", post(create_link::<S>))
@@ -1646,10 +1844,12 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
     backend: impl Into<String>,
     ui_dir: Option<PathBuf>,
     auth: AuthContext,
+    rate_limit_config: crate::rate_limit::RateLimitConfig,
 ) -> Router {
     let start = Instant::now();
     let backend = backend.into();
     let mcp_sessions = McpHttpSessions::default();
+    let rate_limiter = WriteRateLimiter::new(rate_limit_config);
     let mut router = Router::new()
         .merge(data_routes::<S>())
         .nest("/db/{database}", data_routes::<S>())
@@ -1680,6 +1880,7 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
         // change-feed broker. For now, return 501 Not Implemented.
         .route("/graphql/ws", get(graphql_ws_placeholder))
         .with_state(handler.clone())
+        .layer(Extension(rate_limiter))
         .layer(Extension(mcp_sessions))
         .route(
             "/health",
@@ -1811,8 +2012,14 @@ mod tests {
         let handler = Arc::new(Mutex::new(
             AxonHandler::new(MemoryStorageAdapter::default()),
         ));
-        let app =
-            build_router_with_auth(handler, "memory", None, auth).layer(MockConnectInfo(peer));
+        let app = build_router_with_auth(
+            handler,
+            "memory",
+            None,
+            auth,
+            crate::rate_limit::RateLimitConfig::default(),
+        )
+        .layer(MockConnectInfo(peer));
         TestServer::new(app)
     }
 
@@ -3785,8 +3992,14 @@ mod tests {
         let handler = Arc::new(Mutex::new(
             AxonHandler::new(MemoryStorageAdapter::default()),
         ));
-        let app = build_router_with_auth(handler, "memory", None, auth)
-            .layer(MockConnectInfo(peer));
+        let app = build_router_with_auth(
+            handler,
+            "memory",
+            None,
+            auth,
+            crate::rate_limit::RateLimitConfig::default(),
+        )
+        .layer(MockConnectInfo(peer));
         TestServer::new(app)
     }
 
@@ -3852,8 +4065,14 @@ mod tests {
                 .unwrap();
         }
 
-        let app = build_router_with_auth(handler, "memory", None, auth)
-            .layer(MockConnectInfo(peer));
+        let app = build_router_with_auth(
+            handler,
+            "memory",
+            None,
+            auth,
+            crate::rate_limit::RateLimitConfig::default(),
+        )
+        .layer(MockConnectInfo(peer));
         TestServer::new(app)
     }
 

@@ -175,6 +175,7 @@ where
         backend.clone(),
         args.ui_dir.clone(),
         auth.clone(),
+        axon_server::rate_limit::RateLimitConfig::default(),
     );
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
