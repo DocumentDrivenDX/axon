@@ -413,6 +413,12 @@ pub struct PutSchemaBody {
     pub entity_schema: Option<Value>,
     pub link_types: Option<std::collections::HashMap<String, axon_schema::LinkTypeDef>>,
     pub actor: Option<String>,
+    /// If true, apply even if the change is classified as breaking.
+    #[serde(default)]
+    pub force: bool,
+    /// If true, check compatibility and return the diff without applying.
+    #[serde(default)]
+    pub dry_run: bool,
 }
 
 #[derive(Deserialize)]
@@ -1234,10 +1240,27 @@ async fn put_schema<S: StorageAdapter>(
     match handler.lock().await.handle_put_schema(PutSchemaRequest {
         schema,
         actor: Some(identity.actor),
-        force: false,
-        dry_run: false,
+        force: body.force,
+        dry_run: body.dry_run,
     }) {
-        Ok(resp) => (StatusCode::OK, Json(json!({ "schema": resp.schema }))).into_response(),
+        Ok(resp) => {
+            let mut result = json!({ "schema": resp.schema });
+            if let Some(compat) = &resp.compatibility {
+                result["compatibility"] = json!(compat);
+            }
+            if let Some(diff) = &resp.diff {
+                result["diff"] = json!(diff);
+            }
+            if resp.dry_run {
+                result["dry_run"] = json!(true);
+            }
+            (StatusCode::OK, Json(result)).into_response()
+        }
+        Err(AxonError::InvalidOperation(msg)) => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new("breaking_schema_change", msg)),
+        )
+            .into_response(),
         Err(e) => axon_error_response(e),
     }
 }
