@@ -2,29 +2,459 @@
 //!
 //! Generates a full GraphQL schema (queries + mutations + introspection)
 //! from the set of registered collections and their entity schemas.
+//!
+//! When a shared `AxonHandler` is provided via [`build_schema_with_handler`],
+//! resolvers delegate to the live handler for real CRUD operations. The
+//! plain [`build_schema`] function builds a stub schema (useful for SDL
+//! inspection and tests).
 
-use async_graphql::dynamic::{Field, FieldFuture, FieldValue, Object, Schema, TypeRef};
-use async_graphql::Value as GqlValue;
+use std::sync::Arc;
 
+use async_graphql::dynamic::{
+    Field, FieldFuture, FieldValue, InputValue, Object, Schema, TypeRef,
+};
+use async_graphql::{Error as GqlError, ErrorExtensions, Value as GqlValue};
+use serde_json::{json, Value};
+use tokio::sync::Mutex;
+
+use axon_api::handler::AxonHandler;
+use axon_api::request::{
+    CreateEntityRequest, DeleteEntityRequest, GetEntityRequest, PatchEntityRequest,
+    QueryEntitiesRequest, UpdateEntityRequest,
+};
+use axon_core::error::AxonError;
+use axon_core::id::{CollectionId, EntityId};
+use axon_core::types::Entity;
 use axon_schema::schema::CollectionSchema;
+use axon_storage::adapter::StorageAdapter;
 
 use crate::types::extract_fields;
+
+/// Shared handle to an `AxonHandler` behind a `tokio::sync::Mutex`.
+pub type SharedHandler<S> = Arc<Mutex<AxonHandler<S>>>;
 
 /// Wrapper around the dynamically generated `async-graphql` schema.
 pub struct AxonSchema {
     pub schema: Schema,
 }
 
-/// Build a dynamic GraphQL schema from the given collection schemas.
+// ── Entity → GraphQL FieldValue conversion ──────────────────────────────────
+
+/// Convert an `Entity` into an `async-graphql` `FieldValue` that the dynamic
+/// object type can resolve field-by-field.
+fn entity_to_field_value(entity: &Entity) -> FieldValue<'static> {
+    let mut map = serde_json::Map::new();
+    map.insert("id".into(), Value::String(entity.id.to_string()));
+    map.insert("version".into(), json!(entity.version));
+    if let Some(ns) = entity.created_at_ns {
+        map.insert("createdAt".into(), Value::String(format_ns(ns)));
+    }
+    if let Some(ns) = entity.updated_at_ns {
+        map.insert("updatedAt".into(), Value::String(format_ns(ns)));
+    }
+    // Merge user data fields.
+    if let Value::Object(data) = &entity.data {
+        for (k, v) in data {
+            map.insert(k.clone(), v.clone());
+        }
+    }
+
+    FieldValue::from(GqlValue::from_json(Value::Object(map)).unwrap_or(GqlValue::Null))
+}
+
+/// Format nanosecond timestamp as ISO-8601 string.
+fn format_ns(ns: u64) -> String {
+    let secs = (ns / 1_000_000_000) as i64;
+    let nanos = (ns % 1_000_000_000) as u32;
+    time_from_epoch(secs, nanos)
+}
+
+/// Simple epoch seconds → ISO-8601 without external crate.
+fn time_from_epoch(secs: i64, _nanos: u32) -> String {
+    const SECS_PER_DAY: i64 = 86400;
+    const DAYS_PER_YEAR: i64 = 365;
+    const DAYS_PER_4YEARS: i64 = 1461;
+    const DAYS_PER_100YEARS: i64 = 36524;
+    const DAYS_PER_400YEARS: i64 = 146097;
+
+    let mut days = secs / SECS_PER_DAY;
+    let day_secs = (secs % SECS_PER_DAY + SECS_PER_DAY) % SECS_PER_DAY;
+    if secs % SECS_PER_DAY < 0 {
+        days -= 1;
+    }
+    let hours = day_secs / 3600;
+    let minutes = (day_secs % 3600) / 60;
+    let seconds = day_secs % 60;
+
+    // Days since 1970-01-01 → civil date.
+    days += 719_468; // shift to 0000-03-01
+    let era = if days >= 0 {
+        days / DAYS_PER_400YEARS
+    } else {
+        (days - (DAYS_PER_400YEARS - 1)) / DAYS_PER_400YEARS
+    };
+    let doe = days - era * DAYS_PER_400YEARS;
+    let yoe = (doe - doe / DAYS_PER_4YEARS + doe / DAYS_PER_100YEARS
+        - doe / DAYS_PER_400YEARS)
+        / DAYS_PER_YEAR;
+    let y = yoe + era * 400;
+    let doy = doe - (DAYS_PER_YEAR * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
+}
+
+/// Convert an `AxonError` into an `async-graphql` `Error` with structured
+/// extensions for OCC conflicts and other error kinds.
+fn axon_error_to_gql(err: AxonError) -> GqlError {
+    match err {
+        AxonError::ConflictingVersion {
+            expected,
+            actual,
+            current_entity,
+        } => {
+            let entity_json = current_entity.as_ref().map(|e| {
+                json!({
+                    "id": e.id.to_string(),
+                    "version": e.version,
+                    "data": &e.data,
+                    "collection": e.collection.to_string(),
+                })
+            });
+            GqlError::new(format!(
+                "version conflict: expected {expected}, actual {actual}"
+            ))
+            .extend_with(|_err, ext| {
+                ext.set("code", "VERSION_CONFLICT");
+                ext.set("expected", GqlValue::from(expected as i64));
+                ext.set("actual", GqlValue::from(actual as i64));
+                if let Some(ej) = &entity_json {
+                    if let Ok(gql_val) = GqlValue::from_json(ej.clone()) {
+                        ext.set("currentEntity", gql_val);
+                    }
+                }
+            })
+        }
+        AxonError::NotFound(msg) => {
+            GqlError::new(format!("not found: {msg}")).extend_with(|_err, ext| {
+                ext.set("code", "NOT_FOUND");
+            })
+        }
+        AxonError::SchemaValidation(detail) => {
+            GqlError::new(format!("schema validation failed: {detail}"))
+                .extend_with(|_err, ext| {
+                    ext.set("code", "SCHEMA_VALIDATION");
+                })
+        }
+        AxonError::UniqueViolation { field, value } => {
+            GqlError::new(format!("unique violation on field `{field}`: {value}"))
+                .extend_with(|_err, ext| {
+                    ext.set("code", "UNIQUE_VIOLATION");
+                    ext.set("field", field.as_str());
+                    ext.set("value", value.as_str());
+                })
+        }
+        other => GqlError::new(other.to_string()).extend_with(|_err, ext| {
+            ext.set("code", "INTERNAL_ERROR");
+        }),
+    }
+}
+
+// ── Schema builders ─────────────────────────────────────────────────────────
+
+/// Build a dynamic GraphQL schema from the given collection schemas, wired
+/// to a live `AxonHandler` for real CRUD operations.
 ///
 /// Each collection produces:
 /// - A query field `<collection>(id: ID!): <CollectionType>`
-/// - A query field `<collection>s(filter: JSON, limit: Int, after: ID): <CollectionConnection>`
-/// - A mutation field `create<Collection>(input: JSON!): <CollectionType>`
+/// - A query field `<collection>s(limit: Int, afterId: ID): [<CollectionType>]`
+/// - A mutation field `create<Collection>(id: ID!, input: JSON!): <CollectionType>`
 /// - A mutation field `update<Collection>(id: ID!, version: Int!, input: JSON!): <CollectionType>`
+/// - A mutation field `patch<Collection>(id: ID!, version: Int!, patch: JSON!): <CollectionType>`
 /// - A mutation field `delete<Collection>(id: ID!): Boolean!`
+pub fn build_schema_with_handler<S: StorageAdapter + 'static>(
+    collections: &[CollectionSchema],
+    handler: SharedHandler<S>,
+) -> Result<AxonSchema, String> {
+    let mut query = Object::new("Query");
+    let mut mutation = Object::new("Mutation");
+    let mut type_objects = Vec::new();
+
+    for schema in collections {
+        let collection_name = schema.collection.as_str();
+        let type_name = pascal_case(collection_name);
+        let fields = extract_fields(schema);
+
+        // ── Build the GraphQL object type ────────────────────────────────
+        let mut obj = Object::new(&type_name);
+        for (field_name, gql_type, _required) in &fields {
+            let type_ref = parse_type_ref(gql_type);
+            let fname = field_name.clone();
+            obj = obj.field(Field::new(field_name, type_ref, move |ctx| {
+                let fname = fname.clone();
+                FieldFuture::new(async move {
+                    match ctx.parent_value.try_to_value() {
+                        Ok(GqlValue::Object(map)) => {
+                            let key = async_graphql::Name::new(&fname);
+                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
+                        }
+                        _ => Ok(Some(FieldValue::NULL)),
+                    }
+                })
+            }));
+        }
+        type_objects.push(obj);
+
+        // ── Query: get by ID ─────────────────────────────────────────────
+        let col_id = CollectionId::new(collection_name);
+        let handler_get = Arc::clone(&handler);
+        let col_for_get = col_id.clone();
+        let get_field = Field::new(
+            collection_name,
+            TypeRef::named(&type_name),
+            move |ctx| {
+                let handler = Arc::clone(&handler_get);
+                let col = col_for_get.clone();
+                FieldFuture::new(async move {
+                    let id_str = ctx.args.try_get("id")?.string()?;
+
+                    let guard = handler.lock().await;
+                    match guard.get_entity(GetEntityRequest {
+                        collection: col.clone(),
+                        id: EntityId::new(id_str),
+                    }) {
+                        Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                        Err(AxonError::NotFound(_)) => Ok(None),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)));
+        query = query.field(get_field);
+
+        // ── Query: list ──────────────────────────────────────────────────
+        let list_field_name = format!("{collection_name}s");
+        let handler_list = Arc::clone(&handler);
+        let col_for_list = col_id.clone();
+        let type_name_list = type_name.clone();
+        let list_field = Field::new(
+            &list_field_name,
+            TypeRef::named_list(&type_name_list),
+            move |ctx| {
+                let handler = Arc::clone(&handler_list);
+                let col = col_for_list.clone();
+                FieldFuture::new(async move {
+                    let limit = ctx
+                        .args
+                        .try_get("limit")
+                        .ok()
+                        .and_then(|v| v.i64().ok())
+                        .map(|v| v as usize);
+
+                    let after_id = ctx
+                        .args
+                        .try_get("afterId")
+                        .ok()
+                        .and_then(|v| v.string().ok())
+                        .map(EntityId::new);
+
+                    let guard = handler.lock().await;
+                    match guard.query_entities(QueryEntitiesRequest {
+                        collection: col.clone(),
+                        filter: None,
+                        sort: Vec::new(),
+                        limit,
+                        after_id,
+                        count_only: false,
+                    }) {
+                        Ok(resp) => {
+                            let items: Vec<FieldValue> = resp
+                                .entities
+                                .iter()
+                                .map(|e| entity_to_field_value(e))
+                                .collect();
+                            Ok(Some(FieldValue::list(items)))
+                        }
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new("afterId", TypeRef::named(TypeRef::ID)));
+        query = query.field(list_field);
+
+        // ── Mutation: create ─────────────────────────────────────────────
+        let create_field_name = format!("create{type_name}");
+        let handler_create = Arc::clone(&handler);
+        let col_for_create = col_id.clone();
+        let type_name_create = type_name.clone();
+        let create_field = Field::new(
+            &create_field_name,
+            TypeRef::named(&type_name_create),
+            move |ctx| {
+                let handler = Arc::clone(&handler_create);
+                let col = col_for_create.clone();
+                FieldFuture::new(async move {
+                    let id_str = ctx.args.try_get("id")?.string()?;
+
+                    let input_str = ctx.args.try_get("input")?.string()?;
+
+                    let data: Value = serde_json::from_str(input_str)
+                        .map_err(|e| GqlError::new(format!("invalid JSON input: {e}")))?;
+
+                    let mut guard = handler.lock().await;
+                    match guard.create_entity(CreateEntityRequest {
+                        collection: col.clone(),
+                        id: EntityId::new(id_str),
+                        data,
+                        actor: None,
+                        audit_metadata: None,
+                    }) {
+                        Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new("input", TypeRef::named_nn(TypeRef::STRING)));
+        mutation = mutation.field(create_field);
+
+        // ── Mutation: update ─────────────────────────────────────────────
+        let update_field_name = format!("update{type_name}");
+        let handler_update = Arc::clone(&handler);
+        let col_for_update = col_id.clone();
+        let type_name_update = type_name.clone();
+        let update_field = Field::new(
+            &update_field_name,
+            TypeRef::named(&type_name_update),
+            move |ctx| {
+                let handler = Arc::clone(&handler_update);
+                let col = col_for_update.clone();
+                FieldFuture::new(async move {
+                    let id_str = ctx.args.try_get("id")?.string()?;
+                    let version = ctx.args.try_get("version")?.i64()? as u64;
+
+                    let input_str = ctx.args.try_get("input")?.string()?;
+
+                    let data: Value = serde_json::from_str(input_str)
+                        .map_err(|e| GqlError::new(format!("invalid JSON input: {e}")))?;
+
+                    let mut guard = handler.lock().await;
+                    match guard.update_entity(UpdateEntityRequest {
+                        collection: col.clone(),
+                        id: EntityId::new(id_str),
+                        data,
+                        expected_version: version,
+                        actor: None,
+                        audit_metadata: None,
+                    }) {
+                        Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new("version", TypeRef::named_nn(TypeRef::INT)))
+        .argument(InputValue::new("input", TypeRef::named_nn(TypeRef::STRING)));
+        mutation = mutation.field(update_field);
+
+        // ── Mutation: patch ──────────────────────────────────────────────
+        let patch_field_name = format!("patch{type_name}");
+        let handler_patch = Arc::clone(&handler);
+        let col_for_patch = col_id.clone();
+        let type_name_patch = type_name.clone();
+        let patch_field = Field::new(
+            &patch_field_name,
+            TypeRef::named(&type_name_patch),
+            move |ctx| {
+                let handler = Arc::clone(&handler_patch);
+                let col = col_for_patch.clone();
+                FieldFuture::new(async move {
+                    let id_str = ctx.args.try_get("id")?.string()?;
+                    let version = ctx.args.try_get("version")?.i64()? as u64;
+
+                    let patch_str = ctx.args.try_get("patch")?.string()?;
+
+                    let patch: Value = serde_json::from_str(patch_str)
+                        .map_err(|e| GqlError::new(format!("invalid JSON patch: {e}")))?;
+
+                    let mut guard = handler.lock().await;
+                    match guard.patch_entity(PatchEntityRequest {
+                        collection: col.clone(),
+                        id: EntityId::new(id_str),
+                        patch,
+                        expected_version: version,
+                        actor: None,
+                        audit_metadata: None,
+                    }) {
+                        Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new("version", TypeRef::named_nn(TypeRef::INT)))
+        .argument(InputValue::new("patch", TypeRef::named_nn(TypeRef::STRING)));
+        mutation = mutation.field(patch_field);
+
+        // ── Mutation: delete ─────────────────────────────────────────────
+        let delete_field_name = format!("delete{type_name}");
+        let handler_delete = Arc::clone(&handler);
+        let col_for_delete = col_id.clone();
+        let delete_field = Field::new(
+            &delete_field_name,
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+            move |ctx| {
+                let handler = Arc::clone(&handler_delete);
+                let col = col_for_delete.clone();
+                FieldFuture::new(async move {
+                    let id_str = ctx.args.try_get("id")?.string()?;
+
+                    let mut guard = handler.lock().await;
+                    match guard.delete_entity(DeleteEntityRequest {
+                        collection: col.clone(),
+                        id: EntityId::new(id_str),
+                        actor: None,
+                        force: false,
+                        audit_metadata: None,
+                    }) {
+                        Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)));
+        mutation = mutation.field(delete_field);
+    }
+
+    let mut schema_builder = Schema::build(query.type_name(), Some(mutation.type_name()), None)
+        .register(query)
+        .register(mutation);
+
+    for obj in type_objects {
+        schema_builder = schema_builder.register(obj);
+    }
+
+    let schema = schema_builder
+        .finish()
+        .map_err(|e| format!("failed to build GraphQL schema: {e}"))?;
+
+    Ok(AxonSchema { schema })
+}
+
+/// Build a stub dynamic GraphQL schema from the given collection schemas.
 ///
-/// The schema is rebuilt when collections change (schema is immutable once built).
+/// Resolvers return `NULL` / empty lists — useful for SDL introspection and
+/// tests that only need the schema shape, not live data.
 pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, String> {
     let mut query = Object::new("Query");
     let mut mutation = Object::new("Mutation");
@@ -140,7 +570,8 @@ mod tests {
         EmptyMutation, EmptySubscription, Json, Schema as StaticSchema, SimpleObject, ID,
     };
     use axon_core::id::CollectionId;
-    use serde_json::{json, Value};
+    use axon_storage::MemoryStorageAdapter;
+    use serde_json::json;
 
     #[derive(SimpleObject, Clone)]
     #[graphql(name = "CollectionMeta", rename_fields = "camelCase")]
@@ -240,6 +671,22 @@ mod tests {
             indexes: Default::default(),
             compound_indexes: Default::default(),
         }
+    }
+
+    /// Create a shared handler with the given collection schemas registered.
+    async fn make_handler(schemas: &[CollectionSchema]) -> SharedHandler<MemoryStorageAdapter> {
+        let storage = MemoryStorageAdapter::default();
+        let handler = AxonHandler::new(storage);
+        let handler = Arc::new(Mutex::new(handler));
+
+        {
+            let mut guard = handler.lock().await;
+            for s in schemas {
+                let _ = guard.put_schema(s.clone());
+            }
+        }
+
+        handler
     }
 
     #[test]
@@ -384,5 +831,283 @@ mod tests {
         // Empty schema should still be valid (query/mutation with no fields won't work
         // but the schema should build).
         // async-graphql requires at least one field, so we skip this for now.
+    }
+
+    // ── Live handler integration tests ──────────────────────────────────────
+
+    #[tokio::test]
+    async fn handler_schema_get_entity_by_id() {
+        let ts = test_schema();
+        let handler = make_handler(&[ts.clone()]).await;
+
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("t1"),
+                    data: json!({"title": "Hello", "status": "open"}),
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .expect("create should succeed");
+        }
+
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute(r#"{ tasks(id: "t1") { id version title status } }"#)
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let data = result.data.into_json().expect("json");
+        let task = &data["tasks"];
+        assert_eq!(task["id"], "t1");
+        assert_eq!(task["version"], 1);
+        assert_eq!(task["title"], "Hello");
+        assert_eq!(task["status"], "open");
+    }
+
+    #[tokio::test]
+    async fn handler_schema_list_entities() {
+        let ts = test_schema();
+        let handler = make_handler(&[ts.clone()]).await;
+
+        {
+            let mut guard = handler.lock().await;
+            for i in 1..=3 {
+                guard
+                    .create_entity(CreateEntityRequest {
+                        collection: CollectionId::new("tasks"),
+                        id: EntityId::new(&format!("t{i}")),
+                        data: json!({"title": format!("Task {i}")}),
+                        actor: None,
+                        audit_metadata: None,
+                    })
+                    .expect("create should succeed");
+            }
+        }
+
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute("{ taskss(limit: 2) { id title } }")
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let data = result.data.into_json().expect("json");
+        let tasks = data["taskss"].as_array().expect("should be array");
+        assert_eq!(tasks.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn handler_schema_create_mutation() {
+        let ts = test_schema();
+        let handler = make_handler(&[ts.clone()]).await;
+
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute(
+                r#"mutation { createTasks(id: "t1", input: "{\"title\":\"New\"}") { id version title } }"#,
+            )
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let data = result.data.into_json().expect("json");
+        assert_eq!(data["createTasks"]["id"], "t1");
+        assert_eq!(data["createTasks"]["version"], 1);
+        assert_eq!(data["createTasks"]["title"], "New");
+    }
+
+    #[tokio::test]
+    async fn handler_schema_update_mutation() {
+        let ts = test_schema();
+        let handler = make_handler(&[ts.clone()]).await;
+
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("t1"),
+                    data: json!({"title": "Old"}),
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .expect("create should succeed");
+        }
+
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute(
+                r#"mutation { updateTasks(id: "t1", version: 1, input: "{\"title\":\"Updated\"}") { id version title } }"#,
+            )
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let data = result.data.into_json().expect("json");
+        assert_eq!(data["updateTasks"]["version"], 2);
+        assert_eq!(data["updateTasks"]["title"], "Updated");
+    }
+
+    #[tokio::test]
+    async fn handler_schema_update_version_conflict() {
+        let ts = test_schema();
+        let handler = make_handler(&[ts.clone()]).await;
+
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("t1"),
+                    data: json!({"title": "V1"}),
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .expect("create should succeed");
+            guard
+                .update_entity(UpdateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("t1"),
+                    data: json!({"title": "V2"}),
+                    expected_version: 1,
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .expect("update should succeed");
+        }
+
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute(
+                r#"mutation { updateTasks(id: "t1", version: 1, input: "{\"title\":\"Stale\"}") { id version } }"#,
+            )
+            .await;
+        assert!(
+            !result.errors.is_empty(),
+            "should have version conflict error"
+        );
+
+        let err = &result.errors[0];
+        assert!(
+            err.message.contains("version conflict"),
+            "error message: {}",
+            err.message
+        );
+
+        let ext = &err.extensions;
+        assert!(ext.is_some(), "error should have extensions");
+        let ext = ext.as_ref().expect("extensions");
+        let code = ext.get("code");
+        assert!(
+            matches!(code, Some(GqlValue::String(s)) if s == "VERSION_CONFLICT"),
+            "expected VERSION_CONFLICT code in extensions, got: {code:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_schema_delete_mutation() {
+        let ts = test_schema();
+        let handler = make_handler(&[ts.clone()]).await;
+
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("t1"),
+                    data: json!({"title": "To delete"}),
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .expect("create should succeed");
+        }
+
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute(r#"mutation { deleteTasks(id: "t1") }"#)
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let data = result.data.into_json().expect("json");
+        assert_eq!(data["deleteTasks"], true);
+
+        // Verify the entity is gone.
+        let get_result = schema
+            .schema
+            .execute(r#"{ tasks(id: "t1") { id } }"#)
+            .await;
+        assert!(get_result.errors.is_empty());
+        let get_data = get_result.data.into_json().expect("json");
+        assert!(get_data["tasks"].is_null());
+    }
+
+    #[tokio::test]
+    async fn handler_schema_patch_mutation() {
+        let ts = test_schema();
+        let handler = make_handler(&[ts.clone()]).await;
+
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("t1"),
+                    data: json!({"title": "Original", "status": "open"}),
+                    actor: None,
+                    audit_metadata: None,
+                })
+                .expect("create should succeed");
+        }
+
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute(
+                r#"mutation { patchTasks(id: "t1", version: 1, patch: "{\"status\":\"closed\"}") { id version title status } }"#,
+            )
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let data = result.data.into_json().expect("json");
+        assert_eq!(data["patchTasks"]["version"], 2);
+        assert_eq!(data["patchTasks"]["title"], "Original");
+        assert_eq!(data["patchTasks"]["status"], "closed");
+    }
+
+    #[tokio::test]
+    async fn handler_schema_get_not_found_returns_null() {
+        let ts = test_schema();
+        let handler = make_handler(&[ts.clone()]).await;
+
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute(r#"{ tasks(id: "nonexistent") { id } }"#)
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let data = result.data.into_json().expect("json");
+        assert!(data["tasks"].is_null());
     }
 }

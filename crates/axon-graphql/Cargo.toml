@@ -13,10 +13,12 @@ workspace = true
 [dependencies]
 axon-core = { path = "../axon-core" }
 axon-schema = { path = "../axon-schema" }
+axon-api = { path = "../axon-api" }
+axon-storage = { path = "../axon-storage" }
 
 async-graphql = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true }
