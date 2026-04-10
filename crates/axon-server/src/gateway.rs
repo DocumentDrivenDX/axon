@@ -1520,6 +1520,69 @@ async fn commit_transaction<S: StorageAdapter>(
     }
 }
 
+// ── GraphQL handler ──────────────────────────────────────────────────────────
+
+/// Collect all `CollectionSchema`s from the handler, then build and execute
+/// a dynamic GraphQL schema for each incoming request.
+///
+/// Rebuilding per-request ensures newly-created (or dropped) collections are
+/// always reflected in the GraphQL API. A caching layer can be added later
+/// for performance.
+async fn graphql_handler<S: StorageAdapter + 'static>(
+    State(handler): State<SharedHandler<S>>,
+    req: async_graphql_axum::GraphQLRequest,
+) -> Response {
+    // 1. Gather current collection schemas.
+    let schemas: Vec<CollectionSchema> = {
+        let guard = handler.lock().await;
+        let names = match guard.list_collections(ListCollectionsRequest {}) {
+            Ok(resp) => resp.collections,
+            Err(err) => return axon_error_response(err),
+        };
+        names
+            .iter()
+            .filter_map(|meta| {
+                let cid = CollectionId::new(&meta.name);
+                match guard.get_schema(&cid) {
+                    Ok(Some(s)) => Some(s),
+                    _ => None,
+                }
+            })
+            .collect()
+    };
+
+    // 2. Build the dynamic schema.
+    let gql_schema = match axon_graphql::build_schema_with_handler(&schemas, handler.clone()) {
+        Ok(s) => s,
+        Err(msg) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "code": "GRAPHQL_SCHEMA_ERROR", "detail": msg })),
+            )
+                .into_response();
+        }
+    };
+
+    // 3. Execute the request.
+    let response = gql_schema.schema.execute(req.into_inner()).await;
+    async_graphql_axum::GraphQLResponse::from(response).into_response()
+}
+
+/// Placeholder for the GraphQL WebSocket subscription endpoint.
+///
+/// Returns `501 Not Implemented` until the subscription resolvers are wired
+/// to the change-feed broker (`axon_graphql::ChangeFeedBroker`).
+async fn graphql_ws_placeholder() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(json!({
+            "code": "NOT_IMPLEMENTED",
+            "detail": "GraphQL subscriptions over WebSocket are not yet available"
+        })),
+    )
+        .into_response()
+}
+
 // ── Router construction ───────────────────────────────────────────────────────
 
 /// Build the axum router for the HTTP gateway.
@@ -1608,6 +1671,14 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
             "/databases/{database}/schemas/{schema}/collections",
             get(list_namespace_collections::<S>),
         )
+        .route(
+            "/graphql",
+            get(graphql_handler::<S>).post(graphql_handler::<S>),
+        )
+        // TODO: Wire GraphQL subscriptions over WebSocket once the
+        // subscription resolvers in axon-graphql are connected to the
+        // change-feed broker. For now, return 501 Not Implemented.
+        .route("/graphql/ws", get(graphql_ws_placeholder))
         .with_state(handler.clone())
         .layer(Extension(mcp_sessions))
         .route(
