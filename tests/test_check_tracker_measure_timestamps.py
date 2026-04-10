@@ -14,7 +14,10 @@ SCRIPT = REPO_ROOT / "scripts" / "check_tracker_measure_timestamps.py"
 
 class CheckTrackerMeasureTimestampsCliTests(unittest.TestCase):
     def run_validator(
-        self, records: list[dict[str, object]], *ids: str
+        self,
+        records: list[dict[str, object]],
+        *ids: str,
+        require_report_summary: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         with tempfile.NamedTemporaryFile(
             "w", encoding="utf-8", suffix=".jsonl", delete=False
@@ -27,6 +30,8 @@ class CheckTrackerMeasureTimestampsCliTests(unittest.TestCase):
         command = [sys.executable, str(SCRIPT), str(temp_path)]
         for bead_id in ids:
             command.extend(["--id", bead_id])
+        if require_report_summary:
+            command.append("--require-report-summary")
 
         try:
             return subprocess.run(command, capture_output=True, text=True, check=False)
@@ -313,6 +318,97 @@ class CheckTrackerMeasureTimestampsCliTests(unittest.TestCase):
                 }
             ],
             "hx-fake-after-real",
+        )
+
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("all measure timestamps are <= updated_at", result.stdout)
+
+    def test_scoped_validation_fails_when_report_summary_is_required_but_missing(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-missing-report-summary",
+                    "updated_at": "2026-04-09T19:00:00Z",
+                    "notes": (
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:59:11Z</timestamp>"
+                        "</measure-results>"
+                    ),
+                }
+            ],
+            "hx-missing-report-summary",
+            require_report_summary=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            (
+                "hx-missing-report-summary "
+                "(missing <report-summary> timestamp evidence)"
+            ),
+            result.stderr,
+        )
+
+    def test_scoped_validation_fails_when_report_summary_timestamp_is_later_than_updated_at(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-late-report-summary",
+                    "updated_at": "2026-04-09T19:00:00Z",
+                    "notes": (
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:59:11Z</timestamp>"
+                        "</measure-results>"
+                        "<report-summary>"
+                        "<timestamp>2026-04-09T19:00:01Z</timestamp>"
+                        "</report-summary>"
+                    ),
+                }
+            ],
+            "hx-late-report-summary",
+            require_report_summary=True,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            (
+                "hx-late-report-summary has report-summary timestamp "
+                "2026-04-09T19:00:01Z later than updated_at 2026-04-09T19:00:00Z"
+            ),
+            result.stderr,
+        )
+        self.assertIn(
+            (
+                "requested bead IDs lacked validated report-summary evidence: "
+                "hx-late-report-summary (report-summary timestamp later than updated_at)"
+            ),
+            result.stderr,
+        )
+
+    def test_scoped_validation_succeeds_when_report_summary_is_required_and_valid(
+        self,
+    ) -> None:
+        result = self.run_validator(
+            [
+                {
+                    "id": "hx-valid-report-summary",
+                    "updated_at": "2026-04-09T19:00:00Z",
+                    "notes": (
+                        "<measure-results>"
+                        "<timestamp>2026-04-09T18:58:00Z</timestamp>"
+                        "</measure-results>"
+                        "<report-summary>"
+                        "<timestamp>2026-04-09T18:59:00Z</timestamp>"
+                        "</report-summary>"
+                    ),
+                }
+            ],
+            "hx-valid-report-summary",
+            require_report_summary=True,
         )
 
         self.assertEqual(result.returncode, 0)
