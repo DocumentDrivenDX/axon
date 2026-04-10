@@ -838,7 +838,7 @@ mod tests {
     #[tokio::test]
     async fn handler_schema_get_entity_by_id() {
         let ts = test_schema();
-        let handler = make_handler(&[ts.clone()]).await;
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
 
         {
             let mut guard = handler.lock().await;
@@ -873,7 +873,7 @@ mod tests {
     #[tokio::test]
     async fn handler_schema_list_entities() {
         let ts = test_schema();
-        let handler = make_handler(&[ts.clone()]).await;
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
 
         {
             let mut guard = handler.lock().await;
@@ -881,7 +881,7 @@ mod tests {
                 guard
                     .create_entity(CreateEntityRequest {
                         collection: CollectionId::new("tasks"),
-                        id: EntityId::new(&format!("t{i}")),
+                        id: EntityId::new(format!("t{i}")),
                         data: json!({"title": format!("Task {i}")}),
                         actor: None,
                         audit_metadata: None,
@@ -907,7 +907,7 @@ mod tests {
     #[tokio::test]
     async fn handler_schema_create_mutation() {
         let ts = test_schema();
-        let handler = make_handler(&[ts.clone()]).await;
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
 
         let schema =
             build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
@@ -929,7 +929,7 @@ mod tests {
     #[tokio::test]
     async fn handler_schema_update_mutation() {
         let ts = test_schema();
-        let handler = make_handler(&[ts.clone()]).await;
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
 
         {
             let mut guard = handler.lock().await;
@@ -963,7 +963,7 @@ mod tests {
     #[tokio::test]
     async fn handler_schema_update_version_conflict() {
         let ts = test_schema();
-        let handler = make_handler(&[ts.clone()]).await;
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
 
         {
             let mut guard = handler.lock().await;
@@ -1022,7 +1022,7 @@ mod tests {
     #[tokio::test]
     async fn handler_schema_delete_mutation() {
         let ts = test_schema();
-        let handler = make_handler(&[ts.clone()]).await;
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
 
         {
             let mut guard = handler.lock().await;
@@ -1062,7 +1062,7 @@ mod tests {
     #[tokio::test]
     async fn handler_schema_patch_mutation() {
         let ts = test_schema();
-        let handler = make_handler(&[ts.clone()]).await;
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
 
         {
             let mut guard = handler.lock().await;
@@ -1097,7 +1097,7 @@ mod tests {
     #[tokio::test]
     async fn handler_schema_get_not_found_returns_null() {
         let ts = test_schema();
-        let handler = make_handler(&[ts.clone()]).await;
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
 
         let schema =
             build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
