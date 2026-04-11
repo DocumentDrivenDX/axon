@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
 
+use crate::actor_scope::ActorScopeGuard;
 use crate::auth::{AuthContext, AuthError, Identity};
 use crate::collection_listing::{filter_audit_entries_to_database, list_collections_for_database};
 use crate::mcp_http::{notify_entity_change, notify_entity_change_by_parts, McpHttpSessions};
@@ -537,16 +538,21 @@ pub struct TransactionBody {
 
 // ── Route handlers ────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn create_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
+    Extension(actor_scope): Extension<ActorScopeGuard>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<CreateEntityBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
+    if let Err(e) = actor_scope.check(&identity.actor, &collection, &identity.role) {
         return auth_error_response(e);
     }
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
@@ -640,16 +646,21 @@ async fn get_collection_entity<S: StorageAdapter>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn update_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
+    Extension(actor_scope): Extension<ActorScopeGuard>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<UpdateEntityBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
+    if let Err(e) = actor_scope.check(&identity.actor, &collection, &identity.role) {
         return auth_error_response(e);
     }
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
@@ -674,16 +685,21 @@ async fn update_entity<S: StorageAdapter>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn delete_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
+    Extension(actor_scope): Extension<ActorScopeGuard>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     _body: Option<Json<DeleteEntityBody>>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
+    if let Err(e) = actor_scope.check(&identity.actor, &collection, &identity.role) {
         return auth_error_response(e);
     }
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
@@ -745,9 +761,13 @@ async fn create_link<S: StorageAdapter>(
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
+    Extension(actor_scope): Extension<ActorScopeGuard>,
     Json(body): Json<CreateLinkBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
+    if let Err(e) = actor_scope.check(&identity.actor, &body.source_collection, &identity.role) {
         return auth_error_response(e);
     }
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
@@ -788,9 +808,13 @@ async fn delete_link<S: StorageAdapter>(
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
+    Extension(actor_scope): Extension<ActorScopeGuard>,
     Json(body): Json<DeleteLinkBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
+    if let Err(e) = actor_scope.check(&identity.actor, &body.source_collection, &identity.role) {
         return auth_error_response(e);
     }
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
@@ -1002,16 +1026,21 @@ fn rollback_target_from_body(body: &RollbackEntityBody) -> Result<RollbackEntity
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn rollback_collection_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
+    Extension(actor_scope): Extension<ActorScopeGuard>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<RollbackEntityBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
+    if let Err(e) = actor_scope.check(&identity.actor, &collection, &identity.role) {
         return auth_error_response(e);
     }
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
@@ -1160,10 +1189,14 @@ async fn rollback_collection_handler<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(actor_scope): Extension<ActorScopeGuard>,
     Path(CollectionPath { collection }): Path<CollectionPath>,
     Json(body): Json<RollbackCollectionBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
+    if let Err(e) = actor_scope.check(&identity.actor, &collection, &identity.role) {
         return auth_error_response(e);
     }
     let timestamp_ns = match parse_timestamp_ns(&body.timestamp) {
@@ -1598,10 +1631,22 @@ async fn commit_transaction<S: StorageAdapter>(
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
+    Extension(actor_scope): Extension<ActorScopeGuard>,
     Json(body): Json<TransactionBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
         return auth_error_response(e);
+    }
+    // Check actor scope for every collection referenced in the transaction.
+    for op in &body.operations {
+        let collection = match op {
+            TransactionOp::Create { collection, .. }
+            | TransactionOp::Update { collection, .. }
+            | TransactionOp::Delete { collection, .. } => collection,
+        };
+        if let Err(e) = actor_scope.check(&identity.actor, collection, &identity.role) {
+            return auth_error_response(e);
+        }
     }
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
@@ -1785,6 +1830,7 @@ pub fn build_router<S: StorageAdapter + 'static>(
         ui_dir,
         AuthContext::no_auth(),
         crate::rate_limit::RateLimitConfig::default(),
+        ActorScopeGuard::default(),
     )
 }
 
@@ -1845,6 +1891,7 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
     ui_dir: Option<PathBuf>,
     auth: AuthContext,
     rate_limit_config: crate::rate_limit::RateLimitConfig,
+    actor_scope: ActorScopeGuard,
 ) -> Router {
     let start = Instant::now();
     let backend = backend.into();
@@ -1881,6 +1928,7 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
         .route("/graphql/ws", get(graphql_ws_placeholder))
         .with_state(handler.clone())
         .layer(Extension(rate_limiter))
+        .layer(Extension(actor_scope))
         .layer(Extension(mcp_sessions))
         .route(
             "/health",
@@ -2018,6 +2066,7 @@ mod tests {
             None,
             auth,
             crate::rate_limit::RateLimitConfig::default(),
+            ActorScopeGuard::default(),
         )
         .layer(MockConnectInfo(peer));
         TestServer::new(app)
@@ -3998,6 +4047,7 @@ mod tests {
             None,
             auth,
             crate::rate_limit::RateLimitConfig::default(),
+            ActorScopeGuard::default(),
         )
         .layer(MockConnectInfo(peer));
         TestServer::new(app)
@@ -4071,6 +4121,7 @@ mod tests {
             None,
             auth,
             crate::rate_limit::RateLimitConfig::default(),
+            ActorScopeGuard::default(),
         )
         .layer(MockConnectInfo(peer));
         TestServer::new(app)
