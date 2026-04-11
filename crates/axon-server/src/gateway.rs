@@ -1989,7 +1989,7 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
     auth: AuthContext,
     rate_limit_config: crate::rate_limit::RateLimitConfig,
     actor_scope: ActorScopeGuard,
-    control_plane: Option<crate::control_plane_routes::SharedControlPlane>,
+    control_plane: Option<crate::control_plane_routes::ControlPlaneState>,
 ) -> Router {
     let start = Instant::now();
     let backend = backend.into();
@@ -2071,7 +2071,8 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
     }
 
     if let Some(cp) = control_plane {
-        let cp_routes = crate::control_plane_routes::control_plane_routes().with_state(cp);
+        let cp_routes = crate::control_plane_routes::control_plane_routes()
+            .with_state(cp);
         router = router.nest("/control", cp_routes);
     }
 

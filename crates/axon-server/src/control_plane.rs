@@ -57,8 +57,7 @@ impl ControlPlaneDb {
 
     /// Open an in-memory database (useful for testing).
     pub fn open_in_memory() -> Result<Self, AxonError> {
-        let conn =
-            Connection::open_in_memory().map_err(|e| AxonError::Storage(e.to_string()))?;
+        let conn = Connection::open_in_memory().map_err(|e| AxonError::Storage(e.to_string()))?;
         let db = Self { conn };
         db.migrate()?;
         Ok(db)
@@ -123,9 +122,7 @@ impl ControlPlaneDb {
                 },
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    AxonError::NotFound(format!("tenant {id}"))
-                }
+                rusqlite::Error::QueryReturnedNoRows => AxonError::NotFound(format!("tenant {id}")),
                 other => AxonError::Storage(other.to_string()),
             })
     }
@@ -157,12 +154,7 @@ impl ControlPlaneDb {
     // -- nodes --------------------------------------------------------------
 
     /// Register a new node.
-    pub fn create_node(
-        &self,
-        id: &str,
-        address: &str,
-        created_at: &str,
-    ) -> Result<(), AxonError> {
+    pub fn create_node(&self, id: &str, address: &str, created_at: &str) -> Result<(), AxonError> {
         self.conn
             .execute(
                 "INSERT INTO nodes (id, address, created_at) VALUES (?1, ?2, ?3)",
@@ -187,9 +179,7 @@ impl ControlPlaneDb {
                 },
             )
             .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => {
-                    AxonError::NotFound(format!("node {id}"))
-                }
+                rusqlite::Error::QueryReturnedNoRows => AxonError::NotFound(format!("node {id}")),
                 other => AxonError::Storage(other.to_string()),
             })
     }
@@ -269,6 +259,82 @@ impl ControlPlaneDb {
             dbs.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
         }
         Ok(dbs)
+    }
+
+    /// Count databases assigned to a given tenant.
+    pub fn count_databases_for_tenant(&self, tenant_id: &str) -> Result<i64, AxonError> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM tenant_databases WHERE tenant_id = ?1",
+                params![tenant_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))
+    }
+
+    /// Remove a database assignment from a tenant.
+    ///
+    /// Returns `Ok(true)` if a row was deleted, `Ok(false)` if no matching
+    /// assignment existed.
+    pub fn remove_database(
+        &self,
+        tenant_id: &str,
+        db_name: &str,
+    ) -> Result<bool, AxonError> {
+        let rows = self
+            .conn
+            .execute(
+                "DELETE FROM tenant_databases WHERE tenant_id = ?1 AND db_name = ?2",
+                params![tenant_id, db_name],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows > 0)
+    }
+
+    /// Delete a tenant.
+    ///
+    /// If `force` is `false` and the tenant still has database assignments, an
+    /// `InvalidOperation` error is returned.  When `force` is `true`, all
+    /// database assignments are removed first (cascade).
+    ///
+    /// Returns the list of database names that were removed (empty when the
+    /// tenant had no databases or `force` was `false`).
+    pub fn delete_tenant(
+        &self,
+        tenant_id: &str,
+        force: bool,
+    ) -> Result<Vec<String>, AxonError> {
+        // Verify the tenant exists.
+        self.get_tenant(tenant_id)?;
+
+        let count = self.count_databases_for_tenant(tenant_id)?;
+
+        if count > 0 && !force {
+            return Err(AxonError::InvalidOperation(format!(
+                "tenant {tenant_id} still has {count} database(s); use force=true to cascade delete"
+            )));
+        }
+
+        // Collect database names that will be removed (for caller to clean up files).
+        let removed_dbs = if count > 0 {
+            let dbs = self.list_databases_for_tenant(tenant_id)?;
+            let names: Vec<String> = dbs.into_iter().map(|d| d.db_name).collect();
+            self.conn
+                .execute(
+                    "DELETE FROM tenant_databases WHERE tenant_id = ?1",
+                    params![tenant_id],
+                )
+                .map_err(|e| AxonError::Storage(e.to_string()))?;
+            names
+        } else {
+            Vec::new()
+        };
+
+        self.conn
+            .execute("DELETE FROM tenants WHERE id = ?1", params![tenant_id])
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        Ok(removed_dbs)
     }
 }
 
@@ -466,5 +532,119 @@ mod tests {
             matches!(err, AxonError::Storage(_)),
             "expected Storage (PK violation), got {err:?}"
         );
+    }
+
+    // -- remove_database ------------------------------------------------------
+
+    #[test]
+    fn remove_database_returns_true() {
+        let db = setup();
+        db.create_tenant("t1", "Acme", "2026-01-01T00:00:00Z")
+            .expect("tenant");
+        db.assign_database("t1", "mydb", None, "2026-01-02T00:00:00Z")
+            .expect("assign");
+
+        let removed = db.remove_database("t1", "mydb").expect("remove");
+        assert!(removed);
+
+        let dbs = db.list_databases_for_tenant("t1").expect("list");
+        assert!(dbs.is_empty());
+    }
+
+    #[test]
+    fn remove_nonexistent_database_returns_false() {
+        let db = setup();
+        db.create_tenant("t1", "Acme", "2026-01-01T00:00:00Z")
+            .expect("tenant");
+        let removed = db.remove_database("t1", "no-such-db").expect("remove");
+        assert!(!removed);
+    }
+
+    // -- delete_tenant --------------------------------------------------------
+
+    #[test]
+    fn delete_tenant_without_databases() {
+        let db = setup();
+        db.create_tenant("t1", "Acme", "2026-01-01T00:00:00Z")
+            .expect("tenant");
+
+        let removed_dbs = db.delete_tenant("t1", false).expect("delete");
+        assert!(removed_dbs.is_empty());
+
+        let err = db.get_tenant("t1").unwrap_err();
+        assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn delete_tenant_with_databases_rejected_without_force() {
+        let db = setup();
+        db.create_tenant("t1", "Acme", "2026-01-01T00:00:00Z")
+            .expect("tenant");
+        db.assign_database("t1", "mydb", None, "2026-01-02T00:00:00Z")
+            .expect("assign");
+
+        let err = db.delete_tenant("t1", false).unwrap_err();
+        assert!(
+            matches!(err, AxonError::InvalidOperation(_)),
+            "expected InvalidOperation, got {err:?}"
+        );
+
+        // Tenant and database should still exist.
+        db.get_tenant("t1").expect("tenant still exists");
+        assert_eq!(
+            db.list_databases_for_tenant("t1").expect("list").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn delete_tenant_with_databases_force_cascades() {
+        let db = setup();
+        db.create_tenant("t1", "Acme", "2026-01-01T00:00:00Z")
+            .expect("tenant");
+        db.assign_database("t1", "db1", None, "2026-01-02T00:00:00Z")
+            .expect("assign");
+        db.assign_database("t1", "db2", None, "2026-01-03T00:00:00Z")
+            .expect("assign");
+
+        let removed_dbs = db.delete_tenant("t1", true).expect("force delete");
+        assert_eq!(removed_dbs.len(), 2);
+        assert!(removed_dbs.contains(&"db1".to_string()));
+        assert!(removed_dbs.contains(&"db2".to_string()));
+
+        let err = db.get_tenant("t1").unwrap_err();
+        assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn delete_nonexistent_tenant_returns_not_found() {
+        let db = setup();
+        let err = db.delete_tenant("no-such-id", false).unwrap_err();
+        assert!(
+            matches!(err, AxonError::NotFound(_)),
+            "expected NotFound, got {err:?}"
+        );
+    }
+
+    // -- count_databases_for_tenant -------------------------------------------
+
+    #[test]
+    fn count_databases_for_tenant_empty() {
+        let db = setup();
+        db.create_tenant("t1", "Acme", "2026-01-01T00:00:00Z")
+            .expect("tenant");
+        assert_eq!(db.count_databases_for_tenant("t1").expect("count"), 0);
+    }
+
+    #[test]
+    fn count_databases_for_tenant_with_databases() {
+        let db = setup();
+        db.create_tenant("t1", "Acme", "2026-01-01T00:00:00Z")
+            .expect("tenant");
+        db.assign_database("t1", "db1", None, "2026-01-02T00:00:00Z")
+            .expect("assign");
+        db.assign_database("t1", "db2", None, "2026-01-03T00:00:00Z")
+            .expect("assign");
+        assert_eq!(db.count_databases_for_tenant("t1").expect("count"), 2);
     }
 }

@@ -178,14 +178,21 @@ where
     })?;
 
     let control_plane_db =
-        axon_server::control_plane::ControlPlaneDb::open(&args.control_plane_path).map_err(
-            |error| format!("failed to open control-plane database: {error}"),
-        )?;
-    let control_plane = Arc::new(tokio::sync::Mutex::new(control_plane_db));
+        axon_server::control_plane::ControlPlaneDb::open(&args.control_plane_path)
+            .map_err(|error| format!("failed to open control-plane database: {error}"))?;
+    let control_plane_db = Arc::new(tokio::sync::Mutex::new(control_plane_db));
     tracing::info!(
         "control-plane database opened at {}",
         args.control_plane_path
     );
+
+    // Derive the data directory for tenant databases from the control-plane path.
+    let data_dir = std::path::Path::new(&args.control_plane_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let control_plane_state =
+        axon_server::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir);
 
     let handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(storage)));
     let http_app = axon_server::gateway::build_router_with_auth(
@@ -195,7 +202,7 @@ where
         auth.clone(),
         axon_server::rate_limit::RateLimitConfig::default(),
         axon_server::actor_scope::ActorScopeGuard::default(),
-        Some(control_plane),
+        Some(control_plane_state),
     );
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
