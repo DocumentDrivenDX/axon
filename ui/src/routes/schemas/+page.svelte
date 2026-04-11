@@ -2,9 +2,11 @@
 import {
 	type CollectionSchema,
 	type CollectionSummary,
+	type SchemaPreviewResult,
 	createCollection,
 	fetchCollections,
 	fetchSchema,
+	previewSchemaChange,
 	updateSchema,
 } from '$lib/api';
 import { onMount } from 'svelte';
@@ -20,6 +22,8 @@ let error: string | null = null;
 let createCollectionName = '';
 // biome-ignore lint/style/useConst: Svelte template reassigns this via on:click handlers.
 let viewMode: 'structured' | 'raw' = 'structured';
+let preview: SchemaPreviewResult | null = null;
+let previewLoading = false;
 // biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
 let createSchemaJson = `{
   "type": "object",
@@ -213,6 +217,8 @@ async function selectCollection(collectionName: string) {
 	validationError = null;
 	statusMessage = null;
 	error = null;
+	preview = null;
+	previewLoading = false;
 }
 
 function validateJson() {
@@ -228,7 +234,29 @@ function validateJson() {
 	}
 }
 
-async function saveSchema() {
+async function requestPreview() {
+	if (!selectedCollection || !validateJson()) {
+		return;
+	}
+
+	previewLoading = true;
+	preview = null;
+	error = null;
+
+	try {
+		preview = await previewSchemaChange(
+			selectedCollection,
+			JSON.parse(editJson) as CollectionSchema,
+		);
+		statusMessage = null;
+	} catch (errorValue: unknown) {
+		error = errorValue instanceof Error ? errorValue.message : 'Failed to preview schema change';
+	} finally {
+		previewLoading = false;
+	}
+}
+
+async function confirmSave(force: boolean) {
 	if (!selectedCollection || !validateJson()) {
 		return;
 	}
@@ -237,9 +265,11 @@ async function saveSchema() {
 		selectedSchema = await updateSchema(
 			selectedCollection,
 			JSON.parse(editJson) as CollectionSchema,
+			{ force },
 		);
 		editJson = JSON.stringify(selectedSchema, null, 2);
 		editMode = false;
+		preview = null;
 		statusMessage = `Saved schema for ${selectedCollection}.`;
 		error = null;
 		await loadCollections(selectedCollection);
@@ -352,13 +382,56 @@ onMount(() => {
 				{#if !selectedSchema}
 					<p class="muted">Select a collection to inspect its schema.</p>
 				{:else if editMode}
-					<textarea bind:value={editJson} on:input={validateJson}></textarea>
+					<textarea bind:value={editJson} on:input={() => { validateJson(); preview = null; }}></textarea>
 					{#if validationError}
 						<p class="message error">{validationError}</p>
 					{/if}
-					{#if statusMessage && !validationError}
+					{#if statusMessage && !validationError && !preview}
 						<p class="message">{statusMessage}</p>
 					{/if}
+
+					{#if preview}
+						<div class="preview-panel" class:preview-breaking={preview.compatibility === 'breaking'} class:preview-compatible={preview.compatibility === 'compatible'} class:preview-metadata={preview.compatibility === 'metadata_only'}>
+							<div class="preview-header">
+								<strong>Schema Change Preview</strong>
+								{#if preview.compatibility === 'breaking'}
+									<span class="pill preview-pill-breaking">Breaking</span>
+								{:else if preview.compatibility === 'compatible'}
+									<span class="pill preview-pill-compatible">Compatible</span>
+								{:else if preview.compatibility === 'metadata_only'}
+									<span class="pill preview-pill-metadata">Metadata Only</span>
+								{/if}
+							</div>
+
+							{#if preview.diff && preview.diff.changes.length > 0}
+								<ul class="preview-changes">
+									{#each preview.diff.changes as change}
+										<li>
+											<code>{change.path}</code>
+											<span class="pill preview-kind-pill">{change.kind}</span>
+											<span class="muted">{change.description}</span>
+										</li>
+									{/each}
+								</ul>
+							{:else}
+								<p class="muted">No field-level changes detected.</p>
+							{/if}
+
+							{#if preview.compatibility === 'breaking'}
+								<p class="preview-warning">This change is breaking and may invalidate existing entities. Force save to apply.</p>
+							{/if}
+
+							<div class="actions">
+								<button on:click={() => { preview = null; }}>Back to Edit</button>
+								{#if preview.compatibility === 'breaking'}
+									<button class="danger" on:click={() => confirmSave(true)}>Force Save</button>
+								{:else}
+									<button class="primary" on:click={() => confirmSave(false)}>Save Schema</button>
+								{/if}
+							</div>
+						</div>
+					{/if}
+
 					<div class="actions">
 						<button
 							on:click={() => {
@@ -366,13 +439,16 @@ onMount(() => {
 								editJson = JSON.stringify(selectedSchema, null, 2);
 								validationError = null;
 								statusMessage = null;
+								preview = null;
 							}}
 						>
 							Cancel
 						</button>
-						<button class="primary" disabled={!!validationError} on:click={saveSchema}>
-							Save Schema
-						</button>
+						{#if !preview}
+							<button class="primary" disabled={!!validationError || previewLoading} on:click={requestPreview}>
+								{previewLoading ? 'Checking...' : 'Preview Changes'}
+							</button>
+						{/if}
 					</div>
 				{:else if viewMode === 'raw'}
 					<pre>{JSON.stringify(selectedSchema, null, 2)}</pre>
@@ -660,5 +736,90 @@ onMount(() => {
 
 	.small {
 		font-size: 0.82rem;
+	}
+
+	/* ── Schema preview panel ─────────────────────────────────────── */
+
+	.preview-panel {
+		border: 1px solid var(--border);
+		border-radius: 1rem;
+		padding: 1rem;
+		background: rgba(15, 23, 32, 0.6);
+	}
+
+	.preview-breaking {
+		border-color: var(--danger);
+	}
+
+	.preview-compatible {
+		border-color: var(--success);
+	}
+
+	.preview-metadata {
+		border-color: var(--accent);
+	}
+
+	.preview-header {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		margin-bottom: 0.75rem;
+	}
+
+	.preview-pill-breaking {
+		border-color: var(--danger);
+		color: var(--danger);
+	}
+
+	.preview-pill-compatible {
+		border-color: var(--success);
+		color: var(--success);
+	}
+
+	.preview-pill-metadata {
+		border-color: var(--accent);
+		color: var(--accent);
+	}
+
+	.preview-changes {
+		list-style: none;
+		padding: 0;
+		margin: 0 0 0.75rem 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.preview-changes li {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		font-size: 0.9rem;
+	}
+
+	.preview-kind-pill {
+		display: inline-block;
+		border: 1px solid var(--border);
+		border-radius: 0.5rem;
+		padding: 0.1rem 0.4rem;
+		font-size: 0.78rem;
+		color: var(--muted);
+		background: rgba(15, 23, 32, 0.6);
+	}
+
+	.preview-warning {
+		color: var(--danger);
+		font-size: 0.9rem;
+		margin: 0.5rem 0;
+	}
+
+	button.danger {
+		background: rgba(251, 113, 133, 0.15);
+		border-color: var(--danger);
+		color: var(--danger);
+	}
+
+	button.danger:hover {
+		background: rgba(251, 113, 133, 0.25);
 	}
 </style>

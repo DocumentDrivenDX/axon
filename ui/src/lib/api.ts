@@ -11,6 +11,33 @@ export type CollectionSchema = {
 	link_types?: Record<string, unknown>;
 };
 
+export type FieldChange = {
+	path: string;
+	kind:
+		| 'added'
+		| 'removed'
+		| 'modified'
+		| 'made_required'
+		| 'made_optional'
+		| 'enum_widened'
+		| 'enum_narrowed'
+		| 'constraint_tightened'
+		| 'constraint_relaxed';
+	description: string;
+};
+
+export type SchemaDiff = {
+	compatibility: 'compatible' | 'breaking' | 'metadata_only';
+	changes: FieldChange[];
+};
+
+export type SchemaPreviewResult = {
+	schema: CollectionSchema;
+	compatibility: 'compatible' | 'breaking' | 'metadata_only' | null;
+	diff: SchemaDiff | null;
+	dry_run: boolean;
+};
+
 export type CollectionSummary = {
 	name: string;
 	entity_count: number;
@@ -184,6 +211,7 @@ export async function fetchSchema(collection: string): Promise<CollectionSchema>
 export async function updateSchema(
 	collection: string,
 	schema: CollectionSchema,
+	options?: { force?: boolean },
 ): Promise<CollectionSchema> {
 	const response = await request<{ schema: CollectionSchema }>(
 		`/collections/${encodeURIComponent(collection)}/schema`,
@@ -195,11 +223,29 @@ export async function updateSchema(
 				entity_schema: schema.entity_schema ?? null,
 				link_types: schema.link_types ?? {},
 				actor: 'ui',
+				force: options?.force ?? false,
 			}),
 		},
 	);
 
 	return response.schema;
+}
+
+export async function previewSchemaChange(
+	collection: string,
+	schema: CollectionSchema,
+): Promise<SchemaPreviewResult> {
+	return request<SchemaPreviewResult>(`/collections/${encodeURIComponent(collection)}/schema`, {
+		method: 'PUT',
+		body: JSON.stringify({
+			description: schema.description ?? null,
+			version: schema.version,
+			entity_schema: schema.entity_schema ?? null,
+			link_types: schema.link_types ?? {},
+			actor: 'ui',
+			dry_run: true,
+		}),
+	});
 }
 
 export async function createCollection(
