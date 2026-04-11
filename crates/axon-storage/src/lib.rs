@@ -1,6 +1,4 @@
-// deny rather than forbid: sqlite.rs and postgres.rs need `unsafe impl Send/Sync`
-// for connection wrappers used behind Arc<Mutex<>>.
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 //! Storage adapter trait and in-memory implementation for Axon.
 //!
 //! `axon-storage` defines the `StorageAdapter` trait that abstracts over

@@ -2460,8 +2460,8 @@ mod tests {
         s.put_schema(&v2).expect("schema v2 put should succeed");
 
         let stored_collections: Vec<String> = {
-            let mut stmt = s
-                .conn
+            let conn = s.conn.lock().expect("lock");
+                let mut stmt = conn
                 .prepare(
                     "SELECT collection FROM schema_versions
                      WHERE database_name = ?1 AND schema_name = ?2
@@ -2519,7 +2519,7 @@ mod tests {
         assert_eq!(stored.version, 1);
 
         let stored_collection: String = s
-            .conn
+            .conn.lock().expect("lock")
             .query_row(
                 "SELECT collection FROM collection_views
                  WHERE database_name = ?1 AND schema_name = ?2",
@@ -2599,7 +2599,7 @@ mod tests {
 
         // Audit entry must also be absent (rolled back with the transaction).
         let count: i64 = s
-            .conn
+            .conn.lock().expect("lock")
             .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
             .expect("test operation should succeed");
         assert_eq!(count, 0, "audit entry must be rolled back with the entity");
@@ -2637,7 +2637,7 @@ mod tests {
 
         // Audit entry must also be present.
         let count: i64 = s
-            .conn
+            .conn.lock().expect("lock")
             .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
             .expect("test operation should succeed");
         assert_eq!(

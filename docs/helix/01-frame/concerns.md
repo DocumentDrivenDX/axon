@@ -21,7 +21,7 @@
 - **Edition**: currently 2021; upgrade to 2024 is tracked work
 - **MSRV**: 1.75 — lower than niflheim's; raise as dependencies allow
 - **Toolchain pinning**: `rust-toolchain.toml` at project root (not a wrapper script). This is the standard rustup mechanism for reproducible builds and is equivalent to the concern library's wrapper-script recommendation.
-- **Unsafe code policy**: `#![forbid(unsafe_code)]` in all library crates except axon-storage which uses `#![deny(unsafe_code)]` (storage adapters implement `unsafe Send` for connection wrappers with `#[allow(unsafe_code)]` on those specific impls). Binary crates are not restricted. Project code must not introduce new `unsafe` blocks.
+- **Unsafe code policy**: `#![forbid(unsafe_code)]` in all library crates (axon-core, axon-schema, axon-audit, axon-storage, axon-api, axon-graphql, axon-mcp, axon-render). Binary crates (axon-server, axon-cli, axon-sim) are not restricted because upstream dependencies may require it, but project code must not introduce `unsafe` blocks.
 - **Workspace lints**: `[workspace.lints]` configured with clippy pedantic+nursery (resolved)
 - **cargo-deny**: `deny.toml` configured for license, advisory, ban, source checks (resolved)
 
