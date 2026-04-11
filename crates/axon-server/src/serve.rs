@@ -1,4 +1,7 @@
-//! Axon server binary — starts HTTP gateway, gRPC service, or MCP stdio.
+//! Server startup logic — starts HTTP gateway, gRPC service, or MCP stdio.
+//!
+//! Extracted from the former `main.rs` binary so that `axon-cli` (or any
+//! other binary) can invoke [`serve`] as a library call.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -9,19 +12,19 @@ use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 use axon_api::handler::AxonHandler;
-use axon_server::service::{AxonServiceImpl, AxonServiceServer};
-use axon_server::{AuthContext, Role};
+use crate::service::{AxonServiceImpl, AxonServiceServer};
+use crate::{AuthContext, Role};
 use axon_storage::{MemoryStorageAdapter, PostgresStorageAdapter, SqliteStorageAdapter};
 
 #[derive(Clone, Debug, clap::ValueEnum)]
-enum StorageBackend {
+pub enum StorageBackend {
     Memory,
     Sqlite,
     Postgres,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
-enum DefaultRoleArg {
+pub enum DefaultRoleArg {
     Admin,
     Write,
     Read,
@@ -39,15 +42,15 @@ impl From<DefaultRoleArg> for Role {
 
 /// Axon server — schema-first transactional data store for agentic applications.
 #[derive(Parser)]
-#[command(name = "axon-server", version)]
-struct Args {
+#[command(name = "axon-serve", version)]
+pub struct ServeArgs {
     /// Port for the HTTP/JSON gateway.
-    #[arg(long, env = "AXON_HTTP_PORT", default_value = "3000")]
-    http_port: u16,
+    #[arg(long, env = "AXON_HTTP_PORT", default_value = "4170")]
+    pub http_port: u16,
 
-    /// Port for the gRPC service.
-    #[arg(long, env = "AXON_GRPC_PORT", default_value = "50051")]
-    grpc_port: u16,
+    /// Port for the gRPC service. When omitted, gRPC is not started.
+    #[arg(long, env = "AXON_GRPC_PORT")]
+    pub grpc_port: Option<u16>,
 
     /// Disable authentication — all requests succeed as admin with actor="anonymous".
     /// Intended for local development only.
@@ -59,7 +62,7 @@ struct Args {
         default_value = "false",
         value_parser = clap::builder::BoolishValueParser::new()
     )]
-    no_auth: bool,
+    pub no_auth: bool,
 
     /// Path to the local tailscaled socket for LocalAPI whois lookups.
     #[arg(
@@ -67,7 +70,7 @@ struct Args {
         env = "AXON_TAILSCALE_SOCKET",
         default_value = "/run/tailscale/tailscaled.sock"
     )]
-    tailscale_socket: PathBuf,
+    pub tailscale_socket: PathBuf,
 
     /// Default role assigned to Tailscale nodes without a recognized ACL tag.
     #[arg(
@@ -76,34 +79,34 @@ struct Args {
         value_enum,
         default_value = "read"
     )]
-    tailscale_default_role: DefaultRoleArg,
+    pub tailscale_default_role: DefaultRoleArg,
 
     /// Enable guest mode: unauthenticated requests get the specified role
     /// instead of being rejected. This is opt-in; the default role is `read`.
     /// When set, Tailscale auth is not required. Mutually exclusive with `--no-auth`.
     #[arg(long, env = "AXON_GUEST_ROLE", value_enum)]
-    guest_role: Option<DefaultRoleArg>,
+    pub guest_role: Option<DefaultRoleArg>,
 
     /// TTL in seconds for cached Tailscale whois identity lookups.
     #[arg(long, env = "AXON_AUTH_CACHE_TTL_SECS", default_value = "60")]
-    auth_cache_ttl_secs: u64,
+    pub auth_cache_ttl_secs: u64,
 
     /// Run MCP server over stdin/stdout instead of HTTP/gRPC.
     /// No authentication is applied for stdio connections.
     #[arg(long)]
-    mcp_stdio: bool,
+    pub mcp_stdio: bool,
 
     /// Backing storage adapter.
     #[arg(long, env = "AXON_STORAGE", value_enum, default_value = "sqlite")]
-    storage: StorageBackend,
+    pub storage: StorageBackend,
 
     /// SQLite database path when `--storage=sqlite`.
     #[arg(long, env = "AXON_SQLITE_PATH", default_value = "axon-server.db")]
-    sqlite_path: String,
+    pub sqlite_path: String,
 
     /// PostgreSQL DSN when `--storage=postgres`.
     #[arg(long, env = "AXON_POSTGRES_DSN")]
-    postgres_dsn: Option<String>,
+    pub postgres_dsn: Option<String>,
 
     /// SQLite database path for the control-plane (tenant provisioning).
     #[arg(
@@ -111,24 +114,47 @@ struct Args {
         env = "AXON_CONTROL_PLANE_PATH",
         default_value = "axon-control-plane.db"
     )]
-    control_plane_path: String,
+    pub control_plane_path: String,
 
     /// Serve built admin UI assets from this directory under the `/ui` path prefix.
     #[arg(long, env = "AXON_UI_DIR")]
-    ui_dir: Option<PathBuf>,
+    pub ui_dir: Option<PathBuf>,
 }
 
-#[tokio::main]
-async fn main() {
-    let args = Args::parse();
-    if let Err(error) = run(args).await {
-        tracing::error!("{error}");
-        std::process::exit(1);
+/// Initialise the `tracing` subscriber.
+///
+/// When `mcp_stdio` is true, log output is directed to stderr so that stdout
+/// remains clean for the MCP JSON-RPC protocol.
+pub fn init_tracing(mcp_stdio: bool) {
+    let subscriber = tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env());
+    let result = if mcp_stdio {
+        subscriber.with_writer(std::io::stderr).try_init()
+    } else {
+        subscriber.try_init()
+    };
+    let _ = result;
+}
+
+/// Resolve the [`AuthContext`] from [`ServeArgs`].
+pub fn auth_context_from_serve_args(args: &ServeArgs) -> AuthContext {
+    if args.no_auth {
+        AuthContext::no_auth()
+    } else if let Some(ref guest_role) = args.guest_role {
+        AuthContext::guest(guest_role.clone().into())
+    } else {
+        AuthContext::tailscale(
+            args.tailscale_default_role.clone().into(),
+            args.tailscale_socket.clone(),
+            Duration::from_secs(args.auth_cache_ttl_secs),
+        )
     }
 }
 
-async fn run(args: Args) -> Result<(), String> {
-    // For MCP stdio mode, minimize logging to stderr so stdout is clean.
+/// Entry point that replaces the former binary `main`.
+///
+/// Selects the storage backend based on `args.storage` and delegates to
+/// [`run_with_storage`].
+pub async fn serve(args: ServeArgs) -> Result<(), String> {
     init_tracing(args.mcp_stdio);
 
     if args.no_auth {
@@ -162,9 +188,9 @@ async fn run(args: Args) -> Result<(), String> {
     }
 }
 
-async fn run_with_storage<S>(
+pub async fn run_with_storage<S>(
     storage: S,
-    args: &Args,
+    args: &ServeArgs,
     backend: impl Into<String>,
 ) -> Result<(), String>
 where
@@ -175,10 +201,10 @@ where
     if args.mcp_stdio {
         tracing::info!("starting MCP stdio server with backend {backend}");
         let handler = Arc::new(std::sync::Mutex::new(AxonHandler::new(storage)));
-        return axon_server::run_mcp_stdio(handler, &[]).map_err(|error| error.to_string());
+        return crate::run_mcp_stdio(handler, &[]).map_err(|error| error.to_string());
     }
 
-    let auth = auth_context_from_args(args);
+    let auth = auth_context_from_serve_args(args);
 
     auth.verify().await.map_err(|error| {
         format!(
@@ -188,7 +214,7 @@ where
     })?;
 
     let control_plane_db =
-        axon_server::control_plane::ControlPlaneDb::open(&args.control_plane_path)
+        crate::control_plane::ControlPlaneDb::open(&args.control_plane_path)
             .map_err(|error| format!("failed to open control-plane database: {error}"))?;
     let control_plane_db = Arc::new(tokio::sync::Mutex::new(control_plane_db));
     tracing::info!(
@@ -202,25 +228,21 @@ where
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
     let control_plane_state =
-        axon_server::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir);
+        crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir);
 
     let handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(storage)));
-    let http_app = axon_server::gateway::build_router_with_auth(
+    let http_app = crate::gateway::build_router_with_auth(
         handler.clone(),
         backend.clone(),
         args.ui_dir.clone(),
         auth.clone(),
-        axon_server::rate_limit::RateLimitConfig::default(),
-        axon_server::actor_scope::ActorScopeGuard::default(),
+        crate::rate_limit::RateLimitConfig::default(),
+        crate::actor_scope::ActorScopeGuard::default(),
         Some(control_plane_state),
     );
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
-    let grpc_svc = AxonServiceImpl::from_shared_with_auth(handler, auth);
-    let grpc_addr: SocketAddr = ([0, 0, 0, 0], args.grpc_port).into();
-
     tracing::info!("HTTP gateway listening on {http_addr}");
-    tracing::info!("gRPC service listening on {grpc_addr}");
 
     let http_handle = tokio::spawn(async move {
         let listener = tokio::net::TcpListener::bind(http_addr)
@@ -235,50 +257,38 @@ where
         .map_err(|error| format!("HTTP server error: {error}"))
     });
 
-    let grpc_handle = tokio::spawn(async move {
-        tonic::transport::Server::builder()
-            .add_service(AxonServiceServer::new(grpc_svc))
-            .serve_with_shutdown(grpc_addr, shutdown_signal())
-            .await
-            .map_err(|error| format!("gRPC server error: {error}"))
-    });
+    if let Some(port) = args.grpc_port {
+        let grpc_svc = AxonServiceImpl::from_shared_with_auth(handler, auth);
+        let grpc_addr: SocketAddr = ([0, 0, 0, 0], port).into();
+        tracing::info!("gRPC service listening on {grpc_addr}");
 
-    tokio::select! {
-        result = http_handle => {
-            result.map_err(|error| format!("HTTP task join error: {error}"))??;
+        let grpc_handle = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(AxonServiceServer::new(grpc_svc))
+                .serve_with_shutdown(grpc_addr, shutdown_signal())
+                .await
+                .map_err(|error| format!("gRPC server error: {error}"))
+        });
+
+        tokio::select! {
+            result = http_handle => {
+                result.map_err(|error| format!("HTTP task join error: {error}"))??;
+            }
+            result = grpc_handle => {
+                result.map_err(|error| format!("gRPC task join error: {error}"))??;
+            }
         }
-        result = grpc_handle => {
-            result.map_err(|error| format!("gRPC task join error: {error}"))??;
-        }
+    } else {
+        // gRPC disabled — only run the HTTP server.
+        http_handle
+            .await
+            .map_err(|error| format!("HTTP task join error: {error}"))??;
     }
+
     Ok(())
 }
 
-fn init_tracing(mcp_stdio: bool) {
-    let subscriber = tracing_subscriber::fmt().with_env_filter(EnvFilter::from_default_env());
-    let result = if mcp_stdio {
-        subscriber.with_writer(std::io::stderr).try_init()
-    } else {
-        subscriber.try_init()
-    };
-    let _ = result;
-}
-
-fn auth_context_from_args(args: &Args) -> AuthContext {
-    if args.no_auth {
-        AuthContext::no_auth()
-    } else if let Some(ref guest_role) = args.guest_role {
-        AuthContext::guest(guest_role.clone().into())
-    } else {
-        AuthContext::tailscale(
-            args.tailscale_default_role.clone().into(),
-            args.tailscale_socket.clone(),
-            Duration::from_secs(args.auth_cache_ttl_secs),
-        )
-    }
-}
-
-async fn shutdown_signal() {
+pub async fn shutdown_signal() {
     tokio::signal::ctrl_c()
         .await
         .expect("failed to install CTRL+C handler");
@@ -290,15 +300,17 @@ mod tests {
     use clap::Parser;
 
     use super::*;
-    use axon_server::AuthMode;
+    use crate::AuthMode;
 
     #[test]
     fn cli_defaults_to_tailscale_auth() {
-        let args = Args::parse_from(["axon-server"]);
+        let args = ServeArgs::parse_from(["axon-serve"]);
 
         assert!(!args.no_auth, "default startup must keep auth enabled");
+        assert_eq!(args.http_port, 4170);
+        assert!(args.grpc_port.is_none(), "gRPC should be off by default");
         assert_eq!(
-            auth_context_from_args(&args).mode(),
+            auth_context_from_serve_args(&args).mode(),
             &AuthMode::Tailscale {
                 default_role: Role::Read,
             }
@@ -307,53 +319,65 @@ mod tests {
 
     #[test]
     fn cli_no_auth_flag_keeps_explicit_bypass() {
-        let args = Args::parse_from(["axon-server", "--no-auth"]);
+        let args = ServeArgs::parse_from(["axon-serve", "--no-auth"]);
 
         assert!(args.no_auth, "--no-auth must remain an explicit bypass");
-        assert_eq!(auth_context_from_args(&args).mode(), &AuthMode::NoAuth);
+        assert_eq!(
+            auth_context_from_serve_args(&args).mode(),
+            &AuthMode::NoAuth
+        );
     }
 
     #[test]
     fn cli_no_auth_accepts_boolish_values() {
-        let args = Args::parse_from(["axon-server", "--no-auth=1"]);
+        let args = ServeArgs::parse_from(["axon-serve", "--no-auth=1"]);
 
         assert!(
             args.no_auth,
             "boolish values must enable the no-auth bypass"
         );
-        assert_eq!(auth_context_from_args(&args).mode(), &AuthMode::NoAuth);
+        assert_eq!(
+            auth_context_from_serve_args(&args).mode(),
+            &AuthMode::NoAuth
+        );
     }
 
     #[test]
     fn cli_guest_role_enables_guest_mode() {
-        let args = Args::parse_from(["axon-server", "--guest-role=read"]);
+        let args = ServeArgs::parse_from(["axon-serve", "--guest-role=read"]);
 
         assert!(!args.no_auth);
         assert_eq!(
-            auth_context_from_args(&args).mode(),
+            auth_context_from_serve_args(&args).mode(),
             &AuthMode::Guest { role: Role::Read }
         );
     }
 
     #[test]
     fn cli_guest_role_write() {
-        let args = Args::parse_from(["axon-server", "--guest-role=write"]);
+        let args = ServeArgs::parse_from(["axon-serve", "--guest-role=write"]);
 
         assert_eq!(
-            auth_context_from_args(&args).mode(),
+            auth_context_from_serve_args(&args).mode(),
             &AuthMode::Guest { role: Role::Write }
         );
     }
 
     #[test]
     fn cli_no_auth_takes_precedence_over_guest_role() {
-        let args = Args::parse_from(["axon-server", "--no-auth", "--guest-role=read"]);
+        let args = ServeArgs::parse_from(["axon-serve", "--no-auth", "--guest-role=read"]);
 
         assert!(args.no_auth);
         assert_eq!(
-            auth_context_from_args(&args).mode(),
+            auth_context_from_serve_args(&args).mode(),
             &AuthMode::NoAuth,
             "--no-auth should take precedence over --guest-role"
         );
+    }
+
+    #[test]
+    fn grpc_opt_in_with_port() {
+        let args = ServeArgs::parse_from(["axon-serve", "--grpc-port", "4171"]);
+        assert_eq!(args.grpc_port, Some(4171));
     }
 }
