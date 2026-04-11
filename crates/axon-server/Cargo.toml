@@ -33,6 +33,7 @@ tower-http = { version = "0.6", features = ["fs"] }
 tokio-stream.workspace = true
 uuid.workspace = true
 humantime.workspace = true
+rusqlite.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["prost"]
