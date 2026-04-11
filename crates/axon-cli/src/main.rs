@@ -1,10 +1,12 @@
 //! Axon command-line interface.
 //!
-//! Runs in embedded mode (direct SQLite access, no server). All state is
-//! stored in the database file specified by `--db` (default: `axon.db`).
-//! The audit log is in-memory and covers only the current command.
+//! Single binary for Axon: embedded CLI, HTTP server, MCP stdio,
+//! diagnostics, and service management.
 
 #![allow(clippy::print_stdout)]
+
+mod doctor;
+mod service;
 
 use anyhow::{Context, Result};
 use axon_api::handler::AxonHandler;
@@ -46,9 +48,9 @@ enum EntityRenderFormat {
 #[derive(Parser)]
 #[command(name = "axon", about = "Axon data store CLI", version)]
 pub struct Cli {
-    /// Path to the SQLite database file.
-    #[arg(long, default_value = "axon.db", global = true)]
-    db: String,
+    /// Path to the SQLite database file (default: XDG data dir).
+    #[arg(long, global = true)]
+    db: Option<String>,
 
     /// Output format.
     #[arg(long, default_value = "table", global = true)]
@@ -89,11 +91,65 @@ enum Command {
     Schema(SchemaCmd),
 
     /// Show current configuration.
-    Config,
+    #[command(subcommand)]
+    Config(ConfigCmd),
 
     /// Bead (work item) management.
     #[command(subcommand)]
     Bead(BeadCmd),
+
+    /// Start the Axon server (HTTP gateway, optional gRPC).
+    #[cfg(feature = "serve")]
+    Serve(axon_server::serve::ServeArgs),
+
+    /// Start MCP server over stdin/stdout.
+    #[cfg(feature = "serve")]
+    Mcp {
+        /// Backing storage adapter.
+        #[arg(long, env = "AXON_STORAGE", value_enum, default_value = "sqlite")]
+        storage: axon_server::serve::StorageBackend,
+        /// SQLite database path.
+        #[arg(long, env = "AXON_SQLITE_PATH", default_value = "axon.db")]
+        sqlite_path: String,
+        /// PostgreSQL DSN.
+        #[arg(long, env = "AXON_POSTGRES_DSN")]
+        postgres_dsn: Option<String>,
+    },
+
+    /// Show diagnostic information about the Axon installation.
+    Doctor,
+
+    /// Install and manage Axon as a system service.
+    #[command(subcommand)]
+    Install(InstallCmd),
+}
+
+#[derive(Subcommand)]
+enum ConfigCmd {
+    /// Print resolved configuration.
+    Show,
+    /// Print config file path.
+    Path,
+}
+
+#[derive(Subcommand)]
+enum InstallCmd {
+    /// Set up Axon as a service.
+    Setup {
+        /// Install as a system-wide service (requires root).
+        #[arg(long)]
+        global: bool,
+    },
+    /// Remove the Axon service.
+    Uninstall,
+    /// Start the Axon service.
+    Start,
+    /// Stop the Axon service.
+    Stop,
+    /// Restart the Axon service.
+    Restart,
+    /// Show Axon service status.
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -497,8 +553,31 @@ fn main() -> Result<()> {
 }
 
 pub fn run(cli: Cli) -> Result<()> {
-    let storage = SqliteStorageAdapter::open(&cli.db)
-        .with_context(|| format!("failed to open database: {}", cli.db))?;
+    // ── Commands that don't need a database ──────────────────────────────
+    match &cli.command {
+        #[cfg(feature = "serve")]
+        Command::Serve(_) | Command::Mcp { .. } => {
+            return run_server_command(cli);
+        }
+        Command::Doctor => return doctor::run_doctor(),
+        Command::Install(cmd) => {
+            return run_install_command(cmd);
+        }
+        Command::Config(ConfigCmd::Path) => {
+            println!("{}", axon_config::paths::config_file().display());
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // ── Embedded data commands — open SQLite ─────────────────────────────
+    let db_path = cli.db.clone().unwrap_or_else(|| {
+        axon_config::paths::default_sqlite_path()
+            .to_string_lossy()
+            .into_owned()
+    });
+    let storage = SqliteStorageAdapter::open(&db_path)
+        .with_context(|| format!("failed to open database: {db_path}"))?;
     let mut handler = AxonHandler::new(storage);
 
     match cli.command {
@@ -507,9 +586,9 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Collection(cmd) => run_collection(cmd, &cli.output, &mut handler),
         Command::Entity(cmd) => run_entity(cmd, &cli.output, &mut handler),
         Command::Link(cmd) => run_link(cmd, &cli.output, &mut handler),
-        Command::Config => {
+        Command::Config(ConfigCmd::Show) => {
             let config = serde_json::json!({
-                "db": cli.db,
+                "db": db_path,
                 "output": format!("{:?}", cli.output),
                 "mode": "embedded",
             });
@@ -519,7 +598,62 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Schema(cmd) => run_schema(cmd, &cli.output, &handler),
         Command::Audit(cmd) => run_audit(cmd, &cli.output, &mut handler),
         Command::Bead(cmd) => run_bead(cmd, &cli.output, &mut handler),
+        // Already handled above; unreachable
+        #[cfg(feature = "serve")]
+        Command::Serve(_) | Command::Mcp { .. } => unreachable!(),
+        Command::Doctor | Command::Install(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
     }
+}
+
+#[cfg(feature = "serve")]
+fn run_server_command(cli: Cli) -> Result<()> {
+    let rt = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
+    match cli.command {
+        Command::Serve(args) => rt.block_on(async {
+            axon_server::serve::serve(args)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))
+        }),
+        Command::Mcp {
+            storage,
+            sqlite_path,
+            postgres_dsn,
+        } => {
+            let args = axon_server::serve::ServeArgs {
+                http_port: 4170,
+                grpc_port: None,
+                no_auth: true,
+                tailscale_socket: std::path::PathBuf::from("/run/tailscale/tailscaled.sock"),
+                tailscale_default_role: axon_server::serve::DefaultRoleArg::Read,
+                guest_role: None,
+                auth_cache_ttl_secs: 60,
+                mcp_stdio: true,
+                storage,
+                sqlite_path,
+                postgres_dsn,
+                control_plane_path: String::from("axon-control-plane.db"),
+                ui_dir: None,
+            };
+            rt.block_on(async {
+                axon_server::serve::serve(args)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))
+            })
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn run_install_command(cmd: &InstallCmd) -> Result<()> {
+    let action = match cmd {
+        InstallCmd::Setup { global } => service::ServiceAction::Install { global: *global },
+        InstallCmd::Uninstall => service::ServiceAction::Uninstall,
+        InstallCmd::Start => service::ServiceAction::Start,
+        InstallCmd::Stop => service::ServiceAction::Stop,
+        InstallCmd::Restart => service::ServiceAction::Restart,
+        InstallCmd::Status => service::ServiceAction::Status,
+    };
+    service::run_service(action)
 }
 
 fn run_database(
