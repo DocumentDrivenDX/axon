@@ -59,7 +59,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
-    fn new(code: &str, detail: impl Into<Value>) -> Self {
+    pub(crate) fn new(code: &str, detail: impl Into<Value>) -> Self {
         Self {
             code: code.into(),
             detail: detail.into(),
@@ -125,7 +125,7 @@ fn axon_error_response(err: AxonError) -> Response {
     }
 }
 
-fn auth_error_response(err: AuthError) -> Response {
+pub(crate) fn auth_error_response(err: AuthError) -> Response {
     match err {
         AuthError::MissingPeerAddress | AuthError::Unauthorized(_) => (
             StatusCode::UNAUTHORIZED,
@@ -260,7 +260,7 @@ fn default_namespace_health<S: StorageAdapter>(
     ))
 }
 
-async fn authenticate_http_request(
+pub(crate) async fn authenticate_http_request(
     State(auth): State<AuthContext>,
     mut request: axum::extract::Request,
     next: Next,
@@ -1831,6 +1831,7 @@ pub fn build_router<S: StorageAdapter + 'static>(
         AuthContext::no_auth(),
         crate::rate_limit::RateLimitConfig::default(),
         ActorScopeGuard::default(),
+        None,
     )
 }
 
@@ -1892,6 +1893,7 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
     auth: AuthContext,
     rate_limit_config: crate::rate_limit::RateLimitConfig,
     actor_scope: ActorScopeGuard,
+    control_plane: Option<crate::control_plane_routes::SharedControlPlane>,
 ) -> Router {
     let start = Instant::now();
     let backend = backend.into();
@@ -1972,6 +1974,11 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
         let index_path = ui_dir.join("index.html");
         let ui_service = get_service(ServeDir::new(ui_dir).fallback(ServeFile::new(index_path)));
         router = router.nest_service("/ui", ui_service);
+    }
+
+    if let Some(cp) = control_plane {
+        let cp_routes = crate::control_plane_routes::control_plane_routes().with_state(cp);
+        router = router.nest("/control", cp_routes);
     }
 
     router.layer(middleware::from_fn_with_state(
@@ -2067,6 +2074,7 @@ mod tests {
             auth,
             crate::rate_limit::RateLimitConfig::default(),
             ActorScopeGuard::default(),
+            None,
         )
         .layer(MockConnectInfo(peer));
         TestServer::new(app)
@@ -4048,6 +4056,7 @@ mod tests {
             auth,
             crate::rate_limit::RateLimitConfig::default(),
             ActorScopeGuard::default(),
+            None,
         )
         .layer(MockConnectInfo(peer));
         TestServer::new(app)
@@ -4122,6 +4131,7 @@ mod tests {
             auth,
             crate::rate_limit::RateLimitConfig::default(),
             ActorScopeGuard::default(),
+            None,
         )
         .layer(MockConnectInfo(peer));
         TestServer::new(app)

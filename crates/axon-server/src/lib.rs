@@ -3,6 +3,7 @@ pub mod actor_scope;
 pub mod auth;
 mod collection_listing;
 pub mod control_plane;
+pub mod control_plane_routes;
 pub mod gateway;
 pub(crate) mod mcp_http;
 pub mod mcp_stdio;

@@ -99,6 +99,14 @@ struct Args {
     #[arg(long, env = "AXON_POSTGRES_DSN")]
     postgres_dsn: Option<String>,
 
+    /// SQLite database path for the control-plane (tenant provisioning).
+    #[arg(
+        long,
+        env = "AXON_CONTROL_PLANE_PATH",
+        default_value = "axon-control-plane.db"
+    )]
+    control_plane_path: String,
+
     /// Serve built admin UI assets from this directory under the `/ui` path prefix.
     #[arg(long, env = "AXON_UI_DIR")]
     ui_dir: Option<PathBuf>,
@@ -169,6 +177,16 @@ where
         )
     })?;
 
+    let control_plane_db =
+        axon_server::control_plane::ControlPlaneDb::open(&args.control_plane_path).map_err(
+            |error| format!("failed to open control-plane database: {error}"),
+        )?;
+    let control_plane = Arc::new(tokio::sync::Mutex::new(control_plane_db));
+    tracing::info!(
+        "control-plane database opened at {}",
+        args.control_plane_path
+    );
+
     let handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(storage)));
     let http_app = axon_server::gateway::build_router_with_auth(
         handler.clone(),
@@ -177,6 +195,7 @@ where
         auth.clone(),
         axon_server::rate_limit::RateLimitConfig::default(),
         axon_server::actor_scope::ActorScopeGuard::default(),
+        Some(control_plane),
     );
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
