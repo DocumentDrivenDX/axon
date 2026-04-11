@@ -11,11 +11,15 @@
 use std::sync::Arc;
 
 use async_graphql::dynamic::{
-    Field, FieldFuture, FieldValue, InputValue, Object, Schema, TypeRef,
+    Field, FieldFuture, FieldValue, InputValue, Object, Schema, Subscription, SubscriptionField,
+    SubscriptionFieldFuture, TypeRef,
 };
+use async_graphql::futures_util::StreamExt;
 use async_graphql::{Error as GqlError, ErrorExtensions, Value as GqlValue};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
+
+use crate::subscriptions::BroadcastBroker;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
@@ -94,8 +98,7 @@ fn time_from_epoch(secs: i64, _nanos: u32) -> String {
         (days - (DAYS_PER_400YEARS - 1)) / DAYS_PER_400YEARS
     };
     let doe = days - era * DAYS_PER_400YEARS;
-    let yoe = (doe - doe / DAYS_PER_4YEARS + doe / DAYS_PER_100YEARS
-        - doe / DAYS_PER_400YEARS)
+    let yoe = (doe - doe / DAYS_PER_4YEARS + doe / DAYS_PER_100YEARS - doe / DAYS_PER_400YEARS)
         / DAYS_PER_YEAR;
     let y = yoe + era * 400;
     let doy = doe - (DAYS_PER_YEAR * yoe + yoe / 4 - yoe / 100);
@@ -144,19 +147,18 @@ fn axon_error_to_gql(err: AxonError) -> GqlError {
             })
         }
         AxonError::SchemaValidation(detail) => {
-            GqlError::new(format!("schema validation failed: {detail}"))
-                .extend_with(|_err, ext| {
-                    ext.set("code", "SCHEMA_VALIDATION");
-                })
+            GqlError::new(format!("schema validation failed: {detail}")).extend_with(|_err, ext| {
+                ext.set("code", "SCHEMA_VALIDATION");
+            })
         }
-        AxonError::UniqueViolation { field, value } => {
-            GqlError::new(format!("unique violation on field `{field}`: {value}"))
-                .extend_with(|_err, ext| {
-                    ext.set("code", "UNIQUE_VIOLATION");
-                    ext.set("field", field.as_str());
-                    ext.set("value", value.as_str());
-                })
-        }
+        AxonError::UniqueViolation { field, value } => GqlError::new(format!(
+            "unique violation on field `{field}`: {value}"
+        ))
+        .extend_with(|_err, ext| {
+            ext.set("code", "UNIQUE_VIOLATION");
+            ext.set("field", field.as_str());
+            ext.set("value", value.as_str());
+        }),
         other => GqlError::new(other.to_string()).extend_with(|_err, ext| {
             ext.set("code", "INTERNAL_ERROR");
         }),
@@ -178,6 +180,16 @@ fn axon_error_to_gql(err: AxonError) -> GqlError {
 pub fn build_schema_with_handler<S: StorageAdapter + 'static>(
     collections: &[CollectionSchema],
     handler: SharedHandler<S>,
+) -> Result<AxonSchema, String> {
+    build_schema_with_handler_and_broker(collections, handler, None)
+}
+
+/// Build a dynamic GraphQL schema with both a handler and optional broadcast
+/// broker for subscriptions.
+pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
+    collections: &[CollectionSchema],
+    handler: SharedHandler<S>,
+    broker: Option<BroadcastBroker>,
 ) -> Result<AxonSchema, String> {
     let mut query = Object::new("Query");
     let mut mutation = Object::new("Mutation");
@@ -212,27 +224,23 @@ pub fn build_schema_with_handler<S: StorageAdapter + 'static>(
         let col_id = CollectionId::new(collection_name);
         let handler_get = Arc::clone(&handler);
         let col_for_get = col_id.clone();
-        let get_field = Field::new(
-            collection_name,
-            TypeRef::named(&type_name),
-            move |ctx| {
-                let handler = Arc::clone(&handler_get);
-                let col = col_for_get.clone();
-                FieldFuture::new(async move {
-                    let id_str = ctx.args.try_get("id")?.string()?;
+        let get_field = Field::new(collection_name, TypeRef::named(&type_name), move |ctx| {
+            let handler = Arc::clone(&handler_get);
+            let col = col_for_get.clone();
+            FieldFuture::new(async move {
+                let id_str = ctx.args.try_get("id")?.string()?;
 
-                    let guard = handler.lock().await;
-                    match guard.get_entity(GetEntityRequest {
-                        collection: col.clone(),
-                        id: EntityId::new(id_str),
-                    }) {
-                        Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
-                        Err(AxonError::NotFound(_)) => Ok(None),
-                        Err(e) => Err(axon_error_to_gql(e)),
-                    }
-                })
-            },
-        )
+                let guard = handler.lock().await;
+                match guard.get_entity(GetEntityRequest {
+                    collection: col.clone(),
+                    id: EntityId::new(id_str),
+                }) {
+                    Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                    Err(AxonError::NotFound(_)) => Ok(None),
+                    Err(e) => Err(axon_error_to_gql(e)),
+                }
+            })
+        })
         .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)));
         query = query.field(get_field);
 
@@ -436,9 +444,24 @@ pub fn build_schema_with_handler<S: StorageAdapter + 'static>(
         mutation = mutation.field(delete_field);
     }
 
-    let mut schema_builder = Schema::build(query.type_name(), Some(mutation.type_name()), None)
-        .register(query)
-        .register(mutation);
+    // -- Subscription type ---------------------------------------------------
+    let subscription = broker.map(build_entity_changed_subscription);
+
+    let subscription_name = subscription.as_ref().map(|s| s.type_name().to_owned());
+    let mut schema_builder = Schema::build(
+        query.type_name(),
+        Some(mutation.type_name()),
+        subscription_name.as_deref(),
+    )
+    .register(query)
+    .register(mutation);
+
+    if let Some(sub) = subscription {
+        schema_builder = schema_builder.register(sub);
+        // Register the ChangeEvent object type so subscription resolvers can
+        // return structured data.
+        schema_builder = schema_builder.register(change_event_object());
+    }
 
     for obj in type_objects {
         schema_builder = schema_builder.register(obj);
@@ -539,6 +562,182 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         .map_err(|e| format!("failed to build GraphQL schema: {e}"))?;
 
     Ok(AxonSchema { schema })
+}
+
+// -- Subscription helpers -----------------------------------------------------
+
+/// Build the `ChangeEvent` GraphQL object type used by subscription resolvers.
+fn change_event_object() -> Object {
+    Object::new("ChangeEvent")
+        .field(Field::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+            |ctx| {
+                FieldFuture::new(async move {
+                    match ctx.parent_value.try_to_value() {
+                        Ok(GqlValue::Object(map)) => {
+                            let key = async_graphql::Name::new("collection");
+                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
+                        }
+                        _ => Ok(Some(FieldValue::NULL)),
+                    }
+                })
+            },
+        ))
+        .field(Field::new(
+            "entityId",
+            TypeRef::named_nn(TypeRef::STRING),
+            |ctx| {
+                FieldFuture::new(async move {
+                    match ctx.parent_value.try_to_value() {
+                        Ok(GqlValue::Object(map)) => {
+                            let key = async_graphql::Name::new("entityId");
+                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
+                        }
+                        _ => Ok(Some(FieldValue::NULL)),
+                    }
+                })
+            },
+        ))
+        .field(Field::new(
+            "operation",
+            TypeRef::named_nn(TypeRef::STRING),
+            |ctx| {
+                FieldFuture::new(async move {
+                    match ctx.parent_value.try_to_value() {
+                        Ok(GqlValue::Object(map)) => {
+                            let key = async_graphql::Name::new("operation");
+                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
+                        }
+                        _ => Ok(Some(FieldValue::NULL)),
+                    }
+                })
+            },
+        ))
+        .field(Field::new("data", TypeRef::named(TypeRef::STRING), |ctx| {
+            FieldFuture::new(async move {
+                match ctx.parent_value.try_to_value() {
+                    Ok(GqlValue::Object(map)) => {
+                        let key = async_graphql::Name::new("data");
+                        Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
+                    }
+                    _ => Ok(Some(FieldValue::NULL)),
+                }
+            })
+        }))
+        .field(Field::new(
+            "version",
+            TypeRef::named_nn(TypeRef::INT),
+            |ctx| {
+                FieldFuture::new(async move {
+                    match ctx.parent_value.try_to_value() {
+                        Ok(GqlValue::Object(map)) => {
+                            let key = async_graphql::Name::new("version");
+                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
+                        }
+                        _ => Ok(Some(FieldValue::NULL)),
+                    }
+                })
+            },
+        ))
+        .field(Field::new(
+            "timestampMs",
+            TypeRef::named_nn(TypeRef::INT),
+            |ctx| {
+                FieldFuture::new(async move {
+                    match ctx.parent_value.try_to_value() {
+                        Ok(GqlValue::Object(map)) => {
+                            let key = async_graphql::Name::new("timestampMs");
+                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
+                        }
+                        _ => Ok(Some(FieldValue::NULL)),
+                    }
+                })
+            },
+        ))
+        .field(Field::new(
+            "actor",
+            TypeRef::named_nn(TypeRef::STRING),
+            |ctx| {
+                FieldFuture::new(async move {
+                    match ctx.parent_value.try_to_value() {
+                        Ok(GqlValue::Object(map)) => {
+                            let key = async_graphql::Name::new("actor");
+                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
+                        }
+                        _ => Ok(Some(FieldValue::NULL)),
+                    }
+                })
+            },
+        ))
+}
+
+/// Convert a `ChangeEvent` into a `FieldValue` suitable for subscription emission.
+fn change_event_to_field_value(event: &crate::subscriptions::ChangeEvent) -> FieldValue<'static> {
+    let mut map = serde_json::Map::new();
+    map.insert("collection".into(), Value::String(event.collection.clone()));
+    map.insert("entityId".into(), Value::String(event.entity_id.clone()));
+    map.insert("operation".into(), Value::String(event.operation.clone()));
+    if let Some(data) = &event.data {
+        map.insert("data".into(), Value::String(data.to_string()));
+    }
+    map.insert("version".into(), json!(event.version));
+    map.insert("timestampMs".into(), json!(event.timestamp_ms));
+    map.insert("actor".into(), Value::String(event.actor.clone()));
+
+    FieldValue::from(GqlValue::from_json(Value::Object(map)).unwrap_or(GqlValue::Null))
+}
+
+/// Build the `Subscription` type with an `entityChanged` field that
+/// streams change events from the `BroadcastBroker`.
+fn build_entity_changed_subscription(broker: BroadcastBroker) -> Subscription {
+    let entity_changed = SubscriptionField::new(
+        "entityChanged",
+        TypeRef::named_nn("ChangeEvent"),
+        move |ctx| {
+            let broker = broker.clone();
+
+            // Optional collection filter from argument.
+            let collection_filter: Option<String> = ctx
+                .args
+                .try_get("collection")
+                .ok()
+                .and_then(|v| v.string().ok())
+                .map(|s| s.to_owned());
+
+            SubscriptionFieldFuture::new(async move {
+                let rx = broker.subscribe();
+                let stream =
+                    tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |result| {
+                        let filter = collection_filter.clone();
+                        async move {
+                            match result {
+                                Ok(event) => {
+                                    // Apply optional collection filter.
+                                    if let Some(ref col) = filter {
+                                        if event.collection != *col {
+                                            return None;
+                                        }
+                                    }
+                                    Some(Ok(change_event_to_field_value(&event)))
+                                }
+                                // Lagged -- some events were dropped; skip.
+                                Err(_) => None,
+                            }
+                        }
+                    });
+
+                Ok(stream)
+            })
+        },
+    )
+    .argument(InputValue::new(
+        "collection",
+        TypeRef::named(TypeRef::STRING),
+    ))
+    .description("Subscribe to entity change events. Optionally filter by collection name.");
+
+    Subscription::new("Subscription").field(entity_changed)
 }
 
 /// Convert a snake_case collection name to PascalCase for the GraphQL type.
@@ -705,6 +904,44 @@ mod tests {
         assert!(
             sdl.contains("createTasks"),
             "SDL should contain createTasks mutation"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_schema_with_broker_includes_subscription_type() {
+        let ts = test_schema();
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
+        let broker = crate::subscriptions::BroadcastBroker::default();
+
+        let schema =
+            build_schema_with_handler_and_broker(&[ts], Arc::clone(&handler), Some(broker))
+                .expect("schema with broker should build");
+        let sdl = schema.schema.sdl();
+        assert!(
+            sdl.contains("type Subscription"),
+            "SDL should contain Subscription type"
+        );
+        assert!(
+            sdl.contains("entityChanged"),
+            "SDL should contain entityChanged field"
+        );
+        assert!(
+            sdl.contains("type ChangeEvent"),
+            "SDL should contain ChangeEvent type"
+        );
+    }
+
+    #[tokio::test]
+    async fn build_schema_without_broker_has_no_subscription() {
+        let ts = test_schema();
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
+
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+        let sdl = schema.schema.sdl();
+        assert!(
+            !sdl.contains("type Subscription"),
+            "SDL should NOT contain Subscription type when no broker"
         );
     }
 
@@ -1050,10 +1287,7 @@ mod tests {
         assert_eq!(data["deleteTasks"], true);
 
         // Verify the entity is gone.
-        let get_result = schema
-            .schema
-            .execute(r#"{ tasks(id: "t1") { id } }"#)
-            .await;
+        let get_result = schema.schema.execute(r#"{ tasks(id: "t1") { id } }"#).await;
         assert!(get_result.errors.is_empty());
         let get_data = get_result.data.into_json().expect("json");
         assert!(get_data["tasks"].is_null());

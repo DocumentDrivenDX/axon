@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use axon_core::id::CollectionId;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 
 /// A change event emitted to subscribers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -168,6 +169,54 @@ impl ChangeFeedBroker {
     pub fn is_active(&self, id: SubscriptionId) -> bool {
         let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         inner.subscribers.get(&id).is_some_and(|s| !s.closed)
+    }
+}
+
+// -- Broadcast-based broker for async subscriptions --------------------------
+
+/// Default capacity for the broadcast channel.
+const DEFAULT_BROADCAST_CAPACITY: usize = 256;
+
+/// Async broadcast broker for GraphQL subscriptions.
+///
+/// Wraps a `tokio::sync::broadcast` channel so that each subscriber gets an
+/// independent `tokio_stream::wrappers::BroadcastStream`. Suitable for use
+/// inside `SubscriptionFieldFuture` resolvers which need an async `Stream`.
+#[derive(Clone)]
+pub struct BroadcastBroker {
+    sender: broadcast::Sender<ChangeEvent>,
+}
+
+impl Default for BroadcastBroker {
+    fn default() -> Self {
+        Self::new(DEFAULT_BROADCAST_CAPACITY)
+    }
+}
+
+impl BroadcastBroker {
+    /// Create a new broadcast broker with the given channel capacity.
+    pub fn new(capacity: usize) -> Self {
+        let (sender, _) = broadcast::channel(capacity);
+        Self { sender }
+    }
+
+    /// Publish a change event to all active subscribers.
+    ///
+    /// Returns `Ok(receiver_count)` on success, or `Err(event)` if there
+    /// are currently no active receivers (the event is lost).
+    #[allow(clippy::result_large_err)]
+    pub fn publish(&self, event: ChangeEvent) -> Result<usize, ChangeEvent> {
+        self.sender.send(event).map_err(|e| e.0)
+    }
+
+    /// Subscribe and get a `broadcast::Receiver` for change events.
+    pub fn subscribe(&self) -> broadcast::Receiver<ChangeEvent> {
+        self.sender.subscribe()
+    }
+
+    /// Number of active receivers on the broadcast channel.
+    pub fn receiver_count(&self) -> usize {
+        self.sender.receiver_count()
     }
 }
 
@@ -336,5 +385,51 @@ mod tests {
             serde_json::from_str(&json).expect("change event JSON should deserialize");
         assert_eq!(parsed.collection, "tasks");
         assert_eq!(parsed.operation, "update");
+    }
+
+    // -- BroadcastBroker tests -----------------------------------------------
+
+    #[tokio::test]
+    async fn broadcast_broker_publish_and_receive() {
+        let broker = BroadcastBroker::default();
+        let mut rx = broker.subscribe();
+
+        let event = make_event("tasks", "t-001", "create");
+        let sent = broker
+            .publish(event.clone())
+            .expect("publish should succeed with active receiver");
+        assert_eq!(sent, 1);
+
+        let received = rx.recv().await.expect("should receive event");
+        assert_eq!(received.entity_id, "t-001");
+    }
+
+    #[tokio::test]
+    async fn broadcast_broker_multiple_receivers() {
+        let broker = BroadcastBroker::default();
+        let mut rx1 = broker.subscribe();
+        let mut rx2 = broker.subscribe();
+
+        assert_eq!(broker.receiver_count(), 2);
+
+        broker
+            .publish(make_event("tasks", "t-001", "create"))
+            .expect("publish should succeed");
+
+        let e1 = rx1.recv().await.expect("rx1 should receive event");
+        let e2 = rx2.recv().await.expect("rx2 should receive event");
+        assert_eq!(e1.entity_id, "t-001");
+        assert_eq!(e2.entity_id, "t-001");
+    }
+
+    #[test]
+    fn broadcast_broker_publish_no_receivers() {
+        let broker = BroadcastBroker::default();
+        // No subscribers -- event is lost.
+        let result = broker.publish(make_event("tasks", "t-001", "create"));
+        assert!(
+            result.is_err(),
+            "publish with no receivers should return Err"
+        );
     }
 }

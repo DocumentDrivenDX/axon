@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use axum::body::Bytes;
 use axum::extract::connect_info::MockConnectInfo;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, State, WebSocketUpgrade};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -21,6 +21,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
+
+use axon_graphql::BroadcastBroker;
 
 use crate::actor_scope::ActorScopeGuard;
 use crate::auth::{AuthContext, AuthError, Identity};
@@ -35,8 +37,8 @@ use axon_api::request::{
     DropNamespaceRequest, GetCollectionTemplateRequest, GetEntityRequest, GetSchemaRequest,
     ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
     ListNamespacesRequest, PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest,
-    QueryEntitiesRequest, RevertEntityRequest, RollbackCollectionRequest,
-    RollbackEntityRequest, RollbackEntityTarget, TraverseRequest, UpdateEntityRequest,
+    QueryEntitiesRequest, RevertEntityRequest, RollbackCollectionRequest, RollbackEntityRequest,
+    RollbackEntityTarget, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
@@ -148,10 +150,7 @@ pub(crate) fn auth_error_response(err: AuthError) -> Response {
 fn rate_limit_response(limited: &RateLimited) -> Response {
     (
         StatusCode::TOO_MANY_REQUESTS,
-        [(
-            header::RETRY_AFTER,
-            limited.retry_after_secs.to_string(),
-        )],
+        [(header::RETRY_AFTER, limited.retry_after_secs.to_string())],
         Json(ApiError::new(
             "rate_limited",
             format!(
@@ -306,6 +305,50 @@ fn audit_entry_payload(entry: &axon_audit::AuditEntry) -> Value {
         "metadata": &entry.metadata,
         "transaction_id": &entry.transaction_id,
     })
+}
+
+// ── GraphQL subscription broadcast helpers ───────────────────────────────────
+
+/// Broadcast an entity change to GraphQL subscription clients.
+///
+/// Silently drops the event if no subscribers are connected.
+fn broadcast_entity_change(broker: &BroadcastBroker, entity: &Entity, operation: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let event = axon_graphql::ChangeEvent {
+        collection: entity.collection.to_string(),
+        entity_id: entity.id.to_string(),
+        operation: operation.to_string(),
+        data: Some(entity.data.clone()),
+        previous_data: None,
+        version: entity.version,
+        timestamp_ms: now,
+        actor: "system".to_string(),
+    };
+    let _ = broker.publish(event);
+}
+
+/// Broadcast a delete event to GraphQL subscription clients.
+fn broadcast_entity_delete(broker: &BroadcastBroker, collection: &str, entity_id: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let event = axon_graphql::ChangeEvent {
+        collection: collection.to_string(),
+        entity_id: entity_id.to_string(),
+        operation: "delete".to_string(),
+        data: None,
+        previous_data: None,
+        version: 0,
+        timestamp_ms: now,
+        actor: "system".to_string(),
+    };
+    let _ = broker.publish(event);
 }
 
 // ── Request bodies ────────────────────────────────────────────────────────────
@@ -542,6 +585,7 @@ pub struct TransactionBody {
 async fn create_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
+    Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
@@ -567,6 +611,7 @@ async fn create_entity<S: StorageAdapter>(
     }) {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
+            broadcast_entity_change(&broker, &resp.entity, "create");
             (
                 StatusCode::CREATED,
                 Json(json!({
@@ -650,6 +695,7 @@ async fn get_collection_entity<S: StorageAdapter>(
 async fn update_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
+    Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
@@ -676,6 +722,7 @@ async fn update_entity<S: StorageAdapter>(
     }) {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
+            broadcast_entity_change(&broker, &resp.entity, "update");
             Json(json!({
                 "entity": entity_payload(&resp.entity)
             }))
@@ -689,6 +736,7 @@ async fn update_entity<S: StorageAdapter>(
 async fn delete_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
+    Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
@@ -714,6 +762,7 @@ async fn delete_entity<S: StorageAdapter>(
     }) {
         Ok(resp) => {
             notify_entity_change_by_parts(&mcp_sessions, &current_database, &collection, &id);
+            broadcast_entity_delete(&broker, &collection, &id);
             Json(json!({"collection": resp.collection, "id": resp.id})).into_response()
         }
         Err(e) => axon_error_response(e),
@@ -966,6 +1015,7 @@ async fn query_audit<S: StorageAdapter>(
 async fn revert_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
+    Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
@@ -987,6 +1037,7 @@ async fn revert_entity<S: StorageAdapter>(
         }) {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
+            broadcast_entity_change(&broker, &resp.entity, "update");
             Json(json!({
                 "entity": entity_payload(&resp.entity),
                 "audit_entry_id": resp.audit_entry.id,
@@ -1030,6 +1081,7 @@ fn rollback_target_from_body(body: &RollbackEntityBody) -> Result<RollbackEntity
 async fn rollback_collection_entity<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
+    Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
@@ -1064,6 +1116,7 @@ async fn rollback_collection_entity<S: StorageAdapter>(
             audit_entry,
         }) => {
             notify_entity_change(&mcp_sessions, &current_database, &entity);
+            broadcast_entity_change(&broker, &entity, "update");
             Json(json!({
                 "entity": entity_payload(&entity),
                 "audit_entry": audit_entry_payload(&audit_entry),
@@ -1625,9 +1678,11 @@ async fn drop_namespace<S: StorageAdapter>(
 
 // ── Transaction endpoint ─────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn commit_transaction<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
+    Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
@@ -1729,6 +1784,7 @@ async fn commit_transaction<S: StorageAdapter>(
         Ok(written) => {
             for entity in &written {
                 notify_entity_change(&mcp_sessions, &current_database, entity);
+                broadcast_entity_change(&broker, entity, "update");
             }
             let entities: Vec<Value> = written
                 .iter()
@@ -1801,19 +1857,59 @@ async fn graphql_handler<S: StorageAdapter + 'static>(
     async_graphql_axum::GraphQLResponse::from(response).into_response()
 }
 
-/// Placeholder for the GraphQL WebSocket subscription endpoint.
+/// GraphQL WebSocket subscription endpoint.
 ///
-/// Returns `501 Not Implemented` until the subscription resolvers are wired
-/// to the change-feed broker (`axon_graphql::ChangeFeedBroker`).
-async fn graphql_ws_placeholder() -> Response {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        Json(json!({
-            "code": "NOT_IMPLEMENTED",
-            "detail": "GraphQL subscriptions over WebSocket are not yet available"
-        })),
-    )
-        .into_response()
+/// Upgrades the HTTP connection to a WebSocket and runs the graphql-ws
+/// protocol. The schema is rebuilt on connection to reflect current
+/// collections.
+async fn graphql_ws_handler<S: StorageAdapter + 'static>(
+    State(handler): State<SharedHandler<S>>,
+    Extension(broker): Extension<BroadcastBroker>,
+    protocol: async_graphql_axum::GraphQLProtocol,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // 1. Gather current collection schemas.
+    let schemas: Vec<CollectionSchema> = {
+        let guard = handler.lock().await;
+        let names = match guard.list_collections(ListCollectionsRequest {}) {
+            Ok(resp) => resp.collections,
+            Err(err) => return axon_error_response(err),
+        };
+        names
+            .iter()
+            .filter_map(|meta| {
+                let cid = CollectionId::new(&meta.name);
+                match guard.get_schema(&cid) {
+                    Ok(Some(s)) => Some(s),
+                    _ => None,
+                }
+            })
+            .collect()
+    };
+
+    // 2. Build the dynamic schema with subscription support.
+    let gql_schema = match axon_graphql::build_schema_with_handler_and_broker(
+        &schemas,
+        handler.clone(),
+        Some(broker),
+    ) {
+        Ok(s) => s,
+        Err(msg) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "code": "GRAPHQL_SCHEMA_ERROR", "detail": msg })),
+            )
+                .into_response();
+        }
+    };
+
+    // 3. Upgrade to WebSocket and serve the subscription protocol.
+    // Protocol names from the graphql-ws and subscriptions-transport-ws specs.
+    ws.protocols(["graphql-transport-ws", "graphql-ws"])
+        .on_upgrade(move |stream| {
+            let ws = async_graphql_axum::GraphQLWebSocket::new(stream, gql_schema.schema, protocol);
+            ws.serve()
+        })
 }
 
 // ── Router construction ───────────────────────────────────────────────────────
@@ -1924,14 +2020,12 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
             "/graphql",
             get(graphql_handler::<S>).post(graphql_handler::<S>),
         )
-        // TODO: Wire GraphQL subscriptions over WebSocket once the
-        // subscription resolvers in axon-graphql are connected to the
-        // change-feed broker. For now, return 501 Not Implemented.
-        .route("/graphql/ws", get(graphql_ws_placeholder))
+        .route("/graphql/ws", get(graphql_ws_handler::<S>))
         .with_state(handler.clone())
         .layer(Extension(rate_limiter))
         .layer(Extension(actor_scope))
         .layer(Extension(mcp_sessions))
+        .layer(Extension(BroadcastBroker::default()))
         .route(
             "/health",
             get(move || {
@@ -4065,9 +4159,7 @@ mod tests {
     /// Seed an entity and a collection with schema using an admin test server,
     /// then return a new test server with the given role for boundary testing.
     /// Returns the server and the seed collection name ("tasks").
-    async fn seeded_server_with_role(
-        role: Role,
-    ) -> TestServer {
+    async fn seeded_server_with_role(role: Role) -> TestServer {
         let peer: SocketAddr = "100.64.0.1:12345".parse().unwrap();
         let provider = Arc::new(FakeWhoisProvider::with_result(
             peer,
@@ -4430,9 +4522,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_read_can_traverse() {
         let server = seeded_server_with_role(Role::Read).await;
-        let resp = server
-            .get("/traverse/tasks/t-001?link_type=blocks")
-            .await;
+        let resp = server.get("/traverse/tasks/t-001?link_type=blocks").await;
         resp.assert_status_ok();
     }
 
