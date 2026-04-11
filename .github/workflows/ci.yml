@@ -73,3 +73,15 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
+
+  ui:
+    name: UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: cd ui && bun install
+      - run: cd ui && bun run typecheck
+      - run: cd ui && bun run lint
+      - run: cd ui && bun test src/
+      - run: cd ui && bun run build
