@@ -33,8 +33,8 @@ use crate::request::{
     ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest,
     PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
     ReachableRequest, RevalidateRequest, RevertEntityRequest, RollbackCollectionRequest,
-    RollbackEntityRequest, RollbackEntityTarget, SortDirection, TraverseDirection, TraverseRequest,
-    UpdateEntityRequest,
+    RollbackEntityRequest, RollbackEntityTarget, RollbackTransactionRequest, SortDirection,
+    TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
@@ -47,7 +47,8 @@ use crate::response::{
     ListNamespacesResponse, PatchEntityResponse, PutCollectionTemplateResponse, PutSchemaResponse,
     QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevalidateResponse,
     RevertEntityResponse, RollbackCollectionEntityResult, RollbackCollectionResponse,
-    RollbackEntityResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
+    RollbackEntityResponse, RollbackTransactionEntityResult, RollbackTransactionResponse,
+    TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -1699,10 +1700,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
                             audit_entry
                                 .metadata
                                 .insert("collection_rollback".into(), "true".into());
-                            audit_entry.metadata.insert(
-                                "rollback_timestamp_ns".into(),
-                                timestamp_ns.to_string(),
-                            );
+                            audit_entry
+                                .metadata
+                                .insert("rollback_timestamp_ns".into(), timestamp_ns.to_string());
                             self.audit.append(audit_entry)?;
                         }
                         return Ok(());
@@ -1735,8 +1735,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                             updated_by: actor.map(String::from),
                             schema_version: schema.as_ref().map(|s| s.version),
                         };
-                        let stored =
-                            self.storage.compare_and_swap(restored, existing.version)?;
+                        let stored = self.storage.compare_and_swap(restored, existing.version)?;
                         let mut audit_entry = AuditEntry::new(
                             collection.clone(),
                             entity_id.clone(),
@@ -1749,10 +1748,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         audit_entry
                             .metadata
                             .insert("collection_rollback".into(), "true".into());
-                        audit_entry.metadata.insert(
-                            "rollback_timestamp_ns".into(),
-                            timestamp_ns.to_string(),
-                        );
+                        audit_entry
+                            .metadata
+                            .insert("rollback_timestamp_ns".into(), timestamp_ns.to_string());
                         self.audit.append(audit_entry)?;
                     }
                     None => {
@@ -1774,10 +1772,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         audit_entry
                             .metadata
                             .insert("collection_rollback".into(), "true".into());
-                        audit_entry.metadata.insert(
-                            "rollback_timestamp_ns".into(),
-                            timestamp_ns.to_string(),
-                        );
+                        audit_entry
+                            .metadata
+                            .insert("rollback_timestamp_ns".into(), timestamp_ns.to_string());
                         self.audit.append(audit_entry)?;
                     }
                 }
@@ -1802,12 +1799,310 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     audit_entry
                         .metadata
                         .insert("collection_rollback".into(), "true".into());
-                    audit_entry.metadata.insert(
-                        "rollback_timestamp_ns".into(),
-                        timestamp_ns.to_string(),
-                    );
+                    audit_entry
+                        .metadata
+                        .insert("rollback_timestamp_ns".into(), timestamp_ns.to_string());
                     self.audit.append(audit_entry)?;
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    // ── Transaction-level rollback ──────────────────────────────────────────
+
+    /// Roll back all mutations from a specific transaction.
+    ///
+    /// Finds all audit entries sharing the given `transaction_id` and, for each
+    /// affected entity, reverts it to its pre-transaction state (the
+    /// `data_before` snapshot recorded in the audit entry).
+    ///
+    /// - Entities that were *created* by the transaction are deleted.
+    /// - Entities that were *updated* by the transaction are restored to their
+    ///   `data_before` snapshot.
+    /// - Entities that were *deleted* by the transaction are recreated from
+    ///   their `data_before` snapshot.
+    ///
+    /// When `dry_run` is `true`, a preview of the affected entities is returned
+    /// without modifying data.
+    pub fn rollback_transaction(
+        &mut self,
+        req: RollbackTransactionRequest,
+    ) -> Result<RollbackTransactionResponse, AxonError> {
+        // 1. Find all audit entries from the target transaction.
+        let tx_entries = self.audit.query_by_transaction_id(&req.transaction_id)?;
+
+        if tx_entries.is_empty() {
+            return Err(AxonError::NotFound(format!(
+                "transaction '{}'",
+                req.transaction_id
+            )));
+        }
+
+        // 2. Collect the distinct (collection, entity_id) pairs.
+        //    Process in reverse order so we see the *last* mutation per entity
+        //    in the transaction (a transaction might create then update the same entity).
+        let mut seen = HashSet::new();
+        let mut entity_entries: Vec<&AuditEntry> = Vec::new();
+        for entry in tx_entries.iter().rev() {
+            let key = (entry.collection.clone(), entry.entity_id.clone());
+            if seen.insert(key) {
+                entity_entries.push(entry);
+            }
+        }
+        // Reverse back to original order for consistent processing.
+        entity_entries.reverse();
+
+        let entities_affected = entity_entries.len();
+        let mut details = Vec::with_capacity(entities_affected);
+        let mut entities_rolled_back: usize = 0;
+        let mut errors: usize = 0;
+
+        // 3. For each affected entity, find its first mutation in the transaction
+        //    (to get the pre-transaction data_before) and revert.
+        for last_entry in &entity_entries {
+            let collection = &last_entry.collection;
+            let entity_id = &last_entry.entity_id;
+
+            // Find the *first* entry for this entity in the transaction —
+            // its `data_before` is the pre-transaction state.
+            let first_entry = tx_entries
+                .iter()
+                .find(|e| &e.collection == collection && &e.entity_id == entity_id);
+
+            let first_entry = match first_entry {
+                Some(e) => e,
+                None => {
+                    errors += 1;
+                    details.push(RollbackTransactionEntityResult {
+                        collection: collection.to_string(),
+                        id: entity_id.to_string(),
+                        success: false,
+                        error: Some("no audit entry found for entity in transaction".into()),
+                    });
+                    continue;
+                }
+            };
+
+            let result = self.rollback_single_entity_from_transaction(
+                collection,
+                entity_id,
+                first_entry,
+                &req.transaction_id,
+                req.actor.as_deref(),
+                req.dry_run,
+            );
+
+            match result {
+                Ok(()) => {
+                    entities_rolled_back += 1;
+                    details.push(RollbackTransactionEntityResult {
+                        collection: collection.to_string(),
+                        id: entity_id.to_string(),
+                        success: true,
+                        error: None,
+                    });
+                }
+                Err(e) => {
+                    errors += 1;
+                    details.push(RollbackTransactionEntityResult {
+                        collection: collection.to_string(),
+                        id: entity_id.to_string(),
+                        success: false,
+                        error: Some(e.to_string()),
+                    });
+                }
+            }
+        }
+
+        Ok(RollbackTransactionResponse {
+            transaction_id: req.transaction_id,
+            entities_affected,
+            entities_rolled_back,
+            errors,
+            dry_run: req.dry_run,
+            details,
+        })
+    }
+
+    /// Roll a single entity back to its pre-transaction state.
+    ///
+    /// `first_tx_entry` is the first audit entry for this entity in the transaction.
+    /// Its `data_before` represents the entity's state before the transaction began.
+    fn rollback_single_entity_from_transaction(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        first_tx_entry: &AuditEntry,
+        transaction_id: &str,
+        actor: Option<&str>,
+        dry_run: bool,
+    ) -> Result<(), AxonError> {
+        let current = self.storage.get(collection, entity_id)?;
+
+        match first_tx_entry.mutation {
+            MutationType::EntityCreate => {
+                // The transaction created this entity — delete it to revert.
+                if current.is_none() {
+                    // Already absent — nothing to do.
+                    return Ok(());
+                }
+                if dry_run {
+                    return Ok(());
+                }
+                self.storage.delete(collection, entity_id)?;
+                let mut audit_entry = AuditEntry::new(
+                    collection.clone(),
+                    entity_id.clone(),
+                    current.as_ref().map_or(0, |e| e.version) + 1,
+                    MutationType::EntityDelete,
+                    current.map(|e| e.data),
+                    None,
+                    actor.map(String::from),
+                );
+                audit_entry
+                    .metadata
+                    .insert("transaction_rollback".into(), "true".into());
+                audit_entry
+                    .metadata
+                    .insert("rolled_back_transaction_id".into(), transaction_id.into());
+                self.audit.append(audit_entry)?;
+            }
+            MutationType::EntityUpdate | MutationType::EntityRevert => {
+                // The transaction updated this entity — restore data_before.
+                let target_data = match &first_tx_entry.data_before {
+                    Some(data) => data.clone(),
+                    None => {
+                        return Err(AxonError::InvalidOperation(format!(
+                            "audit entry {} has no data_before snapshot to restore",
+                            first_tx_entry.id
+                        )));
+                    }
+                };
+
+                if let Some(ref cur) = current {
+                    if cur.data == target_data {
+                        return Ok(());
+                    }
+                }
+
+                if dry_run {
+                    return Ok(());
+                }
+
+                let schema = self.storage.get_schema(collection)?;
+                match current {
+                    Some(existing) => {
+                        let restored = Entity {
+                            collection: collection.clone(),
+                            id: entity_id.clone(),
+                            version: existing.version,
+                            data: target_data.clone(),
+                            created_at_ns: existing.created_at_ns,
+                            updated_at_ns: Some(now_ns()),
+                            created_by: existing.created_by.clone(),
+                            updated_by: actor.map(String::from),
+                            schema_version: schema.as_ref().map(|s| s.version),
+                        };
+                        let stored =
+                            self.storage.compare_and_swap(restored, existing.version)?;
+                        let mut audit_entry = AuditEntry::new(
+                            collection.clone(),
+                            entity_id.clone(),
+                            stored.version,
+                            MutationType::EntityRevert,
+                            Some(existing.data),
+                            Some(target_data),
+                            actor.map(String::from),
+                        );
+                        audit_entry
+                            .metadata
+                            .insert("transaction_rollback".into(), "true".into());
+                        audit_entry.metadata.insert(
+                            "rolled_back_transaction_id".into(),
+                            transaction_id.into(),
+                        );
+                        self.audit.append(audit_entry)?;
+                    }
+                    None => {
+                        // Entity was deleted after the transaction (or is otherwise
+                        // absent) — recreate it from the pre-transaction snapshot.
+                        let mut entity = Entity::new(
+                            collection.clone(),
+                            entity_id.clone(),
+                            target_data.clone(),
+                        );
+                        entity.schema_version = schema.as_ref().map(|s| s.version);
+                        entity.updated_by = actor.map(String::from);
+                        self.storage.put(entity.clone())?;
+                        let mut audit_entry = AuditEntry::new(
+                            collection.clone(),
+                            entity_id.clone(),
+                            entity.version,
+                            MutationType::EntityRevert,
+                            None,
+                            Some(target_data),
+                            actor.map(String::from),
+                        );
+                        audit_entry
+                            .metadata
+                            .insert("transaction_rollback".into(), "true".into());
+                        audit_entry.metadata.insert(
+                            "rolled_back_transaction_id".into(),
+                            transaction_id.into(),
+                        );
+                        self.audit.append(audit_entry)?;
+                    }
+                }
+            }
+            MutationType::EntityDelete => {
+                // The transaction deleted this entity — recreate from data_before.
+                let target_data = match &first_tx_entry.data_before {
+                    Some(data) => data.clone(),
+                    None => {
+                        return Err(AxonError::InvalidOperation(format!(
+                            "audit entry {} has no data_before snapshot to restore",
+                            first_tx_entry.id
+                        )));
+                    }
+                };
+
+                if current.is_some() {
+                    // Entity already exists (perhaps recreated by another operation).
+                    return Ok(());
+                }
+
+                if dry_run {
+                    return Ok(());
+                }
+
+                let schema = self.storage.get_schema(collection)?;
+                let mut entity =
+                    Entity::new(collection.clone(), entity_id.clone(), target_data.clone());
+                entity.schema_version = schema.as_ref().map(|s| s.version);
+                entity.updated_by = actor.map(String::from);
+                self.storage.put(entity.clone())?;
+                let mut audit_entry = AuditEntry::new(
+                    collection.clone(),
+                    entity_id.clone(),
+                    entity.version,
+                    MutationType::EntityRevert,
+                    None,
+                    Some(target_data),
+                    actor.map(String::from),
+                );
+                audit_entry
+                    .metadata
+                    .insert("transaction_rollback".into(), "true".into());
+                audit_entry
+                    .metadata
+                    .insert("rolled_back_transaction_id".into(), transaction_id.into());
+                self.audit.append(audit_entry)?;
+            }
+            _ => {
+                // Non-entity mutations (collection create/drop, schema, etc.)
+                // are not handled by transaction rollback.
             }
         }
 
@@ -6029,6 +6324,273 @@ entity_schema:
                 .get("rollback_timestamp_ns")
                 .map(String::as_str),
             Some(expected_ts.as_str())
+        );
+    }
+
+    // ── Transaction rollback ──────────────────────────────────────────────
+
+    #[test]
+    fn rollback_transaction_reverts_updates() {
+        let mut h = handler();
+        let col = CollectionId::new("accounts");
+
+        // Seed two entities.
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("a"),
+            data: json!({"balance": 100}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("b"),
+            data: json!({"balance": 50}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        // Commit a transaction that updates both.
+        use crate::transaction::Transaction;
+        let a_before = h.storage_ref().get(&col, &EntityId::new("a")).unwrap().unwrap();
+        let b_before = h.storage_ref().get(&col, &EntityId::new("b")).unwrap().unwrap();
+
+        let mut tx = Transaction::new();
+        let tx_id = tx.id.clone();
+        tx.update(
+            Entity::new(col.clone(), EntityId::new("a"), json!({"balance": 70})),
+            a_before.version,
+            Some(a_before.data.clone()),
+        )
+        .unwrap();
+        tx.update(
+            Entity::new(col.clone(), EntityId::new("b"), json!({"balance": 80})),
+            b_before.version,
+            Some(b_before.data.clone()),
+        )
+        .unwrap();
+
+        h.commit_transaction(tx, Some("system".into())).unwrap();
+
+        // Verify the transaction was applied.
+        let a = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("a") }).unwrap();
+        assert_eq!(a.entity.data["balance"], 70);
+        let b = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("b") }).unwrap();
+        assert_eq!(b.entity.data["balance"], 80);
+
+        // Roll back the transaction.
+        let resp = h
+            .rollback_transaction(RollbackTransactionRequest {
+                transaction_id: tx_id.clone(),
+                actor: Some("admin".into()),
+                dry_run: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.transaction_id, tx_id);
+        assert_eq!(resp.entities_affected, 2);
+        assert_eq!(resp.entities_rolled_back, 2);
+        assert_eq!(resp.errors, 0);
+        assert!(!resp.dry_run);
+
+        // Both entities should be back to their pre-transaction state.
+        let a = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("a") }).unwrap();
+        assert_eq!(a.entity.data["balance"], 100);
+        let b = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("b") }).unwrap();
+        assert_eq!(b.entity.data["balance"], 50);
+    }
+
+    #[test]
+    fn rollback_transaction_reverts_creates() {
+        let mut h = handler();
+        let col = CollectionId::new("accounts");
+
+        // Commit a transaction that creates two entities.
+        use crate::transaction::Transaction;
+        let mut tx = Transaction::new();
+        let tx_id = tx.id.clone();
+        tx.create(Entity::new(col.clone(), EntityId::new("x"), json!({"balance": 200})))
+            .unwrap();
+        tx.create(Entity::new(col.clone(), EntityId::new("y"), json!({"balance": 300})))
+            .unwrap();
+
+        h.commit_transaction(tx, Some("system".into())).unwrap();
+
+        // Both entities should exist.
+        assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("x") }).is_ok());
+        assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("y") }).is_ok());
+
+        // Roll back the transaction.
+        let resp = h
+            .rollback_transaction(RollbackTransactionRequest {
+                transaction_id: tx_id.clone(),
+                actor: Some("admin".into()),
+                dry_run: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities_affected, 2);
+        assert_eq!(resp.entities_rolled_back, 2);
+        assert_eq!(resp.errors, 0);
+
+        // Both entities should no longer exist.
+        assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("x") }).is_err());
+        assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("y") }).is_err());
+    }
+
+    #[test]
+    fn rollback_transaction_reverts_deletes() {
+        let mut h = handler();
+        let col = CollectionId::new("accounts");
+
+        // Create an entity, then delete it in a transaction.
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("z"),
+            data: json!({"balance": 999}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let z_before = h.storage_ref().get(&col, &EntityId::new("z")).unwrap().unwrap();
+
+        use crate::transaction::Transaction;
+        let mut tx = Transaction::new();
+        let tx_id = tx.id.clone();
+        tx.delete(col.clone(), EntityId::new("z"), z_before.version, Some(z_before.data.clone()))
+            .unwrap();
+
+        h.commit_transaction(tx, Some("system".into())).unwrap();
+
+        // Entity should be gone.
+        assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("z") }).is_err());
+
+        // Roll back the transaction — entity should be restored.
+        let resp = h
+            .rollback_transaction(RollbackTransactionRequest {
+                transaction_id: tx_id.clone(),
+                actor: Some("admin".into()),
+                dry_run: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities_affected, 1);
+        assert_eq!(resp.entities_rolled_back, 1);
+        assert_eq!(resp.errors, 0);
+
+        let z = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("z") }).unwrap();
+        assert_eq!(z.entity.data["balance"], 999);
+    }
+
+    #[test]
+    fn rollback_transaction_dry_run_does_not_modify_data() {
+        let mut h = handler();
+        let col = CollectionId::new("accounts");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("a"),
+            data: json!({"balance": 100}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        use crate::transaction::Transaction;
+        let a_before = h.storage_ref().get(&col, &EntityId::new("a")).unwrap().unwrap();
+
+        let mut tx = Transaction::new();
+        let tx_id = tx.id.clone();
+        tx.update(
+            Entity::new(col.clone(), EntityId::new("a"), json!({"balance": 70})),
+            a_before.version,
+            Some(a_before.data.clone()),
+        )
+        .unwrap();
+
+        h.commit_transaction(tx, Some("system".into())).unwrap();
+
+        // Dry-run rollback.
+        let resp = h
+            .rollback_transaction(RollbackTransactionRequest {
+                transaction_id: tx_id.clone(),
+                actor: Some("admin".into()),
+                dry_run: true,
+            })
+            .unwrap();
+
+        assert_eq!(resp.entities_affected, 1);
+        assert_eq!(resp.entities_rolled_back, 1);
+        assert!(resp.dry_run);
+
+        // Data should remain unchanged (balance = 70, not reverted to 100).
+        let a = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("a") }).unwrap();
+        assert_eq!(a.entity.data["balance"], 70);
+    }
+
+    #[test]
+    fn rollback_transaction_not_found_for_unknown_id() {
+        let mut h = handler();
+        let err = h
+            .rollback_transaction(RollbackTransactionRequest {
+                transaction_id: "tx-nonexistent".into(),
+                actor: None,
+                dry_run: false,
+            })
+            .unwrap_err();
+        assert!(matches!(err, AxonError::NotFound(_)));
+    }
+
+    #[test]
+    fn rollback_transaction_audit_entries_contain_metadata() {
+        let mut h = handler();
+        let col = CollectionId::new("accounts");
+
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("a"),
+            data: json!({"balance": 100}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        use crate::transaction::Transaction;
+        let a_before = h.storage_ref().get(&col, &EntityId::new("a")).unwrap().unwrap();
+
+        let mut tx = Transaction::new();
+        let tx_id = tx.id.clone();
+        tx.update(
+            Entity::new(col.clone(), EntityId::new("a"), json!({"balance": 70})),
+            a_before.version,
+            Some(a_before.data.clone()),
+        )
+        .unwrap();
+
+        h.commit_transaction(tx, Some("system".into())).unwrap();
+
+        h.rollback_transaction(RollbackTransactionRequest {
+            transaction_id: tx_id.clone(),
+            actor: Some("admin".into()),
+            dry_run: false,
+        })
+        .unwrap();
+
+        // The latest audit entry for "a" should be the rollback revert
+        // with transaction_rollback metadata.
+        let entries = h.audit.query_by_entity(&col, &EntityId::new("a")).unwrap();
+        let last = entries.last().unwrap();
+        assert_eq!(last.mutation, MutationType::EntityRevert);
+        assert_eq!(
+            last.metadata.get("transaction_rollback").map(String::as_str),
+            Some("true")
+        );
+        assert_eq!(
+            last.metadata.get("rolled_back_transaction_id").map(String::as_str),
+            Some(tx_id.as_str())
         );
     }
 

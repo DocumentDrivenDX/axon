@@ -501,6 +501,22 @@ pub struct RollbackCollectionRequest {
     pub dry_run: bool,
 }
 
+/// Roll back all mutations from a specific transaction.
+///
+/// All entities affected by the transaction are reverted to their
+/// pre-transaction state. When `dry_run` is `true`, a preview of the
+/// affected entities is returned without modifying data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackTransactionRequest {
+    /// The transaction ID (as recorded in `AuditEntry::transaction_id`).
+    pub transaction_id: String,
+    /// Actor performing the rollback.
+    pub actor: Option<String>,
+    /// When true, return a preview without writing changes.
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
 /// Request to diff two schema versions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffSchemaRequest {

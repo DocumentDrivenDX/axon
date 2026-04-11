@@ -237,6 +237,37 @@ pub struct RollbackCollectionResponse {
     pub details: Vec<RollbackCollectionEntityResult>,
 }
 
+/// Per-entity outcome in a transaction rollback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackTransactionEntityResult {
+    /// The collection of the affected entity.
+    pub collection: String,
+    /// The entity ID that was (or would be) rolled back.
+    pub id: String,
+    /// Whether the rollback for this entity succeeded.
+    pub success: bool,
+    /// Error detail when `success` is `false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Response from a transaction-level rollback.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackTransactionResponse {
+    /// The transaction ID that was rolled back.
+    pub transaction_id: String,
+    /// Number of distinct entities affected by the transaction.
+    pub entities_affected: usize,
+    /// Number of entities successfully rolled back (or that would be in dry-run mode).
+    pub entities_rolled_back: usize,
+    /// Number of entities that failed to roll back.
+    pub errors: usize,
+    /// When true, no data was modified.
+    pub dry_run: bool,
+    /// Per-entity details.
+    pub details: Vec<RollbackTransactionEntityResult>,
+}
+
 // ── Entity query response ─────────────────────────────────────────────────────
 
 /// Response from a filtered entity query (US-011 / FEAT-004).

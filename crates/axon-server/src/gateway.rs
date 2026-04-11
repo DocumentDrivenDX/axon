@@ -38,7 +38,7 @@ use axon_api::request::{
     ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
     ListNamespacesRequest, PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest,
     QueryEntitiesRequest, RevertEntityRequest, RollbackCollectionRequest, RollbackEntityRequest,
-    RollbackEntityTarget, TraverseRequest, UpdateEntityRequest,
+    RollbackEntityTarget, RollbackTransactionRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
@@ -1278,6 +1278,56 @@ async fn rollback_collection_handler<S: StorageAdapter>(
     }
 }
 
+// ── Transaction-level rollback ────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+pub struct RollbackTransactionBody {
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Deserialize)]
+pub struct TransactionIdPath {
+    pub transaction_id: String,
+}
+
+async fn rollback_transaction_handler<S: StorageAdapter>(
+    State(handler): State<SharedHandler<S>>,
+    Extension(identity): Extension<Identity>,
+    Extension(rate_limiter): Extension<WriteRateLimiter>,
+    Path(TransactionIdPath { transaction_id }): Path<TransactionIdPath>,
+    body: Option<Json<RollbackTransactionBody>>,
+) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
+    if let Err(limited) = rate_limiter.check(&identity.actor).await {
+        return rate_limit_response(&limited);
+    }
+
+    let dry_run = body.is_some_and(|Json(b)| b.dry_run);
+
+    match handler
+        .lock()
+        .await
+        .rollback_transaction(RollbackTransactionRequest {
+            transaction_id: transaction_id.clone(),
+            actor: Some(identity.actor),
+            dry_run,
+        }) {
+        Ok(resp) => Json(json!({
+            "transaction_id": resp.transaction_id,
+            "entities_affected": resp.entities_affected,
+            "entities_rolled_back": resp.entities_rolled_back,
+            "errors": resp.errors,
+            "dry_run": resp.dry_run,
+            "details": resp.details,
+        }))
+        .into_response(),
+        Err(error) => axon_error_response(error),
+    }
+}
+
 async fn create_collection<S: StorageAdapter>(
     State(handler): State<SharedHandler<S>>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -1979,6 +2029,10 @@ fn data_routes<S: StorageAdapter + 'static>() -> Router<SharedHandler<S>> {
         .route("/collections/{name}/schema", put(put_schema::<S>))
         .route("/collections/{name}/schema", get(get_schema::<S>))
         .route("/transactions", post(commit_transaction::<S>))
+        .route(
+            "/transactions/{transaction_id}/rollback",
+            post(rollback_transaction_handler::<S>),
+        )
 }
 
 /// Build the axum router for the HTTP gateway with request authentication.
