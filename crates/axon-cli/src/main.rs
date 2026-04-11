@@ -6,6 +6,7 @@
 #![allow(clippy::print_stdout)]
 
 mod doctor;
+mod init;
 mod service;
 
 use anyhow::{Context, Result};
@@ -118,6 +119,12 @@ enum Command {
 
     /// Show diagnostic information about the Axon installation.
     Doctor,
+
+    /// Initialize a new Axon project.
+    Init {
+        /// Project name (also used as directory name).
+        name: String,
+    },
 
     /// Install and manage Axon as a system service.
     #[command(subcommand)]
@@ -560,6 +567,7 @@ pub fn run(cli: Cli) -> Result<()> {
             return run_server_command(cli);
         }
         Command::Doctor => return doctor::run_doctor(),
+        Command::Init { ref name } => return init::run_init(name),
         Command::Install(cmd) => {
             return run_install_command(cmd);
         }
@@ -601,7 +609,7 @@ pub fn run(cli: Cli) -> Result<()> {
         // Already handled above; unreachable
         #[cfg(feature = "serve")]
         Command::Serve(_) | Command::Mcp { .. } => unreachable!(),
-        Command::Doctor | Command::Install(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
+        Command::Doctor | Command::Init { .. } | Command::Install(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
     }
 }
 

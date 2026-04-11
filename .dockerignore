@@ -1,0 +1,37 @@
+# Build artifacts
+target/
+
+# Version control
+.git/
+.gitignore
+
+# Node.js / UI dependencies and build output
+ui/node_modules/
+ui/build/
+ui/.svelte-kit/
+ui/playwright-report/
+ui/test-results/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# CI / tooling
+.github/
+.claude/
+.ddx/
+
+# Documentation (not needed for binary build)
+docs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker-related (avoid recursive context)
+Dockerfile
+docker-compose.yml
+.dockerignore

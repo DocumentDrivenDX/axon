@@ -1,0 +1,26 @@
+# Axon server — Docker Compose configuration
+#
+# Start:  docker compose up
+# Stop:   docker compose down
+# Reset:  docker compose down -v   (removes persistent volume)
+
+services:
+  axon:
+    build: .
+    ports:
+      - "4170:4170"
+    volumes:
+      - axon-data:/var/lib/axon
+    environment:
+      - AXON_NO_AUTH=true
+      - AXON_STORAGE=sqlite
+      - AXON_SQLITE_PATH=/var/lib/axon/axon.db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4170/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  axon-data:

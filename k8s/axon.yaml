@@ -1,0 +1,86 @@
+# Axon server — Kubernetes Deployment + Service
+#
+# Apply:  kubectl apply -f k8s/axon.yaml
+# Delete: kubectl delete -f k8s/axon.yaml
+#
+# This manifest uses emptyDir for storage, suitable for development and testing.
+# For production, replace the emptyDir volume with a PersistentVolumeClaim.
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: axon
+  labels:
+    app: axon
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: axon
+  template:
+    metadata:
+      labels:
+        app: axon
+    spec:
+      containers:
+        - name: axon
+          image: axon:latest
+          ports:
+            - name: http
+              containerPort: 4170
+              protocol: TCP
+          env:
+            - name: AXON_NO_AUTH
+              value: "true"
+            - name: AXON_STORAGE
+              value: "sqlite"
+            - name: AXON_SQLITE_PATH
+              value: "/var/lib/axon/axon.db"
+          volumeMounts:
+            - name: axon-data
+              mountPath: /var/lib/axon
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+      # emptyDir for dev/test. Replace with a PVC for production persistence.
+      volumes:
+        - name: axon-data
+          emptyDir: {}
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: axon
+  labels:
+    app: axon
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 4170
+      targetPort: http
+      protocol: TCP
+  selector:
+    app: axon
