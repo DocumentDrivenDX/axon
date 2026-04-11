@@ -277,6 +277,17 @@ pub(crate) async fn authenticate_http_request(
     }
 }
 
+/// Returns the current authenticated identity as JSON.
+///
+/// This endpoint always succeeds for authenticated (or guest/anonymous) users.
+/// The UI calls this on load to determine who the current user is.
+async fn auth_me(Extension(identity): Extension<Identity>) -> impl IntoResponse {
+    Json(json!({
+        "actor": identity.actor,
+        "role": identity.role,
+    }))
+}
+
 fn entity_payload(entity: &Entity) -> Value {
     let mut payload = json!({
         "collection": entity.collection.to_string(),
@@ -2117,6 +2128,8 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
                 }
             }),
         );
+
+    router = router.route("/auth/me", get(auth_me));
 
     if let Some(ui_dir) = ui_dir {
         let index_path = ui_dir.join("index.html");
@@ -4769,5 +4782,74 @@ mod tests {
             detail.contains("admin"),
             "forbidden detail should mention required role 'admin': {detail}"
         );
+    }
+
+    // ── /auth/me endpoint tests ────────────────────────────────────────
+
+    #[tokio::test]
+    async fn auth_me_returns_anonymous_admin_in_no_auth_mode() {
+        let server = test_server();
+        let resp = server.get("/auth/me").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["actor"], "anonymous");
+        assert_eq!(body["role"], "admin");
+    }
+
+    #[tokio::test]
+    async fn auth_me_returns_guest_identity_in_guest_mode() {
+        let peer = SocketAddr::from(([127, 0, 0, 1], 3000));
+        let auth = AuthContext::guest(Role::Read);
+        let server = test_server_with_auth(peer, auth);
+        let resp = server.get("/auth/me").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["actor"], "guest");
+        assert_eq!(body["role"], "read");
+    }
+
+    #[tokio::test]
+    async fn auth_me_returns_tailscale_identity() {
+        let peer = SocketAddr::from(([100, 101, 102, 103], 443));
+        let auth = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            Arc::new(FakeWhoisProvider::with_result(
+                peer,
+                Ok(TailscaleWhoisResponse {
+                    node_name: "erik-laptop".into(),
+                    user_login: "erik@example.com".into(),
+                    tags: vec!["tag:axon-admin".into()],
+                }),
+            )),
+            Duration::from_secs(60),
+        );
+        let server = test_server_with_auth(peer, auth);
+        let resp = server.get("/auth/me").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        assert_eq!(body["actor"], "erik-laptop");
+        assert_eq!(body["role"], "admin");
+    }
+
+    #[tokio::test]
+    async fn auth_me_returns_401_for_unauthorized_peer() {
+        let peer = SocketAddr::from(([127, 0, 0, 1], 3000));
+        let auth = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            Arc::new(FakeWhoisProvider::with_result(
+                peer,
+                Err(AuthError::Unauthorized(
+                    "peer is not a recognized tailnet address".into(),
+                )),
+            )),
+            Duration::from_secs(60),
+        );
+        let server = test_server_with_auth(peer, auth);
+        let resp = server.get("/auth/me").await;
+        resp.assert_status(StatusCode::UNAUTHORIZED);
     }
 }

@@ -78,6 +78,12 @@ struct Args {
     )]
     tailscale_default_role: DefaultRoleArg,
 
+    /// Enable guest mode: unauthenticated requests get the specified role
+    /// instead of being rejected. This is opt-in; the default role is `read`.
+    /// When set, Tailscale auth is not required. Mutually exclusive with `--no-auth`.
+    #[arg(long, env = "AXON_GUEST_ROLE", value_enum)]
+    guest_role: Option<DefaultRoleArg>,
+
     /// TTL in seconds for cached Tailscale whois identity lookups.
     #[arg(long, env = "AXON_AUTH_CACHE_TTL_SECS", default_value = "60")]
     auth_cache_ttl_secs: u64,
@@ -128,6 +134,10 @@ async fn run(args: Args) -> Result<(), String> {
     if args.no_auth {
         tracing::info!(
             "running in --no-auth mode: all requests succeed as admin (actor=anonymous)"
+        );
+    } else if let Some(ref guest_role) = args.guest_role {
+        tracing::info!(
+            "running in guest mode: unauthenticated requests get role={guest_role:?} (actor=guest)"
         );
     }
 
@@ -257,6 +267,8 @@ fn init_tracing(mcp_stdio: bool) {
 fn auth_context_from_args(args: &Args) -> AuthContext {
     if args.no_auth {
         AuthContext::no_auth()
+    } else if let Some(ref guest_role) = args.guest_role {
+        AuthContext::guest(guest_role.clone().into())
     } else {
         AuthContext::tailscale(
             args.tailscale_default_role.clone().into(),
@@ -310,5 +322,38 @@ mod tests {
             "boolish values must enable the no-auth bypass"
         );
         assert_eq!(auth_context_from_args(&args).mode(), &AuthMode::NoAuth);
+    }
+
+    #[test]
+    fn cli_guest_role_enables_guest_mode() {
+        let args = Args::parse_from(["axon-server", "--guest-role=read"]);
+
+        assert!(!args.no_auth);
+        assert_eq!(
+            auth_context_from_args(&args).mode(),
+            &AuthMode::Guest { role: Role::Read }
+        );
+    }
+
+    #[test]
+    fn cli_guest_role_write() {
+        let args = Args::parse_from(["axon-server", "--guest-role=write"]);
+
+        assert_eq!(
+            auth_context_from_args(&args).mode(),
+            &AuthMode::Guest { role: Role::Write }
+        );
+    }
+
+    #[test]
+    fn cli_no_auth_takes_precedence_over_guest_role() {
+        let args = Args::parse_from(["axon-server", "--no-auth", "--guest-role=read"]);
+
+        assert!(args.no_auth);
+        assert_eq!(
+            auth_context_from_args(&args).mode(),
+            &AuthMode::NoAuth,
+            "--no-auth should take precedence over --guest-role"
+        );
     }
 }

@@ -2,15 +2,26 @@
 import '../app.css';
 
 import { base } from '$app/paths';
-import { type HealthStatus, fetchHealth } from '$lib/api';
+import { type AuthState, type HealthStatus, fetchAuthMe, fetchHealth } from '$lib/api';
+import type { Snippet } from 'svelte';
 import { onMount } from 'svelte';
 
-let health: HealthStatus | null = null;
-let healthError: string | null = null;
+const { children }: { children: Snippet } = $props();
+
+let health: HealthStatus | null = $state(null);
+let healthError: string | null = $state(null);
+let authState: AuthState = $state({ status: 'loading' } as AuthState);
 const homeHref = `${base}/`;
 const collectionsHref = `${base}/collections`;
 const schemasHref = `${base}/schemas`;
 const auditHref = `${base}/audit`;
+
+const isGuest = $derived(
+	authState.status === 'authenticated' && authState.identity.actor === 'guest',
+);
+const isReadOnly = $derived(
+	authState.status === 'authenticated' && authState.identity.role === 'read',
+);
 
 async function refreshHealth() {
 	try {
@@ -21,8 +32,18 @@ async function refreshHealth() {
 	}
 }
 
+async function loadAuth() {
+	try {
+		const identity = await fetchAuthMe();
+		authState = { status: 'authenticated', identity };
+	} catch {
+		authState = { status: 'unauthenticated' };
+	}
+}
+
 onMount(() => {
 	void refreshHealth();
+	void loadAuth();
 	const timer = window.setInterval(() => {
 		void refreshHealth();
 	}, 15_000);
@@ -37,6 +58,27 @@ onMount(() => {
 			<a href={homeHref}>Axon Admin</a>
 			<p class="muted">Browser console for live collections, schemas, and audit data.</p>
 		</div>
+
+		<section class="identity-bar">
+			{#if authState.status === 'loading'}
+				<p class="muted">Checking identity...</p>
+			{:else if authState.status === 'unauthenticated'}
+				<div class="message warning">
+					<strong>Not authenticated</strong>
+					<p>Connect via Tailscale to access this server.</p>
+				</div>
+			{:else}
+				<div class="identity-info">
+					<span class="identity-actor">{authState.identity.actor}</span>
+					<span class="pill role-{authState.identity.role}">{authState.identity.role}</span>
+					{#if isGuest && isReadOnly}
+						<span class="pill guest-badge">Guest (read-only)</span>
+					{:else if isGuest}
+						<span class="pill guest-badge">Guest</span>
+					{/if}
+				</div>
+			{/if}
+		</section>
 
 		<nav class="stack">
 			<a class="button-link" href={collectionsHref}>Collections</a>
@@ -70,14 +112,14 @@ onMount(() => {
 						<p class="muted">{health.default_namespace}</p>
 					</div>
 				{:else}
-					<p class="muted">Polling `/health`…</p>
+					<p class="muted">Polling `/health`...</p>
 				{/if}
 			</div>
 		</section>
 	</aside>
 
 	<main class="content">
-		<slot />
+		{@render children()}
 	</main>
 </div>
 
@@ -106,6 +148,39 @@ onMount(() => {
 
 	.brand p {
 		margin: 0.5rem 0 0;
+	}
+
+	.identity-bar {
+		padding: 0.5rem 0;
+	}
+
+	.identity-info {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+		flex-wrap: wrap;
+	}
+
+	.identity-actor {
+		font-weight: 600;
+		font-size: 0.9rem;
+	}
+
+	.guest-badge {
+		font-size: 0.75rem;
+		opacity: 0.8;
+	}
+
+	.message.warning {
+		padding: 0.5rem 0.75rem;
+		border-radius: 0.375rem;
+		background: var(--color-warning-bg, #fef3c7);
+		color: var(--color-warning-text, #92400e);
+		font-size: 0.85rem;
+	}
+
+	.message.warning p {
+		margin: 0.25rem 0 0;
 	}
 
 	.health h2 {

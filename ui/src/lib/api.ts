@@ -288,3 +288,17 @@ export async function fetchAudit(filters: AuditFilters = {}): Promise<AuditQuery
 export async function fetchHealth(): Promise<HealthStatus> {
 	return request<HealthStatus>('/health');
 }
+
+export type AuthIdentity = {
+	actor: string;
+	role: 'admin' | 'write' | 'read';
+};
+
+export type AuthState =
+	| { status: 'authenticated'; identity: AuthIdentity }
+	| { status: 'unauthenticated' }
+	| { status: 'loading' };
+
+export async function fetchAuthMe(): Promise<AuthIdentity> {
+	return request<AuthIdentity>('/auth/me');
+}
