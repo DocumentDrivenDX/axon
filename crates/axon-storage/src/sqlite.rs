@@ -1,3 +1,4 @@
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
@@ -13,6 +14,9 @@ use axon_schema::schema::{CollectionSchema, CollectionView};
 use crate::adapter::StorageAdapter;
 
 /// SQLite-backed storage adapter using an embedded database.
+///
+/// The `Connection` is wrapped in a `Mutex` to provide the `Send + Sync`
+/// bounds required by `StorageAdapter`.
 ///
 /// Schema:
 /// ```sql
@@ -30,7 +34,7 @@ use crate::adapter::StorageAdapter;
 /// the TOCTOU window that exists when a read and write are issued as separate
 /// statements.
 pub struct SqliteStorageAdapter {
-    conn: Connection,
+    conn: Mutex<Connection>,
     /// `true` while a `BEGIN` has been issued but not yet committed or rolled back.
     in_tx: bool,
 }
@@ -39,7 +43,7 @@ impl SqliteStorageAdapter {
     /// Opens (or creates) a SQLite database at the given path.
     pub fn open(path: &str) -> Result<Self, AxonError> {
         let conn = Connection::open(path).map_err(|e| AxonError::Storage(e.to_string()))?;
-        let adapter = Self { conn, in_tx: false };
+        let adapter = Self { conn: Mutex::new(conn), in_tx: false };
         adapter.init_schema()?;
         Ok(adapter)
     }
@@ -47,13 +51,21 @@ impl SqliteStorageAdapter {
     /// Opens an in-memory SQLite database (useful for testing).
     pub fn open_in_memory() -> Result<Self, AxonError> {
         let conn = Connection::open_in_memory().map_err(|e| AxonError::Storage(e.to_string()))?;
-        let adapter = Self { conn, in_tx: false };
+        let adapter = Self { conn: Mutex::new(conn), in_tx: false };
         adapter.init_schema()?;
         Ok(adapter)
     }
 
-    fn init_schema(&self) -> Result<(), AxonError> {
+    /// Acquire the inner `Connection` lock, converting a poisoned-mutex error into
+    /// an `AxonError::Storage`.
+    fn conn(&self) -> Result<MutexGuard<'_, Connection>, AxonError> {
         self.conn
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("mutex poisoned: {e}")))
+    }
+
+    fn init_schema(&self) -> Result<(), AxonError> {
+        self.conn()?
             .execute_batch(
                 "PRAGMA foreign_keys = ON;
                 CREATE TABLE IF NOT EXISTS databases (
@@ -125,7 +137,7 @@ impl SqliteStorageAdapter {
         namespace: &Namespace,
     ) -> Result<bool, AxonError> {
         let exists: i64 = self
-            .conn
+            .conn()?
             .query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM collections
@@ -144,7 +156,7 @@ impl SqliteStorageAdapter {
 
     fn database_exists(&self, database: &str) -> Result<bool, AxonError> {
         let exists: i64 = self
-            .conn
+            .conn()?
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM databases WHERE name = ?1)",
                 params![database],
@@ -156,7 +168,7 @@ impl SqliteStorageAdapter {
 
     fn namespace_exists(&self, namespace: &Namespace) -> Result<bool, AxonError> {
         let exists: i64 = self
-            .conn
+            .conn()?
             .query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM namespaces
@@ -170,8 +182,8 @@ impl SqliteStorageAdapter {
     }
 
     fn table_info(&self, table: &str) -> Result<Vec<(String, i64)>, AxonError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare(&format!("PRAGMA table_info({table})"))
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let rows = stmt
@@ -201,7 +213,7 @@ impl SqliteStorageAdapter {
         has_database_name: bool,
         has_schema_name: bool,
     ) -> Result<(), AxonError> {
-        self.conn
+        self.conn()?
             .execute_batch(
                 "ALTER TABLE collections RENAME TO collections_legacy;
                  CREATE TABLE collections (
@@ -232,7 +244,7 @@ impl SqliteStorageAdapter {
             }
         };
 
-        self.conn
+        self.conn()?
             .execute(
                 &format!(
                     "INSERT OR IGNORE INTO collections (name, database_name, schema_name) {select_sql}"
@@ -240,7 +252,7 @@ impl SqliteStorageAdapter {
                 [],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute("DROP TABLE collections_legacy", [])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -251,7 +263,7 @@ impl SqliteStorageAdapter {
         has_database_name: bool,
         has_schema_name: bool,
     ) -> Result<(), AxonError> {
-        self.conn
+        self.conn()?
             .execute_batch(
                 "ALTER TABLE entities RENAME TO entities_legacy;
                  CREATE TABLE entities (
@@ -285,7 +297,7 @@ impl SqliteStorageAdapter {
             }
         };
 
-        self.conn
+        self.conn()?
             .execute(
                 &format!(
                     "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data) {select_sql}"
@@ -293,7 +305,7 @@ impl SqliteStorageAdapter {
                 [],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute("DROP TABLE entities_legacy", [])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -304,7 +316,7 @@ impl SqliteStorageAdapter {
         has_database_name: bool,
         has_schema_name: bool,
     ) -> Result<(), AxonError> {
-        self.conn
+        self.conn()?
             .execute_batch(
                 "ALTER TABLE schema_versions RENAME TO schema_versions_legacy;
                  CREATE TABLE schema_versions (
@@ -353,7 +365,7 @@ impl SqliteStorageAdapter {
             }
         };
 
-        self.conn
+        self.conn()?
             .execute(
                 &format!(
                     "INSERT INTO schema_versions
@@ -363,7 +375,7 @@ impl SqliteStorageAdapter {
                 [],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute("DROP TABLE schema_versions_legacy", [])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -374,7 +386,7 @@ impl SqliteStorageAdapter {
         has_database_name: bool,
         has_schema_name: bool,
     ) -> Result<(), AxonError> {
-        self.conn
+        self.conn()?
             .execute_batch(
                 "ALTER TABLE collection_views RENAME TO collection_views_legacy;
                  CREATE TABLE collection_views (
@@ -417,7 +429,7 @@ impl SqliteStorageAdapter {
             }
         };
 
-        self.conn
+        self.conn()?
             .execute(
                 &format!(
                     "INSERT OR REPLACE INTO collection_views
@@ -427,7 +439,7 @@ impl SqliteStorageAdapter {
                 [],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute("DROP TABLE collection_views_legacy", [])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -454,7 +466,7 @@ impl SqliteStorageAdapter {
         let rebuild_views = !views_ok;
 
         if !(rebuild_entities || rebuild_collections || rebuild_schema || rebuild_views) {
-            self.conn
+            self.conn()?
                 .execute(
                     "CREATE INDEX IF NOT EXISTS idx_collections_namespace
                      ON collections (database_name, schema_name, name)",
@@ -464,7 +476,7 @@ impl SqliteStorageAdapter {
             return Ok(());
         }
 
-        self.conn
+        self.conn()?
             .execute_batch("PRAGMA foreign_keys = OFF")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
@@ -501,14 +513,14 @@ impl SqliteStorageAdapter {
             )?;
         }
 
-        self.conn
+        self.conn()?
             .execute(
                 "CREATE INDEX IF NOT EXISTS idx_collections_namespace
                  ON collections (database_name, schema_name, name)",
                 [],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute_batch("PRAGMA foreign_keys = ON")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -518,8 +530,8 @@ impl SqliteStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Vec<Namespace>, AxonError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare(
                 "SELECT database_name, schema_name FROM collections
                  WHERE name = ?1
@@ -584,8 +596,8 @@ impl SqliteStorageAdapter {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare(
                 "SELECT name FROM collections
                  WHERE database_name = ?1 AND schema_name = ?2
@@ -610,8 +622,8 @@ impl SqliteStorageAdapter {
         &self,
         database: &str,
     ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare(
                 "SELECT schema_name, name FROM collections
                  WHERE database_name = ?1
@@ -633,13 +645,13 @@ impl SqliteStorageAdapter {
     }
 
     fn ensure_default_namespace(&self) -> Result<(), AxonError> {
-        self.conn
+        self.conn()?
             .execute(
                 "INSERT OR IGNORE INTO databases (name) VALUES (?1)",
                 params![DEFAULT_DATABASE],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "INSERT OR IGNORE INTO namespaces (database_name, name) VALUES (?1, ?2)",
                 params![DEFAULT_DATABASE, DEFAULT_SCHEMA],
@@ -669,15 +681,6 @@ impl SqliteStorageAdapter {
     }
 }
 
-// rusqlite::Connection is not Send by default when built without the
-// `send_sync` feature. For now we mark the adapter Send + Sync manually
-// since callers are expected to use it from a single thread (embedded mode).
-// A production multi-threaded adapter would use a connection pool.
-#[allow(unsafe_code)]
-unsafe impl Send for SqliteStorageAdapter {}
-#[allow(unsafe_code)]
-unsafe impl Sync for SqliteStorageAdapter {}
-
 impl StorageAdapter for SqliteStorageAdapter {
     fn resolve_collection_key(
         &self,
@@ -688,8 +691,8 @@ impl StorageAdapter for SqliteStorageAdapter {
 
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare_cached(
                 "SELECT collection, id, version, data FROM entities
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND id = ?4",
@@ -722,7 +725,7 @@ impl StorageAdapter for SqliteStorageAdapter {
     fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_string(&entity.data)?;
-        self.conn
+        self.conn()?
             .execute(
                 "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -741,7 +744,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 
     fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM entities
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND id = ?4",
@@ -759,7 +762,7 @@ impl StorageAdapter for SqliteStorageAdapter {
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let n: i64 = self
-            .conn
+            .conn()?
             .query_row(
                 "SELECT COUNT(*) FROM entities
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
@@ -797,8 +800,8 @@ impl StorageAdapter for SqliteStorageAdapter {
                    ORDER BY id ASC
                    LIMIT ?6";
 
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare_cached(sql)
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
@@ -854,7 +857,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         let data_json = serde_json::to_string(&entity.data)?;
 
         let changed = self
-            .conn
+            .conn()?
             .execute(
                 "UPDATE entities SET version = ?1, data = ?2
                  WHERE collection = ?3 AND database_name = ?4 AND schema_name = ?5 AND id = ?6 AND version = ?7",
@@ -896,7 +899,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_string(&entity.data)?;
         let changed = self
-            .conn
+            .conn()?
             .execute(
                 "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -935,7 +938,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         if self.in_tx {
             return Err(AxonError::Storage("transaction already active".into()));
         }
-        self.conn
+        self.conn()?
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.in_tx = true;
@@ -946,7 +949,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         if !self.in_tx {
             return Err(AxonError::Storage("no active transaction".into()));
         }
-        self.conn
+        self.conn()?
             .execute_batch("COMMIT")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.in_tx = false;
@@ -957,7 +960,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         if !self.in_tx {
             return Ok(());
         }
-        self.conn
+        self.conn()?
             .execute_batch("ROLLBACK")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.in_tx = false;
@@ -969,10 +972,10 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::AlreadyExists(format!("database '{name}'")));
         }
 
-        self.conn
+        self.conn()?
             .execute("INSERT INTO databases (name) VALUES (?1)", params![name])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "INSERT INTO namespaces (database_name, name) VALUES (?1, ?2)",
                 params![name, DEFAULT_SCHEMA],
@@ -982,8 +985,8 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn list_databases(&self) -> Result<Vec<String>, AxonError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare("SELECT name FROM databases ORDER BY name ASC")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let databases = stmt
@@ -1001,31 +1004,31 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         let doomed = self.database_collection_keys(name)?;
         self.purge_links_for_collections(&doomed)?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM entities WHERE database_name = ?1",
                 params![name],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM collection_views WHERE database_name = ?1",
                 params![name],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM schema_versions WHERE database_name = ?1",
                 params![name],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM collections WHERE database_name = ?1",
                 params![name],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute("DELETE FROM databases WHERE name = ?1", params![name])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -1042,7 +1045,7 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::AlreadyExists(format!("namespace '{namespace}'")));
         }
 
-        self.conn
+        self.conn()?
             .execute(
                 "INSERT INTO namespaces (database_name, name) VALUES (?1, ?2)",
                 params![namespace.database.as_str(), namespace.schema.as_str()],
@@ -1056,8 +1059,8 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::NotFound(format!("database '{database}'")));
         }
 
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare(
                 "SELECT name FROM namespaces
                  WHERE database_name = ?1
@@ -1079,35 +1082,35 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         let doomed = self.namespace_collection_keys(namespace)?;
         self.purge_links_for_collections(&doomed)?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM entities
                  WHERE database_name = ?1 AND schema_name = ?2",
                 params![namespace.database.as_str(), namespace.schema.as_str()],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM collection_views
                  WHERE database_name = ?1 AND schema_name = ?2",
                 params![namespace.database.as_str(), namespace.schema.as_str()],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM schema_versions
                  WHERE database_name = ?1 AND schema_name = ?2",
                 params![namespace.database.as_str(), namespace.schema.as_str()],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM collections
                  WHERE database_name = ?1 AND schema_name = ?2",
                 params![namespace.database.as_str(), namespace.schema.as_str()],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM namespaces
                  WHERE database_name = ?1 AND name = ?2",
@@ -1125,8 +1128,8 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare(
                 "SELECT name FROM collections
                  WHERE database_name = ?1 AND schema_name = ?2
@@ -1160,7 +1163,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         let entry_json =
             serde_json::to_string(&entry).map_err(|e| AxonError::Storage(e.to_string()))?;
 
-        self.conn
+        self.conn()?
             .execute(
                 "INSERT INTO audit_log
                      (timestamp_ns, collection, entity_id, version, mutation, actor,
@@ -1179,7 +1182,7 @@ impl StorageAdapter for SqliteStorageAdapter {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
-        entry.id = self.conn.last_insert_rowid() as u64;
+        entry.id = self.conn()?.last_insert_rowid() as u64;
         Ok(entry)
     }
 
@@ -1187,7 +1190,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         let key = self.resolve_catalog_key(&schema.collection)?;
         // Auto-increment: find current max version for this collection.
         let max_version: i64 = self
-            .conn
+            .conn()?
             .query_row(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
@@ -1211,7 +1214,7 @@ impl StorageAdapter for SqliteStorageAdapter {
             .unwrap_or_default()
             .as_nanos() as i64;
 
-        self.conn
+        self.conn()?
             .execute(
                 "INSERT INTO schema_versions
                     (collection, database_name, schema_name, version, schema_json, created_at)
@@ -1231,8 +1234,8 @@ impl StorageAdapter for SqliteStorageAdapter {
 
     fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare_cached(
                 "SELECT schema_json FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3
@@ -1263,8 +1266,8 @@ impl StorageAdapter for SqliteStorageAdapter {
         version: u32,
     ) -> Result<Option<CollectionSchema>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare_cached(
                 "SELECT schema_json FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND version = ?4",
@@ -1294,8 +1297,8 @@ impl StorageAdapter for SqliteStorageAdapter {
         collection: &CollectionId,
     ) -> Result<Vec<(u32, u64)>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare_cached(
                 "SELECT version, created_at FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3
@@ -1323,7 +1326,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
@@ -1347,7 +1350,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         }
 
         let current_version: i64 = self
-            .conn
+            .conn()?
             .query_row(
                 "SELECT COALESCE(version, 0) FROM collection_views
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
@@ -1373,7 +1376,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         versioned.updated_at_ns = Some(updated_at_ns as u64);
         let view_json = serde_json::to_string(&versioned)?;
 
-        self.conn
+        self.conn()?
             .execute(
                 "INSERT INTO collection_views
                     (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
@@ -1402,8 +1405,8 @@ impl StorageAdapter for SqliteStorageAdapter {
         collection: &CollectionId,
     ) -> Result<Option<CollectionView>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare_cached(
                 "SELECT view_json FROM collection_views
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
@@ -1429,7 +1432,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 
     fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM collection_views
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
@@ -1452,7 +1455,7 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
-        self.conn
+        self.conn()?
             .execute(
                 "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
                  VALUES (?1, ?2, ?3)",
@@ -1471,7 +1474,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         // Older SQLite databases may have `collection_views` without the
         // `ON DELETE CASCADE` foreign key. Delete the dependent row explicitly
         // so upgraded databases do not retain stale collection views.
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM collection_views
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
@@ -1482,7 +1485,7 @@ impl StorageAdapter for SqliteStorageAdapter {
                 ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
@@ -1493,7 +1496,7 @@ impl StorageAdapter for SqliteStorageAdapter {
                 ],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn
+        self.conn()?
             .execute(
                 "DELETE FROM collections
                  WHERE name = ?1 AND database_name = ?2 AND schema_name = ?3",
@@ -1508,8 +1511,8 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
-        let mut stmt = self
-            .conn
+        let conn = self.conn()?;
+            let mut stmt = conn
             .prepare_cached(
                 "SELECT name FROM collections
                  ORDER BY database_name ASC, schema_name ASC, name ASC",

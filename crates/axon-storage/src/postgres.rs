@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use postgres::{Client, NoTls};
@@ -15,15 +15,16 @@ use crate::adapter::StorageAdapter;
 
 /// PostgreSQL-backed storage adapter.
 ///
-/// Uses the synchronous `postgres` crate. The `Client` is wrapped in
-/// `RefCell` because `postgres::Client::query` requires `&mut self` but
-/// `StorageAdapter::get` and other read methods take `&self`.
+/// Uses the synchronous `postgres` crate. The `Client` is wrapped in a
+/// `Mutex` because `postgres::Client::query` requires `&mut self` but
+/// `StorageAdapter::get` and other read methods take `&self`. The `Mutex`
+/// also provides the `Send + Sync` bounds required by `StorageAdapter`.
 ///
 /// Transactions are handled via `BEGIN` / `COMMIT` / `ROLLBACK` statements.
 /// The adapter creates the required tables on initialization if they do not
 /// exist.
 pub struct PostgresStorageAdapter {
-    client: RefCell<Client>,
+    client: Mutex<Client>,
     in_tx: bool,
 }
 
@@ -35,16 +36,23 @@ impl PostgresStorageAdapter {
         let client =
             Client::connect(params, NoTls).map_err(|e| AxonError::Storage(e.to_string()))?;
         let mut adapter = Self {
-            client: RefCell::new(client),
+            client: Mutex::new(client),
             in_tx: false,
         };
         adapter.init_schema()?;
         Ok(adapter)
     }
 
-    fn init_schema(&mut self) -> Result<(), AxonError> {
+    /// Acquire the inner `Client` lock, converting a poisoned-mutex error into
+    /// an `AxonError::Storage`.
+    fn client(&self) -> Result<MutexGuard<'_, Client>, AxonError> {
         self.client
-            .borrow_mut()
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("mutex poisoned: {e}")))
+    }
+
+    fn init_schema(&mut self) -> Result<(), AxonError> {
+        self.client()?
             .batch_execute(
                 "CREATE TABLE IF NOT EXISTS databases (
                     name TEXT NOT NULL PRIMARY KEY
@@ -114,8 +122,7 @@ impl PostgresStorageAdapter {
         namespace: &Namespace,
     ) -> Result<bool, AxonError> {
         let row = self
-            .client
-            .borrow_mut()
+            .client()?
             .query_one(
                 "SELECT EXISTS(
                     SELECT 1 FROM collections
@@ -129,8 +136,7 @@ impl PostgresStorageAdapter {
 
     fn database_exists(&self, database: &str) -> Result<bool, AxonError> {
         let row = self
-            .client
-            .borrow_mut()
+            .client()?
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM databases WHERE name = $1)",
                 &[&database],
@@ -141,8 +147,7 @@ impl PostgresStorageAdapter {
 
     fn namespace_exists(&self, namespace: &Namespace) -> Result<bool, AxonError> {
         let row = self
-            .client
-            .borrow_mut()
+            .client()?
             .query_one(
                 "SELECT EXISTS(
                     SELECT 1 FROM namespaces
@@ -156,8 +161,7 @@ impl PostgresStorageAdapter {
 
     fn table_pk_columns(&self, table: &str) -> Result<Vec<String>, AxonError> {
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT a.attname
                  FROM pg_index i
@@ -173,8 +177,7 @@ impl PostgresStorageAdapter {
     }
 
     fn ensure_namespace_catalog_tables(&mut self) -> Result<(), AxonError> {
-        self.client
-            .borrow_mut()
+        self.client()?
             .batch_execute(
                 "ALTER TABLE entities
                      ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
@@ -200,8 +203,7 @@ impl PostgresStorageAdapter {
         if self.table_pk_columns("entities")?
             != vec!["database_name", "schema_name", "collection", "id"]
         {
-            self.client
-                .borrow_mut()
+            self.client()?
                 .batch_execute(
                     "ALTER TABLE entities DROP CONSTRAINT IF EXISTS entities_pkey;
                      ALTER TABLE entities ADD PRIMARY KEY (database_name, schema_name, collection, id);",
@@ -209,8 +211,7 @@ impl PostgresStorageAdapter {
                 .map_err(|e| AxonError::Storage(e.to_string()))?;
         }
 
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "UPDATE schemas s
                  SET database_name = c.database_name,
@@ -221,8 +222,7 @@ impl PostgresStorageAdapter {
                 &[],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "UPDATE collection_views v
                  SET database_name = c.database_name,
@@ -235,8 +235,7 @@ impl PostgresStorageAdapter {
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
         if self.table_pk_columns("collections")? != vec!["database_name", "schema_name", "name"] {
-            self.client
-                .borrow_mut()
+            self.client()?
                 .batch_execute(
                     "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_collection_fkey;
                      ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_pkey;
@@ -249,8 +248,7 @@ impl PostgresStorageAdapter {
         if self.table_pk_columns("schemas")?
             != vec!["database_name", "schema_name", "collection", "version"]
         {
-            self.client
-                .borrow_mut()
+            self.client()?
                 .batch_execute(
                     "ALTER TABLE schemas DROP CONSTRAINT IF EXISTS schemas_pkey;
                      ALTER TABLE schemas
@@ -262,8 +260,7 @@ impl PostgresStorageAdapter {
         if self.table_pk_columns("collection_views")?
             != vec!["database_name", "schema_name", "collection"]
         {
-            self.client
-                .borrow_mut()
+            self.client()?
                 .batch_execute(
                     "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_pkey;
                      ALTER TABLE collection_views ADD PRIMARY KEY (database_name, schema_name, collection);",
@@ -271,8 +268,7 @@ impl PostgresStorageAdapter {
                 .map_err(|e| AxonError::Storage(e.to_string()))?;
         }
 
-        self.client
-            .borrow_mut()
+        self.client()?
             .batch_execute(
                 "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_collection_fkey;
                  ALTER TABLE collection_views
@@ -292,8 +288,7 @@ impl PostgresStorageAdapter {
         collection: &CollectionId,
     ) -> Result<Vec<Namespace>, AxonError> {
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT database_name, schema_name FROM collections
                  WHERE name = $1
@@ -353,8 +348,7 @@ impl PostgresStorageAdapter {
         namespace: &Namespace,
     ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT name FROM collections
                  WHERE database_name = $1 AND schema_name = $2
@@ -378,8 +372,7 @@ impl PostgresStorageAdapter {
         database: &str,
     ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT schema_name, name FROM collections
                  WHERE database_name = $1
@@ -399,15 +392,13 @@ impl PostgresStorageAdapter {
     }
 
     fn ensure_default_namespace(&self) -> Result<(), AxonError> {
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "INSERT INTO databases (name) VALUES ($1) ON CONFLICT DO NOTHING",
                 &[&DEFAULT_DATABASE],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "INSERT INTO namespaces (database_name, name)
                  VALUES ($1, $2)
@@ -437,14 +428,6 @@ impl PostgresStorageAdapter {
     }
 }
 
-// PostgreSQL's Client is not Send (it holds a TcpStream), but the StorageAdapter
-// trait requires Send + Sync. We use unsafe impl because a single adapter
-// instance is only accessed from one thread at a time behind a Mutex.
-#[allow(unsafe_code)]
-unsafe impl Send for PostgresStorageAdapter {}
-#[allow(unsafe_code)]
-unsafe impl Sync for PostgresStorageAdapter {}
-
 impl StorageAdapter for PostgresStorageAdapter {
     fn resolve_collection_key(
         &self,
@@ -456,8 +439,7 @@ impl StorageAdapter for PostgresStorageAdapter {
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT collection, id, version, data
                  FROM entities
@@ -480,8 +462,7 @@ impl StorageAdapter for PostgresStorageAdapter {
     fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_value(&entity.data)?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
                  VALUES ($1, $2, $3, $4, $5, $6)
@@ -502,8 +483,7 @@ impl StorageAdapter for PostgresStorageAdapter {
 
     fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM entities
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3 AND id = $4",
@@ -521,8 +501,7 @@ impl StorageAdapter for PostgresStorageAdapter {
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let row = self
-            .client
-            .borrow_mut()
+            .client()?
             .query_one(
                 "SELECT COUNT(*) FROM entities
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
@@ -550,8 +529,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         let limit_val = limit.map(|l| l as i64);
 
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT collection, id, version, data FROM entities
                  WHERE collection = $1
@@ -597,8 +575,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         let data_json = serde_json::to_value(&entity.data)?;
 
         let changed = self
-            .client
-            .borrow_mut()
+            .client()?
             .execute(
                 "UPDATE entities SET version = $3, data = $4
                  WHERE collection = $1 AND database_name = $5 AND schema_name = $6 AND id = $2 AND version = $7",
@@ -639,8 +616,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_value(&entity.data)?;
         let changed = self
-            .client
-            .borrow_mut()
+            .client()?
             .execute(
                 "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
                  VALUES ($1, $2, $3, $4, $5, $6)
@@ -679,8 +655,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         if self.in_tx {
             return Err(AxonError::Storage("transaction already active".into()));
         }
-        self.client
-            .borrow_mut()
+        self.client()?
             .batch_execute("BEGIN")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.in_tx = true;
@@ -691,8 +666,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         if !self.in_tx {
             return Err(AxonError::Storage("no active transaction".into()));
         }
-        self.client
-            .borrow_mut()
+        self.client()?
             .batch_execute("COMMIT")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.in_tx = false;
@@ -703,8 +677,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         if !self.in_tx {
             return Ok(());
         }
-        self.client
-            .borrow_mut()
+        self.client()?
             .batch_execute("ROLLBACK")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         self.in_tx = false;
@@ -716,12 +689,10 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Err(AxonError::AlreadyExists(format!("database '{name}'")));
         }
 
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute("INSERT INTO databases (name) VALUES ($1)", &[&name])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "INSERT INTO namespaces (database_name, name) VALUES ($1, $2)",
                 &[&name, &DEFAULT_SCHEMA],
@@ -732,8 +703,7 @@ impl StorageAdapter for PostgresStorageAdapter {
 
     fn list_databases(&self) -> Result<Vec<String>, AxonError> {
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query("SELECT name FROM databases ORDER BY name ASC", &[])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(rows.iter().map(|row| row.get("name")).collect())
@@ -746,27 +716,22 @@ impl StorageAdapter for PostgresStorageAdapter {
 
         let doomed = self.database_collection_keys(name)?;
         self.purge_links_for_collections(&doomed)?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute("DELETE FROM entities WHERE database_name = $1", &[&name])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM collection_views WHERE database_name = $1",
                 &[&name],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute("DELETE FROM schemas WHERE database_name = $1", &[&name])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute("DELETE FROM collections WHERE database_name = $1", &[&name])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute("DELETE FROM databases WHERE name = $1", &[&name])
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -783,8 +748,7 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Err(AxonError::AlreadyExists(format!("namespace '{namespace}'")));
         }
 
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "INSERT INTO namespaces (database_name, name) VALUES ($1, $2)",
                 &[&namespace.database, &namespace.schema],
@@ -799,8 +763,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         }
 
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT name FROM namespaces
                  WHERE database_name = $1
@@ -818,40 +781,35 @@ impl StorageAdapter for PostgresStorageAdapter {
 
         let doomed = self.namespace_collection_keys(namespace)?;
         self.purge_links_for_collections(&doomed)?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM entities
                  WHERE database_name = $1 AND schema_name = $2",
                 &[&namespace.database, &namespace.schema],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM collection_views
                  WHERE database_name = $1 AND schema_name = $2",
                 &[&namespace.database, &namespace.schema],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM schemas
                  WHERE database_name = $1 AND schema_name = $2",
                 &[&namespace.database, &namespace.schema],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM collections
                  WHERE database_name = $1 AND schema_name = $2",
                 &[&namespace.database, &namespace.schema],
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM namespaces
                  WHERE database_name = $1 AND name = $2",
@@ -870,8 +828,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         }
 
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT name FROM collections
                  WHERE database_name = $1 AND schema_name = $2
@@ -899,7 +856,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         let entry_json = serde_json::to_value(&entry)?;
 
         let row = self
-            .client.borrow_mut()
+            .client()?
             .query_one(
                 "INSERT INTO audit_log (timestamp_ns, collection, entity_id, version, mutation, actor, transaction_id, entry_json)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
@@ -926,8 +883,7 @@ impl StorageAdapter for PostgresStorageAdapter {
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(&schema.collection)?;
         let row = self
-            .client
-            .borrow_mut()
+            .client()?
             .query_one(
                 "SELECT COALESCE(MAX(version), 0) FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
@@ -948,8 +904,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         versioned.collection = key.collection.clone();
         versioned.version = next_version as u32;
         let schema_json = serde_json::to_value(&versioned)?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "INSERT INTO schemas
                     (collection, database_name, schema_name, version, schema_json, created_at_ns)
@@ -970,8 +925,7 @@ impl StorageAdapter for PostgresStorageAdapter {
     fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT schema_json FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3
@@ -1002,8 +956,7 @@ impl StorageAdapter for PostgresStorageAdapter {
     ) -> Result<Option<CollectionSchema>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT schema_json FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3 AND version = $4",
@@ -1032,8 +985,7 @@ impl StorageAdapter for PostgresStorageAdapter {
     ) -> Result<Vec<(u32, u64)>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT version, created_at_ns FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3
@@ -1059,8 +1011,7 @@ impl StorageAdapter for PostgresStorageAdapter {
 
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
@@ -1084,8 +1035,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         }
 
         let current_version = self
-            .client
-            .borrow_mut()
+            .client()?
             .query_opt(
                 "SELECT version FROM collection_views
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
@@ -1110,8 +1060,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         versioned.updated_at_ns = Some(updated_at_ns as u64);
         let view_json = serde_json::to_value(&versioned)?;
 
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "INSERT INTO collection_views
                     (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
@@ -1141,8 +1090,7 @@ impl StorageAdapter for PostgresStorageAdapter {
     ) -> Result<Option<CollectionView>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT view_json FROM collection_views
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
@@ -1166,8 +1114,7 @@ impl StorageAdapter for PostgresStorageAdapter {
 
     fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM collection_views
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
@@ -1190,8 +1137,7 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "INSERT INTO collections (name, database_name, schema_name)
                  VALUES ($1, $2, $3)
@@ -1212,8 +1158,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         // either the resolved namespace or the old default/default namespace,
         // so clean them up explicitly instead of relying solely on ON DELETE
         // CASCADE.
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM collection_views
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
@@ -1225,8 +1170,7 @@ impl StorageAdapter for PostgresStorageAdapter {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         if raw_collection != key.collection.as_str() {
-            self.client
-                .borrow_mut()
+            self.client()?
                 .execute(
                     "DELETE FROM collection_views
                      WHERE collection = $1
@@ -1242,8 +1186,7 @@ impl StorageAdapter for PostgresStorageAdapter {
                 )
                 .map_err(|e| AxonError::Storage(e.to_string()))?;
         }
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
@@ -1255,8 +1198,7 @@ impl StorageAdapter for PostgresStorageAdapter {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         if raw_collection != key.collection.as_str() {
-            self.client
-                .borrow_mut()
+            self.client()?
                 .execute(
                     "DELETE FROM schemas
                      WHERE collection = $1
@@ -1272,8 +1214,7 @@ impl StorageAdapter for PostgresStorageAdapter {
                 )
                 .map_err(|e| AxonError::Storage(e.to_string()))?;
         }
-        self.client
-            .borrow_mut()
+        self.client()?
             .execute(
                 "DELETE FROM collections
                  WHERE name = $1 AND database_name = $2 AND schema_name = $3",
@@ -1285,8 +1226,7 @@ impl StorageAdapter for PostgresStorageAdapter {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         if raw_collection != key.collection.as_str() {
-            self.client
-                .borrow_mut()
+            self.client()?
                 .execute(
                     "DELETE FROM collections
                      WHERE name = $1
@@ -1307,8 +1247,7 @@ impl StorageAdapter for PostgresStorageAdapter {
 
     fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
         let rows = self
-            .client
-            .borrow_mut()
+            .client()?
             .query(
                 "SELECT name FROM collections
                  ORDER BY database_name ASC, schema_name ASC, name ASC",
@@ -1470,8 +1409,7 @@ mod tests {
             PostgresStorageAdapter::connect(database.url()).map_err(TestSetupError::Fail)?;
         // Clean tables for a fresh test.
         adapter
-            .client
-            .borrow_mut()
+            .client().map_err(TestSetupError::Fail)?
             .batch_execute(
                 "TRUNCATE entities, schemas, collection_views, collections, namespaces, databases, audit_log
                  RESTART IDENTITY CASCADE",
@@ -1624,8 +1562,7 @@ mod tests {
         );
 
         let remaining_views: i64 = adapter
-            .client
-            .borrow_mut()
+            .client.lock().expect("lock")
             .query_one(
                 "SELECT COUNT(*) FROM collection_views WHERE collection = $1",
                 &[&collection.as_str()],
@@ -2267,8 +2204,7 @@ mod tests {
         s.put_schema(&v2).expect("schema v2 put should succeed");
 
         let stored_collections: Vec<String> = s
-            .client
-            .borrow_mut()
+            .client.lock().expect("lock")
             .query(
                 "SELECT collection FROM schemas
                  WHERE database_name = $1 AND schema_name = $2
@@ -2327,8 +2263,7 @@ mod tests {
         assert_eq!(stored.version, 1);
 
         let stored_collection: String = s
-            .client
-            .borrow_mut()
+            .client.lock().expect("lock")
             .query_one(
                 "SELECT collection FROM collection_views
                  WHERE database_name = $1 AND schema_name = $2",
@@ -2379,8 +2314,7 @@ mod tests {
             .expect("qualified unregister should succeed");
 
         let row_counts = s
-            .client
-            .borrow_mut()
+            .client.lock().expect("lock")
             .query_one(
                 "SELECT
                     (SELECT COUNT(*) FROM collections
@@ -2436,16 +2370,14 @@ mod tests {
             serde_json::to_value(&schema).expect("legacy schema should serialize");
         let legacy_view_json =
             serde_json::to_value(&view).expect("legacy collection view should serialize");
-        s.client
-            .borrow_mut()
+        s.client.lock().expect("lock")
             .execute(
                 "INSERT INTO collections (name, database_name, schema_name)
                  VALUES ($1, $2, $3)",
                 &[&qualified.as_str(), &DEFAULT_DATABASE, &DEFAULT_SCHEMA],
             )
             .expect("legacy collection row should insert");
-        s.client
-            .borrow_mut()
+        s.client.lock().expect("lock")
             .execute(
                 "INSERT INTO schemas
                     (collection, database_name, schema_name, version, schema_json, created_at_ns)
@@ -2460,8 +2392,7 @@ mod tests {
                 ],
             )
             .expect("legacy schema row should insert");
-        s.client
-            .borrow_mut()
+        s.client.lock().expect("lock")
             .execute(
                 "INSERT INTO collection_views
                     (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
@@ -2479,8 +2410,7 @@ mod tests {
             .expect("legacy collection view row should insert");
 
         let before_unregister: i64 = s
-            .client
-            .borrow_mut()
+            .client.lock().expect("lock")
             .query_one(
                 "SELECT
                     (SELECT COUNT(*) FROM collections
@@ -2512,8 +2442,7 @@ mod tests {
             .expect("qualified unregister should succeed");
 
         let remaining_metadata_rows: i64 = s
-            .client
-            .borrow_mut()
+            .client.lock().expect("lock")
             .query_one(
                 "SELECT
                     (SELECT COUNT(*) FROM collections
