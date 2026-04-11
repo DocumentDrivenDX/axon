@@ -1,3 +1,4 @@
+#![deny(unsafe_code)]
 //! Storage adapter trait and in-memory implementation for Axon.
 //!
 //! `axon-storage` defines the `StorageAdapter` trait that abstracts over

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Template rendering and validation for Axon markdown templates.
 //!
 //! This crate handles Mustache-based markdown template validation against

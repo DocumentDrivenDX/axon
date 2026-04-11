@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Schema definitions, validation, and migration for Axon collections.
 //!
 //! `axon-schema` provides the schema engine that enforces structure on entities

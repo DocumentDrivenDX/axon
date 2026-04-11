@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Deterministic simulation testing (DST) framework for Axon.
 //!
 //! Inspired by FoundationDB's approach to correctness: define invariants

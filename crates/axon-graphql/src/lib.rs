@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Auto-generated GraphQL schema from Axon collection schemas (FEAT-015).
 //!
 //! This crate generates a dynamic `async-graphql` schema from the currently

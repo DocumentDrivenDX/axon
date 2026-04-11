@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! MCP (Model Context Protocol) server for Axon.
 //!
 //! Implements the JSON-RPC 2.0-based MCP protocol so that AI agents can

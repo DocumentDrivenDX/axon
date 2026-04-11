@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Core types, traits, and error definitions for Axon.
 //!
 //! `axon-core` is the foundational crate that all other Axon crates depend on.

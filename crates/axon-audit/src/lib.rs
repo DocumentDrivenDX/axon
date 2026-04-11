@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Immutable audit log: records every mutation with provenance.
 //!
 //! `axon-audit` provides the append-only audit trail that tracks every

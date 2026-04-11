@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! HTTP/gRPC API surface for Axon server.
 //!
 //! `axon-api` defines the request/response types and handler interfaces
