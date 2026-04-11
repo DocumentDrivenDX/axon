@@ -84,6 +84,22 @@ Agents need a well-defined, self-documenting API that they can call reliably. Ex
 - [ ] `--output json` flag returns machine-parseable output
 - [ ] `axon` with no args shows help
 
+### Client Mode (added by FEAT-028)
+
+- **Client mode**: When a server is reachable at the configured URL
+  (`http://localhost:4170` by default), CLI commands issue HTTP requests
+  to the server API. The CLI uses the same HTTP routes already defined
+  by the gateway — no new protocol.
+- **Mode selection**: `--embedded` forces embedded SQLite mode.
+  `--server <url>` forces client mode against a specific URL. Default
+  behavior: attempt HTTP connection to configured server URL; if
+  unreachable within 200ms, fall back to embedded.
+- **Output parity**: JSON/table/YAML output formats work identically in
+  both modes.
+- **Server as source of truth**: When a server is running, client mode
+  is the expected path. Embedded mode is for offline or development use
+  without a server.
+
 ## Edge Cases and Error Handling
 
 - **Server unavailable**: Client SDKs return connection error with retry guidance
@@ -114,4 +130,5 @@ Agents need a well-defined, self-documenting API that they can call reliably. Ex
 
 ### Feature Dependencies
 - **Depends On**: FEAT-001, FEAT-002, FEAT-003, FEAT-004
-- **Depended By**: FEAT-006 (Bead Storage Adapter)
+- **Depended By**: FEAT-006 (Bead Storage Adapter), FEAT-028 (Unified
+  Binary — client mode uses the HTTP API)

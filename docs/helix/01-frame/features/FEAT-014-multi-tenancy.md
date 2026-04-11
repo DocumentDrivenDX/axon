@@ -118,6 +118,29 @@ one set of schemas. This works for single-user embedded mode but fails for:
 - **Resolution**: Most-specific grant wins. Narrower scope overrides
   broader scope
 
+#### Physical Database Isolation (added by FEAT-028)
+
+FEAT-014 defines "database" as a *logical* isolation boundary (namespace
+hierarchy). Physical isolation maps each logical database to a separate
+backing store, providing OS-level separation:
+
+- **SQLite mode**: The master/control-plane database lives at
+  `{data_dir}/axon.db`. Each tenant database gets its own file at
+  `{data_dir}/tenants/{db_name}.db`. The server opens adapters lazily
+  on first request to a database and caches them.
+- **PostgreSQL mode**: When a superadmin DSN is provided via config, the
+  server creates a master database (`axon_master`) on first startup.
+  When a new database is created via API, the server issues
+  `CREATE DATABASE axon_{db_name}` and opens a connection pool for it.
+- **Routing**: A `TenantRouter` resolves the `X-Axon-Database` header
+  or `/db/{name}/` path prefix, looks up the adapter for that database,
+  and injects it into the request. The existing `ControlPlaneState` is
+  the catalog — `TenantRouter` reads from it, not duplicates it.
+- **Default database**: The `default` database is always available. It
+  is the implicit target when no database header is provided.
+- **Drop database**: Closes the adapter, deletes the SQLite file (or
+  `DROP DATABASE` for PostgreSQL), and removes the catalog entry.
+
 ### Non-Functional Requirements
 
 - **Name resolution latency**: < 1ms (cached). Collection name resolution
@@ -245,4 +268,5 @@ one set of schemas. This works for single-user embedded mode but fails for:
 
 ### Feature Dependencies
 - **Depends On**: FEAT-001, FEAT-012
-- **Depended By**: FEAT-011 (Admin UI gains database/schema navigation)
+- **Depended By**: FEAT-011 (Admin UI gains database/schema navigation),
+  FEAT-028 (Unified Binary — physical isolation, TenantRouter)
