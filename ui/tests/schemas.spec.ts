@@ -1,8 +1,8 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './fixtures';
 
 test.describe('Schemas page', () => {
 	test('page heading is visible', async ({ page }) => {
-		await page.goto('/schemas');
+		await page.goto('/ui/schemas');
 		await expect(page.getByRole('heading', { name: 'Schemas' })).toBeVisible();
 		await expect(
 			page.getByText('View and update collection schemas through the live HTTP endpoints.'),
@@ -10,14 +10,14 @@ test.describe('Schemas page', () => {
 	});
 
 	test('collections panel is present', async ({ page }) => {
-		await page.goto('/schemas');
+		await page.goto('/ui/schemas');
 		await expect(
 			page.locator('section.panel').filter({ hasText: 'Collections' }),
 		).toBeVisible();
 	});
 
 	test('create collection form is visible', async ({ page }) => {
-		await page.goto('/schemas');
+		await page.goto('/ui/schemas');
 
 		await expect(page.getByRole('heading', { name: 'Create Collection' })).toBeVisible();
 		await expect(page.getByPlaceholder('tasks')).toBeVisible();
@@ -27,7 +27,7 @@ test.describe('Schemas page', () => {
 	});
 
 	test('create collection button is disabled when name is empty', async ({ page }) => {
-		await page.goto('/schemas');
+		await page.goto('/ui/schemas');
 
 		const nameInput = page.getByPlaceholder('tasks');
 		await nameInput.fill('');
@@ -37,7 +37,7 @@ test.describe('Schemas page', () => {
 	});
 
 	test('create collection button enables when name is entered', async ({ page }) => {
-		await page.goto('/schemas');
+		await page.goto('/ui/schemas');
 
 		const nameInput = page.getByPlaceholder('tasks');
 		await nameInput.fill('test-collection');
@@ -47,7 +47,7 @@ test.describe('Schemas page', () => {
 	});
 
 	test('schema detail shows placeholder when no collection selected', async ({ page }) => {
-		await page.goto('/schemas');
+		await page.goto('/ui/schemas');
 
 		await expect(
 			page.getByText('Select a collection to inspect its schema.'),
@@ -56,11 +56,10 @@ test.describe('Schemas page', () => {
 });
 
 test.describe('Schema detail view', () => {
-	// These tests assume at least one collection exists so the schema panel
-	// can display structured field information.
+	// These tests use the mocked collections from fixtures.
 
 	test('selecting a collection shows schema detail', async ({ page }) => {
-		await page.goto('/schemas');
+		await page.goto('/ui/schemas');
 		await page.waitForLoadState('networkidle');
 
 		// Click the first collection button if any exist.
@@ -79,7 +78,7 @@ test.describe('Schema detail view', () => {
 	});
 
 	test('entity fields table has correct headers', async ({ page }) => {
-		await page.goto('/schemas');
+		await page.goto('/ui/schemas');
 		await page.waitForLoadState('networkidle');
 
 		const collectionButtons = page
@@ -105,7 +104,7 @@ test.describe('Schema detail view', () => {
 	});
 
 	test('view mode toggle between structured and raw', async ({ page }) => {
-		await page.goto('/schemas');
+		await page.goto('/ui/schemas');
 		await page.waitForLoadState('networkidle');
 
 		const collectionButtons = page
@@ -130,7 +129,7 @@ test.describe('Schema detail view', () => {
 	});
 
 	test('edit mode opens textarea', async ({ page }) => {
-		await page.goto('/schemas');
+		await page.goto('/ui/schemas');
 		await page.waitForLoadState('networkidle');
 
 		const collectionButtons = page
@@ -148,7 +147,8 @@ test.describe('Schema detail view', () => {
 			if (hasEdit) {
 				await editButton.click();
 				await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
-				await expect(page.getByRole('button', { name: 'Save Schema' })).toBeVisible();
+				// After edit, the "Preview Changes" button should be visible.
+				await expect(page.getByRole('button', { name: 'Preview Changes' })).toBeVisible();
 			}
 		}
 	});
