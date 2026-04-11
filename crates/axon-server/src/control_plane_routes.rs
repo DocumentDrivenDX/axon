@@ -38,9 +38,12 @@ impl ControlPlaneState {
     }
 
     /// Build the file path for a tenant database.
-    pub fn tenant_db_path(&self, tenant_id: &str, db_name: &str) -> PathBuf {
+    ///
+    /// Uses `{data_dir}/tenants/{db_name}.db` layout, matching [`crate::tenant_router::TenantRouter`].
+    pub fn tenant_db_path(&self, _tenant_id: &str, db_name: &str) -> PathBuf {
         self.data_dir
-            .join(format!("{tenant_id}_{db_name}.db"))
+            .join("tenants")
+            .join(format!("{db_name}.db"))
     }
 }
 
@@ -628,7 +631,7 @@ mod tests {
         assert!(body["db_path"].as_str().is_some());
 
         // Verify the SQLite file was actually created.
-        let db_path = tmp.path().join(format!("{id}_prod.db"));
+        let db_path = tmp.path().join("tenants").join("prod.db");
         assert!(db_path.exists(), "provisioned database file should exist");
     }
 
@@ -727,7 +730,7 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
 
-        let db_path = tmp.path().join(format!("{id}_prod.db"));
+        let db_path = tmp.path().join("tenants").join("prod.db");
         assert!(db_path.exists(), "file should exist after assign");
 
         let resp = server
@@ -837,8 +840,8 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
 
-        let prod_path = tmp.path().join(format!("{id}_prod.db"));
-        let staging_path = tmp.path().join(format!("{id}_staging.db"));
+        let prod_path = tmp.path().join("tenants").join("prod.db");
+        let staging_path = tmp.path().join("tenants").join("staging.db");
         assert!(prod_path.exists());
         assert!(staging_path.exists());
 

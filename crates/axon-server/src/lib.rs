@@ -11,6 +11,7 @@ pub mod rate_limit;
 pub mod schema_registry;
 pub mod serve;
 pub mod service;
+pub mod tenant_router;
 
 pub use auth::{AuthContext, AuthMode, Identity, Role};
 pub use mcp_stdio::run_mcp_stdio;
