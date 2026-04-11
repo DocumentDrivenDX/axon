@@ -7,14 +7,18 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::future::Future;
+use std::io::Read as _;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Buf;
+use http_body_util::BodyExt;
+use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
-use tailscale_localapi::{LocalApi, UnixStreamClient};
+use tokio::net::UnixStream;
 use tokio::sync::RwLock;
 
 /// Authentication mode for the server.
@@ -32,6 +36,15 @@ pub enum AuthMode {
     Tailscale {
         /// Default role for nodes without an ACL tag.
         default_role: Role,
+    },
+    /// Guest mode — unauthenticated requests are allowed with a fixed role.
+    ///
+    /// The actor is recorded as `"guest"` in audit entries. This is opt-in and
+    /// intended for scenarios where Tailscale is unavailable but limited access
+    /// is acceptable.
+    Guest {
+        /// The role assigned to all guest requests.
+        role: Role,
     },
 }
 
@@ -64,6 +77,14 @@ impl Identity {
         }
     }
 
+    /// A guest identity with the given role, used in `--auth guest` mode.
+    pub fn guest(role: Role) -> Self {
+        Self {
+            actor: "guest".into(),
+            role,
+        }
+    }
+
     /// Check that this identity has at least read-level access.
     pub fn require_read(&self) -> Result<(), AuthError> {
         // All authenticated roles (Read, Write, Admin) can read.
@@ -75,7 +96,8 @@ impl Identity {
         match self.role {
             Role::Write | Role::Admin => Ok(()),
             Role::Read => Err(AuthError::Forbidden(
-                "permission denied: role 'read' cannot perform write operations (requires 'write')".into(),
+                "permission denied: role 'read' cannot perform write operations (requires 'write')"
+                    .into(),
             )),
         }
     }
@@ -150,15 +172,127 @@ pub(crate) trait TailscaleWhoisProvider: Send + Sync {
     ) -> BoxFuture<'_, Result<TailscaleWhoisResponse, AuthError>>;
 }
 
+// ── Tailscale LocalAPI JSON response types ───────────────────────────
+//
+// Minimal serde structs matching the PascalCase JSON returned by the
+// Tailscale daemon's `/localapi/v0/whois` endpoint.  Only the fields
+// Axon inspects are declared; serde silently ignores the rest.
+
+/// Subset of the Tailscale `Hostinfo` object -- we only need `Hostname`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct TsHostinfo {
+    pub hostname: Option<String>,
+}
+
+/// Subset of the Tailscale `Node` object returned by `/localapi/v0/whois`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct TsNode {
+    pub name: String,
+    pub hostinfo: TsHostinfo,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub computed_name: String,
+    #[serde(default)]
+    pub computed_name_with_host: String,
+}
+
+/// Subset of the Tailscale `UserProfile` returned by `/localapi/v0/whois`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct TsUserProfile {
+    pub login_name: String,
+}
+
+/// Top-level JSON returned by `GET /localapi/v0/whois?addr=...`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct TsWhoisResponse {
+    pub node: TsNode,
+    pub user_profile: TsUserProfile,
+}
+
+impl From<TsWhoisResponse> for TailscaleWhoisResponse {
+    fn from(raw: TsWhoisResponse) -> Self {
+        Self {
+            node_name: preferred_node_name(&raw.node),
+            user_login: raw.user_profile.login_name,
+            tags: raw.node.tags,
+        }
+    }
+}
+
+// ── Direct Unix-socket HTTP client for the Tailscale LocalAPI ────────
+
 #[derive(Clone)]
 struct LocalApiWhoisProvider {
-    client: LocalApi<UnixStreamClient>,
+    socket_path: PathBuf,
 }
 
 impl LocalApiWhoisProvider {
     fn new(socket_path: impl AsRef<Path>) -> Self {
         Self {
-            client: LocalApi::new_with_socket_path(socket_path),
+            socket_path: socket_path.as_ref().to_path_buf(),
+        }
+    }
+
+    /// Issue an HTTP/1.1 GET to the Tailscale daemon over the Unix socket and
+    /// return the response body bytes.
+    async fn get(&self, path: &str) -> Result<hyper::body::Bytes, AuthError> {
+        let stream = UnixStream::connect(&self.socket_path)
+            .await
+            .map_err(|e| AuthError::ProviderUnavailable(format!("connection failed: {e}")))?;
+
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+            .await
+            .map_err(|e| AuthError::ProviderUnavailable(format!("handshake failed: {e}")))?;
+
+        // Drive the HTTP connection in the background.
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let uri: http::Uri = path
+            .parse()
+            .map_err(|e| AuthError::ProviderUnavailable(format!("invalid URI: {e}")))?;
+
+        let request = http::Request::builder()
+            .method("GET")
+            .header("Host", "local-tailscaled.sock")
+            .uri(uri)
+            .body(http_body_util::Empty::<hyper::body::Bytes>::new())
+            .map_err(|e| AuthError::ProviderUnavailable(format!("request build failed: {e}")))?;
+
+        let response = sender
+            .send_request(request)
+            .await
+            .map_err(|e| AuthError::ProviderUnavailable(format!("request failed: {e}")))?;
+
+        let status = response.status();
+        let body = response
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| AuthError::ProviderUnavailable(format!("body read failed: {e}")))?
+            .aggregate();
+
+        if status == http::StatusCode::OK {
+            let mut buf = vec![0u8; body.remaining()];
+            body.reader().read_exact(&mut buf).map_err(|e| {
+                AuthError::ProviderUnavailable(format!("body aggregation failed: {e}"))
+            })?;
+            Ok(hyper::body::Bytes::from(buf))
+        } else if status == http::StatusCode::UNPROCESSABLE_ENTITY {
+            Err(AuthError::Unauthorized(
+                "peer is not a recognized tailnet address".into(),
+            ))
+        } else {
+            Err(AuthError::ProviderUnavailable(format!(
+                "unexpected status from tailscaled: {status}"
+            )))
         }
     }
 }
@@ -166,11 +300,9 @@ impl LocalApiWhoisProvider {
 impl TailscaleWhoisProvider for LocalApiWhoisProvider {
     fn verify(&self) -> BoxFuture<'_, Result<(), AuthError>> {
         Box::pin(async move {
-            self.client
-                .status()
-                .await
-                .map(|_| ())
-                .map_err(map_localapi_error)
+            // A successful GET /localapi/v0/status proves the daemon is reachable.
+            let _ = self.get("/localapi/v0/status").await?;
+            Ok(())
         })
     }
 
@@ -179,11 +311,12 @@ impl TailscaleWhoisProvider for LocalApiWhoisProvider {
         address: SocketAddr,
     ) -> BoxFuture<'_, Result<TailscaleWhoisResponse, AuthError>> {
         Box::pin(async move {
-            self.client
-                .whois(address)
-                .await
-                .map(TailscaleWhoisResponse::from)
-                .map_err(map_localapi_error)
+            let path = format!("/localapi/v0/whois?addr={address}");
+            let body = self.get(&path).await?;
+            let raw: TsWhoisResponse = serde_json::from_slice(&body).map_err(|e| {
+                AuthError::ProviderUnavailable(format!("failed to parse whois response: {e}"))
+            })?;
+            Ok(TailscaleWhoisResponse::from(raw))
         })
     }
 }
@@ -215,6 +348,16 @@ impl AuthContext {
     }
 
     #[must_use]
+    pub fn guest(role: Role) -> Self {
+        Self {
+            mode: AuthMode::Guest { role },
+            provider: None,
+            cache: Arc::new(RwLock::new(HashMap::new())),
+            cache_ttl: Duration::from_secs(0),
+        }
+    }
+
+    #[must_use]
     pub fn tailscale(
         default_role: Role,
         socket_path: impl Into<PathBuf>,
@@ -240,6 +383,7 @@ impl AuthContext {
     pub async fn resolve_peer(&self, peer: Option<SocketAddr>) -> Result<Identity, AuthError> {
         match &self.mode {
             AuthMode::NoAuth => Ok(Identity::anonymous_admin()),
+            AuthMode::Guest { role } => Ok(Identity::guest(role.clone())),
             AuthMode::Tailscale { default_role } => {
                 let peer = peer.ok_or(AuthError::MissingPeerAddress)?;
                 let peer_ip = peer.ip();
@@ -349,17 +493,7 @@ pub fn identity_from_tailscale(whois: &TailscaleWhoisResponse, default_role: &Ro
     }
 }
 
-impl From<tailscale_localapi::Whois> for TailscaleWhoisResponse {
-    fn from(whois: tailscale_localapi::Whois) -> Self {
-        Self {
-            node_name: preferred_node_name(&whois.node),
-            user_login: whois.user_profile.login_name,
-            tags: whois.node.tags,
-        }
-    }
-}
-
-fn preferred_node_name(node: &tailscale_localapi::Node) -> String {
+fn preferred_node_name(node: &TsNode) -> String {
     if !node.computed_name.is_empty() {
         return node.computed_name.clone();
     }
@@ -381,15 +515,6 @@ fn short_node_name(name: &str) -> String {
     match name.split('.').next() {
         Some(short) if !short.is_empty() => short.to_string(),
         _ => name.to_string(),
-    }
-}
-
-fn map_localapi_error(error: tailscale_localapi::Error) -> AuthError {
-    match error {
-        tailscale_localapi::Error::UnprocessableEntity => {
-            AuthError::Unauthorized("peer is not a recognized tailnet address".into())
-        }
-        other => AuthError::ProviderUnavailable(other.to_string()),
     }
 }
 
@@ -470,6 +595,35 @@ mod tests {
         let identity = context.resolve_peer(None).await.expect("no auth succeeds");
         assert_eq!(identity.actor, "anonymous");
         assert_eq!(identity.role, Role::Admin);
+    }
+
+    #[tokio::test]
+    async fn guest_mode_returns_guest_identity() {
+        let context = AuthContext::guest(Role::Read);
+        let identity = context
+            .resolve_peer(None)
+            .await
+            .expect("guest auth succeeds");
+        assert_eq!(identity.actor, "guest");
+        assert_eq!(identity.role, Role::Read);
+    }
+
+    #[tokio::test]
+    async fn guest_mode_with_write_role() {
+        let context = AuthContext::guest(Role::Write);
+        let identity = context
+            .resolve_peer(None)
+            .await
+            .expect("guest auth succeeds");
+        assert_eq!(identity.actor, "guest");
+        assert_eq!(identity.role, Role::Write);
+    }
+
+    #[test]
+    fn guest_identity_constructor() {
+        let id = Identity::guest(Role::Read);
+        assert_eq!(id.actor, "guest");
+        assert_eq!(id.role, Role::Read);
     }
 
     #[test]
