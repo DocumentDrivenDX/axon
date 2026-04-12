@@ -92,12 +92,12 @@ fn collection_template_commands_round_trip() {
     let db = NamedTempFile::new().expect("temp db").into_temp_path();
     let db_path = db.to_string_lossy().into_owned();
 
-    run_ok(&db_path, &["collection", "create", "tasks"]);
+    run_ok(&db_path, &["collections", "create", "tasks"]);
 
     run_ok(
         &db_path,
         &[
-            "collection",
+            "collections",
             "template",
             "put",
             "tasks",
@@ -108,16 +108,16 @@ fn collection_template_commands_round_trip() {
 
     let get_output = run_ok(
         &db_path,
-        &["--output", "json", "collection", "template", "get", "tasks"],
+        &["--output", "json", "collections", "template", "get", "tasks"],
     );
     assert!(get_output.contains(r#""collection": "tasks""#));
     assert!(get_output.contains(r##""template": "# {{title}}""##));
 
-    run_ok(&db_path, &["collection", "template", "delete", "tasks"]);
+    run_ok(&db_path, &["collections", "template", "delete", "tasks"]);
 
     let err_output = run_err(
         &db_path,
-        &["--output", "json", "collection", "template", "get", "tasks"],
+        &["--output", "json", "collections", "template", "get", "tasks"],
     );
     assert!(err_output.contains("has no markdown template defined"));
 }
@@ -135,7 +135,7 @@ fn qualified_collection_template_commands_preserve_namespace_identity() {
         &[
             "--output",
             "json",
-            "collection",
+            "collections",
             "template",
             "put",
             qualified,
@@ -150,7 +150,7 @@ fn qualified_collection_template_commands_preserve_namespace_identity() {
         &[
             "--output",
             "json",
-            "collection",
+            "collections",
             "template",
             "get",
             qualified,
@@ -158,7 +158,7 @@ fn qualified_collection_template_commands_preserve_namespace_identity() {
     );
     assert!(get_json.contains(r#""collection": "prod.billing.tasks""#));
 
-    let get_table = run_ok(&db_path, &["collection", "template", "get", qualified]);
+    let get_table = run_ok(&db_path, &["collections", "template", "get", qualified]);
     assert!(get_table.contains("collection: prod.billing.tasks"));
 }
 
@@ -167,11 +167,11 @@ fn entity_get_can_render_markdown() {
     let db = NamedTempFile::new().expect("temp db").into_temp_path();
     let db_path = db.to_string_lossy().into_owned();
 
-    run_ok(&db_path, &["collection", "create", "tasks"]);
+    run_ok(&db_path, &["collections", "create", "tasks"]);
     run_ok(
         &db_path,
         &[
-            "collection",
+            "collections",
             "template",
             "put",
             "tasks",
@@ -182,17 +182,19 @@ fn entity_get_can_render_markdown() {
     run_ok(
         &db_path,
         &[
-            "entity",
+            "entities",
             "create",
             "tasks",
+            "--id",
             "t-001",
+            "--data",
             r#"{"title":"hello","status":"open"}"#,
         ],
     );
 
     let markdown = run_ok(
         &db_path,
-        &["entity", "get", "tasks", "t-001", "--render", "markdown"],
+        &["entities", "get", "tasks", "t-001", "--render", "markdown"],
     );
     assert_eq!(markdown.trim(), "# hello\n\nStatus: open");
 }
@@ -202,11 +204,11 @@ fn entity_get_markdown_honors_json_output() {
     let db = NamedTempFile::new().expect("temp db").into_temp_path();
     let db_path = db.to_string_lossy().into_owned();
 
-    run_ok(&db_path, &["collection", "create", "tasks"]);
+    run_ok(&db_path, &["collections", "create", "tasks"]);
     run_ok(
         &db_path,
         &[
-            "collection",
+            "collections",
             "template",
             "put",
             "tasks",
@@ -217,10 +219,12 @@ fn entity_get_markdown_honors_json_output() {
     run_ok(
         &db_path,
         &[
-            "entity",
+            "entities",
             "create",
             "tasks",
+            "--id",
             "t-001",
+            "--data",
             r#"{"title":"hello","status":"open"}"#,
         ],
     );
@@ -228,7 +232,7 @@ fn entity_get_markdown_honors_json_output() {
     let output = run_ok(
         &db_path,
         &[
-            "--output", "json", "entity", "get", "tasks", "t-001", "--render", "markdown",
+            "--output", "json", "entities", "get", "tasks", "t-001", "--render", "markdown",
         ],
     );
     let response: GetEntityMarkdownResponse =
@@ -253,11 +257,11 @@ fn entity_get_markdown_honors_yaml_output() {
     let db = NamedTempFile::new().expect("temp db").into_temp_path();
     let db_path = db.to_string_lossy().into_owned();
 
-    run_ok(&db_path, &["collection", "create", "tasks"]);
+    run_ok(&db_path, &["collections", "create", "tasks"]);
     run_ok(
         &db_path,
         &[
-            "collection",
+            "collections",
             "template",
             "put",
             "tasks",
@@ -268,10 +272,12 @@ fn entity_get_markdown_honors_yaml_output() {
     run_ok(
         &db_path,
         &[
-            "entity",
+            "entities",
             "create",
             "tasks",
+            "--id",
             "t-001",
+            "--data",
             r#"{"title":"hello","status":"open"}"#,
         ],
     );
@@ -279,7 +285,7 @@ fn entity_get_markdown_honors_yaml_output() {
     let output = run_ok(
         &db_path,
         &[
-            "--output", "yaml", "entity", "get", "tasks", "t-001", "--render", "markdown",
+            "--output", "yaml", "entities", "get", "tasks", "t-001", "--render", "markdown",
         ],
     );
     let response: GetEntityMarkdownResponse =
@@ -304,14 +310,16 @@ fn entity_get_markdown_json_output_preserves_render_failure_payload() {
     let db = NamedTempFile::new().expect("temp db").into_temp_path();
     let db_path = db.to_string_lossy().into_owned();
 
-    run_ok(&db_path, &["collection", "create", "tasks"]);
+    run_ok(&db_path, &["collections", "create", "tasks"]);
     run_ok(
         &db_path,
         &[
-            "entity",
+            "entities",
             "create",
             "tasks",
+            "--id",
             "t-001",
+            "--data",
             r#"{"title":"hello","status":"open"}"#,
         ],
     );
@@ -320,7 +328,7 @@ fn entity_get_markdown_json_output_preserves_render_failure_payload() {
     let output = run(
         &db_path,
         &[
-            "--output", "json", "entity", "get", "tasks", "t-001", "--render", "markdown",
+            "--output", "json", "entities", "get", "tasks", "t-001", "--render", "markdown",
         ],
     );
     assert!(!output.status.success(), "command unexpectedly succeeded");
@@ -347,14 +355,16 @@ fn entity_get_markdown_yaml_output_preserves_render_failure_payload() {
     let db = NamedTempFile::new().expect("temp db").into_temp_path();
     let db_path = db.to_string_lossy().into_owned();
 
-    run_ok(&db_path, &["collection", "create", "tasks"]);
+    run_ok(&db_path, &["collections", "create", "tasks"]);
     run_ok(
         &db_path,
         &[
-            "entity",
+            "entities",
             "create",
             "tasks",
+            "--id",
             "t-001",
+            "--data",
             r#"{"title":"hello","status":"open"}"#,
         ],
     );
@@ -363,7 +373,7 @@ fn entity_get_markdown_yaml_output_preserves_render_failure_payload() {
     let output = run(
         &db_path,
         &[
-            "--output", "yaml", "entity", "get", "tasks", "t-001", "--render", "markdown",
+            "--output", "yaml", "entities", "get", "tasks", "t-001", "--render", "markdown",
         ],
     );
     assert!(!output.status.success(), "command unexpectedly succeeded");

@@ -19,8 +19,8 @@ use axon_api::request::{
     DescribeCollectionRequest, DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest,
     GetCollectionTemplateRequest, GetEntityRequest, ListCollectionsRequest, ListDatabasesRequest,
     ListNamespaceCollectionsRequest, ListNamespacesRequest, PutCollectionTemplateRequest,
-    QueryAuditRequest, QueryEntitiesRequest, RevalidateRequest, RevertEntityRequest,
-    TraverseRequest, UpdateEntityRequest,
+    PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest, RevalidateRequest,
+    RevertEntityRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_audit::AuditLog;
 use axon_core::id::{CollectionId, EntityId};
@@ -75,15 +75,15 @@ enum Command {
 
     /// Collection management.
     #[command(subcommand)]
-    Collection(CollectionCmd),
+    Collections(CollectionCmd),
 
     /// Entity operations.
     #[command(subcommand)]
-    Entity(EntityCmd),
+    Entities(EntityCmd),
 
     /// Link operations.
     #[command(subcommand)]
-    Link(LinkCmd),
+    Links(LinkCmd),
 
     /// Audit log queries.
     #[command(subcommand)]
@@ -128,9 +128,23 @@ enum Command {
         name: String,
     },
 
-    /// Install and manage Axon as a system service.
+    /// Manage Axon as a system service (install, start, stop, …).
     #[command(subcommand)]
-    Install(InstallCmd),
+    Server(ServerCmd),
+
+    /// Traverse entity relationships as a graph (shorthand for `links traverse`).
+    Graph {
+        /// Source collection.
+        collection: String,
+        /// Source entity ID.
+        id: String,
+        /// Restrict traversal to this link type.
+        #[arg(long, short = 't')]
+        link_type: Option<String>,
+        /// Maximum hop depth (default: 1).
+        #[arg(long, short = 'd', default_value = "1")]
+        depth: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -142,9 +156,9 @@ enum ConfigCmd {
 }
 
 #[derive(Subcommand)]
-enum InstallCmd {
-    /// Set up Axon as a service.
-    Setup {
+enum ServerCmd {
+    /// Install Axon as a user service (systemd on Linux, launchd on macOS).
+    Install {
         /// Install as a system-wide service (requires root).
         #[arg(long)]
         global: bool,
@@ -272,9 +286,13 @@ enum CollectionTemplateCmd {
 enum EntityCmd {
     /// Create a new entity.
     Create {
+        /// Collection name.
         collection: String,
+        /// Entity ID.
+        #[arg(long, short = 'i')]
         id: String,
         /// Entity data as a JSON string.
+        #[arg(long, short = 'd')]
         data: String,
         #[arg(long)]
         actor: Option<String>,
@@ -294,13 +312,17 @@ enum EntityCmd {
         limit: Option<usize>,
     },
     /// Update an entity (optimistic concurrency control).
+    ///
+    /// If --expected-version is omitted the current version is fetched automatically.
     Update {
         collection: String,
         id: String,
         /// Updated data as a JSON string.
+        #[arg(long, short = 'd')]
         data: String,
+        /// Expected version for OCC. Auto-fetched if omitted.
         #[arg(long)]
-        expected_version: u64,
+        expected_version: Option<u64>,
         #[arg(long)]
         actor: Option<String>,
     },
@@ -331,7 +353,40 @@ enum EntityCmd {
 
 #[derive(Subcommand)]
 enum LinkCmd {
-    /// Create a directed link between two entities.
+    /// Set a directed link between two entities (positional shorthand).
+    ///
+    /// Usage: axon links set <src-collection> <src-id> <tgt-collection> <tgt-id> --type <type>
+    Set {
+        source_collection: String,
+        source_id: String,
+        target_collection: String,
+        target_id: String,
+        /// Link type label.
+        #[arg(long = "type", short = 't')]
+        link_type: String,
+        #[arg(long)]
+        actor: Option<String>,
+    },
+    /// List direct outbound links from an entity.
+    List {
+        collection: String,
+        id: String,
+        /// Restrict to this link type.
+        #[arg(long, short = 't')]
+        link_type: Option<String>,
+    },
+    /// Traverse links from a source entity (multi-hop graph walk).
+    Traverse {
+        collection: String,
+        id: String,
+        /// Restrict traversal to this link type.
+        #[arg(long, short = 't')]
+        link_type: Option<String>,
+        /// Maximum hop depth (default: unlimited).
+        #[arg(long, short = 'd')]
+        max_depth: Option<usize>,
+    },
+    /// Create a directed link (explicit long-form flags).
     Create {
         #[arg(long)]
         source_collection: String,
@@ -345,15 +400,6 @@ enum LinkCmd {
         link_type: String,
         #[arg(long)]
         actor: Option<String>,
-    },
-    /// Traverse links from a source entity.
-    Traverse {
-        collection: String,
-        id: String,
-        #[arg(long)]
-        link_type: Option<String>,
-        #[arg(long)]
-        max_depth: Option<usize>,
     },
 }
 
@@ -401,6 +447,28 @@ enum SchemaCmd {
     Show {
         /// Collection name.
         collection: String,
+    },
+    /// Set (replace) the entity schema for a collection.
+    ///
+    /// Accepts either a JSON Schema object (for the entity_schema field) or a
+    /// path to a file containing the same. The version is bumped automatically.
+    Set {
+        /// Collection name.
+        collection: String,
+        /// JSON Schema as a string (conflicts with --file).
+        #[arg(long, short = 's', conflicts_with = "file")]
+        schema: Option<String>,
+        /// Path to a JSON file containing the schema (conflicts with --schema).
+        #[arg(long, short = 'f', conflicts_with = "schema")]
+        file: Option<String>,
+        /// Apply even if the change is breaking.
+        #[arg(long)]
+        force: bool,
+        /// Preview the diff without applying.
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        actor: Option<String>,
     },
     /// Validate a JSON file against a collection's schema.
     Validate {
@@ -570,8 +638,8 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Command::Doctor => return doctor::run_doctor(),
         Command::Init { ref name } => return init::run_init(name),
-        Command::Install(cmd) => {
-            return run_install_command(cmd);
+        Command::Server(cmd) => {
+            return run_service_command(cmd);
         }
         Command::Config(ConfigCmd::Path) => {
             println!("{}", axon_config::paths::config_file().display());
@@ -584,8 +652,9 @@ pub fn run(cli: Cli) -> Result<()> {
     // Try connecting to the configured server URL. If reachable, use HTTP
     // client mode. Fall back to embedded SQLite otherwise.
     // Note: no tokio runtime is active here, so reqwest::blocking is safe.
+    // When --db is explicitly set the caller wants a specific file; stay embedded.
     #[cfg(feature = "serve")]
-    {
+    if cli.db.is_none() {
         let config = axon_config::AxonConfig::load(Some(&axon_config::paths::config_file()))
             .unwrap_or_default();
         if let Ok(http_client) =
@@ -610,9 +679,9 @@ pub fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Database(cmd) => run_database(cmd, &cli.output, &mut handler),
         Command::Namespace(cmd) => run_namespace(cmd, &cli.output, &mut handler),
-        Command::Collection(cmd) => run_collection(cmd, &cli.output, &mut handler),
-        Command::Entity(cmd) => run_entity(cmd, &cli.output, &mut handler),
-        Command::Link(cmd) => run_link(cmd, &cli.output, &mut handler),
+        Command::Collections(cmd) => run_collection(cmd, &cli.output, &mut handler),
+        Command::Entities(cmd) => run_entity(cmd, &cli.output, &mut handler),
+        Command::Links(cmd) => run_link(cmd, &cli.output, &mut handler),
         Command::Config(ConfigCmd::Show) => {
             let config = serde_json::json!({
                 "db": db_path,
@@ -622,13 +691,28 @@ pub fn run(cli: Cli) -> Result<()> {
             print_serialized(&config, &cli.output);
             Ok(())
         }
-        Command::Schema(cmd) => run_schema(cmd, &cli.output, &handler),
+        Command::Schema(cmd) => run_schema(cmd, &cli.output, &mut handler),
         Command::Audit(cmd) => run_audit(cmd, &cli.output, &mut handler),
         Command::Bead(cmd) => run_bead(cmd, &cli.output, &mut handler),
+        Command::Graph {
+            collection,
+            id,
+            link_type,
+            depth,
+        } => run_link(
+            LinkCmd::Traverse {
+                collection,
+                id,
+                link_type,
+                max_depth: Some(depth),
+            },
+            &cli.output,
+            &mut handler,
+        ),
         // Already handled above; unreachable
         #[cfg(feature = "serve")]
         Command::Serve(_) | Command::Mcp { .. } => unreachable!(),
-        Command::Doctor | Command::Init { .. } | Command::Install(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
+        Command::Doctor | Command::Init { .. } | Command::Server(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
     }
 }
 
@@ -671,14 +755,14 @@ fn run_server_command(cli: Cli) -> Result<()> {
     }
 }
 
-fn run_install_command(cmd: &InstallCmd) -> Result<()> {
+fn run_service_command(cmd: &ServerCmd) -> Result<()> {
     let action = match cmd {
-        InstallCmd::Setup { global } => service::ServiceAction::Install { global: *global },
-        InstallCmd::Uninstall => service::ServiceAction::Uninstall,
-        InstallCmd::Start => service::ServiceAction::Start,
-        InstallCmd::Stop => service::ServiceAction::Stop,
-        InstallCmd::Restart => service::ServiceAction::Restart,
-        InstallCmd::Status => service::ServiceAction::Status,
+        ServerCmd::Install { global } => service::ServiceAction::Install { global: *global },
+        ServerCmd::Uninstall => service::ServiceAction::Uninstall,
+        ServerCmd::Start => service::ServiceAction::Start,
+        ServerCmd::Stop => service::ServiceAction::Stop,
+        ServerCmd::Restart => service::ServiceAction::Restart,
+        ServerCmd::Status => service::ServiceAction::Status,
     };
     service::run_service(action)
 }
@@ -1111,12 +1195,24 @@ fn run_entity(
         } => {
             let data: Value =
                 serde_json::from_str(&data).with_context(|| "data must be valid JSON")?;
+            // Auto-fetch current version when --expected-version is omitted.
+            let version = match expected_version {
+                Some(v) => v,
+                None => handler
+                    .get_entity(GetEntityRequest {
+                        collection: CollectionId::new(&collection),
+                        id: EntityId::new(&id),
+                    })
+                    .map_err(|e| anyhow::anyhow!("{e}"))?
+                    .entity
+                    .version,
+            };
             let resp = handler
                 .update_entity(UpdateEntityRequest {
                     collection: CollectionId::new(&collection),
                     id: EntityId::new(&id),
                     data,
-                    expected_version,
+                    expected_version: version,
                     actor,
                     audit_metadata: None,
                 })
@@ -1220,52 +1316,123 @@ fn run_entity(
     Ok(())
 }
 
+fn link_to_json(link: &axon_core::types::Link) -> Value {
+    serde_json::json!({
+        "source_collection": link.source_collection.to_string(),
+        "source_id": link.source_id.to_string(),
+        "target_collection": link.target_collection.to_string(),
+        "target_id": link.target_id.to_string(),
+        "link_type": link.link_type,
+    })
+}
+
+fn print_links(links: &[axon_core::types::Link], format: &OutputFormat) {
+    match format {
+        OutputFormat::Json | OutputFormat::Yaml => {
+            let json: Vec<Value> = links.iter().map(link_to_json).collect();
+            print_serialized(&json, format);
+        }
+        OutputFormat::Table => {
+            if links.is_empty() {
+                println!("(no links)");
+            } else {
+                for l in links {
+                    println!(
+                        "{}/{} --[{}]--> {}/{}",
+                        l.source_collection, l.source_id, l.link_type, l.target_collection, l.target_id,
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_link_and_print(
+    source_collection: String,
+    source_id: String,
+    target_collection: String,
+    target_id: String,
+    link_type: String,
+    actor: Option<String>,
+    format: &OutputFormat,
+    handler: &mut AxonHandler<SqliteStorageAdapter>,
+) -> Result<()> {
+    let resp = handler
+        .create_link(CreateLinkRequest {
+            source_collection: CollectionId::new(&source_collection),
+            source_id: EntityId::new(&source_id),
+            target_collection: CollectionId::new(&target_collection),
+            target_id: EntityId::new(&target_id),
+            link_type,
+            metadata: serde_json::json!(null),
+            actor,
+        })
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let link = &resp.link;
+    match format {
+        OutputFormat::Json | OutputFormat::Yaml => {
+            println!("{}", serde_json::to_string_pretty(&link_to_json(link))?);
+        }
+        OutputFormat::Table => println!(
+            "link {}/{} --[{}]--> {}/{}",
+            link.source_collection,
+            link.source_id,
+            link.link_type,
+            link.target_collection,
+            link.target_id,
+        ),
+    }
+    Ok(())
+}
+
 fn run_link(
     cmd: LinkCmd,
     format: &OutputFormat,
     handler: &mut AxonHandler<SqliteStorageAdapter>,
 ) -> Result<()> {
     match cmd {
-        LinkCmd::Create {
+        LinkCmd::Set {
             source_collection,
             source_id,
             target_collection,
             target_id,
             link_type,
             actor,
+        }
+        | LinkCmd::Create {
+            source_collection,
+            source_id,
+            target_collection,
+            target_id,
+            link_type,
+            actor,
+        } => create_link_and_print(
+            source_collection,
+            source_id,
+            target_collection,
+            target_id,
+            link_type,
+            actor,
+            format,
+            handler,
+        )?,
+        LinkCmd::List {
+            collection,
+            id,
+            link_type,
         } => {
             let resp = handler
-                .create_link(CreateLinkRequest {
-                    source_collection: CollectionId::new(&source_collection),
-                    source_id: EntityId::new(&source_id),
-                    target_collection: CollectionId::new(&target_collection),
-                    target_id: EntityId::new(&target_id),
+                .traverse(TraverseRequest {
+                    collection: CollectionId::new(&collection),
+                    id: EntityId::new(&id),
                     link_type,
-                    metadata: serde_json::json!(null),
-                    actor,
+                    max_depth: Some(1),
+                    direction: Default::default(),
+                    hop_filter: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
-            let link = &resp.link;
-            let result = serde_json::json!({
-                "source_collection": link.source_collection.to_string(),
-                "source_id": link.source_id.to_string(),
-                "target_collection": link.target_collection.to_string(),
-                "target_id": link.target_id.to_string(),
-                "link_type": link.link_type,
-            });
-            match format {
-                OutputFormat::Json | OutputFormat::Yaml => {
-                    println!("{}", serde_json::to_string_pretty(&result)?);
-                }
-                OutputFormat::Table => println!(
-                    "link {}/{} --[{}]--> {}/{}",
-                    link.source_collection,
-                    link.source_id,
-                    link.link_type,
-                    link.target_collection,
-                    link.target_id,
-                ),
-            }
+            print_links(&resp.links, format);
         }
         LinkCmd::Traverse {
             collection,
@@ -1293,7 +1460,7 @@ fn run_link(
 fn run_schema(
     cmd: SchemaCmd,
     format: &OutputFormat,
-    handler: &AxonHandler<SqliteStorageAdapter>,
+    handler: &mut AxonHandler<SqliteStorageAdapter>,
 ) -> Result<()> {
     use axon_schema::validation::validate;
 
@@ -1401,6 +1568,113 @@ fn run_schema(
                     if has_failures {
                         std::process::exit(1);
                     }
+                }
+            }
+        }
+        SchemaCmd::Set {
+            collection,
+            schema,
+            file,
+            force,
+            dry_run,
+            actor,
+        } => {
+            // Load the entity_schema JSON from --schema or --file.
+            let entity_schema_json: Value = match (schema, file) {
+                (Some(s), None) => serde_json::from_str(&s)
+                    .with_context(|| "schema must be valid JSON")?,
+                (None, Some(path)) => {
+                    let content = std::fs::read_to_string(&path)
+                        .with_context(|| format!("failed to read schema file: {path}"))?;
+                    serde_json::from_str(&content)
+                        .with_context(|| format!("file {path} must contain valid JSON"))?
+                }
+                (Some(_), Some(_)) => anyhow::bail!("provide either --schema or --file, not both"),
+                (None, None) => anyhow::bail!("schema content required via --schema or --file"),
+            };
+
+            // Fetch current schema to preserve version and non-entity_schema fields.
+            let existing = handler
+                .get_schema(&CollectionId::new(&collection))
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let base_version = existing.as_ref().map(|s| s.version).unwrap_or(0);
+            let new_schema = axon_schema::schema::CollectionSchema {
+                collection: CollectionId::new(&collection),
+                description: existing.as_ref().and_then(|s| s.description.clone()),
+                version: base_version + 1,
+                entity_schema: Some(entity_schema_json),
+                link_types: existing
+                    .as_ref()
+                    .map(|s| s.link_types.clone())
+                    .unwrap_or_default(),
+                gates: existing
+                    .as_ref()
+                    .map(|s| s.gates.clone())
+                    .unwrap_or_default(),
+                validation_rules: existing
+                    .as_ref()
+                    .map(|s| s.validation_rules.clone())
+                    .unwrap_or_default(),
+                indexes: existing
+                    .as_ref()
+                    .map(|s| s.indexes.clone())
+                    .unwrap_or_default(),
+                compound_indexes: existing
+                    .as_ref()
+                    .map(|s| s.compound_indexes.clone())
+                    .unwrap_or_default(),
+            };
+
+            let resp = handler
+                .handle_put_schema(PutSchemaRequest {
+                    schema: new_schema,
+                    actor,
+                    force,
+                    dry_run,
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            if dry_run {
+                let compat_str = resp.compatibility.as_ref().map(|c| format!("{c:?}"));
+                let changes: Vec<String> = resp
+                    .diff
+                    .as_ref()
+                    .map(|d| d.changes.iter().map(|c| c.description.clone()).collect())
+                    .unwrap_or_default();
+                match format {
+                    OutputFormat::Table => {
+                        println!("dry-run: compatibility={:?}", compat_str);
+                        for change in &changes {
+                            println!("  {change}");
+                        }
+                    }
+                    _ => print_serialized(
+                        &serde_json::json!({
+                            "dry_run": true,
+                            "compatibility": compat_str,
+                            "changes": changes,
+                        }),
+                        format,
+                    ),
+                }
+            } else {
+                let compat_str = resp.compatibility.as_ref().map(|c| format!("{c:?}"));
+                match format {
+                    OutputFormat::Table => println!(
+                        "schema updated: {} v{} ({})",
+                        collection,
+                        resp.schema.version,
+                        compat_str.as_deref().unwrap_or("unknown"),
+                    ),
+                    _ => print_serialized(
+                        &serde_json::json!({
+                            "collection": collection,
+                            "version": resp.schema.version,
+                            "compatibility": compat_str,
+                            "status": "updated",
+                        }),
+                        format,
+                    ),
                 }
             }
         }
@@ -1722,7 +1996,7 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
                 anyhow::bail!("database drop is not yet available in client mode");
             }
         },
-        Command::Collection(cmd) => match cmd {
+        Command::Collections(cmd) => match cmd {
             CollectionCmd::Create {
                 name,
                 schema,
@@ -1748,11 +2022,11 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
                 let resp = client.drop_collection(&name, actor.as_deref())?;
                 print_serialized(&resp, &cli.output);
             }
-            _ => {
-                anyhow::bail!("this collection subcommand is not yet available in client mode");
+            CollectionCmd::Template(_) => {
+                anyhow::bail!("collection template subcommands are not yet available in client mode");
             }
         },
-        Command::Entity(cmd) => match cmd {
+        Command::Entities(cmd) => match cmd {
             EntityCmd::Create {
                 collection,
                 id,
@@ -1777,13 +2051,18 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
                 expected_version,
                 actor,
             } => {
-                let resp = client.update_entity(
-                    &collection,
-                    &id,
-                    &data,
-                    expected_version,
-                    actor.as_deref(),
-                )?;
+                // Auto-fetch current version when --expected-version is omitted.
+                let version = match expected_version {
+                    Some(v) => v,
+                    None => {
+                        let entity = client.get_entity(&collection, &id)?;
+                        entity["version"]
+                            .as_u64()
+                            .ok_or_else(|| anyhow::anyhow!("unexpected entity version format"))?
+                    }
+                };
+                let resp =
+                    client.update_entity(&collection, &id, &data, version, actor.as_deref())?;
                 print_serialized(&resp, &cli.output);
             }
             EntityCmd::Delete {
@@ -1809,7 +2088,7 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
         Command::Namespace(_) => {
             anyhow::bail!("namespace commands are not yet available in client mode");
         }
-        Command::Link(_) => {
+        Command::Links(_) => {
             anyhow::bail!("link commands are not yet available in client mode");
         }
         Command::Audit(_) => {
@@ -1821,9 +2100,12 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
         Command::Bead(_) => {
             anyhow::bail!("bead commands are not yet available in client mode");
         }
+        Command::Graph { .. } => {
+            anyhow::bail!("graph traversal is not yet available in client mode");
+        }
         // These are handled before mode detection; unreachable in client mode
         Command::Serve(_) | Command::Mcp { .. } | Command::Doctor | Command::Init { .. }
-        | Command::Install(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
+        | Command::Server(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
     }
     Ok(())
 }
@@ -1851,10 +2133,10 @@ mod tests {
     #[test]
     fn collection_create_and_describe() {
         let (_f, db) = tmp_db();
-        let cli = make_cli(&db, &["collection", "create", "tasks"]);
+        let cli = make_cli(&db, &["collections", "create", "tasks"]);
         run(cli).unwrap();
 
-        let cli = make_cli(&db, &["collection", "describe", "tasks"]);
+        let cli = make_cli(&db, &["collections", "describe", "tasks"]);
         run(cli).unwrap();
     }
 
@@ -1881,49 +2163,49 @@ mod tests {
     fn collection_list_and_drop() {
         let (_f, db) = tmp_db();
         // Create two collections.
-        run(make_cli(&db, &["collection", "create", "tasks"])).unwrap();
-        run(make_cli(&db, &["collection", "create", "users"])).unwrap();
+        run(make_cli(&db, &["collections", "create", "tasks"])).unwrap();
+        run(make_cli(&db, &["collections", "create", "users"])).unwrap();
 
         // List should show both.
-        run(make_cli(&db, &["--output", "json", "collection", "list"])).unwrap();
+        run(make_cli(&db, &["--output", "json", "collections", "list"])).unwrap();
 
         // Drop one.
-        run(make_cli(&db, &["collection", "drop", "users", "--confirm"])).unwrap();
+        run(make_cli(&db, &["collections", "drop", "users", "--confirm"])).unwrap();
     }
 
     #[test]
     fn entity_create_get_round_trip() {
         let (_f, db) = tmp_db();
-        run(make_cli(&db, &["collection", "create", "tasks"])).unwrap();
+        run(make_cli(&db, &["collections", "create", "tasks"])).unwrap();
 
         let cli = make_cli(
             &db,
-            &["entity", "create", "tasks", "t-001", r#"{"title":"hello"}"#],
+            &["entities", "create", "tasks", "--id", "t-001", "--data", r#"{"title":"hello"}"#],
         );
         run(cli).unwrap();
 
-        let cli = make_cli(&db, &["entity", "get", "tasks", "t-001"]);
+        let cli = make_cli(&db, &["entities", "get", "tasks", "t-001"]);
         run(cli).unwrap();
     }
 
     #[test]
     fn entity_list_returns_entities() {
         let (_f, db) = tmp_db();
-        run(make_cli(&db, &["collection", "create", "tasks"])).unwrap();
+        run(make_cli(&db, &["collections", "create", "tasks"])).unwrap();
         run(make_cli(
             &db,
-            &["entity", "create", "tasks", "t-001", r#"{"title":"a"}"#],
+            &["entities", "create", "tasks", "--id", "t-001", "--data", r#"{"title":"a"}"#],
         ))
         .unwrap();
         run(make_cli(
             &db,
-            &["entity", "create", "tasks", "t-002", r#"{"title":"b"}"#],
+            &["entities", "create", "tasks", "--id", "t-002", "--data", r#"{"title":"b"}"#],
         ))
         .unwrap();
 
         run(make_cli(
             &db,
-            &["--output", "json", "entity", "list", "tasks"],
+            &["--output", "json", "entities", "list", "tasks"],
         ))
         .unwrap();
     }
@@ -1931,17 +2213,19 @@ mod tests {
     #[test]
     fn entity_create_get_json_output() {
         let (_f, db) = tmp_db();
-        run(make_cli(&db, &["collection", "create", "tasks"])).unwrap();
+        run(make_cli(&db, &["collections", "create", "tasks"])).unwrap();
 
         let cli = make_cli(
             &db,
             &[
                 "--output",
                 "json",
-                "entity",
+                "entities",
                 "create",
                 "tasks",
+                "--id",
                 "t-001",
+                "--data",
                 r#"{"title":"hello"}"#,
             ],
         );
@@ -1949,7 +2233,7 @@ mod tests {
 
         let cli = make_cli(
             &db,
-            &["--output", "json", "entity", "get", "tasks", "t-001"],
+            &["--output", "json", "entities", "get", "tasks", "t-001"],
         );
         run(cli).unwrap();
     }
@@ -2079,7 +2363,7 @@ mod tests {
         let cli = make_cli(
             &db,
             &[
-                "collection",
+                "collections",
                 "template",
                 "delete",
                 "tasks",
@@ -2088,8 +2372,8 @@ mod tests {
             ],
         );
 
-        let Command::Collection(CollectionCmd::Template(cmd)) = cli.command else {
-            panic!("expected collection template command");
+        let Command::Collections(CollectionCmd::Template(cmd)) = cli.command else {
+            panic!("expected collections template command");
         };
         run_collection_template(cmd, &OutputFormat::Json, &mut handler).unwrap();
 
