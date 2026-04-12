@@ -16,6 +16,7 @@ jobs:
   build:
     name: Build ${{ matrix.artifact }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -54,16 +55,14 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install protobuf
 
-      - name: Install cross-compilation tools (Linux arm64)
+      - name: Install cross (for Linux arm64)
         if: matrix.cross
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
       - name: Build
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross && 'aarch64-linux-gnu-gcc' || '' }}
-        run: cargo build --release -p axon-cli --target ${{ matrix.target }}
+        run: ${{ matrix.cross && 'cross' || 'cargo' }} build --release -p axon-cli --target ${{ matrix.target }}
 
       - name: Rename binary
         run: cp target/${{ matrix.target }}/release/axon ${{ matrix.artifact }}
@@ -111,7 +110,7 @@ jobs:
 
   release:
     name: Create Release
-    needs: [build, docker]
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

@@ -5,11 +5,11 @@
 #
 # The binary is `axon` (from crates/axon-cli, the unified binary).
 # Default HTTP port is 4170. gRPC is opt-in via --grpc-port.
-# Health check: GET /healthz
+# Health check: GET /health
 
 # ── Stage 1: Builder ──────────────────────────────────────────────────────────
 
-FROM rust:1.86-bookworm AS builder
+FROM rust:1.94-bookworm AS builder
 
 # protobuf-compiler is required by tonic-build for gRPC code generation.
 RUN apt-get update && apt-get install -y --no-install-recommends \
