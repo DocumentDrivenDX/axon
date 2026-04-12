@@ -8,3 +8,6 @@ ui/node_modules/
 ui/playwright-report/
 ui/test-results/
 *.db
+website/public/
+website/.hugo_build.lock
+docs/demos/quickstart/recordings/

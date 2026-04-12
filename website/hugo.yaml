@@ -1,0 +1,46 @@
+baseURL: https://DocumentDrivenDX.github.io/axon/
+languageCode: en-us
+title: Axon — Agent-native state management
+
+module:
+  imports:
+    - path: github.com/imfing/hextra
+
+enableRobotsTXT: true
+enableGitInfo: true
+
+markup:
+  goldmark:
+    renderer:
+      unsafe: true
+  highlight:
+    noClasses: false
+
+menu:
+  main:
+    - name: Docs
+      pageRef: /docs
+      weight: 1
+    - name: CLI Reference
+      pageRef: /docs/cli
+      weight: 2
+    - name: Demo
+      pageRef: /docs/demos
+      weight: 3
+    - name: GitHub ↗
+      url: https://github.com/DocumentDrivenDX/axon
+      weight: 4
+
+params:
+  description: Schema-first, auditable entity store for agentic applications
+  navbar:
+    displayTitle: true
+    displayLogo: false
+  page:
+    width: wide
+  footer:
+    displayCopyright: true
+    displayPoweredBy: false
+  editURL:
+    enable: true
+    base: https://github.com/DocumentDrivenDX/axon/edit/master/website/content

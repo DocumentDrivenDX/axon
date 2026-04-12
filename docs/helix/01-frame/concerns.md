@@ -4,6 +4,8 @@
 - rust-cargo (tech-stack)
 - typescript-bun (tech-stack, admin UI)
 - security-owasp (security, all)
+- hugo-hextra (microsite)
+- demo-asciinema (demo reel)
 
 ## Area Labels
 
@@ -58,3 +60,20 @@
   - **CORS**: no browser-origin cross-site requests expected in the primary deployment model (Tailscale mesh). If the admin UI is served from a different origin, CORS will be scoped to that origin only.
   - **Password storage**: not applicable; authentication is fully delegated to Tailscale.
 - **Concern package**: `/home/erik/Projects/helix/workflows/concerns/security-owasp`
+
+### hugo-hextra
+- **Scope**: `area:website` — `website/` directory only
+- **Theme**: Hextra v0.12.1 via Hugo Module system
+- **Location**: `website/` at project root
+- **Base URL**: `https://DocumentDrivenDX.github.io/axon/`
+- **Quality gate**: `cd website && hugo --gc --minify` builds without errors
+- **Hugo version**: 0.159.2 extended (pinned in CI)
+- **Concern package**: `/home/erik/Projects/helix/workflows/concerns/hugo-hextra`
+
+### demo-asciinema
+- **Scope**: CLI demo reels for the microsite
+- **Demo location**: `docs/demos/quickstart/` (script, Dockerfile, recordings)
+- **Cast location**: `website/static/demos/quickstart.cast` (embedded in microsite)
+- **Recording**: `docker build -t axon:recording docs/demos/quickstart/ && docker run --rm -v $(pwd)/website/static/demos:/recordings axon:recording`
+- **Terminal dimensions**: 100 cols × 35 rows
+- **Concern package**: `/home/erik/Projects/helix/workflows/concerns/demo-asciinema`
