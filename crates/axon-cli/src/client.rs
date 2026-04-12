@@ -78,11 +78,28 @@ impl HttpClient {
         Self::parse_response(resp)
     }
 
-    /// `POST /collections/{collection}/query` with empty body to list all.
+    /// `POST /collections/{collection}/query` with optional limit/filter/count_only.
     pub fn list_entities(&self, collection: &str, limit: Option<usize>) -> Result<Value> {
+        self.query_entities(collection, limit, None, false)
+    }
+
+    /// `POST /collections/{collection}/query` — full query with optional filter JSON and count_only.
+    pub fn query_entities(
+        &self,
+        collection: &str,
+        limit: Option<usize>,
+        filter: Option<Value>,
+        count_only: bool,
+    ) -> Result<Value> {
         let mut body = serde_json::json!({ "collection": collection });
         if let Some(l) = limit {
             body["limit"] = Value::Number(l.into());
+        }
+        if let Some(f) = filter {
+            body["filter"] = f;
+        }
+        if count_only {
+            body["count_only"] = Value::Bool(true);
         }
         let resp = self
             .client
@@ -92,7 +109,7 @@ impl HttpClient {
             ))
             .json(&body)
             .send()
-            .context("failed to send list entities request")?;
+            .context("failed to send query entities request")?;
         Self::parse_response(resp)
     }
 
@@ -230,6 +247,148 @@ impl HttpClient {
             .get(format!("{}/databases", self.base_url))
             .send()
             .context("failed to send list databases request")?;
+        Self::parse_response(resp)
+    }
+
+    // ── Schema operations ────────────────────────────────────────────────────
+
+    /// `GET /collections/{name}/schema`
+    pub fn get_schema(&self, name: &str) -> Result<Value> {
+        let resp = self
+            .client
+            .get(format!("{}/collections/{}/schema", self.base_url, name))
+            .send()
+            .context("failed to send get schema request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `PUT /collections/{name}/schema`
+    ///
+    /// The HTTP body is a flat `PutSchemaBody`: `{version, entity_schema, description?,
+    /// link_types?, force, dry_run}` — NOT a wrapped `{schema: {...}}`.
+    pub fn put_schema(
+        &self,
+        name: &str,
+        version: u64,
+        entity_schema: Value,
+        description: Option<&str>,
+        force: bool,
+        dry_run: bool,
+        actor: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = serde_json::json!({
+            "version": version,
+            "entity_schema": entity_schema,
+            "force": force,
+            "dry_run": dry_run,
+        });
+        if let Some(d) = description {
+            body["description"] = Value::String(d.to_string());
+        }
+        if let Some(a) = actor {
+            body["actor"] = Value::String(a.to_string());
+        }
+        let resp = self
+            .client
+            .put(format!("{}/collections/{}/schema", self.base_url, name))
+            .json(&body)
+            .send()
+            .context("failed to send put schema request")?;
+        Self::parse_response(resp)
+    }
+
+    // ── Link operations ──────────────────────────────────────────────────────
+
+    /// `POST /links`
+    pub fn create_link(
+        &self,
+        source_collection: &str,
+        source_id: &str,
+        target_collection: &str,
+        target_id: &str,
+        link_type: &str,
+        actor: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = serde_json::json!({
+            "source_collection": source_collection,
+            "source_id": source_id,
+            "target_collection": target_collection,
+            "target_id": target_id,
+            "link_type": link_type,
+            "metadata": null,
+        });
+        if let Some(a) = actor {
+            body["actor"] = Value::String(a.to_string());
+        }
+        let resp = self
+            .client
+            .post(format!("{}/links", self.base_url))
+            .json(&body)
+            .send()
+            .context("failed to send create link request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `GET /traverse/{collection}/{id}?link_type=…&max_depth=…`
+    pub fn traverse(
+        &self,
+        collection: &str,
+        id: &str,
+        link_type: Option<&str>,
+        max_depth: Option<usize>,
+    ) -> Result<Value> {
+        let mut url = format!("{}/traverse/{}/{}", self.base_url, collection, id);
+        let mut params: Vec<String> = Vec::new();
+        if let Some(lt) = link_type {
+            params.push(format!("link_type={lt}"));
+        }
+        if let Some(d) = max_depth {
+            params.push(format!("max_depth={d}"));
+        }
+        if !params.is_empty() {
+            url = format!("{}?{}", url, params.join("&"));
+        }
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .context("failed to send traverse request")?;
+        Self::parse_response(resp)
+    }
+
+    // ── Audit operations ─────────────────────────────────────────────────────
+
+    /// `GET /audit/query?collection=…&entity_id=…&actor=…&limit=…`
+    pub fn query_audit(
+        &self,
+        collection: Option<&str>,
+        entity_id: Option<&str>,
+        actor: Option<&str>,
+        limit: Option<usize>,
+    ) -> Result<Value> {
+        let mut params: Vec<String> = Vec::new();
+        if let Some(c) = collection {
+            params.push(format!("collection={c}"));
+        }
+        if let Some(e) = entity_id {
+            params.push(format!("entity_id={e}"));
+        }
+        if let Some(a) = actor {
+            params.push(format!("actor={a}"));
+        }
+        if let Some(l) = limit {
+            params.push(format!("limit={l}"));
+        }
+        let url = if params.is_empty() {
+            format!("{}/audit/query", self.base_url)
+        } else {
+            format!("{}/audit/query?{}", self.base_url, params.join("&"))
+        };
+        let resp = self
+            .client
+            .get(&url)
+            .send()
+            .context("failed to send audit query request")?;
         Self::parse_response(resp)
     }
 

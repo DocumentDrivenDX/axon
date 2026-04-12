@@ -24,7 +24,7 @@ pub fn run_doctor() -> anyhow::Result<()> {
     // Check server connectivity
     #[cfg(feature = "serve")]
     {
-        let url = format!("{}/healthz", config.client.server_url);
+        let url = format!("{}/health", config.client.server_url);
         print!("Server ({}):", config.client.server_url);
         match reqwest::blocking::Client::new()
             .get(&url)

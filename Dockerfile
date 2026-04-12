@@ -42,6 +42,7 @@ RUN groupadd --system axon && useradd --system --gid axon axon
 RUN mkdir -p /var/lib/axon && chown axon:axon /var/lib/axon
 
 COPY --from=builder /usr/src/axon/target/release/axon /usr/local/bin/axon
+COPY scripts/ /scripts/
 
 USER axon
 

@@ -2055,8 +2055,8 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
                 let version = match expected_version {
                     Some(v) => v,
                     None => {
-                        let entity = client.get_entity(&collection, &id)?;
-                        entity["version"]
+                        let resp = client.get_entity(&collection, &id)?;
+                        resp["entity"]["version"]
                             .as_u64()
                             .ok_or_else(|| anyhow::anyhow!("unexpected entity version format"))?
                     }
@@ -2073,8 +2073,42 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
                 let resp = client.delete_entity(&collection, &id, actor.as_deref())?;
                 print_serialized(&resp, &cli.output);
             }
-            EntityCmd::Query { .. } => {
-                anyhow::bail!("entity query is not yet available in client mode");
+            EntityCmd::Query {
+                collection,
+                filter,
+                limit,
+                count_only,
+            } => {
+                // Build filter JSON: each "--filter field=value" becomes a FieldFilter.
+                // FilterNode uses internally-tagged serde: {"type": "field", "field": ..., "op": ..., "value": ...}
+                let filter_json = if filter.is_empty() {
+                    None
+                } else {
+                    let nodes: Vec<Value> = filter
+                        .iter()
+                        .map(|f| {
+                            let (field, value) = f.split_once('=').unwrap_or((f, ""));
+                            serde_json::json!({
+                                "type": "field",
+                                "field": field,
+                                "op": "eq",
+                                "value": value
+                            })
+                        })
+                        .collect();
+                    if nodes.len() == 1 {
+                        Some(nodes.into_iter().next().unwrap())
+                    } else {
+                        Some(serde_json::json!({ "type": "and", "filters": nodes }))
+                    }
+                };
+                let resp = client.query_entities(
+                    &collection,
+                    limit,
+                    filter_json,
+                    count_only,
+                )?;
+                print_serialized(&resp, &cli.output);
             }
         },
         Command::Config(ConfigCmd::Show) => {
@@ -2088,20 +2122,143 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
         Command::Namespace(_) => {
             anyhow::bail!("namespace commands are not yet available in client mode");
         }
-        Command::Links(_) => {
-            anyhow::bail!("link commands are not yet available in client mode");
+        Command::Links(cmd) => match cmd {
+            LinkCmd::Set {
+                source_collection,
+                source_id,
+                target_collection,
+                target_id,
+                link_type,
+                actor,
+            }
+            | LinkCmd::Create {
+                source_collection,
+                source_id,
+                target_collection,
+                target_id,
+                link_type,
+                actor,
+            } => {
+                let resp = client.create_link(
+                    &source_collection,
+                    &source_id,
+                    &target_collection,
+                    &target_id,
+                    &link_type,
+                    actor.as_deref(),
+                )?;
+                print_serialized(&resp, &cli.output);
+            }
+            LinkCmd::List {
+                collection,
+                id,
+                link_type,
+            } => {
+                let resp = client.traverse(&collection, &id, link_type.as_deref(), Some(1))?;
+                print_serialized(&resp, &cli.output);
+            }
+            LinkCmd::Traverse {
+                collection,
+                id,
+                link_type,
+                max_depth,
+            } => {
+                let resp = client.traverse(&collection, &id, link_type.as_deref(), max_depth)?;
+                print_serialized(&resp, &cli.output);
+            }
+        },
+        Command::Graph {
+            collection,
+            id,
+            link_type,
+            depth,
+        } => {
+            let resp = client.traverse(&collection, &id, link_type.as_deref(), Some(depth))?;
+            print_serialized(&resp, &cli.output);
         }
-        Command::Audit(_) => {
-            anyhow::bail!("audit commands are not yet available in client mode");
-        }
-        Command::Schema(_) => {
-            anyhow::bail!("schema commands are not yet available in client mode");
-        }
+        Command::Audit(cmd) => match cmd {
+            AuditCmd::List {
+                collection,
+                entity_id,
+                actor,
+                limit,
+            } => {
+                let resp = client.query_audit(
+                    collection.as_deref(),
+                    entity_id.as_deref(),
+                    actor.as_deref(),
+                    limit,
+                )?;
+                print_serialized(&resp, &cli.output);
+            }
+            AuditCmd::Show { .. } | AuditCmd::Revert { .. } => {
+                anyhow::bail!("audit show/revert not yet available in client mode");
+            }
+        },
+        Command::Schema(cmd) => match cmd {
+            SchemaCmd::Show { collection } => {
+                let resp = client.get_schema(&collection)?;
+                print_serialized(&resp, &cli.output);
+            }
+            SchemaCmd::Set {
+                collection,
+                schema,
+                file,
+                force,
+                dry_run,
+                actor,
+            } => {
+                // Resolve entity_schema JSON from --schema or --file.
+                let entity_schema_json: Value = match (schema, file) {
+                    (Some(s), None) => serde_json::from_str(&s)
+                        .with_context(|| "schema must be valid JSON")?,
+                    (None, Some(path)) => {
+                        let content = std::fs::read_to_string(&path)
+                            .with_context(|| format!("failed to read schema file: {path}"))?;
+                        serde_json::from_str(&content)
+                            .with_context(|| format!("file {path} must contain valid JSON"))?
+                    }
+                    (Some(_), Some(_)) => {
+                        anyhow::bail!("provide either --schema or --file, not both")
+                    }
+                    (None, None) => {
+                        anyhow::bail!("schema content required via --schema or --file")
+                    }
+                };
+                // Fetch current schema; GET returns {"schema": {...}}, extract inner object.
+                let existing_outer = client.get_schema(&collection).ok();
+                let schema_body = existing_outer
+                    .and_then(|v| v.get("schema").cloned())
+                    .unwrap_or_else(|| serde_json::json!({
+                        "collection": collection,
+                        "version": 0,
+                        "link_types": {},
+                        "gates": [],
+                        "validation_rules": [],
+                        "indexes": [],
+                        "compound_indexes": []
+                    }));
+                // Bump version and replace entity_schema.
+                let cur_version = schema_body["version"].as_u64().unwrap_or(0);
+                let new_version = cur_version + 1;
+                let description_val = schema_body["description"].as_str().map(str::to_string);
+                let resp = client.put_schema(
+                    &collection,
+                    new_version,
+                    entity_schema_json,
+                    description_val.as_deref(),
+                    force,
+                    dry_run,
+                    actor.as_deref(),
+                )?;
+                print_serialized(&resp, &cli.output);
+            }
+            SchemaCmd::Validate { .. } | SchemaCmd::Revalidate { .. } => {
+                anyhow::bail!("schema validate/revalidate not yet available in client mode");
+            }
+        },
         Command::Bead(_) => {
             anyhow::bail!("bead commands are not yet available in client mode");
-        }
-        Command::Graph { .. } => {
-            anyhow::bail!("graph traversal is not yet available in client mode");
         }
         // These are handled before mode detection; unreachable in client mode
         Command::Serve(_) | Command::Mcp { .. } | Command::Doctor | Command::Init { .. }
