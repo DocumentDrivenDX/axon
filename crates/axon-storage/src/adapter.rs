@@ -537,21 +537,26 @@ pub trait StorageAdapter: Send + Sync {
 
     /// Look up entity IDs by exact index value (equality query).
     ///
-    /// Returns entity IDs in ascending order. Returns an empty vec if the
-    /// index does not exist or no entities match.
+    /// Returns entity IDs in ascending order. Returns an empty vec if no
+    /// entities match. Implementations that do not maintain in-memory indexes
+    /// should return `Err` so the caller falls through to a full scan.
     fn index_lookup(
         &self,
         _collection: &CollectionId,
         _field: &str,
         _value: &IndexValue,
     ) -> Result<Vec<EntityId>, AxonError> {
-        Ok(vec![])
+        Err(AxonError::Storage(
+            "index_lookup not supported by this adapter".into(),
+        ))
     }
 
     /// Range scan on an index, returning entity IDs whose indexed value
     /// falls within the given bounds.
     ///
     /// Returns entity IDs sorted by indexed value, then by entity ID.
+    /// Implementations that do not maintain in-memory indexes should return
+    /// `Err` so the caller falls through to a full scan.
     fn index_range(
         &self,
         _collection: &CollectionId,
@@ -559,7 +564,9 @@ pub trait StorageAdapter: Send + Sync {
         _lower: Bound<&IndexValue>,
         _upper: Bound<&IndexValue>,
     ) -> Result<Vec<EntityId>, AxonError> {
-        Ok(vec![])
+        Err(AxonError::Storage(
+            "index_range not supported by this adapter".into(),
+        ))
     }
 
     /// Check if the given value already exists in a unique index for a
@@ -615,7 +622,9 @@ pub trait StorageAdapter: Send + Sync {
         _index_idx: usize,
         _key: &CompoundKey,
     ) -> Result<Vec<EntityId>, AxonError> {
-        Ok(vec![])
+        Err(AxonError::Storage(
+            "compound_index_lookup not supported by this adapter".into(),
+        ))
     }
 
     /// Prefix match on a compound index using a partial key.
@@ -627,7 +636,9 @@ pub trait StorageAdapter: Send + Sync {
         _index_idx: usize,
         _prefix: &CompoundKey,
     ) -> Result<Vec<EntityId>, AxonError> {
-        Ok(vec![])
+        Err(AxonError::Storage(
+            "compound_index_prefix not supported by this adapter".into(),
+        ))
     }
 
     // ── Dedicated link storage (ADR-010) ────────────────────────────────

@@ -11,10 +11,10 @@ use std::time::Duration;
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-use axon_api::handler::AxonHandler;
 use crate::service::{AxonServiceImpl, AxonServiceServer};
 use crate::{AuthContext, Role};
-use axon_storage::{MemoryStorageAdapter, PostgresStorageAdapter, SqliteStorageAdapter};
+use axon_api::handler::AxonHandler;
+use axon_storage::{PostgresStorageAdapter, SqliteStorageAdapter};
 
 #[derive(Clone, Debug, clap::ValueEnum)]
 pub enum StorageBackend {
@@ -153,7 +153,9 @@ pub fn auth_context_from_serve_args(args: &ServeArgs) -> AuthContext {
 /// Entry point that replaces the former binary `main`.
 ///
 /// Selects the storage backend based on `args.storage` and delegates to
-/// [`run_with_storage`].
+/// [`run_with_sqlite_storage`].  The HTTP gateway always uses SQLite via
+/// [`TenantRouter`] for per-tenant isolation.  The `--storage=memory`
+/// backend uses an in-memory SQLite database.
 pub async fn serve(args: ServeArgs) -> Result<(), String> {
     init_tracing(args.mcp_stdio);
 
@@ -169,33 +171,45 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
 
     match args.storage {
         StorageBackend::Memory => {
-            run_with_storage(MemoryStorageAdapter::default(), &args, "memory").await
+            let storage = SqliteStorageAdapter::open_in_memory()
+                .map_err(|e| format!("failed to open in-memory SQLite: {e}"))?;
+            run_with_sqlite_storage(storage, &args, "memory").await
         }
         StorageBackend::Sqlite => {
             let storage = SqliteStorageAdapter::open(&args.sqlite_path)
                 .map_err(|error| format!("failed to open SQLite backing store: {error}"))?;
-            run_with_storage(storage, &args, format!("sqlite:{}", args.sqlite_path)).await
+            run_with_sqlite_storage(storage, &args, format!("sqlite:{}", args.sqlite_path)).await
         }
         StorageBackend::Postgres => {
             let dsn = args
                 .postgres_dsn
                 .as_deref()
                 .ok_or_else(|| "--postgres-dsn is required when --storage=postgres".to_string())?;
-            let storage = PostgresStorageAdapter::connect(dsn)
+            let _pg_storage = PostgresStorageAdapter::connect(dsn)
                 .map_err(|error| format!("failed to connect PostgreSQL backing store: {error}"))?;
-            run_with_storage(storage, &args, "postgres").await
+            // PostgreSQL tenant routing is not yet supported.  For now,
+            // create an in-memory SQLite adapter for the HTTP gateway so
+            // the server can start.  gRPC is not started in this mode.
+            tracing::warn!(
+                "PostgreSQL storage selected — HTTP gateway uses in-memory SQLite; \
+                 gRPC is not available in this mode"
+            );
+            let sqlite = SqliteStorageAdapter::open_in_memory()
+                .map_err(|e| format!("failed to open in-memory SQLite for PG fallback: {e}"))?;
+            run_with_sqlite_storage(sqlite, &args, "postgres").await
         }
     }
 }
 
-pub async fn run_with_storage<S>(
-    storage: S,
+/// Run the server with a SQLite storage adapter.
+///
+/// This is the primary server startup path.  The HTTP gateway always uses
+/// [`TenantRouter`] for per-tenant handler isolation.
+pub async fn run_with_sqlite_storage(
+    storage: SqliteStorageAdapter,
     args: &ServeArgs,
     backend: impl Into<String>,
-) -> Result<(), String>
-where
-    S: axon_storage::adapter::StorageAdapter + 'static,
-{
+) -> Result<(), String> {
     let backend = backend.into();
 
     if args.mcp_stdio {
@@ -213,9 +227,8 @@ where
         )
     })?;
 
-    let control_plane_db =
-        crate::control_plane::ControlPlaneDb::open(&args.control_plane_path)
-            .map_err(|error| format!("failed to open control-plane database: {error}"))?;
+    let control_plane_db = crate::control_plane::ControlPlaneDb::open(&args.control_plane_path)
+        .map_err(|error| format!("failed to open control-plane database: {error}"))?;
     let control_plane_db = Arc::new(tokio::sync::Mutex::new(control_plane_db));
     tracing::info!(
         "control-plane database opened at {}",
@@ -228,11 +241,16 @@ where
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
     let control_plane_state =
-        crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir);
+        crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir.clone());
 
-    let handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(storage)));
-    let http_app = crate::gateway::build_router_with_auth(
+    let handler: crate::tenant_router::SharedSqliteHandler =
+        Arc::new(tokio::sync::Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(crate::tenant_router::TenantRouter::new(
+        data_dir,
         handler.clone(),
+    ));
+    let http_app = crate::gateway::build_router_with_auth(
+        tenant_router,
         backend.clone(),
         args.ui_dir.clone(),
         auth.clone(),

@@ -632,9 +632,10 @@ mod tests {
     use super::*;
     use crate::auth::Identity;
     use crate::gateway::build_router;
+    use crate::tenant_router::TenantRouter;
     use axon_api::handler::AxonHandler;
     use axon_core::id::DEFAULT_DATABASE;
-    use axon_storage::MemoryStorageAdapter;
+    use axon_storage::SqliteStorageAdapter;
     use axum::Router;
     use axum_test::TestServer;
     use reqwest::Response as ReqwestResponse;
@@ -651,10 +652,10 @@ mod tests {
     }
 
     fn test_server() -> TestServer {
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
-        TestServer::new(build_router(handler, "memory", None))
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let tenant_router = Arc::new(TenantRouter::single(handler));
+        TestServer::new(build_router(tenant_router, "memory", None))
     }
 
     fn issued_session_id(response: &Response) -> String {
@@ -677,11 +678,10 @@ mod tests {
     }
 
     fn test_mcp_transport_server(sessions: McpHttpSessions) -> TestServer {
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let app = Router::new()
-            .merge(routes::<MemoryStorageAdapter>())
+            .merge(routes::<SqliteStorageAdapter>())
             .with_state(handler)
             .layer(Extension(sessions))
             .layer(Extension(CurrentDatabase::new(DEFAULT_DATABASE)))
@@ -932,10 +932,9 @@ mod tests {
 
     #[tokio::test]
     async fn http_mcp_exposes_sse_endpoint() {
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
-        let response = handle_mcp_sse::<MemoryStorageAdapter>(
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let response = handle_mcp_sse::<SqliteStorageAdapter>(
             State(handler),
             Extension(McpHttpSessions::default()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
@@ -954,9 +953,8 @@ mod tests {
 
     #[tokio::test]
     async fn http_mcp_subscriptions_persist_across_post_requests() {
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let sessions = McpHttpSessions::default();
         let subscribe = handle_mcp(
             State(handler.clone()),
@@ -1002,9 +1000,8 @@ mod tests {
 
     #[tokio::test]
     async fn http_mcp_session_delivers_resource_updates_to_sse_listeners() {
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let sessions = McpHttpSessions::default();
 
         let subscribe = handle_mcp(
@@ -1049,9 +1046,8 @@ mod tests {
 
     #[tokio::test]
     async fn http_mcp_issued_sessions_isolate_subscriptions_for_same_actor() {
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let sessions = McpHttpSessions::default();
         let current_database = CurrentDatabase::new(DEFAULT_DATABASE);
 

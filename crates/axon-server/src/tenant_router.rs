@@ -24,6 +24,9 @@ pub type SharedSqliteHandler = Arc<Mutex<AxonHandler<SqliteStorageAdapter>>>;
 ///
 /// Each tenant gets its own SQLite file at `{data_dir}/tenants/{db_name}.db`.
 /// The "default" name always returns the handler provided at construction.
+///
+/// When constructed via [`TenantRouter::single`], ALL database names resolve
+/// to the default handler (no filesystem access, no separate tenants).
 pub struct TenantRouter {
     /// Root directory for tenant database files. May be empty when constructed
     /// via [`TenantRouter::single`] (test-only, no filesystem access).
@@ -32,6 +35,8 @@ pub struct TenantRouter {
     tenants: RwLock<HashMap<String, SharedSqliteHandler>>,
     /// The handler returned for the "default" database.
     default_handler: SharedSqliteHandler,
+    /// When true, all database names resolve to the default handler.
+    single_mode: bool,
 }
 
 impl TenantRouter {
@@ -41,16 +46,21 @@ impl TenantRouter {
             data_dir,
             tenants: RwLock::new(HashMap::new()),
             default_handler,
+            single_mode: false,
         }
     }
 
-    /// Test-only constructor: wraps a single handler as "default" with no
-    /// filesystem backing for tenants.
+    /// Wraps a single handler so that ALL database names resolve to it.
+    ///
+    /// This is the constructor for tests and single-database deployments
+    /// where multi-tenant isolation is not needed.  No filesystem access
+    /// occurs for non-default database names.
     pub fn single(handler: SharedSqliteHandler) -> Self {
         Self {
             data_dir: PathBuf::new(),
             tenants: RwLock::new(HashMap::new()),
             default_handler: handler,
+            single_mode: true,
         }
     }
 
@@ -76,7 +86,7 @@ impl TenantRouter {
     ///   SQLite file at `{data_dir}/tenants/{db_name}.db`, initialises its
     ///   schema, wraps it in an `AxonHandler`, caches it, and returns it.
     pub async fn get_or_create(&self, db_name: &str) -> Result<SharedSqliteHandler, String> {
-        if db_name == "default" {
+        if db_name == "default" || self.single_mode {
             return Ok(Arc::clone(&self.default_handler));
         }
 
@@ -262,8 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn single_constructor_works() {
-        let storage =
-            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
         let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let router = TenantRouter::single(Arc::clone(&handler));
 

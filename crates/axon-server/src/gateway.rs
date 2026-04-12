@@ -47,8 +47,22 @@ use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT
 use axon_core::types::Entity;
 use axon_schema::schema::CollectionSchema;
 use axon_storage::adapter::StorageAdapter;
+use axon_storage::SqliteStorageAdapter;
 
+use crate::tenant_router::TenantRouter;
+
+/// Shared handler type alias — used by MCP HTTP routes which continue to
+/// use axum `State` for backward compatibility.
+#[allow(dead_code)]
 type SharedHandler<S> = Arc<Mutex<AxonHandler<S>>>;
+
+/// Concrete handler type for tenant-resolved SQLite handlers.
+///
+/// Gateway route handlers extract this from request Extensions rather than
+/// axum State.  The tenant-resolution middleware populates it before the
+/// handler runs.
+pub type TenantHandler = Arc<Mutex<AxonHandler<SqliteStorageAdapter>>>;
+
 const AXON_DATABASE_HEADER: &str = "x-axon-database";
 
 // ── Error response ────────────────────────────────────────────────────────────
@@ -274,6 +288,36 @@ pub(crate) async fn authenticate_http_request(
             next.run(request).await
         }
         Err(error) => auth_error_response(error),
+    }
+}
+
+/// Middleware that resolves the per-tenant handler from the `TenantRouter`
+/// and inserts it as a request [`Extension<TenantHandler>`].
+///
+/// Reads the `X-Axon-Database` header (defaulting to `"default"`) and calls
+/// [`TenantRouter::get_or_create`] to obtain or lazily provision the
+/// tenant's `AxonHandler<SqliteStorageAdapter>`.
+async fn resolve_tenant_handler(
+    Extension(router): Extension<Arc<TenantRouter>>,
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let db_name = request
+        .headers()
+        .get(AXON_DATABASE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("default");
+
+    match router.get_or_create(db_name).await {
+        Ok(handler) => {
+            request.extensions_mut().insert(handler);
+            next.run(request).await
+        }
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("tenant_error", err)),
+        )
+            .into_response(),
     }
 }
 
@@ -593,8 +637,8 @@ pub struct TransactionBody {
 // ── Route handlers ────────────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
-async fn create_entity<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn create_entity(
+    Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -635,8 +679,8 @@ async fn create_entity<S: StorageAdapter>(
     }
 }
 
-async fn get_entity<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn get_entity(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
 ) -> Response {
@@ -652,8 +696,8 @@ async fn get_entity<S: StorageAdapter>(
     }
 }
 
-async fn get_collection_entity<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn get_collection_entity(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Query(params): Query<GetEntityParams>,
@@ -703,8 +747,8 @@ async fn get_collection_entity<S: StorageAdapter>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn update_entity<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn update_entity(
+    Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -744,8 +788,8 @@ async fn update_entity<S: StorageAdapter>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn delete_entity<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn delete_entity(
+    Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -780,8 +824,8 @@ async fn delete_entity<S: StorageAdapter>(
     }
 }
 
-async fn query_entities<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn query_entities(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Path(CollectionPath { collection }): Path<CollectionPath>,
     Json(body): Json<QueryEntitiesRequest>,
@@ -816,8 +860,8 @@ async fn query_entities<S: StorageAdapter>(
     }
 }
 
-async fn create_link<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn create_link(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
@@ -863,8 +907,8 @@ async fn create_link<S: StorageAdapter>(
     }
 }
 
-async fn delete_link<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn delete_link(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
@@ -900,8 +944,8 @@ async fn delete_link<S: StorageAdapter>(
     }
 }
 
-async fn traverse<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn traverse(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -936,8 +980,8 @@ async fn traverse<S: StorageAdapter>(
     }
 }
 
-async fn query_audit_by_entity<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn query_audit_by_entity(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
     Path(CollectionEntityPath {
@@ -976,8 +1020,8 @@ async fn query_audit_by_entity<S: StorageAdapter>(
     }
 }
 
-async fn query_audit<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn query_audit(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
@@ -1023,8 +1067,8 @@ async fn query_audit<S: StorageAdapter>(
     }
 }
 
-async fn revert_entity<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn revert_entity(
+    Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -1089,8 +1133,8 @@ fn rollback_target_from_body(body: &RollbackEntityBody) -> Result<RollbackEntity
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn rollback_collection_entity<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn rollback_collection_entity(
+    Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -1249,8 +1293,8 @@ fn is_leap(y: u64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
 }
 
-async fn rollback_collection_handler<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn rollback_collection_handler(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
@@ -1302,8 +1346,8 @@ pub struct TransactionIdPath {
     pub transaction_id: String,
 }
 
-async fn rollback_transaction_handler<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn rollback_transaction_handler(
+    Extension(handler): Extension<TenantHandler>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Path(TransactionIdPath { transaction_id }): Path<TransactionIdPath>,
@@ -1339,8 +1383,8 @@ async fn rollback_transaction_handler<S: StorageAdapter>(
     }
 }
 
-async fn create_collection<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn create_collection(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(NamePath { name }): Path<NamePath>,
@@ -1382,8 +1426,8 @@ async fn create_collection<S: StorageAdapter>(
     }
 }
 
-async fn drop_collection<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn drop_collection(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(NamePath { name }): Path<NamePath>,
@@ -1406,8 +1450,8 @@ async fn drop_collection<S: StorageAdapter>(
     }
 }
 
-async fn list_collections<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn list_collections(
+    Extension(handler): Extension<TenantHandler>,
     Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
 ) -> Response {
     let handler = handler.lock().await;
@@ -1424,8 +1468,8 @@ async fn list_collections<S: StorageAdapter>(
     }
 }
 
-async fn describe_collection<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn describe_collection(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Path(NamePath { name }): Path<NamePath>,
 ) -> Response {
@@ -1447,8 +1491,8 @@ async fn describe_collection<S: StorageAdapter>(
     }
 }
 
-async fn put_collection_template<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn put_collection_template(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(CollectionPath { collection }): Path<CollectionPath>,
@@ -1484,8 +1528,8 @@ async fn put_collection_template<S: StorageAdapter>(
     }
 }
 
-async fn get_collection_template<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn get_collection_template(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Path(CollectionPath { collection }): Path<CollectionPath>,
 ) -> Response {
@@ -1507,8 +1551,8 @@ async fn get_collection_template<S: StorageAdapter>(
     }
 }
 
-async fn delete_collection_template<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn delete_collection_template(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(CollectionPath { collection }): Path<CollectionPath>,
@@ -1535,8 +1579,8 @@ async fn delete_collection_template<S: StorageAdapter>(
     }
 }
 
-async fn put_schema<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn put_schema(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(NamePath { name: collection }): Path<NamePath>,
@@ -1585,8 +1629,8 @@ async fn put_schema<S: StorageAdapter>(
     }
 }
 
-async fn get_schema<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn get_schema(
+    Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Path(NamePath { name: collection }): Path<NamePath>,
 ) -> Response {
@@ -1598,8 +1642,8 @@ async fn get_schema<S: StorageAdapter>(
     }
 }
 
-async fn create_database<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn create_database(
+    Extension(handler): Extension<TenantHandler>,
     Extension(identity): Extension<Identity>,
     Path(name): Path<String>,
 ) -> Response {
@@ -1616,15 +1660,15 @@ async fn create_database<S: StorageAdapter>(
     }
 }
 
-async fn list_databases<S: StorageAdapter>(State(handler): State<SharedHandler<S>>) -> Response {
+async fn list_databases(Extension(handler): Extension<TenantHandler>) -> Response {
     match handler.lock().await.list_databases(ListDatabasesRequest {}) {
         Ok(resp) => Json(json!({ "databases": resp.databases })).into_response(),
         Err(err) => axon_error_response(err),
     }
 }
 
-async fn drop_database<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn drop_database(
+    Extension(handler): Extension<TenantHandler>,
     Extension(identity): Extension<Identity>,
     Path(name): Path<String>,
     Query(force): Query<ForceQuery>,
@@ -1648,8 +1692,8 @@ async fn drop_database<S: StorageAdapter>(
     }
 }
 
-async fn create_namespace<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn create_namespace(
+    Extension(handler): Extension<TenantHandler>,
     Extension(identity): Extension<Identity>,
     Path((database, schema)): Path<(String, String)>,
 ) -> Response {
@@ -1673,8 +1717,8 @@ async fn create_namespace<S: StorageAdapter>(
     }
 }
 
-async fn list_namespaces<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn list_namespaces(
+    Extension(handler): Extension<TenantHandler>,
     Path(database): Path<String>,
 ) -> Response {
     match handler
@@ -1691,8 +1735,8 @@ async fn list_namespaces<S: StorageAdapter>(
     }
 }
 
-async fn list_namespace_collections<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn list_namespace_collections(
+    Extension(handler): Extension<TenantHandler>,
     Path((database, schema)): Path<(String, String)>,
 ) -> Response {
     match handler
@@ -1710,8 +1754,8 @@ async fn list_namespace_collections<S: StorageAdapter>(
     }
 }
 
-async fn drop_namespace<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn drop_namespace(
+    Extension(handler): Extension<TenantHandler>,
     Extension(identity): Extension<Identity>,
     Path((database, schema)): Path<(String, String)>,
     Query(force): Query<ForceQuery>,
@@ -1740,8 +1784,8 @@ async fn drop_namespace<S: StorageAdapter>(
 // ── Transaction endpoint ─────────────────────────────────────────────────────
 
 #[allow(clippy::too_many_arguments)]
-async fn commit_transaction<S: StorageAdapter>(
-    State(handler): State<SharedHandler<S>>,
+async fn commit_transaction(
+    Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -1878,8 +1922,8 @@ async fn commit_transaction<S: StorageAdapter>(
 /// Rebuilding per-request ensures newly-created (or dropped) collections are
 /// always reflected in the GraphQL API. A caching layer can be added later
 /// for performance.
-async fn graphql_handler<S: StorageAdapter + 'static>(
-    State(handler): State<SharedHandler<S>>,
+async fn graphql_handler(
+    Extension(handler): Extension<TenantHandler>,
     req: async_graphql_axum::GraphQLRequest,
 ) -> Response {
     // 1. Gather current collection schemas.
@@ -1923,8 +1967,8 @@ async fn graphql_handler<S: StorageAdapter + 'static>(
 /// Upgrades the HTTP connection to a WebSocket and runs the graphql-ws
 /// protocol. The schema is rebuilt on connection to reflect current
 /// collections.
-async fn graphql_ws_handler<S: StorageAdapter + 'static>(
-    State(handler): State<SharedHandler<S>>,
+async fn graphql_ws_handler(
+    Extension(handler): Extension<TenantHandler>,
     Extension(broker): Extension<BroadcastBroker>,
     protocol: async_graphql_axum::GraphQLProtocol,
     ws: WebSocketUpgrade,
@@ -1976,13 +2020,16 @@ async fn graphql_ws_handler<S: StorageAdapter + 'static>(
 // ── Router construction ───────────────────────────────────────────────────────
 
 /// Build the axum router for the HTTP gateway.
-pub fn build_router<S: StorageAdapter + 'static>(
-    handler: SharedHandler<S>,
+///
+/// Wraps [`build_router_with_auth`] with no-auth mode and default
+/// rate-limiting / actor-scope configuration.  Used by tests.
+pub fn build_router(
+    tenant_router: Arc<TenantRouter>,
     backend: impl Into<String>,
     ui_dir: Option<PathBuf>,
 ) -> Router {
     build_router_with_auth(
-        handler,
+        tenant_router,
         backend,
         ui_dir,
         AuthContext::no_auth(),
@@ -1992,63 +2039,75 @@ pub fn build_router<S: StorageAdapter + 'static>(
     )
 }
 
-fn data_routes<S: StorageAdapter + 'static>() -> Router<SharedHandler<S>> {
+/// Data routes for the HTTP gateway.
+///
+/// Handlers extract the tenant-resolved handler from
+/// [`Extension<TenantHandler>`] rather than axum [`State`].  The
+/// [`resolve_tenant_handler`] middleware populates this extension before
+/// handlers run.
+///
+/// MCP HTTP routes are **not** included here — they continue to use the
+/// default handler via axum State and are merged separately.
+fn data_routes() -> Router {
     Router::new()
-        .merge(crate::mcp_http::routes::<S>())
-        .route("/entities/{collection}/{id}", post(create_entity::<S>))
-        .route("/entities/{collection}/{id}", get(get_entity::<S>))
-        .route("/entities/{collection}/{id}", put(update_entity::<S>))
-        .route("/entities/{collection}/{id}", delete(delete_entity::<S>))
+        .route("/entities/{collection}/{id}", post(create_entity))
+        .route("/entities/{collection}/{id}", get(get_entity))
+        .route("/entities/{collection}/{id}", put(update_entity))
+        .route("/entities/{collection}/{id}", delete(delete_entity))
         .route(
             "/collections/{collection}/entities/{id}",
-            get(get_collection_entity::<S>),
+            get(get_collection_entity),
         )
         .route(
             "/collections/{collection}/entities/{id}/rollback",
-            post(rollback_collection_entity::<S>),
+            post(rollback_collection_entity),
         )
         .route(
             "/collections/{collection}/rollback",
-            post(rollback_collection_handler::<S>),
+            post(rollback_collection_handler),
         )
-        .route("/collections/{collection}/query", post(query_entities::<S>))
-        .route("/links", post(create_link::<S>))
-        .route("/links", delete(delete_link::<S>))
-        .route("/traverse/{collection}/{id}", get(traverse::<S>))
+        .route("/collections/{collection}/query", post(query_entities))
+        .route("/links", post(create_link))
+        .route("/links", delete(delete_link))
+        .route("/traverse/{collection}/{id}", get(traverse))
         .route(
             "/audit/entity/{collection}/{id}",
-            get(query_audit_by_entity::<S>),
+            get(query_audit_by_entity),
         )
-        .route("/audit/query", get(query_audit::<S>))
-        .route("/audit/revert", post(revert_entity::<S>))
-        .route("/collections", get(list_collections::<S>))
-        .route("/collections/{name}", post(create_collection::<S>))
-        .route("/collections/{name}", get(describe_collection::<S>))
-        .route("/collections/{name}", delete(drop_collection::<S>))
+        .route("/audit/query", get(query_audit))
+        .route("/audit/revert", post(revert_entity))
+        .route("/collections", get(list_collections))
+        .route("/collections/{name}", post(create_collection))
+        .route("/collections/{name}", get(describe_collection))
+        .route("/collections/{name}", delete(drop_collection))
         .route(
             "/collections/{collection}/template",
-            put(put_collection_template::<S>),
-        )
-        .route(
-            "/collections/{collection}/template",
-            get(get_collection_template::<S>),
+            put(put_collection_template),
         )
         .route(
             "/collections/{collection}/template",
-            delete(delete_collection_template::<S>),
+            get(get_collection_template),
         )
-        .route("/collections/{name}/schema", put(put_schema::<S>))
-        .route("/collections/{name}/schema", get(get_schema::<S>))
-        .route("/transactions", post(commit_transaction::<S>))
+        .route(
+            "/collections/{collection}/template",
+            delete(delete_collection_template),
+        )
+        .route("/collections/{name}/schema", put(put_schema))
+        .route("/collections/{name}/schema", get(get_schema))
+        .route("/transactions", post(commit_transaction))
         .route(
             "/transactions/{transaction_id}/rollback",
-            post(rollback_transaction_handler::<S>),
+            post(rollback_transaction_handler),
         )
 }
 
 /// Build the axum router for the HTTP gateway with request authentication.
-pub fn build_router_with_auth<S: StorageAdapter + 'static>(
-    handler: SharedHandler<S>,
+///
+/// The `tenant_router` provides per-database handler isolation.  A
+/// middleware layer resolves the tenant handler from the `X-Axon-Database`
+/// header before any route handler runs.
+pub fn build_router_with_auth(
+    tenant_router: Arc<TenantRouter>,
     backend: impl Into<String>,
     ui_dir: Option<PathBuf>,
     auth: AuthContext,
@@ -2060,37 +2119,43 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
     let backend = backend.into();
     let mcp_sessions = McpHttpSessions::default();
     let rate_limiter = WriteRateLimiter::new(rate_limit_config);
+    let handler = tenant_router.default_handler().clone();
+
+    // MCP HTTP routes still use axum State<SharedHandler<SqliteStorageAdapter>>
+    // and always operate on the default handler.  They are merged separately
+    // from the tenant-aware data routes.
+    let mcp_routes = crate::mcp_http::routes::<SqliteStorageAdapter>().with_state(handler.clone());
+
     let mut router = Router::new()
-        .merge(data_routes::<S>())
-        .nest("/db/{database}", data_routes::<S>())
-        .nest("/v1", data_routes::<S>())
-        .nest("/db/{database}/v1", data_routes::<S>())
-        .route("/databases", get(list_databases::<S>))
-        .route("/databases/{name}", post(create_database::<S>))
-        .route("/databases/{name}", delete(drop_database::<S>))
-        .route("/databases/{database}/schemas", get(list_namespaces::<S>))
+        .merge(data_routes())
+        .merge(mcp_routes.clone())
+        .nest("/db/{database}", data_routes().merge(mcp_routes.clone()))
+        .nest("/v1", data_routes().merge(mcp_routes.clone()))
+        .nest("/db/{database}/v1", data_routes().merge(mcp_routes))
+        .route("/databases", get(list_databases))
+        .route("/databases/{name}", post(create_database))
+        .route("/databases/{name}", delete(drop_database))
+        .route("/databases/{database}/schemas", get(list_namespaces))
         .route(
             "/databases/{database}/schemas/{schema}",
-            post(create_namespace::<S>),
+            post(create_namespace),
         )
         .route(
             "/databases/{database}/schemas/{schema}",
-            delete(drop_namespace::<S>),
+            delete(drop_namespace),
         )
         .route(
             "/databases/{database}/schemas/{schema}/collections",
-            get(list_namespace_collections::<S>),
+            get(list_namespace_collections),
         )
-        .route(
-            "/graphql",
-            get(graphql_handler::<S>).post(graphql_handler::<S>),
-        )
-        .route("/graphql/ws", get(graphql_ws_handler::<S>))
-        .with_state(handler.clone())
+        .route("/graphql", get(graphql_handler).post(graphql_handler))
+        .route("/graphql/ws", get(graphql_ws_handler))
         .layer(Extension(rate_limiter))
         .layer(Extension(actor_scope))
         .layer(Extension(mcp_sessions))
         .layer(Extension(BroadcastBroker::default()))
+        .layer(middleware::from_fn(resolve_tenant_handler))
+        .layer(Extension(tenant_router))
         .route(
             "/health",
             get(move || {
@@ -2138,8 +2203,7 @@ pub fn build_router_with_auth<S: StorageAdapter + 'static>(
     }
 
     if let Some(cp) = control_plane {
-        let cp_routes = crate::control_plane_routes::control_plane_routes()
-            .with_state(cp);
+        let cp_routes = crate::control_plane_routes::control_plane_routes().with_state(cp);
         router = router.nest("/control", cp_routes);
     }
 
@@ -2164,10 +2228,11 @@ mod tests {
     use crate::auth::{
         AuthContext, AuthError, AuthMode, Role, TailscaleWhoisProvider, TailscaleWhoisResponse,
     };
+    use crate::tenant_router::TenantRouter;
     use axon_core::id::{CollectionId, Namespace};
     use axon_schema::schema::{CollectionSchema, CollectionView, IndexDef, IndexType};
     use axon_storage::adapter::StorageAdapter;
-    use axon_storage::MemoryStorageAdapter;
+    use axon_storage::SqliteStorageAdapter;
     use axum::extract::connect_info::MockConnectInfo;
     use axum_test::TestServer;
     use serde_json::json;
@@ -2213,11 +2278,11 @@ mod tests {
         }
     }
 
-    fn test_server_with_handler() -> (TestServer, SharedHandler<MemoryStorageAdapter>) {
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
-        let app = build_router(handler.clone(), "memory", None);
+    fn test_server_with_handler() -> (TestServer, TenantHandler) {
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let tenant_router = Arc::new(TenantRouter::single(handler.clone()));
+        let app = build_router(tenant_router, "memory", None);
         (TestServer::new(app), handler)
     }
 
@@ -2226,11 +2291,11 @@ mod tests {
     }
 
     fn test_server_with_auth(peer: SocketAddr, auth: AuthContext) -> TestServer {
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let tenant_router = Arc::new(TenantRouter::single(handler));
         let app = build_router_with_auth(
-            handler,
+            tenant_router,
             "memory",
             None,
             auth,
@@ -4112,10 +4177,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("_app")).unwrap();
         std::fs::write(dir.path().join("_app/app.js"), "console.log('ui');").unwrap();
 
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
-        let app = build_router(handler, "memory", Some(dir.path().to_path_buf()));
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let tenant_router = Arc::new(TenantRouter::single(handler));
+        let app = build_router(tenant_router, "memory", Some(dir.path().to_path_buf()));
         let server = TestServer::new(app);
 
         let index = server.get("/ui").await;
@@ -4136,10 +4201,10 @@ mod tests {
         )
         .unwrap();
 
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
-        let app = build_router(handler, "memory", Some(dir.path().to_path_buf()));
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let tenant_router = Arc::new(TenantRouter::single(handler));
+        let app = build_router(tenant_router, "memory", Some(dir.path().to_path_buf()));
         let server = TestServer::new(app);
 
         let resp = server.get("/ui/collections/tasks").await;
@@ -4208,11 +4273,11 @@ mod tests {
             provider,
             Duration::from_secs(300),
         );
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let tenant_router = Arc::new(TenantRouter::single(handler));
         let app = build_router_with_auth(
-            handler,
+            tenant_router,
             "memory",
             None,
             auth,
@@ -4248,9 +4313,8 @@ mod tests {
             provider,
             Duration::from_secs(300),
         );
-        let handler = Arc::new(Mutex::new(
-            AxonHandler::new(MemoryStorageAdapter::default()),
-        ));
+        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
 
         // Seed data directly via the handler (bypasses RBAC).
         {
@@ -4284,8 +4348,9 @@ mod tests {
                 .unwrap();
         }
 
+        let tenant_router = Arc::new(TenantRouter::single(handler));
         let app = build_router_with_auth(
-            handler,
+            tenant_router,
             "memory",
             None,
             auth,

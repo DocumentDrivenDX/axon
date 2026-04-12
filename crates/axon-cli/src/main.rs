@@ -5,6 +5,8 @@
 
 #![allow(clippy::print_stdout)]
 
+#[cfg(feature = "serve")]
+mod client;
 mod doctor;
 mod init;
 mod service;
@@ -576,6 +578,23 @@ pub fn run(cli: Cli) -> Result<()> {
             return Ok(());
         }
         _ => {}
+    }
+
+    // ── Mode detection ──────────────────────────────────────────────────
+    // Try connecting to the configured server URL. If reachable, use HTTP
+    // client mode. Fall back to embedded SQLite otherwise.
+    // Note: no tokio runtime is active here, so reqwest::blocking is safe.
+    #[cfg(feature = "serve")]
+    {
+        let config = axon_config::AxonConfig::load(Some(&axon_config::paths::config_file()))
+            .unwrap_or_default();
+        if let Ok(http_client) =
+            client::HttpClient::new(&config.client.server_url, config.client.connect_timeout_ms)
+        {
+            if http_client.is_reachable() {
+                return run_client_mode(cli, http_client);
+            }
+        }
     }
 
     // ── Embedded data commands — open SQLite ─────────────────────────────
@@ -1682,6 +1701,131 @@ fn print_beads(beads: &[axon_api::bead::Bead], format: &OutputFormat) {
             }
         }
     }
+}
+
+// ── Client mode dispatch ──────────────────────────────────────────────────────
+
+/// Dispatch CLI commands via the HTTP client instead of embedded SQLite.
+#[cfg(feature = "serve")]
+fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
+    match cli.command {
+        Command::Database(cmd) => match cmd {
+            DatabaseCmd::Create { name } => {
+                let resp = client.create_database(&name)?;
+                print_serialized(&resp, &cli.output);
+            }
+            DatabaseCmd::List => {
+                let resp = client.list_databases()?;
+                print_serialized(&resp, &cli.output);
+            }
+            DatabaseCmd::Drop { .. } => {
+                anyhow::bail!("database drop is not yet available in client mode");
+            }
+        },
+        Command::Collection(cmd) => match cmd {
+            CollectionCmd::Create {
+                name,
+                schema,
+                actor,
+            } => {
+                let resp = client.create_collection(&name, schema.as_deref(), actor.as_deref())?;
+                print_serialized(&resp, &cli.output);
+            }
+            CollectionCmd::List => {
+                let resp = client.list_collections()?;
+                print_serialized(&resp, &cli.output);
+            }
+            CollectionCmd::Describe { name } => {
+                let resp = client.describe_collection(&name)?;
+                print_serialized(&resp, &cli.output);
+            }
+            CollectionCmd::Drop {
+                name,
+                actor,
+                confirm,
+            } => {
+                anyhow::ensure!(confirm, "collection drop requires --confirm");
+                let resp = client.drop_collection(&name, actor.as_deref())?;
+                print_serialized(&resp, &cli.output);
+            }
+            _ => {
+                anyhow::bail!("this collection subcommand is not yet available in client mode");
+            }
+        },
+        Command::Entity(cmd) => match cmd {
+            EntityCmd::Create {
+                collection,
+                id,
+                data,
+                actor,
+            } => {
+                let resp = client.create_entity(&collection, &id, &data, actor.as_deref())?;
+                print_serialized(&resp, &cli.output);
+            }
+            EntityCmd::Get { collection, id, .. } => {
+                let resp = client.get_entity(&collection, &id)?;
+                print_serialized(&resp, &cli.output);
+            }
+            EntityCmd::List { collection, limit } => {
+                let resp = client.list_entities(&collection, limit)?;
+                print_serialized(&resp, &cli.output);
+            }
+            EntityCmd::Update {
+                collection,
+                id,
+                data,
+                expected_version,
+                actor,
+            } => {
+                let resp = client.update_entity(
+                    &collection,
+                    &id,
+                    &data,
+                    expected_version,
+                    actor.as_deref(),
+                )?;
+                print_serialized(&resp, &cli.output);
+            }
+            EntityCmd::Delete {
+                collection,
+                id,
+                actor,
+            } => {
+                let resp = client.delete_entity(&collection, &id, actor.as_deref())?;
+                print_serialized(&resp, &cli.output);
+            }
+            EntityCmd::Query { .. } => {
+                anyhow::bail!("entity query is not yet available in client mode");
+            }
+        },
+        Command::Config(ConfigCmd::Show) => {
+            let health = client.health().unwrap_or_default();
+            let config = serde_json::json!({
+                "mode": "client",
+                "server": health,
+            });
+            print_serialized(&config, &cli.output);
+        }
+        Command::Namespace(_) => {
+            anyhow::bail!("namespace commands are not yet available in client mode");
+        }
+        Command::Link(_) => {
+            anyhow::bail!("link commands are not yet available in client mode");
+        }
+        Command::Audit(_) => {
+            anyhow::bail!("audit commands are not yet available in client mode");
+        }
+        Command::Schema(_) => {
+            anyhow::bail!("schema commands are not yet available in client mode");
+        }
+        Command::Bead(_) => {
+            anyhow::bail!("bead commands are not yet available in client mode");
+        }
+        // These are handled before mode detection; unreachable in client mode
+        Command::Serve(_) | Command::Mcp { .. } | Command::Doctor | Command::Init { .. }
+        | Command::Install(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
+    }
+    Ok(())
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────

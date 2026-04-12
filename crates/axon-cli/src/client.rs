@@ -1,0 +1,294 @@
+//! HTTP client for talking to a running `axon serve` instance.
+//!
+//! Uses `reqwest::blocking::Client` so the CLI can remain synchronous — no
+//! tokio runtime is needed for non-serve commands.
+
+use anyhow::{Context, Result};
+use reqwest::blocking::Client;
+use serde_json::Value;
+use std::time::Duration;
+
+/// HTTP client that maps CLI operations to Axon server REST endpoints.
+pub struct HttpClient {
+    base_url: String,
+    client: Client,
+}
+
+impl HttpClient {
+    /// Create a new client targeting `base_url` with the given connect timeout.
+    pub fn new(base_url: &str, timeout_ms: u64) -> Result<Self> {
+        let client = Client::builder()
+            .connect_timeout(Duration::from_millis(timeout_ms))
+            .timeout(Duration::from_secs(30))
+            .build()
+            .context("failed to build HTTP client")?;
+        Ok(Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            client,
+        })
+    }
+
+    /// Try to reach the server's health endpoint. Returns `true` if reachable.
+    pub fn is_reachable(&self) -> bool {
+        self.client
+            .get(format!("{}/health", self.base_url))
+            .send()
+            .map(|r| r.status().is_success())
+            .unwrap_or(false)
+    }
+
+    // ── Entity operations ────────────────────────────────────────────────────
+
+    /// `POST /entities/{collection}/{id}` with `{"data": ..., "actor": ...}`
+    pub fn create_entity(
+        &self,
+        collection: &str,
+        id: &str,
+        data: &str,
+        actor: Option<&str>,
+    ) -> Result<Value> {
+        let data_value: Value =
+            serde_json::from_str(data).context("entity data must be valid JSON")?;
+        let mut body = serde_json::json!({ "data": data_value });
+        if let Some(a) = actor {
+            body["actor"] = Value::String(a.to_string());
+        }
+        let resp = self
+            .client
+            .post(format!(
+                "{}/entities/{}/{}",
+                self.base_url, collection, id
+            ))
+            .json(&body)
+            .send()
+            .context("failed to send create entity request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `GET /entities/{collection}/{id}`
+    pub fn get_entity(&self, collection: &str, id: &str) -> Result<Value> {
+        let resp = self
+            .client
+            .get(format!(
+                "{}/entities/{}/{}",
+                self.base_url, collection, id
+            ))
+            .send()
+            .context("failed to send get entity request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `POST /collections/{collection}/query` with empty body to list all.
+    pub fn list_entities(&self, collection: &str, limit: Option<usize>) -> Result<Value> {
+        let mut body = serde_json::json!({ "collection": collection });
+        if let Some(l) = limit {
+            body["limit"] = Value::Number(l.into());
+        }
+        let resp = self
+            .client
+            .post(format!(
+                "{}/collections/{}/query",
+                self.base_url, collection
+            ))
+            .json(&body)
+            .send()
+            .context("failed to send list entities request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `PUT /entities/{collection}/{id}` with `{"data": ..., "expected_version": ..., "actor": ...}`
+    pub fn update_entity(
+        &self,
+        collection: &str,
+        id: &str,
+        data: &str,
+        expected_version: u64,
+        actor: Option<&str>,
+    ) -> Result<Value> {
+        let data_value: Value =
+            serde_json::from_str(data).context("entity data must be valid JSON")?;
+        let mut body = serde_json::json!({
+            "data": data_value,
+            "expected_version": expected_version,
+        });
+        if let Some(a) = actor {
+            body["actor"] = Value::String(a.to_string());
+        }
+        let resp = self
+            .client
+            .put(format!(
+                "{}/entities/{}/{}",
+                self.base_url, collection, id
+            ))
+            .json(&body)
+            .send()
+            .context("failed to send update entity request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `DELETE /entities/{collection}/{id}`
+    pub fn delete_entity(
+        &self,
+        collection: &str,
+        id: &str,
+        actor: Option<&str>,
+    ) -> Result<Value> {
+        let mut req = self.client.delete(format!(
+            "{}/entities/{}/{}",
+            self.base_url, collection, id
+        ));
+        if let Some(a) = actor {
+            req = req.json(&serde_json::json!({ "actor": a }));
+        }
+        let resp = req.send().context("failed to send delete entity request")?;
+        Self::parse_response(resp)
+    }
+
+    // ── Collection operations ────────────────────────────────────────────────
+
+    /// `POST /collections/{name}` with `{"schema": {"version": 1, ...}, "actor": ...}`
+    pub fn create_collection(
+        &self,
+        name: &str,
+        schema: Option<&str>,
+        actor: Option<&str>,
+    ) -> Result<Value> {
+        let schema_body = match schema {
+            Some(s) => {
+                let v: Value =
+                    serde_json::from_str(s).context("schema must be valid JSON")?;
+                serde_json::json!({
+                    "version": 1,
+                    "entity_schema": v,
+                })
+            }
+            None => serde_json::json!({ "version": 1 }),
+        };
+        let mut body = serde_json::json!({ "schema": schema_body });
+        if let Some(a) = actor {
+            body["actor"] = Value::String(a.to_string());
+        }
+        let resp = self
+            .client
+            .post(format!("{}/collections/{}", self.base_url, name))
+            .json(&body)
+            .send()
+            .context("failed to send create collection request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `GET /collections`
+    pub fn list_collections(&self) -> Result<Value> {
+        let resp = self
+            .client
+            .get(format!("{}/collections", self.base_url))
+            .send()
+            .context("failed to send list collections request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `GET /collections/{name}`
+    pub fn describe_collection(&self, name: &str) -> Result<Value> {
+        let resp = self
+            .client
+            .get(format!("{}/collections/{}", self.base_url, name))
+            .send()
+            .context("failed to send describe collection request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `DELETE /collections/{name}`
+    pub fn drop_collection(&self, name: &str, actor: Option<&str>) -> Result<Value> {
+        let mut req = self
+            .client
+            .delete(format!("{}/collections/{}", self.base_url, name));
+        if let Some(a) = actor {
+            req = req.json(&serde_json::json!({ "actor": a }));
+        }
+        let resp = req
+            .send()
+            .context("failed to send drop collection request")?;
+        Self::parse_response(resp)
+    }
+
+    // ── Database operations ──────────────────────────────────────────────────
+
+    /// `POST /databases/{name}`
+    pub fn create_database(&self, name: &str) -> Result<Value> {
+        let resp = self
+            .client
+            .post(format!("{}/databases/{}", self.base_url, name))
+            .send()
+            .context("failed to send create database request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `GET /databases`
+    pub fn list_databases(&self) -> Result<Value> {
+        let resp = self
+            .client
+            .get(format!("{}/databases", self.base_url))
+            .send()
+            .context("failed to send list databases request")?;
+        Self::parse_response(resp)
+    }
+
+    // ── Health ───────────────────────────────────────────────────────────────
+
+    /// `GET /health`
+    pub fn health(&self) -> Result<Value> {
+        let resp = self
+            .client
+            .get(format!("{}/health", self.base_url))
+            .send()
+            .context("failed to send health request")?;
+        Self::parse_response(resp)
+    }
+
+    // ── Internal helpers ─────────────────────────────────────────────────────
+
+    /// Parse a response: if 2xx, return the JSON body; otherwise return an error.
+    fn parse_response(resp: reqwest::blocking::Response) -> Result<Value> {
+        let status = resp.status();
+        let body = resp.text().context("failed to read response body")?;
+        if status.is_success() {
+            serde_json::from_str(&body).context("server returned invalid JSON")
+        } else {
+            // Try to extract a structured error message from the body.
+            if let Ok(err_json) = serde_json::from_str::<Value>(&body) {
+                if let Some(detail) = err_json.get("detail") {
+                    anyhow::bail!(
+                        "server error ({}): {}",
+                        status,
+                        detail
+                    );
+                }
+            }
+            anyhow::bail!("server error ({}): {}", status, body)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn client_new_builds_successfully() {
+        let client = HttpClient::new("http://127.0.0.1:4170", 200);
+        assert!(client.is_ok());
+    }
+
+    #[test]
+    fn unreachable_server_returns_false() {
+        // Connect to a port that almost certainly has nothing listening.
+        let client = HttpClient::new("http://127.0.0.1:19999", 100).unwrap();
+        assert!(!client.is_reachable());
+    }
+
+    #[test]
+    fn base_url_trailing_slash_stripped() {
+        let client = HttpClient::new("http://localhost:4170/", 200).unwrap();
+        assert_eq!(client.base_url, "http://localhost:4170");
+    }
+}

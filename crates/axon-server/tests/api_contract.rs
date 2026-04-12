@@ -16,7 +16,9 @@ use tokio::sync::Mutex;
 use axon_api::handler::AxonHandler;
 use axon_server::gateway::build_router;
 use axon_server::service::{AxonServiceImpl, AxonServiceServer};
+use axon_server::tenant_router::TenantRouter;
 use axon_storage::memory::MemoryStorageAdapter;
+use axon_storage::SqliteStorageAdapter;
 
 // Use the proto types from the server crate.
 use axon_server::service::proto;
@@ -372,10 +374,10 @@ async fn grpc_query_audit_by_entity() {
 #[tokio::test]
 async fn parity_create_get_entity() {
     // HTTP
-    let http_handler = Arc::new(Mutex::new(
-        AxonHandler::new(MemoryStorageAdapter::default()),
-    ));
-    let http_app = build_router(http_handler, "memory", None);
+    let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite");
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
     let http = axum_test::TestServer::new(http_app);
 
     let http_create = http
@@ -434,10 +436,10 @@ async fn parity_create_get_entity() {
 #[tokio::test]
 async fn parity_update_entity() {
     // HTTP
-    let http_handler = Arc::new(Mutex::new(
-        AxonHandler::new(MemoryStorageAdapter::default()),
-    ));
-    let http_app = build_router(http_handler, "memory", None);
+    let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite");
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
     let http = axum_test::TestServer::new(http_app);
 
     http.post("/entities/tasks/t-001")
@@ -488,10 +490,10 @@ async fn parity_update_entity() {
 #[tokio::test]
 async fn parity_link_traverse() {
     // HTTP
-    let http_handler = Arc::new(Mutex::new(
-        AxonHandler::new(MemoryStorageAdapter::default()),
-    ));
-    let http_app = build_router(http_handler, "memory", None);
+    let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite");
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
     let http = axum_test::TestServer::new(http_app);
 
     http.post("/entities/users/u-001")
