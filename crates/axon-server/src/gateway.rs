@@ -38,7 +38,8 @@ use axon_api::request::{
     ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
     ListNamespacesRequest, PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest,
     QueryEntitiesRequest, RevertEntityRequest, RollbackCollectionRequest, RollbackEntityRequest,
-    RollbackEntityTarget, RollbackTransactionRequest, TraverseRequest, UpdateEntityRequest,
+    RollbackEntityTarget, RollbackTransactionRequest, TraverseDirection, TraverseRequest,
+    UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
@@ -952,13 +953,17 @@ async fn traverse(
 ) -> Response {
     let link_type = params.get("link_type").cloned();
     let max_depth = params.get("max_depth").and_then(|s| s.parse().ok());
+    let direction = match params.get("direction").map(|s| s.as_str()) {
+        Some("reverse") => TraverseDirection::Reverse,
+        _ => TraverseDirection::Forward,
+    };
 
     match handler.lock().await.traverse(TraverseRequest {
         collection: qualify_collection_name(&collection, &current_database),
         id: EntityId::new(&id),
         link_type,
         max_depth,
-        direction: Default::default(),
+        direction,
         hop_filter: None,
     }) {
         Ok(resp) => {
