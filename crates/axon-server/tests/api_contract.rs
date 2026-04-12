@@ -947,6 +947,63 @@ async fn grpc_drop_collection_requires_confirm() {
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
 
+/// HTTP contract test: `direction=reverse` on the traverse endpoint.
+///
+/// Graph: A --owns--> B
+///
+/// Forward traversal from A should return B.
+/// Reverse traversal from B should return A (A links TO B).
+#[tokio::test]
+async fn http_traverse_direction_reverse() {
+    let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite");
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    // Create entities A and B.
+    http.post("/entities/nodes/a")
+        .json(&json!({"data": {"name": "A"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+    http.post("/entities/nodes/b")
+        .json(&json!({"data": {"name": "B"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    // Create forward link: A -> B.
+    http.post("/links")
+        .json(&json!({
+            "source_collection": "nodes",
+            "source_id": "a",
+            "target_collection": "nodes",
+            "target_id": "b",
+            "link_type": "owns"
+        }))
+        .await
+        .assert_status_ok();
+
+    // Forward traversal from A should return B.
+    let fwd = http
+        .get("/traverse/nodes/a?link_type=owns&direction=forward")
+        .await;
+    fwd.assert_status_ok();
+    let fwd_body: Value = fwd.json();
+    let fwd_entities = fwd_body["entities"].as_array().unwrap();
+    assert_eq!(fwd_entities.len(), 1, "forward from A should return 1 entity");
+    assert_eq!(fwd_entities[0]["id"], "b", "forward from A should return B");
+
+    // Reverse traversal from B should return A (A links TO B).
+    let rev = http
+        .get("/traverse/nodes/b?link_type=owns&direction=reverse")
+        .await;
+    rev.assert_status_ok();
+    let rev_body: Value = rev.json();
+    let rev_entities = rev_body["entities"].as_array().unwrap();
+    assert_eq!(rev_entities.len(), 1, "reverse from B should return 1 entity");
+    assert_eq!(rev_entities[0]["id"], "a", "reverse from B should return A");
+}
+
 #[tokio::test]
 async fn grpc_create_collection_duplicate_fails() {
     let (addr, _) = start_grpc_server().await;
