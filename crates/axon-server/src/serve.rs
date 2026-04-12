@@ -14,7 +14,7 @@ use tracing_subscriber::EnvFilter;
 use crate::service::{AxonServiceImpl, AxonServiceServer};
 use crate::{AuthContext, Role};
 use axon_api::handler::AxonHandler;
-use axon_storage::{PostgresStorageAdapter, SqliteStorageAdapter};
+use axon_storage::{provision_postgres_database, PostgresStorageAdapter, SqliteStorageAdapter};
 
 #[derive(Clone, Debug, clap::ValueEnum)]
 pub enum StorageBackend {
@@ -181,22 +181,11 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
             run_with_sqlite_storage(storage, &args, format!("sqlite:{}", args.sqlite_path)).await
         }
         StorageBackend::Postgres => {
-            let dsn = args
+            let superadmin_dsn = args
                 .postgres_dsn
                 .as_deref()
                 .ok_or_else(|| "--postgres-dsn is required when --storage=postgres".to_string())?;
-            let _pg_storage = PostgresStorageAdapter::connect(dsn)
-                .map_err(|error| format!("failed to connect PostgreSQL backing store: {error}"))?;
-            // PostgreSQL tenant routing is not yet supported.  For now,
-            // create an in-memory SQLite adapter for the HTTP gateway so
-            // the server can start.  gRPC is not started in this mode.
-            tracing::warn!(
-                "PostgreSQL storage selected — HTTP gateway uses in-memory SQLite; \
-                 gRPC is not available in this mode"
-            );
-            let sqlite = SqliteStorageAdapter::open_in_memory()
-                .map_err(|e| format!("failed to open in-memory SQLite for PG fallback: {e}"))?;
-            run_with_sqlite_storage(sqlite, &args, "postgres").await
+            run_with_postgres_storage(superadmin_dsn, &args).await
         }
     }
 }
@@ -302,6 +291,121 @@ pub async fn run_with_sqlite_storage(
             .await
             .map_err(|error| format!("HTTP task join error: {error}"))??;
     }
+
+    Ok(())
+}
+
+/// Run the server with a PostgreSQL storage backend.
+///
+/// On startup this function:
+/// 1. Creates `axon_master` (the master database) using the superadmin DSN if it
+///    does not already exist, then opens an `AxonHandler<PostgresStorageAdapter>`
+///    against it.
+/// 2. Constructs a [`crate::tenant_router::TenantRouter`] in Postgres mode so
+///    that subsequent tenant provisioning calls issue `CREATE DATABASE axon_{name}`
+///    against the cluster.
+/// 3. Starts the HTTP gateway backed by this router.  gRPC is not started in
+///    Postgres mode.
+pub async fn run_with_postgres_storage(
+    superadmin_dsn: &str,
+    args: &ServeArgs,
+) -> Result<(), String> {
+    if args.mcp_stdio {
+        return Err("MCP stdio mode is not supported with --storage=postgres".to_string());
+    }
+
+    let auth = auth_context_from_serve_args(args);
+
+    auth.verify().await.map_err(|error| {
+        format!(
+            "failed to initialize auth via {}: {error}",
+            args.tailscale_socket.display()
+        )
+    })?;
+
+    // Provision axon_master (the master / control-plane database).
+    let superadmin_dsn_owned = superadmin_dsn.to_owned();
+    let master_conn_str = tokio::task::spawn_blocking({
+        let dsn = superadmin_dsn_owned.clone();
+        move || {
+            match provision_postgres_database(&dsn, "master") {
+                Ok(()) => {
+                    tracing::info!("created master PostgreSQL database 'axon_master'");
+                }
+                Err(axon_core::error::AxonError::AlreadyExists(_)) => {
+                    tracing::info!("master PostgreSQL database 'axon_master' already exists");
+                }
+                Err(e) => {
+                    return Err(format!("failed to provision axon_master: {e}"));
+                }
+            }
+            Ok(axon_storage::tenant_dsn(&dsn, "master"))
+        }
+    })
+    .await
+    .map_err(|e| format!("thread join error while provisioning master database: {e}"))??;
+
+    // Connect to axon_master.
+    let pg_master = tokio::task::spawn_blocking({
+        let conn = master_conn_str.clone();
+        move || {
+            PostgresStorageAdapter::connect(&conn)
+                .map_err(|e| format!("failed to connect to axon_master: {e}"))
+        }
+    })
+    .await
+    .map_err(|e| format!("thread join error while connecting to master database: {e}"))??;
+
+    tracing::info!("connected to master PostgreSQL database at axon_master");
+
+    let default_handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(pg_master)));
+    let tenant_router = Arc::new(crate::tenant_router::TenantRouter::new_postgres(
+        superadmin_dsn_owned,
+        default_handler,
+    ));
+
+    let control_plane_db = crate::control_plane::ControlPlaneDb::open(&args.control_plane_path)
+        .map_err(|error| format!("failed to open control-plane database: {error}"))?;
+    let control_plane_db = Arc::new(tokio::sync::Mutex::new(control_plane_db));
+    tracing::info!(
+        "control-plane database opened at {}",
+        args.control_plane_path
+    );
+
+    let data_dir = std::path::Path::new(&args.control_plane_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+    let control_plane_state =
+        crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir);
+
+    let http_app = crate::gateway::build_router_with_auth(
+        tenant_router,
+        "postgres",
+        args.ui_dir.clone(),
+        auth,
+        crate::rate_limit::RateLimitConfig::default(),
+        crate::actor_scope::ActorScopeGuard::default(),
+        Some(control_plane_state),
+    );
+    let http_addr: std::net::SocketAddr = ([0, 0, 0, 0], args.http_port).into();
+
+    tracing::info!("HTTP gateway (PostgreSQL) listening on {http_addr}");
+
+    tokio::spawn(async move {
+        let listener = tokio::net::TcpListener::bind(http_addr)
+            .await
+            .map_err(|error| format!("failed to bind HTTP listener: {error}"))?;
+        axum::serve(
+            listener,
+            http_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .map_err(|error| format!("HTTP server error: {error}"))
+    })
+    .await
+    .map_err(|error| format!("HTTP task join error: {error}"))??;
 
     Ok(())
 }

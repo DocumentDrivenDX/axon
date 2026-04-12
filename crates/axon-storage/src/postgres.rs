@@ -1273,6 +1273,158 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 }
 
+// ── Per-tenant PostgreSQL provisioning ───────────────────────────────────────
+
+/// Validate a PostgreSQL database name to prevent SQL injection in DDL.
+///
+/// PostgreSQL identifiers may contain letters, digits, `_`, and `$`, and
+/// must start with a letter or `_`. We apply a conservative subset of that
+/// rule here to keep things simple and safe.
+fn validate_pg_db_name(name: &str) -> Result<(), AxonError> {
+    if name.is_empty() {
+        return Err(AxonError::InvalidArgument(
+            "database name must not be empty".to_owned(),
+        ));
+    }
+    let first = name.chars().next().expect("non-empty checked above");
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return Err(AxonError::InvalidArgument(format!(
+            "database name '{name}' must start with a letter or underscore"
+        )));
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(AxonError::InvalidArgument(format!(
+            "database name '{name}' contains invalid characters (only ASCII alphanumeric and _ allowed)"
+        )));
+    }
+    Ok(())
+}
+
+/// Derive a per-tenant DSN from a superadmin DSN by replacing/adding the
+/// `dbname` key.
+///
+/// The superadmin DSN uses the `postgres` maintenance database.  We produce a
+/// new DSN that targets `axon_{name}`.
+///
+/// Both libpq keyword–value format (`host=... dbname=...`) and URL format
+/// (`postgres://...`) are supported.
+pub fn tenant_dsn(superadmin_dsn: &str, tenant_db_name: &str) -> String {
+    let target = format!("axon_{tenant_db_name}");
+    if superadmin_dsn.starts_with("postgres://") || superadmin_dsn.starts_with("postgresql://") {
+        // URL format: replace path component.
+        // e.g. postgres://user:pass@host/somedb?sslmode=disable
+        if let Some(pos) = superadmin_dsn.find("://") {
+            let after_scheme = &superadmin_dsn[pos + 3..];
+            // Find the slash that separates authority from path.
+            if let Some(slash_pos) = after_scheme.find('/') {
+                let scheme_authority = &superadmin_dsn[..pos + 3 + slash_pos];
+                let rest = &after_scheme[slash_pos + 1..];
+                // Strip existing dbname (everything before '?').
+                let query = if let Some(q) = rest.find('?') {
+                    &rest[q..]
+                } else {
+                    ""
+                };
+                return format!("{scheme_authority}/{target}{query}");
+            }
+            // No path: append the target database.
+            return format!("{superadmin_dsn}/{target}");
+        }
+        format!("{superadmin_dsn}/{target}")
+    } else {
+        // Keyword–value format.  Replace existing dbname= or append it.
+        let mut parts: Vec<String> = superadmin_dsn
+            .split_whitespace()
+            .filter(|part| !part.starts_with("dbname="))
+            .map(str::to_owned)
+            .collect();
+        parts.push(format!("dbname={target}"));
+        parts.join(" ")
+    }
+}
+
+/// Create a physical PostgreSQL database named `axon_{name}` using a
+/// superadmin connection.
+///
+/// The `superadmin_dsn` must connect to the `postgres` maintenance database
+/// (or any database the superuser can reach) with sufficient privileges to
+/// execute `CREATE DATABASE`.
+///
+/// The database name is validated to prevent SQL injection.
+///
+/// # Errors
+///
+/// Returns `AxonError::AlreadyExists` if the database already exists.
+/// Returns `AxonError::InvalidArgument` if `name` contains invalid characters.
+/// Returns `AxonError::Storage` for other PostgreSQL errors.
+pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(), AxonError> {
+    validate_pg_db_name(name)?;
+    let full_name = format!("axon_{name}");
+
+    let mut client =
+        Client::connect(superadmin_dsn, NoTls).map_err(|e| AxonError::Storage(e.to_string()))?;
+
+    // Check whether the database already exists.
+    let row = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
+            &[&full_name.as_str()],
+        )
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+    let exists: bool = row.get(0);
+    if exists {
+        return Err(AxonError::AlreadyExists(format!(
+            "PostgreSQL database '{full_name}'"
+        )));
+    }
+
+    // CREATE DATABASE cannot run inside a transaction; use simple_query to
+    // avoid the implicit transaction that execute() would open.
+    client
+        .simple_query(&format!("CREATE DATABASE \"{full_name}\""))
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+    Ok(())
+}
+
+/// Drop the physical PostgreSQL database named `axon_{name}`.
+///
+/// The `superadmin_dsn` must have sufficient privileges to execute
+/// `DROP DATABASE`.
+///
+/// # Errors
+///
+/// Returns `AxonError::NotFound` if the database does not exist.
+/// Returns `AxonError::InvalidArgument` if `name` contains invalid characters.
+/// Returns `AxonError::Storage` for other PostgreSQL errors.
+pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(), AxonError> {
+    validate_pg_db_name(name)?;
+    let full_name = format!("axon_{name}");
+
+    let mut client =
+        Client::connect(superadmin_dsn, NoTls).map_err(|e| AxonError::Storage(e.to_string()))?;
+
+    // Check whether the database exists.
+    let row = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
+            &[&full_name.as_str()],
+        )
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+    let exists: bool = row.get(0);
+    if !exists {
+        return Err(AxonError::NotFound(format!(
+            "PostgreSQL database '{full_name}'"
+        )));
+    }
+
+    client
+        .simple_query(&format!("DROP DATABASE \"{full_name}\""))
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+    Ok(())
+}
+
 // The conformance test suite requires PostgreSQL.
 // Explicit verification path:
 // AXON_TEST_POSTGRES="host=localhost user=axon dbname=axon_test" cargo test -p axon-storage postgres::tests:: -- --nocapture
