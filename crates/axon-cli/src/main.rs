@@ -2244,12 +2244,14 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
                 let description_val = schema_body["description"].as_str().map(str::to_string);
                 let resp = client.put_schema(
                     &collection,
-                    new_version,
-                    entity_schema_json,
-                    description_val.as_deref(),
-                    force,
-                    dry_run,
-                    actor.as_deref(),
+                    client::PutSchemaOptions {
+                        version: new_version,
+                        entity_schema: entity_schema_json,
+                        description: description_val.as_deref(),
+                        force,
+                        dry_run,
+                        actor: actor.as_deref(),
+                    },
                 )?;
                 print_serialized(&resp, &cli.output);
             }

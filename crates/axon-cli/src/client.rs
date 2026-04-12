@@ -8,6 +8,19 @@ use reqwest::blocking::Client;
 use serde_json::Value;
 use std::time::Duration;
 
+/// Options passed to [`HttpClient::put_schema`].
+///
+/// Grouping these into a struct keeps the method signature within clippy's
+/// `too_many_arguments` limit (≤ 7 parameters including `&self` and `name`).
+pub struct PutSchemaOptions<'a> {
+    pub version: u64,
+    pub entity_schema: Value,
+    pub description: Option<&'a str>,
+    pub force: bool,
+    pub dry_run: bool,
+    pub actor: Option<&'a str>,
+}
+
 /// HTTP client that maps CLI operations to Axon server REST endpoints.
 pub struct HttpClient {
     base_url: String,
@@ -266,16 +279,15 @@ impl HttpClient {
     ///
     /// The HTTP body is a flat `PutSchemaBody`: `{version, entity_schema, description?,
     /// link_types?, force, dry_run}` — NOT a wrapped `{schema: {...}}`.
-    pub fn put_schema(
-        &self,
-        name: &str,
-        version: u64,
-        entity_schema: Value,
-        description: Option<&str>,
-        force: bool,
-        dry_run: bool,
-        actor: Option<&str>,
-    ) -> Result<Value> {
+    pub fn put_schema(&self, name: &str, opts: PutSchemaOptions<'_>) -> Result<Value> {
+        let PutSchemaOptions {
+            version,
+            entity_schema,
+            description,
+            force,
+            dry_run,
+            actor,
+        } = opts;
         let mut body = serde_json::json!({
             "version": version,
             "entity_schema": entity_schema,
