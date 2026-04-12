@@ -13,4 +13,5 @@ Axon models the world as **entities** organized into **collections**, connected 
   {{< card link="schema" title="Schema" subtitle="JSON Schema per collection. Defines shape, constraints, and valid values — enforced on every write." >}}
   {{< card link="links" title="Links & Graph" subtitle="Typed edges connecting entities across collections. Traverse to arbitrary depth." >}}
   {{< card link="audit-log" title="Audit Log" subtitle="Immutable record of every mutation — who changed what, when, and what it looked like before." >}}
+  {{< card link="authentication" title="Authentication & Authorization" subtitle="Tailscale-based identity, RBAC roles, ACL tag mapping, and the /auth/me endpoint." >}}
 {{< /cards >}}

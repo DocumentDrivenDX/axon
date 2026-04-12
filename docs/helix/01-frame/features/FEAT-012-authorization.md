@@ -9,22 +9,38 @@ dun:
 # Feature Specification: FEAT-012 - Authorization
 
 **Feature ID**: FEAT-012
-**Status**: Draft
+**Status**: Active — V1 shipped; V2 scaffolded (not wired); V3 deferred
 **Priority**: P1
 **Owner**: Core Team
 **Created**: 2026-04-05
-**Updated**: 2026-04-05
+**Updated**: 2026-04-12
+
+## Implementation Status
+
+| Phase | Capability | Status |
+|-------|-----------|--------|
+| V1 | Global RBAC (admin/write/read/none) + `--no-auth` + `--guest-role` | **Shipped** |
+| V2 | `MaskPolicy` / `WritePolicy` structs and `GrantRegistry` defined | **Scaffolded** — types built and tested in `axon-core`, not yet wired into handlers |
+| V3 | Per-entity attribute conditions, policy inheritance, policy UI | **Deferred** |
+
+Key V1 implementation choices that differ from this spec:
+- **No OIDC support** — Tailscale is the only external provider; OIDC deferred to V2+
+- **No `tailscale-localapi` crate** — identity is resolved via direct HTTP/1.1 over the
+  Tailscale Unix socket using `hyper` + `tokio::net::UnixStream`
+- **`--guest-role` mode added** — unauthenticated requests receive a fixed role (not in
+  original spec, added during implementation for edge deployments without Tailscale)
+- **Actor = node name, not email** — `Identity.actor` is set to the Tailscale
+  `ComputedName` (preferred) or `Hostinfo.Hostname`, not the user's email
 
 ## Overview
 
 Axon requires an authentication and authorization layer to control who can
-access data and what operations they can perform. The auth model is built
-on **OIDC (OpenID Connect)** for identity, with **Tailscale** as the
-default (and first) identity provider via its LocalAPI whois mechanism.
+access data and what operations they can perform. The V1 auth model uses
+**Tailscale LocalAPI whois** for identity, with Tailscale ACL tags mapping
+to built-in RBAC roles.
 
 The design separates identity (who you are) from authorization (what you
-can do), allowing other OIDC providers (Auth0, Okta, Google, etc.) to be
-added without changing the authorization model.
+can do). Future phases may add OIDC providers, but V1 is Tailscale-only.
 
 ## Problem Statement
 
@@ -65,13 +81,21 @@ Audit log entries should carry real actor identities, not "anonymous".
   | `read` | Read entities, query, traverse, browse audit log |
   | `none` | No access (explicitly denied) |
 
-- **Role assignment**: Roles are derived from the identity provider:
-  - **Tailscale**: Mapped from ACL tags (`tag:axon-admin` → admin,
-    `tag:axon-write` → write, `tag:axon-read` → read)
-  - **Generic OIDC**: Mapped from JWT claims (configurable claim name,
-    e.g., `axon_role` in the ID token)
-  - **Default role**: Configurable. Default is `read` for authenticated
-    users with no explicit role assignment
+- **Role assignment**: Roles are derived from Tailscale ACL tags.  When a
+  node carries multiple role-granting tags the highest-privilege role wins:
+
+  | Tag | Role |
+  |-----|------|
+  | `tag:axon-admin` / `tag:admin` | `admin` |
+  | `tag:axon-write` / `tag:axon-agent` / `tag:write` | `write` |
+  | `tag:axon-read` / `tag:read` | `read` |
+  | *(no matching tag)* | `--tailscale-default-role` (default `read`) |
+
+  `tag:axon-agent` is the conventional tag for automated agent workloads
+  that need read/write but not admin access.
+
+- **Default role**: Configurable via `--tailscale-default-role` (default `read`)
+  for authenticated nodes that carry no recognized ACL tag
 
 #### Attribute-Based Access Control (ABAC)
 
@@ -161,11 +185,11 @@ attributes of the **user**, the **resource** (entity/collection), and the
 
 ##### Implementation Phases
 
-| Phase | Capability |
-|-------|-----------|
-| V1 | Global RBAC roles (admin/write/read/none) + --no-auth mode |
-| V2 | Per-collection policies, field masking, field immutability |
-| V3 | Per-entity attribute conditions, policy inheritance, policy UI |
+| Phase | Capability | Status |
+|-------|-----------|--------|
+| V1 | Global RBAC roles (admin/write/read/none) + `--no-auth` + `--guest-role` | **Shipped** |
+| V2 | Per-collection policies, field masking, field immutability | Scaffolded (structs + tests, not wired) |
+| V3 | Per-entity attribute conditions, policy inheritance, policy UI | Deferred |
 
 #### Network-Layer Security (Tailscale-Specific)
 
@@ -195,10 +219,10 @@ attributes of the **user**, the **resource** (entity/collection), and the
 **So that** my operations are attributed to me in the audit log
 
 **Acceptance Criteria:**
-- [ ] Agent connects via Tailscale IP; Axon resolves its identity via whois
-- [ ] Audit entries show the agent's Tailscale node name as actor
-- [ ] Connections from outside the tailnet are rejected with 401
-- [ ] Agent with no recognized Tailscale tags receives the configured `default_role` (default: `read`)
+- [x] Agent connects via Tailscale IP; Axon resolves its identity via whois
+- [x] Audit entries show the agent's Tailscale node name as actor
+- [x] Connections from outside the tailnet are rejected with 401
+- [x] Agent with no recognized Tailscale tags receives the configured `default_role` (default: `read`)
 
 ### Story US-044: Role-Based Access Control [FEAT-012]
 
@@ -207,11 +231,11 @@ attributes of the **user**, the **resource** (entity/collection), and the
 **So that** agents can't accidentally drop collections or modify schemas
 
 **Acceptance Criteria:**
-- [ ] An agent with `tag:axon-write` can create/update/delete entities
-- [ ] An agent with `tag:axon-write` cannot drop collections or change schemas
-- [ ] An agent with `tag:axon-read` gets 403 on any write operation
-- [ ] An admin with `tag:axon-admin` can perform all operations
-- [ ] When a node has multiple role-granting tags, the highest-privilege role wins (admin > write > read)
+- [x] An agent with `tag:axon-write` can create/update/delete entities
+- [x] An agent with `tag:axon-write` cannot drop collections or change schemas
+- [x] An agent with `tag:axon-read` gets 403 on any write operation
+- [x] An admin with `tag:axon-admin` can perform all operations
+- [x] When a node has multiple role-granting tags, the highest-privilege role wins (admin > write > read)
 
 ### Story US-045: Development Without Auth [FEAT-012]
 
@@ -220,9 +244,9 @@ attributes of the **user**, the **resource** (entity/collection), and the
 **So that** I don't need a Tailscale connection during development
 
 **Acceptance Criteria:**
-- [ ] `axon-server --no-auth` starts without requiring tailscaled
-- [ ] All requests succeed as admin in no-auth mode
-- [ ] Audit entries show actor as `"anonymous"` in no-auth mode
+- [x] `axon-server --no-auth` starts without requiring tailscaled
+- [x] All requests succeed as admin in no-auth mode
+- [x] Audit entries show actor as `"anonymous"` in no-auth mode
 
 ## Technical Design
 
@@ -233,9 +257,14 @@ Request arrives
     │
     ▼
 ┌─────────────────┐
-│  --no-auth set?  │──yes──▶ Identity = { actor: "anonymous", role: admin }
+│  --no-auth set?  │──yes──▶ Identity = { actor: "anonymous", role: Admin }
 └────────┬────────┘
          │ no
+         ▼
+┌─────────────────┐
+│  --guest-role?   │──yes──▶ Identity = { actor: "guest", role: <configured> }
+└────────┬────────┘
+         │ no (Tailscale mode)
          ▼
 ┌─────────────────┐
 │ Extract peer IP  │
@@ -243,65 +272,75 @@ Request arrives
 └────────┬────────┘
          ▼
 ┌─────────────────┐
-│ Check cache      │──hit──▶ Use cached identity
-│ (IP → Identity)  │
+│ Check IP cache   │──hit──▶ Use cached identity (TTL: 60 s default)
+│ (RwLock map)     │
 └────────┬────────┘
          │ miss
          ▼
+┌──────────────────────────────────┐
+│ GET /localapi/v0/whois?addr=peer  │
+│ via Unix socket (tailscaled.sock) │
+└────────┬─────────────────────────┘
+         │ 200 OK                  └─ 422 → 401 Unauthorized
+         ▼                         └─ socket error → 503 Unavailable
 ┌─────────────────┐
-│ Call provider    │
-│ (Tailscale whois │
-│  or OIDC verify) │
-└────────┬────────┘
-         ▼
-┌─────────────────┐
-│ Map to Role      │
-│ (tags → role)    │
+│ Map ACL tags     │
+│ to Role          │
 └────────┬────────┘
          ▼
 ┌─────────────────┐
 │ Cache + inject   │
-│ into request ctx │
+│ Identity into    │
+│ request context  │
 └─────────────────┘
 ```
 
 ### Middleware Architecture
 
+HTTP auth runs as an axum middleware layer (`authenticate_http_request` in
+`crates/axon-server/src/gateway.rs`). gRPC uses `AxonServiceImpl::authorize`
+in `crates/axon-server/src/service.rs`. Both delegate to `AuthContext::resolve_peer`.
+
 ```rust
-// axum middleware (HTTP)
-async fn auth_middleware(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    State(auth): State<AuthProvider>,
+// Actual implementation (axon-server/src/gateway.rs)
+pub(crate) async fn authenticate_http_request(
+    State(auth): State<AuthContext>,
     mut request: Request,
     next: Next,
 ) -> Response {
-    match auth.resolve_identity(addr).await {
+    match auth.resolve_peer(request_peer_address(&request)).await {
         Ok(identity) => {
             request.extensions_mut().insert(identity);
             next.run(request).await
         }
-        Err(AuthError::Unauthorized) => StatusCode::UNAUTHORIZED.into_response(),
-        Err(AuthError::Forbidden) => StatusCode::FORBIDDEN.into_response(),
-        Err(AuthError::Unavailable) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(error) => auth_error_response(error),
     }
 }
-
-// Same pattern for tonic interceptor (gRPC)
 ```
 
-### Provider Trait
+Route handlers extract identity with `Extension<Identity>` and enforce
+role requirements:
 
 ```rust
-#[async_trait]
-trait IdentityProvider: Send + Sync {
-    async fn resolve(&self, peer_addr: SocketAddr) -> Result<Identity, AuthError>;
+async fn my_handler(Extension(identity): Extension<Identity>, ...) {
+    identity.require_write()?;  // or require_read() / require_admin()
+    // ... handler logic
+}
+```
+
+### Auth Types
+
+```rust
+// crates/axon-server/src/auth.rs
+pub struct Identity {
+    pub actor: String,  // Tailscale ComputedName, "anonymous", or "guest"
+    pub role: Role,     // Admin | Write | Read
 }
 
-struct Identity {
-    actor: String,       // email, node name, or "anonymous"
-    role: Role,          // admin, write, read, none
-    provider: String,    // "tailscale", "oidc", "none"
-    raw_claims: Value,   // provider-specific metadata
+pub enum AuthMode {
+    NoAuth,
+    Tailscale { default_role: Role },
+    Guest { role: Role },
 }
 ```
 
@@ -351,8 +390,9 @@ role_claim = "axon_role"
 
 - **FEAT-005** (API Surface): Auth middleware wraps HTTP and gRPC endpoints
 - **ADR-005**: Architecture decision for Tailscale LocalAPI whois
-- `tailscale-localapi` crate (v0.5.0) for whois calls
-- `jsonwebtoken` crate for generic OIDC JWT validation (Phase 2)
+- `hyper` + `tokio::net::UnixStream` — direct HTTP/1.1 over the Tailscale Unix socket
+  (`tailscale-localapi` crate was evaluated but not used; direct socket calls chosen)
+- `jsonwebtoken` — deferred (OIDC not implemented in V1)
 
 ### Story US-046: Field-Level Masking [FEAT-012]
 
@@ -391,9 +431,14 @@ role_claim = "axon_role"
 
 ### Related Artifacts
 - **Parent PRD Section**: Requirements Overview > P1 #6 (Authentication/authorization)
-- **User Stories**: US-043, US-044, US-045
+- **User Stories**: US-043, US-044, US-045 (shipped); US-046, US-047 (scaffolded)
 - **Architecture**: ADR-005 (Tailscale LocalAPI whois)
-- **Implementation**: `crates/axon-server/src/auth/` (planned)
+- **Implementation**:
+  - `crates/axon-server/src/auth.rs` — `AuthMode`, `AuthContext`, `Identity`, `LocalApiWhoisProvider`
+  - `crates/axon-core/src/auth.rs` — `Role`, `CallerIdentity`, `MaskPolicy`, `WritePolicy`, `GrantRegistry`
+  - `crates/axon-server/src/gateway.rs` — `authenticate_http_request` middleware, `/auth/me` endpoint
+  - `crates/axon-server/src/service.rs` — gRPC `authorize` + `auth_to_status`
+  - `crates/axon-server/src/serve.rs` — `auth_context_from_serve_args`, CLI flags
 
 ### Feature Dependencies
 - **Depends On**: FEAT-005

@@ -52,16 +52,22 @@ pub enum Role {
 impl Role {
     /// Parse a role from a Tailscale ACL tag or string name.
     ///
-    /// Accepted inputs:
-    /// - `"tag:axon-admin"` or `"admin"` -> `Admin`
-    /// - `"tag:axon-write"` or `"write"` -> `Write`
-    /// - `"tag:axon-read"` or `"read"` -> `Read`
-    /// - anything else -> `None`
+    /// Accepted inputs (both full `tag:` prefix and bare name):
+    ///
+    /// | Input | Role |
+    /// |-------|------|
+    /// | `"tag:axon-admin"` / `"tag:admin"` / `"admin"` | `Admin` |
+    /// | `"tag:axon-write"` / `"tag:axon-agent"` / `"tag:write"` / `"write"` | `Write` |
+    /// | `"tag:axon-read"` / `"tag:read"` / `"read"` | `Read` |
+    /// | anything else | `None` |
+    ///
+    /// `tag:axon-agent` is an alias for `write` — the conventional tag for
+    /// automated agent workloads that need read/write but not admin access.
     pub fn from_tag(tag: &str) -> Self {
         match tag {
-            "tag:axon-admin" | "admin" => Role::Admin,
-            "tag:axon-write" | "write" => Role::Write,
-            "tag:axon-read" | "read" => Role::Read,
+            "tag:axon-admin" | "tag:admin" | "admin" => Role::Admin,
+            "tag:axon-write" | "tag:axon-agent" | "tag:write" | "write" => Role::Write,
+            "tag:axon-read" | "tag:read" | "read" => Role::Read,
             _ => Role::None,
         }
     }
@@ -328,9 +334,21 @@ mod tests {
 
     #[test]
     fn role_from_tag() {
+        // Primary tags
         assert_eq!(Role::from_tag("tag:axon-admin"), Role::Admin);
         assert_eq!(Role::from_tag("tag:axon-write"), Role::Write);
         assert_eq!(Role::from_tag("tag:axon-read"), Role::Read);
+        // Short-form aliases
+        assert_eq!(Role::from_tag("tag:admin"), Role::Admin);
+        assert_eq!(Role::from_tag("tag:write"), Role::Write);
+        assert_eq!(Role::from_tag("tag:read"), Role::Read);
+        // Bare names (no tag: prefix)
+        assert_eq!(Role::from_tag("admin"), Role::Admin);
+        assert_eq!(Role::from_tag("write"), Role::Write);
+        assert_eq!(Role::from_tag("read"), Role::Read);
+        // Agent alias
+        assert_eq!(Role::from_tag("tag:axon-agent"), Role::Write);
+        // Unknown
         assert_eq!(Role::from_tag("unknown"), Role::None);
     }
 

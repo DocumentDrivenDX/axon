@@ -50,15 +50,27 @@ Start the HTTP (and optionally gRPC) server.
 axon serve [flags]
 ```
 
+**Storage**
+
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--http-port <n>` | `4170` | HTTP listener port |
 | `--grpc-port <n>` | disabled | Enable gRPC on this port |
 | `--storage <backend>` | `sqlite` | Storage backend: `sqlite`, `postgres`, `memory` |
-| `--sqlite-path <path>` | XDG data dir | SQLite database file path |
-| `--no-auth` | — | Disable authentication (dev mode) |
-| `--control-plane-path <path>` | XDG data dir | Control-plane SQLite path |
+| `--sqlite-path <path>` | `axon-server.db` | SQLite database file path |
+| `--postgres-dsn <dsn>` | — | PostgreSQL DSN (required when `--storage=postgres`) |
+| `--control-plane-path <path>` | `axon-control-plane.db` | Control-plane SQLite path |
 | `--ui-dir <path>` | — | Serve admin UI static files from this directory |
+
+**Authentication** (see [Authentication & Authorization](/docs/concepts/authentication) for details)
+
+| Flag | Env var | Default | Description |
+|------|---------|---------|-------------|
+| `--no-auth` | `AXON_NO_AUTH` | `false` | Disable auth — all requests are anonymous admin (dev only) |
+| `--tailscale-socket <path>` | `AXON_TAILSCALE_SOCKET` | `/run/tailscale/tailscaled.sock` | Path to Tailscale daemon socket |
+| `--tailscale-default-role <role>` | `AXON_TAILSCALE_DEFAULT_ROLE` | `read` | Role for nodes without a recognized ACL tag |
+| `--guest-role <role>` | `AXON_GUEST_ROLE` | *(disabled)* | Enable guest mode with this role (mutually exclusive with `--no-auth`) |
+| `--auth-cache-ttl-secs <n>` | `AXON_AUTH_CACHE_TTL_SECS` | `60` | Identity cache TTL in seconds |
 
 ```bash
 # In-memory, no auth (development)
@@ -67,8 +79,14 @@ axon serve --no-auth --storage memory
 # SQLite, no auth
 axon serve --no-auth --sqlite-path ./axon.db
 
-# Production with gRPC
-axon serve --storage postgres --grpc-port 4171
+# Guest mode — unauthenticated callers get read-only access
+axon serve --guest-role read
+
+# Production (Tailscale default) with gRPC
+axon serve --storage postgres --postgres-dsn "$DSN" --grpc-port 4171
+
+# Custom Tailscale socket path
+axon serve --tailscale-socket /var/run/tailscale/tailscaled.sock
 ```
 
 ---

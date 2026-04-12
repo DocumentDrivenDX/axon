@@ -10,7 +10,8 @@ dun:
 
 | Date | Status | Deciders | Related | Confidence |
 |------|--------|----------|---------|------------|
-| 2026-04-05 | Proposed | Erik LaBianca | FEAT-005, PRD §P1 Auth | Medium |
+| 2026-04-05 | Accepted | Erik LaBianca | FEAT-005, PRD §P1 Auth | High |
+| 2026-04-12 | *Implemented* | — | FEAT-012 V1 shipped | — |
 
 ## Context
 
@@ -115,14 +116,18 @@ reads peer address from connection info.
 
 **Phase 2: Per-collection authorization**
 
-A simple permission model based on Tailscale ACL tags:
+A simple permission model based on Tailscale ACL tags.  Each of the primary
+tags has accepted aliases (short form and bare name):
 
-| Tag | Permissions |
-|-----|-------------|
-| `tag:axon-admin` | All operations on all collections |
-| `tag:axon-write` | Create, update, delete entities and links |
-| `tag:axon-read` | Read entities, query, traverse, audit log |
-| `tag:axon-agent` | Read + write (alias for agent workloads) |
+| Primary Tag | Aliases | Permissions |
+|-------------|---------|-------------|
+| `tag:axon-admin` | `tag:admin` | All operations on all collections |
+| `tag:axon-write` | `tag:write`, `tag:axon-agent` | Create, update, delete entities and links |
+| `tag:axon-read` | `tag:read` | Read entities, query, traverse, audit log |
+
+`tag:axon-agent` is the conventional tag for automated agent workloads that
+need read/write access.  When multiple role-granting tags are present, the
+highest-privilege role wins.
 
 Permissions are checked after identity extraction, before handler execution.
 
@@ -136,12 +141,17 @@ Tailscale tags.
 
 | Crate | Version | What it does | Verdict |
 |-------|---------|-------------|---------|
-| `tailscale-localapi` | 0.5.0 | Calls tailscaled LocalAPI (status, whois, cert) via Unix socket | **Use this** — provides whois for identity |
+| `tailscale-localapi` | 0.5.0 | Calls tailscaled LocalAPI (status, whois, cert) via Unix socket | Evaluated — not used (see below) |
 | `tsnet` | 0.1.0 | Embeds Tailscale dataplane via libtailscale (cgo) | Not ready — stale, requires Go toolchain |
 | `tailscale-client` | 0.1.5 | Tailscale control plane API (manage devices, keys) | Not relevant for request-time auth |
 
-**Recommendation**: Use `tailscale-localapi` for whois calls. If its API is
-too limited, make direct HTTP calls to the Unix socket with hyper/reqwest.
+**Implementation choice**: Direct HTTP/1.1 over the Tailscale Unix socket via
+`hyper` + `tokio::net::UnixStream`, with manual serde deserialization of the
+JSON response.  `tailscale-localapi` was evaluated but not adopted — the crate
+is small and under-maintained, and the whois API surface needed is only two
+endpoints (`/localapi/v0/status` for startup verification and
+`/localapi/v0/whois?addr=` for per-request identity).  Owning the HTTP
+client code keeps the dependency surface minimal and the behavior explicit.
 
 ## Alternatives Considered
 
@@ -208,12 +218,25 @@ tailscaled is not co-located with the server. More complex to set up.
 
 ## Operational Notes
 
-- **Development mode**: When `--no-auth` flag is passed (or `AXON_NO_AUTH=1`),
-  skip auth entirely. All requests get actor `"anonymous"`.
-- **Server startup**: Verify tailscaled socket is reachable; warn if not.
-- **Caching**: Cache whois results per peer IP with a 60s TTL to avoid
-  per-request socket calls. Tailscale node identity doesn't change frequently.
-- **Embedded mode**: No auth needed — the CLI runs in-process.
+- **Development mode**: `--no-auth` (or `AXON_NO_AUTH=1`) skips auth entirely.
+  All requests get `actor="anonymous"`, `role=Admin`.
+- **Guest mode**: `--guest-role <role>` (or `AXON_GUEST_ROLE=read`) allows
+  unauthenticated access with a fixed role. Useful when Tailscale is not
+  available but unrestricted open access is undesirable.
+- **Server startup**: `AuthContext::verify()` contacts the tailscaled socket
+  before accepting connections. If the socket is unreachable the server exits
+  with an error rather than starting in a broken state.
+- **Caching**: Whois results are cached per peer IP with a configurable TTL
+  (`--auth-cache-ttl-secs`, default 60 s). The cache is an in-memory
+  `HashMap<IpAddr, CachedIdentity>` behind a `RwLock`; reads are lock-free
+  on cache hit. Cache is never actively evicted — stale entries are ignored
+  on next access if their TTL has elapsed.
+- **Actor name**: `Identity.actor` is the Tailscale `ComputedName` field
+  (short node name), falling back to `Hostinfo.Hostname`, then the first
+  label of the FQDN. This is what appears in audit log entries.
+- **Embedded mode**: The CLI runs in-process; no network boundary, so no auth.
+- **Both transports**: HTTP uses axum middleware (`authenticate_http_request`);
+  gRPC uses `AxonServiceImpl::authorize` — both delegate to `AuthContext::resolve_peer`.
 
 ## Validation
 
