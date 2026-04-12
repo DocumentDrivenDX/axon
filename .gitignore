@@ -2,3 +2,9 @@
 Cargo.lock
 .ddx/agent-logs/
 .helix-logs/
+ui/build/
+ui/.svelte-kit/
+ui/node_modules/
+ui/playwright-report/
+ui/test-results/
+*.db
