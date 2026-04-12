@@ -5,20 +5,50 @@ import { expect, test } from '@playwright/test';
  *
  * Uses collection name "e2e-tasks" to avoid interference with other test files.
  * Memory storage resets between server restarts but NOT between tests in a run,
- * so the collection created in step 1 is visible in later tests.
+ * so the collection created in beforeAll is visible in later tests.
+ *
+ * Note: test.describe.configure({ mode: 'serial' }) is set because the workflow
+ * tests are ordered by design and share server-side state.
  */
 
 const COLLECTION_NAME = 'e2e-tasks';
 
 test.describe('Collections workflow', () => {
+	test.describe.configure({ mode: 'serial' });
+
+	test.beforeAll(async ({ request }) => {
+		// Ensure the collection exists before the "check presence" tests run.
+		// Using the API directly avoids a race condition with the UI creation test
+		// when tests are distributed across workers.
+		const response = await request.post(
+			`http://localhost:4170/collections/${COLLECTION_NAME}`,
+			{
+				data: {
+					schema: {
+						description: null,
+						version: 1,
+						entity_schema: { type: 'object', properties: {} },
+						link_types: {},
+					},
+					actor: 'e2e-test',
+				},
+			},
+		);
+		// 201 Created or 409 Conflict (already exists) are both acceptable.
+		expect([201, 409]).toContain(response.status());
+	});
+
 	test('create collection via schemas page', async ({ page }) => {
+		// Use a unique name so this test always creates a brand-new collection,
+		// regardless of prior runs (COLLECTION_NAME may already exist from beforeAll).
+		const uniqueName = `e2e-create-${Date.now()}`;
 		await page.goto('http://localhost:4170/ui/schemas');
 		await page.waitForLoadState('networkidle');
 
 		// Fill in the collection name in the Create Collection form.
 		const nameInput = page.locator('input[placeholder="tasks"]');
 		await expect(nameInput).toBeVisible({ timeout: 15000 });
-		await nameInput.fill(COLLECTION_NAME);
+		await nameInput.fill(uniqueName);
 
 		// Click the primary Create Collection button.
 		const createButton = page

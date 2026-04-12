@@ -15,6 +15,7 @@ const homeHref = `${base}/`;
 const collectionsHref = `${base}/collections`;
 const schemasHref = `${base}/schemas`;
 const auditHref = `${base}/audit`;
+const databasesHref = `${base}/databases`;
 
 const isGuest = $derived(
 	authState.status === 'authenticated' && authState.identity.actor === 'guest',
@@ -84,6 +85,7 @@ onMount(() => {
 			<a class="button-link" href={collectionsHref}>Collections</a>
 			<a class="button-link" href={schemasHref}>Schemas</a>
 			<a class="button-link" href={auditHref}>Audit Log</a>
+			<a class="button-link" href={databasesHref}>Databases</a>
 		</nav>
 
 		<section class="health panel">

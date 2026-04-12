@@ -3,7 +3,8 @@ import { expect, test } from './fixtures';
 test.describe('Collections browser', () => {
 	test('page heading is visible', async ({ page }) => {
 		await page.goto('/ui/collections');
-		await expect(page.getByRole('heading', { name: 'Collections' })).toBeVisible();
+		// exact: true to avoid matching the "Registered Collections" h2 on the same page.
+		await expect(page.getByRole('heading', { name: 'Collections', exact: true })).toBeVisible();
 	});
 
 	test('shows loading state initially', async ({ page }) => {
@@ -13,7 +14,7 @@ test.describe('Collections browser', () => {
 		// It may or may not still be visible depending on API speed, so just
 		// verify the page loaded without error.
 		await expect(
-			page.getByRole('heading', { name: 'Collections' }),
+			page.getByRole('heading', { name: 'Collections', exact: true }),
 		).toBeVisible();
 		// The loading message should eventually disappear.
 		await expect(loadingMessage).not.toBeVisible({ timeout: 10_000 });

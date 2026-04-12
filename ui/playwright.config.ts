@@ -5,8 +5,10 @@ import { defineConfig, devices } from '@playwright/test';
  *
  * Run with: bunx playwright test
  *
- * Requires the Axon server to be running on localhost:3000 so the Vite dev
- * server proxy can forward API requests.
+ * Requires axon-server to be running on localhost:4170 with the built UI:
+ *   axon-server --no-auth --storage memory --ui-dir ui/build --http-port 4170
+ *
+ * All test files use absolute URLs to http://localhost:4170 directly.
  */
 export default defineConfig({
 	testDir: './tests',
@@ -17,7 +19,7 @@ export default defineConfig({
 	reporter: 'html',
 
 	use: {
-		baseURL: 'http://localhost:5173',
+		baseURL: 'http://localhost:4170',
 		trace: 'on-first-retry',
 		screenshot: 'only-on-failure',
 	},
@@ -28,11 +30,4 @@ export default defineConfig({
 			use: { ...devices['Desktop Chrome'] },
 		},
 	],
-
-	/* Start the SvelteKit dev server before running tests. */
-	webServer: {
-		command: 'bun run dev',
-		url: 'http://localhost:5173',
-		reuseExistingServer: !process.env.CI,
-	},
 });

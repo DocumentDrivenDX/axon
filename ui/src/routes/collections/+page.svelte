@@ -1,10 +1,11 @@
 <script lang="ts">
 import { base } from '$app/paths';
-import { type CollectionSummary, fetchCollections } from '$lib/api';
+import { type CollectionSummary, dropCollection, fetchCollections } from '$lib/api';
 
 let collections = $state<CollectionSummary[]>([]);
 let loading = $state(true);
 let error = $state<string | null>(null);
+let dropping = $state<string | null>(null);
 
 const schemasHref = `${base}/schemas`;
 
@@ -112,6 +113,22 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 									<a class="button-link" href={schemaHref(collection.name)}>
 										Schema
 									</a>
+									{#if dropping === collection.name}
+										<span class="muted" style="font-size:0.85rem">Drop {collection.name}?</span>
+										<button class="danger" onclick={async () => {
+											try {
+												await dropCollection(collection.name);
+												dropping = null;
+												await loadCollections();
+											} catch (e: unknown) {
+												error = e instanceof Error ? e.message : 'Failed to drop collection';
+												dropping = null;
+											}
+										}}>Confirm</button>
+										<button onclick={() => (dropping = null)}>Cancel</button>
+									{:else}
+										<button class="danger" onclick={() => (dropping = collection.name)}>Drop</button>
+									{/if}
 								</div>
 							</td>
 						</tr>
@@ -121,3 +138,10 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 		</div>
 	</section>
 {/if}
+
+<style>
+	button.danger {
+		border-color: var(--danger, #fb7185);
+		color: var(--danger, #fb7185);
+	}
+</style>

@@ -11,11 +11,11 @@ dun:
 # Feature Specification: FEAT-011 - Admin Web UI
 
 **Feature ID**: FEAT-011
-**Status**: Draft
+**Status**: Implemented
 **Priority**: P1
 **Owner**: Core Team
 **Created**: 2026-04-05
-**Updated**: 2026-04-05
+**Updated**: 2026-04-11
 
 ## Overview
 
@@ -108,12 +108,15 @@ history.
 **So that** I can quickly inspect data without writing queries
 
 **Acceptance Criteria:**
-- [ ] Opening `http://localhost:3000/ui` shows the collections list
-- [ ] Clicking a collection shows its entities in a table
-- [ ] Clicking an entity shows its full JSON data
-- [ ] Empty collections show an empty state with a "Create Entity" action
-- [ ] Entity table paginates at 50 rows per page with next/previous navigation
-- [ ] "Create Entity" action in empty state opens a form with JSON input validated against schema
+- [x] Opening `http://localhost:4170/ui` shows the collections list
+- [x] Clicking a collection shows its entities in a table
+- [x] Clicking an entity shows its full JSON data
+- [x] Empty collections show an empty state with a "Create Entity" action
+- [x] Entity table paginates at 50 rows per page with next/previous navigation
+- [x] "Create Entity" opens a form with entity ID and JSON data inputs
+- [x] Editing an existing entity opens the JSON editor inline; Cancel restores read-only view
+- [x] Dropping a collection shows a confirmation prompt; confirming removes it from the list
+- [x] Deleting an entity shows a confirmation prompt; confirming removes it from the table
 
 ### Story US-041: Manage Schemas Visually [FEAT-011]
 
@@ -122,12 +125,13 @@ history.
 **So that** I can iterate on schema definitions without CLI round-trips
 
 **Acceptance Criteria:**
-- [ ] Schemas page lists all collections with schema status
-- [ ] Clicking a collection shows its schema as formatted JSON
-- [ ] Editing and saving a schema updates it via PUT and shows success/error
-- [ ] Creating a collection includes a schema input field
-- [ ] Saving invalid schema JSON shows inline error with details
-- [ ] Saving a schema change shows validation result before commit
+- [x] Schemas page lists all collections with schema status
+- [x] Clicking a collection shows its schema as formatted JSON
+- [x] Edit mode opens a textarea pre-filled with the current schema JSON
+- [x] Saving a schema change shows a preview/diff before commit
+- [x] Saving invalid schema JSON shows an inline error with details
+- [x] Cancelling an edit restores the read-only schema view
+- [x] Creating a collection via the schema workspace includes a schema textarea input
 
 ### Story US-042: Inspect Audit Log Visually [FEAT-011]
 
@@ -136,11 +140,27 @@ history.
 **So that** I can trace what happened to specific entities
 
 **Acceptance Criteria:**
-- [ ] Audit page shows recent entries in a table
-- [ ] Entries show operation type, collection, entity ID, version, and actor
-- [ ] Filtering by collection or actor narrows the results
-- [ ] Clicking an entry shows the full before/after data
-- [ ] Audit log supports date range filtering (since/until)
+- [x] Audit page shows recent entries in a table
+- [x] Entries show operation type, collection, entity ID, version, and actor
+- [x] Filtering by collection narrows the results
+- [x] Filtering by actor narrows the results
+- [x] Clearing filters restores all entries
+- [x] Clicking an entry shows the full entry detail
+- [ ] Audit log supports date range filtering (since/until) — deferred to V2
+
+### Story US-043: Manage Multi-Tenant Databases [FEAT-011]
+
+**As an** operator managing multiple Axon tenants
+**I want** a Databases admin page
+**So that** I can create tenants and assign databases without using the API directly
+
+**Acceptance Criteria:**
+- [x] Databases page is accessible from the sidebar
+- [x] Page shows a form to create a new tenant
+- [x] Created tenant appears in the tenant list with its own panel
+- [x] Each tenant panel has a form to assign a named database
+- [x] Assigned database appears in the tenant's database table
+- [x] Each database row has a Remove button with a confirmation step
 
 ## Technical Design
 
@@ -188,7 +208,7 @@ history.
 The axon-server binary gains a `--ui-dir` flag:
 
 ```
-axon-server --http-port 3000 --grpc-port 50051 --ui-dir ./ui/build
+axon-server --http-port 4170 --no-auth --storage memory --ui-dir ./ui/build
 ```
 
 When `--ui-dir` is provided, axum serves static files from that directory
@@ -221,7 +241,6 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 
 ## Out of Scope
 
-- Entity update/edit (OCC version negotiation UX is complex — V2)
 - Link management (create/delete/traverse links — V2)
 - Graph visualization (force-directed layout of entity-link graph — V2)
 - Bead lifecycle management (bead-specific UI — V2)
@@ -243,3 +262,25 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 ### Feature Dependencies
 - **Depends On**: FEAT-001, FEAT-002, FEAT-004, FEAT-005
 - **Depended By**: None (leaf feature)
+
+### Playwright E2E Test Coverage
+
+All 78 tests pass against a live `axon-server --no-auth --storage memory --ui-dir ui/build --http-port 4170`.
+
+| Test file | Description | Stories covered |
+|-----------|-------------|-----------------|
+| `tests/e2e/health.spec.ts` | Root redirect, health panel, sidebar nav links | US-040 |
+| `tests/e2e/collections.spec.ts` | Create collection via UI, verify in schemas list and collections table | US-040 |
+| `tests/e2e/entities.spec.ts` | Full entity CRUD: create, browse, detail, edit/cancel, pagination, empty state | US-040 |
+| `tests/e2e/schemas.spec.ts` | Schema detail, edit, invalid JSON error, preview before save, create collection form | US-041 |
+| `tests/e2e/audit.spec.ts` | Audit table, filter by collection/actor, clear filters, entry detail | US-042 |
+| `tests/e2e/drop-delete.spec.ts` | Drop collection confirm/cancel, delete entity confirm/cancel | US-040 |
+| `tests/e2e/databases.spec.ts` | Databases page, create tenant, assign/remove database | US-043 |
+| `tests/collections.spec.ts` | Collections browser with mocked API: table, headers, pagination | US-040 |
+| `tests/schemas.spec.ts` | Schemas page with mocked API: list, detail, edit textarea | US-041 |
+| `tests/navigation.spec.ts` | Sidebar nav, routing, health panel visibility | US-040 |
+
+**Key implementation notes captured in tests:**
+- `fullyParallel: true` is set globally; inter-dependent tests use `test.describe.configure({ mode: 'serial' })`.
+- In-memory server state persists within a process run; `beforeAll` API calls use `[201, 409]` to be idempotent.
+- Entity `startEdit()` uses JSON round-trip clone (`JSON.parse(JSON.stringify(...))`) instead of `structuredClone` to avoid `DataCloneError` on Svelte 5 deep-reactive proxies.

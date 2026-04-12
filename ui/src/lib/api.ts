@@ -302,3 +302,65 @@ export type AuthState =
 export async function fetchAuthMe(): Promise<AuthIdentity> {
 	return request<AuthIdentity>('/auth/me');
 }
+
+export async function dropCollection(name: string): Promise<void> {
+	await request<void>(`/collections/${encodeURIComponent(name)}`, {
+		method: 'DELETE',
+		body: JSON.stringify({ actor: 'ui' }),
+	});
+}
+
+export async function deleteEntity(collection: string, id: string): Promise<void> {
+	await request<void>(`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`, {
+		method: 'DELETE',
+		body: JSON.stringify({ actor: 'ui' }),
+	});
+}
+
+// ── Tenant / control-plane API ───────────────────────────────────────────────
+
+export type Tenant = {
+	id: string;
+	name: string;
+	created_at: string;
+};
+
+export type TenantDatabase = {
+	tenant_id: string;
+	db_name: string;
+	node_id: string | null;
+	created_at: string;
+};
+
+export async function fetchTenants(): Promise<Tenant[]> {
+	const response = await request<{ tenants: Tenant[] }>('/control/tenants');
+	return response.tenants;
+}
+
+export async function createTenant(name: string): Promise<Tenant> {
+	return request<Tenant>('/control/tenants', {
+		method: 'POST',
+		body: JSON.stringify({ name }),
+	});
+}
+
+export async function fetchTenantDatabases(tenantId: string): Promise<TenantDatabase[]> {
+	const response = await request<{ databases: TenantDatabase[] }>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/databases`,
+	);
+	return response.databases;
+}
+
+export async function assignDatabase(tenantId: string, dbName: string): Promise<TenantDatabase> {
+	return request<TenantDatabase>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/databases`,
+		{ method: 'POST', body: JSON.stringify({ db_name: dbName }) },
+	);
+}
+
+export async function removeDatabase(tenantId: string, dbName: string): Promise<void> {
+	await request<void>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/databases/${encodeURIComponent(dbName)}`,
+		{ method: 'DELETE' },
+	);
+}

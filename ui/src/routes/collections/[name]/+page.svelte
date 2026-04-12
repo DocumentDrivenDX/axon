@@ -4,6 +4,7 @@ import {
 	type CollectionDetail,
 	type EntityRecord,
 	createEntity,
+	deleteEntity,
 	fetchCollection,
 	fetchEntities,
 	fetchEntity,
@@ -41,6 +42,9 @@ let editData = $state<Record<string, unknown> | null>(null);
 let saveError = $state<string | null>(null);
 let saveMessage = $state<string | null>(null);
 let saving = $state(false);
+
+let confirmDelete = $state(false);
+let deleteMessage = $state<string | null>(null);
 
 async function loadCollection(targetCollection: string, afterId: string | null) {
 	loading = true;
@@ -81,7 +85,10 @@ async function openEntity(id: string) {
 
 function startEdit() {
 	if (!selectedEntity) return;
-	editData = structuredClone(selectedEntity.data);
+	// Use JSON round-trip instead of structuredClone: Svelte 5 deep-reactive proxies can
+	// cause structuredClone to throw (DataCloneError), which silently aborts the function
+	// before editMode is set. Entity data is always plain JSON, so this is safe.
+	editData = JSON.parse(JSON.stringify(selectedEntity.data)) as Record<string, unknown>;
 	editMode = true;
 	saveError = null;
 	saveMessage = null;
@@ -240,6 +247,10 @@ afterNavigate(() => {
 	<p class="message success">{createMessage}</p>
 {/if}
 
+{#if deleteMessage}
+	<p class="message success">{deleteMessage}</p>
+{/if}
+
 {#if createOpen || entities.length === 0}
 	<section class="panel">
 		<div class="panel-header">
@@ -329,6 +340,26 @@ afterNavigate(() => {
 						</button>
 					{:else}
 						<button onclick={startEdit}>Edit</button>
+						{#if confirmDelete}
+							<span class="muted" style="font-size:0.85rem">Delete?</span>
+							<button class="danger" onclick={async () => {
+								if (selectedEntity && collectionName) {
+									try {
+										await deleteEntity(collectionName, selectedEntity.id);
+										deleteMessage = `Deleted ${selectedEntity.id}.`;
+										confirmDelete = false;
+										selectedEntity = null;
+										await loadCollection(collectionName, null);
+									} catch (e: unknown) {
+										error = e instanceof Error ? e.message : 'Failed to delete';
+										confirmDelete = false;
+									}
+								}
+							}}>Confirm</button>
+							<button onclick={() => (confirmDelete = false)}>Cancel</button>
+						{:else}
+							<button class="danger" onclick={() => (confirmDelete = true)}>Delete</button>
+						{/if}
 					{/if}
 				</div>
 			{/if}
@@ -390,6 +421,11 @@ afterNavigate(() => {
 </div>
 
 <style>
+	button.danger {
+		border-color: var(--danger, #fb7185);
+		color: var(--danger, #fb7185);
+	}
+
 	tr {
 		cursor: pointer;
 		transition: background 80ms ease;
