@@ -23,6 +23,9 @@ pub enum StorageBackend {
     Postgres,
 }
 
+/// CLI-compatible role selection for `--tailscale-default-role` and `--guest-role`.
+///
+/// Converted to [`Role`] via `From<DefaultRoleArg>`.
 #[derive(Clone, Debug, clap::ValueEnum)]
 pub enum DefaultRoleArg {
     Admin,
@@ -135,7 +138,18 @@ pub fn init_tracing(mcp_stdio: bool) {
     let _ = result;
 }
 
-/// Resolve the [`AuthContext`] from [`ServeArgs`].
+/// Build an [`AuthContext`] from the parsed CLI / env flags.
+///
+/// Priority: `--no-auth` > `--guest-role` > Tailscale (default).
+///
+/// | Condition | Mode | Notes |
+/// |-----------|------|-------|
+/// | `--no-auth` | `NoAuth` | All requests get `actor=anonymous, role=Admin`. |
+/// | `--guest-role <role>` | `Guest` | Tailscale daemon not required. |
+/// | *(default)* | `Tailscale` | Contacts `--tailscale-socket` on every cache miss. |
+///
+/// After construction, call [`AuthContext::verify`] (already done in [`serve`])
+/// to fail fast if the daemon is unreachable.
 pub fn auth_context_from_serve_args(args: &ServeArgs) -> AuthContext {
     if args.no_auth {
         AuthContext::no_auth()

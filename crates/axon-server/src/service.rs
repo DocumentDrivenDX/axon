@@ -108,6 +108,13 @@ fn entity_to_proto(e: axon_core::types::Entity) -> EntityProto {
     }
 }
 
+/// Convert an [`AuthError`] into a gRPC [`Status`].
+///
+/// | `AuthError` variant | gRPC status |
+/// |---------------------|-------------|
+/// | `MissingPeerAddress` / `Unauthorized` | `UNAUTHENTICATED` |
+/// | `Forbidden` | `PERMISSION_DENIED` |
+/// | `ProviderUnavailable` | `UNAVAILABLE` |
 fn auth_to_status(error: AuthError) -> Status {
     match error {
         AuthError::MissingPeerAddress | AuthError::Unauthorized(_) => {

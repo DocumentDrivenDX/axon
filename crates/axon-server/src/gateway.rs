@@ -142,6 +142,13 @@ fn axon_error_response(err: AxonError) -> Response {
     }
 }
 
+/// Convert an [`AuthError`] into an HTTP error response.
+///
+/// | `AuthError` variant | HTTP status | JSON code |
+/// |---------------------|-------------|-----------|
+/// | `MissingPeerAddress` / `Unauthorized` | 401 | `"unauthorized"` |
+/// | `Forbidden` | 403 | `"forbidden"` |
+/// | `ProviderUnavailable` | 503 | `"auth_unavailable"` |
 pub(crate) fn auth_error_response(err: AuthError) -> Response {
     match err {
         AuthError::MissingPeerAddress | AuthError::Unauthorized(_) => (
@@ -177,6 +184,11 @@ fn rate_limit_response(limited: &RateLimited) -> Response {
         .into_response()
 }
 
+/// Extract the connecting peer's socket address from an axum request.
+///
+/// Checks both [`axum::extract::ConnectInfo`] (real TCP connections) and
+/// [`axum::extract::connect_info::MockConnectInfo`] (integration tests) so
+/// auth middleware works in both production and test contexts.
 fn request_peer_address(request: &axum::extract::Request) -> Option<SocketAddr> {
     request
         .extensions()
@@ -274,6 +286,22 @@ fn default_namespace_health<S: StorageAdapter>(
     ))
 }
 
+/// Axum middleware layer that resolves the caller's [`Identity`] and injects
+/// it as a typed request extension.
+///
+/// This middleware runs before every route handler.  It:
+/// 1. Extracts the peer socket address via [`request_peer_address`].
+/// 2. Calls [`AuthContext::resolve_peer`] (cache-first, then Tailscale whois).
+/// 3. Inserts the resolved [`Identity`] into `request.extensions`.
+/// 4. On auth failure, short-circuits with an appropriate HTTP error response
+///    (401, 403, or 503) without reaching the route handler.
+///
+/// Route handlers extract identity with:
+/// ```rust,ignore
+/// async fn my_handler(Extension(identity): Extension<Identity>, ...) { ... }
+/// ```
+/// and then call `identity.require_read()` / `require_write()` / `require_admin()`
+/// to enforce the minimum required role for that operation.
 pub(crate) async fn authenticate_http_request(
     State(auth): State<AuthContext>,
     mut request: axum::extract::Request,

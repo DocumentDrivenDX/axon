@@ -1,8 +1,32 @@
-//! Role-based access control (RBAC) for Axon (US-044, FEAT-012).
+//! Role-based and attribute-based access control for Axon (FEAT-012).
 //!
-//! Four built-in roles control access to Axon operations. Roles are derived
-//! from the identity provider (Tailscale ACL tags, OIDC claims, etc.) and
-//! checked at the API handler level before executing each operation.
+//! # Layers
+//!
+//! **Layer 1 — RBAC** ([`Role`], [`CallerIdentity`], [`Operation`])
+//!
+//! Four built-in roles (`Admin > Write > Read > None`) control access to
+//! Axon operations.  Roles are derived from the identity provider (Tailscale
+//! ACL tags, OIDC claims, etc.) by the server layer and passed into handlers
+//! as a [`CallerIdentity`].  Handlers call [`CallerIdentity::check`] to
+//! enforce the minimum required role.
+//!
+//! **Layer 2 — Field-level masking** ([`MaskPolicy`])
+//!
+//! A `MaskPolicy` hides individual entity fields from callers whose role
+//! falls below a configured minimum.  Applied by [`CallerIdentity::apply_masks`]
+//! before returning entity data to the caller.  Admins always see all fields.
+//!
+//! **Layer 3 — Collection write control** ([`WritePolicy`])
+//!
+//! A `WritePolicy` sets a per-collection minimum write role and marks fields
+//! as immutable after creation.  Checked by the handler before any mutation.
+//!
+//! **Layer 4 — Database-scoped grants** ([`DatabaseGrant`], [`GrantRegistry`])
+//!
+//! Grants scope a role to a specific database (or `"*"` for all databases).
+//! Without a matching grant a caller has `Role::None` on that database.
+//! Admins with a global grant bypass per-database checks.  The grant registry
+//! is stored in `__axon_policies__` and enforced at the routing layer.
 
 use serde::{Deserialize, Serialize};
 

@@ -163,9 +163,22 @@ struct CachedIdentity {
     expires_at: Instant,
 }
 
+/// Abstraction over the Tailscale LocalAPI, enabling test doubles.
+///
+/// The production implementation ([`LocalApiWhoisProvider`]) contacts the
+/// real Tailscale daemon over its Unix socket.  Tests use `FakeWhoisProvider`
+/// to inject pre-canned responses without needing a running Tailscale daemon.
 pub(crate) trait TailscaleWhoisProvider: Send + Sync {
+    /// Verify that the provider is reachable.
+    ///
+    /// Called once at server startup via [`AuthContext::verify`] to surface
+    /// misconfigurations early (e.g., wrong socket path, daemon not running).
     fn verify(&self) -> BoxFuture<'_, Result<(), AuthError>>;
 
+    /// Resolve the identity of the given peer address.
+    ///
+    /// Returns [`AuthError::Unauthorized`] for non-tailnet addresses and
+    /// [`AuthError::ProviderUnavailable`] if the daemon cannot be reached.
     fn whois(
         &self,
         address: SocketAddr,
@@ -225,6 +238,12 @@ impl From<TsWhoisResponse> for TailscaleWhoisResponse {
 }
 
 // ── Direct Unix-socket HTTP client for the Tailscale LocalAPI ────────
+//
+// Tailscale does not bind a TCP port for its LocalAPI — it only listens on
+// a Unix domain socket.  This provider opens a new connection for every
+// request (no connection pooling) because whois calls are rare and caching
+// makes per-request cost negligible.  Each call issues one HTTP/1.1 GET
+// and reads the full response body before closing the socket.
 
 #[derive(Clone)]
 struct LocalApiWhoisProvider {
@@ -322,6 +341,31 @@ impl TailscaleWhoisProvider for LocalApiWhoisProvider {
 }
 
 /// Request authentication state shared by the HTTP and gRPC frontends.
+///
+/// `AuthContext` is cheaply `Clone`d (it wraps `Arc` internally) and intended
+/// to be inserted as Axum router state and tonic service state.
+///
+/// Resolved identities are cached by peer IP for [`cache_ttl`] to avoid a
+/// Unix socket round-trip on every request.  A cache hit requires only an
+/// `RwLock` read — no I/O.  The cache is never actively evicted; stale entries
+/// are ignored on the next lookup if their TTL has expired.
+///
+/// # Configuration examples
+///
+/// ```rust,ignore
+/// // Local development — no auth required
+/// let auth = AuthContext::no_auth();
+///
+/// // Tailscale (production default)
+/// let auth = AuthContext::tailscale(
+///     Role::Read,                                // default role for untagged nodes
+///     "/run/tailscale/tailscaled.sock",
+///     Duration::from_secs(60),                   // identity cache TTL
+/// );
+///
+/// // Guest mode — unauthenticated callers get read access
+/// let auth = AuthContext::guest(Role::Read);
+/// ```
 #[derive(Clone)]
 pub struct AuthContext {
     mode: AuthMode,
@@ -373,6 +417,13 @@ impl AuthContext {
         &self.mode
     }
 
+    /// Verify that the auth provider is reachable.
+    ///
+    /// Called once at server startup before accepting connections.  In
+    /// `NoAuth` and `Guest` modes this is a no-op.  In `Tailscale` mode it
+    /// issues a test request to the Tailscale daemon so a misconfigured
+    /// socket path or a stopped daemon surfaces immediately at startup rather
+    /// than on the first real request.
     pub async fn verify(&self) -> Result<(), AuthError> {
         match &self.provider {
             Some(provider) => provider.verify().await,
@@ -493,6 +544,10 @@ pub fn identity_from_tailscale(whois: &TailscaleWhoisResponse, default_role: &Ro
     }
 }
 
+/// Pick the most human-readable name for a Tailscale node.
+///
+/// Preference order: `ComputedName` → `Hostinfo.Hostname` →
+/// `ComputedNameWithHost` → first label of the FQDN `Name`.
 fn preferred_node_name(node: &TsNode) -> String {
     if !node.computed_name.is_empty() {
         return node.computed_name.clone();
