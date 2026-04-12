@@ -20,5 +20,7 @@ pub use adapter::{
     OrderedFloat, StorageAdapter,
 };
 pub use memory::MemoryStorageAdapter;
-pub use postgres::PostgresStorageAdapter;
+pub use postgres::{
+    deprovision_postgres_database, provision_postgres_database, tenant_dsn, PostgresStorageAdapter,
+};
 pub use sqlite::SqliteStorageAdapter;

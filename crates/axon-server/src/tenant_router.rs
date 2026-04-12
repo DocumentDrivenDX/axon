@@ -1,12 +1,12 @@
-//! Per-tenant database isolation via physical SQLite files.
+//! Per-tenant database isolation via physical SQLite files or PostgreSQL databases.
 //!
 //! `TenantRouter` maps database (tenant) names to separate `AxonHandler`
-//! instances, each backed by its own SQLite file. The "default" database
-//! always maps to the handler supplied at construction time.
+//! instances, each backed by its own SQLite file (SQLite mode) or its own
+//! PostgreSQL database (Postgres mode). The "default" database always maps to
+//! the handler supplied at construction time.
 //!
-//! **V1 scope:** Only SQLite is supported. PostgreSQL tenant routing is
-//! deferred. The router is not yet wired into per-request middleware —
-//! that is a follow-up task.
+//! When constructed via [`TenantRouter::single`], ALL database names resolve
+//! to the default handler (no filesystem access, no separate tenants).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -15,152 +15,358 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 use axon_api::handler::AxonHandler;
-use axon_storage::SqliteStorageAdapter;
+use axon_storage::{PostgresStorageAdapter, SqliteStorageAdapter};
 
 /// A shared, async-safe handle to an `AxonHandler<SqliteStorageAdapter>`.
 pub type SharedSqliteHandler = Arc<Mutex<AxonHandler<SqliteStorageAdapter>>>;
 
+/// A shared, async-safe handle to an `AxonHandler<PostgresStorageAdapter>`.
+pub type SharedPgHandler = Arc<Mutex<AxonHandler<PostgresStorageAdapter>>>;
+
+/// Backend-specific state for the router.
+enum RouterBackend {
+    /// SQLite mode: tenant databases are separate files in `data_dir`.
+    Sqlite {
+        data_dir: PathBuf,
+        tenants: RwLock<HashMap<String, SharedSqliteHandler>>,
+        default_handler: SharedSqliteHandler,
+        single_mode: bool,
+    },
+    /// PostgreSQL mode: tenant databases are separate PG databases.
+    Postgres {
+        superadmin_dsn: String,
+        tenants: RwLock<HashMap<String, SharedPgHandler>>,
+        default_handler: SharedPgHandler,
+    },
+}
+
 /// Routes tenant database names to isolated `AxonHandler` instances.
 ///
-/// Each tenant gets its own SQLite file at `{data_dir}/tenants/{db_name}.db`.
-/// The "default" name always returns the handler provided at construction.
+/// Supports two backends:
+/// - **SQLite** (default): each tenant gets its own `.db` file under `data_dir`.
+/// - **PostgreSQL**: each tenant gets its own `axon_{name}` PG database;
+///   a superadmin DSN is used to provision and deprovision databases.
 ///
 /// When constructed via [`TenantRouter::single`], ALL database names resolve
-/// to the default handler (no filesystem access, no separate tenants).
+/// to the default SQLite handler (no filesystem access, no separate tenants).
 pub struct TenantRouter {
-    /// Root directory for tenant database files. May be empty when constructed
-    /// via [`TenantRouter::single`] (test-only, no filesystem access).
-    data_dir: PathBuf,
-    /// Cached handlers keyed by database name (excludes "default").
-    tenants: RwLock<HashMap<String, SharedSqliteHandler>>,
-    /// The handler returned for the "default" database.
-    default_handler: SharedSqliteHandler,
-    /// When true, all database names resolve to the default handler.
-    single_mode: bool,
+    backend: RouterBackend,
 }
 
 impl TenantRouter {
-    /// Create a new router that stores tenant databases under `data_dir`.
+    /// Create a new SQLite router that stores tenant databases under `data_dir`.
     pub fn new(data_dir: PathBuf, default_handler: SharedSqliteHandler) -> Self {
         Self {
-            data_dir,
-            tenants: RwLock::new(HashMap::new()),
-            default_handler,
-            single_mode: false,
+            backend: RouterBackend::Sqlite {
+                data_dir,
+                tenants: RwLock::new(HashMap::new()),
+                default_handler,
+                single_mode: false,
+            },
         }
     }
 
-    /// Wraps a single handler so that ALL database names resolve to it.
+    /// Create a new PostgreSQL router.
+    ///
+    /// `superadmin_dsn` must be a connection string for a superuser account
+    /// that can execute `CREATE DATABASE` / `DROP DATABASE`.  The
+    /// `default_handler` is pre-connected to the master database
+    /// (`axon_master`) and is returned for the `"default"` database name.
+    pub fn new_postgres(superadmin_dsn: String, default_handler: SharedPgHandler) -> Self {
+        Self {
+            backend: RouterBackend::Postgres {
+                superadmin_dsn,
+                tenants: RwLock::new(HashMap::new()),
+                default_handler,
+            },
+        }
+    }
+
+    /// Wraps a single SQLite handler so that ALL database names resolve to it.
     ///
     /// This is the constructor for tests and single-database deployments
     /// where multi-tenant isolation is not needed.  No filesystem access
     /// occurs for non-default database names.
     pub fn single(handler: SharedSqliteHandler) -> Self {
         Self {
-            data_dir: PathBuf::new(),
-            tenants: RwLock::new(HashMap::new()),
-            default_handler: handler,
-            single_mode: true,
+            backend: RouterBackend::Sqlite {
+                data_dir: PathBuf::new(),
+                tenants: RwLock::new(HashMap::new()),
+                default_handler: handler,
+                single_mode: true,
+            },
         }
     }
 
-    /// Return the handler for the default database.
-    pub fn default_handler(&self) -> &SharedSqliteHandler {
-        &self.default_handler
+    /// Return the handler for the default database (SQLite mode only).
+    pub fn default_handler(&self) -> Option<&SharedSqliteHandler> {
+        match &self.backend {
+            RouterBackend::Sqlite {
+                default_handler, ..
+            } => Some(default_handler),
+            RouterBackend::Postgres { .. } => None,
+        }
+    }
+
+    /// Return the default SQLite handler, panicking if in Postgres mode.
+    ///
+    /// Callers that know they are in SQLite mode (e.g. gRPC initialisation)
+    /// may use this for convenience.
+    pub fn default_sqlite_handler(&self) -> &SharedSqliteHandler {
+        match &self.backend {
+            RouterBackend::Sqlite {
+                default_handler, ..
+            } => default_handler,
+            RouterBackend::Postgres { .. } => {
+                panic!("default_sqlite_handler called on a Postgres TenantRouter")
+            }
+        }
+    }
+
+    /// Return the default Postgres handler (Postgres mode only).
+    pub fn default_postgres_handler(&self) -> Option<&SharedPgHandler> {
+        match &self.backend {
+            RouterBackend::Postgres {
+                default_handler, ..
+            } => Some(default_handler),
+            RouterBackend::Sqlite { .. } => None,
+        }
     }
 
     /// Return the directory where tenant SQLite files are stored.
+    ///
+    /// Returns an empty `PathBuf` in Postgres mode.
     pub fn tenants_dir(&self) -> PathBuf {
-        self.data_dir.join("tenants")
+        match &self.backend {
+            RouterBackend::Sqlite { data_dir, .. } => data_dir.join("tenants"),
+            RouterBackend::Postgres { .. } => PathBuf::new(),
+        }
     }
 
-    /// Compute the on-disk path for a tenant's SQLite database.
+    /// Compute the on-disk path for a tenant's SQLite database (SQLite mode only).
     pub fn tenant_db_path(&self, db_name: &str) -> PathBuf {
         self.tenants_dir().join(format!("{db_name}.db"))
     }
 
-    /// Look up or create the handler for `db_name`.
+    /// Look up or create the SQLite handler for `db_name`.
     ///
     /// - `"default"` always returns the default handler without touching disk.
     /// - Any other name checks the in-memory cache first, then creates a new
     ///   SQLite file at `{data_dir}/tenants/{db_name}.db`, initialises its
     ///   schema, wraps it in an `AxonHandler`, caches it, and returns it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if called in Postgres mode (use `get_or_create_pg` instead).
     pub async fn get_or_create(&self, db_name: &str) -> Result<SharedSqliteHandler, String> {
-        if db_name == "default" || self.single_mode {
-            return Ok(Arc::clone(&self.default_handler));
-        }
+        match &self.backend {
+            RouterBackend::Sqlite {
+                data_dir,
+                tenants,
+                default_handler,
+                single_mode,
+            } => {
+                if db_name == "default" || *single_mode {
+                    return Ok(Arc::clone(default_handler));
+                }
 
-        // Fast path: read lock to check cache.
-        {
-            let tenants = self.tenants.read().await;
-            if let Some(handler) = tenants.get(db_name) {
-                return Ok(Arc::clone(handler));
+                // Fast path: read lock to check cache.
+                {
+                    let guard = tenants.read().await;
+                    if let Some(handler) = guard.get(db_name) {
+                        return Ok(Arc::clone(handler));
+                    }
+                }
+
+                // Slow path: write lock, double-check, then create.
+                let mut guard = tenants.write().await;
+                if let Some(handler) = guard.get(db_name) {
+                    return Ok(Arc::clone(handler));
+                }
+
+                let tenants_dir = data_dir.join("tenants");
+                std::fs::create_dir_all(&tenants_dir).map_err(|e| {
+                    format!(
+                        "failed to create tenants directory {}: {e}",
+                        tenants_dir.display()
+                    )
+                })?;
+
+                let db_path = tenants_dir.join(format!("{db_name}.db"));
+                let path_str = db_path.to_str().ok_or_else(|| {
+                    format!(
+                        "tenant database path is not valid UTF-8: {}",
+                        db_path.display()
+                    )
+                })?;
+
+                let storage = SqliteStorageAdapter::open(path_str)
+                    .map_err(|e| format!("failed to open tenant database '{db_name}': {e}"))?;
+
+                let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+                guard.insert(db_name.to_owned(), Arc::clone(&handler));
+                Ok(handler)
             }
+            RouterBackend::Postgres { .. } => Err(
+                "get_or_create is not supported in Postgres mode; use get_or_create_pg".to_owned(),
+            ),
         }
+    }
 
-        // Slow path: write lock, double-check, then create.
-        let mut tenants = self.tenants.write().await;
-        // Double-check after acquiring write lock (another task may have raced).
-        if let Some(handler) = tenants.get(db_name) {
-            return Ok(Arc::clone(handler));
+    /// Look up or create the PostgreSQL handler for `db_name`.
+    ///
+    /// - `"default"` returns the master handler without provisioning anything.
+    /// - Any other name checks the in-memory cache first, then calls
+    ///   [`axon_storage::provision_postgres_database`] to create `axon_{db_name}`,
+    ///   opens a new [`PostgresStorageAdapter`] pool against that database, and
+    ///   caches the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if called in SQLite mode, or if the database cannot be
+    /// provisioned.
+    pub async fn get_or_create_pg(&self, db_name: &str) -> Result<SharedPgHandler, String> {
+        match &self.backend {
+            RouterBackend::Postgres {
+                superadmin_dsn,
+                tenants,
+                default_handler,
+            } => {
+                if db_name == "default" {
+                    return Ok(Arc::clone(default_handler));
+                }
+
+                // Fast path: read lock to check cache.
+                {
+                    let guard = tenants.read().await;
+                    if let Some(handler) = guard.get(db_name) {
+                        return Ok(Arc::clone(handler));
+                    }
+                }
+
+                // Slow path: write lock, double-check, then create.
+                let mut guard = tenants.write().await;
+                if let Some(handler) = guard.get(db_name) {
+                    return Ok(Arc::clone(handler));
+                }
+
+                let superadmin_dsn = superadmin_dsn.clone();
+                let db_name_owned = db_name.to_owned();
+
+                // Provision the physical database (may already exist — that's
+                // fine, we just open a connection to it).
+                let tenant_conn_str = axon_storage::tenant_dsn(&superadmin_dsn, &db_name_owned);
+
+                // Spawn the blocking connect on a dedicated thread so we don't
+                // block the async runtime.
+                let handler = tokio::task::spawn_blocking(move || {
+                    // Attempt to provision; ignore AlreadyExists.
+                    match axon_storage::provision_postgres_database(&superadmin_dsn, &db_name_owned) {
+                        Ok(()) | Err(axon_core::error::AxonError::AlreadyExists(_)) => {}
+                        Err(e) => {
+                            return Err(format!(
+                                "failed to provision PostgreSQL database 'axon_{db_name_owned}': {e}"
+                            ))
+                        }
+                    }
+
+                    let storage = PostgresStorageAdapter::connect(&tenant_conn_str).map_err(|e| {
+                        format!(
+                            "failed to connect to tenant PostgreSQL database 'axon_{db_name_owned}': {e}"
+                        )
+                    })?;
+                    Ok(Arc::new(Mutex::new(AxonHandler::new(storage))))
+                })
+                .await
+                .map_err(|e| format!("thread join error while provisioning tenant: {e}"))??;
+
+                guard.insert(db_name.to_owned(), Arc::clone(&handler));
+                Ok(handler)
+            }
+            RouterBackend::Sqlite { .. } => Err(
+                "get_or_create_pg is not supported in SQLite mode; use get_or_create".to_owned(),
+            ),
         }
-
-        let tenants_dir = self.tenants_dir();
-        std::fs::create_dir_all(&tenants_dir).map_err(|e| {
-            format!(
-                "failed to create tenants directory {}: {e}",
-                tenants_dir.display()
-            )
-        })?;
-
-        let db_path = self.tenant_db_path(db_name);
-        let path_str = db_path.to_str().ok_or_else(|| {
-            format!(
-                "tenant database path is not valid UTF-8: {}",
-                db_path.display()
-            )
-        })?;
-
-        let storage = SqliteStorageAdapter::open(path_str)
-            .map_err(|e| format!("failed to open tenant database '{db_name}': {e}"))?;
-
-        let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
-        tenants.insert(db_name.to_owned(), Arc::clone(&handler));
-        Ok(handler)
     }
 
     /// Return the names of all cached tenant databases (including "default").
     pub async fn list_databases(&self) -> Vec<String> {
-        let tenants = self.tenants.read().await;
-        let mut names: Vec<String> = std::iter::once("default".to_owned())
-            .chain(tenants.keys().cloned())
-            .collect();
+        let keys: Vec<String> = match &self.backend {
+            RouterBackend::Sqlite { tenants, .. } => tenants.read().await.keys().cloned().collect(),
+            RouterBackend::Postgres { tenants, .. } => {
+                tenants.read().await.keys().cloned().collect()
+            }
+        };
+        let mut names: Vec<String> = std::iter::once("default".to_owned()).chain(keys).collect();
         names.sort();
         names
     }
 
-    /// Remove a tenant from the cache and delete its SQLite file.
+    /// Remove a tenant from the cache and clean up its storage.
     ///
-    /// Returns an error if `db_name` is "default" (the default database cannot
-    /// be dropped) or if the file cannot be removed.
+    /// - In **SQLite mode**: removes the cached handler and deletes the `.db`
+    ///   file from disk.
+    /// - In **Postgres mode**: removes the cached handler and calls
+    ///   [`axon_storage::deprovision_postgres_database`] to drop the physical
+    ///   PostgreSQL database.
+    ///
+    /// Returns an error if `db_name` is `"default"` (that database cannot be
+    /// dropped).
     pub async fn drop_database(&self, db_name: &str) -> Result<(), String> {
         if db_name == "default" {
             return Err("cannot drop the default database".to_owned());
         }
 
-        let mut tenants = self.tenants.write().await;
-        tenants.remove(db_name);
+        match &self.backend {
+            RouterBackend::Sqlite { tenants, .. } => {
+                let mut guard = tenants.write().await;
+                guard.remove(db_name);
 
-        let db_path = self.tenant_db_path(db_name);
-        if db_path.exists() {
-            std::fs::remove_file(&db_path).map_err(|e| {
-                format!(
-                    "failed to remove tenant database file {}: {e}",
-                    db_path.display()
-                )
-            })?;
+                let db_path = self.tenant_db_path(db_name);
+                if db_path.exists() {
+                    std::fs::remove_file(&db_path).map_err(|e| {
+                        format!(
+                            "failed to remove tenant database file {}: {e}",
+                            db_path.display()
+                        )
+                    })?;
+                }
+                Ok(())
+            }
+            RouterBackend::Postgres {
+                superadmin_dsn,
+                tenants,
+                ..
+            } => {
+                let mut guard = tenants.write().await;
+                guard.remove(db_name);
+                drop(guard);
+
+                let superadmin_dsn = superadmin_dsn.clone();
+                let db_name_owned = db_name.to_owned();
+
+                tokio::task::spawn_blocking(move || {
+                    match axon_storage::deprovision_postgres_database(
+                        &superadmin_dsn,
+                        &db_name_owned,
+                    ) {
+                        Ok(()) => Ok(()),
+                        // Already gone — treat as success.
+                        Err(axon_core::error::AxonError::NotFound(_)) => Ok(()),
+                        Err(e) => Err(format!(
+                            "failed to drop PostgreSQL database 'axon_{db_name_owned}': {e}"
+                        )),
+                    }
+                })
+                .await
+                .map_err(|e| format!("thread join error while dropping tenant: {e}"))?
+            }
         }
-        Ok(())
+    }
+
+    /// Return `true` when the router is in PostgreSQL mode.
+    pub fn is_postgres(&self) -> bool {
+        matches!(self.backend, RouterBackend::Postgres { .. })
     }
 }
 
@@ -185,7 +391,10 @@ mod tests {
 
         let handler = router.get_or_create("default").await.expect("default");
         // Should be the same Arc as the default handler.
-        assert!(Arc::ptr_eq(&handler, router.default_handler()));
+        let default = router
+            .default_handler()
+            .expect("SQLite router has default handler");
+        assert!(Arc::ptr_eq(&handler, default));
     }
 
     #[tokio::test]

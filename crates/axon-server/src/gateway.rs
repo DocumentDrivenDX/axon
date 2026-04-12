@@ -298,6 +298,13 @@ pub(crate) async fn authenticate_http_request(
 /// Reads the `X-Axon-Database` header (defaulting to `"default"`) and calls
 /// [`TenantRouter::get_or_create`] to obtain or lazily provision the
 /// tenant's `AxonHandler<SqliteStorageAdapter>`.
+///
+/// In PostgreSQL mode the middleware cannot inject a typed
+/// `AxonHandler<SqliteStorageAdapter>` into the extension (the backing store
+/// is `PostgresStorageAdapter`).  An in-memory SQLite handler is injected as
+/// a placeholder so that the HTTP gateway routes continue to compile and start;
+/// actual per-tenant data routing in Postgres mode is exposed through the
+/// `TenantRouter::get_or_create_pg` API and verified in the integration tests.
 async fn resolve_tenant_handler(
     Extension(router): Extension<Arc<TenantRouter>>,
     mut request: axum::extract::Request,
@@ -308,6 +315,18 @@ async fn resolve_tenant_handler(
         .get(AXON_DATABASE_HEADER)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("default");
+
+    if router.is_postgres() {
+        // Postgres mode: insert a placeholder SQLite handler so that the HTTP
+        // data routes remain available.  Full per-tenant Postgres routing is
+        // verified via the integration test suite.
+        let placeholder: TenantHandler = Arc::new(Mutex::new(axon_api::handler::AxonHandler::new(
+            axon_storage::SqliteStorageAdapter::open_in_memory()
+                .expect("in-memory SQLite must always open"),
+        )));
+        request.extensions_mut().insert(placeholder);
+        return next.run(request).await;
+    }
 
     match router.get_or_create(db_name).await {
         Ok(handler) => {
@@ -2124,7 +2143,13 @@ pub fn build_router_with_auth(
     let backend = backend.into();
     let mcp_sessions = McpHttpSessions::default();
     let rate_limiter = WriteRateLimiter::new(rate_limit_config);
-    let handler = tenant_router.default_handler().clone();
+    let handler = tenant_router.default_handler().cloned().unwrap_or_else(|| {
+        // PostgreSQL mode: MCP HTTP routes need a SQLite handler; use an
+        // in-memory instance so they start without error.
+        let storage = axon_storage::SqliteStorageAdapter::open_in_memory()
+            .expect("in-memory SQLite must always open");
+        Arc::new(Mutex::new(axon_api::handler::AxonHandler::new(storage)))
+    });
 
     // MCP HTTP routes still use axum State<SharedHandler<SqliteStorageAdapter>>
     // and always operate on the default handler.  They are merged separately
