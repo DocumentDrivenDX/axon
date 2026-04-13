@@ -22,6 +22,7 @@ use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
 
+use async_graphql::http::{playground_source, GraphQLPlaygroundConfig};
 use axon_graphql::BroadcastBroker;
 
 use crate::actor_scope::ActorScopeGuard;
@@ -2043,6 +2044,13 @@ async fn graphql_ws_handler(
         })
 }
 
+/// GraphQL Playground — serves the interactive browser IDE at `/graphql/playground`.
+async fn graphql_playground_handler() -> impl IntoResponse {
+    axum::response::Html(playground_source(
+        GraphQLPlaygroundConfig::new("/graphql").subscription_endpoint("/graphql/ws"),
+    ))
+}
+
 // ── Router construction ───────────────────────────────────────────────────────
 
 /// Build the axum router for the HTTP gateway.
@@ -2221,7 +2229,9 @@ pub fn build_router_with_auth(
             }),
         );
 
-    router = router.route("/auth/me", get(auth_me));
+    router = router
+        .route("/auth/me", get(auth_me))
+        .route("/graphql/playground", get(graphql_playground_handler));
 
     if let Some(ui_dir) = ui_dir {
         let index_path = ui_dir.join("index.html");

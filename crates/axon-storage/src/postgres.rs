@@ -1433,17 +1433,7 @@ mod tests {
             .expect("PostgreSQL test guard lock should not be poisoned")
     }
 
-    fn reset_test_tables(adapter: &PostgresStorageAdapter) -> Result<(), AxonError> {
-        adapter.block(adapter.client.batch_execute(
-            "DROP TABLE IF EXISTS collection_views;
-                 DROP TABLE IF EXISTS collections;
-                 DROP TABLE IF EXISTS namespaces;
-                 DROP TABLE IF EXISTS databases;
-                 DROP TABLE IF EXISTS entities;
-                 DROP TABLE IF EXISTS schemas;
-                 DROP TABLE IF EXISTS audit_log;",
-        ))
-    }
+
 
     fn skip_postgres_test(test_name: &str, reason: &str) {
         tracing::warn!(test = test_name, reason, "skipping PostgreSQL storage test");

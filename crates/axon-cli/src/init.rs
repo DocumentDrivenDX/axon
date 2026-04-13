@@ -140,6 +140,7 @@ pub fn run_init(name: &str) -> Result<()> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::fs;
@@ -166,8 +167,7 @@ mod tests {
 
         // Verify seed content has 3 lines.
         let seed_content = fs::read_to_string(project.join("seed/tasks.jsonl")).unwrap();
-        let lines: Vec<&str> = seed_content.lines().collect();
-        assert_eq!(lines.len(), 3);
+        assert_eq!(seed_content.lines().count(), 3);
 
         // Verify README contains the project name.
         let readme_content = fs::read_to_string(project.join("README.md")).unwrap();
@@ -184,7 +184,7 @@ mod tests {
         assert!(result.is_err());
         assert!(
             result
-                .unwrap_err()
+                .expect_err("init of existing dir should fail")
                 .to_string()
                 .contains("already exists")
         );

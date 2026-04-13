@@ -447,7 +447,7 @@ mod tests {
         let result = router.drop_database("default").await;
         assert!(result.is_err(), "dropping 'default' should fail");
         assert!(
-            result.unwrap_err().contains("cannot drop the default"),
+            result.expect_err("dropping 'default' should fail").contains("cannot drop the default"),
             "error message should mention 'default'"
         );
     }

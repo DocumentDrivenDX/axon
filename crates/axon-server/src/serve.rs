@@ -122,6 +122,15 @@ pub struct ServeArgs {
     /// Serve built admin UI assets from this directory under the `/ui` path prefix.
     #[arg(long, env = "AXON_UI_DIR")]
     pub ui_dir: Option<PathBuf>,
+
+    /// Path to a PEM-encoded TLS certificate file. Requires `--tls-key`.
+    /// When both are supplied the server listens on HTTPS instead of HTTP.
+    #[arg(long, env = "AXON_TLS_CERT", requires = "tls_key")]
+    pub tls_cert: Option<PathBuf>,
+
+    /// Path to a PEM-encoded TLS private-key file. Requires `--tls-cert`.
+    #[arg(long, env = "AXON_TLS_KEY", requires = "tls_cert")]
+    pub tls_key: Option<PathBuf>,
 }
 
 /// Initialise the `tracing` subscriber.
@@ -265,20 +274,26 @@ pub async fn run_with_sqlite_storage(
     );
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
-    tracing::info!("HTTP gateway listening on {http_addr}");
-
-    let http_handle = tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(http_addr)
+    let http_handle = if let (Some(cert), Some(key)) =
+        (args.tls_cert.clone(), args.tls_key.clone())
+    {
+        tracing::info!("HTTPS gateway listening on {http_addr}");
+        tokio::spawn(async move { bind_https(http_addr, http_app, cert, key).await })
+    } else {
+        tracing::info!("HTTP gateway listening on {http_addr}");
+        tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(http_addr)
+                .await
+                .map_err(|error| format!("failed to bind HTTP listener: {error}"))?;
+            axum::serve(
+                listener,
+                http_app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown_signal())
             .await
-            .map_err(|error| format!("failed to bind HTTP listener: {error}"))?;
-        axum::serve(
-            listener,
-            http_app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|error| format!("HTTP server error: {error}"))
-    });
+            .map_err(|error| format!("HTTP server error: {error}"))
+        })
+    };
 
     if let Some(port) = args.grpc_port {
         let grpc_svc = AxonServiceImpl::from_shared_with_auth(handler, auth);
@@ -409,20 +424,24 @@ pub async fn run_with_postgres_storage(
     );
     let http_addr: std::net::SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
-    tracing::info!("HTTP gateway (PostgreSQL) listening on {http_addr}");
-
-    tokio::spawn(async move {
-        let listener = tokio::net::TcpListener::bind(http_addr)
+    if let (Some(cert), Some(key)) = (args.tls_cert.clone(), args.tls_key.clone()) {
+        tracing::info!("HTTPS gateway (PostgreSQL) listening on {http_addr}");
+        tokio::spawn(async move { bind_https(http_addr, http_app, cert, key).await })
+    } else {
+        tracing::info!("HTTP gateway (PostgreSQL) listening on {http_addr}");
+        tokio::spawn(async move {
+            let listener = tokio::net::TcpListener::bind(http_addr)
+                .await
+                .map_err(|error| format!("failed to bind HTTP listener: {error}"))?;
+            axum::serve(
+                listener,
+                http_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(shutdown_signal())
             .await
-            .map_err(|error| format!("failed to bind HTTP listener: {error}"))?;
-        axum::serve(
-            listener,
-            http_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-        )
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|error| format!("HTTP server error: {error}"))
-    })
+            .map_err(|error| format!("HTTP server error: {error}"))
+        })
+    }
     .await
     .map_err(|error| format!("HTTP task join error: {error}"))??;
 
@@ -434,6 +453,135 @@ pub async fn shutdown_signal() {
         .await
         .expect("failed to install CTRL+C handler");
     tracing::info!("shutdown signal received, stopping server");
+}
+
+// ── HTTPS support ─────────────────────────────────────────────────────────────
+
+/// Load a rustls `ServerConfig` from PEM certificate and private-key files.
+fn load_tls_config(
+    cert_path: &PathBuf,
+    key_path: &PathBuf,
+) -> Result<tokio_rustls::rustls::ServerConfig, String> {
+    use std::fs::File;
+    use std::io::BufReader;
+
+    let cert_file = File::open(cert_path)
+        .map_err(|e| format!("failed to open TLS cert {}: {e}", cert_path.display()))?;
+    let certs: Vec<_> = rustls_pemfile::certs(&mut BufReader::new(cert_file))
+        .collect::<Result<_, _>>()
+        .map_err(|e| format!("failed to read TLS certificates: {e}"))?;
+
+    let key_file = File::open(key_path)
+        .map_err(|e| format!("failed to open TLS key {}: {e}", key_path.display()))?;
+    let key = rustls_pemfile::private_key(&mut BufReader::new(key_file))
+        .map_err(|e| format!("failed to read TLS private key: {e}"))?
+        .ok_or_else(|| format!("no private key found in {}", key_path.display()))?;
+
+    tokio_rustls::rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|e| format!("invalid TLS configuration: {e}"))
+}
+
+/// Tower service wrapper that bridges `hyper`'s raw `Request<Incoming>` to
+/// axum's `Request<Body>`, injecting `ConnectInfo<SocketAddr>` so the auth
+/// middleware can resolve the peer address.
+#[derive(Clone)]
+struct HyperAxumBridge<S: Clone> {
+    inner: S,
+    remote_addr: SocketAddr,
+}
+
+impl<S, ResBody> tower::Service<axum::http::Request<hyper::body::Incoming>>
+    for HyperAxumBridge<S>
+where
+    S: Clone
+        + tower::Service<
+            axum::http::Request<axum::body::Body>,
+            Response = axum::http::Response<ResBody>,
+        >,
+{
+    type Response = axum::http::Response<ResBody>;
+    type Error = S::Error;
+    type Future = S::Future;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, mut req: axum::http::Request<hyper::body::Incoming>) -> Self::Future {
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(self.remote_addr));
+        self.inner.call(req.map(axum::body::Body::new))
+    }
+}
+
+/// Bind a TLS-wrapped HTTP listener and serve `app` until the shutdown signal.
+///
+/// Loads TLS config from PEM files, wraps each accepted TCP stream in a
+/// `tokio-rustls` handshake, and drives each connection with hyper's auto
+/// HTTP/1+2 builder.  `ConnectInfo<SocketAddr>` is injected per-connection
+/// so the authentication middleware can resolve the peer address.
+async fn bind_https(
+    addr: SocketAddr,
+    app: axum::Router,
+    cert_path: PathBuf,
+    key_path: PathBuf,
+) -> Result<(), String> {
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+    use hyper_util::server::conn::auto;
+    use hyper_util::service::TowerToHyperService;
+
+    let tls_config = load_tls_config(&cert_path, &key_path)?;
+    let tls_acceptor =
+        tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
+
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("failed to bind HTTPS listener on {addr}: {e}"))?;
+
+    let shutdown = std::pin::pin!(shutdown_signal());
+    tokio::pin!(shutdown);
+
+    loop {
+        let (stream, remote_addr) = tokio::select! {
+            res = listener.accept() => match res {
+                Ok(pair) => pair,
+                Err(e) => {
+                    tracing::error!("HTTPS accept error: {e}");
+                    continue;
+                }
+            },
+            () = &mut shutdown => break,
+        };
+
+        let inner_svc = app.clone();
+        let tls_acceptor = tls_acceptor.clone();
+
+        tokio::spawn(async move {
+            let tls_stream = match tls_acceptor.accept(stream).await {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::debug!("TLS handshake error from {remote_addr}: {e}");
+                    return;
+                }
+            };
+            let io = TokioIo::new(tls_stream);
+            let bridge = HyperAxumBridge { inner: inner_svc, remote_addr };
+            if let Err(e) = auto::Builder::new(TokioExecutor::new())
+                .serve_connection_with_upgrades(io, TowerToHyperService::new(bridge))
+                .await
+            {
+                tracing::debug!("HTTPS connection closed: {e}");
+            }
+        });
+    }
+
+    tracing::info!("HTTPS gateway shut down");
+    Ok(())
 }
 
 #[cfg(test)]

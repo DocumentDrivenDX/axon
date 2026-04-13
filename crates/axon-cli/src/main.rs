@@ -744,6 +744,8 @@ fn run_server_command(cli: Cli) -> Result<()> {
                 postgres_dsn,
                 control_plane_path: String::from("axon-control-plane.db"),
                 ui_dir: None,
+                tls_cert: None,
+                tls_key: None,
             };
             rt.block_on(async {
                 axon_server::serve::serve(args)
@@ -2097,7 +2099,7 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
                         })
                         .collect();
                     if nodes.len() == 1 {
-                        Some(nodes.into_iter().next().unwrap())
+                        nodes.into_iter().next()
                     } else {
                         Some(serde_json::json!({ "type": "and", "filters": nodes }))
                     }

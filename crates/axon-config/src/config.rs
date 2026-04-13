@@ -317,7 +317,7 @@ backend = "postgres"
 
         let result = AxonConfig::load(Some(&path));
         assert!(result.is_err(), "malformed TOML should produce an error");
-        let err = result.unwrap_err();
+        let err = result.expect_err("malformed TOML should produce an error");
         let msg = err.to_string();
         assert!(
             msg.contains("failed to parse config"),

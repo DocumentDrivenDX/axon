@@ -17,6 +17,7 @@ use axon_api::handler::AxonHandler;
 use axon_server::gateway::build_router;
 use axon_server::service::{AxonServiceImpl, AxonServiceServer};
 use axon_server::tenant_router::TenantRouter;
+use axon_storage::adapter::StorageAdapter;
 use axon_storage::memory::MemoryStorageAdapter;
 use axon_storage::SqliteStorageAdapter;
 
@@ -374,7 +375,8 @@ async fn grpc_query_audit_by_entity() {
 #[tokio::test]
 async fn parity_create_get_entity() {
     // HTTP
-    let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite");
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
     let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
     let tenant_router = Arc::new(TenantRouter::single(http_handler));
     let http_app = build_router(tenant_router, "memory", None);
@@ -436,7 +438,8 @@ async fn parity_create_get_entity() {
 #[tokio::test]
 async fn parity_update_entity() {
     // HTTP
-    let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite");
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
     let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
     let tenant_router = Arc::new(TenantRouter::single(http_handler));
     let http_app = build_router(tenant_router, "memory", None);
@@ -490,7 +493,8 @@ async fn parity_update_entity() {
 #[tokio::test]
 async fn parity_link_traverse() {
     // HTTP
-    let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite");
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
     let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
     let tenant_router = Arc::new(TenantRouter::single(http_handler));
     let http_app = build_router(tenant_router, "memory", None);
@@ -955,7 +959,8 @@ async fn grpc_drop_collection_requires_confirm() {
 /// Reverse traversal from B should return A (A links TO B).
 #[tokio::test]
 async fn http_traverse_direction_reverse() {
-    let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite");
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
     let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
     let tenant_router = Arc::new(TenantRouter::single(http_handler));
     let http_app = build_router(tenant_router, "memory", None);

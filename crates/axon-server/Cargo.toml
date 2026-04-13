@@ -18,6 +18,7 @@ axon-schema = { path = "../axon-schema" }
 axon-storage = { path = "../axon-storage" }
 axon-mcp = { path = "../axon-mcp" }
 axon-graphql = { path = "../axon-graphql" }
+async-graphql.workspace = true
 async-graphql-axum.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -29,11 +30,14 @@ prost.workspace = true
 axum.workspace = true
 clap.workspace = true
 hyper = { version = "1", features = ["client", "http1"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "service"] }
 http-body-util = "0.1"
 http = "1"
 bytes = "1"
+tower = "0.5"
 tower-http = { version = "0.6", features = ["fs"] }
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
 tokio-stream.workspace = true
 uuid.workspace = true
 humantime.workspace = true
