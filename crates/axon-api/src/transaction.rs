@@ -281,7 +281,8 @@ impl Transaction {
                 | MutationType::SchemaUpdate
                 | MutationType::EntityRevert
                 | MutationType::LinkCreate
-                | MutationType::LinkDelete => true,
+                | MutationType::LinkDelete
+                | MutationType::GuardrailRejection => true,
             };
 
             if !ok {
@@ -356,7 +357,8 @@ impl Transaction {
                 | MutationType::SchemaUpdate
                 | MutationType::EntityRevert
                 | MutationType::LinkCreate
-                | MutationType::LinkDelete => {}
+                | MutationType::LinkDelete
+                | MutationType::GuardrailRejection => {}
             }
         }
 

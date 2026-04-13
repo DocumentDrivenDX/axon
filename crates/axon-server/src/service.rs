@@ -108,6 +108,18 @@ fn axon_to_status(err: AxonError) -> Status {
              \"current_state\":{current_state:?},\"target_state\":{target_state:?},\
              \"valid_transitions\":{valid_transitions:?}}}"
         )),
+        AxonError::RateLimitExceeded { actor, retry_after_ms } => Status::resource_exhausted(format!(
+            "{{\"code\":\"rate_limit_exceeded\",\"actor\":{actor:?},\"retry_after_ms\":{retry_after_ms}}}"
+        )),
+        AxonError::ScopeViolation {
+            actor,
+            entity_id,
+            filter_field,
+            filter_value,
+        } => Status::permission_denied(format!(
+            "{{\"code\":\"scope_violation\",\"actor\":{actor:?},\"entity_id\":{entity_id:?},\
+             \"filter_field\":{filter_field:?},\"filter_value\":{filter_value:?}}}"
+        )),
     }
 }
 

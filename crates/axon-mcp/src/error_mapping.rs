@@ -32,6 +32,17 @@ pub fn map_axon_error(error: AxonError) -> McpError {
         } => McpError::InvalidParams(format!(
             "invalid lifecycle '{lifecycle_name}' transition from '{current_state}' to '{target_state}'; valid: {valid_transitions:?}"
         )),
+        AxonError::RateLimitExceeded { actor, retry_after_ms } => McpError::InvalidParams(format!(
+            "rate limit exceeded for actor '{actor}'; retry after {retry_after_ms}ms"
+        )),
+        AxonError::ScopeViolation {
+            actor,
+            entity_id,
+            filter_field,
+            filter_value,
+        } => McpError::InvalidParams(format!(
+            "scope violation: actor '{actor}' denied access to entity '{entity_id}' (filter {filter_field}={filter_value})"
+        )),
     }
 }
 

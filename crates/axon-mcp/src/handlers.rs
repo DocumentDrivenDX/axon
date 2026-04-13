@@ -1157,6 +1157,17 @@ fn to_tool_error(err: axon_core::error::AxonError) -> ToolError {
              valid transitions: [{}]",
             valid_transitions.join(", ")
         )),
+        AxonError::RateLimitExceeded { actor, retry_after_ms } => ToolError::InvalidArgument(format!(
+            "rate limit exceeded for actor '{actor}'; retry after {retry_after_ms}ms"
+        )),
+        AxonError::ScopeViolation {
+            actor,
+            entity_id,
+            filter_field,
+            filter_value,
+        } => ToolError::InvalidArgument(format!(
+            "scope violation: actor '{actor}' denied access to entity '{entity_id}' (filter {filter_field}={filter_value})"
+        )),
     }
 }
 

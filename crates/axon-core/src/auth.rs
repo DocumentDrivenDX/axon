@@ -114,6 +114,39 @@ impl Operation {
     }
 }
 
+/// A simple field-equality filter used as an agent scope constraint
+/// (FEAT-022 / ADR-016).
+///
+/// When attached to a [`CallerIdentity`], the agent guardrails layer rejects
+/// any mutation whose target entity data does not satisfy
+/// `data[field] == value`. V1 supports only field-equality predicates;
+/// compound and range filters are deferred.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EntityFilter {
+    /// The top-level data field to compare.
+    pub field: String,
+    /// The required value for that field.
+    pub value: serde_json::Value,
+}
+
+impl EntityFilter {
+    /// Convenience constructor.
+    pub fn new(field: impl Into<String>, value: serde_json::Value) -> Self {
+        Self {
+            field: field.into(),
+            value,
+        }
+    }
+
+    /// Returns `true` when the JSON object `data` satisfies this filter.
+    ///
+    /// Returns `false` when `data` is not a JSON object, when the field is
+    /// absent, or when the value does not equal [`Self::value`].
+    pub fn matches(&self, data: &serde_json::Value) -> bool {
+        data.get(&self.field).is_some_and(|v| v == &self.value)
+    }
+}
+
 /// Identity context for a request.
 ///
 /// Populated by the auth middleware from the identity provider.
@@ -124,6 +157,11 @@ pub struct CallerIdentity {
     pub actor: String,
     /// The caller's effective role (highest privilege from all their tags).
     pub role: Role,
+    /// Optional scope constraint enforced by the agent guardrails layer
+    /// (FEAT-022, ADR-016). When `Some`, this caller may only mutate entities
+    /// whose data matches the filter. `None` means no scope restriction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_filter: Option<EntityFilter>,
 }
 
 impl CallerIdentity {
@@ -132,6 +170,7 @@ impl CallerIdentity {
         Self {
             actor: "anonymous".into(),
             role: Role::Admin,
+            entity_filter: None,
         }
     }
 
@@ -140,7 +179,14 @@ impl CallerIdentity {
         Self {
             actor: actor.into(),
             role,
+            entity_filter: None,
         }
+    }
+
+    /// Attach an entity scope filter (builder style, FEAT-022).
+    pub fn with_entity_filter(mut self, filter: EntityFilter) -> Self {
+        self.entity_filter = Some(filter);
+        self
     }
 
     /// Check whether this caller is authorized for the given operation.

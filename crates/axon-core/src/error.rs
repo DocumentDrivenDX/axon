@@ -75,4 +75,39 @@ pub enum AxonError {
 
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// Per-actor mutation rate limit was exceeded (FEAT-022 / ADR-016).
+    ///
+    /// `retry_after_ms` is the number of milliseconds the caller should wait
+    /// before retrying. The HTTP layer maps this to `429 Too Many Requests`
+    /// with a `Retry-After` header; the gRPC layer uses `RESOURCE_EXHAUSTED`.
+    #[error(
+        "rate limit exceeded for actor `{actor}`: retry after {retry_after_ms}ms"
+    )]
+    RateLimitExceeded {
+        /// The actor whose bucket was exhausted.
+        actor: String,
+        /// How many milliseconds until enough tokens refill for one mutation.
+        retry_after_ms: u64,
+    },
+
+    /// The caller's scope filter rejected this mutation (FEAT-022 / ADR-016).
+    ///
+    /// The actor's `entity_filter` did not match the target entity's data.
+    /// Includes the filter that was applied so callers can see the boundary
+    /// they crossed.
+    #[error(
+        "scope violation for actor `{actor}` on entity `{entity_id}`: \
+         filter `{filter_field}` requires value `{filter_value}`"
+    )]
+    ScopeViolation {
+        /// The actor whose scope was violated.
+        actor: String,
+        /// The target entity ID that the actor was denied access to.
+        entity_id: String,
+        /// The filter field that was checked.
+        filter_field: String,
+        /// The required value for the filter field.
+        filter_value: serde_json::Value,
+    },
 }

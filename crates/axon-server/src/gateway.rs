@@ -159,6 +159,32 @@ fn axon_error_response(err: AxonError) -> Response {
             )),
         )
             .into_response(),
+        AxonError::RateLimitExceeded { actor, retry_after_ms } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ApiError::new(
+                "rate_limit_exceeded",
+                json!({"actor": actor, "retry_after_ms": retry_after_ms}),
+            )),
+        )
+            .into_response(),
+        AxonError::ScopeViolation {
+            actor,
+            entity_id,
+            filter_field,
+            filter_value,
+        } => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError::new(
+                "scope_violation",
+                json!({
+                    "actor": actor,
+                    "entity_id": entity_id,
+                    "filter_field": filter_field,
+                    "filter_value": filter_value,
+                }),
+            )),
+        )
+            .into_response(),
     }
 }
 

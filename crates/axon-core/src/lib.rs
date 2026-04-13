@@ -8,14 +8,19 @@
 pub mod auth;
 pub mod clock;
 pub mod error;
+pub mod guardrails;
 pub mod id;
 pub mod topology;
 pub mod types;
 
 pub use auth::{
-    CallerIdentity, DatabaseGrant, GrantRegistry, MaskPolicy, Operation, Role, WritePolicy,
+    CallerIdentity, DatabaseGrant, EntityFilter, GrantRegistry, MaskPolicy, Operation, Role,
+    WritePolicy,
 };
 pub use clock::{Clock, FakeClock, SystemClock};
+pub use guardrails::{
+    GuardrailsConfig, GuardrailsLayer, RateLimitConfig, RejectionReason, TokenBucket,
+};
 pub use error::AxonError;
 pub use id::{
     CollectionId, EntityId, LinkId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE,

@@ -33,6 +33,11 @@ pub enum MutationType {
     TemplateDelete,
     // ── Schema operations ────────────────────────────────────────────────────
     SchemaUpdate,
+    // ── Guardrail rejections (FEAT-022 / ADR-016) ───────────────────────────
+    /// A mutation was rejected by the agent guardrails layer (rate limit or
+    /// scope violation). Distinct from regular mutations — no entity state
+    /// changed, but operators need to see the rejection in the audit trail.
+    GuardrailRejection,
 }
 
 impl std::fmt::Display for MutationType {
@@ -50,6 +55,7 @@ impl std::fmt::Display for MutationType {
             MutationType::TemplateUpdate => "template.update",
             MutationType::TemplateDelete => "template.delete",
             MutationType::SchemaUpdate => "schema.update",
+            MutationType::GuardrailRejection => "guardrail_rejection",
         };
         f.write_str(s)
     }
