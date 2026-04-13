@@ -34,7 +34,7 @@ use crate::request::{
     PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
     ReachableRequest, RevalidateRequest, RevertEntityRequest, RollbackCollectionRequest,
     RollbackEntityRequest, RollbackEntityTarget, RollbackTransactionRequest, SortDirection,
-    TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
@@ -48,7 +48,7 @@ use crate::response::{
     QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevalidateResponse,
     RevertEntityResponse, RollbackCollectionEntityResult, RollbackCollectionResponse,
     RollbackEntityResponse, RollbackTransactionEntityResult, RollbackTransactionResponse,
-    TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
+    TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -3409,6 +3409,80 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let links_col = Link::links_collection();
         let entities = self.storage.range_scan(&links_col, None, None, None)?;
         Ok(entities.iter().filter_map(Link::from_entity).collect())
+    }
+
+    /// Transition an entity through a named lifecycle state machine (FEAT-015).
+    ///
+    /// Steps:
+    /// 1. Load the collection schema and locate the named lifecycle.
+    /// 2. Read the current entity.
+    /// 3. Determine the current state from `entity.data[lifecycle.field]`.
+    /// 4. Validate that `target_state` is reachable from the current state.
+    /// 5. Write the updated entity via OCC using `expected_version`.
+    pub fn transition_lifecycle(
+        &mut self,
+        req: TransitionLifecycleRequest,
+    ) -> Result<TransitionLifecycleResponse, AxonError> {
+        // (1) Load schema and find the lifecycle definition.
+        let schema = self
+            .storage
+            .get_schema(&req.collection_id)?
+            .ok_or_else(|| {
+                AxonError::NotFound(format!("schema for collection {}", req.collection_id))
+            })?;
+
+        let lifecycle = schema.lifecycles.get(&req.lifecycle_name).ok_or_else(|| {
+            AxonError::LifecycleNotFound {
+                lifecycle_name: req.lifecycle_name.clone(),
+            }
+        })?;
+
+        // (2) Read current entity.
+        let entity = self
+            .storage
+            .get(&req.collection_id, &req.entity_id)?
+            .ok_or_else(|| AxonError::NotFound(req.entity_id.to_string()))?;
+
+        // (3) Get current state from entity data.
+        let current_state = entity
+            .data
+            .get(&lifecycle.field)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        // (4) Check that the target state is allowed from the current state.
+        let allowed: Vec<String> = lifecycle
+            .transitions
+            .get(&current_state)
+            .cloned()
+            .unwrap_or_default();
+
+        if !allowed.contains(&req.target_state) {
+            return Err(AxonError::InvalidTransition {
+                lifecycle_name: req.lifecycle_name.clone(),
+                current_state,
+                target_state: req.target_state.clone(),
+                valid_transitions: allowed,
+            });
+        }
+
+        // (5) Apply the transition via update_entity (OCC).
+        let mut new_data = entity.data.clone();
+        new_data[&lifecycle.field] = serde_json::Value::String(req.target_state.clone());
+
+        let update_resp = self.update_entity(crate::request::UpdateEntityRequest {
+            collection: req.collection_id,
+            id: req.entity_id,
+            data: new_data,
+            expected_version: req.expected_version,
+            actor: req.actor,
+            audit_metadata: req.audit_metadata,
+        })?;
+
+        Ok(TransitionLifecycleResponse {
+            entity: update_resp.entity,
+        })
     }
 }
 

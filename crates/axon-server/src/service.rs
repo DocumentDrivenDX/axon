@@ -95,6 +95,19 @@ fn axon_to_status(err: AxonError) -> Status {
         AxonError::UniqueViolation { field, value } => Status::already_exists(format!(
             "{{\"code\":\"unique_violation\",\"field\":{field:?},\"value\":{value:?}}}"
         )),
+        AxonError::LifecycleNotFound { lifecycle_name } => Status::not_found(format!(
+            "{{\"code\":\"lifecycle_not_found\",\"lifecycle_name\":{lifecycle_name:?}}}"
+        )),
+        AxonError::InvalidTransition {
+            lifecycle_name,
+            current_state,
+            target_state,
+            valid_transitions,
+        } => Status::failed_precondition(format!(
+            "{{\"code\":\"invalid_transition\",\"lifecycle_name\":{lifecycle_name:?},\
+             \"current_state\":{current_state:?},\"target_state\":{target_state:?},\
+             \"valid_transitions\":{valid_transitions:?}}}"
+        )),
     }
 }
 

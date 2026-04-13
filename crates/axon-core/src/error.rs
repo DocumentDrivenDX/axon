@@ -47,6 +47,29 @@ pub enum AxonError {
     #[error("invalid operation: {0}")]
     InvalidOperation(String),
 
+    /// Named lifecycle not found on the collection schema.
+    #[error("lifecycle not found: {lifecycle_name}")]
+    LifecycleNotFound {
+        /// The lifecycle name that was not found.
+        lifecycle_name: String,
+    },
+
+    /// Entity is not in a state that allows the requested transition.
+    #[error(
+        "invalid transition in lifecycle `{lifecycle_name}`: \
+         cannot transition from `{current_state}` to `{target_state}`"
+    )]
+    InvalidTransition {
+        /// The lifecycle name.
+        lifecycle_name: String,
+        /// The entity's current state.
+        current_state: String,
+        /// The requested target state.
+        target_state: String,
+        /// States that are reachable from `current_state`.
+        valid_transitions: Vec<String>,
+    },
+
     #[error("storage error: {0}")]
     Storage(String),
 

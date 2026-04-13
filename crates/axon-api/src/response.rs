@@ -71,6 +71,13 @@ pub struct DeleteEntityResponse {
     pub id: String,
 }
 
+/// Response after a successful lifecycle transition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransitionLifecycleResponse {
+    /// The entity at its new version after the transition.
+    pub entity: Entity,
+}
+
 /// Response after successfully creating a link.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateLinkResponse {

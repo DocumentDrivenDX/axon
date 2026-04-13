@@ -589,3 +589,27 @@ pub struct DropDatabaseRequest {
 /// Request to list all databases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListDatabasesRequest {}
+
+// ── Lifecycle transition request (FEAT-015) ──────────────────────────────────
+
+/// Request to transition an entity through a named lifecycle state machine.
+///
+/// The lifecycle must be declared in the collection schema (`schema.lifecycles`).
+/// The entity's current state is read from `entity.data[lifecycle.field]` and
+/// validated against the allowed transitions before writing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransitionLifecycleRequest {
+    pub collection_id: CollectionId,
+    pub entity_id: EntityId,
+    /// Name of the lifecycle defined in the collection schema.
+    pub lifecycle_name: String,
+    /// The state the caller wants to transition to.
+    pub target_state: String,
+    /// The version the caller believes is current (OCC guard).
+    pub expected_version: u64,
+    /// Optional actor identity for the audit log.
+    pub actor: Option<String>,
+    /// Optional key-value metadata attached to the audit entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_metadata: Option<HashMap<String, String>>,
+}

@@ -133,6 +133,32 @@ fn axon_error_response(err: AxonError) -> Response {
             )),
         )
             .into_response(),
+        AxonError::LifecycleNotFound { lifecycle_name } => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new(
+                "lifecycle_not_found",
+                json!({"lifecycle_name": lifecycle_name}),
+            )),
+        )
+            .into_response(),
+        AxonError::InvalidTransition {
+            lifecycle_name,
+            current_state,
+            target_state,
+            valid_transitions,
+        } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError::new(
+                "invalid_transition",
+                json!({
+                    "lifecycle_name": lifecycle_name,
+                    "current_state": current_state,
+                    "target_state": target_state,
+                    "valid_transitions": valid_transitions,
+                }),
+            )),
+        )
+            .into_response(),
     }
 }
 

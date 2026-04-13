@@ -21,6 +21,17 @@ pub fn map_axon_error(error: AxonError) -> McpError {
         )),
         AxonError::Storage(message) => McpError::Internal(message),
         AxonError::Serialization(error) => McpError::Internal(error.to_string()),
+        AxonError::LifecycleNotFound { lifecycle_name } => {
+            McpError::NotFound(format!("lifecycle '{lifecycle_name}' not found"))
+        }
+        AxonError::InvalidTransition {
+            lifecycle_name,
+            current_state,
+            target_state,
+            valid_transitions,
+        } => McpError::InvalidParams(format!(
+            "invalid lifecycle '{lifecycle_name}' transition from '{current_state}' to '{target_state}'; valid: {valid_transitions:?}"
+        )),
     }
 }
 

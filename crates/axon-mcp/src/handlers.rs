@@ -1143,6 +1143,20 @@ fn to_tool_error(err: axon_core::error::AxonError) -> ToolError {
         }
         AxonError::Storage(msg) => ToolError::Internal(msg),
         AxonError::Serialization(e) => ToolError::Internal(e.to_string()),
+        AxonError::LifecycleNotFound { lifecycle_name } => {
+            ToolError::NotFound(format!("lifecycle not found: {lifecycle_name}"))
+        }
+        AxonError::InvalidTransition {
+            lifecycle_name,
+            current_state,
+            target_state,
+            valid_transitions,
+        } => ToolError::InvalidArgument(format!(
+            "invalid transition in lifecycle `{lifecycle_name}`: \
+             cannot go from `{current_state}` to `{target_state}`; \
+             valid transitions: [{}]",
+            valid_transitions.join(", ")
+        )),
     }
 }
 
