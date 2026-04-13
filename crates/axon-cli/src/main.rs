@@ -158,7 +158,7 @@ enum Command {
 }
 
 #[cfg(feature = "serve")]
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum UserCmd {
     /// Grant a role to a principal (creates or updates the assignment).
     Grant {
@@ -180,7 +180,7 @@ enum UserCmd {
 }
 
 #[cfg(feature = "serve")]
-#[derive(Subcommand)]
+#[derive(Subcommand, Clone)]
 enum CorsCmd {
     /// Add an allowed CORS origin (e.g. `https://sindri:5173`).
     ///
@@ -696,11 +696,13 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("{}", axon_config::paths::config_file().display());
             return Ok(());
         }
+        // user/cors write directly to the control-plane SQLite; they never need
+        // the data DB and must not go through the HTTP server (auth would reject
+        // them if the caller is not on the tailnet with admin rights).
         #[cfg(feature = "serve")]
-        Command::User(_) | Command::Cors(_) => {
-            // User/CORS commands are handled in client mode (HTTP) or embedded mode
-            // (direct SQLite) below; no early return here.
-        }
+        Command::User(cmd) => return run_user_embedded(cmd.clone(), &cli.output),
+        #[cfg(feature = "serve")]
+        Command::Cors(cmd) => return run_cors_embedded(cmd.clone(), &cli.output),
         _ => {}
     }
 
@@ -765,15 +767,9 @@ pub fn run(cli: Cli) -> Result<()> {
             &cli.output,
             &mut handler,
         ),
-        // User-role commands against the control-plane database directly.
-        #[cfg(feature = "serve")]
-        Command::User(cmd) => run_user_embedded(cmd, &cli.output),
-        // CORS origin commands against the control-plane database directly.
-        #[cfg(feature = "serve")]
-        Command::Cors(cmd) => run_cors_embedded(cmd, &cli.output),
         // Already handled above; unreachable
         #[cfg(feature = "serve")]
-        Command::Serve(_) | Command::Mcp { .. } => unreachable!(),
+        Command::User(_) | Command::Cors(_) | Command::Serve(_) | Command::Mcp { .. } => unreachable!(),
         Command::Doctor | Command::Init { .. } | Command::Server(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
     }
 }
@@ -2473,38 +2469,10 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
         Command::Bead(_) => {
             anyhow::bail!("bead commands are not yet available in client mode");
         }
-        #[cfg(feature = "serve")]
-        Command::User(cmd) => match cmd {
-            UserCmd::List => {
-                let resp = client.list_users()?;
-                print_serialized(&resp, &cli.output);
-            }
-            UserCmd::Grant { login, role } => {
-                let resp = client.set_user_role(&login, &role)?;
-                print_serialized(&resp, &cli.output);
-            }
-            UserCmd::Revoke { login } => {
-                let resp = client.remove_user_role(&login)?;
-                print_serialized(&resp, &cli.output);
-            }
-        },
-        #[cfg(feature = "serve")]
-        Command::Cors(cmd) => match cmd {
-            CorsCmd::List => {
-                let resp = client.list_cors_origins()?;
-                print_serialized(&resp, &cli.output);
-            }
-            CorsCmd::Add { origin } => {
-                let resp = client.add_cors_origin(&origin)?;
-                print_serialized(&resp, &cli.output);
-            }
-            CorsCmd::Remove { origin } => {
-                let resp = client.remove_cors_origin(&origin)?;
-                print_serialized(&resp, &cli.output);
-            }
-        },
         // These are handled before mode detection; unreachable in client mode
-        Command::Serve(_) | Command::Mcp { .. } | Command::Doctor | Command::Init { .. }
+        #[cfg(feature = "serve")]
+        Command::User(_) | Command::Cors(_) | Command::Serve(_) | Command::Mcp { .. } => unreachable!(),
+        Command::Doctor | Command::Init { .. }
         | Command::Server(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
     }
     Ok(())
