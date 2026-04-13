@@ -81,7 +81,7 @@ Axon abstracts storage behind a **Storage Adapter** trait. Multiple backing stor
 
 The adapter must support:
 - **Key-value operations**: get, put, delete, range scan
-- **Transactions**: begin, commit, abort with serializable isolation
+- **Transactions**: begin, commit, abort with snapshot isolation (V1); storage backends may provide serializable at the transaction layer.
 - **Ordered iteration**: scan by key prefix with start/end bounds
 - **Atomic batch writes**: multiple puts/deletes in one atomic operation
 - **Compare-and-swap**: conditional write for OCC (write if version matches)
@@ -340,7 +340,7 @@ Following FoundationDB's approach (see [research](../00-discover/foundationdb-ds
 | Invariant | Verification |
 |-----------|-------------|
 | **No lost updates** | Concurrent writers to same entity: exactly one succeeds per version |
-| **Serializable isolation** | Cycle test (ring integrity) under concurrent transactions |
+| **Snapshot Isolation** | Cycle test (ring integrity) under concurrent transactions; write skew prevention is P1. |
 | **Audit completeness** | Every committed mutation has a corresponding audit entry |
 | **Audit immutability** | No audit entry is ever modified or deleted |
 | **Schema enforcement** | No entity in storage violates its collection schema |

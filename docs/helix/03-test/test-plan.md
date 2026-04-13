@@ -79,9 +79,9 @@ These are the properties that must hold under all circumstances, including concu
 - CHECK: final value == sum of acknowledged writes
 - BUGGIFY: inject version conflicts, storage errors, delays
 
-### INV-002: Serializable Isolation (Cycle Test)
+### INV-002: Snapshot Isolation (Cycle Test)
 
-**Statement**: Concurrent transactions produce results equivalent to some serial execution order. No write skew, no phantom reads, no dirty reads.
+**Statement**: Concurrent transactions produce results equivalent to some serial execution order. No phantom reads, no dirty reads.
 
 **Verification**: FoundationDB's cycle test. N entities form a ring via typed links. Transactions atomically update pairs of adjacent nodes. The CHECK phase walks the ring — exactly N hops means isolation held.
 
@@ -91,6 +91,10 @@ These are the properties that must hold under all circumstances, including concu
 - CHECK: ring walk returns to start in exactly N hops
 - BUGGIFY: inject transaction aborts, delays, storage errors
 - Failure detection: fewer or more hops = isolation violation
+
+### INV-002b (P1): Write Skew Prevention
+
+**Statement**: Write skew is prevented under serializable isolation.
 
 ### INV-003: Audit Completeness
 

@@ -62,7 +62,7 @@ ACID semantics for multi-entity operations. If it can be partially applied, it's
 | Criterion | Test |
 |-----------|------|
 | Atomicity | Multi-entity transaction: all operations commit or none do |
-| Serializable isolation | Concurrent transactions produce results equivalent to serial execution |
+| Snapshot Isolation | Concurrent transactions are isolated from each other's writes; write skew prevention (full serializability) is P1. |
 | No lost updates | Version-based OCC prevents stale-state overwrites |
 | Linearizable single-entity reads | Read-after-write returns the written value from any client on the same instance |
 

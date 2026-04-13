@@ -51,7 +51,7 @@ Agents operating concurrently on shared state produce corrupt or inconsistent da
 
 ### Conflict Resolution
 
-- **First-writer-wins**: Under serializable isolation, the first transaction to commit wins. Subsequent transactions that touch the same entities are aborted with conflict
+- **First-writer-wins**: Under snapshot isolation with write-set OCC, the first transaction to commit wins. Subsequent transactions that touch the same entities are aborted with conflict
 - **Conflict detail**: The abort response includes which entity/link caused the conflict and its current state
 - **Retry guidance**: API response includes a `retryable: true` flag for version conflicts (vs. `retryable: false` for schema violations)
 

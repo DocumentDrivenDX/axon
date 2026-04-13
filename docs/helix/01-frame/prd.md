@@ -134,7 +134,7 @@ Axon provides full ACID transactions across entities and links within a single A
 
 ### Isolation Levels
 
-Axon's isolation model is defined in terms of the standard database isolation hierarchy. The default and recommended level is **serializable**; weaker levels are available as explicit opt-ins for performance-sensitive paths.
+The default isolation level in V1 is **snapshot isolation**, implemented via optimistic concurrency control (OCC) with write-set conflict detection. Serializable isolation (preventing write skew) is a P1 post-V1 goal; see the known gap below.
 
 | Level | Guarantee | Prevents | Axon Support |
 |-------|-----------|----------|-------------|

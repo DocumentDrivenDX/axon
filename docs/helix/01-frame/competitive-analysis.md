@@ -146,7 +146,7 @@ Relational databases are the incumbent and the most likely "do nothing" alternat
 | **Schema flexibility** | Strict SQL schemas + JSONB columns for flexibility | Dynamic typing (any column can hold any type, despite declared affinity) | Strict SQL schemas | Strict SQL schemas |
 | **Audit patterns** | Manual: triggers, audit tables, pg_audit extension, temporal tables (SQL:2011 pending) | Manual: triggers + audit tables | Manual: triggers + audit tables | Built-in change feeds (CDC) |
 | **Embeddability** | No (server process required) | Yes (best-in-class: single-file, zero-config, in-process) | No (server process) | No (server process) |
-| **Transactions** | Full ACID, serializable isolation | Full ACID, serializable (single-writer) | Full ACID (InnoDB), but weaker isolation defaults | Serializable, distributed ACID |
+| **Transactions** | Full ACID, snapshot isolation (V1); serializable is P1. | Full ACID, serializable (single-writer) | Full ACID (InnoDB), but weaker isolation defaults | Serializable, distributed ACID |
 | **Recursive structures** | `WITH RECURSIVE` (powerful but verbose), ltree (materialized path), closure tables | `WITH RECURSIVE` (functional but limited optimizer) | `WITH RECURSIVE` (basic) | `WITH RECURSIVE` (PostgreSQL-compatible) |
 | **Change feeds** | Logical replication, LISTEN/NOTIFY, pg_logical | None built-in | Binary log (row-based) | Changefeeds (built-in CDC) |
 | **Performance** | Excellent (mature optimizer, parallel queries, JIT) | Excellent for single-user (100K+ reads/sec, fast writes with WAL mode) | Good (InnoDB mature, limited parallel query) | Good (distributed, higher latency per query) |
