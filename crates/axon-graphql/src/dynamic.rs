@@ -869,6 +869,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         }
     }
 
@@ -964,6 +965,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         let schema = build_schema(&[tasks, users]).expect("schema should build");

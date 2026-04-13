@@ -144,6 +144,7 @@ pub fn bead_schema() -> CollectionSchema {
         validation_rules: Default::default(),
         indexes: Default::default(),
         compound_indexes: Default::default(),
+        lifecycles: Default::default(),
     }
 }
 

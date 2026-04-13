@@ -133,6 +133,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         validation_rules: Default::default(),
         indexes: Default::default(),
         compound_indexes: Default::default(),
+        lifecycles: Default::default(),
     };
     handler
         .put_schema(schema)
@@ -207,6 +208,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         validation_rules: Default::default(),
         indexes: Default::default(),
         compound_indexes: Default::default(),
+        lifecycles: Default::default(),
     };
 
     let all_entities = handler

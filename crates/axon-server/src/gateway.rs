@@ -1504,6 +1504,7 @@ async fn create_collection(
         validation_rules: Default::default(),
         indexes: Default::default(),
         compound_indexes: Default::default(),
+        lifecycles: Default::default(),
     };
     match handler
         .lock()
@@ -1692,6 +1693,7 @@ async fn put_schema(
         validation_rules: Default::default(),
         indexes: Default::default(),
         compound_indexes: Default::default(),
+        lifecycles: Default::default(),
     };
     match handler.lock().await.handle_put_schema(PutSchemaRequest {
         schema,
@@ -2718,6 +2720,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
                 }),
                 "storing qualified schema for template HTTP test",
             );
@@ -3397,6 +3400,7 @@ mod tests {
                     }],
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
                 })
                 .unwrap();
             guard
@@ -3935,6 +3939,7 @@ mod tests {
                     unique: true,
                 }],
                 compound_indexes: Default::default(),
+                lifecycles: Default::default(),
             };
             storage
                 .put_schema(&schema(billing_invoices.clone()))

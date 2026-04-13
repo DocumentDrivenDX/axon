@@ -275,6 +275,7 @@ macro_rules! storage_conformance_tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+                lifecycles: Default::default(),
                 };
                 s.put_schema(&schema).expect("test operation should succeed");
                 let got = s.get_schema(&col).expect("test operation should succeed").expect("test operation should succeed");
@@ -303,6 +304,7 @@ macro_rules! storage_conformance_tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+                lifecycles: Default::default(),
                 };
                 let v2 = CollectionSchema {
                     collection: col.clone(),
@@ -314,6 +316,7 @@ macro_rules! storage_conformance_tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+                lifecycles: Default::default(),
                 };
                 s.put_schema(&v1).expect("test operation should succeed");
                 s.put_schema(&v2).expect("test operation should succeed");
@@ -336,6 +339,7 @@ macro_rules! storage_conformance_tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+                lifecycles: Default::default(),
                 };
                 s.put_schema(&schema).expect("test operation should succeed");
                 assert!(s.get_schema(&col).expect("test operation should succeed").is_some());
@@ -357,6 +361,7 @@ macro_rules! storage_conformance_tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+                lifecycles: Default::default(),
                 };
                 s.put_schema(&original).expect("test operation should succeed");
 
@@ -371,6 +376,7 @@ macro_rules! storage_conformance_tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+                lifecycles: Default::default(),
                 })
                 .expect("test operation should succeed");
                 s.abort_tx().expect("test operation should succeed");
@@ -425,6 +431,7 @@ macro_rules! storage_conformance_tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
                 };
                 s.put_schema(&schema).expect("test operation should succeed");
 

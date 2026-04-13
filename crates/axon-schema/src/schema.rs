@@ -32,6 +32,20 @@ pub struct LinkTypeDef {
     pub metadata_schema: Option<Value>,
 }
 
+/// Lifecycle definition for a state-machine field (ESF Layer 6).
+///
+/// Describes valid states and allowed transitions for a single field
+/// (e.g. `status`). Used by `transition_lifecycle` to validate state changes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LifecycleDef {
+    /// The entity field this lifecycle governs (e.g. `"status"`).
+    pub field: String,
+    /// The initial state for new entities.
+    pub initial: String,
+    /// Map from state name to the list of states reachable from it.
+    pub transitions: HashMap<String, Vec<String>>,
+}
+
 /// Gate definition declared in the schema (ESF Layer 5).
 ///
 /// Gates group validation rules by purpose. The `save` gate blocks persistence;
@@ -144,6 +158,9 @@ pub struct CollectionSchema {
     /// Compound index declarations (ESF Layer 4, US-033).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compound_indexes: Vec<CompoundIndexDef>,
+    /// Lifecycle definitions (ESF Layer 6). Keys are lifecycle names.
+    #[serde(default)]
+    pub lifecycles: HashMap<String, LifecycleDef>,
 }
 
 /// Presentation metadata for a collection, versioned independently from the
@@ -195,6 +212,7 @@ impl CollectionSchema {
             validation_rules: Vec::new(),
             indexes: Vec::new(),
             compound_indexes: Vec::new(),
+            lifecycles: HashMap::new(),
         }
     }
 }
@@ -219,6 +237,8 @@ pub struct EsfDocument {
     pub link_types: Option<Value>,
     /// Layer 3: Custom validation rules with severity. Stored as raw JSON for now.
     pub validation_rules: Option<Value>,
+    /// Layer 6: Lifecycle definitions. Stored as raw JSON for now.
+    pub lifecycles: Option<Value>,
 }
 
 impl EsfDocument {
@@ -243,6 +263,12 @@ impl EsfDocument {
             })?,
             None => HashMap::new(),
         };
+        let lifecycles: HashMap<String, LifecycleDef> = match self.lifecycles {
+            Some(val) => serde_json::from_value(val).map_err(|e| {
+                AxonError::SchemaValidation(format!("invalid lifecycles definition: {e}"))
+            })?,
+            None => HashMap::new(),
+        };
         Ok(CollectionSchema {
             collection: CollectionId::new(self.collection),
             description: None,
@@ -253,6 +279,7 @@ impl EsfDocument {
             validation_rules: Vec::new(),
             indexes: Vec::new(),
             compound_indexes: Vec::new(),
+            lifecycles,
         })
     }
 }
@@ -354,5 +381,69 @@ entity_schema:
     fn parse_invalid_yaml_returns_error() {
         let result = EsfDocument::parse("{ not: valid yaml: [");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn esf_parses_lifecycles_from_beads_fixture() {
+        let esf = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("fixtures/beads.esf.yaml"),
+        )
+        .expect("beads.esf.yaml fixture missing");
+        let doc = EsfDocument::parse(&esf).unwrap();
+        let schema = doc.into_collection_schema().unwrap();
+
+        let lc = schema.lifecycles.get("status").expect("status lifecycle missing");
+        assert_eq!(lc.field, "status");
+        assert_eq!(lc.initial, "draft");
+
+        let from_draft = lc.transitions.get("draft").expect("draft transitions missing");
+        assert!(from_draft.contains(&"pending".to_string()));
+        assert!(from_draft.contains(&"cancelled".to_string()));
+    }
+
+    #[test]
+    fn collection_schema_without_lifecycles_defaults_to_empty() {
+        let doc = EsfDocument::parse(INVOICE_ESF).unwrap();
+        let schema = doc.into_collection_schema().unwrap();
+        assert!(schema.lifecycles.is_empty());
+    }
+
+    #[test]
+    fn lifecycle_def_round_trips_through_json() {
+        let mut transitions = HashMap::new();
+        transitions.insert("draft".to_string(), vec!["active".to_string()]);
+        transitions.insert("active".to_string(), vec!["closed".to_string()]);
+        let lc = LifecycleDef {
+            field: "status".to_string(),
+            initial: "draft".to_string(),
+            transitions,
+        };
+        let mut lifecycles = HashMap::new();
+        lifecycles.insert("status".to_string(), lc.clone());
+        let schema = CollectionSchema {
+            collection: CollectionId::new("items"),
+            description: None,
+            version: 1,
+            entity_schema: None,
+            link_types: HashMap::new(),
+            gates: HashMap::new(),
+            validation_rules: Vec::new(),
+            indexes: Vec::new(),
+            compound_indexes: Vec::new(),
+            lifecycles,
+        };
+        let json = serde_json::to_string(&schema).unwrap();
+        let restored: CollectionSchema = serde_json::from_str(&json).unwrap();
+        let restored_lc = restored.lifecycles.get("status").unwrap();
+        assert_eq!(restored_lc.field, lc.field);
+        assert_eq!(restored_lc.initial, lc.initial);
+        assert_eq!(restored_lc.transitions, lc.transitions);
+    }
+
+    #[test]
+    fn collection_schema_new_has_empty_lifecycles() {
+        let schema = CollectionSchema::new(CollectionId::new("tasks"));
+        assert!(schema.lifecycles.is_empty());
     }
 }

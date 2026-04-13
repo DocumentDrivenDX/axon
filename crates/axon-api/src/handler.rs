@@ -4175,6 +4175,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
                 },
                 actor: None,
             }),
@@ -4228,6 +4229,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
                 },
                 actor: None,
             }),
@@ -4333,6 +4335,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
                 },
                 actor: None,
             }),
@@ -4486,6 +4489,7 @@ mod tests {
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                lifecycles: Default::default(),
             })
             .expect("qualified schema put should succeed");
         h.create_entity(CreateEntityRequest {
@@ -6694,6 +6698,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -6805,6 +6810,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         let err = h
@@ -6895,6 +6901,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         })
         .unwrap();
 
@@ -6924,6 +6931,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -8055,6 +8063,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         h.put_schema(schema.clone()).unwrap();
@@ -8103,6 +8112,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -8171,6 +8181,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         let err = h.put_schema(schema).unwrap_err();
@@ -8194,6 +8205,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         let err = h
@@ -8226,6 +8238,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -8258,6 +8271,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -8286,6 +8300,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         let err = h
             .handle_put_schema(PutSchemaRequest {
@@ -8319,6 +8334,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -8346,6 +8362,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -8380,6 +8397,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -8407,6 +8425,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -8445,6 +8464,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -8472,6 +8492,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -8680,6 +8701,7 @@ link_types:
             ],
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         h.put_schema(schema).unwrap();
         h
@@ -9758,6 +9780,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -9832,6 +9855,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+            lifecycles: Default::default(),
             },
             actor: None,
             force: true,
@@ -9865,6 +9889,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+            lifecycles: Default::default(),
             },
             actor: None,
         })
@@ -10106,6 +10131,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -10131,6 +10157,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v2_schema,
@@ -10204,6 +10231,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+            lifecycles: Default::default(),
             },
             actor: None,
         })
@@ -10227,6 +10255,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+            lifecycles: Default::default(),
             },
             actor: None,
             force: false,
@@ -10253,6 +10282,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+            lifecycles: Default::default(),
             },
             actor: None,
             force: false,
@@ -10461,6 +10491,7 @@ link_types:
                 },
             ],
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         h.create_collection(CreateCollectionRequest {
@@ -10659,6 +10690,7 @@ link_types:
                 unique: false,
             }],
             compound_indexes: Default::default(),
+            lifecycles: Default::default(),
         };
 
         h.put_schema(indexed_schema(billing.clone())).unwrap();
@@ -10776,6 +10808,7 @@ link_types:
                 unique: false,
             }],
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         let err = h.put_schema(schema).unwrap_err();
@@ -10812,6 +10845,7 @@ link_types:
                 unique: true,
             }],
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         h.create_collection(CreateCollectionRequest {
@@ -11936,6 +11970,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+            lifecycles: Default::default(),
             },
             actor: None,
         })
@@ -11980,6 +12015,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+            lifecycles: Default::default(),
             },
             actor: None,
         })
@@ -12239,6 +12275,7 @@ link_types:
             ],
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            lifecycles: Default::default(),
         };
 
         h.put_schema(gated_schema(billing.clone())).unwrap();

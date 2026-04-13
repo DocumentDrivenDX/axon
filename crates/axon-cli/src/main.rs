@@ -1112,6 +1112,7 @@ fn run_collection(
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                lifecycles: Default::default(),
             };
             handler
                 .create_collection(CreateCollectionRequest {
@@ -1830,6 +1831,7 @@ fn run_schema(
                     .as_ref()
                     .map(|s| s.compound_indexes.clone())
                     .unwrap_or_default(),
+                lifecycles: Default::default(),
             };
 
             let resp = handler
@@ -2622,10 +2624,11 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
-                    gates: Default::default(),
-                    validation_rules: Default::default(),
-                    indexes: Default::default(),
-                    compound_indexes: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                lifecycles: Default::default(),
                 },
                 actor: None,
             })
@@ -2665,10 +2668,11 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
-                    gates: Default::default(),
-                    validation_rules: Default::default(),
-                    indexes: Default::default(),
-                    compound_indexes: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                lifecycles: Default::default(),
                 },
                 actor: None,
             })
@@ -2715,6 +2719,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
                 },
                 actor: None,
             })
@@ -2772,10 +2777,11 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
-                    gates: Default::default(),
-                    validation_rules: Default::default(),
-                    indexes: Default::default(),
-                    compound_indexes: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                lifecycles: Default::default(),
                 },
                 actor: None,
             })

@@ -2327,6 +2327,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         s.put_schema(&schema)
@@ -2365,6 +2366,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
         let v2 = CollectionSchema {
             collection: col.clone(),
@@ -2376,6 +2378,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         s.put_schema(&v1).expect("test operation should succeed");
@@ -2406,6 +2409,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+        lifecycles: Default::default(),
         };
 
         s.put_schema(&schema)
@@ -2441,6 +2445,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            lifecycles: Default::default(),
         };
         let v2 = CollectionSchema {
             collection: qualified,
@@ -2454,6 +2459,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            lifecycles: Default::default(),
         };
 
         s.put_schema(&v1).expect("schema v1 put should succeed");

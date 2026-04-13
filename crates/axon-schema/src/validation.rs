@@ -646,6 +646,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            lifecycles: Default::default(),
         };
         let entity = json!({"count": "not-a-number"});
         let errs = validate_entity(&schema, &entity)
@@ -693,6 +694,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            lifecycles: Default::default(),
         };
         let entity = json!({});
         let errs = validate_entity(&schema, &entity)
