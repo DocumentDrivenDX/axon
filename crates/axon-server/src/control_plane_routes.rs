@@ -17,6 +17,7 @@ use tokio::sync::Mutex;
 
 use crate::auth::{Identity, Role};
 use crate::control_plane::{ControlPlaneDb, Tenant, TenantDatabase};
+use crate::cors_config::CorsStore;
 use crate::gateway::{auth_error_response, ApiError};
 use crate::user_roles::UserRoleStore;
 
@@ -32,19 +33,29 @@ pub struct ControlPlaneState {
     /// Shared with [`AuthContext`] so that role changes take effect within the
     /// next identity-cache TTL window without a server restart.
     pub user_roles: UserRoleStore,
+    /// In-memory write-through cache of CORS allowed origins.
+    ///
+    /// Shared with the CORS middleware layer so that changes take effect on the
+    /// next request without a server restart.
+    pub cors_store: CorsStore,
 }
 
 /// Shared handle to the control-plane SQLite database (legacy alias).
 pub type SharedControlPlane = Arc<Mutex<ControlPlaneDb>>;
 
 impl ControlPlaneState {
-    /// Create a new control-plane state with the given user-role store.
+    /// Create a new control-plane state.
     ///
-    /// Pass the same `UserRoleStore` instance to [`AuthContext::with_user_roles`]
-    /// so that `PUT /control/users` changes are reflected in auth without a
-    /// server restart.
-    pub fn new(db: Arc<Mutex<ControlPlaneDb>>, data_dir: PathBuf, user_roles: UserRoleStore) -> Self {
-        Self { db, data_dir, user_roles }
+    /// Pass the same `UserRoleStore` and `CorsStore` instances to the auth
+    /// context and CORS middleware respectively so that management changes
+    /// take effect without a server restart.
+    pub fn new(
+        db: Arc<Mutex<ControlPlaneDb>>,
+        data_dir: PathBuf,
+        user_roles: UserRoleStore,
+        cors_store: CorsStore,
+    ) -> Self {
+        Self { db, data_dir, user_roles, cors_store }
     }
 
     /// Build the file path for a tenant database.
@@ -140,6 +151,10 @@ pub fn control_plane_routes() -> Router<ControlPlaneState> {
         .route("/users", get(list_users))
         .route("/users/{login}", put(set_user_role))
         .route("/users/{login}", delete(remove_user_role))
+        // CORS origin management
+        .route("/cors", get(list_cors_origins))
+        .route("/cors", put(add_cors_origin))
+        .route("/cors", delete(remove_cors_origin_handler))
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -564,6 +579,87 @@ async fn remove_user_role(
     }
 }
 
+// ── CORS origin handlers ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct CorsOriginBody {
+    origin: String,
+}
+
+/// `GET /control/cors` — list all configured CORS allowed origins.
+async fn list_cors_origins(
+    State(state): State<ControlPlaneState>,
+    Extension(identity): Extension<Identity>,
+) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
+    let db = state.db.lock().await;
+    match db.list_cors_origins() {
+        Ok(origins) => Json(json!({ "origins": origins })).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `PUT /control/cors` — add an allowed origin (idempotent).
+async fn add_cors_origin(
+    State(state): State<ControlPlaneState>,
+    Extension(identity): Extension<Identity>,
+    Json(body): Json<CorsOriginBody>,
+) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
+    let db = state.db.lock().await;
+    match db.add_cors_origin(&body.origin) {
+        Ok(()) => {
+            state.cors_store.add_cached(body.origin.clone());
+            (StatusCode::OK, Json(json!({ "origin": body.origin }))).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `DELETE /control/cors` — remove an allowed origin.
+async fn remove_cors_origin_handler(
+    State(state): State<ControlPlaneState>,
+    Extension(identity): Extension<Identity>,
+    Json(body): Json<CorsOriginBody>,
+) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
+    let db = state.db.lock().await;
+    match db.remove_cors_origin(&body.origin) {
+        Ok(true) => {
+            state.cors_store.remove_cached(&body.origin);
+            (StatusCode::OK, Json(json!({ "origin": body.origin, "deleted": true })))
+                .into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new(
+                "not_found",
+                format!("origin '{}' is not in the CORS allow-list", body.origin),
+            )),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
 // ── Provisioning ────────────────────────────────────────────────────────────
 
 /// Create and initialize a new tenant SQLite database at the given path.
@@ -613,6 +709,7 @@ mod tests {
             Arc::new(Mutex::new(cp_db)),
             tmp.path().to_path_buf(),
             UserRoleStore::default(),
+            CorsStore::default(),
         );
         build_test_server(state)
     }
@@ -1080,6 +1177,89 @@ mod tests {
         let server = test_control_plane_server_with_dir(&tmp);
         let resp = server
             .delete("/control/users/nobody@example.com")
+            .await;
+        resp.assert_status(StatusCode::NOT_FOUND);
+    }
+
+    // -- GET /control/cors ----------------------------------------------------
+
+    #[tokio::test]
+    async fn list_cors_origins_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+        let resp = server.get("/control/cors").await;
+        resp.assert_status(StatusCode::OK);
+        let body: Value = resp.json();
+        assert_eq!(body["origins"].as_array().unwrap().len(), 0);
+    }
+
+    // -- PUT /control/cors ----------------------------------------------------
+
+    #[tokio::test]
+    async fn add_cors_origin_returns_200() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+        let resp = server
+            .put("/control/cors")
+            .json(&json!({ "origin": "https://sindri:5173" }))
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body: Value = resp.json();
+        assert_eq!(body["origin"], "https://sindri:5173");
+
+        let list = server.get("/control/cors").await;
+        let list_body: Value = list.json();
+        assert_eq!(list_body["origins"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn add_cors_origin_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+        server
+            .put("/control/cors")
+            .json(&json!({ "origin": "https://sindri:5173" }))
+            .await
+            .assert_status(StatusCode::OK);
+        server
+            .put("/control/cors")
+            .json(&json!({ "origin": "https://sindri:5173" }))
+            .await
+            .assert_status(StatusCode::OK);
+        let list_body: Value = server.get("/control/cors").await.json();
+        assert_eq!(list_body["origins"].as_array().unwrap().len(), 1);
+    }
+
+    // -- DELETE /control/cors -------------------------------------------------
+
+    #[tokio::test]
+    async fn remove_cors_origin_returns_200() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+        server
+            .put("/control/cors")
+            .json(&json!({ "origin": "https://sindri:5173" }))
+            .await
+            .assert_status(StatusCode::OK);
+        let resp = server
+            .delete("/control/cors")
+            .json(&json!({ "origin": "https://sindri:5173" }))
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body: Value = resp.json();
+        assert_eq!(body["deleted"], true);
+
+        let list_body: Value = server.get("/control/cors").await.json();
+        assert_eq!(list_body["origins"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn remove_nonexistent_cors_origin_returns_404() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+        let resp = server
+            .delete("/control/cors")
+            .json(&json!({ "origin": "https://nobody:9000" }))
             .await;
         resp.assert_status(StatusCode::NOT_FOUND);
     }

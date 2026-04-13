@@ -173,6 +173,69 @@ pub fn auth_context_from_serve_args(args: &ServeArgs) -> AuthContext {
     }
 }
 
+/// Fully initialized control-plane: opened DB, loaded stores, wired auth.
+///
+/// Created by [`init_control_plane`] and consumed by each storage-backend startup
+/// function.  Bundles everything the gateway needs from the control plane so the
+/// two startup paths share exactly one code path for this initialization.
+pub struct ControlPlaneReady {
+    /// Async-safe handle to the control-plane SQLite database.
+    pub db: std::sync::Arc<tokio::sync::Mutex<crate::control_plane::ControlPlaneDb>>,
+    /// Axom route state (DB handle + data dir + stores).
+    pub state: crate::control_plane_routes::ControlPlaneState,
+    /// CORS store — pass to [`crate::gateway::build_router_with_auth`].
+    pub cors_store: crate::cors_config::CorsStore,
+    /// Auth context with the user-role registry wired in.
+    pub auth: AuthContext,
+    /// Parent directory of the control-plane database file.
+    pub data_dir: std::path::PathBuf,
+}
+
+/// Open the control-plane database, load user-role and CORS stores, wire auth.
+///
+/// Called once per startup by both [`run_with_sqlite_storage`] and
+/// [`run_with_postgres_storage`].  Returns a [`ControlPlaneReady`] bundle that
+/// each path destructures to obtain only the pieces it needs.
+pub fn init_control_plane(
+    control_plane_path: &str,
+    auth: AuthContext,
+) -> Result<ControlPlaneReady, String> {
+    let db = crate::control_plane::ControlPlaneDb::open(control_plane_path)
+        .map_err(|e| format!("failed to open control-plane database: {e}"))?;
+    tracing::info!("control-plane database opened at {control_plane_path}");
+
+    let user_roles = crate::user_roles::UserRoleStore::default();
+    user_roles.load_from_entries(
+        db.list_user_roles()
+            .map_err(|e| format!("failed to load user roles: {e}"))?,
+    );
+    tracing::info!("loaded {} user-role assignment(s)", user_roles.list().len());
+
+    let cors_store = crate::cors_config::CorsStore::default();
+    cors_store.load_from_entries(
+        db.list_cors_origins()
+            .map_err(|e| format!("failed to load CORS origins: {e}"))?,
+    );
+    tracing::info!("loaded {} CORS allowed origin(s)", cors_store.list().len());
+
+    let auth = auth.with_user_roles(user_roles.clone());
+
+    let data_dir = std::path::Path::new(control_plane_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf();
+
+    let db = std::sync::Arc::new(tokio::sync::Mutex::new(db));
+    let state = crate::control_plane_routes::ControlPlaneState::new(
+        db.clone(),
+        data_dir.clone(),
+        user_roles,
+        cors_store.clone(),
+    );
+
+    Ok(ControlPlaneReady { db, state, cors_store, auth, data_dir })
+}
+
 /// Entry point that replaces the former binary `main`.
 ///
 /// Selects the storage backend based on `args.storage` and delegates to
@@ -244,33 +307,8 @@ pub async fn run_with_sqlite_storage(
         )
     })?;
 
-    let control_plane_db = crate::control_plane::ControlPlaneDb::open(&args.control_plane_path)
-        .map_err(|error| format!("failed to open control-plane database: {error}"))?;
-    tracing::info!(
-        "control-plane database opened at {}",
-        args.control_plane_path
-    );
-
-    // Load user-role assignments from the control-plane DB into a shared store.
-    let user_roles = crate::user_roles::UserRoleStore::default();
-    let role_entries = control_plane_db
-        .list_user_roles()
-        .map_err(|e| format!("failed to load user roles: {e}"))?;
-    user_roles.load_from_entries(role_entries);
-    tracing::info!("loaded {} user-role assignment(s)", user_roles.list().len());
-
-    // Share the role store with both the auth context and control-plane routes.
-    let auth = auth.with_user_roles(user_roles.clone());
-
-    let control_plane_db = Arc::new(tokio::sync::Mutex::new(control_plane_db));
-
-    // Derive the data directory for tenant databases from the control-plane path.
-    let data_dir = std::path::Path::new(&args.control_plane_path)
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
-    let control_plane_state =
-        crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir.clone(), user_roles);
+    let cp = init_control_plane(&args.control_plane_path, auth)?;
+    let (auth, data_dir, cors_store) = (cp.auth, cp.data_dir, cp.cors_store);
 
     let handler: crate::tenant_router::TenantHandler =
         Arc::new(tokio::sync::Mutex::new(AxonHandler::new(
@@ -287,7 +325,8 @@ pub async fn run_with_sqlite_storage(
         auth.clone(),
         crate::rate_limit::RateLimitConfig::default(),
         crate::actor_scope::ActorScopeGuard::default(),
-        Some(control_plane_state),
+        Some(cp.state),
+        cors_store,
     );
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 
@@ -415,28 +454,8 @@ pub async fn run_with_postgres_storage(
         default_handler,
     ));
 
-    let control_plane_db = crate::control_plane::ControlPlaneDb::open(&args.control_plane_path)
-        .map_err(|error| format!("failed to open control-plane database: {error}"))?;
-    tracing::info!(
-        "control-plane database opened at {}",
-        args.control_plane_path
-    );
-
-    let user_roles = crate::user_roles::UserRoleStore::default();
-    let role_entries = control_plane_db
-        .list_user_roles()
-        .map_err(|e| format!("failed to load user roles: {e}"))?;
-    user_roles.load_from_entries(role_entries);
-    let auth = auth.with_user_roles(user_roles.clone());
-
-    let control_plane_db = Arc::new(tokio::sync::Mutex::new(control_plane_db));
-
-    let data_dir = std::path::Path::new(&args.control_plane_path)
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf();
-    let control_plane_state =
-        crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir, user_roles);
+    let cp = init_control_plane(&args.control_plane_path, auth)?;
+    let (auth, cors_store) = (cp.auth, cp.cors_store);
 
     let http_app = crate::gateway::build_router_with_auth(
         tenant_router,
@@ -445,7 +464,8 @@ pub async fn run_with_postgres_storage(
         auth,
         crate::rate_limit::RateLimitConfig::default(),
         crate::actor_scope::ActorScopeGuard::default(),
-        Some(control_plane_state),
+        Some(cp.state),
+        cors_store,
     );
     let http_addr: std::net::SocketAddr = ([0, 0, 0, 0], args.http_port).into();
 

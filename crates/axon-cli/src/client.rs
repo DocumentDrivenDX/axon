@@ -449,6 +449,40 @@ impl HttpClient {
         Self::parse_response(resp)
     }
 
+    // ── CORS origin management ───────────────────────────────────────────────
+
+    /// `GET /control/cors` — list all allowed CORS origins.
+    pub fn list_cors_origins(&self) -> Result<Value> {
+        let resp = self
+            .client
+            .get(format!("{}/control/cors", self.base_url))
+            .send()
+            .context("failed to send list-cors-origins request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `PUT /control/cors` — add an allowed origin (or `"*"` for wildcard).
+    pub fn add_cors_origin(&self, origin: &str) -> Result<Value> {
+        let resp = self
+            .client
+            .put(format!("{}/control/cors", self.base_url))
+            .json(&serde_json::json!({ "origin": origin }))
+            .send()
+            .context("failed to send add-cors-origin request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `DELETE /control/cors` — remove an allowed origin.
+    pub fn remove_cors_origin(&self, origin: &str) -> Result<Value> {
+        let resp = self
+            .client
+            .delete(format!("{}/control/cors", self.base_url))
+            .json(&serde_json::json!({ "origin": origin }))
+            .send()
+            .context("failed to send remove-cors-origin request")?;
+        Self::parse_response(resp)
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     /// Parse a response: if 2xx, return the JSON body; otherwise return an error.

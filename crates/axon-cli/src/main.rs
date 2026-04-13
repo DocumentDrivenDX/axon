@@ -150,6 +150,11 @@ enum Command {
     #[cfg(feature = "serve")]
     #[command(subcommand)]
     User(UserCmd),
+
+    /// Manage CORS allowed origins for browser-based clients.
+    #[cfg(feature = "serve")]
+    #[command(subcommand)]
+    Cors(CorsCmd),
 }
 
 #[cfg(feature = "serve")]
@@ -171,6 +176,25 @@ enum UserCmd {
         login: String,
     },
     /// List all explicit user-role assignments.
+    List,
+}
+
+#[cfg(feature = "serve")]
+#[derive(Subcommand)]
+enum CorsCmd {
+    /// Add an allowed CORS origin (e.g. `https://sindri:5173`).
+    ///
+    /// Use `*` to enable wildcard mode, which allows all origins.
+    Add {
+        /// The origin to allow (scheme + host + optional port).
+        origin: String,
+    },
+    /// Remove an allowed CORS origin.
+    Remove {
+        /// The origin to remove.
+        origin: String,
+    },
+    /// List all allowed CORS origins.
     List,
 }
 
@@ -673,8 +697,8 @@ pub fn run(cli: Cli) -> Result<()> {
             return Ok(());
         }
         #[cfg(feature = "serve")]
-        Command::User(_) => {
-            // User commands are handled in client mode (HTTP) or embedded mode
+        Command::User(_) | Command::Cors(_) => {
+            // User/CORS commands are handled in client mode (HTTP) or embedded mode
             // (direct SQLite) below; no early return here.
         }
         _ => {}
@@ -744,6 +768,9 @@ pub fn run(cli: Cli) -> Result<()> {
         // User-role commands against the control-plane database directly.
         #[cfg(feature = "serve")]
         Command::User(cmd) => run_user_embedded(cmd, &cli.output),
+        // CORS origin commands against the control-plane database directly.
+        #[cfg(feature = "serve")]
+        Command::Cors(cmd) => run_cors_embedded(cmd, &cli.output),
         // Already handled above; unreachable
         #[cfg(feature = "serve")]
         Command::Serve(_) | Command::Mcp { .. } => unreachable!(),
@@ -826,6 +853,72 @@ fn run_user_embedded(cmd: UserCmd, format: &OutputFormat) -> Result<()> {
                 }
             } else {
                 anyhow::bail!("no explicit role assigned to '{login}'");
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Run `axon cors` commands against the control-plane SQLite database directly
+/// (no server required).
+#[cfg(feature = "serve")]
+fn run_cors_embedded(cmd: CorsCmd, format: &OutputFormat) -> Result<()> {
+    use axon_server::control_plane::ControlPlaneDb;
+
+    let cp_path = axon_config::paths::control_plane_sqlite_path()
+        .to_string_lossy()
+        .into_owned();
+    let db = ControlPlaneDb::open(&cp_path)
+        .with_context(|| format!("failed to open control-plane database: {cp_path}"))?;
+
+    match cmd {
+        CorsCmd::List => {
+            let origins = db
+                .list_cors_origins()
+                .map_err(|e| anyhow::anyhow!("failed to list CORS origins: {e}"))?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    print_serialized(&serde_json::json!({ "origins": origins }), format);
+                }
+                OutputFormat::Table => {
+                    if origins.is_empty() {
+                        println!("No CORS origins configured.");
+                    } else {
+                        for o in &origins {
+                            println!("{o}");
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        CorsCmd::Add { origin } => {
+            db.add_cors_origin(&origin)
+                .map_err(|e| anyhow::anyhow!("failed to add CORS origin: {e}"))?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    print_serialized(&serde_json::json!({ "origin": origin, "added": true }), format);
+                }
+                OutputFormat::Table => println!("Added CORS origin: {origin}"),
+            }
+            Ok(())
+        }
+        CorsCmd::Remove { origin } => {
+            let removed = db
+                .remove_cors_origin(&origin)
+                .map_err(|e| anyhow::anyhow!("failed to remove CORS origin: {e}"))?;
+            if removed {
+                match format {
+                    OutputFormat::Json | OutputFormat::Yaml => {
+                        print_serialized(
+                            &serde_json::json!({ "origin": origin, "deleted": true }),
+                            format,
+                        );
+                    }
+                    OutputFormat::Table => println!("Removed CORS origin: {origin}"),
+                }
+            } else {
+                anyhow::bail!("origin '{origin}' was not in the allow-list");
             }
             Ok(())
         }
@@ -2392,6 +2485,21 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
             }
             UserCmd::Revoke { login } => {
                 let resp = client.remove_user_role(&login)?;
+                print_serialized(&resp, &cli.output);
+            }
+        },
+        #[cfg(feature = "serve")]
+        Command::Cors(cmd) => match cmd {
+            CorsCmd::List => {
+                let resp = client.list_cors_origins()?;
+                print_serialized(&resp, &cli.output);
+            }
+            CorsCmd::Add { origin } => {
+                let resp = client.add_cors_origin(&origin)?;
+                print_serialized(&resp, &cli.output);
+            }
+            CorsCmd::Remove { origin } => {
+                let resp = client.remove_cors_origin(&origin)?;
                 print_serialized(&resp, &cli.output);
             }
         },

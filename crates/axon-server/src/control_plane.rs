@@ -92,7 +92,25 @@ impl ControlPlaneDb {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         crate::user_roles::migrate_user_roles(&self.conn)?;
+        crate::cors_config::migrate_cors_origins(&self.conn)?;
         Ok(())
+    }
+
+    // -- cors_origins ----------------------------------------------------------
+
+    /// List all configured CORS allowed origins.
+    pub fn list_cors_origins(&self) -> Result<Vec<String>, AxonError> {
+        crate::cors_config::db_list(&self.conn)
+    }
+
+    /// Add (or no-op if already present) a CORS allowed origin.
+    pub fn add_cors_origin(&self, origin: &str) -> Result<(), AxonError> {
+        crate::cors_config::db_add(&self.conn, origin)
+    }
+
+    /// Remove a CORS allowed origin.  Returns `true` if a row was deleted.
+    pub fn remove_cors_origin(&self, origin: &str) -> Result<bool, AxonError> {
+        crate::cors_config::db_remove(&self.conn, origin)
     }
 
     // -- user_roles ------------------------------------------------------------

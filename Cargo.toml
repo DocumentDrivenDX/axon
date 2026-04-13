@@ -16,10 +16,10 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.5"
+version = "0.1.6"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/easylabz/axon"
+repository = "https://github.com/DocumentDrivenDX/axon"
 rust-version = "1.75"
 
 [workspace.lints.clippy]

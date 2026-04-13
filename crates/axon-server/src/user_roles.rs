@@ -165,7 +165,7 @@ fn parse_role(s: &str) -> Result<Role, AxonError> {
     }
 }
 
-fn chrono_now() -> String {
+pub(crate) fn chrono_now() -> String {
     // RFC 3339 timestamp without an external dep.
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()

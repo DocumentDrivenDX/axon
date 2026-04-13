@@ -28,6 +28,7 @@ use axon_graphql::BroadcastBroker;
 use crate::actor_scope::ActorScopeGuard;
 use crate::auth::{AuthContext, AuthError, Identity};
 use crate::collection_listing::{filter_audit_entries_to_database, list_collections_for_database};
+use crate::cors_config::CorsStore;
 use crate::mcp_http::{notify_entity_change, notify_entity_change_by_parts, McpHttpSessions};
 use crate::rate_limit::{RateLimited, WriteRateLimiter};
 use axon_api::handler::AxonHandler;
@@ -311,6 +312,70 @@ pub(crate) async fn authenticate_http_request(
         }
         Err(error) => auth_error_response(error),
     }
+}
+
+/// CORS middleware — runs **outside** the auth layer so that OPTIONS preflights
+/// bypass authentication entirely.
+///
+/// Behaviour depends on the configured [`CorsStore`]:
+///
+/// | Store state          | OPTIONS response                           | Non-OPTIONS  |
+/// |---------------------|--------------------------------------------|-------------|
+/// | Empty (no config)   | 200, no CORS headers                       | No headers  |
+/// | Origin in allow-list | 200 + CORS headers, `ACAO: <echo origin>` | `ACAO: <echo origin>` |
+/// | Wildcard (`*`)      | 200 + CORS headers, `ACAO: *`              | `ACAO: *`   |
+///
+/// `Access-Control-Max-Age: 86400` is included in preflight responses so that
+/// browsers cache the preflight for 24 hours.
+pub(crate) async fn cors_middleware(
+    State(cors): State<CorsStore>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let origin = request
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    // Short-circuit OPTIONS preflight — bypass auth entirely.
+    if request.method() == axum::http::Method::OPTIONS {
+        let mut builder = axum::http::Response::builder().status(StatusCode::OK);
+        if let Some(ref orig) = origin {
+            if !cors.is_empty() && (cors.is_wildcard() || cors.is_allowed(orig)) {
+                let acao = if cors.is_wildcard() { "*" } else { orig.as_str() };
+                builder = builder
+                    .header("Access-Control-Allow-Origin", acao)
+                    .header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+                    .header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                    .header("Access-Control-Max-Age", "86400");
+            }
+        }
+        return builder
+            .body(axum::body::Body::empty())
+            .unwrap_or_else(|_| axum::http::Response::new(axum::body::Body::empty()));
+    }
+
+    let mut response = next.run(request).await;
+
+    if let Some(ref orig) = origin {
+        if !cors.is_empty() {
+            let acao: Option<String> = if cors.is_wildcard() {
+                Some("*".into())
+            } else if cors.is_allowed(orig) {
+                Some(orig.clone())
+            } else {
+                None
+            };
+            if let Some(value) = acao {
+                if let Ok(v) = axum::http::HeaderValue::from_str(&value) {
+                    response.headers_mut().insert("Access-Control-Allow-Origin", v);
+                }
+            }
+        }
+    }
+
+    response
 }
 
 /// Middleware that resolves the per-tenant handler from the `TenantRouter`
@@ -2070,6 +2135,7 @@ pub fn build_router(
         crate::rate_limit::RateLimitConfig::default(),
         ActorScopeGuard::default(),
         None,
+        CorsStore::default(),
     )
 }
 
@@ -2140,6 +2206,11 @@ fn data_routes() -> Router {
 /// The `tenant_router` provides per-database handler isolation.  A
 /// middleware layer resolves the tenant handler from the `X-Axon-Database`
 /// header before any route handler runs.
+///
+/// `cors` controls the CORS allowed-origin policy.  An empty `CorsStore`
+/// (the default) disables CORS headers entirely, preserving backward
+/// compatibility with non-browser clients.
+#[allow(clippy::too_many_arguments)]
 pub fn build_router_with_auth(
     tenant_router: Arc<TenantRouter>,
     backend: impl Into<String>,
@@ -2148,6 +2219,7 @@ pub fn build_router_with_auth(
     rate_limit_config: crate::rate_limit::RateLimitConfig,
     actor_scope: ActorScopeGuard,
     control_plane: Option<crate::control_plane_routes::ControlPlaneState>,
+    cors: CorsStore,
 ) -> Router {
     let start = Instant::now();
     let backend = backend.into();
@@ -2251,10 +2323,14 @@ pub fn build_router_with_auth(
         router = router.nest("/control", cp_routes);
     }
 
-    router.layer(middleware::from_fn_with_state(
-        auth,
-        authenticate_http_request,
-    ))
+    // Auth is the inner gatekeeper; CORS is the outer envelope so that OPTIONS
+    // preflights never reach the auth middleware.
+    router
+        .layer(middleware::from_fn_with_state(
+            auth,
+            authenticate_http_request,
+        ))
+        .layer(middleware::from_fn_with_state(cors, cors_middleware))
 }
 
 #[cfg(test)]
@@ -2350,6 +2426,7 @@ mod tests {
             crate::rate_limit::RateLimitConfig::default(),
             ActorScopeGuard::default(),
             None,
+            CorsStore::default(),
         )
         .layer(MockConnectInfo(peer));
         TestServer::new(app)
@@ -4354,6 +4431,7 @@ mod tests {
             crate::rate_limit::RateLimitConfig::default(),
             ActorScopeGuard::default(),
             None,
+            CorsStore::default(),
         )
         .layer(MockConnectInfo(peer));
         TestServer::new(app)
@@ -4429,6 +4507,7 @@ mod tests {
             crate::rate_limit::RateLimitConfig::default(),
             ActorScopeGuard::default(),
             None,
+            CorsStore::default(),
         )
         .layer(MockConnectInfo(peer));
         TestServer::new(app)
@@ -4988,5 +5067,137 @@ mod tests {
         let server = test_server_with_auth(peer, auth);
         let resp = server.get("/auth/me").await;
         resp.assert_status(StatusCode::UNAUTHORIZED);
+    }
+
+    // ── CORS middleware tests ─────────────────────────────────────────────────
+
+    fn cors_server(cors: CorsStore) -> axum_test::TestServer {
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
+        );
+        let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let tenant_router = Arc::new(TenantRouter::single(handler));
+        let app = build_router_with_auth(
+            tenant_router,
+            "memory",
+            None,
+            AuthContext::no_auth(),
+            crate::rate_limit::RateLimitConfig::default(),
+            ActorScopeGuard::default(),
+            None,
+            cors,
+        );
+        axum_test::TestServer::new(app)
+    }
+
+    #[tokio::test]
+    async fn cors_options_preflight_allowed_origin_returns_200_with_headers() {
+        let cors = CorsStore::default();
+        cors.add_cached("https://sindri:5173");
+        let server = cors_server(cors);
+
+        let resp = server
+            .method(axum::http::Method::OPTIONS, "/entities/tasks/t-001")
+            .add_header(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_static("https://sindri:5173"),
+            )
+            .add_header(
+                axum::http::header::HeaderName::from_static("access-control-request-method"),
+                axum::http::HeaderValue::from_static("POST"),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        assert_eq!(
+            resp.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()),
+            Some("https://sindri:5173")
+        );
+        assert!(resp.headers().contains_key("access-control-allow-methods"));
+    }
+
+    #[tokio::test]
+    async fn cors_options_preflight_unknown_origin_returns_200_no_cors_headers() {
+        let cors = CorsStore::default();
+        cors.add_cached("https://allowed.example.com");
+        let server = cors_server(cors);
+
+        let resp = server
+            .method(axum::http::Method::OPTIONS, "/entities/tasks/t-001")
+            .add_header(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_static("https://evil.example.com"),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        assert!(
+            resp.headers().get("access-control-allow-origin").is_none(),
+            "unknown origin must not receive ACAO header"
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_wildcard_echoes_star_for_any_origin() {
+        let cors = CorsStore::default();
+        cors.add_cached("*");
+        let server = cors_server(cors);
+
+        let resp = server
+            .method(axum::http::Method::OPTIONS, "/entities/tasks/t-001")
+            .add_header(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_static("https://any.example.com"),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        assert_eq!(
+            resp.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()),
+            Some("*")
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_non_options_request_gets_acao_header_for_allowed_origin() {
+        let cors = CorsStore::default();
+        cors.add_cached("https://sindri:5173");
+        let server = cors_server(cors);
+
+        // POST to a real endpoint (create entity).
+        let resp = server
+            .post("/entities/tasks/t-cors-test")
+            .add_header(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_static("https://sindri:5173"),
+            )
+            .json(&serde_json::json!({"data": {"x": 1}, "actor": "test"}))
+            .await;
+
+        // The entity write should succeed and carry ACAO header.
+        resp.assert_status(StatusCode::CREATED);
+        assert_eq!(
+            resp.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()),
+            Some("https://sindri:5173")
+        );
+    }
+
+    #[tokio::test]
+    async fn cors_empty_store_adds_no_headers() {
+        let server = cors_server(CorsStore::default());
+
+        let resp = server
+            .get("/health")
+            .add_header(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_static("https://example.com"),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        assert!(
+            resp.headers().get("access-control-allow-origin").is_none(),
+            "empty CORS store must not add any CORS headers"
+        );
     }
 }
