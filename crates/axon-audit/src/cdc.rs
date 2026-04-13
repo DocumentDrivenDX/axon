@@ -218,9 +218,16 @@ impl KafkaConfig {
 
 /// Stub Kafka CDC sink.
 ///
-/// This implementation validates the interface and records what *would* be
-/// sent to Kafka. The actual rdkafka integration is deferred to avoid
-/// blocking on native dependency compilation.
+/// Enables dependency injection for testing without a real broker.
+#[cfg(feature = "kafka")]
+pub trait KafkaProducerBackend: Send + std::fmt::Debug {
+    /// Send a message to the given topic with the given key and payload.
+    fn send(&self, topic: &str, key: &str, payload: &str) -> Result<(), String>;
+}
+
+// ── MockProducer (kafka feature) ──────────────────────────────────────────
+
+/// Mock Kafka producer for testing.
 ///
 /// Events are buffered in memory with the computed topic and partition key
 /// so tests can verify correct routing.
