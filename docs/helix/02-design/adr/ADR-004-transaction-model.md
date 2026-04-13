@@ -22,7 +22,7 @@ while matching the workload characteristics of agentic applications.
 |--------|-------------|
 | Problem | Choose a concurrency control mechanism for multi-entity atomic transactions |
 | Workload | Agentic applications — typically low contention, short-lived operations on bounded entity sets |
-| Requirements | Serializable isolation, deadlock-free, sub-20ms p99 for 2–5 entity transactions, embedded and server mode |
+| Requirements | Snapshot Isolation in V1 (Serializable is P1), deadlock-free, sub-20ms p99 for 2–5 entity transactions, embedded and server mode |
 | Prior context | ADR-003 selected SQLite + PostgreSQL with application-layer audit. The transaction model must work across both backends behind the StorageAdapter trait |
 
 ## Decision
@@ -77,16 +77,21 @@ field-path violations.
 
 ### Isolation Guarantees
 
-OCC as implemented provides **serializable isolation** for write transactions:
+OCC as implemented provides **Snapshot Isolation** for write transactions:
 
 - Writes are buffered locally; no storage reads occur at stage time
-- Version checks at commit detect any interleaving write that could produce
-  an inconsistent result
-- Because conflicting transactions are aborted (not queued), there are no
-  dirty reads, non-repeatable reads, phantom reads, or write skew
+- Version checks at commit detect any interleaving write to the same entities,
+  preventing lost updates
+- Dirty reads and non-repeatable reads are prevented; phantom reads are
+  prevented for entity lookups by version
 - The commit phase runs under a storage-level transaction (SQLite `BEGIN
   IMMEDIATE`, PostgreSQL `SERIALIZABLE`), preventing concurrent commits from
   racing at the storage layer
+
+**V1 known gap — write skew is not prevented**: OCC tracks only the write set.
+Two transactions that each read disjoint entities and write to each other's
+read set can both commit, violating serializability. Preventing write skew
+requires read-set tracking, which is deferred to P1.
 
 ### Audit Integration
 
@@ -213,7 +218,7 @@ and maps cleanly onto all three StorageAdapter backends.
 |------|--------|
 | Positive | Deadlock-free. Simple implementation — version check is a comparison, not a lock acquisition. Works uniformly across SQLite, PostgreSQL, and memory. Conflict response carries current state, enabling intelligent client-side merging |
 | Negative | Callers must implement retry logic on conflict. High-contention workloads (unlikely for agentic use cases) will retry frequently |
-| Neutral | Serializable isolation is the default; relaxed isolation levels (snapshot, read-committed) are a P1 opt-in per FEAT-008, not required for V1 |
+| Neutral | Snapshot Isolation is the V1 default (write-set OCC prevents lost updates and dirty reads but not write skew); Serializable isolation requires read-set tracking and is P1 per FEAT-008 |
 
 ## Implementation Notes
 
@@ -230,7 +235,7 @@ and maps cleanly onto all three StorageAdapter backends.
 
 | Success Metric | Review Trigger |
 |----------------|----------------|
-| PROP-004: serializability simulation passes (concurrent transactions produce serial-equivalent result) | Any lost-update or write-skew report |
+| PROP-004: snapshot isolation verified — no lost updates, no dirty reads (write skew detection deferred to P1 serializable work) | Any lost-update report |
 | No deadlocks observed in load tests | Deadlock report (should be impossible by construction) |
 | Transaction commit p99 < 20ms for 2–5 entity transactions (BM-005/BM-006) | Benchmark regression |
 | INV-003 (audit completeness) confirms all committed transactions have full audit trails | Any audit gap detected |

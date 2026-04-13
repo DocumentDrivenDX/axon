@@ -129,7 +129,7 @@ Axon provides full ACID transactions across entities and links within a single A
 |----------|-----------|
 | **Atomicity** | A transaction that updates multiple entities and/or links either fully commits or fully rolls back. Debit account A and credit account B — both or neither |
 | **Consistency** | Every committed transaction leaves the database in a schema-valid state. Schema violations abort the transaction |
-| **Isolation** | Serializable isolation by default (see Isolation Levels below) |
+| **Isolation** | Snapshot Isolation by default in V1 (see Isolation Levels below). Serializable isolation is P1. |
 | **Durability** | Committed transactions survive process restarts. The audit log is the durability mechanism |
 
 ### Isolation Levels
@@ -138,10 +138,12 @@ Axon's isolation model is defined in terms of the standard database isolation hi
 
 | Level | Guarantee | Prevents | Axon Support |
 |-------|-----------|----------|-------------|
-| **Serializable** | Transactions behave as if executed one at a time in some serial order. Strongest guarantee. No anomalies possible | Dirty reads, non-repeatable reads, phantom reads, write skew | **Default**. V1 implementation via optimistic concurrency with conflict detection at commit time |
-| **Snapshot Isolation (SI)** | Each transaction reads from a consistent snapshot taken at transaction start. Writers don't block readers. Vulnerable to write skew | Dirty reads, non-repeatable reads, phantom reads | **P1**. Useful for long-running read transactions that shouldn't block writers |
+| **Serializable** | Transactions behave as if executed one at a time in some serial order. Strongest guarantee. No anomalies possible | Dirty reads, non-repeatable reads, phantom reads, write skew | **P1 — requires read-set tracking not yet implemented**. |
+| **Snapshot Isolation (SI)** | Each transaction reads from a consistent snapshot taken at transaction start. Writers don't block readers. Vulnerable to write skew | Dirty reads, non-repeatable reads, phantom reads | **Default in V1 — write-set OCC provides snapshot isolation**. |
 | **Read Committed** | Each statement sees only data committed before the statement began. Different statements in the same transaction may see different snapshots | Dirty reads | **Available** as explicit opt-in. Useful for reporting queries that tolerate minor inconsistency |
 | **Read Uncommitted** | **Not supported**. Axon will never expose uncommitted data | — | Not supported |
+
+> **V1 known gap: write skew is not prevented.** OCC with write-set conflict detection provides Snapshot Isolation, not Serializability. Write skew — where two concurrent transactions each read disjoint entities and write to each other's read set — is not detected. Read-set tracking is required for full serializability and is deferred to P1.
 
 **Linearizability**: For single-entity operations, Axon provides **linearizable** semantics — once a write is acknowledged, all subsequent reads (from any client on the same instance) will see that write. This is stronger than serializable for single-object operations and critical for the optimistic concurrency model: when you read an entity at version 5 and update it, you are guaranteed that version 5 was the most recent committed version at the time of your read.
 
@@ -164,8 +166,8 @@ Axon uses optimistic concurrency as its primary concurrency mechanism:
 | Scope | V1 Support | Notes |
 |-------|-----------|-------|
 | Single-entity read/write | Yes | Linearizable. Optimistic concurrency via version |
-| Multi-entity transaction | Yes | Serializable. Atomic batch: update entities A, B, and link L in one transaction. All-or-nothing |
-| Cross-collection transaction | Yes | Serializable. Debit in `accounts` collection and create record in `ledger` collection — same transaction |
+| Multi-entity transaction | Yes | Snapshot Isolation (V1). Atomic batch: update entities A, B, and link L in one transaction. All-or-nothing |
+| Cross-collection transaction | Yes | Snapshot Isolation (V1). Debit in `accounts` collection and create record in `ledger` collection — same transaction |
 | Cross-instance transaction | No (P2) | Distributed transactions across Axon instances are deferred. Will require consensus protocol (Raft, Paxos) or saga pattern |
 
 ### Transaction API (Conceptual)
@@ -186,7 +188,7 @@ Each operation within the transaction is validated (schema, version) and the ent
 |----------|-----------|-----------|
 | Single entity read after write (same client) | Linearizable + read-your-writes | Version tracking, session affinity |
 | Single entity read after write (different client, same instance) | Linearizable | Committed state is immediately visible |
-| Multi-entity transaction | Serializable | OCC with conflict detection at commit |
+| Multi-entity transaction | Snapshot Isolation (V1); Serializable is P1 | OCC with write-set conflict detection at commit |
 | Concurrent writes to same entity | Exactly one wins, others get conflict error with current state | Version-based OCC |
 | Long-running read query | Snapshot isolation (P1) or read-committed | Configurable per-query |
 
@@ -280,7 +282,7 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 5. **Audit log** — immutable, append-only log of every mutation with actor, timestamp, operation, before/after state
 6. **Entity operations** — create, read, update, delete, list, query with filtering, sorting, pagination
 7. **Link operations** — create, traverse, query, delete links between entities
-8. **ACID transactions** — multi-entity/link atomic operations with serializable isolation. All-or-nothing commits
+8. **ACID transactions** — multi-entity/link atomic operations with snapshot isolation (V1). All-or-nothing commits. Serializable isolation is P1.
 9. **Optimistic concurrency** — version-based conflict detection. Stale writes are rejected with current state
 10. **API surface** — well-defined API (gRPC or HTTP) suitable for agent and human consumption
 11. **Embedded mode** — run Axon in-process for development and testing
@@ -403,7 +405,7 @@ compatible with Axon but are not prioritized for any release:
 - Entity and link CRUD operations
 - Schema engine with validation for entities and link-types
 - Audit log architecture (append-only, immutable)
-- ACID transactions with OCC and serializable isolation
+- ACID transactions with OCC and snapshot isolation (V1; serializable is P1)
 - Embedded mode working end-to-end
 - CLI for basic operations
 

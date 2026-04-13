@@ -16,7 +16,7 @@ dun:
 
 ## Overview
 
-ACID transactions are Axon's correctness guarantee. When an agent debits account A and credits account B, both changes commit or neither does. When two agents concurrently update the same entity, exactly one succeeds and the other is informed of the conflict. Transactions span entities and links across collections within a single Axon instance, with serializable isolation as the default.
+ACID transactions are Axon's correctness guarantee. When an agent debits account A and credits account B, both changes commit or neither does. When two agents concurrently update the same entity, exactly one succeeds and the other is informed of the conflict. Transactions span entities and links across collections within a single Axon instance, with snapshot isolation as the default in V1. Serializable isolation (preventing write skew) is P1.
 
 ## Problem Statement
 
@@ -28,10 +28,12 @@ Agents operating concurrently on shared state produce corrupt or inconsistent da
 
 | Level | Guarantee | Anomalies Prevented | Axon Support |
 |-------|-----------|---------------------|-------------|
-| **Serializable** | Transactions execute as if in serial order | All: dirty reads, non-repeatable reads, phantom reads, write skew | **Default** in V1. Implemented via OCC with conflict detection at commit |
-| **Snapshot Isolation** | Transaction reads from a consistent point-in-time snapshot | Dirty reads, non-repeatable reads, phantoms. Vulnerable to write skew | **P1**. Opt-in for long-running reads |
+| **Serializable** | Transactions execute as if in serial order | All: dirty reads, non-repeatable reads, phantom reads, write skew | **P1 — requires read-set tracking not yet implemented**. |
+| **Snapshot Isolation** | Transaction reads from a consistent point-in-time snapshot | Dirty reads, non-repeatable reads, phantoms. Vulnerable to write skew | **Default in V1 — write-set OCC provides snapshot isolation**. |
 | **Read Committed** | Each statement sees only committed data | Dirty reads | **Available** as opt-in for reporting |
 | **Read Uncommitted** | Not supported | — | **Never**. Axon does not expose uncommitted state |
+
+> **V1 known gap: write skew is not prevented.** OCC with write-set conflict detection provides Snapshot Isolation, not Serializability. Write skew — two concurrent transactions each reading disjoint entities and writing to each other's read set — is not detected in V1. Read-set tracking is required for full serializability and is deferred to P1.
 
 ### Single-Entity Operations
 
@@ -85,16 +87,36 @@ Agents operating concurrently on shared state produce corrupt or inconsistent da
 - [ ] Agent A can read the new state, merge, and retry with version 6
 - [ ] If no other agent has touched the entity, the update succeeds on the first try
 
-### Story US-022: Serializable Isolation [FEAT-008]
+### Story US-022: Snapshot Isolation [FEAT-008]
 
 **As a** developer
-**I want** serializable isolation for my transactions
-**So that** concurrent transactions produce the same result as if they ran one at a time
+**I want** snapshot isolation for my transactions
+**So that** concurrent transactions do not see uncommitted or partially-applied state
 
 **Acceptance Criteria:**
-- [ ] Two concurrent transactions that both read entity X and conditionally write to entity Y produce the same result as serial execution
-- [ ] Write skew is prevented: if T1 reads A and writes B while T2 reads B and writes A, at most one commits
+- [ ] Each transaction reads from a consistent snapshot; no dirty reads or non-repeatable reads within a transaction
+- [ ] Two concurrent transactions writing to the same entity: exactly one commits, the other receives a version conflict
 - [ ] Isolation level can be checked / set per transaction
+
+> **Note — write skew prevention is deferred to P1.** V1 OCC with write-set conflict detection does not prevent write skew. The criterion "if T1 reads A and writes B while T2 reads B and writes A, at most one commits" is NOT guaranteed in V1. Read-set tracking is required and will be addressed when Serializable isolation is implemented (P1).
+
+### Story US-081: Idempotent Transaction Submission [FEAT-008]
+
+**As a** client submitting a transaction over an unreliable network
+**I want** to safely retry a transaction if I don't receive a response
+**So that** a lost response does not cause duplicate writes or a confusing version conflict
+
+**Acceptance Criteria:**
+- [ ] `POST /transactions` with `Idempotency-Key: <uuid>` stores the response for 5 minutes
+- [ ] A retry with the same key within the TTL returns the original response without re-executing
+- [ ] A retry after TTL expiry re-executes the transaction (the key has no memory)
+- [ ] If the original transaction failed with a schema or conflict error, the failure is NOT cached — retry re-executes
+- [ ] A second concurrent request with the same in-flight key returns 409 with `retryable: true` and a `retry_after_ms` hint
+- [ ] Idempotency keys are scoped per database; same key in different databases are independent
+
+**Consumer context**: nexiq's sync flush can lose the response. Without idempotency keys, a retry either produces duplicate writes (if the server applied it) or fails with a confusing version conflict (against the client's own prior write, which has already been applied).
+
+---
 
 ## Edge Cases and Error Handling
 
@@ -109,7 +131,7 @@ Agents operating concurrently on shared state produce corrupt or inconsistent da
 
 - Zero lost updates: no write is silently overwritten by a stale client
 - Transaction commit latency < 20ms p99 for 2-5 entity transactions
-- Serializable isolation verified by jepsen-style concurrency tests
+- Snapshot isolation verified by jepsen-style concurrency tests (write skew prevention deferred to P1 serializable work)
 
 ## Constraints and Assumptions
 
