@@ -15,6 +15,11 @@ use tokio::sync::broadcast;
 /// A change event emitted to subscribers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangeEvent {
+    /// The ID of the audit entry that produced this event.
+    ///
+    /// Clients use this as a resume point for `since_audit_id` on reconnect.
+    /// Must be populated on both replayed and live events.
+    pub audit_id: String,
     /// The collection that changed.
     pub collection: String,
     /// The entity ID that changed.
@@ -227,6 +232,7 @@ mod tests {
 
     fn make_event(collection: &str, entity_id: &str, op: &str) -> ChangeEvent {
         ChangeEvent {
+            audit_id: format!("audit-{entity_id}"),
             collection: collection.into(),
             entity_id: entity_id.into(),
             operation: op.into(),
@@ -385,6 +391,31 @@ mod tests {
             serde_json::from_str(&json).expect("change event JSON should deserialize");
         assert_eq!(parsed.collection, "tasks");
         assert_eq!(parsed.operation, "update");
+        assert_eq!(parsed.audit_id, "audit-t-001");
+    }
+
+    #[test]
+    fn audit_id_serializes_in_websocket_payload() {
+        let event = make_event("tasks", "t-001", "create");
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(
+            json.contains("\"audit_id\":\"audit-t-001\""),
+            "expected audit_id in serialized payload, got: {json}"
+        );
+    }
+
+    #[test]
+    fn published_event_carries_audit_id_to_subscriber() {
+        let broker = ChangeFeedBroker::new();
+        let id = broker.subscribe(SubscriptionFilter::default());
+
+        let mut event = make_event("tasks", "t-001", "create");
+        event.audit_id = "audit-42".into();
+        broker.publish(event);
+
+        let events = broker.poll(id).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].audit_id, "audit-42");
     }
 
     // -- BroadcastBroker tests -----------------------------------------------
