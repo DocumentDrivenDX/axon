@@ -10,8 +10,7 @@ members = [
     "crates/axon-server",
     "crates/axon-graphql",
     "crates/axon-mcp",
-    "crates/axon-render",
-    "crates/axon-config",
+    "crates/axon-control-plane",
 ]
 resolver = "2"
 

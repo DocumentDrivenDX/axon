@@ -1,0 +1,27 @@
+[package]
+name = "axon-control-plane"
+description = "Multi-tenant control plane for Axon deployments (FEAT-025)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axon-core = { path = "../axon-core" }
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+axum.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+tokio = { version = "1", features = ["full"] }
+axum-test = "20"
+serde_json.workspace = true
