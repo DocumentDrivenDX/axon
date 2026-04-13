@@ -20,7 +20,7 @@ export default defineConfig({
 	reporter: 'html',
 
 	use: {
-		baseURL: 'http://localhost:4171',
+		baseURL: 'http://localhost:4170',
 		trace: 'on-first-retry',
 		screenshot: 'only-on-failure',
 	},
@@ -37,13 +37,10 @@ export default defineConfig({
 	 * AXON_POSTGRES_DSN must be set to a valid PostgreSQL connection string. */
 	webServer: {
 		command:
-			'cargo run -p axon-cli -- serve --no-auth --storage postgres --http-port 4171 --postgres-dsn $AXON_POSTGRES_DSN --ui-dir ui/build',
-		url: 'http://localhost:4171/health',
+			'cargo run -p axon-cli -- serve --no-auth --storage postgres --postgres-dsn $AXON_POSTGRES_DSN --ui-dir ui/build',
+		url: 'http://localhost:4170/health',
 		reuseExistingServer: !process.env.CI,
 		timeout: 120000,
 		cwd: '..',
-		env: {
-			AXON_POSTGRES_DSN: process.env.AXON_POSTGRES_DSN ?? '',
-		},
 	},
 });

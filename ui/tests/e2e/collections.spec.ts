@@ -4,11 +4,7 @@ import { expect, test } from '@playwright/test';
  * E2E tests for collection creation and browsing against a real axon-server.
  *
  * Uses collection name "e2e-tasks" to avoid interference with other test files.
- * Memory storage resets between server restarts but NOT between tests in a run,
- * so the collection created in beforeAll is visible in later tests.
- *
- * Note: test.describe.configure({ mode: 'serial' }) is set because the workflow
- * tests are ordered by design and share server-side state.
+ * Uses relative URLs so the baseURL from the active Playwright config applies.
  */
 
 const COLLECTION_NAME = 'e2e-tasks';
@@ -18,22 +14,17 @@ test.describe('Collections workflow', () => {
 
 	test.beforeAll(async ({ request }) => {
 		// Ensure the collection exists before the "check presence" tests run.
-		// Using the API directly avoids a race condition with the UI creation test
-		// when tests are distributed across workers.
-		const response = await request.post(
-			`http://localhost:4170/collections/${COLLECTION_NAME}`,
-			{
-				data: {
-					schema: {
-						description: null,
-						version: 1,
-						entity_schema: { type: 'object', properties: {} },
-						link_types: {},
-					},
-					actor: 'e2e-test',
+		const response = await request.post(`/collections/${COLLECTION_NAME}`, {
+			data: {
+				schema: {
+					description: null,
+					version: 1,
+					entity_schema: { type: 'object', properties: {} },
+					link_types: {},
 				},
+				actor: 'e2e-test',
 			},
-		);
+		});
 		// 201 Created or 409 Conflict (already exists) are both acceptable.
 		expect([201, 409]).toContain(response.status());
 	});
@@ -42,7 +33,7 @@ test.describe('Collections workflow', () => {
 		// Use a unique name so this test always creates a brand-new collection,
 		// regardless of prior runs (COLLECTION_NAME may already exist from beforeAll).
 		const uniqueName = `e2e-create-${Date.now()}`;
-		await page.goto('http://localhost:4170/ui/schemas');
+		await page.goto('/ui/schemas');
 		await page.waitForLoadState('networkidle');
 
 		// Fill in the collection name in the Create Collection form.
@@ -63,7 +54,7 @@ test.describe('Collections workflow', () => {
 	});
 
 	test('new collection appears in schemas collection list', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/schemas');
+		await page.goto('/ui/schemas');
 		await page.waitForLoadState('networkidle');
 
 		// The left-hand panel lists registered collections.
@@ -76,7 +67,7 @@ test.describe('Collections workflow', () => {
 	});
 
 	test('new collection appears in collections table', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/collections');
+		await page.goto('/ui/collections');
 		await page.waitForLoadState('networkidle');
 
 		// The collections table should show the collection we created.
@@ -88,7 +79,7 @@ test.describe('Collections workflow', () => {
 	});
 
 	test('collection detail page shows 0 entities', async ({ page }) => {
-		await page.goto(`http://localhost:4170/ui/collections/${COLLECTION_NAME}`);
+		await page.goto(`/ui/collections/${COLLECTION_NAME}`);
 		await page.waitForLoadState('networkidle');
 
 		// Page heading matches the collection name.

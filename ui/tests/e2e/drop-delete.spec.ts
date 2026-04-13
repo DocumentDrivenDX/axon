@@ -4,13 +4,14 @@ import { expect, test } from '@playwright/test';
  * E2E tests for Drop Collection and Delete Entity features.
  *
  * Uses isolated collection names to avoid interference with other test files.
+ * Uses relative URLs so the baseURL from the active Playwright config applies.
  */
 
 test.describe('Drop collection', () => {
 	const COLLECTION_NAME = 'e2e-drop';
 
 	test.beforeAll(async ({ request }) => {
-		const response = await request.post(`http://localhost:4170/collections/${COLLECTION_NAME}`, {
+		const response = await request.post(`/collections/${COLLECTION_NAME}`, {
 			data: {
 				schema: {
 					description: null,
@@ -26,7 +27,7 @@ test.describe('Drop collection', () => {
 	});
 
 	test('collections table has Drop button', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/collections');
+		await page.goto('/ui/collections');
 		await page.waitForLoadState('networkidle');
 
 		const table = page.locator('table');
@@ -40,7 +41,7 @@ test.describe('Drop collection', () => {
 	});
 
 	test('clicking Drop shows confirmation', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/collections');
+		await page.goto('/ui/collections');
 		await page.waitForLoadState('networkidle');
 
 		const table = page.locator('table');
@@ -57,7 +58,7 @@ test.describe('Drop collection', () => {
 	});
 
 	test('clicking Cancel restores Drop button', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/collections');
+		await page.goto('/ui/collections');
 		await page.waitForLoadState('networkidle');
 
 		const table = page.locator('table');
@@ -76,7 +77,7 @@ test.describe('Drop collection', () => {
 	});
 
 	test('confirming Drop removes the collection', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/collections');
+		await page.goto('/ui/collections');
 		await page.waitForLoadState('networkidle');
 
 		const table = page.locator('table');
@@ -91,7 +92,7 @@ test.describe('Drop collection', () => {
 		await row.getByRole('button', { name: 'Confirm' }).click();
 		await page.waitForLoadState('networkidle');
 
-		// The collection should no longer appear in the table (or the table is gone entirely).
+		// The collection should no longer appear in the table.
 		await expect(page.locator('table').locator('tr').filter({ hasText: COLLECTION_NAME })).not.toBeVisible({
 			timeout: 15000,
 		});
@@ -103,8 +104,7 @@ test.describe('Delete entity', () => {
 	const ENTITY_ID = 'delete-me';
 
 	test.beforeAll(async ({ request }) => {
-		// Create the collection.
-		const collResp = await request.post(`http://localhost:4170/collections/${COLLECTION_NAME}`, {
+		const collResp = await request.post(`/collections/${COLLECTION_NAME}`, {
 			data: {
 				schema: {
 					description: null,
@@ -117,21 +117,16 @@ test.describe('Delete entity', () => {
 		});
 		expect([201, 409]).toContain(collResp.status());
 
-		// Create an entity to be deleted.
-		const entityResp = await request.post(
-			`http://localhost:4170/entities/${COLLECTION_NAME}/${ENTITY_ID}`,
-			{
-				data: { data: { note: 'to be deleted' }, actor: 'e2e-test' },
-			},
-		);
+		const entityResp = await request.post(`/entities/${COLLECTION_NAME}/${ENTITY_ID}`, {
+			data: { data: { note: 'to be deleted' }, actor: 'e2e-test' },
+		});
 		expect([201, 409]).toContain(entityResp.status());
 	});
 
 	test('entity detail shows Delete button', async ({ page }) => {
-		await page.goto(`http://localhost:4170/ui/collections/${COLLECTION_NAME}`);
+		await page.goto(`/ui/collections/${COLLECTION_NAME}`);
 		await page.waitForLoadState('networkidle');
 
-		// Wait for the entity to be auto-selected (entity-meta shows the ID).
 		const detailPanel = page.locator('.two-column section.panel').nth(1);
 		const entityMeta = detailPanel.locator('.entity-meta');
 		await expect(entityMeta.getByText(ENTITY_ID)).toBeVisible({ timeout: 15000 });
@@ -141,7 +136,7 @@ test.describe('Delete entity', () => {
 	});
 
 	test('clicking Delete shows confirmation', async ({ page }) => {
-		await page.goto(`http://localhost:4170/ui/collections/${COLLECTION_NAME}`);
+		await page.goto(`/ui/collections/${COLLECTION_NAME}`);
 		await page.waitForLoadState('networkidle');
 
 		const detailPanel = page.locator('.two-column section.panel').nth(1);
@@ -160,7 +155,7 @@ test.describe('Delete entity', () => {
 	});
 
 	test('clicking Cancel restores Delete button', async ({ page }) => {
-		await page.goto(`http://localhost:4170/ui/collections/${COLLECTION_NAME}`);
+		await page.goto(`/ui/collections/${COLLECTION_NAME}`);
 		await page.waitForLoadState('networkidle');
 
 		const detailPanel = page.locator('.two-column section.panel').nth(1);
@@ -181,7 +176,7 @@ test.describe('Delete entity', () => {
 	});
 
 	test('confirming Delete removes the entity', async ({ page }) => {
-		await page.goto(`http://localhost:4170/ui/collections/${COLLECTION_NAME}`);
+		await page.goto(`/ui/collections/${COLLECTION_NAME}`);
 		await page.waitForLoadState('networkidle');
 
 		const detailPanel = page.locator('.two-column section.panel').nth(1);

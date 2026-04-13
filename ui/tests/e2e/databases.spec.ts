@@ -6,20 +6,20 @@ test.describe('Databases page', () => {
 	test.describe.configure({ mode: 'serial' });
 
 	test('sidebar has Databases link', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/collections');
+		await page.goto('/ui/collections');
 		await page.waitForLoadState('networkidle');
 		const nav = page.locator('nav');
 		await expect(nav.getByRole('link', { name: 'Databases' })).toBeVisible();
 	});
 
 	test('databases page loads with heading', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/databases');
+		await page.goto('/ui/databases');
 		await page.waitForLoadState('networkidle');
 		await expect(page.getByRole('heading', { name: 'Databases' })).toBeVisible({ timeout: 15000 });
 	});
 
 	test('create tenant form is visible', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/databases');
+		await page.goto('/ui/databases');
 		await page.waitForLoadState('networkidle');
 		await expect(page.getByRole('heading', { name: 'Create Tenant' })).toBeVisible();
 		await expect(page.getByPlaceholder('my-org')).toBeVisible();
@@ -28,14 +28,14 @@ test.describe('Databases page', () => {
 	});
 
 	test('create tenant button enables when name entered', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/databases');
+		await page.goto('/ui/databases');
 		await page.waitForLoadState('networkidle');
 		await page.getByPlaceholder('my-org').fill('e2e-tenant-test');
 		await expect(page.getByRole('button', { name: 'Create Tenant' })).toBeEnabled();
 	});
 
 	test('can create a tenant and see it in the list', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/databases');
+		await page.goto('/ui/databases');
 		await page.waitForLoadState('networkidle');
 		await page.getByPlaceholder('my-org').fill('e2e-org');
 		await page.getByRole('button', { name: 'Create Tenant' }).click();
@@ -44,7 +44,7 @@ test.describe('Databases page', () => {
 	});
 
 	test('can assign a database to a tenant', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/databases');
+		await page.goto('/ui/databases');
 		await page.waitForLoadState('networkidle');
 		// The e2e-org tenant should exist from the previous test (same server instance)
 		const tenantPanel = page.locator('section.panel').filter({ hasText: 'e2e-org' });
@@ -57,7 +57,7 @@ test.describe('Databases page', () => {
 	});
 
 	test('can remove a database from a tenant', async ({ page }) => {
-		await page.goto('http://localhost:4170/ui/databases');
+		await page.goto('/ui/databases');
 		await page.waitForLoadState('networkidle');
 		const tenantPanel = page.locator('section.panel').filter({ hasText: 'e2e-org' });
 		await expect(tenantPanel).toBeVisible({ timeout: 15000 });
