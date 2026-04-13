@@ -11,6 +11,7 @@ const { children }: { children: Snippet } = $props();
 let health: HealthStatus | null = $state(null);
 let healthError: string | null = $state(null);
 let authState: AuthState = $state({ status: 'loading' } as AuthState);
+
 const homeHref = `${base}/`;
 const collectionsHref = `${base}/collections`;
 const schemasHref = `${base}/schemas`;
@@ -54,44 +55,41 @@ onMount(() => {
 </script>
 
 <div class="shell">
-	<aside class="sidebar panel">
-		<div class="brand">
-			<a href={homeHref}>Axon Admin</a>
-			<p class="muted">Browser console for live collections, schemas, and audit data.</p>
+	<header class="topnav panel">
+		<div class="topnav-left">
+			<a class="brand-link" href={homeHref}>Axon</a>
+			<nav class="topnav-links">
+				<a class="nav-link" href={collectionsHref}>Collections</a>
+				<a class="nav-link" href={schemasHref}>Schemas</a>
+				<a class="nav-link" href={auditHref}>Audit Log</a>
+				<a class="nav-link" href={databasesHref}>Databases</a>
+			</nav>
 		</div>
 
-		<section class="identity-bar">
+		<div class="topnav-right">
 			{#if authState.status === 'loading'}
-				<p class="muted">Checking identity...</p>
+				<span class="muted user-widget">···</span>
 			{:else if authState.status === 'unauthenticated'}
-				<div class="message warning">
-					<strong>Not authenticated</strong>
-					<p>Connect via Tailscale to access this server.</p>
-				</div>
+				<span class="pill warning-pill">Not authenticated — connect via Tailscale</span>
 			{:else}
-				<div class="identity-info">
-					<span class="identity-actor">{authState.identity.actor}</span>
+				<div class="user-widget">
+					<span class="user-actor">{authState.identity.actor}</span>
 					<span class="pill role-{authState.identity.role}">{authState.identity.role}</span>
 					{#if isGuest && isReadOnly}
-						<span class="pill guest-badge">Guest (read-only)</span>
+						<span class="pill guest-badge">guest · read-only</span>
 					{:else if isGuest}
-						<span class="pill guest-badge">Guest</span>
+						<span class="pill guest-badge">guest</span>
 					{/if}
 				</div>
 			{/if}
-		</section>
+		</div>
+	</header>
 
-		<nav class="stack">
-			<a class="button-link" href={collectionsHref}>Collections</a>
-			<a class="button-link" href={schemasHref}>Schemas</a>
-			<a class="button-link" href={auditHref}>Audit Log</a>
-			<a class="button-link" href={databasesHref}>Databases</a>
-		</nav>
-
-		<section class="health panel">
+	<div class="body">
+		<aside class="sidebar panel">
 			<div class="panel-header">
 				<h2>Health</h2>
-				<span class="pill">{health?.status ?? 'checking'}</span>
+				<span class="pill {healthError ? 'pill-error' : ''}">{healthError ? 'error' : (health?.status ?? 'checking')}</span>
 			</div>
 			<div class="panel-body stack">
 				{#if healthError}
@@ -114,58 +112,88 @@ onMount(() => {
 						<p class="muted">{health.default_namespace}</p>
 					</div>
 				{:else}
-					<p class="muted">Polling `/health`...</p>
+					<p class="muted">Polling…</p>
 				{/if}
 			</div>
-		</section>
-	</aside>
+		</aside>
 
-	<main class="content">
-		{@render children()}
-	</main>
+		<main class="content">
+			{@render children()}
+		</main>
+	</div>
 </div>
 
 <style>
 	.shell {
-		display: grid;
-		grid-template-columns: 18rem minmax(0, 1fr);
+		display: flex;
+		flex-direction: column;
 		gap: 1rem;
 		min-height: 100vh;
 		padding: 1rem;
 	}
 
-	.sidebar {
+	/* ── Top nav ─────────────────────────────────────────────────────────── */
+
+	.topnav {
 		display: flex;
-		flex-direction: column;
+		align-items: center;
+		justify-content: space-between;
 		gap: 1rem;
-		padding: 1.1rem;
+		padding: 0.6rem 1.1rem;
 	}
 
-	.brand a {
-		font-size: 1.35rem;
+	.topnav-left {
+		display: flex;
+		align-items: center;
+		gap: 1.5rem;
+	}
+
+	.brand-link {
+		font-size: 1.2rem;
 		font-weight: 700;
-		letter-spacing: 0.02em;
+		letter-spacing: 0.04em;
 		text-decoration: none;
+		color: var(--accent);
+		white-space: nowrap;
 	}
 
-	.brand p {
-		margin: 0.5rem 0 0;
+	.topnav-links {
+		display: flex;
+		align-items: center;
+		gap: 0.25rem;
 	}
 
-	.identity-bar {
-		padding: 0.5rem 0;
+	.nav-link {
+		padding: 0.4rem 0.75rem;
+		border-radius: 0.6rem;
+		text-decoration: none;
+		font-size: 0.9rem;
+		color: var(--muted);
+		transition: color 120ms ease, background 120ms ease;
 	}
 
-	.identity-info {
+	.nav-link:hover {
+		color: var(--text);
+		background: rgba(255, 255, 255, 0.06);
+	}
+
+	.topnav-right {
+		display: flex;
+		align-items: center;
+		gap: 0.75rem;
+		flex-shrink: 0;
+	}
+
+	.user-widget {
 		display: flex;
 		align-items: center;
 		gap: 0.5rem;
-		flex-wrap: wrap;
 	}
 
-	.identity-actor {
-		font-weight: 600;
-		font-size: 0.9rem;
+	.user-actor {
+		font-size: 0.875rem;
+		font-weight: 500;
+		color: var(--text);
 	}
 
 	.guest-badge {
@@ -173,30 +201,49 @@ onMount(() => {
 		opacity: 0.8;
 	}
 
-	.message.warning {
-		padding: 0.5rem 0.75rem;
-		border-radius: 0.375rem;
-		background: var(--color-warning-bg, #fef3c7);
-		color: var(--color-warning-text, #92400e);
-		font-size: 0.85rem;
+	.warning-pill {
+		border-color: rgba(251, 191, 36, 0.4);
+		color: #fbbf24;
+		font-size: 0.82rem;
 	}
 
-	.message.warning p {
-		margin: 0.25rem 0 0;
+	.pill-error {
+		border-color: rgba(251, 113, 133, 0.4);
+		color: var(--danger);
 	}
 
-	.health h2 {
+	/* ── Body grid ───────────────────────────────────────────────────────── */
+
+	.body {
+		display: grid;
+		grid-template-columns: 16rem minmax(0, 1fr);
+		gap: 1rem;
+		flex: 1;
+	}
+
+	.sidebar {
+		display: flex;
+		flex-direction: column;
+		align-self: start;
+	}
+
+	.sidebar h2 {
 		margin: 0;
 		font-size: 1rem;
 	}
 
 	.content {
-		padding: 1rem 0;
+		padding: 0;
+		min-width: 0;
 	}
 
-	@media (max-width: 1024px) {
-		.shell {
+	@media (max-width: 900px) {
+		.body {
 			grid-template-columns: 1fr;
+		}
+
+		.topnav-links {
+			display: none;
 		}
 	}
 </style>

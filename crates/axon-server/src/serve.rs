@@ -180,6 +180,11 @@ pub fn auth_context_from_serve_args(args: &ServeArgs) -> AuthContext {
 /// [`TenantRouter`] for per-tenant isolation.  The `--storage=memory`
 /// backend uses an in-memory SQLite database.
 pub async fn serve(args: ServeArgs) -> Result<(), String> {
+    // Install a rustls crypto provider once per process before any TLS I/O.
+    // Without this, processes that pull in both aws-lc-rs and ring (via
+    // reqwest + tokio-rustls) will panic with "could not determine provider".
+    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+
     init_tracing(args.mcp_stdio);
 
     if args.no_auth {

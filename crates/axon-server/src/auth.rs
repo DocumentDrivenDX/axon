@@ -542,9 +542,19 @@ const fn role_priority(role: &Role) -> u8 {
 }
 
 /// Resolve identity from a Tailscale whois response.
+///
+/// The actor is the user's login name (e.g. `"erik@example.com"`), which
+/// identifies the *person* in audit log entries.  For tagged service nodes
+/// whose login name is empty, the node name is used as a fallback so that
+/// automated agents still produce a meaningful actor string.
 pub fn identity_from_tailscale(whois: &TailscaleWhoisResponse, default_role: &Role) -> Identity {
+    let actor = if !whois.user_login.is_empty() {
+        whois.user_login.clone()
+    } else {
+        whois.node_name.clone()
+    };
     Identity {
-        actor: whois.node_name.clone(),
+        actor,
         role: role_from_tags(&whois.tags, default_role),
     }
 }
@@ -774,7 +784,7 @@ mod tests {
             tags: vec!["tag:admin".into()],
         };
         let id = identity_from_tailscale(&whois, &Role::Read);
-        assert_eq!(id.actor, "erik-laptop");
+        assert_eq!(id.actor, "erik@example.com");
         assert_eq!(id.role, Role::Admin);
     }
 
@@ -786,8 +796,21 @@ mod tests {
             tags: vec![],
         };
         let id = identity_from_tailscale(&whois, &Role::Read);
-        assert_eq!(id.actor, "phone");
+        assert_eq!(id.actor, "user@example.com");
         assert_eq!(id.role, Role::Read);
+    }
+
+    #[test]
+    fn identity_from_tailscale_falls_back_to_node_name_when_login_empty() {
+        // Tagged service nodes may have an empty user_login; fall back to node_name.
+        let whois = TailscaleWhoisResponse {
+            node_name: "agent-worker-1".into(),
+            user_login: "".into(),
+            tags: vec!["tag:axon-agent".into()],
+        };
+        let id = identity_from_tailscale(&whois, &Role::Read);
+        assert_eq!(id.actor, "agent-worker-1");
+        assert_eq!(id.role, Role::Write);
     }
 
     #[test]
@@ -832,7 +855,7 @@ mod tests {
             .await
             .expect("cached whois should resolve");
 
-        assert_eq!(first.actor, "erik-laptop");
+        assert_eq!(first.actor, "erik@example.com");
         assert_eq!(first.role, Role::Admin);
         assert_eq!(second, first);
         assert_eq!(provider.calls(), 1);
