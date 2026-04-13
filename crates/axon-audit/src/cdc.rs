@@ -1,12 +1,23 @@
-//! Change Data Capture (CDC) sinks for streaming changes without Kafka (US-077, FEAT-021).
+//! Change Data Capture (CDC) sinks for streaming changes (US-077, FEAT-021).
 //!
 //! Provides Debezium-compatible envelope format and pluggable sinks:
 //! - **JSONL file sink**: Appends one JSON line per event to a file
 //! - **In-memory sink**: Collects events in memory (for testing)
+//! - **Kafka sink**: Produces events to Kafka via rdkafka (requires `kafka` feature)
 //!
-//! All sinks emit events in the same Debezium envelope format that Kafka
-//! CDC (US-074) would use, so consumers work identically regardless of
-//! transport.
+//! All sinks emit events in the same Debezium envelope format so that
+//! consumers work identically regardless of transport.
+//!
+//! # Kafka feature flag
+//!
+//! The `kafka` feature enables real rdkafka producer integration in
+//! [`KafkaCdcSink`]. Without the feature the struct is a stub that buffers
+//! events in memory for routing verification.
+//!
+//! To run Kafka-specific tests (uses [`MockProducer`], no broker required):
+//! ```text
+//! cargo test -p axon-audit --features kafka
+//! ```
 
 use std::io::Write;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -216,11 +227,13 @@ impl KafkaConfig {
     }
 }
 
-/// Stub Kafka CDC sink.
+// ── Internal Kafka producer backend trait (kafka feature) ─────────────────
+
+/// Internal trait for Kafka producer backends.
 ///
 /// Enables dependency injection for testing without a real broker.
 #[cfg(feature = "kafka")]
-pub trait KafkaProducerBackend: Send + std::fmt::Debug {
+pub(crate) trait KafkaProducerBackend: Send + std::fmt::Debug {
     /// Send a message to the given topic with the given key and payload.
     fn send(&self, topic: &str, key: &str, payload: &str) -> Result<(), String>;
 }
@@ -229,8 +242,75 @@ pub trait KafkaProducerBackend: Send + std::fmt::Debug {
 
 /// Mock Kafka producer for testing.
 ///
-/// Events are buffered in memory with the computed topic and partition key
-/// so tests can verify correct routing.
+/// Records all sent messages in an [`Arc<Mutex<Vec<...>>>`] so tests can
+/// inspect them without a real Kafka broker.
+#[cfg(feature = "kafka")]
+#[derive(Debug, Default, Clone)]
+pub struct MockProducer {
+    /// All messages sent: (topic, partition_key, payload_json).
+    pub sent: std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+}
+
+#[cfg(feature = "kafka")]
+impl KafkaProducerBackend for MockProducer {
+    fn send(&self, topic: &str, key: &str, payload: &str) -> Result<(), String> {
+        self.sent
+            .lock()
+            .unwrap()
+            .push((topic.to_string(), key.to_string(), payload.to_string()));
+        Ok(())
+    }
+}
+
+// ── RdkafkaProducer (kafka feature) ──────────────────────────────────────
+
+/// rdkafka `FutureProducer`-backed Kafka producer.
+///
+/// Serializes each send to a blocking call. In production async code prefer
+/// restructuring the CDC pipeline to be fully async.
+#[cfg(feature = "kafka")]
+struct RdkafkaProducer {
+    inner: rdkafka::producer::FutureProducer,
+}
+
+#[cfg(feature = "kafka")]
+impl std::fmt::Debug for RdkafkaProducer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RdkafkaProducer").finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "kafka")]
+impl KafkaProducerBackend for RdkafkaProducer {
+    fn send(&self, topic: &str, key: &str, payload: &str) -> Result<(), String> {
+        use rdkafka::producer::FutureRecord;
+        use std::time::Duration;
+
+        let record = FutureRecord::to(topic).key(key).payload(payload);
+        // Create a temporary runtime to drive the async delivery future.
+        // NOTE: Do not call this from within a tokio async context — use
+        // spawn_blocking or restructure as fully async instead.
+        tokio::runtime::Runtime::new()
+            .map_err(|e| format!("failed to create tokio runtime: {e}"))?
+            .block_on(async {
+                self.inner
+                    .send(record, Duration::from_secs(5))
+                    .await
+                    .map(|_| ())
+                    .map_err(|(e, _)| format!("CdcError::ProducerError: {e}"))
+            })
+    }
+}
+
+// ── KafkaCdcSink — stub (no kafka feature) ────────────────────────────────
+
+/// Stub Kafka CDC sink (compiled without the `kafka` feature).
+///
+/// Validates routing logic and records what *would* be sent to Kafka.
+/// Enable the `kafka` feature for the real rdkafka-backed implementation.
+///
+/// Run Kafka integration tests: `cargo test -p axon-audit --features kafka`
+#[cfg(not(feature = "kafka"))]
 #[derive(Debug)]
 pub struct KafkaCdcSink {
     config: KafkaConfig,
@@ -238,8 +318,9 @@ pub struct KafkaCdcSink {
     pub sent: Vec<(String, String, String)>,
 }
 
+#[cfg(not(feature = "kafka"))]
 impl KafkaCdcSink {
-    /// Create a new Kafka CDC sink with the given configuration.
+    /// Create a new stub Kafka CDC sink.
     pub fn new(config: KafkaConfig) -> Self {
         Self {
             config,
@@ -253,6 +334,7 @@ impl KafkaCdcSink {
     }
 }
 
+#[cfg(not(feature = "kafka"))]
 impl CdcSink for KafkaCdcSink {
     fn emit(&mut self, envelope: &CdcEnvelope) -> Result<(), String> {
         if !self.config.enabled {
@@ -269,10 +351,105 @@ impl CdcSink for KafkaCdcSink {
     }
 
     fn flush(&mut self) -> Result<(), String> {
-        // Stub: in real implementation, this would flush the rdkafka producer.
         Ok(())
     }
 }
+
+// ── KafkaCdcSink — real rdkafka (kafka feature) ───────────────────────────
+
+/// Kafka CDC sink backed by an rdkafka `FutureProducer`.
+///
+/// Each [`CdcEnvelope`] is serialized to a Debezium JSON envelope and
+/// produced to the topic resolved by [`KafkaConfig::topic_for`], with the
+/// entity ID as the message key (preserving per-entity ordering).
+///
+/// Producer errors surface as `Err(String)` from [`CdcSink::emit`] and
+/// never panic.
+///
+/// # Testing
+///
+/// Use [`KafkaCdcSink::with_producer`] and [`MockProducer`] to test without
+/// a real Kafka broker:
+///
+/// ```ignore
+/// let mock = MockProducer::default();
+/// let sent = Arc::clone(&mock.sent);
+/// let mut sink = KafkaCdcSink::with_producer(config, mock);
+/// ```
+#[cfg(feature = "kafka")]
+pub struct KafkaCdcSink {
+    config: KafkaConfig,
+    producer: Box<dyn KafkaProducerBackend>,
+}
+
+#[cfg(feature = "kafka")]
+impl std::fmt::Debug for KafkaCdcSink {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KafkaCdcSink")
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "kafka")]
+impl KafkaCdcSink {
+    /// Create a sink backed by a real rdkafka `FutureProducer`.
+    ///
+    /// Returns an error if the producer cannot be configured (e.g. invalid
+    /// broker address format). The actual broker connection is lazy.
+    pub fn new(config: KafkaConfig) -> Result<Self, String> {
+        use rdkafka::config::ClientConfig;
+        let producer: rdkafka::producer::FutureProducer = ClientConfig::new()
+            .set("bootstrap.servers", &config.brokers)
+            .set("message.timeout.ms", "5000")
+            .create()
+            .map_err(|e| format!("CdcError::ProducerError: failed to create producer: {e}"))?;
+        Ok(Self {
+            config,
+            producer: Box::new(RdkafkaProducer { inner: producer }),
+        })
+    }
+
+    /// Create a sink backed by a custom producer (for testing with [`MockProducer`]).
+    pub fn with_producer(
+        config: KafkaConfig,
+        producer: impl KafkaProducerBackend + 'static,
+    ) -> Self {
+        Self {
+            config,
+            producer: Box::new(producer),
+        }
+    }
+
+    /// Access the configuration.
+    pub fn config(&self) -> &KafkaConfig {
+        &self.config
+    }
+}
+
+#[cfg(feature = "kafka")]
+impl CdcSink for KafkaCdcSink {
+    fn emit(&mut self, envelope: &CdcEnvelope) -> Result<(), String> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+
+        let topic = self.config.topic_for(&envelope.source.collection);
+        let key = KafkaConfig::partition_key(&envelope.source.entity_id);
+        let payload = serde_json::to_string(envelope)
+            .map_err(|e| format!("CDC serialization error: {e}"))?;
+
+        self.producer
+            .send(&topic, &key, &payload)
+            .map_err(|e| format!("CdcError::ProducerError: {e}"))
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -545,7 +722,7 @@ mod tests {
         assert_eq!(envelope.ts_ms, 1000); // 1_000_000_000 ns = 1000 ms
     }
 
-    // ── Kafka CDC sink tests (US-074) ──────────────────────────────────
+    // ── Kafka config tests (always compiled) ──────────────────────────────
 
     #[test]
     fn kafka_config_topic_template() {
@@ -564,6 +741,16 @@ mod tests {
     }
 
     #[test]
+    fn kafka_config_default() {
+        let config = KafkaConfig::default();
+        assert_eq!(config.brokers, "localhost:9092");
+        assert!(!config.enabled);
+    }
+
+    // ── Kafka CDC sink stub tests (no `kafka` feature) ────────────────────
+
+    #[cfg(not(feature = "kafka"))]
+    #[test]
     fn kafka_sink_disabled_does_not_emit() {
         let config = KafkaConfig {
             enabled: false,
@@ -581,6 +768,7 @@ mod tests {
         assert!(sink.sent.is_empty());
     }
 
+    #[cfg(not(feature = "kafka"))]
     #[test]
     fn kafka_sink_enabled_records_events() {
         let config = KafkaConfig {
@@ -610,6 +798,7 @@ mod tests {
         assert_eq!(parsed.source.audit_id, 42);
     }
 
+    #[cfg(not(feature = "kafka"))]
     #[test]
     fn kafka_sink_partitions_by_entity_key() {
         let config = KafkaConfig {
@@ -643,6 +832,7 @@ mod tests {
         assert_eq!(sink.sent[1].1, "t-002"); // partition key for entity t-002
     }
 
+    #[cfg(not(feature = "kafka"))]
     #[test]
     fn kafka_sink_audit_id_cursor() {
         let config = KafkaConfig {
@@ -679,10 +869,140 @@ mod tests {
         );
     }
 
-    #[test]
-    fn kafka_config_default() {
-        let config = KafkaConfig::default();
-        assert_eq!(config.brokers, "localhost:9092");
-        assert!(!config.enabled);
+    // ── Kafka CDC sink tests with MockProducer (requires `kafka` feature) ─
+
+    #[cfg(feature = "kafka")]
+    mod kafka_producer_tests {
+        use super::*;
+        use std::sync::{Arc, Mutex};
+
+        /// Failing producer for error-path tests.
+        #[derive(Debug)]
+        struct FailingProducer;
+
+        impl KafkaProducerBackend for FailingProducer {
+            fn send(&self, _topic: &str, _key: &str, _payload: &str) -> Result<(), String> {
+                Err("simulated producer error".to_string())
+            }
+        }
+
+        fn make_enabled_sink() -> (KafkaCdcSink, Arc<Mutex<Vec<(String, String, String)>>>) {
+            let config = KafkaConfig {
+                enabled: true,
+                ..KafkaConfig::default()
+            };
+            let mock = MockProducer::default();
+            let sent = Arc::clone(&mock.sent);
+            let sink = KafkaCdcSink::with_producer(config, mock);
+            (sink, sent)
+        }
+
+        #[test]
+        fn create_event_produces_op_c_on_correct_topic() {
+            let (mut sink, sent) = make_enabled_sink();
+            let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+            sink.emit(&envelope).unwrap();
+
+            let msgs = sent.lock().unwrap();
+            assert_eq!(msgs.len(), 1);
+            let (topic, key, json) = &msgs[0];
+            assert_eq!(topic, "axon.tasks");
+            assert_eq!(key, "t-001");
+
+            let parsed: CdcEnvelope = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed.op, CdcOp::Create, "op should be 'c' for create");
+            assert_eq!(parsed.source.audit_id, 42);
+        }
+
+        #[test]
+        fn update_event_produces_op_u() {
+            let (mut sink, sent) = make_enabled_sink();
+            let envelope = CdcEnvelope::from_audit_entry(&sample_update_entry()).unwrap();
+            sink.emit(&envelope).unwrap();
+
+            let msgs = sent.lock().unwrap();
+            let (_, _, json) = &msgs[0];
+            let parsed: CdcEnvelope = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed.op, CdcOp::Update, "op should be 'u' for update");
+        }
+
+        #[test]
+        fn delete_event_produces_op_d() {
+            let (mut sink, sent) = make_enabled_sink();
+            let envelope = CdcEnvelope::from_audit_entry(&sample_delete_entry()).unwrap();
+            sink.emit(&envelope).unwrap();
+
+            let msgs = sent.lock().unwrap();
+            let (_, _, json) = &msgs[0];
+            let parsed: CdcEnvelope = serde_json::from_str(json).unwrap();
+            assert_eq!(parsed.op, CdcOp::Delete, "op should be 'd' for delete");
+        }
+
+        #[test]
+        fn producer_error_returns_err_not_panic() {
+            let config = KafkaConfig {
+                enabled: true,
+                ..KafkaConfig::default()
+            };
+            let mut sink = KafkaCdcSink::with_producer(config, FailingProducer);
+            let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+            let result = sink.emit(&envelope);
+            assert!(result.is_err(), "expected Err from failing producer");
+            let msg = result.unwrap_err();
+            assert!(
+                msg.contains("ProducerError") || msg.contains("simulated"),
+                "error should indicate producer failure, got: {msg}"
+            );
+        }
+
+        #[test]
+        fn disabled_sink_does_not_produce_to_mock() {
+            let config = KafkaConfig {
+                enabled: false,
+                ..KafkaConfig::default()
+            };
+            let mock = MockProducer::default();
+            let sent = Arc::clone(&mock.sent);
+            let mut sink = KafkaCdcSink::with_producer(config, mock);
+            let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+            sink.emit(&envelope).unwrap();
+            assert!(
+                sent.lock().unwrap().is_empty(),
+                "disabled sink should not call producer"
+            );
+        }
+
+        #[test]
+        fn entity_id_used_as_message_key() {
+            let (mut sink, sent) = make_enabled_sink();
+
+            let e1 = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+            let mut entry2 = sample_update_entry();
+            entry2.entity_id = EntityId::new("t-002");
+            let e2 = CdcEnvelope::from_audit_entry(&entry2).unwrap();
+
+            sink.emit(&e1).unwrap();
+            sink.emit(&e2).unwrap();
+
+            let msgs = sent.lock().unwrap();
+            assert_eq!(msgs[0].1, "t-001", "key should be entity_id for first event");
+            assert_eq!(msgs[1].1, "t-002", "key should be entity_id for second event");
+        }
+
+        #[test]
+        fn debezium_envelope_fields_present() {
+            let (mut sink, sent) = make_enabled_sink();
+            let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry()).unwrap();
+            sink.emit(&envelope).unwrap();
+
+            let msgs = sent.lock().unwrap();
+            let (_, _, json) = &msgs[0];
+            let v: serde_json::Value = serde_json::from_str(json).unwrap();
+            assert!(v.get("op").is_some(), "envelope must have 'op' field");
+            assert!(v.get("source").is_some(), "envelope must have 'source' field");
+            assert!(v.get("ts_ms").is_some(), "envelope must have 'ts_ms' field");
+            assert_eq!(v["op"], "c");
+            assert_eq!(v["source"]["name"], "axon");
+        }
     }
 }
