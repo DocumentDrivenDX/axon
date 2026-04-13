@@ -1,0 +1,34 @@
+{
+  "attempt_id": "20260413T204038-549c1781",
+  "bead_id": "axon-bd579636",
+  "base_rev": "77547d99da857f3df319538c102c7350d4cc2974",
+  "created_at": "2026-04-13T20:40:38.466521791Z",
+  "requested": {
+    "harness": "agent",
+    "model": "bragi",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-bd579636",
+    "title": "FEAT-025: Control Plane — multi-tenant management, BYOC support",
+    "description": "Lightweight management plane for multi-tenant Axon deployments. PostgreSQL-backed control plane for tenant lifecycle (provisioning, monitoring, deprovisioning). Supports BYOC model where customers run Axon in their own infrastructure. See FEAT-025.",
+    "acceptance": "New tenant provisioned via API; tenant health visible in dashboard; control plane never accesses tenant entity data; BYOC instance registers with control plane",
+    "labels": [
+      "feat",
+      "p2",
+      "control-plane"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:40:38Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4128606"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T204038-549c1781",
+    "prompt": ".ddx/executions/20260413T204038-549c1781/prompt.md",
+    "manifest": ".ddx/executions/20260413T204038-549c1781/manifest.json",
+    "result": ".ddx/executions/20260413T204038-549c1781/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-bd579636-20260413T204038-549c1781"
+  }
+}

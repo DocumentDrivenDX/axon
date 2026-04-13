@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T200452-f307acfa",
+  "bead_id": "axon-118f54c6",
+  "base_rev": "5603349f20c8c3e90bc55fec50b7a556ef45a405",
+  "created_at": "2026-04-13T20:04:52.98246027Z",
+  "requested": {
+    "harness": "agent",
+    "model": "vidar",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-118f54c6",
+    "title": "Add schema_version field to Entity for per-entity schema tracking (FEAT-017)",
+    "description": "Add schema_version: u32 to the Entity struct in axon-core/src/types.rs. Set at create time to the collection's current schema version (retrieved from storage.get_schema_version). On update/patch, do NOT change schema_version — it only changes when the entity is explicitly revalidated via the revalidate_collection handler. Surface in all entity API responses (automatic since responses include the full Entity struct). The revalidate handler must update schema_version to current version for each re-validated entity it writes back. SERDE COMPATIBILITY: Add #[serde(default)] to schema_version on the Entity struct so entities persisted before this field was added (when the field is absent in the stored JSON) deserialize successfully with schema_version=0 instead of returning a deserialization error.",
+    "acceptance": "Entity created with schema at version N has schema_version=N; updating an entity does not change schema_version; after revalidate_collection, each entity's schema_version equals current schema version; schema_version present in all API response types; BACKWARD COMPATIBILITY TEST: manually construct a JSON entity blob WITHOUT schema_version field; deserialize into Entity — must succeed with schema_version=0 (no error); this simulates entities stored before this migration",
+    "parent": "axon-b5a5cc01",
+    "labels": [
+      "feat",
+      "p1",
+      "schema-evolution"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:04:52Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4085758"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T200452-f307acfa",
+    "prompt": ".ddx/executions/20260413T200452-f307acfa/prompt.md",
+    "manifest": ".ddx/executions/20260413T200452-f307acfa/manifest.json",
+    "result": ".ddx/executions/20260413T200452-f307acfa/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-118f54c6-20260413T200452-f307acfa"
+  }
+}

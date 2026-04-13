@@ -1,0 +1,34 @@
+{
+  "attempt_id": "20260413T203719-694bb776",
+  "bead_id": "axon-61a657c7",
+  "base_rev": "1744773213a1fd74cca7335b451500b5f43f5fee",
+  "created_at": "2026-04-13T20:37:19.616761959Z",
+  "requested": {
+    "harness": "agent",
+    "model": "bragi",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-61a657c7",
+    "title": "FEAT-024: Application Substrate — auto-generated TS client, admin UI, deployment templates",
+    "description": "Make Axon trivially deployable as backend for lightweight apps. Auto-generate TypeScript client from ESF schema, auto-generate admin UI, provide deployment templates for Cloud Run/Workers. Client-side validation matching server-side rules. See FEAT-024.",
+    "acceptance": "TypeScript client generated from schema compiles and works; client-side validation matches server-side; admin UI provides entity browser; deployment template produces running instance",
+    "labels": [
+      "feat",
+      "p2",
+      "app-substrate"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:37:19Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4128606"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T203719-694bb776",
+    "prompt": ".ddx/executions/20260413T203719-694bb776/prompt.md",
+    "manifest": ".ddx/executions/20260413T203719-694bb776/manifest.json",
+    "result": ".ddx/executions/20260413T203719-694bb776/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-61a657c7-20260413T203719-694bb776"
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "attempt_id": "20260413T210451-5371b626",
+  "bead_id": "axon-eed075ae",
+  "base_rev": "f2c03cbda741dd7ccdfcf654815a84c432f20a3f",
+  "created_at": "2026-04-13T21:04:51.936248137Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-eed075ae",
+    "title": "Implement point-in-time rollback for collections (FEAT-023)",
+    "description": "Implement RollbackCollectionRequest { collection_id, since_timestamp: DateTime\u003cUtc\u003e, dry_run: bool } in axon-api/src/request.rs and RollbackCollectionResponse { compensating_writes: Vec\u003cEntityId\u003e, conflicts: Vec\u003cEntityId\u003e } in response.rs. Handler: scan audit log for all mutations to the collection after since_timestamp; for each affected entity, find its state at since_timestamp (the last audit entry at or before the cutoff); issue compensating writes via the existing update/delete paths. Entities that did not exist at the cutoff (created after since_timestamp) must be DELETED by the rollback — they appear in compensating_writes as delete operations. Conflicts: entities modified since their rollback target version (by a concurrent write after the rollback was initiated) are reported in conflicts list. All compensating writes share a single transaction_id with operation=rollback in audit metadata. Out of scope: cross-collection point-in-time rollback.",
+    "acceptance": "RollbackCollectionRequest with a past timestamp undoes all mutations after that point; compensating writes produce audit entries with operation=rollback; dry_run=true returns planned writes without committing; entities with OCC conflicts appear in conflicts field, not silently skipped; empty result when no mutations exist after the timestamp; NEW ENTITY TEST: entity E created AFTER the cutoff timestamp is DELETED by the rollback — E appears in compensating_writes as a delete operation (not an update to prior state, since it had no prior state)",
+    "labels": [
+      "feat",
+      "p1",
+      "rollback"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:04:51Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4037"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T210451-5371b626",
+    "prompt": ".ddx/executions/20260413T210451-5371b626/prompt.md",
+    "manifest": ".ddx/executions/20260413T210451-5371b626/manifest.json",
+    "result": ".ddx/executions/20260413T210451-5371b626/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-eed075ae-20260413T210451-5371b626"
+  }
+}

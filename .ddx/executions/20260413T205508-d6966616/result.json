@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-a0081a82",
+  "attempt_id": "20260413T205508-d6966616",
+  "base_rev": "e6e2c9c4f521928828a8b09ab33e2e23fa71a946",
+  "result_rev": "e6e2c9c4f521928828a8b09ab33e2e23fa71a946",
+  "outcome": "error",
+  "status": "execution_failed",
+  "detail": "agent: provider error: POST \"http://vidar:1234/v1/chat/completions\": 400 Bad Request {\n        \"message\": \"Invalid model identifier \\\"vidar-coder\\\". Please specify a valid downloaded model (e.g., qwen3.5-27b-claude-4.6-opus-distilled-mlx, qwen3.5-27b, openai/gpt-oss-120b@mxfp4).\",\n        \"type\": \"invalid_request_error\",\n        \"param\": \"model\",\n        \"code\": \"model_not_found\"\n    }",
+  "reason": "agent: provider error: POST \"http://vidar:1234/v1/chat/completions\": 400 Bad Request {\n        \"message\": \"Invalid model identifier \\\"vidar-coder\\\". Please specify a valid downloaded model (e.g., qwen3.5-27b-claude-4.6-opus-distilled-mlx, qwen3.5-27b, openai/gpt-oss-120b@mxfp4).\",\n        \"type\": \"invalid_request_error\",\n        \"param\": \"model\",\n        \"code\": \"model_not_found\"\n    }",
+  "harness": "agent",
+  "model": "vidar-coder",
+  "session_id": "eb-d78e3676",
+  "duration_ms": 9,
+  "exit_code": 1,
+  "error": "agent: provider error: POST \"http://vidar:1234/v1/chat/completions\": 400 Bad Request {\n        \"message\": \"Invalid model identifier \\\"vidar-coder\\\". Please specify a valid downloaded model (e.g., qwen3.5-27b-claude-4.6-opus-distilled-mlx, qwen3.5-27b, openai/gpt-oss-120b@mxfp4).\",\n        \"type\": \"invalid_request_error\",\n        \"param\": \"model\",\n        \"code\": \"model_not_found\"\n    }",
+  "execution_dir": ".ddx/executions/20260413T205508-d6966616",
+  "prompt_file": ".ddx/executions/20260413T205508-d6966616/prompt.md",
+  "manifest_file": ".ddx/executions/20260413T205508-d6966616/manifest.json",
+  "result_file": ".ddx/executions/20260413T205508-d6966616/result.json",
+  "started_at": "2026-04-13T20:55:08.868888118Z",
+  "finished_at": "2026-04-13T20:55:08.878258609Z",
+  "required_exec_summary": "skipped"
+}

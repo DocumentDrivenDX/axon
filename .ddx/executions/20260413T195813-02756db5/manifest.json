@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T195813-02756db5",
+  "bead_id": "axon-88b4b5f1",
+  "base_rev": "84d15732c58411c33ba23b730398a50734913aa8",
+  "created_at": "2026-04-13T19:58:13.980191981Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-88b4b5f1",
+    "title": "Add gate_results field to Entity and persist via StorageAdapter (FEAT-019 phase 1)",
+    "description": "Scope: data model, persistence, and removal of the superseded gate-results side-table. Gate query filter and lifecycle enforcement are a separate task (axon-ba577e48).\n\nChanges:\n(1) axon-core/src/types.rs: add gate_results: HashMap\u003cString, GateResult\u003e to Entity struct, where GateResult is re-exported from axon-schema::gates (use the existing GateResult { gate: String, pass: bool, failures: Vec\u003cRuleViolation\u003e } type — do NOT define a new type). Add #[serde(default)] so entities persisted before this field was added deserialize with gate_results=HashMap::new().\n\n(2) axon-api/src/handler.rs: in create_entity, update_entity, and patch_entity, populate entity.gate_results directly from the results of evaluate_gates() — GateEvaluation.gate_results is already HashMap\u003cString, GateResult\u003e, so this is a direct assignment into entity.gate_results before the entity is written to storage. REMOVE the existing calls to self.storage.put_gate_results() at the three write sites (~lines 257, 394, 526). REMOVE the call to self.storage.delete_gate_results() in delete_entity (~line 604).\n\n(3) axon-storage/src/adapter.rs: REMOVE the following methods from the StorageAdapter trait: put_gate_results, get_gate_results, delete_gate_results, gate_lookup. These are replaced by the entity blob as the single system of record for gate results. Future gate-based query filtering will be backed by the general-purpose index infrastructure (FEAT-013) rather than this bespoke side-table.\n\n(4) axon-storage/src/memory.rs: REMOVE the gate_results: HashMap\u003c(CollectionId, EntityId), HashMap\u003cString, bool\u003e\u003e field from MemoryStorageAdapter and its impl blocks for put_gate_results, get_gate_results, delete_gate_results, and gate_lookup.\n\n(5) axon-storage/src/sqlite.rs: same removal — remove any put_gate_results, get_gate_results, delete_gate_results, gate_lookup impls.\n\n(6) No storage schema change required — gate_results is serialized as part of the entity data blob (opaque JSON). The new field appears automatically when the entity struct is serialized.",
+    "acceptance": "SAVE GATE (save_violations non-empty): create entity violating a save-gate rule → write REJECTED with validation error; gate_results NOT stored (write never committed). CUSTOM GATE: create entity violating a custom gate rule → write PROCEEDS; entity.gate_results[gate_name].pass = false; entity.gate_results[gate_name].failures is non-empty. PASSING GATE: entity satisfying all rules in a custom gate → gate_results[gate_name].pass = true; gate_results[gate_name].failures is empty. UPDATE: gate_results recomputed on every update/patch; passing then failing a gate updates the stored value. ROUND-TRIP: entity with gate_results persisted to MemoryStorageAdapter and re-fetched returns identical gate_results (HashMap\u003cString, GateResult\u003e round-trips through serde including failures vec). SIDE-TABLE REMOVED: StorageAdapter trait has no put_gate_results, get_gate_results, delete_gate_results, or gate_lookup methods; MemoryStorageAdapter has no gate_results HashMap field; handler.rs has no calls to put_gate_results or delete_gate_results. Existing tests still pass.",
+    "parent": "axon-b5a5cc01",
+    "labels": [
+      "feat",
+      "p1",
+      "gate-materialization"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T19:58:13Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4074950"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T195813-02756db5",
+    "prompt": ".ddx/executions/20260413T195813-02756db5/prompt.md",
+    "manifest": ".ddx/executions/20260413T195813-02756db5/manifest.json",
+    "result": ".ddx/executions/20260413T195813-02756db5/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-88b4b5f1-20260413T195813-02756db5"
+  }
+}

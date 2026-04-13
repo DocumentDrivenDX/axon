@@ -1,0 +1,44 @@
+{
+  "attempt_id": "20260413T205143-ff8fbd96",
+  "bead_id": "axon-ba577e48",
+  "base_rev": "acd95c76892d742d9bdbadc94fdf45335b9e1725",
+  "created_at": "2026-04-13T20:51:43.176499738Z",
+  "requested": {
+    "harness": "agent",
+    "model": "vidar-coder",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-ba577e48",
+    "title": "Add gate-based query filter and lifecycle gate enforcement (FEAT-019)",
+    "description": "Prerequisite: axon-88b4b5f1 (gate_results on Entity) must be complete. (1) Query filter: extend query_entities in axon-api/src/handler.rs to support filter path '_gates.{gate_name}' (eq: true/false) and synthetic path '_gates.complete' (true = all gate_results entries have pass=true). Gate values come from the persisted gate_results field — no re-evaluation at query time. (2) Lifecycle gate enforcement (requires_gate) is OUT OF SCOPE for this task — it depends on FEAT-010 (state machines, 0% implemented). Do not implement requires_gate checking here.",
+    "acceptance": "query_entities with filter _gates.complete=true returns only entities where all gate_results entries have pass=true; filter _gates.complete=true on an entity with NO gate_results (empty map) returns true — trivially all gates pass; filter _gates.{name}=false returns entities where that specific gate failed; filter _gates.{name}=true returns entities where that gate passed; combining gate filter with other field filters works correctly; lifecycle transition acceptance criteria are NOT part of this bead",
+    "labels": [
+      "feat",
+      "p1",
+      "gate-materialization"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:51:43Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "12462",
+      "events": [
+        {
+          "actor": "erik",
+          "body": "agent: agent: reasoning stall: model produced only reasoning tokens past stall timeout\nresult_rev=eafa6fef374adde07abb91dce41c975d63eb675d\nbase_rev=eafa6fef374adde07abb91dce41c975d63eb675d\nretry_after=2026-04-14T02:28:52Z",
+          "created_at": "2026-04-13T20:28:52.604606416Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ]
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T205143-ff8fbd96",
+    "prompt": ".ddx/executions/20260413T205143-ff8fbd96/prompt.md",
+    "manifest": ".ddx/executions/20260413T205143-ff8fbd96/manifest.json",
+    "result": ".ddx/executions/20260413T205143-ff8fbd96/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-ba577e48-20260413T205143-ff8fbd96"
+  }
+}

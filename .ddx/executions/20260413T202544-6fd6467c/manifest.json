@@ -1,0 +1,34 @@
+{
+  "attempt_id": "20260413T202544-6fd6467c",
+  "bead_id": "axon-3009fe32",
+  "base_rev": "ad29baa21f98e41baba359f513e0e96957959b08",
+  "created_at": "2026-04-13T20:25:44.330168771Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-3009fe32",
+    "title": "Implement snapshot_entities handler method and GET /snapshot HTTP endpoint (FEAT-004 US-080)",
+    "description": "Add to axon-api/src/request.rs: SnapshotRequest { collection_id, limit: Option\u003cu32\u003e, cursor: Option\u003cString\u003e, filter: Option\u003cQueryFilter\u003e }. Add to axon-api/src/response.rs: SnapshotResponse { entities: Vec\u003cEntity\u003e, next_page_cursor: Option\u003cString\u003e, audit_cursor: u64 }. Add handler method in axon-api/src/handler.rs: snapshot_entities(req: SnapshotRequest) -\u003e Result\u003cSnapshotResponse\u003e. Implementation: read entities and current max audit_id from storage. For the in-memory backend, this is the current state at call time — no concurrent writers in single-threaded tests. V1 CAVEAT (must be documented in code comments and tests): multi-page snapshot consistency across pages is only guaranteed for in-memory single-threaded use. MemoryStorageAdapter has no storage-level snapshot isolation; concurrent writes between pages can cause a multi-page snapshot to reflect mixed state. This is acceptable for V1 (tests are single-threaded); production multi-page consistency requires storage-level snapshot support (deferred). Add HTTP route GET /collections/{name}/snapshot in axon-server parsing limit/cursor/filter query params.",
+    "acceptance": "GET /snapshot returns { entities, next_page_cursor, audit_cursor }; create N entities, snapshot, create one more entity, tail from audit_cursor — new entity appears in tail but not in snapshot entities; paginated snapshot: all pages share the same audit_cursor (snapshot point); empty collection returns entities=[], next_page_cursor=null, valid audit_cursor; V1 caveat is present in a code comment on snapshot_entities and a note in the test file that multi-page consistency under concurrent writes is not guaranteed by this implementation",
+    "labels": [
+      "feat",
+      "p1",
+      "sync"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:25:44Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4074950"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T202544-6fd6467c",
+    "prompt": ".ddx/executions/20260413T202544-6fd6467c/prompt.md",
+    "manifest": ".ddx/executions/20260413T202544-6fd6467c/manifest.json",
+    "result": ".ddx/executions/20260413T202544-6fd6467c/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-3009fe32-20260413T202544-6fd6467c"
+  }
+}

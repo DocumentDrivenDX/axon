@@ -1,0 +1,34 @@
+{
+  "attempt_id": "20260413T211805-3842ef37",
+  "bead_id": "axon-686c066a",
+  "base_rev": "67b11301b5ef4b36a8c8f8b951bc0f7e577fdb15",
+  "created_at": "2026-04-13T21:18:05.261146329Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-686c066a",
+    "title": "Wire transition_lifecycle to HTTP, gRPC and MCP transports (FEAT-015 follow-on)",
+    "description": "Bead axon-0f9c54cf implemented AxonHandler::transition_lifecycle and the request/response types, but the operation is not reachable from any transport. Wire it up:\n\n(1) HTTP (crates/axon-server/src/gateway.rs): add POST /collections/{name}/entities/{id}/lifecycle/{lifecycle_name}/transition accepting JSON body { target_state: String, expected_version: u64, actor: Option\u003cString\u003e }. Return 200 with entity JSON on success, 409 on OCC conflict, 422 on InvalidTransition with body { error, current_state, valid_transitions }, 404 on entity/lifecycle not found.\n\n(2) gRPC (crates/axon-server/src/service.rs): add TransitionLifecycle RPC if the proto definition supports it, or add a comment pointing to the proto change needed. If proto changes are needed, note them explicitly — do not add a silent no-op.\n\n(3) MCP (crates/axon-mcp/src/handlers.rs): add transition_lifecycle tool. Input schema: collection_id, entity_id, lifecycle_name, target_state, expected_version (optional). Return entity JSON on success, structured error with valid_transitions on InvalidTransition. The error mapping to_tool_error for LifecycleNotFound and InvalidTransition already exists from axon-0f9c54cf — verify it is wired to the new tool handler.\n\n(4) Tests: add HTTP integration tests (start real server, POST to the route) following the pattern in crates/axon-server/tests/api_contract.rs. Test: valid transition succeeds and returns updated entity; invalid transition returns 422 with valid_transitions; wrong version returns 409.",
+    "acceptance": "POST /collections/{name}/entities/{id}/lifecycle/{lifecycle_name}/transition is reachable via HTTP; valid transition updates entity and returns 200; InvalidTransition returns 422 with valid_transitions list; OCC conflict returns 409; integration tests using real server pass; MCP transition_lifecycle tool callable and returns entity on success",
+    "labels": [
+      "feat",
+      "p1",
+      "lifecycle",
+      "graphql"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:18:05Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4037"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T211805-3842ef37",
+    "prompt": ".ddx/executions/20260413T211805-3842ef37/prompt.md",
+    "manifest": ".ddx/executions/20260413T211805-3842ef37/manifest.json",
+    "result": ".ddx/executions/20260413T211805-3842ef37/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-686c066a-20260413T211805-3842ef37"
+  }
+}

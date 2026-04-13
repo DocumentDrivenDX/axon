@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T202852-ef7e9162",
+  "bead_id": "axon-0dd2e517",
+  "base_rev": "1ee0c2fe39a4c2c9fb05f0051effea19817f8321",
+  "created_at": "2026-04-13T20:28:52.723206604Z",
+  "requested": {
+    "harness": "agent",
+    "model": "bragi",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-0dd2e517",
+    "title": "Add completion channel to background index build (prereq for testable FEAT-013)",
+    "description": "axon-storage/src/index_builder.rs: IndexBuildInfo currently has no JoinHandle and no completion channel. Tests waiting for index build completion have no option except time.sleep(), which is racy. Change: add a tokio::watch::Receiver\u003cIndexBuildStatus\u003e (or oneshot) to IndexBuildInfo returned by the build initiation call so callers can .await completion deterministically. The build task (tokio::spawn) sends on the channel when state transitions to Ready or fails. No change to the public IndexStatus enum. Prerequisite for axon-5973f060.",
+    "acceptance": "IndexBuildInfo has a channel field resolving when build transitions to Ready or Failed; test can await completion without sleeping; build failure resolves the channel with an error variant",
+    "labels": [
+      "feat",
+      "p2",
+      "indexes",
+      "testability"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:28:52Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4128606"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T202852-ef7e9162",
+    "prompt": ".ddx/executions/20260413T202852-ef7e9162/prompt.md",
+    "manifest": ".ddx/executions/20260413T202852-ef7e9162/manifest.json",
+    "result": ".ddx/executions/20260413T202852-ef7e9162/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-0dd2e517-20260413T202852-ef7e9162"
+  }
+}

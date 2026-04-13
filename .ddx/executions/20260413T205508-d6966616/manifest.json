@@ -1,0 +1,44 @@
+{
+  "attempt_id": "20260413T205508-d6966616",
+  "bead_id": "axon-a0081a82",
+  "base_rev": "e6e2c9c4f521928828a8b09ab33e2e23fa71a946",
+  "created_at": "2026-04-13T20:55:08.868682493Z",
+  "requested": {
+    "harness": "agent",
+    "model": "vidar-coder",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-a0081a82",
+    "title": "Add injectable Clock trait to axon-core (prereq for testable time-based features)",
+    "description": "axon-6f138697 (idempotency keys) and axon-0fc26e99 (agent guardrails rate limiting) both require an injectable clock for deterministic time-based tests. Without a shared trait, each bead will define its own clock abstraction, leading to incompatible types. Required change: add to axon-core/src/types.rs (or a new axon-core/src/clock.rs): pub trait Clock: Send + Sync { fn now(\u0026self) -\u003e std::time::Instant; } with two implementations: SystemClock (wraps Instant::now()) and FakeClock { inner: Arc\u003cMutex\u003cInstant\u003e\u003e } with a fn advance(\u0026self, duration: Duration) method. Export both from axon-core::prelude or axon-core::clock.",
+    "acceptance": "Clock trait exists in axon-core; SystemClock::now() returns Instant::now(); FakeClock::now() returns the last value set; FakeClock::advance(d) moves the clock forward by d; both implement Clock + Send + Sync; IdempotencyStore and GuardrailsLayer can accept Arc\u003cdyn Clock\u003e for injection; a test can create FakeClock, advance past TTL, and verify eviction without sleeping",
+    "labels": [
+      "feat",
+      "p1",
+      "testability"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:55:08Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "12462",
+      "events": [
+        {
+          "actor": "erik",
+          "body": "agent: agent: reasoning stall: model produced only reasoning tokens past stall timeout\nresult_rev=50f35da7d364e4caa7daf30e9d89d154ad06a202\nbase_rev=50f35da7d364e4caa7daf30e9d89d154ad06a202\nretry_after=2026-04-14T02:37:19Z",
+          "created_at": "2026-04-13T20:37:19.494416355Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ]
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T205508-d6966616",
+    "prompt": ".ddx/executions/20260413T205508-d6966616/prompt.md",
+    "manifest": ".ddx/executions/20260413T205508-d6966616/manifest.json",
+    "result": ".ddx/executions/20260413T205508-d6966616/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-a0081a82-20260413T205508-d6966616"
+  }
+}

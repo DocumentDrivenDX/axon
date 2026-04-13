@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T212805-4a9618fb",
+  "bead_id": "axon-77b53b36",
+  "base_rev": "a5aea13fbadbfda326c41ba6f05ae73778063426",
+  "created_at": "2026-04-13T21:28:05.881621164Z",
+  "requested": {
+    "harness": "agent",
+    "model": "vidar-coder",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-77b53b36",
+    "title": "Document and enforce global audit_id ordering invariant on AuditLog trait",
+    "description": "MemoryAuditLog::query_paginated returns entries in insertion order, which happens to be audit_id ascending because append() is the only mutation. However this ordering invariant is not stated anywhere in the AuditLog trait contract — it's implicit convention, not enforced code.\n\nChanges:\n(1) crates/axon-audit/src/log.rs: add a doc comment on the AuditLog trait's query method explicitly stating: 'Implementations MUST return entries ordered by audit_id ascending. Persistent backends must emit ORDER BY id ASC or equivalent.'\n(2) Add a unit test to MemoryAuditLog that inserts entries out-of-audit_id order (by manipulating internal state or via a test-only constructor) and asserts query_paginated still returns them sorted. This proves the invariant is enforced, not just coincidental.\n(3) Add a note in the trait doc that known_collections() is O(N) over the full log in the default implementation and must be cached/indexed in production backends.",
+    "acceptance": "AuditLog trait query method has explicit doc comment stating the audit_id ascending ordering requirement; at least one test validates ordering is not dependent on insertion order; known_collections O(N) caveat is documented in the trait",
+    "labels": [
+      "chore",
+      "p2",
+      "audit",
+      "docs"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:28:05Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "162017"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T212805-4a9618fb",
+    "prompt": ".ddx/executions/20260413T212805-4a9618fb/prompt.md",
+    "manifest": ".ddx/executions/20260413T212805-4a9618fb/manifest.json",
+    "result": ".ddx/executions/20260413T212805-4a9618fb/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-77b53b36-20260413T212805-4a9618fb"
+  }
+}

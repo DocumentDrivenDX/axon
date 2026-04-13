@@ -1,0 +1,36 @@
+{
+  "attempt_id": "20260413T203324-5a029f2a",
+  "bead_id": "axon-eec93920",
+  "base_rev": "a9b17a563495f6c4b2c082f6eb5230b244e3e644",
+  "created_at": "2026-04-13T20:33:24.904404568Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-eec93920",
+    "title": "Add LifecycleDef to CollectionSchema and parse from ESF (prereq for transition_lifecycle)",
+    "description": "CRITICAL INFRASTRUCTURE GAP: CollectionSchema (axon-schema/src/schema.rs) has no 'lifecycles' field. EsfDocument.into_collection_schema() at line 209 hardcodes gates=HashMap::new() and has no lifecycle parsing — the ESF 'lifecycles:' section in fixtures/beads.esf.yaml is silently dropped. Without this, transition_lifecycle (axon-0f9c54cf) has no data to validate transitions against. Required changes: (1) axon-schema/src/schema.rs: add LifecycleDef { field: String, initial: String, transitions: HashMap\u003cString, Vec\u003cString\u003e\u003e } struct with Serialize/Deserialize. (2) Add lifecycles: HashMap\u003cString, LifecycleDef\u003e to CollectionSchema with #[serde(default)]. (3) Add lifecycles: Option\u003cValue\u003e to EsfDocument. (4) In EsfDocument.into_collection_schema(): parse lifecycles from the Option\u003cValue\u003e the same way link_types are parsed. (5) CollectionSchema::new() initializes lifecycles to HashMap::new(). No storage changes needed — lifecycle defs are stored as part of the CollectionSchema JSON blob.",
+    "acceptance": "EsfDocument::parse() on beads.esf.yaml produces a CollectionSchema with lifecycles['status'].field='status', lifecycles['status'].initial='draft', and transitions['draft']=[pending, cancelled]; CollectionSchema with no lifecycles section deserializes with lifecycles=HashMap::new() (serde default); CollectionSchema serializes/deserializes lifecycle definitions round-trip without loss; existing tests pass",
+    "labels": [
+      "feat",
+      "p1",
+      "schema",
+      "lifecycle",
+      "testability"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:33:24Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4074950"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T203324-5a029f2a",
+    "prompt": ".ddx/executions/20260413T203324-5a029f2a/prompt.md",
+    "manifest": ".ddx/executions/20260413T203324-5a029f2a/manifest.json",
+    "result": ".ddx/executions/20260413T203324-5a029f2a/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-eec93920-20260413T203324-5a029f2a"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T210753-b6db458f",
+  "bead_id": "axon-4c08a548",
+  "base_rev": "77a05f64fefe3db6006272a2613c4b143468d3db",
+  "created_at": "2026-04-13T21:07:53.914499417Z",
+  "requested": {
+    "harness": "agent",
+    "model": "vidar-coder",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-4c08a548",
+    "title": "Complete PRD isolation fix — 7 residual false serializable claims after axon-f63ac16f",
+    "description": "Bead axon-f63ac16f updated the PRD isolation table and FEAT-008 but left at least 7 residual false or contradictory claims. The bead's acceptance criterion ('no false serializable.*V1 claims remaining') is NOT met.\n\nFiles and locations requiring fixes:\n\n(1) docs/helix/01-frame/prd.md:137 — WORST: prose directly contradicts the updated table two lines below. Still reads: 'The default and recommended level is serializable; weaker levels are available as explicit opt-ins'. Rewrite to say snapshot isolation is the V1 default with write skew as a known gap.\n\n(2) docs/helix/01-frame/principles.md:65 — P4 row still reads 'Serializable isolation | Concurrent transactions produce results equivalent to serial execution'. Update to Snapshot Isolation with a P1 note for serializability.\n\n(3) docs/helix/01-frame/technical-requirements.md:84 — Storage Adapter Trait: 'Transactions: begin, commit, abort with serializable isolation'. This is misleading at the product level next to the updated PRD. Add a clarifying note: storage backends may provide serializable at the transaction level, but product-level isolation is snapshot isolation for V1.\n\n(4) docs/helix/01-frame/technical-requirements.md:343 — Correctness Invariants table: 'Serializable isolation | Cycle test...'. Relabel as Snapshot Isolation or add P1 note.\n\n(5) docs/helix/03-test/test-plan.md:82-84 — INV-002: 'Serializable Isolation (Cycle Test)' with claim 'No write skew, no phantom reads, no dirty reads'. The 'no write skew' claim is false for V1. Reframe as SI invariant (cycle test is still valid under SI) and demote write-skew prevention to P1.\n\n(6) docs/helix/01-frame/features/FEAT-008-acid-transactions.md:63 — Conflict Resolution section: 'Under serializable isolation, the first transaction to commit wins'. Update to snapshot isolation.\n\n(7) docs/helix/04-compete/competitive-analysis.md — Axon column claims 'Full ACID, serializable isolation'. Add V1 footnote: 'V1 provides snapshot isolation; serializable is P1'.\n\nDo NOT edit: alignment review docs (point-in-time artifacts), SPIKE-001 (describes third-party backends), ADR-003/ADR-004 storage-layer references (accurate at the storage-transaction level).",
+    "acceptance": "grep -ri 'serializable.*default' docs/ returns zero results; grep -ri 'no write skew' docs/ returns zero V1 claims (test-plan INV-002 reframed or demoted); prd.md §5 prose and table are internally consistent; principles.md P4 updated; FEAT-008 conflict resolution section updated; competitive-analysis has V1 footnote; cargo check still passes (docs only)",
+    "labels": [
+      "bug",
+      "p0",
+      "docs",
+      "isolation"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:07:53Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "162017"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T210753-b6db458f",
+    "prompt": ".ddx/executions/20260413T210753-b6db458f/prompt.md",
+    "manifest": ".ddx/executions/20260413T210753-b6db458f/manifest.json",
+    "result": ".ddx/executions/20260413T210753-b6db458f/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-4c08a548-20260413T210753-b6db458f"
+  }
+}

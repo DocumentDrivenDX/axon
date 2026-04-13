@@ -1,0 +1,34 @@
+{
+  "attempt_id": "20260413T205152-7dccfb34",
+  "bead_id": "axon-375db29e",
+  "base_rev": "7ed5220c921de42440a047b1c27b1786cc4184de",
+  "created_at": "2026-04-13T20:51:52.982999297Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-375db29e",
+    "title": "Implement entity-level and transaction-level rollback (FEAT-023 — excludes point-in-time)",
+    "description": "Scope: entity-level and transaction-level rollback only. Point-in-time (collection-level) rollback is a separate task (axon-eed075ae). Changes in axon-api/src/request.rs: (1) RollbackEntityRequest { collection_id, entity_id, target_version: u64, dry_run: bool, expected_version: Option\u003cu64\u003e }. (2) RollbackTransactionRequest { transaction_id: String, dry_run: bool }. Handler methods in axon-api/src/handler.rs: rollback_entity: read audit log for entity, find audit entry with requested target_version, extract the 'before' state, issue update_entity call with that state (standard OCC via expected_version). rollback_transaction: find all audit entries with the given transaction_id, group by entity_id, find 'before' state of each, issue compensating writes in a NEW single transaction. ALL-OR-NOTHING SEMANTICS: if ANY compensating write has an OCC conflict (entity was modified after the original transaction), NO compensating writes are applied — the entire rollback aborts and returns the conflict list. This must be explicitly enforced: do not apply partial compensating writes and then fail. Dry-run: compute planned changes and predicted OCC conflicts without writing.",
+    "acceptance": "rollback_entity to version 2 on entity at version 5: entity returns to version-2 state at version 6; audit log shows new entry with operation=rollback; dry_run=true returns planned state without writing; OCC conflict returns conflict error with current state; rollback_transaction: all entities touched by the transaction are reverted atomically in one new transaction; ALL-OR-NOTHING TEST: entity A can be rolled back, entity B has a conflict; result is NEITHER A nor B is rolled back; entire rollback aborts returning both in the conflicts list (not silently skipping B and applying A); partial rollback is impossible",
+    "parent": "axon-b5a5cc01",
+    "labels": [
+      "feat",
+      "p1",
+      "rollback"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:51:52Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4037"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T205152-7dccfb34",
+    "prompt": ".ddx/executions/20260413T205152-7dccfb34/prompt.md",
+    "manifest": ".ddx/executions/20260413T205152-7dccfb34/manifest.json",
+    "result": ".ddx/executions/20260413T205152-7dccfb34/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-375db29e-20260413T205152-7dccfb34"
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "attempt_id": "20260413T212605-3c349642",
+  "bead_id": "axon-62a3e143",
+  "base_rev": "21c9b4705a2bc071f4a88c6b83b5b7852dc7c9da",
+  "created_at": "2026-04-13T21:26:05.510890921Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-62a3e143",
+    "title": "Fix clippy str_split_at_newline warning in axon-audit/src/cdc.rs",
+    "description": "crates/axon-audit/src/cdc.rs:584 triggers a str_split_at_newline clippy lint that fails CI's -D warnings gate. This was introduced by the FEAT-021 KafkaCdcSink commit (axon-be2a06cc) and is unrelated to the kafka feature flag — it fires on a plain string split in the non-kafka code path.\n\nFind the offending call at line 584 and fix the lint: either use the recommended replacement method suggested by clippy, or restructure the string operation to avoid the pattern. Run cargo clippy --workspace -- -D warnings after the fix to confirm clean.",
+    "acceptance": "cargo clippy --workspace -- -D warnings passes with zero warnings; the specific lint at crates/axon-audit/src/cdc.rs:584 is resolved; cargo test --workspace still passes",
+    "labels": [
+      "chore",
+      "p1",
+      "clippy",
+      "ci"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:26:05Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4037"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T212605-3c349642",
+    "prompt": ".ddx/executions/20260413T212605-3c349642/prompt.md",
+    "manifest": ".ddx/executions/20260413T212605-3c349642/manifest.json",
+    "result": ".ddx/executions/20260413T212605-3c349642/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-62a3e143-20260413T212605-3c349642"
+  }
+}

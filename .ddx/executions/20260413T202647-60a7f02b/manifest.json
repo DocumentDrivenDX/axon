@@ -1,0 +1,34 @@
+{
+  "attempt_id": "20260413T202647-60a7f02b",
+  "bead_id": "axon-ba577e48",
+  "base_rev": "eafa6fef374adde07abb91dce41c975d63eb675d",
+  "created_at": "2026-04-13T20:26:47.504844638Z",
+  "requested": {
+    "harness": "agent",
+    "model": "bragi",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-ba577e48",
+    "title": "Add gate-based query filter and lifecycle gate enforcement (FEAT-019)",
+    "description": "Prerequisite: axon-88b4b5f1 (gate_results on Entity) must be complete. (1) Query filter: extend query_entities in axon-api/src/handler.rs to support filter path '_gates.{gate_name}' (eq: true/false) and synthetic path '_gates.complete' (true = all gate_results entries have pass=true). Gate values come from the persisted gate_results field — no re-evaluation at query time. (2) Lifecycle gate enforcement (requires_gate) is OUT OF SCOPE for this task — it depends on FEAT-010 (state machines, 0% implemented). Do not implement requires_gate checking here.",
+    "acceptance": "query_entities with filter _gates.complete=true returns only entities where all gate_results entries have pass=true; filter _gates.complete=true on an entity with NO gate_results (empty map) returns true — trivially all gates pass; filter _gates.{name}=false returns entities where that specific gate failed; filter _gates.{name}=true returns entities where that gate passed; combining gate filter with other field filters works correctly; lifecycle transition acceptance criteria are NOT part of this bead",
+    "labels": [
+      "feat",
+      "p1",
+      "gate-materialization"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:26:47Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4128606"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T202647-60a7f02b",
+    "prompt": ".ddx/executions/20260413T202647-60a7f02b/prompt.md",
+    "manifest": ".ddx/executions/20260413T202647-60a7f02b/manifest.json",
+    "result": ".ddx/executions/20260413T202647-60a7f02b/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-ba577e48-20260413T202647-60a7f02b"
+  }
+}

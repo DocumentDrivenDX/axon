@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T200839-679ca1d9",
+  "bead_id": "axon-f63ac16f",
+  "base_rev": "f72d768c18c79ffd33d56d6afde18a55e502336f",
+  "created_at": "2026-04-13T20:08:39.930649623Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-f63ac16f",
+    "title": "Clarify V1 isolation model in PRD: snapshot isolation vs full serializability",
+    "description": "PRD §5 isolation table says 'Serializable is the default in V1, implemented via OCC with conflict detection at commit'. This is inaccurate: OCC with write-set conflict detection provides Snapshot Isolation, not Serializability. Write skew (two transactions each read disjoint entities and write to each other's read set) is not prevented. FILES TO UPDATE: (1) docs/helix/01-frame/prd.md §5 isolation table: change 'Serializable' row Axon Support from 'Default' to 'P1 — requires read-set tracking not yet implemented'. Change 'Snapshot Isolation' row to 'Default in V1 — write-set OCC provides snapshot isolation'. Add explicit note: 'V1 known gap: write skew is not prevented.' (2) docs/helix/01-frame/features/FEAT-008-acid-transactions.md: US-022 acceptance criteria currently states 'Write skew is prevented: if T1 reads A and writes B while T2 reads B and writes A, at most one commits' — this is FALSE for V1. Update US-022 to: keep the basic isolation criterion, add a note that write-skew prevention is P1 post-V1, and mark the write-skew criterion as deferred. (3) No other documents may claim serializable isolation as V1 default.",
+    "acceptance": "PRD §5 isolation table accurately describes V1 as snapshot isolation (not serializable); write skew gap explicitly documented in PRD; FEAT-008.md US-022 acceptance criteria does NOT claim write-skew prevention as V1 behavior; a grep for 'serializable.*default' or 'serializable.*V1' across docs/ returns zero false claims; no regression to other isolation documentation",
+    "parent": "axon-b5a5cc01",
+    "labels": [
+      "chore",
+      "p1",
+      "planning"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:08:39Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4074950"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T200839-679ca1d9",
+    "prompt": ".ddx/executions/20260413T200839-679ca1d9/prompt.md",
+    "manifest": ".ddx/executions/20260413T200839-679ca1d9/manifest.json",
+    "result": ".ddx/executions/20260413T200839-679ca1d9/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-f63ac16f-20260413T200839-679ca1d9"
+  }
+}

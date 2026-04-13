@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-a0081a82",
+  "attempt_id": "20260413T203427-ed92c8d6",
+  "base_rev": "50f35da7d364e4caa7daf30e9d89d154ad06a202",
+  "result_rev": "50f35da7d364e4caa7daf30e9d89d154ad06a202",
+  "outcome": "error",
+  "status": "execution_failed",
+  "detail": "agent: agent: reasoning stall: model produced only reasoning tokens past stall timeout",
+  "reason": "agent: agent: reasoning stall: model produced only reasoning tokens past stall timeout",
+  "harness": "agent",
+  "model": "qwen3.5-27b",
+  "session_id": "eb-7d369fd9",
+  "duration_ms": 171401,
+  "exit_code": 1,
+  "error": "agent: agent: reasoning stall: model produced only reasoning tokens past stall timeout",
+  "execution_dir": ".ddx/executions/20260413T203427-ed92c8d6",
+  "prompt_file": ".ddx/executions/20260413T203427-ed92c8d6/prompt.md",
+  "manifest_file": ".ddx/executions/20260413T203427-ed92c8d6/manifest.json",
+  "result_file": ".ddx/executions/20260413T203427-ed92c8d6/result.json",
+  "started_at": "2026-04-13T20:34:28.043451952Z",
+  "finished_at": "2026-04-13T20:37:19.44542048Z",
+  "required_exec_summary": "skipped"
+}

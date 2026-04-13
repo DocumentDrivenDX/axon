@@ -1,0 +1,34 @@
+{
+  "attempt_id": "20260413T201726-5d5a4027",
+  "bead_id": "axon-fadfcecd",
+  "base_rev": "d517d4580a7ba734c73121d4275b234f1b14434e",
+  "created_at": "2026-04-13T20:17:26.302710296Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-fadfcecd",
+    "title": "Extend audit query handler for multi-collection tail with unified cursor (FEAT-003 US-079)",
+    "description": "Changes:\n(1) axon-api/src/request.rs: add collection_ids: Vec\u003cCollectionId\u003e to QueryAuditRequest (the existing type — there is no ListAuditEntriesRequest). The existing collection: Option\u003cCollectionId\u003e field stays for backward compatibility. When collection_ids is non-empty, filter to those collections; when collection_ids is empty AND collection is None, return entries from all collections. The handler should merge both fields: effective set = collection_ids union (collection as a single-element vec if Some).\n\n(2) axon-api/src/handler.rs query_audit: update logic to derive an effective Vec\u003cCollectionId\u003e from both fields (see above), pass to storage, and return entries ordered globally by audit_id ascending — NOT grouped by collection. The global ordering guarantee is non-negotiable: if collection A produces entry id=5 and collection B produces entry id=3, the response is [id=3(B), id=5(A)].\n\n(3) axon-storage/src/adapter.rs StorageAdapter trait: update list_audit_entries (or query_audit_entries — use the actual method name in the trait) signature to accept \u0026[CollectionId] (empty slice = all collections). Update memory.rs and sqlite.rs implementations accordingly.\n\n(4) HTTP route: add GET /audit/tail (or extend the existing /audit/query route) accepting query params ?collections=name1,name2\u0026after_id=\u003cid\u003e. Parse collections as a comma-split Vec\u003cCollectionId\u003e.",
+    "acceptance": "GET /audit/tail?collections=beads,tasks\u0026after_id=0 returns entries from both collections ordered by audit_id ascending (NOT grouped). INTERLEAVING TEST: create task (id=1), create bead (id=2), update task (id=3); multi-collection tail returns [id=1, id=2, id=3] in that order — not [tasks: id=1,3, beads: id=2]. Omitting collections= returns entries from all collections. after_id cursor: second request with after_id=\u003clast_seen_id\u003e returns only newer entries. Unknown collection name returns 400. Single-collection path still works via existing collection field on QueryAuditRequest (existing tests pass). TYPE NAME: no type named ListAuditEntriesRequest should appear in the implementation — the existing QueryAuditRequest is extended.",
+    "labels": [
+      "feat",
+      "p1",
+      "audit"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:17:26Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4074950"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T201726-5d5a4027",
+    "prompt": ".ddx/executions/20260413T201726-5d5a4027/prompt.md",
+    "manifest": ".ddx/executions/20260413T201726-5d5a4027/manifest.json",
+    "result": ".ddx/executions/20260413T201726-5d5a4027/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-fadfcecd-20260413T201726-5d5a4027"
+  }
+}

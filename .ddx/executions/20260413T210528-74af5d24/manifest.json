@@ -1,0 +1,36 @@
+{
+  "attempt_id": "20260413T210528-74af5d24",
+  "bead_id": "axon-4a3d5efe",
+  "base_rev": "f55c143793ec56c70a2b59e2ff294410faf4f72a",
+  "created_at": "2026-04-13T21:05:28.827622073Z",
+  "requested": {
+    "harness": "agent",
+    "model": "vidar-coder",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-4a3d5efe",
+    "title": "Fix KafkaCdcSink kafka feature build — tokio missing from non-dev dependencies",
+    "description": "crates/axon-audit/Cargo.toml declares tokio only in [dev-dependencies] (line 29), but crates/axon-audit/src/cdc.rs:293 calls tokio::runtime::Runtime::new() in library code gated on the 'kafka' feature. Result: 'cargo build -p axon-audit --features kafka' and 'cargo test -p axon-audit --features kafka' both fail with error[E0433]: failed to resolve: use of unresolved module or unlinked crate 'tokio'. The CI test-kafka job added in .github/workflows/ci.yml will fail on every run.\n\nFix: add tokio as an optional dependency gated on the kafka feature in crates/axon-audit/Cargo.toml:\n\n  [dependencies]\n  tokio = { workspace = true, optional = true }\n\n  [features]\n  kafka = [\"dep:rdkafka\", \"dep:tokio\"]\n\nSecondary issue in the same commit: KafkaProducerBackend is pub(crate) but KafkaCdcSink::with_producer is pub and takes impl KafkaProducerBackend, causing a private_bounds warning that fails clippy -D warnings. Fix by either promoting KafkaProducerBackend to pub or making with_producer pub(crate).",
+    "acceptance": "cargo build -p axon-audit --features kafka succeeds; cargo test -p axon-audit --features kafka runs and all Kafka tests pass; cargo clippy -p axon-audit --features kafka -- -D warnings is clean; cargo test -p axon-audit (no feature) still passes; CI test-kafka job passes",
+    "labels": [
+      "bug",
+      "p0",
+      "cdc",
+      "kafka",
+      "ci"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:05:28Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "162017"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T210528-74af5d24",
+    "prompt": ".ddx/executions/20260413T210528-74af5d24/prompt.md",
+    "manifest": ".ddx/executions/20260413T210528-74af5d24/manifest.json",
+    "result": ".ddx/executions/20260413T210528-74af5d24/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-4a3d5efe-20260413T210528-74af5d24"
+  }
+}

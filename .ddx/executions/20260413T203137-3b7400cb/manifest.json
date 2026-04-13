@@ -1,0 +1,36 @@
+{
+  "attempt_id": "20260413T203137-3b7400cb",
+  "bead_id": "axon-7adc58e9",
+  "base_rev": "8b63f58966e5ce3dab02ed95f3eb25a8d79a33bd",
+  "created_at": "2026-04-13T20:31:37.109492597Z",
+  "requested": {
+    "harness": "agent",
+    "model": "bragi",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-7adc58e9",
+    "title": "Add audit_id field to ChangeEvent in subscriptions.rs (prereq for US-082)",
+    "description": "File: axon-graphql/src/subscriptions.rs. ChangeEvent struct is missing audit_id: String field. Without it, a client has no resume point for since_audit_id on reconnect. Prerequisite for axon-7836eb3e (resumable subscriptions). Add audit_id: String to ChangeEvent. Populate from the source audit entry's ID when the subscription event is constructed. Must be present on both replayed and live events.",
+    "acceptance": "ChangeEvent struct has audit_id: String field; live subscription events have audit_id set to the triggering audit entry ID; field serializes correctly in the WebSocket message; existing subscription tests pass",
+    "labels": [
+      "feat",
+      "p1",
+      "graphql",
+      "subscriptions",
+      "testability"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:31:37Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4128606"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T203137-3b7400cb",
+    "prompt": ".ddx/executions/20260413T203137-3b7400cb/prompt.md",
+    "manifest": ".ddx/executions/20260413T203137-3b7400cb/manifest.json",
+    "result": ".ddx/executions/20260413T203137-3b7400cb/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-7adc58e9-20260413T203137-3b7400cb"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "attempt_id": "20260413T205508-7c5224c2",
+  "bead_id": "axon-0dd2e517",
+  "base_rev": "fe83eca2f7319c65b132316a4d584c9d4a3553b8",
+  "created_at": "2026-04-13T20:55:08.465660883Z",
+  "requested": {
+    "harness": "agent",
+    "model": "vidar-coder",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-0dd2e517",
+    "title": "Add completion channel to background index build (prereq for testable FEAT-013)",
+    "description": "axon-storage/src/index_builder.rs: IndexBuildInfo currently has no JoinHandle and no completion channel. Tests waiting for index build completion have no option except time.sleep(), which is racy. Change: add a tokio::watch::Receiver\u003cIndexBuildStatus\u003e (or oneshot) to IndexBuildInfo returned by the build initiation call so callers can .await completion deterministically. The build task (tokio::spawn) sends on the channel when state transitions to Ready or fails. No change to the public IndexStatus enum. Prerequisite for axon-5973f060.",
+    "acceptance": "IndexBuildInfo has a channel field resolving when build transitions to Ready or Failed; test can await completion without sleeping; build failure resolves the channel with an error variant",
+    "labels": [
+      "feat",
+      "p2",
+      "indexes",
+      "testability"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:55:08Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "12462",
+      "events": [
+        {
+          "actor": "erik",
+          "body": "agent: agent: reasoning stall: model produced only reasoning tokens past stall timeout\nresult_rev=1ee0c2fe39a4c2c9fb05f0051effea19817f8321\nbase_rev=1ee0c2fe39a4c2c9fb05f0051effea19817f8321\nretry_after=2026-04-14T02:31:36Z",
+          "created_at": "2026-04-13T20:31:36.989002565Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ]
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T205508-7c5224c2",
+    "prompt": ".ddx/executions/20260413T205508-7c5224c2/prompt.md",
+    "manifest": ".ddx/executions/20260413T205508-7c5224c2/manifest.json",
+    "result": ".ddx/executions/20260413T205508-7c5224c2/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-0dd2e517-20260413T205508-7c5224c2"
+  }
+}

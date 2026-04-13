@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T201105-b3e3f523",
+  "bead_id": "axon-be2a06cc",
+  "base_rev": "9ea6a6b8befc64bcab60476126242f705b37b26a",
+  "created_at": "2026-04-13T20:11:05.131919634Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-be2a06cc",
+    "title": "Implement KafkaCdcSink with rdkafka producer — replace in-memory stub (FEAT-021)",
+    "description": "File: axon-audit/src/cdc.rs. KafkaCdcSink at line 228 buffers events in memory with a comment 'actual rdkafka integration is deferred'. Changes: (1) Add rdkafka = { version = '...', optional = true } to axon-audit/Cargo.toml with a 'kafka' feature flag (default = []). (2) Add 'kafka' to the CI test command — check the project's CI config (likely .github/workflows/*.yml or a Makefile/justfile) and add '--features kafka' to the axon-audit test invocation. If no CI config exists yet, add a note in a comment at the top of cdc.rs documenting that 'cargo test --features kafka' is required to test Kafka integration. (3) Replace the Vec\u003c(topic, partition_key, json)\u003e buffer with rdkafka::producer::FutureProducer behind #[cfg(feature='kafka')]. (4) Implement produce(): serialize CdcEvent to Debezium JSON envelope, call producer.send() with topic from KafkaConfig, entity_id as message key. (5) Error handling: producer errors return CdcError::ProducerError — do not panic. (6) Tests: use a MockProducer struct (small internal trait with sent: Arc\u003cMutex\u003cVec\u003c...\u003e\u003e\u003e) rather than a real Kafka broker.",
+    "acceptance": "KafkaCdcSink with mock producer: entity create event produces message on correct topic with entity_id as key and valid Debezium envelope (op=c); update event produces op=u; delete event produces op=d; producer error returns CdcError not a panic; 'cargo test --features kafka' runs the Kafka tests; 'cargo test' without the feature still compiles and passes (existing tests unaffected); CI config updated (or comment added documenting the feature flag)",
+    "parent": "axon-b5a5cc01",
+    "labels": [
+      "feat",
+      "p1",
+      "cdc"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:11:05Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4074950"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T201105-b3e3f523",
+    "prompt": ".ddx/executions/20260413T201105-b3e3f523/prompt.md",
+    "manifest": ".ddx/executions/20260413T201105-b3e3f523/manifest.json",
+    "result": ".ddx/executions/20260413T201105-b3e3f523/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-be2a06cc-20260413T201105-b3e3f523"
+  }
+}

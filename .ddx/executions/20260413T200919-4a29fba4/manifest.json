@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T200919-4a29fba4",
+  "bead_id": "axon-e0817efb",
+  "base_rev": "25c9668a75e2871f12462d1ac1f460efb3179938",
+  "created_at": "2026-04-13T20:09:19.80228057Z",
+  "requested": {
+    "harness": "agent",
+    "model": "bragi",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-e0817efb",
+    "title": "Thread CallerIdentity through request pipeline — identity extraction only (FEAT-012)",
+    "description": "Scope: identity extraction and propagation only. RBAC policy enforcement is a separate future task. Changes: (1) axon-server/src/service.rs (gRPC): extract actor from request metadata header 'x-axon-actor'; construct CallerIdentity { actor, auth_mode }; pass to each handler method call. (2) axon-server/src/gateway.rs (HTTP): same extraction from HTTP header 'x-axon-actor'. (3) Handler method signatures in axon-api/src/handler.rs: add caller: \u0026CallerIdentity parameter to create_entity, update_entity, patch_entity, delete_entity, commit_transaction, and collection management methods. Handler uses caller.actor as the 'actor' field on audit entries. (4) --no-auth flag: identity = CallerIdentity::anonymous(); all operations proceed. No permission checks in this task.",
+    "acceptance": "Tests MUST use the real HTTP server test pattern from axon-server/tests/api_contract.rs (start a real server, issue HTTP requests) — NOT unit tests of handler methods directly. Required test cases: POST entity with 'x-axon-actor: agent-1' header; read audit log for entity; audit entry has actor=agent-1; POST entity without header; audit entry has actor=anonymous; --no-auth mode: request without header still succeeds with actor=anonymous; no request is rejected based on identity; existing tests pass (add identity header where needed)",
+    "parent": "axon-b5a5cc01",
+    "labels": [
+      "feat",
+      "p1",
+      "auth"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:09:19Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4096142"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T200919-4a29fba4",
+    "prompt": ".ddx/executions/20260413T200919-4a29fba4/prompt.md",
+    "manifest": ".ddx/executions/20260413T200919-4a29fba4/manifest.json",
+    "result": ".ddx/executions/20260413T200919-4a29fba4/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-e0817efb-20260413T200919-4a29fba4"
+  }
+}

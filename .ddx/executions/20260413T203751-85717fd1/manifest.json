@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T203751-85717fd1",
+  "bead_id": "axon-0f9c54cf",
+  "base_rev": "92e575dfd1aeb1a7e5a5c35f0f5dc30784698969",
+  "created_at": "2026-04-13T20:37:51.93532091Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-0f9c54cf",
+    "title": "Add transition_lifecycle method to AxonHandler (prereq for FEAT-015 lifecycle mutations)",
+    "description": "Prerequisites: axon-eec93920 (LifecycleDef in CollectionSchema) must be complete before this task. axon-api/src/handler.rs: no transition_lifecycle() method exists. Implement handler method only — no GraphQL wiring. Signature: transition_lifecycle(req: TransitionLifecycleRequest) -\u003e Result\u003cEntity\u003e. TransitionLifecycleRequest { collection_id: CollectionId, entity_id: EntityId, lifecycle_name: String, target_state: String, expected_version: u64 }. Logic: (1) load collection schema; (2) look up schema.lifecycles[lifecycle_name] — if not found, return LifecycleNotFound error; (3) read current entity; (4) get current value of schema.lifecycles[lifecycle_name].field from entity.data (e.g., entity.data['status']); (5) look up allowed transitions for current state from LifecycleDef.transitions; (6) if target_state not in allowed set, return InvalidTransition { lifecycle_name, current_state, valid_transitions }; (7) if valid: update entity.data[lifecycle_field] = target_state via update_entity (standard OCC using expected_version).",
+    "acceptance": "transition_lifecycle with valid target state updates the correct data field and returns updated entity; invalid target state returns InvalidTransition error with lifecycle_name, current_state, and valid_transitions list; LifecycleNotFound returned for unknown lifecycle_name; wrong expected_version returns version conflict; entity at final state (e.g., 'done' with transitions=[]) has empty valid_transitions in InvalidTransition error; tests use a collection schema with lifecycles populated via CollectionSchema.lifecycles (from axon-eec93920)",
+    "labels": [
+      "feat",
+      "p1",
+      "lifecycle",
+      "testability"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:37:51Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4074950"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T203751-85717fd1",
+    "prompt": ".ddx/executions/20260413T203751-85717fd1/prompt.md",
+    "manifest": ".ddx/executions/20260413T203751-85717fd1/manifest.json",
+    "result": ".ddx/executions/20260413T203751-85717fd1/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-0f9c54cf-20260413T203751-85717fd1"
+  }
+}

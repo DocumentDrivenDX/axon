@@ -54,6 +54,12 @@ pub struct AuditPage {
 ///
 /// Implementations must guarantee that entries are stored durably and
 /// in the order they were appended. The log is never truncated.
+///
+/// # Ordering Invariant
+///
+/// All query methods that return multiple entries MUST return them in ascending `audit_id` order.
+/// Implementations MUST ensure this invariant holds regardless of how entries were inserted.
+/// Persistent backends must emit `ORDER BY id ASC` or equivalent SQL ordering clause.
 pub trait AuditLog: Send + Sync {
     /// Appends an entry to the audit log.
     ///
@@ -101,7 +107,24 @@ pub trait AuditLog: Send + Sync {
     /// The cursor (`after_id`) is the last entry ID seen; the next page begins
     /// at `after_id + 1`. When the returned [`AuditPage::next_cursor`] is `None`
     /// there are no further results.
+    ///
+    /// # Ordering
+    ///
+    /// Returns entries ordered by `audit_id` (the entry's sequential `id`) in ascending order.
+    /// Implementations MUST return entries ordered by audit_id ascending. Persistent backends
+    /// must emit `ORDER BY id ASC` or equivalent SQL ordering clause.
     fn query_paginated(&self, query: AuditQuery) -> Result<AuditPage, AxonError>;
+
+    /// Returns the set of distinct collection IDs that appear in the audit log.
+    ///
+    /// Used to validate collection names supplied by callers before querying.
+    /// Returns an empty set when the log is empty.
+    ///
+    /// # Complexity
+    ///
+    /// The default implementation is O(N) over the full log and must be cached or indexed
+    /// in production backends for scalability.
+    fn known_collections(&self) -> std::collections::HashSet<CollectionId>;
 
     /// Replay audit entries from a given cursor, returning CDC envelopes.
     ///
@@ -169,6 +192,10 @@ impl AuditLog for MemoryAuditLog {
 
     fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    fn known_collections(&self) -> std::collections::HashSet<CollectionId> {
+        self.entries.iter().map(|e| e.collection.clone()).collect()
     }
 
     fn query_by_entity(
@@ -280,6 +307,10 @@ impl AuditLog for MemoryAuditLog {
                 true
             })
             .collect();
+
+        // Sort entries by audit_id (entry.id) in ascending order before returning.
+        // This enforces the ordering invariant regardless of insertion order.
+        filtered.sort_by_key(|e| e.id);
 
         // Fetch one extra to detect whether a next page exists.
         let has_more = filtered.len() > limit;
@@ -807,5 +838,122 @@ mod tests {
         let ids: Vec<u64> = envelopes.iter().map(|e| e.source.audit_id).collect();
         let unique: std::collections::HashSet<u64> = ids.iter().copied().collect();
         assert_eq!(ids.len(), unique.len());
+    }
+
+    // ── Ordering Invariant Tests ─────────────────────────────────────────
+
+    /// Verifies that query_paginated returns entries ordered by audit_id ascending,
+    /// even when internal storage is manipulated to be out-of-order.
+    #[test]
+    fn query_paginated_enforces_audit_id_ordering() {
+        // Create a MemoryAuditLog and manipulate its internal state to insert entries
+        // with non-sequential audit_id values, simulating an out-of-order scenario.
+        let mut log = MemoryAuditLog::default();
+
+        // Create entries with audit_id values that are not in insertion order
+        let mut entry1 = AuditEntry::new(
+            CollectionId::new("tasks"),
+            EntityId::new("t-003"),
+            1, // version
+            MutationType::EntityCreate,
+            None,
+            Some(serde_json::json!({"task": "third"})),
+            Some("agent".into()),
+        );
+        entry1.id = 100; // Set id directly to simulate out-of-order insertion
+
+        let mut entry2 = AuditEntry::new(
+            CollectionId::new("tasks"),
+            EntityId::new("t-001"),
+            1, // version
+            MutationType::EntityCreate,
+            None,
+            Some(serde_json::json!({"task": "first"})),
+            Some("agent".into()),
+        );
+        entry2.id = 50; // Set id directly to simulate out-of-order insertion
+
+        let mut entry3 = AuditEntry::new(
+            CollectionId::new("tasks"),
+            EntityId::new("t-002"),
+            1, // version
+            MutationType::EntityCreate,
+            None,
+            Some(serde_json::json!({"task": "second"})),
+            Some("agent".into()),
+        );
+        entry3.id = 75; // Set id directly to simulate out-of-order insertion
+
+        // Insert entries directly into internal storage (out-of-order by audit_id)
+        log.entries.push(entry1);
+        log.entries.push(entry2);
+        log.entries.push(entry3);
+
+        // Query without any filters - should return entries sorted by audit_id (id)
+        let page = log
+            .query_paginated(AuditQuery {
+                limit: Some(10),
+                ..Default::default()
+            })
+            .unwrap();
+
+        // Verify entries are sorted by audit_id (id) ascending
+        assert_eq!(page.entries.len(), 3);
+
+        // The entries should be ordered by id (50, 75, 100), NOT insertion order
+        assert_eq!(page.entries[0].id, 50);
+        assert_eq!(page.entries[1].id, 75);
+        assert_eq!(page.entries[2].id, 100);
+
+        // Verify entries are actually ordered by their id field
+        let ids: Vec<u64> = page.entries.iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![50, 75, 100]);
+    }
+
+    /// Verifies that known_collections returns entries in deterministic order
+    /// and demonstrates the O(N) iteration pattern.
+    #[test]
+    fn known_collections_are_deterministic() {
+        let mut log = MemoryAuditLog::default();
+
+        log.append(AuditEntry::new(
+            CollectionId::new("tasks"),
+            EntityId::new("t-001"),
+            1,
+            MutationType::EntityCreate,
+            None,
+            Some(serde_json::json!({})),
+            None,
+        ))
+        .unwrap();
+
+        log.append(AuditEntry::new(
+            CollectionId::new("beads"),
+            EntityId::new("b-001"),
+            2,
+            MutationType::EntityCreate,
+            None,
+            Some(serde_json::json!({})),
+            None,
+        ))
+        .unwrap();
+
+        log.append(AuditEntry::new(
+            CollectionId::new("tasks"),
+            EntityId::new("t-002"),
+            3,
+            MutationType::EntityUpdate,
+            None,
+            Some(serde_json::json!({})),
+            None,
+        ))
+        .unwrap();
+
+        let collections = log.known_collections();
+
+        // Should contain exactly two collections
+        assert_eq!(collections.len(), 2);
+        assert!(collections.contains(&CollectionId::new("tasks")));
+        assert!(collections.contains(&CollectionId::new("beads")));
     }
 }

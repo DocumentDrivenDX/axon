@@ -1,0 +1,36 @@
+{
+  "attempt_id": "20260413T200651-c8b8461a",
+  "bead_id": "axon-6f69ef62",
+  "base_rev": "658bdd20acc4582714f76dd5a201eba03fc0d31e",
+  "created_at": "2026-04-13T20:06:51.202315518Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-6f69ef62",
+    "title": "Author ADR for Agent Guardrails rate limiting and scope constraints (FEAT-022)",
+    "description": "Write ADR-016-agent-guardrails.md in docs/helix/02-design/adr/. The ADR must resolve: (1) Rate limiting strategy: token bucket per agent identity (identity = CallerIdentity.actor from axon-e0817efb). Bucket configuration: mutations_per_second and mutations_per_minute, burst_allowance. In-process implementation (no Redis) using a HashMap\u003cactor, TokenBucket\u003e protected by Mutex. Rate limit exceeded produces a retryable error with retry_after_ms. (2) Scope constraints: an agent credential can be annotated with an entity_filter (e.g., 'assignee = agent-id'). Any mutation targeting an entity not matching the filter is rejected with ScopeViolation error. Scope annotation lives in the auth layer (FEAT-012) — for V1 this means it's a field on CallerIdentity that the guardrails layer reads. (3) Interaction with FEAT-012 auth: guardrails layer reads from CallerIdentity (already threaded by axon-e0817efb). RBAC and guardrails are separate — guardrails are per-agent preventive controls, not per-role access grants. (4) Audit: all guardrail rejections produce audit entries with operation=guardrail_rejection and the rejection reason. (5) Out of scope: semantic validation hooks (deferred per FEAT-022 spec). Configuring limits via API (V1 is config-file only).",
+    "acceptance": "ADR-016 exists at docs/helix/02-design/adr/ADR-016-agent-guardrails.md; rate limiting strategy and data structure are decided; scope constraint model is defined; audit trail for rejections is specified; no open questions remain that would block implementation (axon-0fc26e99)",
+    "parent": "axon-b5a5cc01",
+    "labels": [
+      "chore",
+      "p1",
+      "planning",
+      "agent-guardrails"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:06:51Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4074950"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T200651-c8b8461a",
+    "prompt": ".ddx/executions/20260413T200651-c8b8461a/prompt.md",
+    "manifest": ".ddx/executions/20260413T200651-c8b8461a/manifest.json",
+    "result": ".ddx/executions/20260413T200651-c8b8461a/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-6f69ef62-20260413T200651-c8b8461a"
+  }
+}

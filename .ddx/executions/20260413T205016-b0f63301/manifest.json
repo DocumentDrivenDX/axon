@@ -1,0 +1,45 @@
+{
+  "attempt_id": "20260413T205016-b0f63301",
+  "bead_id": "axon-cdd8ec32",
+  "base_rev": "62defcf0597d6db7b4d401649b05a5c5d8d794af",
+  "created_at": "2026-04-13T20:50:16.980906784Z",
+  "requested": {
+    "harness": "agent",
+    "model": "qwen/qwen3-coder-next",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-cdd8ec32",
+    "title": "Author ADR for Control Plane topology and BYOC deployment model (FEAT-025)",
+    "description": "Write ADR-017-control-plane.md in docs/helix/02-design/adr/. The ADR must resolve: (1) Control plane backing store: PostgreSQL database for CP metadata (tenant registry, health snapshots, configuration). Separate from any tenant's data — no entity data ever touches the CP DB. (2) CP-to-instance auth: each managed Axon instance exposes a /health and /metrics endpoint. The CP authenticates to instances using a shared secret (HMAC-signed token) or mTLS. In BYOC deployments, the instance registers with the CP on startup by posting its endpoint URL and a registration token; the CP verifies the token. (3) Tenant lifecycle: CP provisions tenants by recording a tenant entry in its DB with the instance endpoint, backing store config, and schema version. CP does not deploy Axon itself — that is handled by deployment tooling (Docker/Kubernetes manifests). (4) Monitoring: CP polls instance /health at a configurable interval. Health state is stored in CP DB with a timestamp. CP serves aggregate dashboards from this store. (5) Data sovereignty: CP never reads entity data. All monitoring is metrics-only. (6) BYOC air-gap: local CP mode runs entirely in customer infrastructure with no external dependencies.",
+    "acceptance": "ADR-017 exists at docs/helix/02-design/adr/ADR-017-control-plane.md; CP-to-instance auth model is decided (shared secret vs mTLS choice made); tenant registration flow is specified; data sovereignty guarantee is explicit; no open questions remain that would block starting a control-plane crate",
+    "parent": "axon-b5a5cc01",
+    "labels": [
+      "chore",
+      "p1",
+      "planning"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:50:16Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "5898",
+      "events": [
+        {
+          "actor": "erik",
+          "body": "agent made no commits\nresult_rev=581d4d502a0ad9b5ad260d83b376afee49e93eb8\nbase_rev=581d4d502a0ad9b5ad260d83b376afee49e93eb8\nretry_after=2026-04-14T02:09:19Z",
+          "created_at": "2026-04-13T20:09:19.690484915Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "no_changes"
+        }
+      ]
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T205016-b0f63301",
+    "prompt": ".ddx/executions/20260413T205016-b0f63301/prompt.md",
+    "manifest": ".ddx/executions/20260413T205016-b0f63301/manifest.json",
+    "result": ".ddx/executions/20260413T205016-b0f63301/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-cdd8ec32-20260413T205016-b0f63301"
+  }
+}

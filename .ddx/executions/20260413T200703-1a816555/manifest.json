@@ -1,0 +1,36 @@
+{
+  "attempt_id": "20260413T200703-1a816555",
+  "bead_id": "axon-1c343de8",
+  "base_rev": "7fec58e147e918433e889005bc857435b07ba960",
+  "created_at": "2026-04-13T20:07:03.380619439Z",
+  "requested": {
+    "harness": "agent",
+    "model": "vidar",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-1c343de8",
+    "title": "Author ADR for Rollback/Recovery compensating transaction semantics (FEAT-023)",
+    "description": "Write ADR-015-rollback-recovery.md in docs/helix/02-design/adr/. The ADR must resolve: (1) Compensating write approach: rollback is a new write at version N+1 applying the prior state — not a version pointer rewrite. This preserves the audit log as append-only and keeps OCC semantics consistent. (2) OCC during rollback: the compensating write uses expected_version=current_version. If the entity was modified since the rollback target, this produces a standard version conflict — the caller must resolve. (3) Cross-entity atomicity for transaction-level rollback: all compensating writes for a rolled-back transaction are grouped in a new transaction with a shared rollback_transaction_id. If any compensating write fails (OCC conflict), the entire compensating transaction is aborted and the conflict list is returned — partial rollback is rejected. (4) Audit trail: compensating writes produce audit entries with operation=rollback and a reference to the original entry/transaction. (5) Dry-run: reads audit log and current entity states, computes the compensating writes, detects OCC conflicts — all without writing. The ADR should explicitly state what is out of scope for V1 (CRDT merging, automatic conflict resolution, saga compensation).",
+    "acceptance": "ADR-015 exists at docs/helix/02-design/adr/ADR-015-rollback-recovery.md; covers compensating write rationale, OCC interaction, cross-entity atomicity, audit trail design, and V1 out-of-scope; no open questions remain that would block implementation (axon-375db29e)",
+    "parent": "axon-b5a5cc01",
+    "labels": [
+      "chore",
+      "p1",
+      "planning",
+      "rollback"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T20:07:03Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4096042"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T200703-1a816555",
+    "prompt": ".ddx/executions/20260413T200703-1a816555/prompt.md",
+    "manifest": ".ddx/executions/20260413T200703-1a816555/manifest.json",
+    "result": ".ddx/executions/20260413T200703-1a816555/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-1c343de8-20260413T200703-1a816555"
+  }
+}
