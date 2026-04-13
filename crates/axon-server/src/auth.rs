@@ -304,7 +304,12 @@ impl LocalApiWhoisProvider {
                 AuthError::ProviderUnavailable(format!("body aggregation failed: {e}"))
             })?;
             Ok(hyper::body::Bytes::from(buf))
-        } else if status == http::StatusCode::UNPROCESSABLE_ENTITY {
+        } else if status == http::StatusCode::NOT_FOUND
+            || status == http::StatusCode::UNPROCESSABLE_ENTITY
+        {
+            // 404: address not known to this tailnet (observed on Tailscale ≥ 1.x).
+            // 422: legacy "unprocessable entity" returned by older daemon versions.
+            // Both mean the peer is not a tailnet member — not a provider fault.
             Err(AuthError::Unauthorized(
                 "peer is not a recognized tailnet address".into(),
             ))

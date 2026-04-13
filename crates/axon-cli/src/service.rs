@@ -56,7 +56,9 @@ fn uninstall_service() -> Result<()> {
 
 // ── systemd (Linux) ──────────────────────────────────────────────────────────
 
-const SYSTEMD_UNIT_TEMPLATE: &str = "\
+/// User service (~/.config/systemd/user/axon.service).
+/// Runs as the invoking user; `WantedBy=default.target` is correct here.
+const SYSTEMD_USER_UNIT: &str = "\
 [Unit]
 Description=Axon Data Store
 After=network.target
@@ -66,9 +68,34 @@ Type=simple
 ExecStart={binary_path} serve
 Restart=on-failure
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target
+";
+
+/// System service (/etc/systemd/system/axon.service).
+/// Runs as the `axon` system user; `WantedBy=multi-user.target` is standard for
+/// non-graphical daemons.  The user and data directory must be created separately
+/// (see `create_axon_system_user`).
+const SYSTEMD_GLOBAL_UNIT: &str = "\
+[Unit]
+Description=Axon Data Store
+After=network.target
+
+[Service]
+Type=simple
+User=axon
+Group=axon
+ExecStart={binary_path} serve
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
 ";
 
 fn systemd_unit_path(global: bool) -> Result<PathBuf> {
@@ -84,9 +111,46 @@ fn systemd_unit_path(global: bool) -> Result<PathBuf> {
     }
 }
 
+fn create_axon_system_user() -> Result<()> {
+    // Check whether the `axon` system user already exists.
+    let exists = Command::new("id")
+        .arg("axon")
+        .status()
+        .context("failed to run `id axon`")?
+        .success();
+
+    if !exists {
+        run_cmd(
+            "useradd",
+            &[
+                "--system",
+                "--no-create-home",
+                "--home-dir",
+                "/var/lib/axon",
+                "--shell",
+                "/usr/sbin/nologin",
+                "--comment",
+                "Axon Data Store",
+                "axon",
+            ],
+        )
+        .context("failed to create `axon` system user")?;
+        println!("created system user `axon`");
+    }
+
+    // Ensure the data directory exists and is owned by axon.
+    std::fs::create_dir_all("/var/lib/axon")
+        .context("failed to create /var/lib/axon")?;
+    run_cmd("chown", &["axon:axon", "/var/lib/axon"])
+        .context("failed to chown /var/lib/axon")?;
+    println!("data directory: /var/lib/axon");
+    Ok(())
+}
+
 fn install_systemd(bin: &std::path::Path, global: bool) -> Result<()> {
     let unit_path = systemd_unit_path(global)?;
-    let unit_content = SYSTEMD_UNIT_TEMPLATE.replace("{binary_path}", &bin.display().to_string());
+    let template = if global { SYSTEMD_GLOBAL_UNIT } else { SYSTEMD_USER_UNIT };
+    let unit_content = template.replace("{binary_path}", &bin.display().to_string());
 
     if let Some(parent) = unit_path.parent() {
         std::fs::create_dir_all(parent)
@@ -97,6 +161,7 @@ fn install_systemd(bin: &std::path::Path, global: bool) -> Result<()> {
     println!("wrote {}", unit_path.display());
 
     if global {
+        create_axon_system_user()?;
         run_cmd("systemctl", &["daemon-reload"])?;
         run_cmd("systemctl", &["enable", "axon"])?;
         println!("enabled axon.service (system)");
@@ -156,6 +221,16 @@ const LAUNCHD_PLIST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 
 const LAUNCHD_LABEL: &str = "com.axon.server";
 
+/// Returns `gui/<uid>` — the launchctl domain for the current user's GUI session.
+fn launchd_user_domain() -> Result<String> {
+    let out = Command::new("id")
+        .arg("-u")
+        .output()
+        .context("failed to run `id -u`")?;
+    let uid = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(format!("gui/{uid}"))
+}
+
 fn launchd_plist_path(global: bool) -> Result<PathBuf> {
     if global {
         Ok(PathBuf::from(
@@ -182,7 +257,17 @@ fn install_launchd(bin: &std::path::Path, global: bool) -> Result<()> {
         .with_context(|| format!("failed to write {}", plist_path.display()))?;
     println!("wrote {}", plist_path.display());
 
-    run_cmd("launchctl", &["load", &plist_path.display().to_string()])?;
+    // `launchctl load` is deprecated; use `bootstrap` on macOS 10.15+.
+    // For user agents: bootstrap gui/<uid>; for system daemons: bootstrap system.
+    if global {
+        run_cmd("launchctl", &["bootstrap", "system", &plist_path.display().to_string()])?;
+    } else {
+        let domain = launchd_user_domain()?;
+        run_cmd(
+            "launchctl",
+            &["bootstrap", &domain, &plist_path.display().to_string()],
+        )?;
+    }
     println!("loaded {LAUNCHD_LABEL}");
     Ok(())
 }
@@ -191,15 +276,16 @@ fn uninstall_launchd() -> Result<()> {
     let user_path = launchd_plist_path(false)?;
     let global_path = launchd_plist_path(true)?;
 
-    let plist_path = if user_path.exists() {
-        user_path
+    let (plist_path, domain) = if user_path.exists() {
+        (user_path, launchd_user_domain()?)
     } else if global_path.exists() {
-        global_path
+        (global_path, "system".to_string())
     } else {
         anyhow::bail!("no axon launchd plist found");
     };
 
-    let _ = run_cmd("launchctl", &["unload", &plist_path.display().to_string()]);
+    // `launchctl unload` is deprecated; use `bootout`.
+    let _ = run_cmd("launchctl", &["bootout", &domain, &plist_path.display().to_string()]);
     std::fs::remove_file(&plist_path)
         .with_context(|| format!("failed to remove {}", plist_path.display()))?;
     println!("removed {}", plist_path.display());
