@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T215145-9c162ec5",
+  "bead_id": "axon-030c4344",
+  "base_rev": "bf0b2e9f7ccb11d9cc3c22f3ddf35b49b1a348f1",
+  "created_at": "2026-04-13T21:51:45.98495997Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-030c4344",
+    "title": "Add gRPC integration test for lifecycle transition (axon-686c066a follow-on)",
+    "description": "Opus review of axon-686c066a found that while HTTP integration tests were added (crates/axon-server/tests/), the gRPC transport path for TransitionLifecycle has no integration test — only the HTTP and MCP paths are directly exercised. The gRPC service method delegates to handler.transition_lifecycle but this path is untested.\n\nRequired: Add at least one integration test that calls the gRPC TransitionLifecycle RPC directly (using a test gRPC client against a running axon-server), asserts that: (a) a valid transition succeeds and returns the updated entity, (b) an invalid transition (wrong state, missing required fields) returns gRPC Status INVALID_ARGUMENT, not INTERNAL.\n\nFiles to modify: crates/axon-server/tests/ (add grpc_lifecycle_test.rs or extend existing grpc_integration.rs if it exists). Use the tonic test client pattern already in use elsewhere in the test suite.",
+    "acceptance": "At least one gRPC integration test for TransitionLifecycle exists; test exercises the happy path (valid transition) and one error path (invalid state) via gRPC; test passes with cargo test --workspace; test is isolated and does not depend on external services",
+    "labels": [
+      "test",
+      "p2",
+      "lifecycle",
+      "grpc",
+      "testability"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:51:45Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "436710"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T215145-9c162ec5",
+    "prompt": ".ddx/executions/20260413T215145-9c162ec5/prompt.md",
+    "manifest": ".ddx/executions/20260413T215145-9c162ec5/manifest.json",
+    "result": ".ddx/executions/20260413T215145-9c162ec5/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-030c4344-20260413T215145-9c162ec5"
+  }
+}

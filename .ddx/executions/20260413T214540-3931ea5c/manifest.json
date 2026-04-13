@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T214540-3931ea5c",
+  "bead_id": "axon-ee53b52d",
+  "base_rev": "1f930bd286c65dd12a0a2c64ad601b571966624a",
+  "created_at": "2026-04-13T21:45:40.723325505Z",
+  "requested": {
+    "harness": "agent",
+    "model": "bragi",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-ee53b52d",
+    "title": "Wire GraphQL entity CRUD and link mutations to handler methods (FEAT-015)",
+    "description": "Scope: entity CRUD mutations and link mutations only. Lifecycle transitions and commitTransaction are a separate task (axon-49c241c2). File: axon-graphql/src/dynamic.rs. Currently all mutation resolvers return FieldValue::NULL at lines ~72 and ~81. For each collection, wire: (1) create{Collection}: extract fields from MutationArgs, build CreateEntityRequest, call handler.create_entity(), return entity as FieldValue::Object or propagate error. (2) update{Collection}: build UpdateEntityRequest with expected_version from args, call handler.update_entity(). (3) patch{Collection}: build PatchEntityRequest with JSON merge patch body, call handler.patch_entity(). (4) delete{Collection}: call handler.delete_entity(). (5) create{Collection}Link / delete{Collection}Link: call handler.create_link() / delete_link(). Version conflict must surface as GraphQL error with code=VERSION_CONFLICT and currentEntity in extensions. Schema validation errors must surface with code=VALIDATION_ERROR and violations list in extensions. TEST LOCATION: tests must be in axon-graphql/tests/mutations.rs OR axon-server/tests/graphql_mutations.rs using the real HTTP test server pattern from axon-server/tests/api_contract.rs (start a real server, issue HTTP requests with a GraphQL client). Handler unit tests alone are insufficient.",
+    "acceptance": "createBead mutation creates an entity and returns it with id and version; updateBead with correct expectedVersion succeeds; updateBead with wrong expectedVersion returns GraphQL error with code=VERSION_CONFLICT and currentEntity in extensions; patchBead modifies only specified fields; deleteBead removes entity; createBeadLink creates a typed link; tests are integration tests using the real HTTP server (not resolver unit tests); error extension fields are asserted in tests (not just that an error occurred)",
+    "parent": "axon-b5a5cc01",
+    "labels": [
+      "feat",
+      "p1",
+      "graphql"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:45:40Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "380154"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T214540-3931ea5c",
+    "prompt": ".ddx/executions/20260413T214540-3931ea5c/prompt.md",
+    "manifest": ".ddx/executions/20260413T214540-3931ea5c/manifest.json",
+    "result": ".ddx/executions/20260413T214540-3931ea5c/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-ee53b52d-20260413T214540-3931ea5c"
+  }
+}

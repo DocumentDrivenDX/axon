@@ -1,0 +1,35 @@
+{
+  "attempt_id": "20260413T215129-d340b26a",
+  "bead_id": "axon-f1c3183c",
+  "base_rev": "77e06b88fc00a2033c25f5e75b3b7e86f4cf1826",
+  "created_at": "2026-04-13T21:51:29.251239446Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-f1c3183c",
+    "title": "Clarify transaction rollback behavior on create/delete source txs and PIT all-or-nothing semantics (ADR-015 gaps)",
+    "description": "Opus review of the rollback implementation (commits bbc88b1, 5b1eb02, 91a6e6b, e22ebdb) identified two specification gaps not addressed by ADR-015:\n\nGAP 1 — Transaction rollback refuses create/delete source txs: The current transaction rollback implementation (axon-api/src/handler.rs, ~RollbackTransaction handler) refuses to roll back transactions that include entity creates or deletes — it only handles update operations. ADR-015 does not explicitly document this constraint. Required change: (a) if this is intentional, add a clear code comment AND document it in ADR-015 under Known Constraints; (b) if this is a gap, file a separate bead to implement create/delete rollback support.\n\nGAP 2 — PIT rollback is best-effort, not all-or-nothing: The point-in-time collection rollback handler (5b1eb02) rolls back entities individually. If some entities fail to roll back (e.g., OCC conflicts), the collection ends up in a partial state with no indication to the caller of which entities succeeded or failed. ADR-015 says compensating writes but does not specify atomicity guarantees. Required change: update ADR-015 to explicitly state whether PIT rollback is all-or-nothing or best-effort; update the HTTP response for POST /collections/{name}/rollback to include a partial_failures field listing which entity IDs failed to roll back.\n\nFiles: docs/helix/02-design/adr/ADR-015-rollback-recovery.md, crates/axon-api/src/handler.rs (RollbackTransaction and PIT rollback handlers), crates/axon-api/src/request.rs (response types)",
+    "acceptance": "ADR-015 explicitly documents create/delete rollback constraint (or files a separate bead for full support); PIT rollback response includes partial_failures: Vec\u003cEntityId\u003e (may be empty on full success); cargo test --workspace passes; no ambiguity remains about rollback atomicity guarantees",
+    "labels": [
+      "bug",
+      "p1",
+      "rollback",
+      "adr",
+      "docs"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:51:29Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "434014"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T215129-d340b26a",
+    "prompt": ".ddx/executions/20260413T215129-d340b26a/prompt.md",
+    "manifest": ".ddx/executions/20260413T215129-d340b26a/manifest.json",
+    "result": ".ddx/executions/20260413T215129-d340b26a/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-f1c3183c-20260413T215129-d340b26a"
+  }
+}

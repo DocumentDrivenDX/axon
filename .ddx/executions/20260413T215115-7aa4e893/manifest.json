@@ -1,0 +1,33 @@
+{
+  "attempt_id": "20260413T215115-7aa4e893",
+  "bead_id": "axon-d0302596",
+  "base_rev": "4291e167c50437b363bfa1b36df3bf996128a333",
+  "created_at": "2026-04-13T21:51:15.612438315Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-d0302596",
+    "title": "Add gate_results storage round-trip and backward-compat serde tests (axon-88b4b5f1 acceptance gap)",
+    "description": "Bead axon-88b4b5f1 added gate_results to Entity but added no new tests. The acceptance criteria call out persistence and serde scenarios that are not exercised by existing tests (existing tests only check resp.gates, not the fetched entity's gate_results field). Add the following tests:\n\n(1) Storage round-trip test in crates/axon-api/src/handler.rs or crates/axon-api/tests/: create an entity that fails a custom gate, then call storage.get(col, id) directly and assert fetched.gate_results[gate_name].pass == false and .failures non-empty. Then update the entity to satisfy the gate and assert fetched.gate_results[gate_name].pass == true and .failures is empty. Validates handler.rs:206 and handler.rs:321 actually write to storage, not just the response.\n\n(2) Serde round-trip test in crates/axon-core/src/types.rs: construct an Entity with a non-empty gate_results containing a GateResult with multiple RuleViolation failures, call serde_json::to_value / from_value, assert equality. Validates the new field round-trips through the entity blob correctly.\n\n(3) Backward-compat test: deserialize an Entity JSON blob that lacks the gate_results field (simulating pre-FEAT-019 stored data) and assert it deserializes successfully with gate_results.is_empty(). Validates #[serde(default)] works as expected.\n\n(4) Clarify transaction-path semantics at handler.rs:1080 which carries forward existing.gate_results rather than re-evaluating: add a code comment explaining whether this is intentional (carry-forward for transaction fast-path is acceptable) or a gap. If carry-forward is intentional, a test asserting that transaction writes do NOT re-evaluate gates would lock in the behavior.",
+    "acceptance": "Four new tests added as described; all pass; cargo test --workspace passes; the acceptance criteria from axon-88b4b5f1 ('ROUND-TRIP', 'CUSTOM GATE', 'PASSING GATE', 'UPDATE recomputed') can now be traced to specific test cases; transaction-path behavior is documented in a code comment",
+    "labels": [
+      "test",
+      "p1",
+      "gate-materialization"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:51:15Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "432089"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T215115-7aa4e893",
+    "prompt": ".ddx/executions/20260413T215115-7aa4e893/prompt.md",
+    "manifest": ".ddx/executions/20260413T215115-7aa4e893/manifest.json",
+    "result": ".ddx/executions/20260413T215115-7aa4e893/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-d0302596-20260413T215115-7aa4e893"
+  }
+}

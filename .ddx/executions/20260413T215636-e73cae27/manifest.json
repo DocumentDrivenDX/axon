@@ -1,0 +1,44 @@
+{
+  "attempt_id": "20260413T215636-e73cae27",
+  "bead_id": "axon-4c08a548",
+  "base_rev": "abb3778785421c424ab453dd4ad6fa7100886c40",
+  "created_at": "2026-04-13T21:56:36.693246916Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-4c08a548",
+    "title": "Complete PRD isolation fix — 7 residual false serializable claims after axon-f63ac16f",
+    "description": "Fix 7 residual false serializable isolation claims left after axon-f63ac16f. All 7 require targeted edits to specific lines — do NOT edit alignment review docs, SPIKE-001, ADR-003, ADR-004, or storage-layer references.\n\nEXACT CHANGES REQUIRED:\n\n(1) docs/helix/01-frame/prd.md line ~137 — replace the prose paragraph starting 'The default and recommended level is **serializable**' with: 'The default isolation level in V1 is **snapshot isolation**, implemented via optimistic concurrency control (OCC) with write-set conflict detection. Serializable isolation (preventing write skew) is a P1 post-V1 goal; see the known gap below.'\n\n(2) docs/helix/01-frame/principles.md line ~65 — in the P4 table row, replace 'Serializable isolation | Concurrent transactions produce results equivalent to serial execution' with 'Snapshot Isolation | Concurrent transactions are isolated from each other's writes; write skew prevention (full serializability) is P1.'\n\n(3) docs/helix/01-frame/technical-requirements.md line ~84 — in the Storage Adapter Trait bullet, change 'begin, commit, abort with serializable isolation' to 'begin, commit, abort with snapshot isolation (V1); storage backends may provide serializable at the transaction layer.'\n\n(4) docs/helix/01-frame/technical-requirements.md line ~343 — in the Correctness Invariants table, change 'Serializable isolation | Cycle test (ring integrity) under concurrent transactions' to 'Snapshot Isolation | Cycle test (ring integrity) under concurrent transactions; write skew prevention is P1.'\n\n(5) docs/helix/03-test/test-plan.md lines ~82-84 — rename INV-002 from 'Serializable Isolation (Cycle Test)' to 'Snapshot Isolation (Cycle Test)'; remove 'No write skew' from the invariant statement (SI prevents phantom reads and dirty reads, not write skew); add 'INV-002b (P1): Write skew is prevented under serializable isolation.'\n\n(6) docs/helix/01-frame/features/FEAT-008-acid-transactions.md line ~63 — change 'Under serializable isolation, the first transaction to commit wins' to 'Under snapshot isolation with write-set OCC, the first transaction to commit wins.'\n\n(7) docs/helix/01-frame/competitive-analysis.md line ~149 — in the Axon column, change 'Full ACID, serializable isolation' to 'Full ACID, snapshot isolation (V1); serializable is P1.'\n\nACCEPTANCE VERIFICATION: after changes, run these greps and confirm zero matches:\n  grep -ri 'serializable.*default' docs/\n  grep -n 'no write skew' docs/helix/03-test/test-plan.md\n  grep -n 'serializable isolation.*first' docs/helix/01-frame/features/FEAT-008-acid-transactions.md\n  grep -n 'serializable isolation' docs/helix/01-frame/principles.md\n  grep -n 'Full ACID, serializable' docs/helix/01-frame/competitive-analysis.md",
+    "acceptance": "All 7 specific locations updated as described; grep -ri 'serializable.*default' docs/ returns zero results; grep -ri 'no write skew' docs/ returns zero V1 claims (only P1 deferred items); prd.md prose and table are internally consistent; cargo check passes (docs only change)",
+    "labels": [
+      "bug",
+      "p0",
+      "docs",
+      "isolation"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "erik",
+          "body": "iteration_limit\nresult_rev=77a05f64fefe3db6006272a2613c4b143468d3db\nbase_rev=77a05f64fefe3db6006272a2613c4b143468d3db\nretry_after=2026-04-14T03:28:05Z",
+          "created_at": "2026-04-13T21:28:05.764735008Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ],
+      "execute-loop-last-detail": "iteration_limit",
+      "execute-loop-last-status": "execution_failed",
+      "execute-loop-retry-after": "2026-04-14T03:28:05Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T215636-e73cae27",
+    "prompt": ".ddx/executions/20260413T215636-e73cae27/prompt.md",
+    "manifest": ".ddx/executions/20260413T215636-e73cae27/manifest.json",
+    "result": ".ddx/executions/20260413T215636-e73cae27/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-4c08a548-20260413T215636-e73cae27"
+  }
+}

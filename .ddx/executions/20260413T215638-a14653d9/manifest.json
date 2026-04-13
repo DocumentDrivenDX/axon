@@ -1,0 +1,51 @@
+{
+  "attempt_id": "20260413T215638-a14653d9",
+  "bead_id": "axon-a0081a82",
+  "base_rev": "abb3778785421c424ab453dd4ad6fa7100886c40",
+  "created_at": "2026-04-13T21:56:38.970338781Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-a0081a82",
+    "title": "Add injectable Clock trait to axon-core (prereq for testable time-based features)",
+    "description": "axon-6f138697 (idempotency keys) and axon-0fc26e99 (agent guardrails rate limiting) both require an injectable clock for deterministic time-based tests. Without a shared trait, each bead will define its own clock abstraction, leading to incompatible types. Required change: add to axon-core/src/types.rs (or a new axon-core/src/clock.rs): pub trait Clock: Send + Sync { fn now(\u0026self) -\u003e std::time::Instant; } with two implementations: SystemClock (wraps Instant::now()) and FakeClock { inner: Arc\u003cMutex\u003cInstant\u003e\u003e } with a fn advance(\u0026self, duration: Duration) method. Export both from axon-core::prelude or axon-core::clock.",
+    "acceptance": "Clock trait exists in axon-core; SystemClock::now() returns Instant::now(); FakeClock::now() returns the last value set; FakeClock::advance(d) moves the clock forward by d; both implement Clock + Send + Sync; IdempotencyStore and GuardrailsLayer can accept Arc\u003cdyn Clock\u003e for injection; a test can create FakeClock, advance past TTL, and verify eviction without sleeping",
+    "labels": [
+      "feat",
+      "p1",
+      "testability"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "erik",
+          "body": "agent: agent: reasoning stall: model produced only reasoning tokens past stall timeout\nresult_rev=50f35da7d364e4caa7daf30e9d89d154ad06a202\nbase_rev=50f35da7d364e4caa7daf30e9d89d154ad06a202\nretry_after=2026-04-14T02:37:19Z",
+          "created_at": "2026-04-13T20:37:19.494416355Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        },
+        {
+          "actor": "erik",
+          "body": "agent: provider error: POST \"http://vidar:1234/v1/chat/completions\": 400 Bad Request {\n        \"message\": \"Invalid model identifier \\\"vidar-coder\\\". Please specify a valid downloaded model (e.g., qwen3.5-27b-claude-4.6-opus-distilled-mlx, qwen3.5-27b, openai/gpt-oss-120b@mxfp4).\",\n        \"type\": \"invalid_request_error\",\n        \"param\": \"model\",\n        \"code\": \"model_not_found\"\n    }\nresult_rev=e6e2c9c4f521928828a8b09ab33e2e23fa71a946\nbase_rev=e6e2c9c4f521928828a8b09ab33e2e23fa71a946\nretry_after=2026-04-14T02:55:08Z",
+          "created_at": "2026-04-13T20:55:08.93407393Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ],
+      "execute-loop-last-detail": "agent: provider error: POST \"http://vidar:1234/v1/chat/completions\": 400 Bad Request {\n        \"message\": \"Invalid model identifier \\\"vidar-coder\\\". Please specify a valid downloaded model (e.g., qwen3.5-27b-claude-4.6-opus-distilled-mlx, qwen3.5-27b, openai/gpt-oss-120b@mxfp4).\",\n        \"type\": \"invalid_request_error\",\n        \"param\": \"model\",\n        \"code\": \"model_not_found\"\n    }",
+      "execute-loop-last-status": "execution_failed",
+      "execute-loop-retry-after": "2026-04-14T02:55:08Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T215638-a14653d9",
+    "prompt": ".ddx/executions/20260413T215638-a14653d9/prompt.md",
+    "manifest": ".ddx/executions/20260413T215638-a14653d9/manifest.json",
+    "result": ".ddx/executions/20260413T215638-a14653d9/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-a0081a82-20260413T215638-a14653d9"
+  }
+}

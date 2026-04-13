@@ -1,0 +1,36 @@
+{
+  "attempt_id": "20260413T215136-a644bace",
+  "bead_id": "axon-b7782e95",
+  "base_rev": "c2beab6b7ca232d941a48d9dc157a20c8cc80ed2",
+  "created_at": "2026-04-13T21:51:36.701050347Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-b7782e95",
+    "title": "Persist schema_version through SQL storage backends (FEAT-017 follow-on)",
+    "description": "Opus review of axon-118f54c6 found that both SQL storage backends hardcode schema_version: 0 when reconstructing entities from the database, silently resetting the field on every read.\n\nAffected files:\n- crates/axon-storage/src/sqlite.rs line ~87: hardcodes schema_version: 0 when loading Entity from SQLite rows\n- crates/axon-storage/src/postgres.rs line ~100: hardcodes schema_version: 0 when loading Entity from Postgres rows\n\nRequired:\n1. Add schema_version column to the entities table in both SQLite and Postgres schemas (if not already present as part of the entity blob)\n2. Alternatively: if entities are stored as a JSON blob, ensure schema_version is included in the serialized blob and deserialized correctly (the Entity struct has #[serde(default)] so existing rows will load as 0 — this is correct). In that case, the hardcoded 0 in the struct constructors should use the deserialized value instead.\n3. Add a round-trip test: create entity with schema_version=N, write to storage, read back via storage.get(), assert schema_version==N.\n\nThe in-memory backend may already be correct (it stores the full Entity). Focus on the SQL backends.",
+    "acceptance": "schema_version round-trips through both SQLite and Postgres storage backends; schema_version read from storage matches the value written; existing entities with no schema_version column/field load as 0 (backward compat); cargo test --workspace passes",
+    "labels": [
+      "bug",
+      "p1",
+      "schema-evolution",
+      "storage",
+      "sqlite",
+      "postgres"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-13T21:51:36Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "435646"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260413T215136-a644bace",
+    "prompt": ".ddx/executions/20260413T215136-a644bace/prompt.md",
+    "manifest": ".ddx/executions/20260413T215136-a644bace/manifest.json",
+    "result": ".ddx/executions/20260413T215136-a644bace/result.json",
+    "worktree": ".ddx/.execute-bead-wt-axon-b7782e95-20260413T215136-a644bace"
+  }
+}
