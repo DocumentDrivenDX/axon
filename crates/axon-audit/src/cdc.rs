@@ -876,6 +876,8 @@ mod tests {
         use super::*;
         use std::sync::{Arc, Mutex};
 
+        type SentMessages = Arc<Mutex<Vec<(String, String, String)>>>;
+
         /// Failing producer for error-path tests.
         #[derive(Debug)]
         struct FailingProducer;
@@ -886,7 +888,7 @@ mod tests {
             }
         }
 
-        fn make_enabled_sink() -> (KafkaCdcSink, Arc<Mutex<Vec<(String, String, String)>>>) {
+        fn make_enabled_sink() -> (KafkaCdcSink, SentMessages) {
             let config = KafkaConfig {
                 enabled: true,
                 ..KafkaConfig::default()
