@@ -6,6 +6,7 @@
 //! and the error hierarchy used across the workspace.
 
 pub mod auth;
+pub mod clock;
 pub mod error;
 pub mod id;
 pub mod topology;
@@ -14,6 +15,7 @@ pub mod types;
 pub use auth::{
     CallerIdentity, DatabaseGrant, GrantRegistry, MaskPolicy, Operation, Role, WritePolicy,
 };
+pub use clock::{Clock, FakeClock, SystemClock};
 pub use error::AxonError;
 pub use id::{
     CollectionId, EntityId, LinkId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE,
