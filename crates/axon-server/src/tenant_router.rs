@@ -15,28 +15,28 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 use axon_api::handler::AxonHandler;
+use axon_storage::adapter::StorageAdapter;
 use axon_storage::{PostgresStorageAdapter, SqliteStorageAdapter};
 
-/// A shared, async-safe handle to an `AxonHandler<SqliteStorageAdapter>`.
-pub type SharedSqliteHandler = Arc<Mutex<AxonHandler<SqliteStorageAdapter>>>;
-
-/// A shared, async-safe handle to an `AxonHandler<PostgresStorageAdapter>`.
-pub type SharedPgHandler = Arc<Mutex<AxonHandler<PostgresStorageAdapter>>>;
+/// Shared, async-safe handle to an `AxonHandler` backed by a boxed
+/// `StorageAdapter`.  Used by the HTTP gateway for both SQLite and
+/// PostgreSQL tenants.
+pub type TenantHandler = Arc<Mutex<AxonHandler<Box<dyn StorageAdapter + Send + Sync>>>>;
 
 /// Backend-specific state for the router.
 enum RouterBackend {
     /// SQLite mode: tenant databases are separate files in `data_dir`.
     Sqlite {
         data_dir: PathBuf,
-        tenants: RwLock<HashMap<String, SharedSqliteHandler>>,
-        default_handler: SharedSqliteHandler,
+        tenants: RwLock<HashMap<String, TenantHandler>>,
+        default_handler: TenantHandler,
         single_mode: bool,
     },
     /// PostgreSQL mode: tenant databases are separate PG databases.
     Postgres {
         superadmin_dsn: String,
-        tenants: RwLock<HashMap<String, SharedPgHandler>>,
-        default_handler: SharedPgHandler,
+        tenants: RwLock<HashMap<String, TenantHandler>>,
+        default_handler: TenantHandler,
     },
 }
 
@@ -55,7 +55,7 @@ pub struct TenantRouter {
 
 impl TenantRouter {
     /// Create a new SQLite router that stores tenant databases under `data_dir`.
-    pub fn new(data_dir: PathBuf, default_handler: SharedSqliteHandler) -> Self {
+    pub fn new(data_dir: PathBuf, default_handler: TenantHandler) -> Self {
         Self {
             backend: RouterBackend::Sqlite {
                 data_dir,
@@ -72,7 +72,7 @@ impl TenantRouter {
     /// that can execute `CREATE DATABASE` / `DROP DATABASE`.  The
     /// `default_handler` is pre-connected to the master database
     /// (`axon_master`) and is returned for the `"default"` database name.
-    pub fn new_postgres(superadmin_dsn: String, default_handler: SharedPgHandler) -> Self {
+    pub fn new_postgres(superadmin_dsn: String, default_handler: TenantHandler) -> Self {
         Self {
             backend: RouterBackend::Postgres {
                 superadmin_dsn,
@@ -82,12 +82,12 @@ impl TenantRouter {
         }
     }
 
-    /// Wraps a single SQLite handler so that ALL database names resolve to it.
+    /// Wraps a single handler so that ALL database names resolve to it.
     ///
     /// This is the constructor for tests and single-database deployments
     /// where multi-tenant isolation is not needed.  No filesystem access
     /// occurs for non-default database names.
-    pub fn single(handler: SharedSqliteHandler) -> Self {
+    pub fn single(handler: TenantHandler) -> Self {
         Self {
             backend: RouterBackend::Sqlite {
                 data_dir: PathBuf::new(),
@@ -98,38 +98,15 @@ impl TenantRouter {
         }
     }
 
-    /// Return the handler for the default database (SQLite mode only).
-    pub fn default_handler(&self) -> Option<&SharedSqliteHandler> {
-        match &self.backend {
-            RouterBackend::Sqlite {
-                default_handler, ..
-            } => Some(default_handler),
-            RouterBackend::Postgres { .. } => None,
-        }
-    }
-
-    /// Return the default SQLite handler, panicking if in Postgres mode.
-    ///
-    /// Callers that know they are in SQLite mode (e.g. gRPC initialisation)
-    /// may use this for convenience.
-    pub fn default_sqlite_handler(&self) -> &SharedSqliteHandler {
+    /// Return the handler for the default database.
+    pub fn default_handler(&self) -> &TenantHandler {
         match &self.backend {
             RouterBackend::Sqlite {
                 default_handler, ..
             } => default_handler,
-            RouterBackend::Postgres { .. } => {
-                panic!("default_sqlite_handler called on a Postgres TenantRouter")
-            }
-        }
-    }
-
-    /// Return the default Postgres handler (Postgres mode only).
-    pub fn default_postgres_handler(&self) -> Option<&SharedPgHandler> {
-        match &self.backend {
             RouterBackend::Postgres {
                 default_handler, ..
-            } => Some(default_handler),
-            RouterBackend::Sqlite { .. } => None,
+            } => default_handler,
         }
     }
 
@@ -148,7 +125,7 @@ impl TenantRouter {
         self.tenants_dir().join(format!("{db_name}.db"))
     }
 
-    /// Look up or create the SQLite handler for `db_name`.
+    /// Look up or create the handler for `db_name` in SQLite mode.
     ///
     /// - `"default"` always returns the default handler without touching disk.
     /// - Any other name checks the in-memory cache first, then creates a new
@@ -158,7 +135,7 @@ impl TenantRouter {
     /// # Errors
     ///
     /// Returns `Err` if called in Postgres mode (use `get_or_create_pg` instead).
-    pub async fn get_or_create(&self, db_name: &str) -> Result<SharedSqliteHandler, String> {
+    pub async fn get_or_create(&self, db_name: &str) -> Result<TenantHandler, String> {
         match &self.backend {
             RouterBackend::Sqlite {
                 data_dir,
@@ -203,7 +180,8 @@ impl TenantRouter {
                 let storage = SqliteStorageAdapter::open(path_str)
                     .map_err(|e| format!("failed to open tenant database '{db_name}': {e}"))?;
 
-                let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+                let boxed: Box<dyn StorageAdapter + Send + Sync> = Box::new(storage);
+                let handler = Arc::new(Mutex::new(AxonHandler::new(boxed)));
                 guard.insert(db_name.to_owned(), Arc::clone(&handler));
                 Ok(handler)
             }
@@ -225,7 +203,7 @@ impl TenantRouter {
     ///
     /// Returns `Err` if called in SQLite mode, or if the database cannot be
     /// provisioned.
-    pub async fn get_or_create_pg(&self, db_name: &str) -> Result<SharedPgHandler, String> {
+    pub async fn get_or_create_pg(&self, db_name: &str) -> Result<TenantHandler, String> {
         match &self.backend {
             RouterBackend::Postgres {
                 superadmin_dsn,
@@ -275,7 +253,8 @@ impl TenantRouter {
                             "failed to connect to tenant PostgreSQL database 'axon_{db_name_owned}': {e}"
                         )
                     })?;
-                    Ok(Arc::new(Mutex::new(AxonHandler::new(storage))))
+                    let boxed: Box<dyn StorageAdapter + Send + Sync> = Box::new(storage);
+                    Ok(Arc::new(Mutex::new(AxonHandler::new(boxed))))
                 })
                 .await
                 .map_err(|e| format!("thread join error while provisioning tenant: {e}"))??;
@@ -286,6 +265,20 @@ impl TenantRouter {
             RouterBackend::Sqlite { .. } => Err(
                 "get_or_create_pg is not supported in SQLite mode; use get_or_create".to_owned(),
             ),
+        }
+    }
+
+    /// Look up or create the handler for `db_name`, dispatching to the
+    /// correct backend automatically.
+    ///
+    /// This is the primary entry point for the HTTP gateway middleware: it
+    /// returns a `TenantHandler` regardless of whether the backing store is
+    /// SQLite or PostgreSQL.
+    pub async fn get_or_create_any(&self, db_name: &str) -> Result<TenantHandler, String> {
+        if self.is_postgres() {
+            self.get_or_create_pg(db_name).await
+        } else {
+            self.get_or_create(db_name).await
         }
     }
 
@@ -378,8 +371,9 @@ mod tests {
 
     /// Create a `TenantRouter` backed by a temporary directory.
     fn make_router(tmp: &Path) -> TenantRouter {
-        let default_storage =
-            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let default_storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
+        );
         let default_handler = Arc::new(Mutex::new(AxonHandler::new(default_storage)));
         TenantRouter::new(tmp.to_path_buf(), default_handler)
     }
@@ -391,9 +385,7 @@ mod tests {
 
         let handler = router.get_or_create("default").await.expect("default");
         // Should be the same Arc as the default handler.
-        let default = router
-            .default_handler()
-            .expect("SQLite router has default handler");
+        let default = router.default_handler();
         assert!(Arc::ptr_eq(&handler, default));
     }
 
@@ -481,8 +473,10 @@ mod tests {
 
     #[tokio::test]
     async fn single_constructor_works() {
-        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
-        let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
+        );
+        let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let router = TenantRouter::single(Arc::clone(&handler));
 
         let got = router.get_or_create("default").await.expect("default");

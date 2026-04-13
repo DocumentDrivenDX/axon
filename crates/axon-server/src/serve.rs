@@ -246,8 +246,10 @@ pub async fn run_with_sqlite_storage(
     let control_plane_state =
         crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir.clone());
 
-    let handler: crate::tenant_router::SharedSqliteHandler =
-        Arc::new(tokio::sync::Mutex::new(AxonHandler::new(storage)));
+    let handler: crate::tenant_router::TenantHandler =
+        Arc::new(tokio::sync::Mutex::new(AxonHandler::new(
+            Box::new(storage) as Box<dyn axon_storage::adapter::StorageAdapter + Send + Sync>,
+        )));
     let tenant_router = Arc::new(crate::tenant_router::TenantRouter::new(
         data_dir,
         handler.clone(),
@@ -372,7 +374,10 @@ pub async fn run_with_postgres_storage(
 
     tracing::info!("connected to master PostgreSQL database at axon_master");
 
-    let default_handler = Arc::new(tokio::sync::Mutex::new(AxonHandler::new(pg_master)));
+    let default_handler: crate::tenant_router::TenantHandler =
+        Arc::new(tokio::sync::Mutex::new(AxonHandler::new(
+            Box::new(pg_master) as Box<dyn axon_storage::adapter::StorageAdapter + Send + Sync>,
+        )));
     let tenant_router = Arc::new(crate::tenant_router::TenantRouter::new_postgres(
         superadmin_dsn_owned,
         default_handler,

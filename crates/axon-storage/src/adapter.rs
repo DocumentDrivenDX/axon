@@ -824,3 +824,315 @@ pub trait StorageAdapter: Send + Sync {
         Ok(())
     }
 }
+
+/// Forward all `StorageAdapter` calls through a `Box<dyn StorageAdapter>`.
+///
+/// This blanket impl allows `Box<dyn StorageAdapter + Send + Sync>` to be used
+/// as a `TenantHandler` storage, enabling the HTTP gateway to serve both
+/// `SqliteStorageAdapter` and `PostgresStorageAdapter` through the same type.
+///
+/// Only the seven required methods (no default) are forwarded explicitly.
+/// All defaulted methods are also forwarded so that concrete overrides
+/// (e.g. `PostgresStorageAdapter`'s dedicated SQL implementations) are
+/// dispatched correctly through the vtable rather than silently using the
+/// trait's own defaults.
+impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
+    fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
+        (**self).get(collection, id)
+    }
+    fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+        (**self).put(entity)
+    }
+    fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+        (**self).delete(collection, id)
+    }
+    fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+        (**self).count(collection)
+    }
+    fn range_scan(
+        &self,
+        collection: &CollectionId,
+        start: Option<&EntityId>,
+        end: Option<&EntityId>,
+        limit: Option<usize>,
+    ) -> Result<Vec<Entity>, AxonError> {
+        (**self).range_scan(collection, start, end, limit)
+    }
+    fn compare_and_swap(
+        &mut self,
+        entity: Entity,
+        expected_version: u64,
+    ) -> Result<Entity, AxonError> {
+        (**self).compare_and_swap(entity, expected_version)
+    }
+    fn create_if_absent(
+        &mut self,
+        entity: Entity,
+        expected_absent_version: u64,
+    ) -> Result<Entity, AxonError> {
+        (**self).create_if_absent(entity, expected_absent_version)
+    }
+    fn begin_tx(&mut self) -> Result<(), AxonError> {
+        (**self).begin_tx()
+    }
+    fn commit_tx(&mut self) -> Result<(), AxonError> {
+        (**self).commit_tx()
+    }
+    fn abort_tx(&mut self) -> Result<(), AxonError> {
+        (**self).abort_tx()
+    }
+    fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+        (**self).append_audit_entry(entry)
+    }
+    fn create_database(&mut self, name: &str) -> Result<(), AxonError> {
+        (**self).create_database(name)
+    }
+    fn list_databases(&self) -> Result<Vec<String>, AxonError> {
+        (**self).list_databases()
+    }
+    fn drop_database(&mut self, name: &str) -> Result<(), AxonError> {
+        (**self).drop_database(name)
+    }
+    fn create_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
+        (**self).create_namespace(namespace)
+    }
+    fn list_namespaces(&self, database: &str) -> Result<Vec<String>, AxonError> {
+        (**self).list_namespaces(database)
+    }
+    fn drop_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
+        (**self).drop_namespace(namespace)
+    }
+    fn list_namespace_collections(
+        &self,
+        namespace: &Namespace,
+    ) -> Result<Vec<CollectionId>, AxonError> {
+        (**self).list_namespace_collections(namespace)
+    }
+    fn resolve_collection_key(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<QualifiedCollectionId, AxonError> {
+        (**self).resolve_collection_key(collection)
+    }
+    fn purge_links_for_collections(
+        &mut self,
+        collections: &[QualifiedCollectionId],
+    ) -> Result<(), AxonError> {
+        (**self).purge_links_for_collections(collections)
+    }
+    fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+        (**self).put_schema(schema)
+    }
+    fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
+        (**self).get_schema(collection)
+    }
+    fn get_schema_version(
+        &self,
+        collection: &CollectionId,
+        version: u32,
+    ) -> Result<Option<CollectionSchema>, AxonError> {
+        (**self).get_schema_version(collection, version)
+    }
+    fn list_schema_versions(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Vec<(u32, u64)>, AxonError> {
+        (**self).list_schema_versions(collection)
+    }
+    fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        (**self).delete_schema(collection)
+    }
+    fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
+        (**self).put_collection_view(view)
+    }
+    fn get_collection_view(
+        &self,
+        collection: &CollectionId,
+    ) -> Result<Option<CollectionView>, AxonError> {
+        (**self).get_collection_view(collection)
+    }
+    fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        (**self).delete_collection_view(collection)
+    }
+    fn register_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        (**self).register_collection(collection)
+    }
+    fn register_collection_in_namespace(
+        &mut self,
+        collection: &CollectionId,
+        namespace: &Namespace,
+    ) -> Result<(), AxonError> {
+        (**self).register_collection_in_namespace(collection, namespace)
+    }
+    fn collection_registered_in_namespace(
+        &self,
+        collection: &CollectionId,
+        namespace: &Namespace,
+    ) -> Result<bool, AxonError> {
+        (**self).collection_registered_in_namespace(collection, namespace)
+    }
+    fn unregister_collection(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        (**self).unregister_collection(collection)
+    }
+    fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
+        (**self).list_collections()
+    }
+    fn collection_numeric_id(&self, collection: &CollectionId) -> Result<Option<u64>, AxonError> {
+        (**self).collection_numeric_id(collection)
+    }
+    fn collection_by_numeric_id(&self, numeric_id: u64) -> Result<Option<CollectionId>, AxonError> {
+        (**self).collection_by_numeric_id(numeric_id)
+    }
+    fn update_indexes(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        old_data: Option<&serde_json::Value>,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        (**self).update_indexes(collection, entity_id, old_data, new_data, indexes)
+    }
+    fn remove_index_entries(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        data: &serde_json::Value,
+        indexes: &[axon_schema::schema::IndexDef],
+    ) -> Result<(), AxonError> {
+        (**self).remove_index_entries(collection, entity_id, data, indexes)
+    }
+    fn index_lookup(
+        &self,
+        collection: &CollectionId,
+        field: &str,
+        value: &IndexValue,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        (**self).index_lookup(collection, field, value)
+    }
+    fn index_range(
+        &self,
+        collection: &CollectionId,
+        field: &str,
+        lower: Bound<&IndexValue>,
+        upper: Bound<&IndexValue>,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        (**self).index_range(collection, field, lower, upper)
+    }
+    fn index_unique_conflict(
+        &self,
+        collection: &CollectionId,
+        field: &str,
+        value: &IndexValue,
+        exclude_entity: &EntityId,
+    ) -> Result<bool, AxonError> {
+        (**self).index_unique_conflict(collection, field, value, exclude_entity)
+    }
+    fn drop_indexes(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
+        (**self).drop_indexes(collection)
+    }
+    fn update_compound_indexes(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        old_data: Option<&serde_json::Value>,
+        new_data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        (**self).update_compound_indexes(collection, entity_id, old_data, new_data, indexes)
+    }
+    fn remove_compound_index_entries(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        data: &serde_json::Value,
+        indexes: &[axon_schema::schema::CompoundIndexDef],
+    ) -> Result<(), AxonError> {
+        (**self).remove_compound_index_entries(collection, entity_id, data, indexes)
+    }
+    fn compound_index_lookup(
+        &self,
+        collection: &CollectionId,
+        index_idx: usize,
+        key: &CompoundKey,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        (**self).compound_index_lookup(collection, index_idx, key)
+    }
+    fn compound_index_prefix(
+        &self,
+        collection: &CollectionId,
+        index_idx: usize,
+        prefix: &CompoundKey,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        (**self).compound_index_prefix(collection, index_idx, prefix)
+    }
+    fn put_link(&mut self, link: &axon_core::types::Link) -> Result<(), AxonError> {
+        (**self).put_link(link)
+    }
+    fn delete_link(
+        &mut self,
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: &str,
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+    ) -> Result<(), AxonError> {
+        (**self).delete_link(source_collection, source_id, link_type, target_collection, target_id)
+    }
+    fn get_link(
+        &self,
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: &str,
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+    ) -> Result<Option<axon_core::types::Link>, AxonError> {
+        (**self).get_link(source_collection, source_id, link_type, target_collection, target_id)
+    }
+    fn list_outbound_links(
+        &self,
+        source_collection: &CollectionId,
+        source_id: &EntityId,
+        link_type: Option<&str>,
+    ) -> Result<Vec<axon_core::types::Link>, AxonError> {
+        (**self).list_outbound_links(source_collection, source_id, link_type)
+    }
+    fn list_inbound_links(
+        &self,
+        target_collection: &CollectionId,
+        target_id: &EntityId,
+        link_type: Option<&str>,
+    ) -> Result<Vec<axon_core::types::Link>, AxonError> {
+        (**self).list_inbound_links(target_collection, target_id, link_type)
+    }
+    fn put_gate_results(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        gates: &std::collections::HashMap<String, bool>,
+    ) -> Result<(), AxonError> {
+        (**self).put_gate_results(collection, entity_id, gates)
+    }
+    fn get_gate_results(
+        &self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+    ) -> Result<Option<std::collections::HashMap<String, bool>>, AxonError> {
+        (**self).get_gate_results(collection, entity_id)
+    }
+    fn gate_lookup(
+        &self,
+        collection: &CollectionId,
+        gate: &str,
+        pass: bool,
+    ) -> Result<Vec<EntityId>, AxonError> {
+        (**self).gate_lookup(collection, gate, pass)
+    }
+    fn delete_gate_results(
+        &mut self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+    ) -> Result<(), AxonError> {
+        (**self).delete_gate_results(collection, entity_id)
+    }
+}

@@ -652,7 +652,10 @@ mod tests {
     }
 
     fn test_server() -> TestServer {
-        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        use axon_storage::adapter::StorageAdapter;
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
+        );
         let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler));
         TestServer::new(build_router(tenant_router, "memory", None))

@@ -48,21 +48,13 @@ use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT
 use axon_core::types::Entity;
 use axon_schema::schema::CollectionSchema;
 use axon_storage::adapter::StorageAdapter;
-use axon_storage::SqliteStorageAdapter;
 
-use crate::tenant_router::TenantRouter;
+use crate::tenant_router::{TenantHandler, TenantRouter};
 
 /// Shared handler type alias — used by MCP HTTP routes which continue to
 /// use axum `State` for backward compatibility.
 #[allow(dead_code)]
 type SharedHandler<S> = Arc<Mutex<AxonHandler<S>>>;
-
-/// Concrete handler type for tenant-resolved SQLite handlers.
-///
-/// Gateway route handlers extract this from request Extensions rather than
-/// axum State.  The tenant-resolution middleware populates it before the
-/// handler runs.
-pub type TenantHandler = Arc<Mutex<AxonHandler<SqliteStorageAdapter>>>;
 
 const AXON_DATABASE_HEADER: &str = "x-axon-database";
 
@@ -324,15 +316,9 @@ pub(crate) async fn authenticate_http_request(
 /// and inserts it as a request [`Extension<TenantHandler>`].
 ///
 /// Reads the `X-Axon-Database` header (defaulting to `"default"`) and calls
-/// [`TenantRouter::get_or_create`] to obtain or lazily provision the
-/// tenant's `AxonHandler<SqliteStorageAdapter>`.
-///
-/// In PostgreSQL mode the middleware cannot inject a typed
-/// `AxonHandler<SqliteStorageAdapter>` into the extension (the backing store
-/// is `PostgresStorageAdapter`).  An in-memory SQLite handler is injected as
-/// a placeholder so that the HTTP gateway routes continue to compile and start;
-/// actual per-tenant data routing in Postgres mode is exposed through the
-/// `TenantRouter::get_or_create_pg` API and verified in the integration tests.
+/// [`TenantRouter::get_or_create_any`] to obtain or lazily provision the
+/// tenant's handler, regardless of whether the backing store is SQLite or
+/// PostgreSQL.
 async fn resolve_tenant_handler(
     Extension(router): Extension<Arc<TenantRouter>>,
     mut request: axum::extract::Request,
@@ -344,19 +330,7 @@ async fn resolve_tenant_handler(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("default");
 
-    if router.is_postgres() {
-        // Postgres mode: insert a placeholder SQLite handler so that the HTTP
-        // data routes remain available.  Full per-tenant Postgres routing is
-        // verified via the integration test suite.
-        let placeholder: TenantHandler = Arc::new(Mutex::new(axon_api::handler::AxonHandler::new(
-            axon_storage::SqliteStorageAdapter::open_in_memory()
-                .expect("in-memory SQLite must always open"),
-        )));
-        request.extensions_mut().insert(placeholder);
-        return next.run(request).await;
-    }
-
-    match router.get_or_create(db_name).await {
+    match router.get_or_create_any(db_name).await {
         Ok(handler) => {
             request.extensions_mut().insert(handler);
             next.run(request).await
@@ -2171,18 +2145,13 @@ pub fn build_router_with_auth(
     let backend = backend.into();
     let mcp_sessions = McpHttpSessions::default();
     let rate_limiter = WriteRateLimiter::new(rate_limit_config);
-    let handler = tenant_router.default_handler().cloned().unwrap_or_else(|| {
-        // PostgreSQL mode: MCP HTTP routes need a SQLite handler; use an
-        // in-memory instance so they start without error.
-        let storage = axon_storage::SqliteStorageAdapter::open_in_memory()
-            .expect("in-memory SQLite must always open");
-        Arc::new(Mutex::new(axon_api::handler::AxonHandler::new(storage)))
-    });
+    let handler = tenant_router.default_handler().clone();
 
-    // MCP HTTP routes still use axum State<SharedHandler<SqliteStorageAdapter>>
+    // MCP HTTP routes use axum State<SharedHandler<Box<dyn StorageAdapter>>>
     // and always operate on the default handler.  They are merged separately
     // from the tenant-aware data routes.
-    let mcp_routes = crate::mcp_http::routes::<SqliteStorageAdapter>().with_state(handler.clone());
+    let mcp_routes = crate::mcp_http::routes::<Box<dyn StorageAdapter + Send + Sync>>()
+        .with_state(handler.clone());
 
     let mut router = Router::new()
         .merge(data_routes())
@@ -2337,7 +2306,9 @@ mod tests {
     }
 
     fn test_server_with_handler() -> (TestServer, TenantHandler) {
-        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
+        );
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler.clone()));
         let app = build_router(tenant_router, "memory", None);
@@ -2349,7 +2320,9 @@ mod tests {
     }
 
     fn test_server_with_auth(peer: SocketAddr, auth: AuthContext) -> TestServer {
-        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
+        );
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler));
         let app = build_router_with_auth(
@@ -4235,7 +4208,9 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("_app")).unwrap();
         std::fs::write(dir.path().join("_app/app.js"), "console.log('ui');").unwrap();
 
-        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
+        );
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler));
         let app = build_router(tenant_router, "memory", Some(dir.path().to_path_buf()));
@@ -4259,7 +4234,9 @@ mod tests {
         )
         .unwrap();
 
-        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
+        );
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler));
         let app = build_router(tenant_router, "memory", Some(dir.path().to_path_buf()));
@@ -4331,7 +4308,9 @@ mod tests {
             provider,
             Duration::from_secs(300),
         );
-        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
+        );
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler));
         let app = build_router_with_auth(
@@ -4371,7 +4350,9 @@ mod tests {
             provider,
             Duration::from_secs(300),
         );
-        let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
+        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
+            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
+        );
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
 
         // Seed data directly via the handler (bypasses RBAC).
