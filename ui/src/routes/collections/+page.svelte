@@ -1,6 +1,7 @@
 <script lang="ts">
 import { base } from '$app/paths';
 import { type CollectionSummary, dropCollection, fetchCollections } from '$lib/api';
+import { getSelectedTenant } from '$lib/stores.svelte';
 
 let collections = $state<CollectionSummary[]>([]);
 let loading = $state(true);
@@ -27,7 +28,7 @@ function formatTimestamp(ns: number | null | undefined): string {
 async function loadCollections() {
 	loading = true;
 	try {
-		collections = await fetchCollections();
+		collections = await fetchCollections(getSelectedTenant()?.db_name);
 		error = null;
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load collections';
@@ -117,7 +118,7 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 										<span class="muted" style="font-size:0.85rem">Drop {collection.name}?</span>
 										<button class="danger" onclick={async () => {
 											try {
-												await dropCollection(collection.name);
+												await dropCollection(collection.name, getSelectedTenant()?.db_name);
 												dropping = null;
 												await loadCollections();
 											} catch (e: unknown) {

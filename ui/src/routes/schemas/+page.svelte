@@ -9,6 +9,7 @@ import {
 	previewSchemaChange,
 	updateSchema,
 } from '$lib/api';
+import { getSelectedTenant } from '$lib/stores.svelte';
 import { onMount } from 'svelte';
 
 let collections: CollectionSummary[] = [];
@@ -201,7 +202,7 @@ function extractCompoundIndexes(schema: CollectionSchema): CompoundIndexInfo[] {
 }
 
 async function loadCollections(preferredCollection?: string) {
-	collections = await fetchCollections();
+	collections = await fetchCollections(getSelectedTenant()?.db_name);
 	const nextSelection = preferredCollection ?? selectedCollection ?? collections[0]?.name;
 
 	if (nextSelection) {
@@ -211,7 +212,7 @@ async function loadCollections(preferredCollection?: string) {
 
 async function selectCollection(collectionName: string) {
 	selectedCollection = collectionName;
-	selectedSchema = await fetchSchema(collectionName);
+	selectedSchema = await fetchSchema(collectionName, getSelectedTenant()?.db_name);
 	editJson = JSON.stringify(selectedSchema, null, 2);
 	editMode = false;
 	validationError = null;
@@ -247,6 +248,7 @@ async function requestPreview() {
 		preview = await previewSchemaChange(
 			selectedCollection,
 			JSON.parse(editJson) as CollectionSchema,
+			getSelectedTenant()?.db_name,
 		);
 		statusMessage = null;
 	} catch (errorValue: unknown) {
@@ -266,6 +268,7 @@ async function confirmSave(force: boolean) {
 			selectedCollection,
 			JSON.parse(editJson) as CollectionSchema,
 			{ force },
+			getSelectedTenant()?.db_name,
 		);
 		editJson = JSON.stringify(selectedSchema, null, 2);
 		editMode = false;
@@ -286,7 +289,7 @@ async function submitCreateCollection() {
 			version: 1,
 			entity_schema: entitySchema,
 			link_types: {},
-		});
+		}, getSelectedTenant()?.db_name);
 		createCollectionName = '';
 		statusMessage = 'Collection created.';
 		error = null;

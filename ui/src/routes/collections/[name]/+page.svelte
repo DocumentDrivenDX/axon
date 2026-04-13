@@ -15,6 +15,7 @@ import JsonTree from '$lib/components/JsonTree.svelte';
 // biome-ignore lint/correctness/noUnusedImports: Used in template for casting entity data.
 import type { JsonValue } from '$lib/components/json-tree-types';
 import { validateEntityData } from '$lib/schema-validation';
+import { getSelectedTenant } from '$lib/stores.svelte';
 import { onMount } from 'svelte';
 
 let collectionName = $state('');
@@ -48,15 +49,16 @@ let deleteMessage = $state<string | null>(null);
 
 async function loadCollection(targetCollection: string, afterId: string | null) {
 	loading = true;
+	const dbName = getSelectedTenant()?.db_name;
 	try {
-		collection = await fetchCollection(targetCollection);
+		collection = await fetchCollection(targetCollection, dbName);
 		const result = await fetchEntities(targetCollection, {
 			limit: 50,
 			afterId,
-		});
+		}, dbName);
 		entities = result.entities;
 		nextCursor = result.next_cursor;
-		selectedEntity = entities[0] ? await fetchEntity(targetCollection, entities[0].id) : null;
+		selectedEntity = entities[0] ? await fetchEntity(targetCollection, entities[0].id, dbName) : null;
 		editMode = false;
 		editData = null;
 		error = null;
@@ -73,7 +75,7 @@ async function openEntity(id: string) {
 	}
 
 	try {
-		selectedEntity = await fetchEntity(collectionName, id);
+		selectedEntity = await fetchEntity(collectionName, id, getSelectedTenant()?.db_name);
 		editMode = false;
 		editData = null;
 		saveError = null;
@@ -121,6 +123,7 @@ async function saveEntity() {
 			selectedEntity.id,
 			editData,
 			selectedEntity.version,
+			getSelectedTenant()?.db_name,
 		);
 		selectedEntity = updated;
 		editMode = false;
@@ -171,7 +174,7 @@ async function submitCreateEntity() {
 	}
 
 	try {
-		const entity = await createEntity(collectionName, createId.trim(), parsedData);
+		const entity = await createEntity(collectionName, createId.trim(), parsedData, getSelectedTenant()?.db_name);
 		createMessage = `Created ${entity.id}.`;
 		createErrors = [];
 		createOpen = false;
@@ -345,7 +348,7 @@ afterNavigate(() => {
 							<button class="danger" onclick={async () => {
 								if (selectedEntity && collectionName) {
 									try {
-										await deleteEntity(collectionName, selectedEntity.id);
+										await deleteEntity(collectionName, selectedEntity.id, getSelectedTenant()?.db_name);
 										deleteMessage = `Deleted ${selectedEntity.id}.`;
 										confirmDelete = false;
 										selectedEntity = null;

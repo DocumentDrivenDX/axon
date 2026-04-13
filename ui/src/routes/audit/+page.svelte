@@ -1,5 +1,6 @@
 <script lang="ts">
 import { type AuditEntry, fetchAudit } from '$lib/api';
+import { getSelectedTenant } from '$lib/stores.svelte';
 import { onMount } from 'svelte';
 
 type AuditFilters = {
@@ -63,7 +64,7 @@ async function loadEntries() {
 			auditFilters.untilNs = untilNs;
 		}
 
-		const response = await fetchAudit(auditFilters);
+		const response = await fetchAudit(auditFilters, getSelectedTenant()?.db_name);
 		entries = response.entries;
 		selectedEntry = entries[0] ?? null;
 		error = null;

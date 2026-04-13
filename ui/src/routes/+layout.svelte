@@ -2,7 +2,8 @@
 import '../app.css';
 
 import { base } from '$app/paths';
-import { type AuthState, type HealthStatus, fetchAuthMe, fetchHealth } from '$lib/api';
+import { type AuthState, type HealthStatus, type Tenant, fetchAuthMe, fetchHealth, fetchTenants } from '$lib/api';
+import { getSelectedTenant, setSelectedTenant } from '$lib/stores.svelte';
 import type { Snippet } from 'svelte';
 import { onMount } from 'svelte';
 
@@ -11,12 +12,13 @@ const { children }: { children: Snippet } = $props();
 let health: HealthStatus | null = $state(null);
 let healthError: string | null = $state(null);
 let authState: AuthState = $state({ status: 'loading' } as AuthState);
+let tenants: Tenant[] = $state([]);
 
 const homeHref = `${base}/`;
 const collectionsHref = `${base}/collections`;
 const schemasHref = `${base}/schemas`;
 const auditHref = `${base}/audit`;
-const databasesHref = `${base}/databases`;
+const tenantsHref = `${base}/tenants`;
 
 const isGuest = $derived(
 	authState.status === 'authenticated' && authState.identity.actor === 'guest',
@@ -24,6 +26,8 @@ const isGuest = $derived(
 const isReadOnly = $derived(
 	authState.status === 'authenticated' && authState.identity.role === 'read',
 );
+
+const selectedTenant = $derived(getSelectedTenant());
 
 async function refreshHealth() {
 	try {
@@ -43,9 +47,28 @@ async function loadAuth() {
 	}
 }
 
+async function loadTenants() {
+	try {
+		tenants = await fetchTenants();
+		// Auto-select first tenant if none selected and tenants exist.
+		if (!getSelectedTenant() && tenants.length > 0) {
+			setSelectedTenant(tenants[0] ?? null);
+		}
+	} catch {
+		// Tenant list is a best-effort; silently ignore (e.g. no auth).
+	}
+}
+
+function handleTenantChange(event: Event) {
+	const id = (event.target as HTMLSelectElement).value;
+	const found = tenants.find((t) => t.id === id) ?? null;
+	setSelectedTenant(found);
+}
+
 onMount(() => {
 	void refreshHealth();
 	void loadAuth();
+	void loadTenants();
 	const timer = window.setInterval(() => {
 		void refreshHealth();
 	}, 15_000);
@@ -62,8 +85,26 @@ onMount(() => {
 				<a class="nav-link" href={collectionsHref}>Collections</a>
 				<a class="nav-link" href={schemasHref}>Schemas</a>
 				<a class="nav-link" href={auditHref}>Audit Log</a>
-				<a class="nav-link" href={databasesHref}>Databases</a>
+				<a class="nav-link" href={tenantsHref}>Tenants</a>
 			</nav>
+		</div>
+
+		<div class="topnav-center">
+			{#if tenants.length > 0}
+				<div class="tenant-selector">
+					<label for="tenant-select" class="tenant-label">Tenant</label>
+					<select
+						id="tenant-select"
+						class="tenant-select"
+						value={selectedTenant?.id ?? ''}
+						onchange={handleTenantChange}
+					>
+						{#each tenants as tenant}
+							<option value={tenant.id}>{tenant.name}</option>
+						{/each}
+					</select>
+				</div>
+			{/if}
 		</div>
 
 		<div class="topnav-right">
@@ -177,6 +218,39 @@ onMount(() => {
 		background: rgba(255, 255, 255, 0.06);
 	}
 
+	.topnav-center {
+		flex: 1;
+		display: flex;
+		justify-content: center;
+	}
+
+	.tenant-selector {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
+	}
+
+	.tenant-label {
+		font-size: 0.8rem;
+		color: var(--muted);
+		white-space: nowrap;
+	}
+
+	.tenant-select {
+		background: var(--surface, #1e1e2e);
+		border: 1px solid rgba(255, 255, 255, 0.12);
+		border-radius: 0.5rem;
+		color: var(--text);
+		font-size: 0.875rem;
+		padding: 0.3rem 0.6rem;
+		cursor: pointer;
+	}
+
+	.tenant-select:focus {
+		outline: none;
+		border-color: var(--accent);
+	}
+
 	.topnav-right {
 		display: flex;
 		align-items: center;
@@ -243,6 +317,10 @@ onMount(() => {
 		}
 
 		.topnav-links {
+			display: none;
+		}
+
+		.topnav-center {
 			display: none;
 		}
 	}

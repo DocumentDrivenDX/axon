@@ -2,11 +2,18 @@
 //!
 //! All endpoints live under `/control` and require the `Admin` role.
 //! The control-plane database is separate from the per-tenant data stores.
+//!
+//! # Tenant model
+//!
+//! Each tenant owns exactly one database.  When a tenant is created the server
+//! auto-generates a `db_name` slug from the tenant name (e.g. "Acme Corp" →
+//! `acme-corp-<uuid-prefix>`) and provisions the backing SQLite file.
+//! Deleting a tenant removes the SQLite file as well.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
@@ -16,7 +23,7 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::auth::{Identity, Role};
-use crate::control_plane::{ControlPlaneDb, Tenant, TenantDatabase};
+use crate::control_plane::{ControlPlaneDb, Tenant};
 use crate::cors_config::CorsStore;
 use crate::gateway::{auth_error_response, ApiError};
 use crate::user_roles::UserRoleStore;
@@ -61,7 +68,7 @@ impl ControlPlaneState {
     /// Build the file path for a tenant database.
     ///
     /// Uses `{data_dir}/tenants/{db_name}.db` layout, matching [`crate::tenant_router::TenantRouter`].
-    pub fn tenant_db_path(&self, _tenant_id: &str, db_name: &str) -> PathBuf {
+    pub fn tenant_db_path(&self, db_name: &str) -> PathBuf {
         self.data_dir
             .join("tenants")
             .join(format!("{db_name}.db"))
@@ -75,17 +82,13 @@ pub struct CreateTenantBody {
     pub name: String,
 }
 
-#[derive(Deserialize)]
-pub struct AssignDatabaseBody {
-    pub db_name: String,
-}
-
 // ── Response types ───────────────────────────────────────────────────────────
 
 #[derive(Serialize)]
 struct TenantResponse {
     id: String,
     name: String,
+    db_name: String,
     created_at: String,
 }
 
@@ -94,41 +97,52 @@ impl From<Tenant> for TenantResponse {
         Self {
             id: t.id,
             name: t.name,
+            db_name: t.db_name,
             created_at: t.created_at,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct TenantDatabaseResponse {
-    tenant_id: String,
-    db_name: String,
-    node_id: Option<String>,
-    created_at: String,
-}
-
-impl From<TenantDatabase> for TenantDatabaseResponse {
-    fn from(td: TenantDatabase) -> Self {
-        Self {
-            tenant_id: td.tenant_id,
-            db_name: td.db_name,
-            node_id: td.node_id,
-            created_at: td.created_at,
         }
     }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/// Generate an ISO-8601 UTC timestamp string using the standard library.
+/// Generate an ISO-8601 UTC timestamp string.
 fn now_iso8601() -> String {
-    // Use humantime for simple UTC formatting (already a dependency).
     humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string()
 }
 
 /// Detect SQLite UNIQUE constraint violations in error messages.
 fn is_unique_violation(msg: &str) -> bool {
     msg.contains("UNIQUE constraint failed")
+}
+
+/// Derive a filesystem-safe slug from a tenant name.
+///
+/// Converts to lowercase, replaces non-alphanumeric characters with `-`,
+/// collapses runs of `-`, and trims leading/trailing dashes.  Always appends
+/// the first 8 hex characters of the supplied UUID to guarantee uniqueness.
+///
+/// # Examples
+/// - `"Acme Corp"` + `"01966b3c-..."` → `"acme-corp-01966b3c"`
+/// - `"  -- "` + `"01966b3c-..."` → `"tenant-01966b3c"`
+fn name_to_db_slug(name: &str, id: &str) -> String {
+    let slug: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect();
+    let slug: String = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    // Take first 8 hex chars from the UUID (strip dashes).
+    let uuid_prefix: String = id.chars().filter(|c| c != &'-').take(8).collect();
+
+    if slug.is_empty() {
+        format!("tenant-{uuid_prefix}")
+    } else {
+        format!("{slug}-{uuid_prefix}")
+    }
 }
 
 // ── Route builder ────────────────────────────────────────────────────────────
@@ -141,12 +155,6 @@ pub fn control_plane_routes() -> Router<ControlPlaneState> {
         .route("/tenants", get(list_tenants))
         .route("/tenants/{id}", get(get_tenant))
         .route("/tenants/{id}", delete(delete_tenant))
-        .route("/tenants/{id}/databases", post(assign_database))
-        .route("/tenants/{id}/databases", get(list_tenant_databases))
-        .route(
-            "/tenants/{tenant_id}/databases/{db_name}",
-            delete(remove_database),
-        )
         // User-role management
         .route("/users", get(list_users))
         .route("/users/{login}", put(set_user_role))
@@ -160,6 +168,9 @@ pub fn control_plane_routes() -> Router<ControlPlaneState> {
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// `POST /control/tenants` — create a new tenant.
+///
+/// Auto-generates `db_name` from the tenant name and provisions a backing
+/// SQLite database file in the configured data directory.
 async fn create_tenant(
     State(state): State<ControlPlaneState>,
     Extension(identity): Extension<Identity>,
@@ -171,18 +182,35 @@ async fn create_tenant(
 
     let id = uuid::Uuid::now_v7().to_string();
     let created_at = now_iso8601();
+    let db_name = name_to_db_slug(&body.name, &id);
 
     let db = state.db.lock().await;
-    match db.create_tenant(&id, &body.name, &created_at) {
-        Ok(()) => (
-            StatusCode::CREATED,
-            Json(json!({
-                "id": id,
-                "name": body.name,
-                "created_at": created_at,
-            })),
-        )
-            .into_response(),
+    match db.create_tenant(&id, &body.name, &db_name, &created_at) {
+        Ok(()) => {
+            // Provision the SQLite database file.
+            let db_path = state.tenant_db_path(&db_name);
+            if let Err(e) = provision_tenant_database(&db_path) {
+                // Best-effort rollback.
+                let _ = db.delete_tenant(&id);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError::new("provisioning_error", e.to_string())),
+                )
+                    .into_response();
+            }
+
+            (
+                StatusCode::CREATED,
+                Json(json!({
+                    "id": id,
+                    "name": body.name,
+                    "db_name": db_name,
+                    "db_path": db_path.display().to_string(),
+                    "created_at": created_at,
+                })),
+            )
+                .into_response()
+        }
         Err(e) => {
             let msg = e.to_string();
             if is_unique_violation(&msg) {
@@ -254,137 +282,11 @@ async fn get_tenant(
     }
 }
 
-/// `POST /control/tenants/{id}/databases` — assign a database to a tenant.
-///
-/// Records the assignment in the control-plane database and provisions the
-/// actual SQLite file in the configured data directory.
-async fn assign_database(
-    State(state): State<ControlPlaneState>,
-    Extension(identity): Extension<Identity>,
-    Path(tenant_id): Path<String>,
-    Json(body): Json<AssignDatabaseBody>,
-) -> Response {
-    if let Err(e) = identity.require_admin() {
-        return auth_error_response(e);
-    }
-
-    let created_at = now_iso8601();
-
-    let db = state.db.lock().await;
-
-    // Verify the tenant exists first, so we can distinguish 404 from other errors.
-    if let Err(axon_core::error::AxonError::NotFound(_)) = db.get_tenant(&tenant_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ApiError::new("not_found", format!("tenant {tenant_id}"))),
-        )
-            .into_response();
-    }
-
-    match db.assign_database(&tenant_id, &body.db_name, None, &created_at) {
-        Ok(()) => {
-            // Provision the SQLite database file.
-            let db_path = state.tenant_db_path(&tenant_id, &body.db_name);
-            if let Err(e) = provision_tenant_database(&db_path) {
-                // Best-effort rollback of the assignment record.
-                let _ = db.remove_database(&tenant_id, &body.db_name);
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError::new("provisioning_error", e.to_string())),
-                )
-                    .into_response();
-            }
-
-            (
-                StatusCode::CREATED,
-                Json(json!({
-                    "tenant_id": tenant_id,
-                    "db_name": body.db_name,
-                    "db_path": db_path.display().to_string(),
-                    "created_at": created_at,
-                })),
-            )
-                .into_response()
-        }
-        Err(e) => {
-            let msg = e.to_string();
-            if is_unique_violation(&msg) || msg.contains("PRIMARY KEY constraint failed") {
-                (
-                    StatusCode::CONFLICT,
-                    Json(ApiError::new(
-                        "already_exists",
-                        format!(
-                            "database '{}' already assigned to tenant '{}'",
-                            body.db_name, tenant_id,
-                        ),
-                    )),
-                )
-                    .into_response()
-            } else {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError::new("storage_error", msg)),
-                )
-                    .into_response()
-            }
-        }
-    }
-}
-
-/// `GET /control/tenants/{id}/databases` — list databases for a tenant.
-async fn list_tenant_databases(
-    State(state): State<ControlPlaneState>,
-    Extension(identity): Extension<Identity>,
-    Path(tenant_id): Path<String>,
-) -> Response {
-    if let Err(e) = identity.require_admin() {
-        return auth_error_response(e);
-    }
-
-    let db = state.db.lock().await;
-
-    // Verify the tenant exists first.
-    if let Err(axon_core::error::AxonError::NotFound(_)) = db.get_tenant(&tenant_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ApiError::new("not_found", format!("tenant {tenant_id}"))),
-        )
-            .into_response();
-    }
-
-    match db.list_databases_for_tenant(&tenant_id) {
-        Ok(dbs) => {
-            let payload: Vec<TenantDatabaseResponse> = dbs.into_iter().map(Into::into).collect();
-            Json(json!({ "databases": payload })).into_response()
-        }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError::new("storage_error", e.to_string())),
-        )
-            .into_response(),
-    }
-}
-
-// ── New handlers ────────────────────────────────────────────────────────────
-
-/// Query parameters for `DELETE /control/tenants/{id}`.
-#[derive(Deserialize, Default)]
-struct DeleteTenantQuery {
-    /// When `true`, cascade-delete all database assignments and their
-    /// provisioned SQLite files.
-    #[serde(default)]
-    force: bool,
-}
-
-/// `DELETE /control/tenants/{id}` — delete a tenant.
-///
-/// Returns 409 if the tenant still has databases and `?force=true` is not set.
-/// With `?force=true`, all database assignments and provisioned files are removed.
+/// `DELETE /control/tenants/{id}` — delete a tenant and its provisioned database.
 async fn delete_tenant(
     State(state): State<ControlPlaneState>,
     Extension(identity): Extension<Identity>,
     Path(id): Path<String>,
-    Query(query): Query<DeleteTenantQuery>,
 ) -> Response {
     if let Err(e) = identity.require_admin() {
         return auth_error_response(e);
@@ -392,19 +294,17 @@ async fn delete_tenant(
 
     let db = state.db.lock().await;
 
-    match db.delete_tenant(&id, query.force) {
-        Ok(removed_dbs) => {
-            // Clean up provisioned database files.
-            for db_name in &removed_dbs {
-                let path = state.tenant_db_path(&id, db_name);
-                let _ = std::fs::remove_file(&path);
-            }
+    match db.delete_tenant(&id) {
+        Ok(db_name) => {
+            // Remove the provisioned SQLite file (best-effort).
+            let path = state.tenant_db_path(&db_name);
+            let _ = std::fs::remove_file(&path);
             (
                 StatusCode::OK,
                 Json(json!({
                     "deleted": true,
                     "tenant_id": id,
-                    "removed_databases": removed_dbs,
+                    "db_name": db_name,
                 })),
             )
                 .into_response()
@@ -412,64 +312,6 @@ async fn delete_tenant(
         Err(axon_core::error::AxonError::NotFound(_)) => (
             StatusCode::NOT_FOUND,
             Json(ApiError::new("not_found", format!("tenant {id}"))),
-        )
-            .into_response(),
-        Err(axon_core::error::AxonError::InvalidOperation(msg)) => (
-            StatusCode::CONFLICT,
-            Json(ApiError::new("has_databases", msg)),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError::new("storage_error", e.to_string())),
-        )
-            .into_response(),
-    }
-}
-
-/// `DELETE /control/tenants/{tenant_id}/databases/{db_name}` — remove a
-/// database assignment and delete the provisioned SQLite file.
-async fn remove_database(
-    State(state): State<ControlPlaneState>,
-    Extension(identity): Extension<Identity>,
-    Path((tenant_id, db_name)): Path<(String, String)>,
-) -> Response {
-    if let Err(e) = identity.require_admin() {
-        return auth_error_response(e);
-    }
-
-    let db = state.db.lock().await;
-
-    // Verify the tenant exists first.
-    if let Err(axon_core::error::AxonError::NotFound(_)) = db.get_tenant(&tenant_id) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(ApiError::new("not_found", format!("tenant {tenant_id}"))),
-        )
-            .into_response();
-    }
-
-    match db.remove_database(&tenant_id, &db_name) {
-        Ok(true) => {
-            // Remove the provisioned SQLite file (best-effort).
-            let path = state.tenant_db_path(&tenant_id, &db_name);
-            let _ = std::fs::remove_file(&path);
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "deleted": true,
-                    "tenant_id": tenant_id,
-                    "db_name": db_name,
-                })),
-            )
-                .into_response()
-        }
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(ApiError::new(
-                "not_found",
-                format!("database '{db_name}' not assigned to tenant '{tenant_id}'"),
-            )),
         )
             .into_response(),
         Err(e) => (
@@ -525,7 +367,6 @@ async fn set_user_role(
     let db = state.db.lock().await;
     match db.set_user_role(&login, &body.role) {
         Ok(()) => {
-            // Update in-memory cache so auth picks it up on next request.
             state.user_roles.set_cached(login.clone(), body.role.clone());
             (
                 StatusCode::OK,
@@ -542,9 +383,6 @@ async fn set_user_role(
 }
 
 /// `DELETE /control/users/{login}` — remove an explicit role assignment.
-///
-/// After removal, the principal falls back to tag-based or default role
-/// resolution on their next request.
 async fn remove_user_role(
     State(state): State<ControlPlaneState>,
     Extension(identity): Extension<Identity>,
@@ -663,9 +501,6 @@ async fn remove_cors_origin_handler(
 // ── Provisioning ────────────────────────────────────────────────────────────
 
 /// Create and initialize a new tenant SQLite database at the given path.
-///
-/// Uses `rusqlite::Connection::open` which creates the file if it doesn't
-/// exist.  We also ensure the parent directory exists.
 fn provision_tenant_database(path: &std::path::Path) -> Result<(), axon_core::error::AxonError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -674,7 +509,6 @@ fn provision_tenant_database(path: &std::path::Path) -> Result<(), axon_core::er
                 parent.display()
             )))?;
     }
-    // Open (creating) the database and run a minimal pragma to verify it works.
     let conn = rusqlite::Connection::open(path)
         .map_err(|e| axon_core::error::AxonError::Storage(format!(
             "failed to create tenant database at {}: {e}",
@@ -700,10 +534,7 @@ mod tests {
     use serde_json::Value;
     use std::net::SocketAddr;
 
-    /// Create a test server backed by a temp directory (for database provisioning).
-    fn test_control_plane_server_with_dir(
-        tmp: &tempfile::TempDir,
-    ) -> TestServer {
+    fn test_control_plane_server_with_dir(tmp: &tempfile::TempDir) -> TestServer {
         let cp_db = ControlPlaneDb::open_in_memory().expect("open in-memory control-plane db");
         let state = ControlPlaneState::new(
             Arc::new(Mutex::new(cp_db)),
@@ -728,23 +559,39 @@ mod tests {
         TestServer::new(app)
     }
 
-    /// Helper: create tenant and return the ID.
-    async fn create_test_tenant(server: &TestServer, name: &str) -> String {
+    /// Helper: create a tenant and return the id and db_name.
+    async fn create_test_tenant(server: &TestServer, name: &str) -> (String, String) {
         let resp = server
             .post("/control/tenants")
             .json(&json!({ "name": name }))
             .await;
         resp.assert_status(StatusCode::CREATED);
-        resp.json::<Value>()["id"]
-            .as_str()
-            .unwrap()
-            .to_string()
+        let body: Value = resp.json();
+        (
+            body["id"].as_str().unwrap().to_string(),
+            body["db_name"].as_str().unwrap().to_string(),
+        )
+    }
+
+    // -- name_to_db_slug -------------------------------------------------------
+
+    #[test]
+    fn slug_basic() {
+        let slug = name_to_db_slug("Acme Corp", "01966b3c-1234-0000-0000-000000000000");
+        assert!(slug.starts_with("acme-corp-"));
+        assert!(slug.ends_with("01966b3c"));
+    }
+
+    #[test]
+    fn slug_empty_name_uses_tenant_prefix() {
+        let slug = name_to_db_slug("   ---   ", "abcdef01-0000-0000-0000-000000000000");
+        assert_eq!(slug, "tenant-abcdef01");
     }
 
     // -- POST /control/tenants ------------------------------------------------
 
     #[tokio::test]
-    async fn create_tenant_returns_201() {
+    async fn create_tenant_returns_201_with_db_name() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
         let resp = server
@@ -755,7 +602,23 @@ mod tests {
         let body: Value = resp.json();
         assert_eq!(body["name"], "acme");
         assert!(body["id"].as_str().is_some());
+        assert!(body["db_name"].as_str().unwrap().starts_with("acme-"));
         assert!(body["created_at"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn create_tenant_provisions_db_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+        let resp = server
+            .post("/control/tenants")
+            .json(&json!({ "name": "widget-co" }))
+            .await;
+        resp.assert_status(StatusCode::CREATED);
+        let body: Value = resp.json();
+        let db_name = body["db_name"].as_str().unwrap();
+        let expected_path = tmp.path().join("tenants").join(format!("{db_name}.db"));
+        assert!(expected_path.exists(), "provisioned db file should exist");
     }
 
     #[tokio::test]
@@ -787,30 +650,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_tenants_returns_created_tenants() {
+    async fn list_tenants_includes_db_name() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
         create_test_tenant(&server, "alpha").await;
-        create_test_tenant(&server, "beta").await;
         let resp = server.get("/control/tenants").await;
         resp.assert_status(StatusCode::OK);
         let body: Value = resp.json();
-        assert_eq!(body["tenants"].as_array().unwrap().len(), 2);
+        let tenants = body["tenants"].as_array().unwrap();
+        assert_eq!(tenants.len(), 1);
+        assert!(tenants[0]["db_name"].as_str().unwrap().starts_with("alpha-"));
     }
 
     // -- GET /control/tenants/{id} --------------------------------------------
 
     #[tokio::test]
-    async fn get_tenant_returns_200() {
+    async fn get_tenant_returns_200_with_db_name() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
-        let id = create_test_tenant(&server, "acme").await;
+        let (id, _) = create_test_tenant(&server, "acme").await;
 
         let resp = server.get(&format!("/control/tenants/{id}")).await;
         resp.assert_status(StatusCode::OK);
         let body: Value = resp.json();
         assert_eq!(body["id"], id);
         assert_eq!(body["name"], "acme");
+        assert!(body["db_name"].as_str().unwrap().starts_with("acme-"));
     }
 
     #[tokio::test]
@@ -823,256 +688,36 @@ mod tests {
         resp.assert_status(StatusCode::NOT_FOUND);
     }
 
-    // -- POST /control/tenants/{id}/databases ---------------------------------
-
-    #[tokio::test]
-    async fn assign_database_returns_201_and_provisions_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let id = create_test_tenant(&server, "acme").await;
-
-        let resp = server
-            .post(&format!("/control/tenants/{id}/databases"))
-            .json(&json!({ "db_name": "prod" }))
-            .await;
-        resp.assert_status(StatusCode::CREATED);
-        let body: Value = resp.json();
-        assert_eq!(body["tenant_id"], id);
-        assert_eq!(body["db_name"], "prod");
-        assert!(body["db_path"].as_str().is_some());
-
-        // Verify the SQLite file was actually created.
-        let db_path = tmp.path().join("tenants").join("prod.db");
-        assert!(db_path.exists(), "provisioned database file should exist");
-    }
-
-    #[tokio::test]
-    async fn assign_database_to_nonexistent_tenant_returns_404() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let resp = server
-            .post("/control/tenants/00000000-0000-0000-0000-000000000000/databases")
-            .json(&json!({ "db_name": "prod" }))
-            .await;
-        resp.assert_status(StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn assign_duplicate_database_returns_409() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let id = create_test_tenant(&server, "acme").await;
-
-        server
-            .post(&format!("/control/tenants/{id}/databases"))
-            .json(&json!({ "db_name": "prod" }))
-            .await
-            .assert_status(StatusCode::CREATED);
-
-        let resp = server
-            .post(&format!("/control/tenants/{id}/databases"))
-            .json(&json!({ "db_name": "prod" }))
-            .await;
-        resp.assert_status(StatusCode::CONFLICT);
-    }
-
-    // -- GET /control/tenants/{id}/databases ----------------------------------
-
-    #[tokio::test]
-    async fn list_tenant_databases_returns_empty() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let id = create_test_tenant(&server, "acme").await;
-
-        let resp = server
-            .get(&format!("/control/tenants/{id}/databases"))
-            .await;
-        resp.assert_status(StatusCode::OK);
-        let body: Value = resp.json();
-        assert_eq!(body["databases"].as_array().unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn list_tenant_databases_returns_assigned() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let id = create_test_tenant(&server, "acme").await;
-
-        server
-            .post(&format!("/control/tenants/{id}/databases"))
-            .json(&json!({ "db_name": "prod" }))
-            .await
-            .assert_status(StatusCode::CREATED);
-        server
-            .post(&format!("/control/tenants/{id}/databases"))
-            .json(&json!({ "db_name": "staging" }))
-            .await
-            .assert_status(StatusCode::CREATED);
-
-        let resp = server
-            .get(&format!("/control/tenants/{id}/databases"))
-            .await;
-        resp.assert_status(StatusCode::OK);
-        let body: Value = resp.json();
-        assert_eq!(body["databases"].as_array().unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn list_databases_for_nonexistent_tenant_returns_404() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let resp = server
-            .get("/control/tenants/00000000-0000-0000-0000-000000000000/databases")
-            .await;
-        resp.assert_status(StatusCode::NOT_FOUND);
-    }
-
-    // -- DELETE /control/tenants/{id}/databases/{db_name} ---------------------
-
-    #[tokio::test]
-    async fn remove_database_returns_200_and_deletes_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let id = create_test_tenant(&server, "acme").await;
-
-        server
-            .post(&format!("/control/tenants/{id}/databases"))
-            .json(&json!({ "db_name": "prod" }))
-            .await
-            .assert_status(StatusCode::CREATED);
-
-        let db_path = tmp.path().join("tenants").join("prod.db");
-        assert!(db_path.exists(), "file should exist after assign");
-
-        let resp = server
-            .delete(&format!("/control/tenants/{id}/databases/prod"))
-            .await;
-        resp.assert_status(StatusCode::OK);
-        let body: Value = resp.json();
-        assert_eq!(body["deleted"], true);
-        assert_eq!(body["db_name"], "prod");
-
-        // Verify the file was removed.
-        assert!(!db_path.exists(), "file should be deleted after remove");
-
-        // Verify the assignment is gone.
-        let list_resp = server
-            .get(&format!("/control/tenants/{id}/databases"))
-            .await;
-        let list_body: Value = list_resp.json();
-        assert_eq!(list_body["databases"].as_array().unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn remove_nonexistent_database_returns_404() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let id = create_test_tenant(&server, "acme").await;
-
-        let resp = server
-            .delete(&format!("/control/tenants/{id}/databases/nope"))
-            .await;
-        resp.assert_status(StatusCode::NOT_FOUND);
-    }
-
-    #[tokio::test]
-    async fn remove_database_for_nonexistent_tenant_returns_404() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let resp = server
-            .delete("/control/tenants/00000000-0000-0000-0000-000000000000/databases/foo")
-            .await;
-        resp.assert_status(StatusCode::NOT_FOUND);
-    }
-
     // -- DELETE /control/tenants/{id} -----------------------------------------
 
     #[tokio::test]
-    async fn delete_tenant_without_databases_returns_200() {
+    async fn delete_tenant_returns_200() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
-        let id = create_test_tenant(&server, "acme").await;
+        let (id, _) = create_test_tenant(&server, "acme").await;
 
-        let resp = server
-            .delete(&format!("/control/tenants/{id}"))
-            .await;
+        let resp = server.delete(&format!("/control/tenants/{id}")).await;
         resp.assert_status(StatusCode::OK);
         let body: Value = resp.json();
         assert_eq!(body["deleted"], true);
-        assert_eq!(body["removed_databases"].as_array().unwrap().len(), 0);
-
-        // Verify the tenant is gone.
-        server
-            .get(&format!("/control/tenants/{id}"))
-            .await
-            .assert_status(StatusCode::NOT_FOUND);
+        assert_eq!(body["tenant_id"], id);
     }
 
     #[tokio::test]
-    async fn delete_tenant_with_databases_without_force_returns_409() {
+    async fn delete_tenant_removes_db_file() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
-        let id = create_test_tenant(&server, "acme").await;
+        let (id, db_name) = create_test_tenant(&server, "byebye").await;
+
+        let db_path = tmp.path().join("tenants").join(format!("{db_name}.db"));
+        assert!(db_path.exists(), "db file should exist before delete");
 
         server
-            .post(&format!("/control/tenants/{id}/databases"))
-            .json(&json!({ "db_name": "prod" }))
-            .await
-            .assert_status(StatusCode::CREATED);
-
-        let resp = server
             .delete(&format!("/control/tenants/{id}"))
-            .await;
-        resp.assert_status(StatusCode::CONFLICT);
-        let body: Value = resp.json();
-        assert_eq!(body["code"], "has_databases");
-
-        // Tenant should still exist.
-        server
-            .get(&format!("/control/tenants/{id}"))
             .await
             .assert_status(StatusCode::OK);
-    }
 
-    #[tokio::test]
-    async fn delete_tenant_with_databases_force_cascades() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let id = create_test_tenant(&server, "acme").await;
-
-        server
-            .post(&format!("/control/tenants/{id}/databases"))
-            .json(&json!({ "db_name": "prod" }))
-            .await
-            .assert_status(StatusCode::CREATED);
-        server
-            .post(&format!("/control/tenants/{id}/databases"))
-            .json(&json!({ "db_name": "staging" }))
-            .await
-            .assert_status(StatusCode::CREATED);
-
-        let prod_path = tmp.path().join("tenants").join("prod.db");
-        let staging_path = tmp.path().join("tenants").join("staging.db");
-        assert!(prod_path.exists());
-        assert!(staging_path.exists());
-
-        let resp = server
-            .delete(&format!("/control/tenants/{id}?force=true"))
-            .await;
-        resp.assert_status(StatusCode::OK);
-        let body: Value = resp.json();
-        assert_eq!(body["deleted"], true);
-        assert_eq!(body["removed_databases"].as_array().unwrap().len(), 2);
-
-        // Verify files are cleaned up.
-        assert!(!prod_path.exists(), "prod db file should be removed");
-        assert!(!staging_path.exists(), "staging db file should be removed");
-
-        // Verify the tenant is gone.
-        server
-            .get(&format!("/control/tenants/{id}"))
-            .await
-            .assert_status(StatusCode::NOT_FOUND);
+        assert!(!db_path.exists(), "db file should be removed after delete");
     }
 
     #[tokio::test]
@@ -1081,185 +726,6 @@ mod tests {
         let server = test_control_plane_server_with_dir(&tmp);
         let resp = server
             .delete("/control/tenants/00000000-0000-0000-0000-000000000000")
-            .await;
-        resp.assert_status(StatusCode::NOT_FOUND);
-    }
-
-    // -- GET /control/users ---------------------------------------------------
-
-    #[tokio::test]
-    async fn list_users_returns_empty() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let resp = server.get("/control/users").await;
-        resp.assert_status(StatusCode::OK);
-        let body: Value = resp.json();
-        assert_eq!(body["users"].as_array().unwrap().len(), 0);
-    }
-
-    // -- PUT /control/users/{login} -------------------------------------------
-
-    #[tokio::test]
-    async fn set_user_role_creates_entry() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-
-        let resp = server
-            .put("/control/users/alice@example.com")
-            .json(&json!({ "role": "write" }))
-            .await;
-        resp.assert_status(StatusCode::OK);
-        let body: Value = resp.json();
-        assert_eq!(body["login"], "alice@example.com");
-        assert_eq!(body["role"], "write");
-
-        // Verify it appears in list.
-        let list_resp = server.get("/control/users").await;
-        list_resp.assert_status(StatusCode::OK);
-        let list_body: Value = list_resp.json();
-        let users = list_body["users"].as_array().unwrap();
-        assert_eq!(users.len(), 1);
-        assert_eq!(users[0]["login"], "alice@example.com");
-    }
-
-    #[tokio::test]
-    async fn set_user_role_upserts() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-
-        server
-            .put("/control/users/alice@example.com")
-            .json(&json!({ "role": "read" }))
-            .await
-            .assert_status(StatusCode::OK);
-        server
-            .put("/control/users/alice@example.com")
-            .json(&json!({ "role": "admin" }))
-            .await
-            .assert_status(StatusCode::OK);
-
-        let list_resp = server.get("/control/users").await;
-        let list_body: Value = list_resp.json();
-        let users = list_body["users"].as_array().unwrap();
-        assert_eq!(users.len(), 1);
-        assert_eq!(users[0]["role"], "admin");
-    }
-
-    // -- DELETE /control/users/{login} ----------------------------------------
-
-    #[tokio::test]
-    async fn remove_user_role_returns_200() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-
-        server
-            .put("/control/users/alice@example.com")
-            .json(&json!({ "role": "write" }))
-            .await
-            .assert_status(StatusCode::OK);
-
-        let resp = server
-            .delete("/control/users/alice@example.com")
-            .await;
-        resp.assert_status(StatusCode::OK);
-        let body: Value = resp.json();
-        assert_eq!(body["deleted"], true);
-
-        // Should be gone from list.
-        let list_resp = server.get("/control/users").await;
-        let list_body: Value = list_resp.json();
-        assert_eq!(list_body["users"].as_array().unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn remove_nonexistent_user_role_returns_404() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let resp = server
-            .delete("/control/users/nobody@example.com")
-            .await;
-        resp.assert_status(StatusCode::NOT_FOUND);
-    }
-
-    // -- GET /control/cors ----------------------------------------------------
-
-    #[tokio::test]
-    async fn list_cors_origins_returns_empty() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let resp = server.get("/control/cors").await;
-        resp.assert_status(StatusCode::OK);
-        let body: Value = resp.json();
-        assert_eq!(body["origins"].as_array().unwrap().len(), 0);
-    }
-
-    // -- PUT /control/cors ----------------------------------------------------
-
-    #[tokio::test]
-    async fn add_cors_origin_returns_200() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let resp = server
-            .put("/control/cors")
-            .json(&json!({ "origin": "https://sindri:5173" }))
-            .await;
-        resp.assert_status(StatusCode::OK);
-        let body: Value = resp.json();
-        assert_eq!(body["origin"], "https://sindri:5173");
-
-        let list = server.get("/control/cors").await;
-        let list_body: Value = list.json();
-        assert_eq!(list_body["origins"].as_array().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn add_cors_origin_is_idempotent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        server
-            .put("/control/cors")
-            .json(&json!({ "origin": "https://sindri:5173" }))
-            .await
-            .assert_status(StatusCode::OK);
-        server
-            .put("/control/cors")
-            .json(&json!({ "origin": "https://sindri:5173" }))
-            .await
-            .assert_status(StatusCode::OK);
-        let list_body: Value = server.get("/control/cors").await.json();
-        assert_eq!(list_body["origins"].as_array().unwrap().len(), 1);
-    }
-
-    // -- DELETE /control/cors -------------------------------------------------
-
-    #[tokio::test]
-    async fn remove_cors_origin_returns_200() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        server
-            .put("/control/cors")
-            .json(&json!({ "origin": "https://sindri:5173" }))
-            .await
-            .assert_status(StatusCode::OK);
-        let resp = server
-            .delete("/control/cors")
-            .json(&json!({ "origin": "https://sindri:5173" }))
-            .await;
-        resp.assert_status(StatusCode::OK);
-        let body: Value = resp.json();
-        assert_eq!(body["deleted"], true);
-
-        let list_body: Value = server.get("/control/cors").await.json();
-        assert_eq!(list_body["origins"].as_array().unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn remove_nonexistent_cors_origin_returns_404() {
-        let tmp = tempfile::tempdir().unwrap();
-        let server = test_control_plane_server_with_dir(&tmp);
-        let resp = server
-            .delete("/control/cors")
-            .json(&json!({ "origin": "https://nobody:9000" }))
             .await;
         resp.assert_status(StatusCode::NOT_FOUND);
     }
