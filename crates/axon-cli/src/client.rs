@@ -416,6 +416,39 @@ impl HttpClient {
         Self::parse_response(resp)
     }
 
+    // ── User-role management ─────────────────────────────────────────────────
+
+    /// `GET /control/users` — list all explicit user-role assignments.
+    pub fn list_users(&self) -> Result<Value> {
+        let resp = self
+            .client
+            .get(format!("{}/control/users", self.base_url))
+            .send()
+            .context("failed to send list-users request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `PUT /control/users/{login}` — assign a role to a principal.
+    pub fn set_user_role(&self, login: &str, role: &str) -> Result<Value> {
+        let resp = self
+            .client
+            .put(format!("{}/control/users/{login}", self.base_url))
+            .json(&serde_json::json!({ "role": role }))
+            .send()
+            .context("failed to send set-user-role request")?;
+        Self::parse_response(resp)
+    }
+
+    /// `DELETE /control/users/{login}` — remove an explicit role assignment.
+    pub fn remove_user_role(&self, login: &str) -> Result<Value> {
+        let resp = self
+            .client
+            .delete(format!("{}/control/users/{login}", self.base_url))
+            .send()
+            .context("failed to send remove-user-role request")?;
+        Self::parse_response(resp)
+    }
+
     // ── Internal helpers ─────────────────────────────────────────────────────
 
     /// Parse a response: if 2xx, return the JSON body; otherwise return an error.

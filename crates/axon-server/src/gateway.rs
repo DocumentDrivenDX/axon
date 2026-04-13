@@ -3036,12 +3036,12 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
 
-        let resp = server.get("/audit/query?actor=ts-agent").await;
+        let resp = server.get("/audit/query?actor=agent@example.com").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         let entries = body["entries"].as_array().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0]["actor"], "ts-agent");
+        assert_eq!(entries[0]["actor"], "agent@example.com");
     }
 
     #[tokio::test]
@@ -4966,7 +4966,7 @@ mod tests {
         let resp = server.get("/auth/me").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
-        assert_eq!(body["actor"], "erik-laptop");
+        assert_eq!(body["actor"], "erik@example.com");
         assert_eq!(body["role"], "admin");
     }
 

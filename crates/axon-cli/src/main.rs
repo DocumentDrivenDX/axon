@@ -145,6 +145,33 @@ enum Command {
         #[arg(long, short = 'd', default_value = "1")]
         depth: usize,
     },
+
+    /// Manage per-principal role assignments.
+    #[cfg(feature = "serve")]
+    #[command(subcommand)]
+    User(UserCmd),
+}
+
+#[cfg(feature = "serve")]
+#[derive(Subcommand)]
+enum UserCmd {
+    /// Grant a role to a principal (creates or updates the assignment).
+    Grant {
+        /// The user's login name (e.g. `erik@example.com`).
+        login: String,
+        /// The role to assign: `admin`, `write`, or `read`.
+        role: String,
+    },
+    /// Revoke the explicit role assignment for a principal.
+    ///
+    /// After revocation, the principal falls back to tag-based or default role
+    /// resolution on their next request.
+    Revoke {
+        /// The user's login name.
+        login: String,
+    },
+    /// List all explicit user-role assignments.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -645,6 +672,11 @@ pub fn run(cli: Cli) -> Result<()> {
             println!("{}", axon_config::paths::config_file().display());
             return Ok(());
         }
+        #[cfg(feature = "serve")]
+        Command::User(_) => {
+            // User commands are handled in client mode (HTTP) or embedded mode
+            // (direct SQLite) below; no early return here.
+        }
         _ => {}
     }
 
@@ -709,10 +741,94 @@ pub fn run(cli: Cli) -> Result<()> {
             &cli.output,
             &mut handler,
         ),
+        // User-role commands against the control-plane database directly.
+        #[cfg(feature = "serve")]
+        Command::User(cmd) => run_user_embedded(cmd, &cli.output),
         // Already handled above; unreachable
         #[cfg(feature = "serve")]
         Command::Serve(_) | Command::Mcp { .. } => unreachable!(),
         Command::Doctor | Command::Init { .. } | Command::Server(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
+    }
+}
+
+/// Run `axon user` commands against the control-plane SQLite database directly
+/// (no server required).
+#[cfg(feature = "serve")]
+fn run_user_embedded(cmd: UserCmd, format: &OutputFormat) -> Result<()> {
+    use axon_server::auth::Role;
+    use axon_server::control_plane::ControlPlaneDb;
+
+    let cp_path = axon_config::paths::control_plane_sqlite_path()
+        .to_string_lossy()
+        .into_owned();
+    let db = ControlPlaneDb::open(&cp_path)
+        .with_context(|| format!("failed to open control-plane database: {cp_path}"))?;
+
+    match cmd {
+        UserCmd::List => {
+            let entries = db
+                .list_user_roles()
+                .map_err(|e| anyhow::anyhow!("failed to list user roles: {e}"))?;
+            let users: Vec<serde_json::Value> = entries
+                .iter()
+                .map(|e| serde_json::json!({ "login": e.login, "role": e.role }))
+                .collect();
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    print_serialized(&serde_json::json!({ "users": users }), format);
+                }
+                OutputFormat::Table => {
+                    if entries.is_empty() {
+                        println!("No explicit user-role assignments.");
+                    } else {
+                        for e in &entries {
+                            let role_str = serde_json::to_string(&e.role).unwrap_or_default();
+                            println!("{:<40} {}", e.login, role_str.trim_matches('"'));
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        UserCmd::Grant { login, role } => {
+            let role: Role = match role.as_str() {
+                "admin" => Role::Admin,
+                "write" => Role::Write,
+                "read" => Role::Read,
+                other => anyhow::bail!("unknown role '{other}'; must be admin, write, or read"),
+            };
+            db.set_user_role(&login, &role)
+                .map_err(|e| anyhow::anyhow!("failed to set role: {e}"))?;
+            match format {
+                OutputFormat::Json | OutputFormat::Yaml => {
+                    print_serialized(&serde_json::json!({ "login": login, "role": role }), format);
+                }
+                OutputFormat::Table => {
+                    let role_str = serde_json::to_string(&role).unwrap_or_default();
+                    println!("Granted {} to {login}", role_str.trim_matches('"'));
+                }
+            }
+            Ok(())
+        }
+        UserCmd::Revoke { login } => {
+            let removed = db
+                .remove_user_role(&login)
+                .map_err(|e| anyhow::anyhow!("failed to revoke role: {e}"))?;
+            if removed {
+                match format {
+                    OutputFormat::Json | OutputFormat::Yaml => {
+                        print_serialized(
+                            &serde_json::json!({ "login": login, "deleted": true }),
+                            format,
+                        );
+                    }
+                    OutputFormat::Table => println!("Revoked explicit role for {login}"),
+                }
+            } else {
+                anyhow::bail!("no explicit role assigned to '{login}'");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -2264,6 +2380,21 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
         Command::Bead(_) => {
             anyhow::bail!("bead commands are not yet available in client mode");
         }
+        #[cfg(feature = "serve")]
+        Command::User(cmd) => match cmd {
+            UserCmd::List => {
+                let resp = client.list_users()?;
+                print_serialized(&resp, &cli.output);
+            }
+            UserCmd::Grant { login, role } => {
+                let resp = client.set_user_role(&login, &role)?;
+                print_serialized(&resp, &cli.output);
+            }
+            UserCmd::Revoke { login } => {
+                let resp = client.remove_user_role(&login)?;
+                print_serialized(&resp, &cli.output);
+            }
+        },
         // These are handled before mode detection; unreachable in client mode
         Command::Serve(_) | Command::Mcp { .. } | Command::Doctor | Command::Init { .. }
         | Command::Server(_) | Command::Config(ConfigCmd::Path) => unreachable!(),

@@ -47,6 +47,7 @@ mod collection_listing;
 pub(crate) mod embedded_ui;
 pub mod control_plane;
 pub mod control_plane_routes;
+pub mod user_roles;
 pub mod gateway;
 pub(crate) mod mcp_http;
 pub mod mcp_stdio;

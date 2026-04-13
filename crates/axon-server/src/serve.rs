@@ -246,11 +246,23 @@ pub async fn run_with_sqlite_storage(
 
     let control_plane_db = crate::control_plane::ControlPlaneDb::open(&args.control_plane_path)
         .map_err(|error| format!("failed to open control-plane database: {error}"))?;
-    let control_plane_db = Arc::new(tokio::sync::Mutex::new(control_plane_db));
     tracing::info!(
         "control-plane database opened at {}",
         args.control_plane_path
     );
+
+    // Load user-role assignments from the control-plane DB into a shared store.
+    let user_roles = crate::user_roles::UserRoleStore::default();
+    let role_entries = control_plane_db
+        .list_user_roles()
+        .map_err(|e| format!("failed to load user roles: {e}"))?;
+    user_roles.load_from_entries(role_entries);
+    tracing::info!("loaded {} user-role assignment(s)", user_roles.list().len());
+
+    // Share the role store with both the auth context and control-plane routes.
+    let auth = auth.with_user_roles(user_roles.clone());
+
+    let control_plane_db = Arc::new(tokio::sync::Mutex::new(control_plane_db));
 
     // Derive the data directory for tenant databases from the control-plane path.
     let data_dir = std::path::Path::new(&args.control_plane_path)
@@ -258,7 +270,7 @@ pub async fn run_with_sqlite_storage(
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
     let control_plane_state =
-        crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir.clone());
+        crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir.clone(), user_roles);
 
     let handler: crate::tenant_router::TenantHandler =
         Arc::new(tokio::sync::Mutex::new(AxonHandler::new(
@@ -405,18 +417,26 @@ pub async fn run_with_postgres_storage(
 
     let control_plane_db = crate::control_plane::ControlPlaneDb::open(&args.control_plane_path)
         .map_err(|error| format!("failed to open control-plane database: {error}"))?;
-    let control_plane_db = Arc::new(tokio::sync::Mutex::new(control_plane_db));
     tracing::info!(
         "control-plane database opened at {}",
         args.control_plane_path
     );
+
+    let user_roles = crate::user_roles::UserRoleStore::default();
+    let role_entries = control_plane_db
+        .list_user_roles()
+        .map_err(|e| format!("failed to load user roles: {e}"))?;
+    user_roles.load_from_entries(role_entries);
+    let auth = auth.with_user_roles(user_roles.clone());
+
+    let control_plane_db = Arc::new(tokio::sync::Mutex::new(control_plane_db));
 
     let data_dir = std::path::Path::new(&args.control_plane_path)
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
     let control_plane_state =
-        crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir);
+        crate::control_plane_routes::ControlPlaneState::new(control_plane_db, data_dir, user_roles);
 
     let http_app = crate::gateway::build_router_with_auth(
         tenant_router,

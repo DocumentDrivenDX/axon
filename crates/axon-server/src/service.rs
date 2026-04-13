@@ -1390,7 +1390,7 @@ mod tests {
             .into_inner();
 
         assert_eq!(resp.entries.len(), 1);
-        assert_eq!(resp.entries[0].actor, "grpc-agent");
+        assert_eq!(resp.entries[0].actor, "agent@example.com");
     }
 
     #[tokio::test]

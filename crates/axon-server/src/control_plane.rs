@@ -91,7 +91,29 @@ impl ControlPlaneDb {
                  );",
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
+        crate::user_roles::migrate_user_roles(&self.conn)?;
         Ok(())
+    }
+
+    // -- user_roles ------------------------------------------------------------
+
+    /// List all user-role assignments.
+    pub fn list_user_roles(&self) -> Result<Vec<crate::user_roles::UserRoleEntry>, AxonError> {
+        crate::user_roles::db_list(&self.conn)
+    }
+
+    /// Upsert a user-role assignment.
+    pub fn set_user_role(
+        &self,
+        login: &str,
+        role: &crate::auth::Role,
+    ) -> Result<(), AxonError> {
+        crate::user_roles::db_set(&self.conn, login, role)
+    }
+
+    /// Remove a user-role assignment.  Returns `true` if a row was deleted.
+    pub fn remove_user_role(&self, login: &str) -> Result<bool, AxonError> {
+        crate::user_roles::db_remove(&self.conn, login)
     }
 
     // -- tenants ------------------------------------------------------------

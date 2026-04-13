@@ -50,6 +50,13 @@ pub fn default_sqlite_path() -> PathBuf {
     data_dir().join("axon.db")
 }
 
+/// Returns the default path for the control-plane SQLite database.
+///
+/// Equivalent to `data_dir()/axon-control-plane.db`.
+pub fn control_plane_sqlite_path() -> PathBuf {
+    data_dir().join("axon-control-plane.db")
+}
+
 /// Returns the directory for per-tenant data.
 ///
 /// Equivalent to `data_dir()/tenants/`.

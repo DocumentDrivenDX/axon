@@ -22,6 +22,7 @@ dun:
 | V1 | Global RBAC (admin/write/read/none) + `--no-auth` + `--guest-role` | **Shipped** |
 | V2 | `MaskPolicy` / `WritePolicy` structs and `GrantRegistry` defined | **Scaffolded** — types built and tested in `axon-core`, not yet wired into handlers |
 | V3 | Per-entity attribute conditions, policy inheritance, policy UI | **Deferred** |
+| V4 | Per-principal RBAC: Axon-owned user→role registry; `axon user grant/revoke/list`; `/control/users` REST API | **In Progress** |
 
 Key V1 implementation choices that differ from this spec:
 - **No OIDC support** — Tailscale is the only external provider; OIDC deferred to V2+
@@ -29,8 +30,10 @@ Key V1 implementation choices that differ from this spec:
   Tailscale Unix socket using `hyper` + `tokio::net::UnixStream`
 - **`--guest-role` mode added** — unauthenticated requests receive a fixed role (not in
   original spec, added during implementation for edge deployments without Tailscale)
-- **Actor = node name, not email** — `Identity.actor` is set to the Tailscale
-  `ComputedName` (preferred) or `Hostinfo.Hostname`, not the user's email
+- **Actor = LoginName (email), with node-name fallback** — `Identity.actor` is set to
+  the Tailscale `UserProfile.LoginName` (email) when a user profile is present; for
+  tagged service nodes with no user profile the `ComputedName` (node name) is used as
+  fallback
 
 ## Overview
 
@@ -283,10 +286,20 @@ Request arrives
 └────────┬─────────────────────────┘
          │ 200 OK                  └─ 422 → 401 Unauthorized
          ▼                         └─ socket error → 503 Unavailable
+┌─────────────────────────────────┐
+│ Axon user-role registry lookup   │
+│ by UserProfile.LoginName         │──found──▶ Use assigned role
+└────────────┬────────────────────┘
+             │ not found
+             ▼
 ┌─────────────────┐
 │ Map ACL tags     │
 │ to Role          │
 └────────┬────────┘
+         │ no matching tags
+         ▼
+    default_role
+         │
          ▼
 ┌─────────────────┐
 │ Cache + inject   │
@@ -333,7 +346,7 @@ async fn my_handler(Extension(identity): Extension<Identity>, ...) {
 ```rust
 // crates/axon-server/src/auth.rs
 pub struct Identity {
-    pub actor: String,  // Tailscale ComputedName, "anonymous", or "guest"
+    pub actor: String,  // Tailscale LoginName (email), node name fallback, "anonymous", or "guest"
     pub role: Role,     // Admin | Write | Read
 }
 
@@ -342,6 +355,11 @@ pub enum AuthMode {
     Tailscale { default_role: Role },
     Guest { role: Role },
 }
+
+/// In-memory, write-through cache of principal→role assignments.
+/// Backed by the control-plane SQLite database.
+#[derive(Clone, Default)]
+pub struct UserRoleStore(Arc<RwLock<HashMap<String, Role>>>);
 ```
 
 ### Configuration
@@ -394,6 +412,23 @@ role_claim = "axon_role"
   (`tailscale-localapi` crate was evaluated but not used; direct socket calls chosen)
 - `jsonwebtoken` — deferred (OIDC not implemented in V1)
 
+### Story US-048: Per-Principal Role Assignment [FEAT-012]
+
+**As an** operator
+**I want** to assign roles directly to user principals (by email/login)
+**So that** I control authorization in Axon without needing to configure Tailscale ACL tags
+
+**Acceptance Criteria:**
+- [ ] `axon user grant erik@example.com admin` assigns the admin role to that principal
+- [ ] `axon user revoke erik@example.com` removes the explicit assignment; falls back to tag-based role then default
+- [ ] `axon user list` shows all explicit role assignments
+- [ ] `GET /control/users` returns all user-role mappings (admin only)
+- [ ] `PUT /control/users/{login}` sets the role for a principal (admin only)
+- [ ] `DELETE /control/users/{login}` removes the explicit role for a principal (admin only)
+- [ ] Role assignments survive server restarts (persisted in control-plane SQLite)
+- [ ] Changes take effect within the identity cache TTL (default 60s)
+- [ ] Axon-owned role assignment takes priority over Tailscale ACL tag mapping
+
 ### Story US-046: Field-Level Masking [FEAT-012]
 
 **As a** data steward
@@ -431,7 +466,7 @@ role_claim = "axon_role"
 
 ### Related Artifacts
 - **Parent PRD Section**: Requirements Overview > P1 #6 (Authentication/authorization)
-- **User Stories**: US-043, US-044, US-045 (shipped); US-046, US-047 (scaffolded)
+- **User Stories**: US-043, US-044, US-045 (shipped); US-046, US-047 (scaffolded); US-048 (in progress)
 - **Architecture**: ADR-005 (Tailscale LocalAPI whois)
 - **Implementation**:
   - `crates/axon-server/src/auth.rs` — `AuthMode`, `AuthContext`, `Identity`, `LocalApiWhoisProvider`
@@ -439,6 +474,9 @@ role_claim = "axon_role"
   - `crates/axon-server/src/gateway.rs` — `authenticate_http_request` middleware, `/auth/me` endpoint
   - `crates/axon-server/src/service.rs` — gRPC `authorize` + `auth_to_status`
   - `crates/axon-server/src/serve.rs` — `auth_context_from_serve_args`, CLI flags
+  - `crates/axon-server/src/user_roles.rs` — `UserRoleStore` (in-memory + SQLite backing)
+  - `crates/axon-server/src/control_plane_routes.rs` — `/control/users` REST endpoints
+  - `crates/axon-cli/src/main.rs` — `axon user grant/revoke/list` CLI commands
 
 ### Feature Dependencies
 - **Depends On**: FEAT-005

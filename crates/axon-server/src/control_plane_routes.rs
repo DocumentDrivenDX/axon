@@ -9,15 +9,16 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use crate::auth::Identity;
+use crate::auth::{Identity, Role};
 use crate::control_plane::{ControlPlaneDb, Tenant, TenantDatabase};
 use crate::gateway::{auth_error_response, ApiError};
+use crate::user_roles::UserRoleStore;
 
 /// Shared state for control-plane routes, holding the DB and a data directory
 /// where tenant SQLite databases are provisioned.
@@ -26,15 +27,24 @@ pub struct ControlPlaneState {
     pub db: Arc<Mutex<ControlPlaneDb>>,
     /// Directory where tenant database files are created.
     pub data_dir: PathBuf,
+    /// In-memory write-through cache of principal → role assignments.
+    ///
+    /// Shared with [`AuthContext`] so that role changes take effect within the
+    /// next identity-cache TTL window without a server restart.
+    pub user_roles: UserRoleStore,
 }
 
 /// Shared handle to the control-plane SQLite database (legacy alias).
 pub type SharedControlPlane = Arc<Mutex<ControlPlaneDb>>;
 
 impl ControlPlaneState {
-    /// Create a new control-plane state.
-    pub fn new(db: Arc<Mutex<ControlPlaneDb>>, data_dir: PathBuf) -> Self {
-        Self { db, data_dir }
+    /// Create a new control-plane state with the given user-role store.
+    ///
+    /// Pass the same `UserRoleStore` instance to [`AuthContext::with_user_roles`]
+    /// so that `PUT /control/users` changes are reflected in auth without a
+    /// server restart.
+    pub fn new(db: Arc<Mutex<ControlPlaneDb>>, data_dir: PathBuf, user_roles: UserRoleStore) -> Self {
+        Self { db, data_dir, user_roles }
     }
 
     /// Build the file path for a tenant database.
@@ -126,6 +136,10 @@ pub fn control_plane_routes() -> Router<ControlPlaneState> {
             "/tenants/{tenant_id}/databases/{db_name}",
             delete(remove_database),
         )
+        // User-role management
+        .route("/users", get(list_users))
+        .route("/users/{login}", put(set_user_role))
+        .route("/users/{login}", delete(remove_user_role))
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -451,6 +465,105 @@ async fn remove_database(
     }
 }
 
+// ── User-role handlers ───────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct SetUserRoleBody {
+    role: Role,
+}
+
+/// `GET /control/users` — list all explicit user-role assignments.
+async fn list_users(
+    State(state): State<ControlPlaneState>,
+    Extension(identity): Extension<Identity>,
+) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
+    let db = state.db.lock().await;
+    match db.list_user_roles() {
+        Ok(entries) => {
+            let users: Vec<_> = entries
+                .into_iter()
+                .map(|e| json!({ "login": e.login, "role": e.role }))
+                .collect();
+            Json(json!({ "users": users })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `PUT /control/users/{login}` — assign or update a role for a principal.
+async fn set_user_role(
+    State(state): State<ControlPlaneState>,
+    Extension(identity): Extension<Identity>,
+    Path(login): Path<String>,
+    Json(body): Json<SetUserRoleBody>,
+) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
+    let db = state.db.lock().await;
+    match db.set_user_role(&login, &body.role) {
+        Ok(()) => {
+            // Update in-memory cache so auth picks it up on next request.
+            state.user_roles.set_cached(login.clone(), body.role.clone());
+            (
+                StatusCode::OK,
+                Json(json!({ "login": login, "role": body.role })),
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `DELETE /control/users/{login}` — remove an explicit role assignment.
+///
+/// After removal, the principal falls back to tag-based or default role
+/// resolution on their next request.
+async fn remove_user_role(
+    State(state): State<ControlPlaneState>,
+    Extension(identity): Extension<Identity>,
+    Path(login): Path<String>,
+) -> Response {
+    if let Err(e) = identity.require_admin() {
+        return auth_error_response(e);
+    }
+    let db = state.db.lock().await;
+    match db.remove_user_role(&login) {
+        Ok(true) => {
+            state.user_roles.remove_cached(&login);
+            (
+                StatusCode::OK,
+                Json(json!({ "login": login, "deleted": true })),
+            )
+                .into_response()
+        }
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new(
+                "not_found",
+                format!("no explicit role assigned to '{login}'"),
+            )),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
 // ── Provisioning ────────────────────────────────────────────────────────────
 
 /// Create and initialize a new tenant SQLite database at the given path.
@@ -499,6 +612,7 @@ mod tests {
         let state = ControlPlaneState::new(
             Arc::new(Mutex::new(cp_db)),
             tmp.path().to_path_buf(),
+            UserRoleStore::default(),
         );
         build_test_server(state)
     }
@@ -870,6 +984,102 @@ mod tests {
         let server = test_control_plane_server_with_dir(&tmp);
         let resp = server
             .delete("/control/tenants/00000000-0000-0000-0000-000000000000")
+            .await;
+        resp.assert_status(StatusCode::NOT_FOUND);
+    }
+
+    // -- GET /control/users ---------------------------------------------------
+
+    #[tokio::test]
+    async fn list_users_returns_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+        let resp = server.get("/control/users").await;
+        resp.assert_status(StatusCode::OK);
+        let body: Value = resp.json();
+        assert_eq!(body["users"].as_array().unwrap().len(), 0);
+    }
+
+    // -- PUT /control/users/{login} -------------------------------------------
+
+    #[tokio::test]
+    async fn set_user_role_creates_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+
+        let resp = server
+            .put("/control/users/alice@example.com")
+            .json(&json!({ "role": "write" }))
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body: Value = resp.json();
+        assert_eq!(body["login"], "alice@example.com");
+        assert_eq!(body["role"], "write");
+
+        // Verify it appears in list.
+        let list_resp = server.get("/control/users").await;
+        list_resp.assert_status(StatusCode::OK);
+        let list_body: Value = list_resp.json();
+        let users = list_body["users"].as_array().unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0]["login"], "alice@example.com");
+    }
+
+    #[tokio::test]
+    async fn set_user_role_upserts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+
+        server
+            .put("/control/users/alice@example.com")
+            .json(&json!({ "role": "read" }))
+            .await
+            .assert_status(StatusCode::OK);
+        server
+            .put("/control/users/alice@example.com")
+            .json(&json!({ "role": "admin" }))
+            .await
+            .assert_status(StatusCode::OK);
+
+        let list_resp = server.get("/control/users").await;
+        let list_body: Value = list_resp.json();
+        let users = list_body["users"].as_array().unwrap();
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0]["role"], "admin");
+    }
+
+    // -- DELETE /control/users/{login} ----------------------------------------
+
+    #[tokio::test]
+    async fn remove_user_role_returns_200() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+
+        server
+            .put("/control/users/alice@example.com")
+            .json(&json!({ "role": "write" }))
+            .await
+            .assert_status(StatusCode::OK);
+
+        let resp = server
+            .delete("/control/users/alice@example.com")
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body: Value = resp.json();
+        assert_eq!(body["deleted"], true);
+
+        // Should be gone from list.
+        let list_resp = server.get("/control/users").await;
+        let list_body: Value = list_resp.json();
+        assert_eq!(list_body["users"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn remove_nonexistent_user_role_returns_404() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = test_control_plane_server_with_dir(&tmp);
+        let resp = server
+            .delete("/control/users/nobody@example.com")
             .await;
         resp.assert_status(StatusCode::NOT_FOUND);
     }

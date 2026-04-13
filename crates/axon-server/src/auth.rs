@@ -377,6 +377,8 @@ pub struct AuthContext {
     provider: Option<Arc<dyn TailscaleWhoisProvider>>,
     cache: Arc<RwLock<HashMap<IpAddr, CachedIdentity>>>,
     cache_ttl: Duration,
+    /// Per-principal role registry.  Overrides tag-based role resolution.
+    user_roles: crate::user_roles::UserRoleStore,
 }
 
 impl Default for AuthContext {
@@ -393,6 +395,7 @@ impl AuthContext {
             provider: None,
             cache: Arc::new(RwLock::new(HashMap::new())),
             cache_ttl: Duration::from_secs(60),
+            user_roles: crate::user_roles::UserRoleStore::default(),
         }
     }
 
@@ -403,6 +406,7 @@ impl AuthContext {
             provider: None,
             cache: Arc::new(RwLock::new(HashMap::new())),
             cache_ttl: Duration::from_secs(0),
+            user_roles: crate::user_roles::UserRoleStore::default(),
         }
     }
 
@@ -415,6 +419,22 @@ impl AuthContext {
         let mode = AuthMode::Tailscale { default_role };
         let provider = Arc::new(LocalApiWhoisProvider::new(socket_path.into()));
         Self::with_provider(mode, provider, cache_ttl)
+    }
+
+    /// Replace the user-role store with `store`.
+    ///
+    /// Both the returned `AuthContext` and the original `store` handle share
+    /// the same underlying `Arc`, so mutations through either are immediately
+    /// visible.
+    #[must_use]
+    pub fn with_user_roles(mut self, store: crate::user_roles::UserRoleStore) -> Self {
+        self.user_roles = store;
+        self
+    }
+
+    /// Return a reference to the shared user-role store.
+    pub fn user_roles(&self) -> &crate::user_roles::UserRoleStore {
+        &self.user_roles
     }
 
     #[must_use]
@@ -453,7 +473,23 @@ impl AuthContext {
                         "tailscale auth is enabled but no LocalAPI provider is configured".into(),
                     )
                 })?;
-                let identity = identity_from_tailscale(&provider.whois(peer).await?, default_role);
+                let whois = provider.whois(peer).await?;
+
+                // Priority: (1) Axon user-role registry by login, (2) ACL tags,
+                // (3) --tailscale-default-role.
+                let role = if whois.user_login.is_empty() {
+                    role_from_tags(&whois.tags, default_role)
+                } else {
+                    self.user_roles
+                        .get(&whois.user_login)
+                        .unwrap_or_else(|| role_from_tags(&whois.tags, default_role))
+                };
+                let actor = if whois.user_login.is_empty() {
+                    whois.node_name.clone()
+                } else {
+                    whois.user_login.clone()
+                };
+                let identity = Identity { actor, role };
                 self.store_cached_identity(peer_ip, identity.clone()).await;
                 Ok(identity)
             }
@@ -491,6 +527,7 @@ impl AuthContext {
             provider: Some(provider),
             cache: Arc::new(RwLock::new(HashMap::new())),
             cache_ttl,
+            user_roles: crate::user_roles::UserRoleStore::default(),
         }
     }
 }
@@ -548,10 +585,10 @@ const fn role_priority(role: &Role) -> u8 {
 /// whose login name is empty, the node name is used as a fallback so that
 /// automated agents still produce a meaningful actor string.
 pub fn identity_from_tailscale(whois: &TailscaleWhoisResponse, default_role: &Role) -> Identity {
-    let actor = if !whois.user_login.is_empty() {
-        whois.user_login.clone()
-    } else {
+    let actor = if whois.user_login.is_empty() {
         whois.node_name.clone()
+    } else {
+        whois.user_login.clone()
     };
     Identity {
         actor,
@@ -976,5 +1013,79 @@ mod tests {
         assert!(id.require_read().is_ok());
         assert!(id.require_write().is_ok());
         assert!(id.require_admin().is_ok());
+    }
+
+    // ── User-role registry tests (US-048) ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn user_role_registry_overrides_tag_based_role() {
+        use crate::user_roles::{UserRoleEntry, UserRoleStore};
+
+        let address = SocketAddr::from(([100, 101, 102, 103], 443));
+        // Tailscale says the node has no axon tags → default role would be Read.
+        let provider = Arc::new(FakeWhoisProvider::with_result(
+            address,
+            Ok(TailscaleWhoisResponse {
+                node_name: "erikd-laptop".into(),
+                user_login: "erik@example.com".into(),
+                tags: vec![],
+            }),
+        ));
+        let store = UserRoleStore::default();
+        store.load_from_entries(vec![UserRoleEntry {
+            login: "erik@example.com".into(),
+            role: Role::Write,
+        }]);
+        let context = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            provider,
+            Duration::from_secs(60),
+        )
+        .with_user_roles(store);
+
+        let identity = context
+            .resolve_peer(Some(address))
+            .await
+            .expect("should resolve");
+        assert_eq!(identity.actor, "erik@example.com");
+        // Registry grants Write, overriding the Read default.
+        assert_eq!(identity.role, Role::Write);
+    }
+
+    #[tokio::test]
+    async fn user_role_registry_overrides_acl_tag_role() {
+        use crate::user_roles::{UserRoleEntry, UserRoleStore};
+
+        let address = SocketAddr::from(([100, 101, 102, 104], 443));
+        // Tailscale tags say Admin, but registry says Read.
+        let provider = Arc::new(FakeWhoisProvider::with_result(
+            address,
+            Ok(TailscaleWhoisResponse {
+                node_name: "erikd-laptop".into(),
+                user_login: "restricted@example.com".into(),
+                tags: vec!["tag:axon-admin".into()],
+            }),
+        ));
+        let store = UserRoleStore::default();
+        store.load_from_entries(vec![UserRoleEntry {
+            login: "restricted@example.com".into(),
+            role: Role::Read,
+        }]);
+        let context = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            provider,
+            Duration::from_secs(60),
+        )
+        .with_user_roles(store);
+
+        let identity = context
+            .resolve_peer(Some(address))
+            .await
+            .expect("should resolve");
+        assert_eq!(identity.role, Role::Read);
     }
 }
