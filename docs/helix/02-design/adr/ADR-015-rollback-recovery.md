@@ -316,7 +316,142 @@ post-bad-state that the first rollback undid.
 This satisfies FEAT-023 acceptance criterion: "Rollback of a rollback
 (re-apply) works correctly" with no special-case code.
 
-### 7. Explicit V1 Out of Scope
+### 7. Known Constraints
+
+Two implementation constraints in the initial FEAT-023 delivery are
+not conceptual limitations of the compensating-write model but are
+scoped out of V1 pending dedicated follow-on work.
+
+#### 7a. Transaction Rollback Rejects Create/Delete Source Mutations
+
+`Handler::rollback_transaction` (the transaction-level rollback entry
+point) **rejects source transactions that include entity creates or
+deletes**. A rollback request whose source transaction contains an
+`EntityCreate` or `EntityDelete` mutation returns
+`AxonError::InvalidOperation` with a message naming the offending
+entity. Only `EntityUpdate`, `EntityRevert`, and `EntityRollback`
+source mutations are supported by the V1 transaction rollback path.
+
+**Rationale.** The cross-entity atomicity contract (§3) requires the
+compensating transaction to stage every compensating write through a
+single `begin_tx`/`commit_tx` via the OCC `compare_and_swap` path. That
+path handles *updates only*: reversing an `EntityCreate` requires
+issuing a `storage.delete`, and reversing an `EntityDelete` requires
+reconstructing a prior-version entity whose `created_at_ns`,
+`created_by`, and lineage metadata cannot be trivially reconstructed
+from audit state alone (the creation may itself have been a revert of
+an earlier delete, etc.). Mixing delete and create compensating
+operations into the shared transaction also breaks the single-path OCC
+check — `compare_and_swap` has no equivalent for "expect absent, then
+create" or "expect present at version V, then delete".
+
+Rather than quietly skip these mutations (which would violate the
+all-or-nothing contract and produce silent partial rollbacks), V1
+fails fast with a clear error so callers understand the limitation.
+A separate bead tracks full create/delete rollback support (see
+Follow-on Work below).
+
+**What this means for callers.**
+
+| Source transaction shape | V1 transaction rollback behavior |
+|---|---|
+| Updates only | Full rollback, atomic |
+| Any create | Rejected with `InvalidOperation` — caller must fall back to per-entity compensation |
+| Any delete | Rejected with `InvalidOperation` — same fallback |
+| Mixed updates + create/delete | Rejected — the update portion is **not** partially applied |
+
+Point-in-time rollback (§7b) handles creates and deletes via its
+per-entity best-effort path, so callers whose source transaction is
+purely a create/delete workload can use PIT rollback with an
+appropriate cutoff as a workaround.
+
+#### 7b. Point-in-Time Rollback is Best-Effort, Not All-or-Nothing
+
+`Handler::rollback_collection` (the point-in-time collection rollback
+entry point) is **best-effort at the entity level**, not atomic across
+the collection. This is a deliberate divergence from the transaction
+rollback contract (§3), driven by three characteristics unique to PIT
+rollback:
+
+1. **PIT rollback is not bounded by a single source transaction.** It
+   reverts mutations from potentially thousands of source transactions
+   scanned out of the audit log by timestamp cutoff, and easily exceeds
+   the 100-op transaction limit (FEAT-008). Grouping every
+   compensating write into one transaction is structurally impossible
+   for large rollbacks.
+2. **The compensating operation set is heterogeneous.** A single PIT
+   rollback can mix restores, recreates (entities deleted after the
+   cutoff), and deletes (entities created after the cutoff). Unlike
+   transaction rollback, there is no uniform `compare_and_swap` path
+   the whole set flows through, so the shared-transaction OCC abort
+   guarantee is unavailable.
+3. **PIT rollback is a recovery tool, not a business operation.** When
+   an operator is unwinding bad state after an incident, applying 99
+   of 100 compensating writes and reporting the one failure is
+   strictly more useful than refusing to apply anything.
+
+**Contract.** `rollback_collection` applies every compensating write
+it can and reports per-entity outcomes:
+
+- Successful compensating writes are listed in `compensating_writes`.
+- Entities whose compensation could not be applied (OCC drift between
+  plan time and commit, storage drift from the audit view, or
+  concurrent re-appearance of a deleted entity) are listed in
+  `partial_failures`.
+- The response field is named `partial_failures` — not `conflicts` —
+  to make the best-effort contract unambiguous at the type level.
+- A full-success rollback has `partial_failures == []`.
+- A fully-blocked rollback has `compensating_writes == []` and
+  `partial_failures` populated with the blocked entities.
+- A partially-applied rollback has both lists non-empty; the
+  compensating transaction ID (`compensating_transaction_id`) groups
+  whatever writes did land so callers can inspect them in the audit
+  log.
+
+**Retry semantics.** Callers observing a non-empty `partial_failures`
+list can retry the PIT rollback — the compensating writes already
+applied become new audit entries that subsequent runs skip past, and
+the still-failing entities get a fresh plan/commit attempt. Retrying
+until `partial_failures` is empty is safe and idempotent (modulo
+concurrent writers continuing to produce new drift).
+
+**Why not mirror transaction rollback's all-or-nothing contract?**
+Two alternatives were considered and rejected:
+
+| Alternative | Rejection reason |
+|---|---|
+| Run PIT rollback inside a single `begin_tx`/`commit_tx` | Capped at 100 ops (FEAT-008); excludes the primary use case (large incident recovery). |
+| Run PIT rollback as a chain of 100-op transactions, abort all on any failure | Requires a distributed compensating-of-compensating cleanup path that does not exist in V1 and would itself be best-effort; adds complexity for marginal benefit over per-entity reporting. |
+
+The per-entity best-effort contract is the honest minimum viable
+semantic. A "strict mode" that refuses to commit any writes when any
+entity fails is a P1 follow-on (Follow-on Work), as is chunked
+rollback with chunk-level atomicity.
+
+#### 7c. Follow-on Work
+
+The following beads track removing these constraints:
+
+- **Full create/delete transaction rollback.** Extend
+  `rollback_transaction` to stage compensating `put`/`delete`
+  operations alongside updates inside a single compensating
+  transaction, with reconstruction of creation metadata from the
+  earliest audit entry for each entity. Tracked as a separate P1
+  bead filed alongside this ADR amendment.
+- **PIT rollback strict mode.** Add an opt-in `strict: bool` flag to
+  `RollbackCollectionRequest` that causes any entity-level failure to
+  abort the whole rollback by issuing inverse compensating writes for
+  any entries already applied in the current run. P2 follow-on.
+- **Chunked PIT rollback with chunk-level atomicity.** Break a PIT
+  rollback into N-op chunks, each of which is atomic via shared
+  transaction; the overall rollback remains best-effort across
+  chunks. P2 follow-on.
+
+Until these follow-ons land, callers of the V1 API should treat
+`rollback_transaction` as "updates-only, atomic" and
+`rollback_collection` as "any mutation, best-effort per entity".
+
+### 8. Explicit V1 Out of Scope
 
 The following are explicitly **not** V1 concerns and should not gate
 FEAT-023 shipping:
@@ -329,7 +464,7 @@ FEAT-023 shipping:
 | **Rolling back schema changes** | Deferred | FEAT-017 schema evolution governs schema changes. A rollback whose `data_before` does not match the current schema fails schema validation (same guard as US-008 `revert_entity_to_audit_entry`). `--force` escape hatch is a P1 follow-on. |
 | **Rolling back audit entries themselves** | Out of scope forever | The audit log is append-only. There is no "undo" for audit entries — that would defeat their purpose. |
 | **Cross-database rollback** | Deferred | V1 rollback operates within a single Axon database. Multi-database coordination requires distributed transactions (P2). |
-| **Partial rollback** of a failing compensating transaction | Rejected | FEAT-023 and this ADR require all-or-nothing compensating transactions. Callers who want partial rollback should issue multiple single-entity rollbacks. |
+| **Partial rollback** of a failing *transaction-level* compensating transaction | Rejected | FEAT-023 and §3 require all-or-nothing for transaction-level rollback. Callers who want partial rollback of updates should issue multiple single-entity rollbacks. Point-in-time rollback is a separate contract — see §7b, it **is** best-effort by design. |
 | **Time-bounded undo window** with GC after N days | Deferred | V1 retains all audit entries (FEAT-003 Constraints). Retention policies are a P2 FEAT-003 deliverable. |
 
 ## Alternatives Considered
@@ -411,6 +546,8 @@ is a P1 follow-on.
 | Negative | Rollback cost scales with the number of compensated entities — reverting 10 000 entities requires 10 000 compensating writes and 10 000 new audit entries. Point-in-time rollback of a busy database may be expensive. |
 | Negative | 100-op transaction limit forces caller-side chunking for large point-in-time rollbacks; chunked rollbacks lose cross-chunk atomicity. |
 | Negative | OCC conflicts must be resolved by the caller. There is no "force" rollback mode in V1 — if the caller truly wants to overwrite a concurrent edit, they must read current state, merge, and retry (same as any OCC flow). |
+| Negative | V1 transaction-level rollback rejects source transactions that include entity creates or deletes (§7a). Callers must use per-entity compensation or point-in-time rollback as a workaround until the follow-on bead lands. |
+| Neutral | Point-in-time rollback is best-effort, not atomic (§7b). The `RollbackCollectionResponse.partial_failures` field carries per-entity failures; callers choose whether to retry, escalate, or accept the partial result. |
 | Neutral | `AuditEntry` gains two optional fields (`rollback_source_audit_id`, `rollback_source_transaction_id`) and `MutationType` gains `EntityRollback`. Both are additive and do not affect existing entries. |
 
 ## Implementation Notes
@@ -434,6 +571,16 @@ is a P1 follow-on.
   the single-entity special case and emits `EntityRevert`. The new
   transaction-level entry points emit `EntityRollback`. A P1 follow-on
   can unify them if the distinction proves unhelpful in practice.
+- `Handler::rollback_transaction` returns `InvalidOperation` for source
+  transactions containing entity creates or deletes (§7a). The rejection
+  is implemented before any storage transaction is opened, so no partial
+  state is written. A follow-on bead tracks full create/delete support.
+- `Handler::rollback_collection` records per-entity failures in the
+  response's `partial_failures` field (§7b). Plan-time drift, commit-time
+  OCC conflicts, and concurrent re-appearance of deleted entities all
+  route into this field rather than aborting the whole operation. The
+  compensating `transaction_id` groups whichever writes did land so the
+  partial result is inspectable via `axon audit list`.
 - Point-in-time rollback uses an audit log scan by timestamp cutoff
   (FEAT-003 query API). The scan cost is proportional to mutations
   *after* the cutoff, satisfying FEAT-023 NFR ("scales with mutations
