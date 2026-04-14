@@ -488,6 +488,7 @@ fn broadcast_entity_change(broker: &BroadcastBroker, entity: &Entity, operation:
         .as_millis() as u64;
 
     let event = axon_graphql::ChangeEvent {
+        audit_id: String::new(),
         collection: entity.collection.to_string(),
         entity_id: entity.id.to_string(),
         operation: operation.to_string(),
@@ -508,6 +509,7 @@ fn broadcast_entity_delete(broker: &BroadcastBroker, collection: &str, entity_id
         .as_millis() as u64;
 
     let event = axon_graphql::ChangeEvent {
+        audit_id: String::new(),
         collection: collection.to_string(),
         entity_id: entity_id.to_string(),
         operation: "delete".to_string(),
