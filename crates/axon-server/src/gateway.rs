@@ -270,7 +270,10 @@ fn axon_error_response(err: AxonError) -> Response {
             )),
         )
             .into_response(),
-        AxonError::RateLimitExceeded { actor, retry_after_ms } => (
+        AxonError::RateLimitExceeded {
+            actor,
+            retry_after_ms,
+        } => (
             StatusCode::TOO_MANY_REQUESTS,
             Json(ApiError::new(
                 "rate_limit_exceeded",
@@ -548,11 +551,21 @@ pub(crate) async fn cors_middleware(
         let mut builder = axum::http::Response::builder().status(StatusCode::OK);
         if let Some(ref orig) = origin {
             if !cors.is_empty() && (cors.is_wildcard() || cors.is_allowed(orig)) {
-                let acao = if cors.is_wildcard() { "*" } else { orig.as_str() };
+                let acao = if cors.is_wildcard() {
+                    "*"
+                } else {
+                    orig.as_str()
+                };
                 builder = builder
                     .header("Access-Control-Allow-Origin", acao)
-                    .header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+                    .header(
+                        "Access-Control-Allow-Methods",
+                        "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+                    )
+                    .header(
+                        "Access-Control-Allow-Headers",
+                        "Content-Type, Authorization",
+                    )
                     .header("Access-Control-Max-Age", "86400");
             }
         }
@@ -574,7 +587,9 @@ pub(crate) async fn cors_middleware(
             };
             if let Some(value) = acao {
                 if let Ok(v) = axum::http::HeaderValue::from_str(&value) {
-                    response.headers_mut().insert("Access-Control-Allow-Origin", v);
+                    response
+                        .headers_mut()
+                        .insert("Access-Control-Allow-Origin", v);
                 }
             }
         }
@@ -1184,12 +1199,7 @@ async fn delete_entity(
     ) {
         Ok(resp) => {
             notify_entity_change_by_parts(&mcp_sessions, &current_database, &collection, &id);
-            broadcast_entity_delete(
-                &broker,
-                &collection,
-                &id,
-                audit_id_string(resp.audit_id),
-            );
+            broadcast_entity_delete(&broker, &collection, &id, audit_id_string(resp.audit_id));
             Json(json!({"collection": resp.collection, "id": resp.id})).into_response()
         }
         Err(e) => axon_error_response(e),
@@ -1699,12 +1709,7 @@ async fn rollback_collection_entity(
             audit_entry,
         }) => {
             notify_entity_change(&mcp_sessions, &current_database, &entity);
-            broadcast_entity_change(
-                &broker,
-                &entity,
-                "update",
-                audit_entry.id.to_string(),
-            );
+            broadcast_entity_change(&broker, &entity, "update", audit_entry.id.to_string());
             Json(json!({
                 "entity": entity_payload(&entity),
                 "audit_entry": audit_entry_payload(&audit_entry),
@@ -2476,9 +2481,7 @@ async fn commit_transaction(
             // Look up the audit entries produced by this transaction so we can
             // stamp each broadcast ChangeEvent with a resume cursor. All
             // entries share the tx_id; match each to its (collection, id) pair.
-            let tx_entries = audit
-                .query_by_transaction_id(&tx_id)
-                .unwrap_or_default();
+            let tx_entries = audit.query_by_transaction_id(&tx_id).unwrap_or_default();
             for entity in &written {
                 notify_entity_change(&mcp_sessions, &current_database, entity);
                 let entity_collection = &entity.collection;
@@ -2533,6 +2536,7 @@ async fn commit_transaction(
 /// for performance.
 async fn graphql_handler(
     Extension(handler): Extension<TenantHandler>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     req: async_graphql_axum::GraphQLRequest,
 ) -> Response {
     // 1. Gather current collection schemas.
@@ -2566,8 +2570,13 @@ async fn graphql_handler(
         }
     };
 
-    // 3. Execute the request.
-    let response = gql_schema.schema.execute(req.into_inner()).await;
+    // 3. Execute the request, injecting the resolved caller identity so
+    //    mutation resolvers can attribute audit entries to the authenticated
+    //    actor (FEAT-012).
+    let response = gql_schema
+        .schema
+        .execute(req.into_inner().data(caller))
+        .await;
     async_graphql_axum::GraphQLResponse::from(response).into_response()
 }
 
@@ -2936,7 +2945,10 @@ fn build_router_full(
         );
 
     router = router
-        .route("/", get(|| async { axum::response::Redirect::temporary("/ui") }))
+        .route(
+            "/",
+            get(|| async { axum::response::Redirect::temporary("/ui") }),
+        )
         .route("/auth/me", get(auth_me))
         .route("/graphql/playground", get(graphql_playground_handler));
 
@@ -3036,9 +3048,8 @@ mod tests {
     }
 
     fn test_server_with_handler() -> (TestServer, TenantHandler) {
-        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
-            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
-        );
+        let storage: Box<dyn StorageAdapter + Send + Sync> =
+            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler.clone()));
         let app = build_router(tenant_router, "memory", None);
@@ -3050,9 +3061,8 @@ mod tests {
     }
 
     fn test_server_with_auth(peer: SocketAddr, auth: AuthContext) -> TestServer {
-        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
-            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
-        );
+        let storage: Box<dyn StorageAdapter + Send + Sync> =
+            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler));
         let app = build_router_with_auth(
@@ -5020,7 +5030,10 @@ mod tests {
             .get(header::LOCATION)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        assert!(location.ends_with("/ui"), "expected redirect to /ui, got: {location}");
+        assert!(
+            location.ends_with("/ui"),
+            "expected redirect to /ui, got: {location}"
+        );
     }
 
     #[tokio::test]
@@ -5035,7 +5048,10 @@ mod tests {
             .unwrap_or("");
         assert!(ct.starts_with("text/html"), "expected text/html, got: {ct}");
         // SvelteKit's static build always starts with <!DOCTYPE html>
-        assert!(resp.text().starts_with("<!DOCTYPE html"), "expected HTML document");
+        assert!(
+            resp.text().starts_with("<!DOCTYPE html"),
+            "expected HTML document"
+        );
     }
 
     #[tokio::test]
@@ -5067,8 +5083,14 @@ mod tests {
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        assert!(ct.starts_with("text/html"), "fallback must be HTML, got: {ct}");
-        assert!(resp.text().starts_with("<!DOCTYPE html"), "expected index.html fallback");
+        assert!(
+            ct.starts_with("text/html"),
+            "fallback must be HTML, got: {ct}"
+        );
+        assert!(
+            resp.text().starts_with("<!DOCTYPE html"),
+            "expected index.html fallback"
+        );
     }
 
     #[tokio::test]
@@ -5132,9 +5154,8 @@ mod tests {
             provider,
             Duration::from_secs(300),
         );
-        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
-            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
-        );
+        let storage: Box<dyn StorageAdapter + Send + Sync> =
+            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler));
         let app = build_router_with_auth(
@@ -5175,9 +5196,8 @@ mod tests {
             provider,
             Duration::from_secs(300),
         );
-        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
-            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
-        );
+        let storage: Box<dyn StorageAdapter + Send + Sync> =
+            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
 
         // Seed data directly via the handler (bypasses RBAC).
@@ -5786,9 +5806,8 @@ mod tests {
     // ── CORS middleware tests ─────────────────────────────────────────────────
 
     fn cors_server(cors: CorsStore) -> axum_test::TestServer {
-        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
-            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
-        );
+        let storage: Box<dyn StorageAdapter + Send + Sync> =
+            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let tenant_router = Arc::new(TenantRouter::single(handler));
         let app = build_router_with_auth(
@@ -5824,7 +5843,9 @@ mod tests {
 
         resp.assert_status_ok();
         assert_eq!(
-            resp.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()),
+            resp.headers()
+                .get("access-control-allow-origin")
+                .map(|v| v.to_str().unwrap()),
             Some("https://sindri:5173")
         );
         assert!(resp.headers().contains_key("access-control-allow-methods"));
@@ -5867,7 +5888,9 @@ mod tests {
 
         resp.assert_status_ok();
         assert_eq!(
-            resp.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()),
+            resp.headers()
+                .get("access-control-allow-origin")
+                .map(|v| v.to_str().unwrap()),
             Some("*")
         );
     }
@@ -5891,7 +5914,9 @@ mod tests {
         // The entity write should succeed and carry ACAO header.
         resp.assert_status(StatusCode::CREATED);
         assert_eq!(
-            resp.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()),
+            resp.headers()
+                .get("access-control-allow-origin")
+                .map(|v| v.to_str().unwrap()),
             Some("https://sindri:5173")
         );
     }

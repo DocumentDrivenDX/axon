@@ -23,9 +23,11 @@ use crate::subscriptions::BroadcastBroker;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateEntityRequest, DeleteEntityRequest, GetEntityRequest, PatchEntityRequest,
-    QueryEntitiesRequest, UpdateEntityRequest,
+    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
+    GetEntityRequest, PatchEntityRequest, QueryEntitiesRequest, TransitionLifecycleRequest,
+    UpdateEntityRequest,
 };
+use axon_core::auth::CallerIdentity;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
@@ -110,6 +112,19 @@ fn time_from_epoch(secs: i64, _nanos: u32) -> String {
     format!("{y:04}-{m:02}-{d:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
+/// Resolve a [`CallerIdentity`] from the async-graphql request context.
+///
+/// Mutation resolvers call this before invoking `_with_caller` handler methods
+/// so audit entries reflect the authenticated caller populated by the HTTP
+/// layer's middleware (FEAT-012). When the transport did not inject an
+/// identity (e.g. the in-process unit tests below), falls back to
+/// [`CallerIdentity::anonymous`].
+fn caller_from_ctx(ctx: &async_graphql::dynamic::ResolverContext<'_>) -> CallerIdentity {
+    ctx.data::<CallerIdentity>()
+        .cloned()
+        .unwrap_or_else(|_| CallerIdentity::anonymous())
+}
+
 /// Convert an `AxonError` into an `async-graphql` `Error` with structured
 /// extensions for OCC conflicts and other error kinds.
 fn axon_error_to_gql(err: AxonError) -> GqlError {
@@ -148,7 +163,11 @@ fn axon_error_to_gql(err: AxonError) -> GqlError {
         }
         AxonError::SchemaValidation(detail) => {
             GqlError::new(format!("schema validation failed: {detail}")).extend_with(|_err, ext| {
+                // Keep legacy `SCHEMA_VALIDATION` code for existing clients;
+                // expose the raw detail string in the structured extension so
+                // clients can surface it without string-parsing the message.
                 ext.set("code", "SCHEMA_VALIDATION");
+                ext.set("detail", detail.as_str());
             })
         }
         AxonError::UniqueViolation { field, value } => GqlError::new(format!(
@@ -159,6 +178,45 @@ fn axon_error_to_gql(err: AxonError) -> GqlError {
             ext.set("field", field.as_str());
             ext.set("value", value.as_str());
         }),
+        AxonError::InvalidTransition {
+            lifecycle_name,
+            current_state,
+            target_state,
+            valid_transitions,
+        } => GqlError::new(format!(
+            "invalid transition in lifecycle `{lifecycle_name}`: \
+             cannot transition from `{current_state}` to `{target_state}`"
+        ))
+        .extend_with(move |_err, ext| {
+            ext.set("code", "INVALID_TRANSITION");
+            ext.set("lifecycleName", lifecycle_name.as_str());
+            ext.set("currentState", current_state.as_str());
+            ext.set("targetState", target_state.as_str());
+            ext.set(
+                "validTransitions",
+                GqlValue::List(
+                    valid_transitions
+                        .iter()
+                        .map(|s| GqlValue::String(s.clone()))
+                        .collect(),
+                ),
+            );
+        }),
+        AxonError::LifecycleNotFound { lifecycle_name } => GqlError::new(format!(
+            "lifecycle not found: {lifecycle_name}"
+        ))
+        .extend_with(move |_err, ext| {
+            ext.set("code", "LIFECYCLE_NOT_FOUND");
+            ext.set("lifecycleName", lifecycle_name.as_str());
+        }),
+        AxonError::InvalidArgument(msg) => GqlError::new(format!("invalid argument: {msg}"))
+            .extend_with(|_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+            }),
+        AxonError::InvalidOperation(msg) => GqlError::new(format!("invalid operation: {msg}"))
+            .extend_with(|_err, ext| {
+                ext.set("code", "INVALID_OPERATION");
+            }),
         other => GqlError::new(other.to_string()).extend_with(|_err, ext| {
             ext.set("code", "INTERNAL_ERROR");
         }),
@@ -307,6 +365,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_create);
                 let col = col_for_create.clone();
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let id_str = ctx.args.try_get("id")?.string()?;
 
@@ -316,13 +375,16 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         .map_err(|e| GqlError::new(format!("invalid JSON input: {e}")))?;
 
                     let mut guard = handler.lock().await;
-                    match guard.create_entity(CreateEntityRequest {
-                        collection: col.clone(),
-                        id: EntityId::new(id_str),
-                        data,
-                        actor: None,
-                        audit_metadata: None,
-                    }) {
+                    match guard.create_entity_with_caller(
+                        CreateEntityRequest {
+                            collection: col.clone(),
+                            id: EntityId::new(id_str),
+                            data,
+                            actor: None,
+                            audit_metadata: None,
+                        },
+                        &caller,
+                    ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
@@ -344,6 +406,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_update);
                 let col = col_for_update.clone();
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let id_str = ctx.args.try_get("id")?.string()?;
                     let version = ctx.args.try_get("version")?.i64()? as u64;
@@ -354,14 +417,17 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         .map_err(|e| GqlError::new(format!("invalid JSON input: {e}")))?;
 
                     let mut guard = handler.lock().await;
-                    match guard.update_entity(UpdateEntityRequest {
-                        collection: col.clone(),
-                        id: EntityId::new(id_str),
-                        data,
-                        expected_version: version,
-                        actor: None,
-                        audit_metadata: None,
-                    }) {
+                    match guard.update_entity_with_caller(
+                        UpdateEntityRequest {
+                            collection: col.clone(),
+                            id: EntityId::new(id_str),
+                            data,
+                            expected_version: version,
+                            actor: None,
+                            audit_metadata: None,
+                        },
+                        &caller,
+                    ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
@@ -384,6 +450,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_patch);
                 let col = col_for_patch.clone();
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let id_str = ctx.args.try_get("id")?.string()?;
                     let version = ctx.args.try_get("version")?.i64()? as u64;
@@ -394,14 +461,17 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         .map_err(|e| GqlError::new(format!("invalid JSON patch: {e}")))?;
 
                     let mut guard = handler.lock().await;
-                    match guard.patch_entity(PatchEntityRequest {
-                        collection: col.clone(),
-                        id: EntityId::new(id_str),
-                        patch,
-                        expected_version: version,
-                        actor: None,
-                        audit_metadata: None,
-                    }) {
+                    match guard.patch_entity_with_caller(
+                        PatchEntityRequest {
+                            collection: col.clone(),
+                            id: EntityId::new(id_str),
+                            patch,
+                            expected_version: version,
+                            actor: None,
+                            audit_metadata: None,
+                        },
+                        &caller,
+                    ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
@@ -423,17 +493,21 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_delete);
                 let col = col_for_delete.clone();
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let id_str = ctx.args.try_get("id")?.string()?;
 
                     let mut guard = handler.lock().await;
-                    match guard.delete_entity(DeleteEntityRequest {
-                        collection: col.clone(),
-                        id: EntityId::new(id_str),
-                        actor: None,
-                        force: false,
-                        audit_metadata: None,
-                    }) {
+                    match guard.delete_entity_with_caller(
+                        DeleteEntityRequest {
+                            collection: col.clone(),
+                            id: EntityId::new(id_str),
+                            actor: None,
+                            force: false,
+                            audit_metadata: None,
+                        },
+                        &caller,
+                    ) {
                         Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
@@ -442,6 +516,177 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         )
         .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)));
         mutation = mutation.field(delete_field);
+
+        // ── Mutation: transition<Collection>Lifecycle ────────────────────
+        let transition_field_name = format!("transition{type_name}Lifecycle");
+        let handler_transition = Arc::clone(&handler);
+        let col_for_transition = col_id.clone();
+        let type_name_transition = type_name.clone();
+        let transition_field = Field::new(
+            &transition_field_name,
+            TypeRef::named(&type_name_transition),
+            move |ctx| {
+                let handler = Arc::clone(&handler_transition);
+                let col = col_for_transition.clone();
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(async move {
+                    let id_str = ctx.args.try_get("id")?.string()?;
+                    let lifecycle_name = ctx.args.try_get("lifecycleName")?.string()?.to_owned();
+                    let target_state = ctx.args.try_get("targetState")?.string()?.to_owned();
+                    let expected_version = ctx.args.try_get("expectedVersion")?.i64()? as u64;
+
+                    let mut guard = handler.lock().await;
+                    match guard.transition_lifecycle_with_caller(
+                        TransitionLifecycleRequest {
+                            collection_id: col.clone(),
+                            entity_id: EntityId::new(id_str),
+                            lifecycle_name,
+                            target_state,
+                            expected_version,
+                            actor: None,
+                            audit_metadata: None,
+                        },
+                        &caller,
+                    ) {
+                        Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new(
+            "lifecycleName",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new(
+            "targetState",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new(
+            "expectedVersion",
+            TypeRef::named_nn(TypeRef::INT),
+        ));
+        mutation = mutation.field(transition_field);
+    }
+
+    // ── Global link mutations ────────────────────────────────────────────────
+    //
+    // Links span two collections and are not backed by a GraphQL Entity type,
+    // so `createLink` / `deleteLink` are exposed as global (collection-less)
+    // mutations returning `Boolean!`. The structured request type carries the
+    // full source/target coordinates.
+    {
+        let handler_create_link = Arc::clone(&handler);
+        let create_link_field = Field::new(
+            "createLink",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+            move |ctx| {
+                let handler = Arc::clone(&handler_create_link);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(async move {
+                    let source_collection =
+                        ctx.args.try_get("sourceCollection")?.string()?.to_owned();
+                    let source_id = ctx.args.try_get("sourceId")?.string()?.to_owned();
+                    let target_collection =
+                        ctx.args.try_get("targetCollection")?.string()?.to_owned();
+                    let target_id = ctx.args.try_get("targetId")?.string()?.to_owned();
+                    let link_type = ctx.args.try_get("linkType")?.string()?.to_owned();
+                    let metadata = match ctx.args.try_get("metadata") {
+                        Ok(v) => match v.string() {
+                            Ok(s) => serde_json::from_str::<Value>(s).map_err(|e| {
+                                GqlError::new(format!("invalid JSON metadata: {e}"))
+                            })?,
+                            Err(_) => Value::Null,
+                        },
+                        Err(_) => Value::Null,
+                    };
+
+                    let mut guard = handler.lock().await;
+                    match guard.create_link_with_caller(
+                        CreateLinkRequest {
+                            source_collection: CollectionId::new(source_collection),
+                            source_id: EntityId::new(source_id),
+                            target_collection: CollectionId::new(target_collection),
+                            target_id: EntityId::new(target_id),
+                            link_type,
+                            metadata,
+                            actor: None,
+                        },
+                        &caller,
+                    ) {
+                        Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "sourceCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("sourceId", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new(
+            "targetCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("targetId", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new(
+            "linkType",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("metadata", TypeRef::named(TypeRef::STRING)));
+        mutation = mutation.field(create_link_field);
+
+        let handler_delete_link = Arc::clone(&handler);
+        let delete_link_field = Field::new(
+            "deleteLink",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+            move |ctx| {
+                let handler = Arc::clone(&handler_delete_link);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(async move {
+                    let source_collection =
+                        ctx.args.try_get("sourceCollection")?.string()?.to_owned();
+                    let source_id = ctx.args.try_get("sourceId")?.string()?.to_owned();
+                    let target_collection =
+                        ctx.args.try_get("targetCollection")?.string()?.to_owned();
+                    let target_id = ctx.args.try_get("targetId")?.string()?.to_owned();
+                    let link_type = ctx.args.try_get("linkType")?.string()?.to_owned();
+
+                    let mut guard = handler.lock().await;
+                    match guard.delete_link_with_caller(
+                        DeleteLinkRequest {
+                            source_collection: CollectionId::new(source_collection),
+                            source_id: EntityId::new(source_id),
+                            target_collection: CollectionId::new(target_collection),
+                            target_id: EntityId::new(target_id),
+                            link_type,
+                            actor: None,
+                        },
+                        &caller,
+                    ) {
+                        Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "sourceCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("sourceId", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new(
+            "targetCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("targetId", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new(
+            "linkType",
+            TypeRef::named_nn(TypeRef::STRING),
+        ));
+        mutation = mutation.field(delete_link_field);
     }
 
     // -- Subscription type ---------------------------------------------------
@@ -869,7 +1114,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         }
     }
 
@@ -965,7 +1210,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         let schema = build_schema(&[tasks, users]).expect("schema should build");
