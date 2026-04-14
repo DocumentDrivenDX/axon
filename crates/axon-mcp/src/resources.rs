@@ -464,6 +464,7 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
                 .query_audit(QueryAuditRequest {
                     database: Some(current_database.to_string()),
                     collection: Some(qualify_collection_name(&collection, current_database)),
+                    collection_ids: Vec::new(),
                     entity_id: Some(EntityId::new(&id)),
                     actor: None,
                     operation: None,

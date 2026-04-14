@@ -1220,6 +1220,25 @@ async fn query_audit_by_entity(
     }
 }
 
+/// Parse the `?collections=name1,name2` query parameter into a `Vec<CollectionId>`,
+/// qualifying each name with the current database scope. Missing or empty values yield an
+/// empty vec, which `AuditQuery` interprets as "no multi-collection filter" (FEAT-003 US-079).
+fn parse_audit_collections_param(
+    params: &std::collections::HashMap<String, String>,
+    current_database: &CurrentDatabase,
+) -> Vec<CollectionId> {
+    params
+        .get("collections")
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|part| !part.is_empty())
+                .map(|part| qualify_collection_name(part, current_database))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 async fn query_audit(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -1231,6 +1250,7 @@ async fn query_audit(
         collection: params
             .get("collection")
             .map(|collection| qualify_collection_name(collection, &current_database)),
+        collection_ids: parse_audit_collections_param(&params, &current_database),
         entity_id: params.get("entity_id").map(EntityId::new),
         actor: params.get("actor").cloned(),
         operation: params.get("operation").cloned(),
@@ -3198,6 +3218,80 @@ mod tests {
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entries"].as_array().unwrap().len(), 2);
+    }
+
+    /// Verifies that GET /audit/query honors the multi-collection `collections=` query
+    /// parameter (FEAT-003 US-079) and returns entries from the union of requested
+    /// collections globally ordered by `audit_id` ascending.
+    #[tokio::test]
+    async fn http_query_audit_multi_collection_tail() {
+        let server = test_server();
+
+        // Interleave entries across three collections. "users" is NOT in the query set
+        // and must be excluded from the response, while the cursor must still advance
+        // past it in global audit_id order.
+        server
+            .post("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1"}, "actor": "agent"}))
+            .await
+            .assert_status(StatusCode::CREATED); // audit id = 1
+        server
+            .post("/entities/beads/b-001")
+            .json(&json!({"data": {"name": "b1"}, "actor": "agent"}))
+            .await
+            .assert_status(StatusCode::CREATED); // audit id = 2
+        server
+            .post("/entities/users/u-001")
+            .json(&json!({"data": {"name": "u1"}, "actor": "agent"}))
+            .await
+            .assert_status(StatusCode::CREATED); // audit id = 3 — excluded by filter
+        server
+            .put("/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v2"}, "expected_version": 1, "actor": "agent"}))
+            .await
+            .assert_status_ok(); // audit id = 4
+
+        // Multi-collection tail: request tasks + beads, expect 3 entries in global id order.
+        let resp = server.get("/audit/query?collections=tasks,beads").await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let entries = body["entries"].as_array().unwrap();
+        assert_eq!(
+            entries.len(),
+            3,
+            "multi-collection tail must return all matching entries"
+        );
+        assert_eq!(entries[0]["collection"], "tasks");
+        assert_eq!(entries[1]["collection"], "beads");
+        assert_eq!(entries[2]["collection"], "tasks");
+        // Strictly ascending audit_id across all three entries.
+        let ids: Vec<u64> = entries.iter().map(|e| e["id"].as_u64().unwrap()).collect();
+        assert!(ids[0] < ids[1] && ids[1] < ids[2]);
+
+        // Cursor walks: after_id=ids[0] should skip the first tasks entry.
+        let resp = server
+            .get(&format!(
+                "/audit/query?collections=tasks,beads&after_id={}",
+                ids[0]
+            ))
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let entries2 = body["entries"].as_array().unwrap();
+        assert_eq!(entries2.len(), 2);
+        assert!(entries2.iter().all(|e| e["id"].as_u64().unwrap() > ids[0]));
+
+        // Union semantics: ?collection=tasks combined with ?collections=beads should return both.
+        let resp = server
+            .get("/audit/query?collection=tasks&collections=beads")
+            .await;
+        resp.assert_status_ok();
+        let body: Value = resp.json();
+        let entries3 = body["entries"].as_array().unwrap();
+        assert_eq!(entries3.len(), 3);
+        assert!(entries3
+            .iter()
+            .all(|e| e["collection"] == "tasks" || e["collection"] == "beads"));
     }
 
     #[tokio::test]

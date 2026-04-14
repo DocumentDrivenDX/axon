@@ -14,8 +14,18 @@ use crate::entry::{AuditEntry, MutationType};
 pub struct AuditQuery {
     /// Restrict to entries within this database scope.
     pub database: Option<String>,
-    /// Restrict to entries for this collection.
+    /// Restrict to entries for this collection (single-collection path; kept for backward
+    /// compatibility). When `collection_ids` is also non-empty, the two are unioned before
+    /// filtering.
     pub collection: Option<CollectionId>,
+    /// Restrict to entries for any of these collections (multi-collection tail, US-079).
+    ///
+    /// When non-empty, the effective collection filter is the union of this set and the
+    /// optional single `collection` field. When both are empty / `None`, no collection filter
+    /// is applied (entries from all collections are returned). Results are always returned
+    /// globally ordered by `audit_id` ascending — never grouped by collection — so that a
+    /// single monotonic cursor advances across all requested collections at once.
+    pub collection_ids: Vec<CollectionId>,
     /// Restrict to entries for this entity.
     pub entity_id: Option<EntityId>,
     /// Restrict to entries produced by this actor.
@@ -262,6 +272,20 @@ impl AuditLog for MemoryAuditLog {
         let limit = query.limit.unwrap_or(DEFAULT_PAGE_SIZE);
         let after_id = query.after_id.unwrap_or(0);
 
+        // Build the effective collection filter as the union of `collection_ids` and the
+        // single-collection `collection` field. Empty set means "all collections".
+        // Results remain globally ordered by audit_id ascending so that a single monotonic
+        // cursor walks all requested collections (FEAT-003 US-079).
+        let effective_collections: Vec<&CollectionId> = {
+            let mut v: Vec<&CollectionId> = query.collection_ids.iter().collect();
+            if let Some(col) = &query.collection {
+                if !v.contains(&col) {
+                    v.push(col);
+                }
+            }
+            v
+        };
+
         let mut filtered: Vec<&AuditEntry> = self
             .entries
             .iter()
@@ -274,10 +298,10 @@ impl AuditLog for MemoryAuditLog {
                         return false;
                     }
                 }
-                if let Some(col) = &query.collection {
-                    if &e.collection != col {
-                        return false;
-                    }
+                if !effective_collections.is_empty()
+                    && !effective_collections.contains(&&e.collection)
+                {
+                    return false;
                 }
                 if let Some(eid) = &query.entity_id {
                     if &e.entity_id != eid {
@@ -672,6 +696,215 @@ mod tests {
             default_page.entries[0].collection,
             CollectionId::new("tasks")
         );
+    }
+
+    // ── Multi-collection tail tests (US-079, FEAT-003) ───────────────────
+
+    fn entry_for(collection: &str, entity: &str, mutation: MutationType) -> AuditEntry {
+        AuditEntry::new(
+            CollectionId::new(collection),
+            EntityId::new(entity),
+            1,
+            mutation,
+            None,
+            Some(serde_json::json!({"x": 1})),
+            None,
+        )
+    }
+
+    /// Verifies that multi-collection tail queries return entries interleaved by
+    /// global `audit_id` order rather than grouped by collection.
+    #[test]
+    fn multi_collection_tail_returns_entries_globally_ordered_by_id() {
+        let mut log = MemoryAuditLog::default();
+        must_ok(
+            log.append(entry_for("tasks", "t-001", MutationType::EntityCreate)),
+            "tasks create append should succeed",
+        );
+        must_ok(
+            log.append(entry_for("beads", "b-001", MutationType::EntityCreate)),
+            "beads create append should succeed",
+        );
+        must_ok(
+            log.append(entry_for("tasks", "t-001", MutationType::EntityUpdate)),
+            "tasks update append should succeed",
+        );
+
+        let page = must_ok(
+            log.query_paginated(AuditQuery {
+                collection_ids: vec![CollectionId::new("beads"), CollectionId::new("tasks")],
+                ..Default::default()
+            }),
+            "multi-collection query should succeed",
+        );
+
+        assert_eq!(page.entries.len(), 3);
+        assert_eq!(page.entries[0].id, 1);
+        assert_eq!(page.entries[0].collection, CollectionId::new("tasks"));
+        assert_eq!(page.entries[1].id, 2);
+        assert_eq!(page.entries[1].collection, CollectionId::new("beads"));
+        assert_eq!(page.entries[2].id, 3);
+        assert_eq!(page.entries[2].collection, CollectionId::new("tasks"));
+    }
+
+    #[test]
+    fn multi_collection_tail_omit_collections_returns_all() {
+        let mut log = MemoryAuditLog::default();
+        must_ok(
+            log.append(entry_for("tasks", "t-001", MutationType::EntityCreate)),
+            "tasks append should succeed",
+        );
+        must_ok(
+            log.append(entry_for("beads", "b-001", MutationType::EntityCreate)),
+            "beads append should succeed",
+        );
+
+        let page = must_ok(
+            log.query_paginated(AuditQuery {
+                collection_ids: vec![],
+                collection: None,
+                ..Default::default()
+            }),
+            "unfiltered query should succeed",
+        );
+        assert_eq!(page.entries.len(), 2);
+    }
+
+    #[test]
+    fn multi_collection_tail_unions_with_single_collection_field() {
+        let mut log = MemoryAuditLog::default();
+        must_ok(
+            log.append(entry_for("tasks", "t-001", MutationType::EntityCreate)),
+            "tasks append should succeed",
+        );
+        must_ok(
+            log.append(entry_for("beads", "b-001", MutationType::EntityCreate)),
+            "beads append should succeed",
+        );
+        must_ok(
+            log.append(entry_for("users", "u-001", MutationType::EntityCreate)),
+            "users append should succeed",
+        );
+
+        // collection_ids=["beads"] + collection=Some("tasks") → union = {beads, tasks}
+        let page = must_ok(
+            log.query_paginated(AuditQuery {
+                collection_ids: vec![CollectionId::new("beads")],
+                collection: Some(CollectionId::new("tasks")),
+                ..Default::default()
+            }),
+            "union query should succeed",
+        );
+
+        assert_eq!(page.entries.len(), 2);
+        let collections: Vec<&str> = page.entries.iter().map(|e| e.collection.as_str()).collect();
+        assert!(collections.contains(&"tasks"));
+        assert!(collections.contains(&"beads"));
+        assert!(!collections.contains(&"users"));
+    }
+
+    /// Walks 6 interleaved entries across two collections in pages of 2, verifying that
+    /// the unified `audit_id` cursor advances monotonically across both collections and
+    /// that `next_cursor` returns `None` only after every requested collection has been
+    /// fully drained. Covers US-079 AC #3, #4, and #6.
+    #[test]
+    fn query_paginated_multi_collection_tail() {
+        let mut log = MemoryAuditLog::default();
+        // Interleave three collections so global audit_id order differs from per-collection order.
+        must_ok(
+            log.append(entry_for("tasks", "t-001", MutationType::EntityCreate)),
+            "append #1 should succeed",
+        ); // id=1
+        must_ok(
+            log.append(entry_for("beads", "b-001", MutationType::EntityCreate)),
+            "append #2 should succeed",
+        ); // id=2
+        must_ok(
+            log.append(entry_for("users", "u-001", MutationType::EntityCreate)),
+            "append #3 should succeed",
+        ); // id=3 (not in the query set)
+        must_ok(
+            log.append(entry_for("tasks", "t-001", MutationType::EntityUpdate)),
+            "append #4 should succeed",
+        ); // id=4
+        must_ok(
+            log.append(entry_for("beads", "b-002", MutationType::EntityCreate)),
+            "append #5 should succeed",
+        ); // id=5
+        must_ok(
+            log.append(entry_for("tasks", "t-002", MutationType::EntityCreate)),
+            "append #6 should succeed",
+        ); // id=6
+
+        let query_set = vec![CollectionId::new("tasks"), CollectionId::new("beads")];
+
+        // Page 1: expect ids 1 (tasks), 2 (beads). Skips users (id=3).
+        let page1 = must_ok(
+            log.query_paginated(AuditQuery {
+                collection_ids: query_set.clone(),
+                limit: Some(2),
+                ..Default::default()
+            }),
+            "page 1 query should succeed",
+        );
+        assert_eq!(page1.entries.len(), 2);
+        assert_eq!(page1.entries[0].id, 1);
+        assert_eq!(page1.entries[0].collection, CollectionId::new("tasks"));
+        assert_eq!(page1.entries[1].id, 2);
+        assert_eq!(page1.entries[1].collection, CollectionId::new("beads"));
+        let cursor1 = must_some(page1.next_cursor, "page 1 should have a next cursor");
+        assert_eq!(cursor1, 2);
+
+        // Page 2: expect ids 4 (tasks update), 5 (beads). Skips users (id=3) because it's
+        // not in the query set, demonstrating that the cursor advances globally but the
+        // filter still excludes unrequested collections.
+        let page2 = must_ok(
+            log.query_paginated(AuditQuery {
+                collection_ids: query_set.clone(),
+                after_id: Some(cursor1),
+                limit: Some(2),
+                ..Default::default()
+            }),
+            "page 2 query should succeed",
+        );
+        assert_eq!(page2.entries.len(), 2);
+        assert_eq!(page2.entries[0].id, 4);
+        assert_eq!(page2.entries[0].collection, CollectionId::new("tasks"));
+        assert_eq!(page2.entries[1].id, 5);
+        assert_eq!(page2.entries[1].collection, CollectionId::new("beads"));
+        let cursor2 = must_some(page2.next_cursor, "page 2 should have a next cursor");
+        assert_eq!(cursor2, 5);
+
+        // Page 3: only id=6 (tasks) remains; cursor should be None (fully drained).
+        let page3 = must_ok(
+            log.query_paginated(AuditQuery {
+                collection_ids: query_set.clone(),
+                after_id: Some(cursor2),
+                limit: Some(2),
+                ..Default::default()
+            }),
+            "page 3 query should succeed",
+        );
+        assert_eq!(page3.entries.len(), 1);
+        assert_eq!(page3.entries[0].id, 6);
+        assert_eq!(page3.entries[0].collection, CollectionId::new("tasks"));
+        assert!(
+            page3.next_cursor.is_none(),
+            "all requested collections drained → next_cursor must be None"
+        );
+
+        // Final empty page from the drained cursor — should yield zero entries and no cursor.
+        let page4 = must_ok(
+            log.query_paginated(AuditQuery {
+                collection_ids: query_set,
+                after_id: Some(6),
+                limit: Some(2),
+                ..Default::default()
+            }),
+            "page 4 (drained) query should succeed",
+        );
+        assert!(page4.entries.is_empty());
+        assert!(page4.next_cursor.is_none());
     }
 
     #[test]

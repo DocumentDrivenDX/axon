@@ -275,6 +275,7 @@ pub fn get_prompt_from_handler<S: StorageAdapter>(
                 .query_audit(QueryAuditRequest {
                     database: Some(current_database.to_string()),
                     collection: Some(qualify_collection_name(&collection, current_database)),
+                    collection_ids: Vec::new(),
                     entity_id: optional_string(arguments, "id").map(|id| EntityId::new(&id)),
                     actor: None,
                     operation: None,

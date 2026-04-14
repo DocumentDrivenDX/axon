@@ -199,8 +199,18 @@ pub struct QueryAuditRequest {
     /// This is only set when the transport explicitly selected a current
     /// database (for example, `X-Axon-Database` or `/db/{database}`).
     pub database: Option<String>,
-    /// Restrict to entries for this collection.
+    /// Restrict to entries for this collection (single-collection path; kept for
+    /// backward compatibility). When `collection_ids` is also provided, the two
+    /// are unioned before filtering.
     pub collection: Option<CollectionId>,
+    /// Restrict to entries for any of these collections (multi-collection tail, US-079).
+    ///
+    /// Unioned with `collection` if both are set. When empty and `collection` is `None`,
+    /// entries from all collections are returned. Entries are always emitted globally
+    /// ordered by `audit_id` ascending so that a single monotonic cursor walks all
+    /// requested collections at once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collection_ids: Vec<CollectionId>,
     /// Restrict to entries for this entity.
     pub entity_id: Option<EntityId>,
     /// Restrict to entries produced by this actor.

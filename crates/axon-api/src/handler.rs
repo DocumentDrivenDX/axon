@@ -1303,6 +1303,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let query = AuditQuery {
             database: req.database,
             collection: req.collection,
+            collection_ids: req.collection_ids,
             entity_id: req.entity_id,
             actor: req.actor,
             operation,
@@ -12656,6 +12657,7 @@ link_types:
             .query_audit(QueryAuditRequest {
                 database: None,
                 collection: None,
+                collection_ids: Vec::new(),
                 entity_id: None,
                 actor: None,
                 operation: None,
