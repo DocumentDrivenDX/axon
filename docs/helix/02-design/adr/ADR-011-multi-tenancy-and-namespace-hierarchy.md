@@ -11,7 +11,24 @@ dun:
 
 | Date | Status | Deciders | Related | Confidence |
 |------|--------|----------|---------|------------|
-| 2026-04-05 | Accepted | Erik LaBianca | ADR-003, ADR-010, FEAT-012 | High |
+| 2026-04-05 | Accepted (amended 2026-04-14 by ADR-018) | Erik LaBianca | ADR-003, ADR-010, ADR-018, FEAT-012 | High |
+
+> **Amendment notice (2026-04-14)**: ADR-018 amends this ADR on two points:
+>
+> 1. **Tenant is no longer the database.** Section 1's claim that "A
+>    database is the fundamental unit of tenant isolation" is walked back.
+>    Tenant is now a first-class global account boundary *above* database.
+>    A tenant owns N databases. See ADR-018 for the full model.
+> 2. **Wire protocol is path-based, not header-based.** Section 5's
+>    `X-Axon-Database` header and `/db/{name}/...` path prefix are removed.
+>    The new wire format is `/tenants/{tenant}/databases/{database}/...`
+>    everywhere.
+>
+> The rest of this ADR — schemas within a database, node topology,
+> database placement, migration protocol, per-backend storage isolation,
+> default behavior — is **unchanged** and remains authoritative.
+> Specifically, ADR-011 still governs how databases map to nodes and how
+> databases are moved between nodes.
 
 ## Context
 

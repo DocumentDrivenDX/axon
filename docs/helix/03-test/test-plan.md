@@ -381,6 +381,84 @@ Real-world workflows from the use case research, encoded as deterministic integr
 - [ ] Aggregation returns correct total hours
 - [ ] Audit trail shows approval chain
 
+### SCN-011: Cross-Tenant Isolation via Path Routing (FEAT-014, ADR-018)
+
+**Source**: ADR-018 — tenant as global account boundary with path-based wire protocol
+
+**Setup**:
+- Two tenants: `acme` (admin: `alice`) and `globex` (admin: `alice`, with role `read`)
+- Each tenant has a database named `orders` (same name, different tenants)
+- Alice has a `users` row; two `tenant_users` rows link her to both tenants
+- Two JWT credentials for Alice: one with `aud=acme` granting read/write on `acme.orders`; one with `aud=globex` granting read on `globex.orders`
+
+**Execution**:
+1. With the acme credential, POST an entity to `/tenants/acme/databases/orders/entities/invoices/inv-001`
+2. With the acme credential, attempt the same POST against `/tenants/globex/databases/orders/entities/invoices/inv-001`
+3. With the globex credential, GET `/tenants/globex/databases/orders/entities/invoices/inv-001`
+4. With the globex credential, attempt a POST to `/tenants/globex/databases/orders/entities/invoices/inv-002`
+5. List collections under each tenant's path
+
+**Check**:
+- [ ] Step 1 succeeds (200) and creates the invoice in acme's orders database
+- [ ] Step 2 returns 403 with "aud mismatch" — credential is bound to acme, URL tenant is globex
+- [ ] Step 3 returns 404 — inv-001 exists in acme's orders, not globex's orders (same name, different database)
+- [ ] Step 4 returns 403 with "op not granted" — globex credential has read-only grants
+- [ ] Step 5 returns completely disjoint collection lists — no cross-tenant visibility
+- [ ] Audit entries in acme carry Alice's user_id; audit entries in globex also carry Alice's user_id but are isolated to globex
+- [ ] There is no HTTP path, header, or body field that can leak data across the tenant boundary
+
+### SCN-012: User in Two Tenants with Different Roles (FEAT-012, FEAT-014)
+
+**Source**: ADR-018 — M:N users via `tenant_users` join table
+
+**Setup**:
+- User `bob` with a single `users` row and two `user_identities` rows — one for tailscale, one for a future OIDC provider (federated to the same user_id)
+- `tenant_users(acme, bob, admin)` and `tenant_users(globex, bob, read)`
+- Both tenants have a database named `config`
+
+**Execution**:
+1. Bob authenticates via Tailscale and calls `GET /control/tenants` — expects to see both acme and globex
+2. Bob attempts `POST /tenants/acme/databases/config/entities/settings/s-001` — admin in acme, should succeed
+3. Bob attempts the same POST against `/tenants/globex/databases/config/entities/settings/s-001` — read-only in globex, should 403
+4. Bob creates a JWT credential scoped to acme with write grants on `config`
+5. Bob attempts to create a JWT credential scoped to globex with write grants on `config` — should fail because his role in globex is `read`
+6. Remove Bob from globex (`DELETE /control/tenants/globex/users/bob`) and re-run step 1
+
+**Check**:
+- [ ] Step 1 lists both tenants, with Bob's role per tenant visible in the response
+- [ ] Step 2 succeeds with a 200 and an audit entry attributed to `bob`
+- [ ] Step 3 returns 403 with "role insufficient for op" (or similar structured error)
+- [ ] Step 4 succeeds and returns a signed JWT with `aud=acme`, `grants.databases[0].ops=["read","write"]`
+- [ ] Step 5 returns 403 with "grants exceed role"
+- [ ] After step 6, step 1 lists only acme; Bob's access to acme is unchanged; attempting any operation on globex paths returns 403
+
+### SCN-013: JWT Credential Grant Enforcement and Revocation (FEAT-012)
+
+**Source**: ADR-018 — JWT credentials with `grants` claim; revocation via `jti`
+
+**Setup**:
+- Tenant `acme` with databases `orders`, `analytics`, `internal`
+- User `svc-ci` with role `write` in `acme`
+- Credential issued to `svc-ci` with `grants: { databases: [{name: "orders", ops: ["read","write"]}, {name: "analytics", ops: ["read"]}] }`, TTL 1 hour
+
+**Execution**:
+1. POST an entity to `/tenants/acme/databases/orders/entities/invoices/inv-001` with the credential
+2. POST an entity to `/tenants/acme/databases/analytics/...` with the same credential (analytics is grant-read-only)
+3. GET an entity from `/tenants/acme/databases/analytics/...` with the same credential
+4. GET an entity from `/tenants/acme/databases/internal/...` — internal is not in grants at all
+5. Revoke the credential via `DELETE /control/tenants/acme/credentials/{jti}`
+6. Re-attempt step 1 with the revoked credential
+
+**Check**:
+- [ ] Step 1 succeeds (200) — orders grants write
+- [ ] Step 2 returns 403 with "op not granted" — analytics is read-only
+- [ ] Step 3 succeeds (200) — analytics grants read
+- [ ] Step 4 returns 403 with "database not in grants" — internal is outside the credential's scope
+- [ ] Step 5 returns 204 (or similar) and the `jti` is added to the revocation table
+- [ ] Step 6 returns 401 within 1 second of step 5 (LRU cache propagation window)
+- [ ] An audit entry exists for the credential revocation, attributed to the admin who revoked it
+- [ ] Clock skew: a credential with `exp` 10 minutes in the future is accepted; a credential with `nbf` 10 minutes in the future is rejected
+
 ---
 
 ## 5. L3: Property-Based Tests
@@ -489,6 +567,9 @@ From technical requirements. All benchmarks use `criterion` and are ratcheted.
 | SCN-008 Golden Record Merge | FEAT-007, FEAT-008 | P3, P4 | MDM |
 | SCN-009 Version Chain | FEAT-007, FEAT-009 | P3 | Document Mgmt |
 | SCN-010 Time Approval | FEAT-010, FEAT-003 | P2 | Time Tracking |
+| SCN-011 Cross-Tenant Isolation via Path Routing | FEAT-014, FEAT-012, ADR-018 | P1 | Multi-tenant SaaS |
+| SCN-012 User in Two Tenants with Different Roles | FEAT-012, FEAT-014 | P1 | Multi-tenant SaaS |
+| SCN-013 JWT Credential Grant Enforcement and Revocation | FEAT-012 | P1 | Security, integrations |
 
 ---
 

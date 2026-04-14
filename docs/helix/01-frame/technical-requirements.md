@@ -238,44 +238,70 @@ Rules-based (not cost-based). Checks filter fields against declared indexes:
 
 ---
 
-## 4c. Namespace Hierarchy and Multi-Tenancy
+## 4c. Tenancy, Namespace Hierarchy, and Path-Based Addressing
 
-See [ADR-011](../02-design/adr/ADR-011-multi-tenancy-and-namespace-hierarchy.md)
-and [FEAT-014](features/FEAT-014-multi-tenancy.md).
+See [ADR-018](../02-design/adr/ADR-018-tenant-user-credential-model.md)
+(governing), [ADR-011](../02-design/adr/ADR-011-multi-tenancy-and-namespace-hierarchy.md)
+(node placement and migration), and [FEAT-014](features/FEAT-014-multi-tenancy.md).
 
-### Four-Level Hierarchy
+### Four-Level Conceptual Hierarchy
 
 ```
-node          (deployment / physical location — routing only)
-  └── database    (tenant isolation boundary)
-       └── schema     (logical namespace within a database)
-            └── collection  (entity container)
+tenant  (global account boundary — owns users, credentials, databases)
+├── users            (M:N via tenant_users)
+├── credentials      (tenant-scoped JWTs with grants)
+└── databases        (N per tenant — placed on nodes)
+     └── schemas     (logical namespace within a database)
+          └── collections  (entity containers)
+               └── entities
+
+node  (physical placement only — invisible from the data path)
 ```
 
-### Data Path
+### Wire Addressing (Path-Based)
 
-The entity address is `database.schema.collection/entity_id`. The node
-level is not part of the data path — it is a routing/placement concept.
+Every data-plane route is nested under a fixed prefix:
+
+```
+/tenants/{tenant}/databases/{database}/{resource...}
+```
+
+An entity's canonical URL is simultaneously its identifier, its routing
+key, and its HTTP cache key. There is no `X-Axon-Database` header, no
+`X-Axon-Tenant` header, and no un-prefixed legacy routes. See ADR-018
+for the rationale.
 
 ### Defaults
 
-- Single-tenant deployments use `default.default.{collection}` implicitly
-- First startup creates the `default` database and `default` schema
-- Zero configuration required for single-tenant use
+- On a fresh deployment, the first successful authenticated request
+  auto-creates a `default` tenant with the authenticating user as its
+  admin, plus a `default` database and a `default` schema inside it.
+  This is idempotent — runs only when `tenants` is empty.
+- `--no-auth` mode synthesizes the default context in memory without
+  persisting any rows.
 
 ### Node Topology (P2)
 
 Nodes carry region and zone metadata. A `database_placement` table maps
-databases to nodes. Database migration is a routing table update plus data
-replication — no key-space rewrite, no entity address change.
+`(tenant, database)` pairs to nodes. Database migration is a routing
+table update plus data replication — no key-space rewrite, no URL
+change, no client reconfiguration. ADR-011 governs the migration
+protocol.
 
 ### Access Control Scoping
 
-RBAC/ABAC grants (FEAT-012) operate at four granularity levels:
-- Global (all databases)
-- Database (all schemas within a database)
-- Schema (all collections within a namespace)
-- Collection (existing behavior)
+Every data-plane request is authorized against a `(user, tenant,
+database)` triple:
+
+1. **Membership** — the caller must have a `tenant_users` row for the
+   URL's tenant. Roles: `admin | write | read`.
+2. **Grant** — if the caller is using a JWT credential, the credential's
+   `grants.databases[]` claim must cover the URL's database with an
+   `ops` entry matching the request method (read vs. write).
+
+Grants are always ≤ role: an admin can issue narrow credentials, but
+a `read` member cannot issue a `write` credential. See FEAT-012 for
+the full model and ADR-018 for the JWT claim shape.
 
 ---
 
