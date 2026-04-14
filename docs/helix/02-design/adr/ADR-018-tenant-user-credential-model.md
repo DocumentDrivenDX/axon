@@ -273,21 +273,149 @@ via the `aud` claim. A user who is a member of N tenants has N credentials
 - `iss` — deployment identifier (hostname or configured URN). Prevents
   cross-deployment credential confusion.
 - `sub` — the user's stable UUID from the `users` table.
-- `aud` — the tenant this credential is valid against. Must match the
-  `{tenant}` segment of the URL path on every request.
+- `aud` — the tenant this credential is valid against. **Must be a
+  single string, not an array.** Must match the `{tenant}` segment of
+  the URL path on every request. Verification rejects JWTs whose `aud`
+  claim is a JSON array with `credential_malformed` (see failure table
+  below). Multi-audience credentials are not supported in v5 and are
+  not intended to be supported in a future version — a user who is a
+  member of N tenants uses N distinct credentials.
 - `jti` — unique credential ID. Used for revocation.
 - `iat` / `nbf` / `exp` — standard JWT timing claims. Default TTL is 24
   hours; credentials issued for longer-lived use cases (CI, integrations)
   can request longer TTLs subject to policy.
 - `grants.databases[]` — the list of databases (within the tenant) the
-  credential can touch, each with an `ops` list. `ops` values in v1 are
-  `read` and `write`; future ops (`delete`, `admin`) are reserved.
+  credential can touch, each with an `ops` list. v5 ops are `read`,
+  `write`, and `admin` — see "Grants rule table" below for what each
+  op covers and who can mint which ops.
 
-**The `grants` field is designed to evolve.** v1 has database-level ops.
-Future iterations may add `collections`, `fields` for field-level ABAC,
-`filters` for row-level filters, `rate_class` for throttling category, etc.
-The JWT claim is opaque to the JWT spec but parsed by axon-server's auth
-middleware.
+**The `grants` field is designed to evolve.** The v5 `grants` shape is
+locked to `{ databases: [{ name, ops }] }`. Future iterations may add
+`collections`, `fields` for field-level ABAC, `filters` for row-level
+filters, or `rate_class` for throttling category. The verification
+middleware must reject unknown top-level keys in `grants` with
+`credential_malformed` (strict mode) so a forward-incompatible
+deployment fails closed on older verifiers.
+
+#### Grants JSON Schema (v5)
+
+```json
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.example/schemas/credential-grants-v5.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["databases"],
+  "properties": {
+    "databases": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "ops"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*$"
+          },
+          "ops": {
+            "type": "array",
+            "items": { "enum": ["read", "write", "admin"] },
+            "minItems": 1,
+            "maxItems": 3,
+            "uniqueItems": true
+          }
+        }
+      },
+      "minItems": 0,
+      "maxItems": 1024
+    }
+  }
+}
+```
+
+Verifiers MUST reject any `grants` payload that doesn't match this
+schema with the `credential_malformed` rejection (see failure table).
+The 1024-database cap is a safety bound to prevent pathological
+credentials; real-world credentials are expected to list 1–10 databases.
+
+#### Grants rule table — who can mint what (v5)
+
+The issuer's `tenant_users.role` at issuance time sets a ceiling on the
+grants any credential they mint can contain. The rule is:
+
+| Issuer role | Can mint credentials with ops in... | For databases in... |
+|---|---|---|
+| `admin` | `{read, write, admin}` | Any database in the tenant, including databases created *after* the credential was minted (because the credential identifies the tenant, not individual databases) |
+| `write` | `{read, write}` — **not `admin`** | Any database in the tenant (because role is tenant-wide in v5; future per-database roles will narrow this) |
+| `read`  | `{read}` only | Any database in the tenant |
+
+**Self-issuance**: a tenant admin can mint credentials for any member of
+the tenant (admin issue-on-behalf). A non-admin can self-issue their own
+credentials as long as the grants are ≤ their role. Cross-member
+non-admin issuance (write-role user mints a credential for another user)
+is rejected.
+
+**Enforcement at issuance**: `POST /control/tenants/{id}/credentials`
+validates the above rule before signing. Rejection returns
+`403 forbidden` with code `grants_exceed_issuer_role` and a structured
+list of which requested ops/databases exceeded the ceiling.
+
+**Enforcement at verification**: the verification middleware trusts
+that the claim was valid at issuance time. It does NOT re-validate
+grants against the user's current role. This means a credential issued
+when the user was `admin` still carries admin grants even if the user
+has since been demoted to `write`. Mitigation: short TTL (24h default)
+limits the divergence window. If operators need immediate revocation on
+role change, they must explicitly revoke the credential's `jti`.
+
+#### Op-to-HTTP-method mapping (v5)
+
+The grant op required for each data-plane route is fixed per route, not
+derived from the HTTP method. This is more explicit than a generic
+"GET=read / else=write" rule and prevents surprises at schema or
+database boundaries.
+
+| Route (under `/tenants/{t}/databases/{d}`) | Method | Required op | Notes |
+|---|---|---|---|
+| `/entities/{c}/{id}` | GET | `read` on `{d}` | |
+| `/entities/{c}/{id}` | POST/PUT/PATCH/DELETE | `write` on `{d}` | |
+| `/entities/{c}/{id}/rollback` | POST | `admin` on `{d}` | destructive history rewrite |
+| `/collections` | GET | `read` on `{d}` | |
+| `/collections/{c}` | POST | `admin` on `{d}` | schema-shape change |
+| `/collections/{c}` | DELETE | `admin` on `{d}` | |
+| `/collections/{c}/schema` | GET | `read` on `{d}` | |
+| `/collections/{c}/schema` | PUT | `admin` on `{d}` | schema evolution |
+| `/collections/{c}/rollback` | POST | `admin` on `{d}` | |
+| `/transactions` | POST | `write` on **every** database touched | fail-closed: if the tx touches dbs `{x, y}`, credential needs write on both |
+| `/transactions/{tx_id}/rollback` | POST | `admin` on **every** database touched | |
+| `/snapshot` | POST | `read` on `{d}` | read-only bulk operation |
+| `/audit/query` | GET | `read` on `{d}` | |
+| `/audit/tail` | GET | `read` on `{d}` | |
+| `/lifecycle/{c}/{id}/transition` | POST | `write` on `{d}` | |
+| `/graphql` | POST | per-operation: each GraphQL query/mutation resolved to its op at execute time | query → `read`, mutation → per-mutation-type (most are `write`, schema mutations are `admin`) |
+| `/graphql/ws` | WS | `read` on `{d}` at connect; subscriptions inherit | |
+
+Control-plane routes (`/control/tenants/...`, `/control/users/...`) are
+authorized differently — they check the caller's **role** (not grants)
+and require tenant-admin or deployment-admin membership. The
+op-to-method mapping above is for *data-plane* routes only.
+
+| Control-plane route | Required privilege |
+|---|---|
+| `GET /control/tenants` | any authenticated user (results filtered to caller's memberships) |
+| `POST /control/tenants` | deployment admin only |
+| `GET /control/tenants/{id}` | member of that tenant, any role |
+| `DELETE /control/tenants/{id}` | tenant admin OR deployment admin |
+| `GET/POST/DELETE /control/tenants/{id}/databases[/{db}]` | tenant admin |
+| `GET/POST/PUT/DELETE /control/tenants/{id}/users[/{user_id}]` | tenant admin |
+| `POST /control/tenants/{id}/credentials` | tenant admin OR self-issue (sub == target user AND grants ≤ own role) |
+| `GET /control/tenants/{id}/credentials` | tenant admin (lists all) OR self (lists own only) |
+| `DELETE /control/tenants/{id}/credentials/{jti}` | tenant admin OR the jti's owner |
+| `GET/POST/DELETE /control/users[/{id}]` | deployment admin only |
+| `GET /health`, `GET /ui/*` | public — no authn required |
 
 **Verification order on every data-plane request**:
 
@@ -311,6 +439,41 @@ middleware.
 8. Install `(user_id, tenant_id, grants)` into the request's axum extension
    so handlers can enforce finer invariants (e.g., "user must be admin in
    the tenant to create a new database").
+
+**JWT failure mode → HTTP status + error code**:
+
+Every rejection along the verification order maps to a specific status and
+a stable `error.code` string in the response body. This table is normative
+— SDKs switch on `error.code`, not on the human-readable message.
+
+| Failure | Status | `error.code` | Retryable | Notes |
+|---------|--------|--------------|-----------|-------|
+| No `Authorization` header (non-`--no-auth`) | 401 | `unauthenticated` | no | `WWW-Authenticate: Bearer` header required |
+| Header present but not `Bearer <token>` | 401 | `credential_malformed` | no | Includes invalid base64, missing dots |
+| JWT structurally invalid (bad JSON, missing claims) | 401 | `credential_malformed` | no | Missing `sub`, `aud`, `exp`, `jti`, or `iss` |
+| `aud` is a JSON array instead of single string | 401 | `credential_malformed` | no | Normative: `aud` MUST be a single string |
+| Signature invalid | 401 | `credential_invalid` | no | Wrong key, tampered payload |
+| `exp` in the past | 401 | `credential_expired` | yes — after refresh | Client should re-issue |
+| `nbf` in the future | 401 | `credential_not_yet_valid` | yes — after clock skew | Allow ≤30s skew before rejecting |
+| `jti` present in `credential_revocations` | 401 | `credential_revoked` | no | Permanent |
+| `iss` does not match this deployment's issuer | 401 | `credential_foreign_issuer` | no | Cross-deployment credential |
+| `aud` ≠ URL `{tenant}` segment | 403 | `credential_wrong_tenant` | no | Credential is valid — wrong tenant |
+| `sub` resolves to a suspended or deleted user | 401 | `user_suspended` | no | User re-activation required |
+| `sub` is not a member of the URL `{tenant}` | 403 | `not_a_tenant_member` | no | Membership was revoked |
+| URL `{database}` not in `grants.databases[]` | 403 | `database_not_granted` | no | Re-issue credential with broader grants |
+| Required op (`read`/`write`/`admin`) not in matching grant's `ops[]` | 403 | `op_not_granted` | no | |
+
+The 401/403 split is deliberate: 401 = "your credential is broken, get a
+new one"; 403 = "your credential is fine, but it isn't for this tenant/
+database/op." SDKs retry after refresh on 401 but surface 403 to the
+caller as a permission error.
+
+**Observability envelope**: every auth rejection emits a structured log
+event with fields `{error_code, tenant_path, database_path, op,
+user_id_if_known, jti_if_known, remote_addr}`. Metrics counter
+`axon_auth_rejections_total{error_code}` gives operators a per-code
+histogram for dashboarding and alerting. No rejection is silently
+swallowed.
 
 **Revocation**:
 
@@ -396,9 +559,60 @@ The auto-bootstrap behavior is idempotent. It runs only when there are zero
 tenants. After any tenant has been created (auto or explicit), it does not
 re-run.
 
-`--no-auth` mode skips the bootstrap and synthesizes the same context
-in-memory on every request — there's no persistent user, no persistent
-tenant, just an anonymous admin claim that lets everything succeed.
+**Concurrency**: if two requests arrive simultaneously against a fresh
+deployment, both will observe zero tenants and both will attempt to
+bootstrap. The implementation MUST use a unique constraint and idempotent
+insert rather than a check-then-insert race:
+
+```sql
+INSERT INTO tenants (id, name, created_at_ms)
+VALUES (?, 'default', ?)
+ON CONFLICT (name) DO NOTHING;
+
+INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
+VALUES (
+    (SELECT id FROM tenants WHERE name = 'default'),
+    ?, 'admin', ?
+) ON CONFLICT (tenant_id, user_id) DO NOTHING;
+```
+
+The `tenants.name` column has a `UNIQUE` index. The first transaction
+wins; the second becomes a no-op. After both commit, both requests see
+the bootstrapped state and proceed.
+
+**Tailscale auto-provision race**: the whois middleware does an identical
+`ON CONFLICT DO NOTHING` insert into `users` keyed on `(provider, subject)`
+in the `user_identities` table. The flow is:
+
+```sql
+BEGIN;
+INSERT INTO users (id, created_at_ms)
+VALUES (?, ?) ON CONFLICT DO NOTHING;
+
+INSERT INTO user_identities (provider, subject, user_id)
+VALUES ('tailscale', ?, ?)
+ON CONFLICT (provider, subject) DO NOTHING;
+
+SELECT user_id FROM user_identities
+WHERE provider = 'tailscale' AND subject = ?;
+COMMIT;
+```
+
+The final `SELECT` returns whichever `user_id` won the race. Both
+concurrent first-seen requests for the same tailnet identity converge on
+the same user row. Unit test: issue N parallel whois resolutions for the
+same identity, assert exactly one `users` row and one `user_identities`
+row result.
+
+**`--no-auth` mode + tenant URLs**: `--no-auth` skips the persistent
+bootstrap and synthesizes an anonymous admin claim per-request. The URL
+path `{tenant}/{database}` is still honored — the anonymous claim is
+generated with grants for whichever tenant/database the URL names, so any
+URL routes successfully. The backing store is keyed by the URL's
+`(tenant, database)` pair, so `--no-auth` gives you a per-URL in-memory
+namespace with no persistent user identity. This is the dev-mode
+contract: anything you name into existence via a URL works; nothing is
+persisted beyond process lifetime unless the storage adapter says so.
 
 ### 7. Relationship to ADR-011 and commit efe4aa1
 
@@ -484,7 +698,7 @@ use case. See section 5.
 | Type | Impact |
 |------|--------|
 | **Positive** | Clear tenant isolation; M:N users enable real SaaS and team-organization deployments; canonical entity URLs enable edge routing and HTTP caching; JWTs give us industry-standard credentials with structured grants; Tailscale stays the simple default for dev while OIDC arrives later as a clean provider addition; division of labor between REST and GraphQL is explicit; the whole stack (wire protocol, storage, auth, UI, SDK) becomes internally consistent about what a tenant is |
-| **Negative** | Non-trivial implementation scope: SQL migration, auth middleware redesign, router restructure, UI two-level picker, SDK rewrite, test matrix rewrite — roughly 4–6 weeks of focused work; JWT introduces a new runtime dependency and a signing key management surface; per-tenant credentials mean users with access to N tenants carry N credentials in their config (but N is small for humans, and SDKs can manage the list) |
+| **Negative** | Non-trivial implementation scope: SQL migration, auth middleware redesign, router restructure, UI two-level picker, SDK rewrite, test matrix rewrite; JWT introduces a new runtime dependency and a signing key management surface (see "Signing key rotation" below); per-tenant credentials mean users with access to N tenants carry N credentials in their config (but N is small for humans, and SDKs can manage the list) |
 | **Neutral** | The 4-level hierarchy is one level deeper than ADR-011 intended; users have to understand what a tenant is, but this concept is well-established in SaaS tooling and doesn't need invention; GraphQL mutation resolvers gain a new context extraction path (the `(user_id, tenant_id, grants)` extension) but the resolvers themselves are unchanged |
 
 ## Validation
@@ -506,6 +720,22 @@ use case. See section 5.
 - JWT library: `jsonwebtoken` crate (already common in the Rust ecosystem)
 - Signing key management: env var for dev; config file with rotation stub
   for prod. Full rotation protocol is deferred to a future ADR.
+- **Signing key rotation vulnerability**: until the rotation ADR lands, a
+  compromised signing key forces revocation of every outstanding credential
+  in the affected deployment. Operators MUST treat the key as a
+  tier-1 secret, store it only in a vault / KMS, and never commit it to
+  version control. The rotation ADR MUST define: (a) key version identifier
+  in JWT header `kid`, (b) overlap window where old and new keys both
+  verify, (c) operator runbook for emergency rotation, (d) audit event
+  emitted on rotation. This is a known gap and MUST be closed before v1.0.
+- **Audit retention on tenant drop**: `DELETE /control/tenants/{id}`
+  does NOT erase the tenant's audit log. Audit records are retained per
+  the tenant's configured retention policy (default 7 years, archived
+  to cold storage on tenant deletion, purged on policy expiry). The
+  retention policy is a tenant-level setting editable by a tenant admin,
+  with a deployment-level floor an operator can set. Audit attribution
+  (`{user_id, tenant_id, jti}`) remains stable across tenant deletion
+  so post-hoc forensic queries resolve correctly.
 - The `TenantRouter` from FEAT-028 is renamed (conceptually) to
   `DatabaseRouter`: it resolves `(tenant, database)` → node/storage adapter.
   The tenant check happens at the auth middleware layer; the router only

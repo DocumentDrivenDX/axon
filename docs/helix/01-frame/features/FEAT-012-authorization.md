@@ -147,7 +147,10 @@ machine-to-machine).
     themselves, issuing for their own use) — this is the self-issue
     case for CLI tokens and the admin-issue case for integration tokens.
   - The requested grants must be a subset of what the target user's
-    role in the tenant permits (grants ≤ role).
+    role in the tenant permits (grants ≤ role). **See ADR-018 Section 4
+    for the normative grants rule table (admin/write/read issuer
+    capabilities) and op-to-HTTP-method mapping.** This feature spec
+    defers to the ADR for the authoritative mapping to avoid drift.
   - The user must be a member of the tenant.
   - Returns the signed JWT string in the response body; the server
     does not persist the signed token (only the jti, for revocation
@@ -165,6 +168,17 @@ machine-to-machine).
 - **Listing**: `GET /control/tenants/{id}/credentials` returns metadata
   only — jti, user_id, issued_at, expires_at, revoked status, and grants.
   Never the signed JWT string (which is not persisted anyway).
+- **Observability envelope** (cross-reference ADR-018 Section 4): every
+  auth rejection emits a structured log event with fields `{error_code,
+  tenant_path, database_path, op, user_id_if_known, jti_if_known,
+  remote_addr}` and increments
+  `axon_auth_rejections_total{error_code="..."}`. A rejection that cannot
+  be counted is a bug. Operators use this for dashboard alerting on
+  credential expiry waves and for post-incident forensics.
+- **Error-code stability**: the `error.code` strings in ADR-018's failure
+  mode table are a public SDK contract. They MUST NOT be renamed without
+  a coordinated SDK release. Adding new codes is allowed; renaming
+  existing ones is a breaking change.
 
 #### Identity (Authentication)
 
@@ -182,7 +196,12 @@ on the resolved user, never on the raw external identity.
      The server resolves the tailnet identity via ADR-005's LocalAPI
      whois, looks up `user_identities(provider="tailscale",
      external_id=<tailnet handle>)`, and uses the resulting user_id
-     (auto-provisioning on first seen).
+     (auto-provisioning on first seen). Auto-provisioning MUST use an
+     `INSERT ... ON CONFLICT DO NOTHING` transaction on
+     `(provider, subject)` — never check-then-insert — so that parallel
+     first-seen requests for the same tailnet identity converge on a
+     single `users` row. See ADR-018 Section 6 for the normative SQL
+     pattern and the required concurrency invariant.
 - **Both paths converge** on the same request extension:
   `(user_id, tenant_id, grants)`. Handlers do not know which
   authentication path was taken.

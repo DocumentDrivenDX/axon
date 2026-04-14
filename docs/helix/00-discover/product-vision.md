@@ -35,7 +35,11 @@ Axon is designed for a world where agents are primary consumers of business data
 
 - Axon is **not an analytics engine**. It is OLTP, not OLAP. For analytics, consume Axon's CDC stream in an analytics system (e.g., niflheim).
 - Axon is **not a general-purpose database**. It is an entity store with opinions about how data should be structured, validated, and audited.
-- Axon is **not a distributed database** (currently). Single-tenant instances with a lightweight control plane. Distributed coordination (Raft, Paxos) is explicitly out of scope.
+- Axon is **not a distributed database** (currently). An Axon deployment is a single `axon-server` instance (or a small cluster fronting one backing store). Distributed coordination (Raft, Paxos) is explicitly out of scope. A single deployment hosts **many tenants**, each of which owns multiple databases — see ADR-018 for the tenant/database model.
+
+### Stability Status
+
+Axon is **pre-release**. The wire protocol, data model, and SDK surface are not yet frozen. Breaking changes may land in any minor version until v1.0 without a deprecation period. Production use is at the operator's own risk. Consumers building long-lived integrations should pin a specific version and track the CHANGELOG for API-impacting changes.
 
 ## Target Market
 

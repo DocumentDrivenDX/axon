@@ -2,6 +2,13 @@
 
 Cloud-native, auditable, schema-first entity-graph-relational data store for agentic applications and business workflows.
 
+> ⚠️ **Pre-release.** The wire protocol, data model, and SDK surface are not
+> yet frozen. Breaking changes may land in any minor version until v1.0
+> without a deprecation period. Production use is at the operator's own
+> risk. Pin a specific version and track the CHANGELOG for API-impacting
+> changes. See the [Product Vision — Stability Status](docs/helix/00-discover/product-vision.md#stability-status)
+> for the full stability contract.
+
 **Status**: Early design phase
 
 ## What is Axon?

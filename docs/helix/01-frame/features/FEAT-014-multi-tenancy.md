@@ -121,7 +121,20 @@ ADR-018.
   with the authenticating user as its sole admin. Idempotent — runs only
   when `tenants` is empty. This replaces the old "auto-create default
   database" behavior; the default tenant is what now owns the default
-  database.
+  database. Bootstrap MUST be concurrency-safe: two simultaneous
+  first-requests on a fresh deployment MUST converge on a single
+  `tenants.name="default"` row via `UNIQUE(name)` + `INSERT ... ON
+  CONFLICT DO NOTHING`. Check-then-insert is forbidden. See ADR-018
+  Section 6 for the normative SQL pattern.
+- **`--no-auth` mode and tenant URLs**: when the server is started with
+  `--no-auth`, no persistent bootstrap runs and no `tenants`/`users` rows
+  are written. The URL path `{tenant}/{database}` is still honored —
+  the middleware synthesizes an anonymous admin claim scoped to
+  whichever `(tenant, database)` the URL names, and the storage adapter
+  materializes a per-URL in-memory namespace on first touch. This gives
+  `--no-auth` a clean dev-mode semantic: any URL works, nothing is
+  persisted past process lifetime unless the configured storage adapter
+  says so. See ADR-018 Section 6.
 - **Tenant owns databases**: A `tenant_databases(tenant_id, database_name)`
   join authoritatively declares which databases belong to which tenant.
   Database names are unique within a tenant but not globally — two

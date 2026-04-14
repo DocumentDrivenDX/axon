@@ -175,6 +175,54 @@ both writes use the same backing store transaction.
 - CHECK: for each transaction ID in audit log, all operations are present; for failed transactions, no operations are present
 - AP/AR scenario: debit account A, credit account B, create ledger entry — must be all-or-nothing
 
+### INV-017: Tenant Path Isolation (ADR-018, FEAT-014)
+
+**Statement**: An entity written at URL path `/tenants/A/databases/X/...` is never readable at any URL path with a different `{tenant}` segment, regardless of the authenticating credential. Cross-tenant reads MUST return 404 or 403, never data from the wrong tenant.
+
+**Verification**: For every `(tenant_a, tenant_b, entity_id)` triple in the workload, attempt to read `entity_id` via every `(tenant_c/database_d)` path. The only path that returns data MUST be the one the entity was written at.
+
+**Workload**: `TenantPathIsolationWorkload` — creates N tenants each with M databases, writes entities to random `(tenant, database, collection, id)` tuples, issues read requests for every tuple at every path, asserts the tuple→path mapping is injective.
+
+### INV-018: Grant Enforcement (ADR-018 §4, FEAT-012)
+
+**Statement**: A request with a JWT whose `grants.databases[].ops` does not include the op required by the HTTP method MUST be rejected with 403 `op_not_granted`, and the underlying storage MUST NOT be touched (no partial side effects, no audit entry for the attempted op).
+
+**Verification**: For every combination in ADR-018's op-to-HTTP-method mapping table, issue a JWT with grants deliberately missing the required op and assert: (a) response is 403 with `error.code = "op_not_granted"`, (b) storage state is unchanged pre/post, (c) audit log has zero new entries, (d) `axon_auth_rejections_total{error_code="op_not_granted"}` incremented by exactly 1.
+
+**Workload**: `GrantEnforcementWorkload` — iterates the HTTP method × op matrix, BUGGIFY inserts random deletions from the grants array.
+
+### INV-019: JWT Rejection Determinism (ADR-018 §4 failure mode table)
+
+**Statement**: Every row of ADR-018's JWT failure mode table maps a specific JWT defect to a specific `(status, error.code)` pair. That mapping MUST be deterministic: the same defect MUST produce the same pair across all calls, backends, and runs.
+
+**Verification**: Enumerate each failure mode from the table, construct the minimal defective JWT, submit it, and assert `(response.status, response.body.error.code)` matches the table row. Run the same enumeration against every storage backend. Run the enumeration under `axon-sim` with three fixed seeds — the output MUST be byte-identical across seeds.
+
+**Workload**: `JwtRejectionDeterminismWorkload` — table-driven test case per row. No randomness; failure is fatal.
+
+### INV-020: Auto-Bootstrap Uniqueness (ADR-018 §6, FEAT-014)
+
+**Statement**: Under N concurrent first-requests to a fresh deployment, exactly one `tenants` row is created with `name = "default"`, exactly one `tenant_users` row joins the authenticating user as admin, and all N requests observe the bootstrapped state after their respective commits. No duplicate tenant, no duplicate membership, no lost bootstrap.
+
+**Verification**: Spawn N parallel requests against a fresh empty DB. Post-run, `SELECT COUNT(*) FROM tenants WHERE name='default'` MUST return 1; `SELECT COUNT(*) FROM tenant_users` MUST return 1 per distinct user; every request MUST have observed `tenant_id` equal to the single row's id.
+
+**Workload**: `AutoBootstrapConcurrencyWorkload` — N ∈ {2, 8, 64, 256} with BUGGIFY-injected commit delays to widen the race window.
+
+### INV-021: Federation Consistency (ADR-018 §2, FEAT-012)
+
+**Statement**: A `user_identities` row with `(provider, subject)` resolves to exactly one `user_id`, and that `user_id` is stable across all subsequent resolutions for the same `(provider, subject)` pair — even under concurrent first-seen resolutions.
+
+**Verification**: Issue N parallel whois resolutions for the same tailnet identity on a fresh DB. Assert exactly one `users` row, exactly one `user_identities` row, all N requests return the same `user_id`. Then add a second provider (`oidc`) for the same human and assert the `users` row is preserved while two `user_identities` rows now point to it.
+
+**Workload**: `FederationRaceWorkload`.
+
+### INV-022: Audit Attribution Stability (ADR-018 Implementation Notes, FEAT-003)
+
+**Statement**: An audit entry's `{user_id, tenant_id, jti}` triple remains resolvable to the original identity even after: (a) the user's display name / email changes, (b) the user is suspended, (c) the credential is revoked, (d) the tenant is deleted (subject to retention policy). No audit entry's attribution fields may be mutated post-write.
+
+**Verification**: Write audit entries, then mutate each attribution dimension (rename user, suspend user, revoke jti, delete tenant within retention). Re-query the audit entries and assert the original `{user_id, tenant_id, jti}` values are preserved byte-for-byte.
+
+**Workload**: `AuditAttributionStabilityWorkload`.
+
 ---
 
 ## 4. L2: Business Scenario Tests
@@ -459,6 +507,74 @@ Real-world workflows from the use case research, encoded as deterministic integr
 - [ ] An audit entry exists for the credential revocation, attributed to the admin who revoked it
 - [ ] Clock skew: a credential with `exp` 10 minutes in the future is accepted; a credential with `nbf` 10 minutes in the future is rejected
 
+### SCN-014: Authentication Rejection Matrix (ADR-018 §4)
+
+**Source**: ADR-018 Section 4 JWT failure mode table — each row is a distinct negative test.
+
+**Setup**:
+- A tenant `acme` with one admin user `alice`, a `write` member `bob`, and one database `orders`.
+- A valid baseline JWT for `alice` against `acme` with `grants: [{name: "orders", ops: [read, write, admin]}]`.
+
+**Execution**: for every row in ADR-018's failure mode table (14 rows as of this writing), construct the minimal defective JWT or URL, submit a representative request, and assert the response status, `error.code`, and observability counter.
+
+Representative rows:
+1. No Authorization header → 401 `unauthenticated`
+2. Bearer with non-JWT payload → 401 `credential_malformed`
+3. `aud` is a JSON array `["acme"]` → 401 `credential_malformed`
+4. Signature computed with a wrong key → 401 `credential_invalid`
+5. `exp` = now − 60s → 401 `credential_expired`
+6. `nbf` = now + 3600s → 401 `credential_not_yet_valid`
+7. `jti` added to revocation table before request → 401 `credential_revoked`
+8. `iss` = "other-deployment" → 401 `credential_foreign_issuer`
+9. Valid JWT for tenant `beta` submitted to `/tenants/acme/...` → 403 `credential_wrong_tenant`
+10. Valid JWT whose `sub` user was marked `suspended_at_ms` → 401 `user_suspended`
+11. Valid JWT whose `sub` was removed from `tenant_users` → 403 `not_a_tenant_member`
+12. JWT with grants for `orders` submitted to `/tenants/acme/databases/customers/...` → 403 `database_not_granted`
+13. JWT with `ops: [read]` submitted via POST → 403 `op_not_granted`
+14. Successful baseline request → 200 (ratchet: baseline must still succeed)
+
+**Check**:
+- [ ] Every row returns the exact `(status, error.code)` pair from ADR-018's table
+- [ ] Every row increments `axon_auth_rejections_total{error_code="..."}` by exactly 1 (the baseline row increments nothing)
+- [ ] Every row produces a structured log event with full envelope fields
+- [ ] No row touches storage (no new entities, no new audit rows) — verified by a pre/post snapshot of the backing store
+
+### SCN-015: Default-Tenant Bootstrap Under Concurrency (FEAT-014, ADR-018 §6)
+
+**Setup**: A fresh deployment with zero tenants, zero users, a single storage backend.
+
+**Execution**:
+1. Spawn 64 parallel requests, each using a distinct Tailscale identity, each hitting `/tenants/default/databases/default/collections/items`.
+2. Wait for all 64 to complete.
+
+**Check**:
+- [ ] Exactly 1 row in `tenants` with `name = "default"`
+- [ ] 64 rows in `users` (one per distinct identity) and 64 rows in `tenant_users` with role `admin` pointing at the one default tenant
+- [ ] Exactly 1 row in `databases` with `name = "default"` bound to the default tenant
+- [ ] All 64 requests return the same `tenant_id` and `database_id` in their responses
+- [ ] Zero `credential_malformed` / `unauthenticated` rejections in the counter
+- [ ] Audit log contains `tenant.created`, `database.created`, and 64 `user.provisioned` events — no duplicates
+
+### SCN-016: BYOC Deployment Boundary (FEAT-025, ADR-017)
+
+**Source**: ADR-017 + FEAT-025 + ADR-018's clarification that FEAT-025 is the BYOC control plane above deployments, not an embedded per-deployment control plane.
+
+**Setup**:
+- A local "control plane" process owning a registry of deployments.
+- Two `axon-server` processes on different ports, each registered as a managed deployment (`dep-alpha`, `dep-beta`), each with its own tenant set.
+
+**Execution**:
+1. `dep-alpha` has tenant `acme`; `dep-beta` has tenant `acme` (same name, different deployment).
+2. A data-plane write to `dep-alpha`'s `acme` tenant.
+3. A data-plane read to `dep-beta`'s `acme` tenant for the same entity id.
+4. Control-plane query via the BYOC control plane: `GET /control/deployments/dep-alpha/tenants`.
+
+**Check**:
+- [ ] Step 3 returns 404 — the two `acme` tenants are fully independent
+- [ ] The BYOC control plane can enumerate tenants per deployment but does not aggregate data across deployments
+- [ ] The BYOC control plane has no data-plane surface (attempts to read an entity via the control plane return 404)
+- [ ] Each deployment's audit log is self-contained (no BYOC-level cross-deployment audit)
+
 ---
 
 ## 5. L3: Property-Based Tests
@@ -483,6 +599,24 @@ Real-world workflows from the use case research, encoded as deterministic integr
 
 **Property**: After any sequence of entity/link operations, the link graph is consistent: no dangling references, all link-type constraints hold, traversal from any entity follows only valid links.
 
+### PROP-009: Credential Grant Subset Invariant (ADR-018 §4, FEAT-012)
+
+**Property**: For every credential issued through `POST /control/tenants/{id}/credentials`, the credential's `grants` object is a subset of the issuer's role capabilities per ADR-018's grants rule table. Formally: let `R(i)` = the set of `(database, op)` pairs the issuer `i` may delegate given their tenant role, and `G(c)` = the set expressed by credential `c`. Then `G(c) ⊆ R(i)` for every successfully-issued credential, and any attempt to issue a credential with `G(c) ⊄ R(i)` returns 403 `grants_exceed_role`.
+
+**Generators**: random issuer roles, random requested grants, random tenant/database graphs. Rejection path and accept path are both exercised.
+
+### PROP-010: Path Routing Determinism (ADR-018, FEAT-014)
+
+**Property**: For any URL `/tenants/{t}/databases/{d}/collections/{c}/entities/{id}`, the `(tenant, database, collection, entity_id)` tuple extracted by the routing middleware is identical across all backends, all protocols (REST and GraphQL), and all sessions. The extraction is a pure function of the URL; no hidden state affects the result.
+
+**Generators**: random URL segments (including Unicode, URL-encoded bytes, max-length identifiers). The same URL is fed through REST and through GraphQL's equivalent `entity(tenant, database, collection, id)` query; the resolved tuple must match.
+
+### PROP-011: Tailscale ↔ JWT Equivalence (ADR-018 §4, FEAT-012)
+
+**Property**: For any given `(user, tenant, database, op)` combination, the request handler produces the identical response whether authenticated via a Tailscale whois synthetic claim or via a JWT credential granting the same scope. Response bodies, audit log entries (modulo the `auth_method` field), and error codes are byte-identical.
+
+**Generators**: random (user, tenant, database, op) combinations. Each combination is run twice — once with `Authorization: Bearer <jwt>`, once via the tailnet sock — and the outputs are diffed. A diff that isn't explicitly on the `auth_method` field is a bug.
+
 ---
 
 ## 6. L4: Backend Conformance
@@ -492,8 +626,11 @@ Every StorageAdapter implementation must pass the **identical** test suite. Test
 | Test Suite | SQLite | PostgreSQL | FoundationDB | Memory |
 |-----------|:------:|:----------:|:------------:|:------:|
 | INV-001 through INV-008 | Required | Required | Required | Required |
+| INV-017 through INV-022 | Required | Required | Required | Required |
 | SCN-001 through SCN-010 | Required | Required | Required | Required |
+| SCN-011 through SCN-016 | Required | Required | Required | Required |
 | PROP-001 through PROP-005 | Required | Required | Required | Required |
+| PROP-009 through PROP-011 | Required | Required | Required | Required |
 | BM-001 through BM-010 | Required | Required | Required | N/A (memory not benchmarked) |
 
 If a backend cannot pass any invariant, it is not shipped.
@@ -525,6 +662,27 @@ From technical requirements. All benchmarks use `criterion` and are ratcheted.
 - HTTP gateway produces identical results to gRPC for all operations
 - Error responses conform to structured error format (code, detail, field path)
 - Embedded API (Rust trait) produces identical results to network API
+
+### L6 Path-Based Route Contract (ADR-018)
+
+Every data-plane route is path-prefixed with `/tenants/{t}/databases/{d}/`.
+The contract suite generates a golden route inventory from the axum router
+and asserts the following properties on every build:
+
+- [ ] Every data-plane route starts with the literal prefix `/tenants/{tenant}/databases/{database}/`. Routes under `/health`, `/ui`, and `/control` are the only exceptions.
+- [ ] No route reads an `X-Axon-Database` header; the contract test greps the crate source for `X-Axon-Database` and fails if any match is found.
+- [ ] No `/db/{name}/...` prefix survives; fail on any router builder using the legacy prefix.
+- [ ] Every data-plane route, on unauthenticated access, returns 401 or 403 per ADR-018's failure mode table — not 200 and not 500. Enumerate the route table and hit each one with no credentials; record the status.
+- [ ] The generated OpenAPI schema lists every `/tenants/{tenant}/databases/{database}/...` route and names `tenant` + `database` as required path parameters; the GraphQL SDL lists matching top-level types. The two surfaces are cross-checked by a golden test.
+- [ ] The grants rule table in ADR-018 §4 is enforced on every control-plane endpoint that issues credentials: the contract test submits deliberately-over-scoped issuance requests and asserts 403 `grants_exceed_role`.
+
+### L8 SDK and Golden Client Contract
+
+Each supported SDK (Rust, TypeScript, Python when they land) has a matching L8 golden-client test that exercises the full `(tenant, database)` fluent API:
+
+- [ ] A `.tenant(t).database(d).entity(c, id).get()` call against a live server resolves to the expected entity.
+- [ ] The SDK's error enum has a stable `error_code` discriminant that matches the ADR-018 failure mode table one-for-one — adding a code to the table without adding it to the SDK enum is a compile error via a shared codegen manifest.
+- [ ] A credential with revoked `jti` surfaces as `CredentialRevoked` — not a generic `Unauthorized`.
 
 ---
 
@@ -570,6 +728,18 @@ From technical requirements. All benchmarks use `criterion` and are ratcheted.
 | SCN-011 Cross-Tenant Isolation via Path Routing | FEAT-014, FEAT-012, ADR-018 | P1 | Multi-tenant SaaS |
 | SCN-012 User in Two Tenants with Different Roles | FEAT-012, FEAT-014 | P1 | Multi-tenant SaaS |
 | SCN-013 JWT Credential Grant Enforcement and Revocation | FEAT-012 | P1 | Security, integrations |
+| SCN-014 Authentication Rejection Matrix | FEAT-012, ADR-018 | P1 (Security) | All |
+| SCN-015 Default-Tenant Bootstrap Under Concurrency | FEAT-014, ADR-018 | P1 | Multi-tenant SaaS |
+| SCN-016 BYOC Deployment Boundary | FEAT-025, ADR-017 | P1 | BYOC operators |
+| INV-017 Tenant Path Isolation | FEAT-014, ADR-018 | P1 | All |
+| INV-018 Grant Enforcement | FEAT-012, ADR-018 | P1 (Security) | All |
+| INV-019 JWT Rejection Determinism | FEAT-012, ADR-018 | P1 (Security) | All |
+| INV-020 Auto-Bootstrap Uniqueness | FEAT-014, ADR-018 | P1 | All |
+| INV-021 Federation Consistency | FEAT-012, ADR-018 | P1 | All |
+| INV-022 Audit Attribution Stability | FEAT-003, ADR-018 | P2 (Audit) | Compliance, Security |
+| PROP-009 Credential Grant Subset | FEAT-012, ADR-018 | P1 | All |
+| PROP-010 Path Routing Determinism | FEAT-014, ADR-018 | P1 | All |
+| PROP-011 Tailscale ↔ JWT Equivalence | FEAT-012, ADR-018 | P1 | All |
 
 ---
 
