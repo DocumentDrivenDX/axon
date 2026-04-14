@@ -201,18 +201,18 @@ function extractCompoundIndexes(schema: CollectionSchema): CompoundIndexInfo[] {
 	}));
 }
 
-async function loadCollections(preferredCollection?: string) {
-	collections = await fetchCollections(getSelectedTenant()?.db_name);
+async function loadCollections(dbName?: string, preferredCollection?: string) {
+	collections = await fetchCollections(dbName);
 	const nextSelection = preferredCollection ?? selectedCollection ?? collections[0]?.name;
 
 	if (nextSelection) {
-		await selectCollection(nextSelection);
+		await selectCollection(nextSelection, dbName);
 	}
 }
 
-async function selectCollection(collectionName: string) {
+async function selectCollection(collectionName: string, dbName?: string) {
 	selectedCollection = collectionName;
-	selectedSchema = await fetchSchema(collectionName, getSelectedTenant()?.db_name);
+	selectedSchema = await fetchSchema(collectionName, dbName ?? getSelectedTenant()?.db_name);
 	editJson = JSON.stringify(selectedSchema, null, 2);
 	editMode = false;
 	validationError = null;
@@ -275,7 +275,7 @@ async function confirmSave(force: boolean) {
 		preview = null;
 		statusMessage = `Saved schema for ${selectedCollection}.`;
 		error = null;
-		await loadCollections(selectedCollection);
+		await loadCollections(getSelectedTenant()?.db_name, selectedCollection);
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to save schema';
 	}
@@ -293,14 +293,14 @@ async function submitCreateCollection() {
 		createCollectionName = '';
 		statusMessage = 'Collection created.';
 		error = null;
-		await loadCollections();
+		await loadCollections(getSelectedTenant()?.db_name);
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to create collection';
 	}
 }
 
 onMount(() => {
-	void loadCollections();
+	void loadCollections(getSelectedTenant()?.db_name);
 });
 </script>
 

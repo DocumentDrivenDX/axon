@@ -47,9 +47,8 @@ let saving = $state(false);
 let confirmDelete = $state(false);
 let deleteMessage = $state<string | null>(null);
 
-async function loadCollection(targetCollection: string, afterId: string | null) {
+async function loadCollection(targetCollection: string, afterId: string | null, dbName?: string) {
 	loading = true;
-	const dbName = getSelectedTenant()?.db_name;
 	try {
 		collection = await fetchCollection(targetCollection, dbName);
 		const result = await fetchEntities(targetCollection, {
@@ -180,7 +179,7 @@ async function submitCreateEntity() {
 		createOpen = false;
 		paginationHistory = [null];
 		pageIndex = 0;
-		await loadCollection(collectionName, null);
+		await loadCollection(collectionName, null, getSelectedTenant()?.db_name);
 		selectedEntity = entity;
 	} catch (errorValue: unknown) {
 		createErrors = [errorValue instanceof Error ? errorValue.message : 'Failed to create entity'];
@@ -194,7 +193,7 @@ async function nextPage() {
 
 	pageIndex += 1;
 	paginationHistory = [...paginationHistory, nextCursor];
-	await loadCollection(collectionName, nextCursor);
+	await loadCollection(collectionName, nextCursor, getSelectedTenant()?.db_name);
 }
 
 async function previousPage() {
@@ -203,7 +202,7 @@ async function previousPage() {
 	}
 
 	pageIndex -= 1;
-	await loadCollection(collectionName, paginationHistory[pageIndex] ?? null);
+	await loadCollection(collectionName, paginationHistory[pageIndex] ?? null, getSelectedTenant()?.db_name);
 }
 
 async function syncRoute() {
@@ -218,7 +217,7 @@ async function syncRoute() {
 	paginationHistory = [null];
 	pageIndex = 0;
 	selectedEntity = null;
-	await loadCollection(routeCollectionName, null);
+	await loadCollection(routeCollectionName, null, getSelectedTenant()?.db_name);
 }
 
 onMount(() => {
@@ -227,6 +226,28 @@ onMount(() => {
 
 afterNavigate(() => {
 	void syncRoute();
+});
+
+let lastLoadedDbName: string | undefined | null = null;
+$effect(() => {
+	const tenant = getSelectedTenant();
+	const dbName = tenant?.db_name;
+	// Skip the first run (syncRoute on mount already handles the initial load),
+	// and only reload when the tenant actually changes.
+	if (lastLoadedDbName === null) {
+		lastLoadedDbName = dbName;
+		return;
+	}
+	if (dbName === lastLoadedDbName) {
+		return;
+	}
+	lastLoadedDbName = dbName;
+	if (collectionName) {
+		paginationHistory = [null];
+		pageIndex = 0;
+		selectedEntity = null;
+		void loadCollection(collectionName, null, dbName);
+	}
 });
 </script>
 
@@ -352,7 +373,7 @@ afterNavigate(() => {
 										deleteMessage = `Deleted ${selectedEntity.id}.`;
 										confirmDelete = false;
 										selectedEntity = null;
-										await loadCollection(collectionName, null);
+										await loadCollection(collectionName, null, getSelectedTenant()?.db_name);
 									} catch (e: unknown) {
 										error = e instanceof Error ? e.message : 'Failed to delete';
 										confirmDelete = false;

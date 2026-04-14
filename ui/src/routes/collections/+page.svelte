@@ -25,10 +25,10 @@ function formatTimestamp(ns: number | null | undefined): string {
 	return new Date(ns / 1_000_000).toLocaleDateString();
 }
 
-async function loadCollections() {
+async function loadCollections(dbName?: string) {
 	loading = true;
 	try {
-		collections = await fetchCollections(getSelectedTenant()?.db_name);
+		collections = await fetchCollections(dbName);
 		error = null;
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load collections';
@@ -38,7 +38,8 @@ async function loadCollections() {
 }
 
 $effect(() => {
-	void loadCollections();
+	const tenant = getSelectedTenant();
+	void loadCollections(tenant?.db_name);
 });
 
 const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_count, 0));
@@ -50,7 +51,7 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 		<p class="muted">Browse registered collections with entity counts and schema versions.</p>
 	</div>
 	<div class="actions">
-		<button onclick={loadCollections}>Refresh</button>
+		<button onclick={() => loadCollections(getSelectedTenant()?.db_name)}>Refresh</button>
 		<a class="button-link primary" href={schemasHref}>Create Collection</a>
 	</div>
 </div>
@@ -120,7 +121,7 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 											try {
 												await dropCollection(collection.name, getSelectedTenant()?.db_name);
 												dropping = null;
-												await loadCollections();
+												await loadCollections(getSelectedTenant()?.db_name);
 											} catch (e: unknown) {
 												error = e instanceof Error ? e.message : 'Failed to drop collection';
 												dropping = null;

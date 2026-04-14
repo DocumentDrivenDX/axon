@@ -39,7 +39,7 @@ function formatTimestamp(timestampNs: number): string {
 	return new Date(timestampNs / 1_000_000).toLocaleString();
 }
 
-async function loadEntries() {
+async function loadEntries(dbName?: string) {
 	loading = true;
 	try {
 		const auditFilters: {
@@ -64,7 +64,7 @@ async function loadEntries() {
 			auditFilters.untilNs = untilNs;
 		}
 
-		const response = await fetchAudit(auditFilters, getSelectedTenant()?.db_name);
+		const response = await fetchAudit(auditFilters, dbName);
 		entries = response.entries;
 		selectedEntry = entries[0] ?? null;
 		error = null;
@@ -76,7 +76,7 @@ async function loadEntries() {
 }
 
 onMount(() => {
-	void loadEntries();
+	void loadEntries(getSelectedTenant()?.db_name);
 });
 </script>
 
@@ -108,7 +108,7 @@ onMount(() => {
 			</label>
 		</div>
 		<div class="actions">
-			<button class="primary" on:click={loadEntries}>Apply Filters</button>
+			<button class="primary" on:click={() => loadEntries(getSelectedTenant()?.db_name)}>Apply Filters</button>
 		</div>
 	</div>
 </section>
