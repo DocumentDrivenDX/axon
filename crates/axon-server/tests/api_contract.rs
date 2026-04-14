@@ -1684,3 +1684,59 @@ async fn grpc_transition_lifecycle_uses_metadata_actor() {
         "gRPC x-axon-actor metadata must be recorded as the audit actor"
     );
 }
+
+/// FEAT-026 — `ChangeEvent.audit_id` must be populated from the audit append
+/// result so live subscribers can use it as a resume cursor. Before this fix
+/// the gateway broadcast functions hard-coded `audit_id: String::new()`.
+#[tokio::test]
+async fn http_create_entity_publishes_change_event_with_audit_id() {
+    use axon_graphql::subscriptions::BroadcastBroker;
+    use axon_server::gateway::build_router_with_broker;
+
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(handler.clone()));
+
+    // Inject a broker that the test can subscribe to before any writes run.
+    let broker = BroadcastBroker::default();
+    let mut rx = broker.subscribe();
+
+    let http_app = build_router_with_broker(tenant_router, "memory", None, broker);
+    let http = axum_test::TestServer::new(http_app);
+
+    // POST creates the first entity in this handler — its audit id is 1.
+    http.post("/entities/tasks/t-001")
+        .json(&json!({"data": {"title": "hello"}, "actor": "test"}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        .await
+        .expect("broker publishes within the timeout")
+        .expect("broker channel delivers the event");
+
+    assert_eq!(event.collection, "tasks");
+    assert_eq!(event.entity_id, "t-001");
+    assert_eq!(event.operation, "create");
+    assert!(
+        !event.audit_id.is_empty(),
+        "audit_id must not be empty; got '{}'",
+        event.audit_id
+    );
+    // The handler's audit log started empty, so the first append is id 1.
+    assert_eq!(event.audit_id, "1");
+
+    // Verify the audit_id actually resolves against the stored audit log.
+    let audit_id: u64 = event.audit_id.parse().expect("audit_id parses as u64");
+    let entry = {
+        let h = handler.lock().await;
+        use axon_audit::log::AuditLog;
+        h.audit_log()
+            .find_by_id(audit_id)
+            .expect("audit lookup succeeds")
+            .expect("audit entry exists")
+    };
+    assert_eq!(entry.collection.as_str(), "tasks");
+    assert_eq!(entry.entity_id.as_str(), "t-001");
+}

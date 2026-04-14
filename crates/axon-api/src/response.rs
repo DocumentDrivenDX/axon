@@ -36,6 +36,11 @@ pub struct CreateEntityResponse {
     /// Advisory violations (never block, always reported).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advisories: Vec<RuleViolation>,
+    /// Audit entry ID produced by this write. Used as the resume cursor for
+    /// live change subscriptions (FEAT-026). `None` for callers that do not
+    /// populate it (pre-FEAT-026 paths).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<u64>,
 }
 
 /// Response after successfully updating an entity.
@@ -49,6 +54,10 @@ pub struct UpdateEntityResponse {
     /// Advisory violations (never block, always reported).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advisories: Vec<RuleViolation>,
+    /// Audit entry ID produced by this write. Used as the resume cursor for
+    /// live change subscriptions (FEAT-026).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<u64>,
 }
 
 /// Response after successfully patching an entity (RFC 7396 merge patch).
@@ -62,6 +71,10 @@ pub struct PatchEntityResponse {
     /// Advisory violations (never block, always reported).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub advisories: Vec<RuleViolation>,
+    /// Audit entry ID produced by this write. Used as the resume cursor for
+    /// live change subscriptions (FEAT-026).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<u64>,
 }
 
 /// Response after successfully deleting an entity.
@@ -69,6 +82,10 @@ pub struct PatchEntityResponse {
 pub struct DeleteEntityResponse {
     pub collection: String,
     pub id: String,
+    /// Audit entry ID produced by this delete. `None` when the delete was a
+    /// no-op (entity did not exist), otherwise populated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<u64>,
 }
 
 /// Response after a successful lifecycle transition.
@@ -76,6 +93,9 @@ pub struct DeleteEntityResponse {
 pub struct TransitionLifecycleResponse {
     /// The entity at its new version after the transition.
     pub entity: Entity,
+    /// Audit entry ID produced by the underlying update.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<u64>,
 }
 
 /// Response after successfully creating a link.

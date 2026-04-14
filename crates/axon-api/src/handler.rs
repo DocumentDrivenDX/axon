@@ -555,7 +555,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(meta) = req.audit_metadata {
             audit_entry = audit_entry.with_metadata(meta);
         }
-        self.audit.append(audit_entry)?;
+        let appended = self.audit.append(audit_entry)?;
+        let audit_id = Some(appended.id);
 
         let (gates, advisories) = match gate_eval {
             Some(eval) => {
@@ -578,6 +579,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entity,
             gates,
             advisories,
+            audit_id,
         })
     }
 
@@ -744,7 +746,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(meta) = req.audit_metadata {
             audit_entry = audit_entry.with_metadata(meta);
         }
-        self.audit.append(audit_entry)?;
+        let appended = self.audit.append(audit_entry)?;
+        let audit_id = Some(appended.id);
 
         let (gates, advisories) = match gate_eval {
             Some(eval) => {
@@ -767,6 +770,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entity: updated,
             gates,
             advisories,
+            audit_id,
         })
     }
 
@@ -883,7 +887,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(meta) = req.audit_metadata {
             audit_entry = audit_entry.with_metadata(meta);
         }
-        self.audit.append(audit_entry)?;
+        let appended = self.audit.append(audit_entry)?;
+        let audit_id = Some(appended.id);
 
         let (gates, advisories) = match gate_eval {
             Some(eval) => {
@@ -906,6 +911,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entity: updated,
             gates,
             advisories,
+            audit_id,
         })
     }
 
@@ -972,7 +978,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.storage.delete_gate_results(&req.collection, &req.id)?;
 
         // Audit (only if the entity actually existed).
-        if before.is_some() {
+        let audit_id = if before.is_some() {
             let mut audit_entry = AuditEntry::new(
                 req.collection.clone(),
                 req.id.clone(),
@@ -985,12 +991,16 @@ impl<S: StorageAdapter> AxonHandler<S> {
             if let Some(meta) = req.audit_metadata {
                 audit_entry = audit_entry.with_metadata(meta);
             }
-            self.audit.append(audit_entry)?;
-        }
+            let appended = self.audit.append(audit_entry)?;
+            Some(appended.id)
+        } else {
+            None
+        };
 
         Ok(DeleteEntityResponse {
             collection: req.collection.to_string(),
             id: req.id.to_string(),
+            audit_id,
         })
     }
 
@@ -3702,6 +3712,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         Ok(TransitionLifecycleResponse {
             entity: update_resp.entity,
+            audit_id: update_resp.audit_id,
         })
     }
 }

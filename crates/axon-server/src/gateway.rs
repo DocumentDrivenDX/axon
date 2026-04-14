@@ -660,14 +660,23 @@ fn audit_entry_payload(entry: &axon_audit::AuditEntry) -> Value {
 /// Broadcast an entity change to GraphQL subscription clients.
 ///
 /// Silently drops the event if no subscribers are connected.
-fn broadcast_entity_change(broker: &BroadcastBroker, entity: &Entity, operation: &str) {
+///
+/// `audit_id` is the stringified audit entry id produced by the write.
+/// Consumers use it as a resume cursor via `since_audit_id` on reconnect.
+/// Pass an empty string only when the audit id is genuinely unavailable.
+fn broadcast_entity_change(
+    broker: &BroadcastBroker,
+    entity: &Entity,
+    operation: &str,
+    audit_id: String,
+) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
 
     let event = axon_graphql::ChangeEvent {
-        audit_id: String::new(),
+        audit_id,
         collection: entity.collection.to_string(),
         entity_id: entity.id.to_string(),
         operation: operation.to_string(),
@@ -681,14 +690,22 @@ fn broadcast_entity_change(broker: &BroadcastBroker, entity: &Entity, operation:
 }
 
 /// Broadcast a delete event to GraphQL subscription clients.
-fn broadcast_entity_delete(broker: &BroadcastBroker, collection: &str, entity_id: &str) {
+///
+/// `audit_id` is the stringified audit entry id produced by the delete.
+/// See [`broadcast_entity_change`] for details.
+fn broadcast_entity_delete(
+    broker: &BroadcastBroker,
+    collection: &str,
+    entity_id: &str,
+    audit_id: String,
+) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64;
 
     let event = axon_graphql::ChangeEvent {
-        audit_id: String::new(),
+        audit_id,
         collection: collection.to_string(),
         entity_id: entity_id.to_string(),
         operation: "delete".to_string(),
@@ -699,6 +716,18 @@ fn broadcast_entity_delete(broker: &BroadcastBroker, collection: &str, entity_id
         actor: "system".to_string(),
     };
     let _ = broker.publish(event);
+}
+
+/// Format an optional audit id as a string for `ChangeEvent.audit_id`.
+///
+/// Returns the decimal representation when present, or an empty string when
+/// the caller did not capture the id. An empty string preserves the previous
+/// wire-level default so older subscribers do not observe a regression.
+fn audit_id_string(audit_id: Option<u64>) -> String {
+    match audit_id {
+        Some(id) => id.to_string(),
+        None => String::new(),
+    }
 }
 
 // ── Request bodies ────────────────────────────────────────────────────────────
@@ -986,7 +1015,12 @@ async fn create_entity(
     ) {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
-            broadcast_entity_change(&broker, &resp.entity, "create");
+            broadcast_entity_change(
+                &broker,
+                &resp.entity,
+                "create",
+                audit_id_string(resp.audit_id),
+            );
             (
                 StatusCode::CREATED,
                 Json(json!({
@@ -1101,7 +1135,12 @@ async fn update_entity(
     ) {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
-            broadcast_entity_change(&broker, &resp.entity, "update");
+            broadcast_entity_change(
+                &broker,
+                &resp.entity,
+                "update",
+                audit_id_string(resp.audit_id),
+            );
             Json(json!({
                 "entity": entity_payload(&resp.entity)
             }))
@@ -1145,7 +1184,12 @@ async fn delete_entity(
     ) {
         Ok(resp) => {
             notify_entity_change_by_parts(&mcp_sessions, &current_database, &collection, &id);
-            broadcast_entity_delete(&broker, &collection, &id);
+            broadcast_entity_delete(
+                &broker,
+                &collection,
+                &id,
+                audit_id_string(resp.audit_id),
+            );
             Json(json!({"collection": resp.collection, "id": resp.id})).into_response()
         }
         Err(e) => axon_error_response(e),
@@ -1292,7 +1336,12 @@ async fn transition_lifecycle_handler(
     ) {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
-            broadcast_entity_change(&broker, &resp.entity, "update");
+            broadcast_entity_change(
+                &broker,
+                &resp.entity,
+                "update",
+                audit_id_string(resp.audit_id),
+            );
             Json(json!({
                 "entity": entity_payload(&resp.entity)
             }))
@@ -1566,7 +1615,12 @@ async fn revert_entity(
         }) {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
-            broadcast_entity_change(&broker, &resp.entity, "update");
+            broadcast_entity_change(
+                &broker,
+                &resp.entity,
+                "update",
+                resp.audit_entry.id.to_string(),
+            );
             Json(json!({
                 "entity": entity_payload(&resp.entity),
                 "audit_entry_id": resp.audit_entry.id,
@@ -1645,7 +1699,12 @@ async fn rollback_collection_entity(
             audit_entry,
         }) => {
             notify_entity_change(&mcp_sessions, &current_database, &entity);
-            broadcast_entity_change(&broker, &entity, "update");
+            broadcast_entity_change(
+                &broker,
+                &entity,
+                "update",
+                audit_entry.id.to_string(),
+            );
             Json(json!({
                 "entity": entity_payload(&entity),
                 "audit_entry": audit_entry_payload(&audit_entry),
@@ -2414,9 +2473,22 @@ async fn commit_transaction(
     let (storage, audit) = h.storage_and_audit_mut();
     match tx.commit(storage, audit, Some(caller.actor.clone())) {
         Ok(written) => {
+            // Look up the audit entries produced by this transaction so we can
+            // stamp each broadcast ChangeEvent with a resume cursor. All
+            // entries share the tx_id; match each to its (collection, id) pair.
+            let tx_entries = audit
+                .query_by_transaction_id(&tx_id)
+                .unwrap_or_default();
             for entity in &written {
                 notify_entity_change(&mcp_sessions, &current_database, entity);
-                broadcast_entity_change(&broker, entity, "update");
+                let entity_collection = &entity.collection;
+                let entity_key = &entity.id;
+                let audit_id = tx_entries
+                    .iter()
+                    .find(|e| &e.collection == entity_collection && &e.entity_id == entity_key)
+                    .map(|e| e.id.to_string())
+                    .unwrap_or_default();
+                broadcast_entity_change(&broker, entity, "update", audit_id);
             }
             let entities: Vec<Value> = written
                 .iter()
@@ -2730,6 +2802,58 @@ fn build_router_with_auth_inner(
     cors: CorsStore,
     idempotency_store: HttpIdempotencyStore,
 ) -> Router {
+    build_router_full(
+        tenant_router,
+        backend,
+        ui_dir,
+        auth,
+        rate_limit_config,
+        actor_scope,
+        control_plane,
+        cors,
+        idempotency_store,
+        BroadcastBroker::default(),
+    )
+}
+
+/// Build the router with an externally-provided [`BroadcastBroker`].
+///
+/// Useful in tests that want to subscribe to the broker and observe the
+/// [`axon_graphql::ChangeEvent`]s published by HTTP write handlers. Returns
+/// the router configured to use the supplied broker instance.
+pub fn build_router_with_broker(
+    tenant_router: Arc<TenantRouter>,
+    backend: impl Into<String>,
+    ui_dir: Option<PathBuf>,
+    broker: BroadcastBroker,
+) -> Router {
+    build_router_full(
+        tenant_router,
+        backend,
+        ui_dir,
+        AuthContext::no_auth(),
+        crate::rate_limit::RateLimitConfig::default(),
+        ActorScopeGuard::default(),
+        None,
+        CorsStore::default(),
+        default_idempotency_store(),
+        broker,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_router_full(
+    tenant_router: Arc<TenantRouter>,
+    backend: impl Into<String>,
+    ui_dir: Option<PathBuf>,
+    auth: AuthContext,
+    rate_limit_config: crate::rate_limit::RateLimitConfig,
+    actor_scope: ActorScopeGuard,
+    control_plane: Option<crate::control_plane_routes::ControlPlaneState>,
+    cors: CorsStore,
+    idempotency_store: HttpIdempotencyStore,
+    broker: BroadcastBroker,
+) -> Router {
     let start = Instant::now();
     let backend = backend.into();
     let mcp_sessions = McpHttpSessions::default();
@@ -2769,7 +2893,7 @@ fn build_router_with_auth_inner(
         .layer(Extension(rate_limiter))
         .layer(Extension(actor_scope))
         .layer(Extension(mcp_sessions))
-        .layer(Extension(BroadcastBroker::default()))
+        .layer(Extension(broker))
         .layer(Extension(idempotency_store))
         .layer(middleware::from_fn(resolve_tenant_handler))
         .layer(Extension(tenant_router))
