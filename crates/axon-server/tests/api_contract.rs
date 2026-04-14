@@ -986,7 +986,7 @@ async fn http_traverse_direction_reverse() {
             "link_type": "owns"
         }))
         .await
-        .assert_status_ok();
+        .assert_status(axum::http::StatusCode::CREATED);
 
     // Forward traversal from A should return B.
     let fwd = http
