@@ -567,6 +567,39 @@ pub struct AggregateRequest {
     pub group_by: Option<String>,
 }
 
+// ── Snapshot request (US-080, FEAT-004) ─────────────────────────────────────
+
+/// Request to take a consistent point-in-time snapshot of entities.
+///
+/// Returns entities from one or more collections as-of the current state plus
+/// an `audit_cursor` that captures the audit log high-water mark at snapshot
+/// time. Callers can tail the audit log from `audit_cursor` to discover
+/// mutations that occurred after the snapshot.
+///
+/// # V1 caveat
+///
+/// Multi-page snapshot consistency under concurrent writes is NOT guaranteed
+/// by this implementation. `MemoryStorageAdapter` has no storage-level snapshot
+/// isolation; concurrent mutations between paginated requests can cause a
+/// multi-page snapshot to reflect mixed state (some entities from before a
+/// write, others from after). This is acceptable for V1 because the built-in
+/// tests are single-threaded. Production-grade multi-page consistency requires
+/// storage-level snapshot support and is deferred to a later release.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SnapshotRequest {
+    /// Collections to include in the snapshot. `None` means **all** registered
+    /// collections visible to the handler.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collections: Option<Vec<CollectionId>>,
+    /// Maximum number of entities to return per page. `None` means no limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<usize>,
+    /// Opaque pagination cursor returned in a previous response's
+    /// `next_page_token`. Omit to start from the beginning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_page_token: Option<String>,
+}
+
 // ── Database isolation requests (US-035, FEAT-014) ────────────────────────
 
 /// Request to create a new database (isolated data space).

@@ -33,8 +33,9 @@ use crate::request::{
     ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest,
     PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
     ReachableRequest, RevalidateRequest, RevertEntityRequest, RollbackCollectionRequest,
-    RollbackEntityRequest, RollbackEntityTarget, RollbackTransactionRequest, SortDirection,
-    TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    RollbackEntityRequest, RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest,
+    SortDirection, TransitionLifecycleRequest, TraverseDirection, TraverseRequest,
+    UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
@@ -48,7 +49,8 @@ use crate::response::{
     QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevalidateResponse,
     RevertEntityResponse, RollbackCollectionEntityResult, RollbackCollectionResponse,
     RollbackEntityResponse, RollbackTransactionEntityResult, RollbackTransactionResponse,
-    TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
+    SnapshotResponse, TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse,
+    UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -991,6 +993,97 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entities,
             total_count,
             next_cursor,
+        })
+    }
+
+    // ── Snapshot (US-080, FEAT-004) ──────────────────────────────────────────
+
+    /// Take a consistent point-in-time snapshot of one or more collections.
+    ///
+    /// Returns matching entities along with an `audit_cursor` that represents
+    /// the audit log high-water mark at the moment of the snapshot. Callers can
+    /// tail the audit log from `audit_cursor` to discover mutations that
+    /// occurred after the snapshot.
+    ///
+    /// The audit cursor is captured **under the same `&self` reference** as
+    /// the entity scan so there is no race window between reading the cursor
+    /// and reading entities: no write can interleave between the two reads.
+    ///
+    /// When `req.collections` is `None`, all collections visible to this
+    /// handler are included. Results are ordered by `(collection, entity_id)`
+    /// for stable cursor-based pagination.
+    ///
+    /// # V1 caveat — multi-page consistency
+    ///
+    /// Multi-page snapshot consistency is only guaranteed for single-threaded,
+    /// in-memory use. Concurrent writes between paginated requests can cause a
+    /// multi-page snapshot to reflect mixed state (some entities from before a
+    /// write, others from after). This is acceptable for V1. Production-grade
+    /// multi-page consistency requires storage-level snapshot support and is
+    /// deferred to a later release.
+    pub fn snapshot_entities(&self, req: SnapshotRequest) -> Result<SnapshotResponse, AxonError> {
+        // Capture the audit high-water mark *before* reading entities so the
+        // cursor correctly represents "no changes newer than this snapshot".
+        // This happens under the same `&self` reference as the entity scan, so
+        // no writer can interleave between the cursor read and the data read.
+        let audit_cursor = self.audit.entries().last().map(|e| e.id).unwrap_or(0);
+
+        // Resolve the list of collections to scan.
+        let collections: Vec<CollectionId> = match req.collections {
+            Some(list) => list,
+            None => self.storage.list_collections()?,
+        };
+
+        // Collect entities from all requested collections into a single
+        // ordered stream. Sorting by (collection, id) guarantees deterministic
+        // cursor-based pagination across pages and across repeated calls.
+        let mut all: Vec<Entity> = Vec::new();
+        for collection in &collections {
+            let page = self.storage.range_scan(collection, None, None, None)?;
+            all.extend(Self::present_entities(collection, page));
+        }
+        all.sort_by(|a, b| {
+            a.collection
+                .as_str()
+                .cmp(b.collection.as_str())
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+
+        // Cursor-based pagination: skip everything up to and including the
+        // token from a previous page.
+        if let Some(ref token) = req.after_page_token {
+            let (cursor_collection, cursor_id) = decode_snapshot_page_token(token)?;
+            let pos = all
+                .iter()
+                .position(|e| {
+                    e.collection.as_str() == cursor_collection && e.id.as_str() == cursor_id
+                })
+                .ok_or_else(|| {
+                    AxonError::InvalidArgument(format!(
+                        "snapshot page token '{token}' does not match any entity in the snapshot"
+                    ))
+                })?;
+            all = all.split_off(pos + 1);
+        }
+
+        // Apply limit.
+        let limit = req.limit.unwrap_or(usize::MAX);
+        let has_more = all.len() > limit;
+        if has_more {
+            all.truncate(limit);
+        }
+
+        let next_page_token = if has_more {
+            all.last()
+                .map(|e| encode_snapshot_page_token(e.collection.as_str(), e.id.as_str()))
+        } else {
+            None
+        };
+
+        Ok(SnapshotResponse {
+            entities: all,
+            audit_cursor,
+            next_page_token,
         })
     }
 
@@ -3484,6 +3577,40 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entity: update_resp.entity,
         })
     }
+}
+
+// ── Snapshot page token codec (US-080) ────────────────────────────────────
+//
+// Snapshot pagination uses an opaque token that identifies the last entity
+// returned on the previous page by its `(collection, id)` key. The wire
+// format is `<collection_len>:<collection><id>`, which is length-prefixed so
+// it can unambiguously round-trip any byte content in either field without
+// depending on an out-of-tree escape/base64 library.
+fn encode_snapshot_page_token(collection: &str, id: &str) -> String {
+    format!("{}:{collection}{id}", collection.len())
+}
+
+fn decode_snapshot_page_token(token: &str) -> Result<(String, String), AxonError> {
+    let (len_str, rest) = token.split_once(':').ok_or_else(|| {
+        AxonError::InvalidArgument("malformed snapshot page token: missing length prefix".into())
+    })?;
+    let collection_len: usize = len_str.parse().map_err(|e| {
+        AxonError::InvalidArgument(format!(
+            "malformed snapshot page token: invalid length prefix: {e}"
+        ))
+    })?;
+    if rest.len() < collection_len {
+        return Err(AxonError::InvalidArgument(
+            "malformed snapshot page token: payload shorter than declared length".into(),
+        ));
+    }
+    if !rest.is_char_boundary(collection_len) {
+        return Err(AxonError::InvalidArgument(
+            "malformed snapshot page token: length prefix does not land on utf8 boundary".into(),
+        ));
+    }
+    let (collection, id) = rest.split_at(collection_len);
+    Ok((collection.to_string(), id.to_string()))
 }
 
 // ── Index-accelerated query planner (FEAT-013) ─────────────────────────────────
@@ -12419,5 +12546,198 @@ link_types:
         let patch = json!({"a": {"b": null, "e": 4}});
         json_merge_patch(&mut target, &patch);
         assert_eq!(target, json!({"a": {"c": 2, "e": 4}, "d": 3}));
+    }
+
+    // ── Snapshot tests (US-080, FEAT-004) ────────────────────────────────────
+    //
+    // Multi-page snapshot consistency under concurrent writes is NOT
+    // guaranteed by this implementation. `MemoryStorageAdapter` has no
+    // storage-level snapshot isolation; concurrent mutations between paginated
+    // requests can cause a multi-page snapshot to reflect mixed state. All
+    // tests below are single-threaded and therefore fully consistent.
+
+    fn seed_tasks_and_notes(h: &mut AxonHandler<MemoryStorageAdapter>) {
+        let tasks = CollectionId::new("tasks");
+        let notes = CollectionId::new("notes");
+        h.create_collection(CreateCollectionRequest {
+            name: tasks.clone(),
+            schema: CollectionSchema::new(tasks.clone()),
+            actor: None,
+        })
+        .unwrap();
+        h.create_collection(CreateCollectionRequest {
+            name: notes.clone(),
+            schema: CollectionSchema::new(notes.clone()),
+            actor: None,
+        })
+        .unwrap();
+
+        for i in 0..3 {
+            h.create_entity(CreateEntityRequest {
+                collection: tasks.clone(),
+                id: EntityId::new(format!("t-{i:03}")),
+                data: json!({"n": i}),
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+        }
+        for i in 0..2 {
+            h.create_entity(CreateEntityRequest {
+                collection: notes.clone(),
+                id: EntityId::new(format!("n-{i:03}")),
+                data: json!({"n": i}),
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn snapshot_empty_handler_returns_zero_cursor() {
+        let h = handler();
+        let resp = h.snapshot_entities(SnapshotRequest::default()).unwrap();
+        assert!(resp.entities.is_empty());
+        assert_eq!(resp.audit_cursor, 0);
+        assert!(resp.next_page_token.is_none());
+    }
+
+    #[test]
+    fn snapshot_returns_all_entities_across_collections() {
+        let mut h = handler();
+        seed_tasks_and_notes(&mut h);
+
+        let resp = h.snapshot_entities(SnapshotRequest::default()).unwrap();
+        assert_eq!(resp.entities.len(), 5);
+        assert!(resp.audit_cursor >= 5);
+        assert!(resp.next_page_token.is_none());
+    }
+
+    #[test]
+    fn snapshot_collections_filter_narrows_results() {
+        let mut h = handler();
+        seed_tasks_and_notes(&mut h);
+
+        let resp = h
+            .snapshot_entities(SnapshotRequest {
+                collections: Some(vec![CollectionId::new("tasks")]),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(resp.entities.len(), 3);
+        for e in &resp.entities {
+            assert_eq!(e.collection.as_str(), "tasks");
+        }
+    }
+
+    #[test]
+    fn snapshot_cursor_is_race_free_with_post_snapshot_writes() {
+        let mut h = handler();
+        seed_tasks_and_notes(&mut h);
+
+        let snap = h.snapshot_entities(SnapshotRequest::default()).unwrap();
+        let cursor = snap.audit_cursor;
+        assert_eq!(snap.entities.len(), 5);
+
+        // New create after the snapshot.
+        h.create_entity(CreateEntityRequest {
+            collection: CollectionId::new("tasks"),
+            id: EntityId::new("t-late"),
+            data: json!({"n": 99}),
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        // The audit tail starting at the captured cursor must include the
+        // new entity and exclude the snapshotted ones.
+        let tail = h
+            .query_audit(QueryAuditRequest {
+                database: None,
+                collection: None,
+                entity_id: None,
+                actor: None,
+                operation: None,
+                since_ns: None,
+                until_ns: None,
+                after_id: Some(cursor),
+                limit: None,
+            })
+            .unwrap();
+
+        let tail_ids: Vec<&str> = tail.entries.iter().map(|e| e.entity_id.as_str()).collect();
+        assert!(tail_ids.contains(&"t-late"));
+        assert!(!tail_ids.contains(&"t-000"));
+        assert!(!tail_ids.contains(&"n-000"));
+    }
+
+    #[test]
+    fn snapshot_pagination_returns_stable_pages() {
+        let mut h = handler();
+        seed_tasks_and_notes(&mut h);
+
+        let p1 = h
+            .snapshot_entities(SnapshotRequest {
+                limit: Some(2),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(p1.entities.len(), 2);
+        assert!(p1.next_page_token.is_some());
+        let cursor = p1.audit_cursor;
+
+        let p2 = h
+            .snapshot_entities(SnapshotRequest {
+                limit: Some(2),
+                after_page_token: p1.next_page_token.clone(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(p2.entities.len(), 2);
+        assert!(p2.next_page_token.is_some());
+        assert_eq!(p2.audit_cursor, cursor);
+
+        let p3 = h
+            .snapshot_entities(SnapshotRequest {
+                limit: Some(2),
+                after_page_token: p2.next_page_token.clone(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(p3.entities.len(), 1);
+        assert!(p3.next_page_token.is_none());
+        assert_eq!(p3.audit_cursor, cursor);
+
+        // Union of pages is exactly the 5 entities we seeded, without
+        // duplication.
+        let mut keys: Vec<(String, String)> = p1
+            .entities
+            .iter()
+            .chain(p2.entities.iter())
+            .chain(p3.entities.iter())
+            .map(|e| (e.collection.to_string(), e.id.to_string()))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        assert_eq!(keys.len(), 5);
+    }
+
+    #[test]
+    fn snapshot_page_token_round_trip() {
+        let token = encode_snapshot_page_token("tasks", "t-001");
+        let (c, i) = decode_snapshot_page_token(&token).unwrap();
+        assert_eq!(c, "tasks");
+        assert_eq!(i, "t-001");
+    }
+
+    #[test]
+    fn snapshot_page_token_rejects_malformed_input() {
+        // Missing length prefix.
+        assert!(decode_snapshot_page_token("no-colon-here").is_err());
+        // Invalid length.
+        assert!(decode_snapshot_page_token("abc:xyz").is_err());
+        // Length past payload end.
+        assert!(decode_snapshot_page_token("99:abc").is_err());
     }
 }

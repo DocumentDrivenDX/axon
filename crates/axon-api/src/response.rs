@@ -507,3 +507,29 @@ pub struct DropDatabaseResponse {
 pub struct ListDatabasesResponse {
     pub databases: Vec<String>,
 }
+
+// ── Snapshot response (US-080, FEAT-004) ────────────────────────────────────
+
+/// Response from a consistent point-in-time snapshot (US-080 / FEAT-004).
+///
+/// `audit_cursor` is the audit log high-water mark captured atomically with
+/// the entity scan. Tail the audit log from `audit_cursor` to discover
+/// mutations that occurred after this snapshot was taken.
+///
+/// # V1 caveat
+///
+/// All pages of a paginated snapshot share the **same** `audit_cursor` (the
+/// value captured on the first page). Multi-page consistency under concurrent
+/// writes is not guaranteed by this implementation — see
+/// [`crate::request::SnapshotRequest`] for details.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotResponse {
+    /// Entities in this page of the snapshot.
+    pub entities: Vec<Entity>,
+    /// Audit log high-water mark at snapshot time. Use this as the `after_id`
+    /// cursor when tailing the audit log for changes after the snapshot.
+    pub audit_cursor: u64,
+    /// Opaque cursor to fetch the next page. `None` when the result set is
+    /// exhausted.
+    pub next_page_token: Option<String>,
+}

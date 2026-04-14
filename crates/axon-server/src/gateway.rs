@@ -40,8 +40,8 @@ use axon_api::request::{
     ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
     ListNamespacesRequest, PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest,
     QueryEntitiesRequest, RevertEntityRequest, RollbackCollectionRequest, RollbackEntityRequest,
-    RollbackEntityTarget, RollbackTransactionRequest, TraverseDirection, TraverseRequest,
-    UpdateEntityRequest,
+    RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest, TraverseDirection,
+    TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
@@ -995,6 +995,60 @@ async fn query_entities(
                 "entities": entities,
                 "total_count": resp.total_count,
                 "next_cursor": resp.next_cursor,
+            }))
+            .into_response()
+        }
+        Err(e) => axon_error_response(e),
+    }
+}
+
+/// `POST /snapshot` (and `POST /db/{database}/snapshot`) — atomic multi-collection
+/// snapshot with audit cursor (US-080, FEAT-004).
+///
+/// Request body is a [`SnapshotRequest`] JSON document. Collections named in
+/// `collections` are rewritten into the current database namespace (so callers
+/// can pass bare collection names). Response is a `SnapshotResponse` JSON
+/// document.
+async fn snapshot_entities_handler(
+    Extension(handler): Extension<TenantHandler>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Extension(identity): Extension<Identity>,
+    Json(body): Json<SnapshotRequest>,
+) -> Response {
+    if let Err(e) = identity.require_read() {
+        return auth_error_response(e);
+    }
+
+    let collections = body.collections.as_ref().map(|cols| {
+        cols.iter()
+            .map(|c| qualify_collection_name(c.as_str(), &current_database))
+            .collect::<Vec<_>>()
+    });
+
+    let req = SnapshotRequest {
+        collections,
+        limit: body.limit,
+        after_page_token: body.after_page_token,
+    };
+
+    match handler.lock().await.snapshot_entities(req) {
+        Ok(resp) => {
+            let entities: Vec<Value> = resp
+                .entities
+                .iter()
+                .map(|e| {
+                    json!({
+                        "collection": e.collection.to_string(),
+                        "id": e.id.to_string(),
+                        "version": e.version,
+                        "data": e.data,
+                    })
+                })
+                .collect();
+            Json(json!({
+                "entities": entities,
+                "audit_cursor": resp.audit_cursor,
+                "next_page_token": resp.next_page_token,
             }))
             .into_response()
         }
@@ -2223,6 +2277,7 @@ fn data_routes() -> Router {
             post(rollback_collection_handler),
         )
         .route("/collections/{collection}/query", post(query_entities))
+        .route("/snapshot", post(snapshot_entities_handler))
         .route("/links", post(create_link))
         .route("/links", delete(delete_link))
         .route("/traverse/{collection}/{id}", get(traverse))

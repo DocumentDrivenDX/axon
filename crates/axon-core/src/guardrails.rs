@@ -142,7 +142,9 @@ impl TokenBucket {
             .saturating_duration_since(self.last_refill)
             .as_secs_f64();
         if elapsed > 0.0 {
-            self.tokens = (self.tokens + elapsed * self.refill_rate).min(self.capacity);
+            self.tokens = elapsed
+                .mul_add(self.refill_rate, self.tokens)
+                .min(self.capacity);
             self.last_refill = now;
         }
     }
@@ -581,9 +583,7 @@ mod tests {
         let layer = GuardrailsLayer::with_clock(GuardrailsConfig::default(), clock);
         let caller = caller("unfiltered");
         // Whatever the data, no filter means no scope restriction.
-        layer
-            .check_scope(&caller, "any", &json!({"x": 1}))
-            .unwrap();
+        layer.check_scope(&caller, "any", &json!({"x": 1})).unwrap();
     }
 
     #[test]
