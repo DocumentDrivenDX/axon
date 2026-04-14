@@ -13,6 +13,7 @@ fn now_ns() -> u64 {
 
 use axon_audit::entry::{compute_diff, AuditEntry, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
+use axon_core::auth::CallerIdentity;
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
@@ -351,6 +352,98 @@ impl<S: StorageAdapter> AxonHandler<S> {
         actor: Option<String>,
     ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
         tx.commit(&mut self.storage, &mut self.audit, actor)
+    }
+
+    // ── Identity-propagating wrappers (FEAT-012) ────────────────────────────
+    //
+    // These variants accept a [`CallerIdentity`] extracted from a transport
+    // layer (gRPC metadata, HTTP header). They override any actor field set
+    // on the incoming request with `caller.actor`, so audit entries always
+    // record the authenticated caller rather than whatever string the
+    // client put in the JSON body. The non-`_with_caller` methods remain for
+    // internal callers (tests, CLI, MCP) that construct requests directly
+    // without an HTTP/gRPC transport origin.
+
+    /// Create an entity, overriding `req.actor` with the caller identity.
+    pub fn create_entity_with_caller(
+        &mut self,
+        mut req: CreateEntityRequest,
+        caller: &CallerIdentity,
+    ) -> Result<CreateEntityResponse, AxonError> {
+        req.actor = Some(caller.actor.clone());
+        self.create_entity(req)
+    }
+
+    /// Update an entity, overriding `req.actor` with the caller identity.
+    pub fn update_entity_with_caller(
+        &mut self,
+        mut req: UpdateEntityRequest,
+        caller: &CallerIdentity,
+    ) -> Result<UpdateEntityResponse, AxonError> {
+        req.actor = Some(caller.actor.clone());
+        self.update_entity(req)
+    }
+
+    /// Merge-patch an entity, overriding `req.actor` with the caller identity.
+    pub fn patch_entity_with_caller(
+        &mut self,
+        mut req: PatchEntityRequest,
+        caller: &CallerIdentity,
+    ) -> Result<PatchEntityResponse, AxonError> {
+        req.actor = Some(caller.actor.clone());
+        self.patch_entity(req)
+    }
+
+    /// Delete an entity, overriding `req.actor` with the caller identity.
+    pub fn delete_entity_with_caller(
+        &mut self,
+        mut req: DeleteEntityRequest,
+        caller: &CallerIdentity,
+    ) -> Result<DeleteEntityResponse, AxonError> {
+        req.actor = Some(caller.actor.clone());
+        self.delete_entity(req)
+    }
+
+    /// Commit a transaction attributing the audit entries to the caller.
+    ///
+    /// Ignores any actor string the client may have supplied on the request
+    /// body and uses `caller.actor` as the authoritative identity.
+    pub fn commit_transaction_with_caller(
+        &mut self,
+        tx: crate::transaction::Transaction,
+        caller: &CallerIdentity,
+    ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
+        self.commit_transaction(tx, Some(caller.actor.clone()))
+    }
+
+    /// Create a link, overriding `req.actor` with the caller identity.
+    pub fn create_link_with_caller(
+        &mut self,
+        mut req: CreateLinkRequest,
+        caller: &CallerIdentity,
+    ) -> Result<CreateLinkResponse, AxonError> {
+        req.actor = Some(caller.actor.clone());
+        self.create_link(req)
+    }
+
+    /// Delete a link, overriding `req.actor` with the caller identity.
+    pub fn delete_link_with_caller(
+        &mut self,
+        mut req: DeleteLinkRequest,
+        caller: &CallerIdentity,
+    ) -> Result<DeleteLinkResponse, AxonError> {
+        req.actor = Some(caller.actor.clone());
+        self.delete_link(req)
+    }
+
+    /// Drive a lifecycle transition, overriding `req.actor` with the caller.
+    pub fn transition_lifecycle_with_caller(
+        &mut self,
+        mut req: TransitionLifecycleRequest,
+        caller: &CallerIdentity,
+    ) -> Result<TransitionLifecycleResponse, AxonError> {
+        req.actor = Some(caller.actor.clone());
+        self.transition_lifecycle(req)
     }
 
     fn ensure_collection_exists(&self, collection: &CollectionId) -> Result<(), AxonError> {

@@ -1190,3 +1190,179 @@ async fn grpc_transition_lifecycle_version_conflict() {
     assert_eq!(err.code(), tonic::Code::FailedPrecondition);
     assert!(err.message().contains("version_conflict"));
 }
+
+// ── Caller identity propagation (FEAT-012, salvage of axon-81966bf9) ────────
+//
+// End-to-end verification that the `x-axon-actor` header flows from the HTTP
+// and gRPC transports into audit entry provenance. These tests start a real
+// HTTP test server (axum_test) and a real gRPC server (tonic) and inspect
+// the audit log via the public `/audit/entity/...` endpoint or the
+// `query_audit_by_entity` RPC.
+
+fn caller_identity_http_server() -> axum_test::TestServer {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    axum_test::TestServer::new(http_app)
+}
+
+#[tokio::test]
+async fn http_caller_identity_from_header_recorded_in_audit() {
+    let server = caller_identity_http_server();
+
+    server
+        .post("/entities/tasks/t-001")
+        .add_header("x-axon-actor", "agent-1")
+        .json(&json!({"data": {"title": "hello"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let resp = server.get("/audit/entity/tasks/t-001").await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    let entries = body["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["actor"], "agent-1",
+        "x-axon-actor header value must be recorded as the audit actor"
+    );
+}
+
+#[tokio::test]
+async fn http_missing_caller_identity_records_anonymous_in_audit() {
+    let server = caller_identity_http_server();
+
+    server
+        .post("/entities/tasks/t-002")
+        .json(&json!({"data": {"title": "no-header"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let resp = server.get("/audit/entity/tasks/t-002").await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    let entries = body["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["actor"], "anonymous",
+        "missing identity header falls back to the anonymous caller"
+    );
+}
+
+#[tokio::test]
+async fn http_caller_identity_body_actor_is_ignored() {
+    let server = caller_identity_http_server();
+
+    // Body carries an actor field, but no x-axon-actor header. The header is
+    // the authority — body-level actor must NOT leak into the audit entry.
+    server
+        .post("/entities/tasks/t-003")
+        .json(&json!({"data": {"title": "imposter"}, "actor": "claimed-by-body"}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let resp = server.get("/audit/entity/tasks/t-003").await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    let entries = body["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0]["actor"], "anonymous",
+        "body-level actor must not bypass header-based identity extraction"
+    );
+}
+
+#[tokio::test]
+async fn http_caller_identity_empty_header_falls_back_to_anonymous() {
+    let server = caller_identity_http_server();
+
+    // An empty x-axon-actor header must be treated as "no header" rather
+    // than recording an empty string as the actor.
+    server
+        .post("/entities/tasks/t-006")
+        .add_header("x-axon-actor", "")
+        .json(&json!({"data": {"title": "empty-header"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let resp = server.get("/audit/entity/tasks/t-006").await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    let entries = body["entries"].as_array().unwrap();
+    assert_eq!(entries[0]["actor"], "anonymous");
+}
+
+#[tokio::test]
+async fn http_caller_identity_per_operation_type() {
+    // Create, update, and delete all receive identity from the header.
+    let server = caller_identity_http_server();
+
+    server
+        .post("/entities/tasks/t-005")
+        .add_header("x-axon-actor", "creator")
+        .json(&json!({"data": {"title": "v1"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    server
+        .put("/entities/tasks/t-005")
+        .add_header("x-axon-actor", "updater")
+        .json(&json!({"data": {"title": "v2"}, "expected_version": 1}))
+        .await
+        .assert_status_ok();
+
+    server
+        .delete("/entities/tasks/t-005")
+        .add_header("x-axon-actor", "deleter")
+        .await
+        .assert_status_ok();
+
+    let resp = server.get("/audit/entity/tasks/t-005").await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+    let entries = body["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 3);
+    // Entries are ordered chronologically: create, update, delete.
+    assert_eq!(entries[0]["actor"], "creator");
+    assert_eq!(entries[1]["actor"], "updater");
+    assert_eq!(entries[2]["actor"], "deleter");
+}
+
+#[tokio::test]
+async fn grpc_transition_lifecycle_uses_metadata_actor() {
+    let mut client = setup_lifecycle_client().await;
+
+    // Send a transition with the caller identity in metadata. The proto
+    // `actor` field is ignored in favor of the `x-axon-actor` metadata.
+    let mut req = tonic::Request::new(proto::TransitionLifecycleRequest {
+        collection: "tasks".into(),
+        entity_id: "t-001".into(),
+        lifecycle_name: "status".into(),
+        target_state: "submitted".into(),
+        expected_version: 1,
+        actor: "ignored-body".into(),
+    });
+    req.metadata_mut()
+        .insert("x-axon-actor", "grpc-agent".parse().unwrap());
+    client.transition_lifecycle(req).await.unwrap();
+
+    let resp = client
+        .query_audit_by_entity(proto::QueryAuditByEntityRequest {
+            collection: "tasks".into(),
+            entity_id: "t-001".into(),
+        })
+        .await
+        .unwrap();
+    let entries = resp.into_inner().entries;
+    // Entries include the setup create + the lifecycle transition update.
+    let transition = entries
+        .iter()
+        .find(|e| e.mutation == "EntityUpdate")
+        .expect("transition produces an EntityUpdate audit entry");
+    assert_eq!(
+        transition.actor, "grpc-agent",
+        "gRPC x-axon-actor metadata must be recorded as the audit actor"
+    );
+}

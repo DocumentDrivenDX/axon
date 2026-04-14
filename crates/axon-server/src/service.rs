@@ -13,15 +13,62 @@ use axon_api::request::{
 };
 use axon_api::transaction::Transaction;
 use axon_audit::log::AuditLog;
+use axon_core::auth::{CallerIdentity as CoreCallerIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE};
 use axon_storage::adapter::StorageAdapter;
 use axon_storage::memory::MemoryStorageAdapter;
 use serde_json::json;
 use tokio::sync::Mutex;
+use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
 
 const AXON_DATABASE_HEADER: &str = "x-axon-database";
+
+/// Metadata key carrying the caller-declared actor identity (FEAT-012).
+///
+/// Mirrors the HTTP gateway's `x-axon-actor` header. Values containing
+/// control characters are rejected as `invalid_argument`; absent or empty
+/// values fall back to the authenticated [`Identity::actor`].
+pub const ACTOR_HEADER: &str = "x-axon-actor";
+
+/// Extract the `x-axon-actor` metadata into a [`CoreCallerIdentity`],
+/// inheriting the role from the authenticated [`Identity`] (FEAT-012).
+///
+/// Returns `Err(Status::invalid_argument)` when the header value contains
+/// control characters. When the header is absent or empty after trimming,
+/// falls back to `identity.actor` (which is `"anonymous"` under `--no-auth`).
+#[allow(clippy::result_large_err)] // `Status` is the standard tonic error type.
+fn caller_from_metadata(
+    metadata: &MetadataMap,
+    identity: &Identity,
+) -> Result<CoreCallerIdentity, Status> {
+    let role = match identity.role {
+        crate::auth::Role::Admin => CoreRole::Admin,
+        crate::auth::Role::Write => CoreRole::Write,
+        crate::auth::Role::Read => CoreRole::Read,
+    };
+    let Some(raw) = metadata.get(ACTOR_HEADER) else {
+        return Ok(CoreCallerIdentity::new(identity.actor.clone(), role));
+    };
+    let value = raw
+        .to_str()
+        .map_err(|_| Status::invalid_argument("x-axon-actor metadata must be valid ASCII"))?;
+    if value
+        .chars()
+        .any(|c| c.is_control() || c == '\n' || c == '\r')
+    {
+        return Err(Status::invalid_argument(
+            "x-axon-actor metadata must not contain control characters",
+        ));
+    }
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Ok(CoreCallerIdentity::new(identity.actor.clone(), role))
+    } else {
+        Ok(CoreCallerIdentity::new(trimmed.to_string(), role))
+    }
+}
 
 // Include the generated protobuf code.
 pub mod proto {
@@ -237,6 +284,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
     ) -> Result<Response<ProtoCreateEntityResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
         identity.require_write().map_err(auth_to_status)?;
+        let caller = caller_from_metadata(request.metadata(), &identity)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let data: serde_json::Value = serde_json::from_str(&req.data_json)
@@ -246,13 +294,16 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .handler
             .lock()
             .await
-            .create_entity(CreateEntityRequest {
-                collection: qualify_collection_name(&req.collection, &current_database),
-                id: EntityId::new(&req.id),
-                data,
-                actor: Some(identity.actor),
-                audit_metadata: None,
-            })
+            .create_entity_with_caller(
+                CreateEntityRequest {
+                    collection: qualify_collection_name(&req.collection, &current_database),
+                    id: EntityId::new(&req.id),
+                    data,
+                    actor: None,
+                    audit_metadata: None,
+                },
+                &caller,
+            )
             .map_err(axon_to_status)?;
 
         Ok(Response::new(ProtoCreateEntityResp {
@@ -288,6 +339,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
     ) -> Result<Response<ProtoUpdateEntityResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
         identity.require_write().map_err(auth_to_status)?;
+        let caller = caller_from_metadata(request.metadata(), &identity)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let data: serde_json::Value = serde_json::from_str(&req.data_json)
@@ -297,14 +349,17 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .handler
             .lock()
             .await
-            .update_entity(UpdateEntityRequest {
-                collection: qualify_collection_name(&req.collection, &current_database),
-                id: EntityId::new(&req.id),
-                data,
-                expected_version: req.expected_version,
-                actor: Some(identity.actor),
-                audit_metadata: None,
-            })
+            .update_entity_with_caller(
+                UpdateEntityRequest {
+                    collection: qualify_collection_name(&req.collection, &current_database),
+                    id: EntityId::new(&req.id),
+                    data,
+                    expected_version: req.expected_version,
+                    actor: None,
+                    audit_metadata: None,
+                },
+                &caller,
+            )
             .map_err(axon_to_status)?;
 
         Ok(Response::new(ProtoUpdateEntityResp {
@@ -318,6 +373,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
     ) -> Result<Response<ProtoDeleteEntityResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
         identity.require_write().map_err(auth_to_status)?;
+        let caller = caller_from_metadata(request.metadata(), &identity)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
 
@@ -325,13 +381,16 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .handler
             .lock()
             .await
-            .delete_entity(DeleteEntityRequest {
-                collection: qualify_collection_name(&req.collection, &current_database),
-                id: EntityId::new(&req.id),
-                actor: Some(identity.actor),
-                audit_metadata: None,
-                force: false,
-            })
+            .delete_entity_with_caller(
+                DeleteEntityRequest {
+                    collection: qualify_collection_name(&req.collection, &current_database),
+                    id: EntityId::new(&req.id),
+                    actor: None,
+                    audit_metadata: None,
+                    force: false,
+                },
+                &caller,
+            )
             .map_err(axon_to_status)?;
 
         Ok(Response::new(ProtoDeleteEntityResp {
@@ -346,6 +405,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
     ) -> Result<Response<ProtoCreateLinkResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
         identity.require_write().map_err(auth_to_status)?;
+        let caller = caller_from_metadata(request.metadata(), &identity)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let metadata: serde_json::Value = if req.metadata_json.is_empty() {
@@ -359,21 +419,24 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .handler
             .lock()
             .await
-            .create_link(CreateLinkRequest {
-                source_collection: qualify_collection_name(
-                    &req.source_collection,
-                    &current_database,
-                ),
-                source_id: EntityId::new(&req.source_id),
-                target_collection: qualify_collection_name(
-                    &req.target_collection,
-                    &current_database,
-                ),
-                target_id: EntityId::new(&req.target_id),
-                link_type: req.link_type.clone(),
-                metadata,
-                actor: Some(identity.actor),
-            })
+            .create_link_with_caller(
+                CreateLinkRequest {
+                    source_collection: qualify_collection_name(
+                        &req.source_collection,
+                        &current_database,
+                    ),
+                    source_id: EntityId::new(&req.source_id),
+                    target_collection: qualify_collection_name(
+                        &req.target_collection,
+                        &current_database,
+                    ),
+                    target_id: EntityId::new(&req.target_id),
+                    link_type: req.link_type.clone(),
+                    metadata,
+                    actor: None,
+                },
+                &caller,
+            )
             .map_err(axon_to_status)?;
 
         let link = resp.link;
@@ -395,6 +458,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
     ) -> Result<Response<ProtoDeleteLinkResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
         identity.require_write().map_err(auth_to_status)?;
+        let caller = caller_from_metadata(request.metadata(), &identity)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
 
@@ -402,20 +466,23 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .handler
             .lock()
             .await
-            .delete_link(DeleteLinkRequest {
-                source_collection: qualify_collection_name(
-                    &req.source_collection,
-                    &current_database,
-                ),
-                source_id: EntityId::new(&req.source_id),
-                target_collection: qualify_collection_name(
-                    &req.target_collection,
-                    &current_database,
-                ),
-                target_id: EntityId::new(&req.target_id),
-                link_type: req.link_type.clone(),
-                actor: Some(identity.actor),
-            })
+            .delete_link_with_caller(
+                DeleteLinkRequest {
+                    source_collection: qualify_collection_name(
+                        &req.source_collection,
+                        &current_database,
+                    ),
+                    source_id: EntityId::new(&req.source_id),
+                    target_collection: qualify_collection_name(
+                        &req.target_collection,
+                        &current_database,
+                    ),
+                    target_id: EntityId::new(&req.target_id),
+                    link_type: req.link_type.clone(),
+                    actor: None,
+                },
+                &caller,
+            )
             .map_err(axon_to_status)?;
 
         Ok(Response::new(ProtoDeleteLinkResp {
@@ -517,6 +584,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
     ) -> Result<Response<ProtoCommitTxResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
         identity.require_write().map_err(auth_to_status)?;
+        let caller = caller_from_metadata(request.metadata(), &identity)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
         let mut tx = Transaction::new();
@@ -584,7 +652,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         let mut h = self.handler.lock().await;
         let (storage, audit) = h.storage_and_audit_mut();
         let written = tx
-            .commit(storage, audit, Some(identity.actor))
+            .commit(storage, audit, Some(caller.actor.clone()))
             .map_err(axon_to_status)?;
 
         Ok(Response::new(ProtoCommitTxResp {
@@ -960,28 +1028,30 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
     ) -> Result<Response<ProtoTransitionLifecycleResp>, Status> {
         let identity = self.authorize(request.remote_addr()).await?;
         identity.require_write().map_err(auth_to_status)?;
+        let caller = caller_from_metadata(request.metadata(), &identity)?;
         let current_database = grpc_current_database(&request).to_string();
         let req = request.into_inner();
 
-        let actor = if req.actor.is_empty() {
-            identity.actor
-        } else {
-            req.actor
-        };
+        // Proto `actor` field is ignored in favor of the caller identity
+        // resolved from `x-axon-actor` metadata (FEAT-012).
+        let _ = req.actor;
 
         let resp = self
             .handler
             .lock()
             .await
-            .transition_lifecycle(TransitionLifecycleRequest {
-                collection_id: qualify_collection_name(&req.collection, &current_database),
-                entity_id: EntityId::new(&req.entity_id),
-                lifecycle_name: req.lifecycle_name,
-                target_state: req.target_state,
-                expected_version: req.expected_version,
-                actor: Some(actor),
-                audit_metadata: None,
-            })
+            .transition_lifecycle_with_caller(
+                TransitionLifecycleRequest {
+                    collection_id: qualify_collection_name(&req.collection, &current_database),
+                    entity_id: EntityId::new(&req.entity_id),
+                    lifecycle_name: req.lifecycle_name,
+                    target_state: req.target_state,
+                    expected_version: req.expected_version,
+                    actor: None,
+                    audit_metadata: None,
+                },
+                &caller,
+            )
             .map_err(axon_to_status)?;
 
         Ok(Response::new(ProtoTransitionLifecycleResp {

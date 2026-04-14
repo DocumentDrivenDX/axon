@@ -45,6 +45,7 @@ use axon_api::request::{
 };
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
+use axon_core::auth::{CallerIdentity as CoreCallerIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 use axon_core::types::Entity;
@@ -59,6 +60,86 @@ use crate::tenant_router::{TenantHandler, TenantRouter};
 type SharedHandler<S> = Arc<Mutex<AxonHandler<S>>>;
 
 const AXON_DATABASE_HEADER: &str = "x-axon-database";
+
+/// Header carrying the caller-declared actor identity (FEAT-012).
+///
+/// The HTTP gateway and gRPC service read this header on every request and
+/// use its value as the source of truth for audit entry `actor` fields,
+/// overriding any body-level `actor` string the client might send.
+pub(crate) const AXON_ACTOR_HEADER: &str = "x-axon-actor";
+
+/// Outcome of parsing the `x-axon-actor` request header.
+enum ActorHeaderOutcome {
+    /// Header absent or empty after trimming — fall back to [`CallerIdentity`]
+    /// derived from the authenticated [`Identity`].
+    Absent,
+    /// Header present and valid — override `caller.actor` with this value.
+    Present(String),
+    /// Header value contains control characters or non-ASCII-safe bytes; the
+    /// middleware rejects the request with `400 Bad Request`.
+    Invalid,
+}
+
+/// Parse the `x-axon-actor` header into an [`ActorHeaderOutcome`].
+///
+/// Accepts any ASCII-printable identifier after trimming whitespace. Rejects
+/// values that contain control characters, carriage returns, or newlines
+/// (would corrupt downstream audit log formatting and HTTP protocol framing).
+fn parse_actor_header(headers: &HeaderMap) -> ActorHeaderOutcome {
+    let Some(raw) = headers.get(AXON_ACTOR_HEADER) else {
+        return ActorHeaderOutcome::Absent;
+    };
+    let value = match raw.to_str() {
+        Ok(s) => s,
+        Err(_) => return ActorHeaderOutcome::Invalid,
+    };
+    if value
+        .chars()
+        .any(|c| c.is_control() || c == '\n' || c == '\r')
+    {
+        return ActorHeaderOutcome::Invalid;
+    }
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        ActorHeaderOutcome::Absent
+    } else {
+        ActorHeaderOutcome::Present(trimmed.to_string())
+    }
+}
+
+/// Map the authenticated [`Identity::role`] into a core [`CoreRole`].
+fn core_role_from_identity(identity: &Identity) -> CoreRole {
+    match identity.role {
+        crate::auth::Role::Admin => CoreRole::Admin,
+        crate::auth::Role::Write => CoreRole::Write,
+        crate::auth::Role::Read => CoreRole::Read,
+    }
+}
+
+/// Build a [`CoreCallerIdentity`] from the authenticated [`Identity`] and the
+/// `x-axon-actor` header (FEAT-012).
+///
+/// - Header present + non-empty → `actor` = header value (trimmed), `role`
+///   inherited from the authenticated identity.
+/// - Header missing or empty after trimming → `actor` = `identity.actor`
+///   (preserving existing Tailscale/guest/no-auth semantics), `role`
+///   inherited from the authenticated identity.
+///
+/// In `--no-auth` mode the inherited `identity.actor` is `"anonymous"`, which
+/// satisfies the FEAT-012 acceptance criterion that a missing header falls
+/// back to an anonymous caller identity.
+fn caller_from_parts(identity: &Identity, header: ActorHeaderOutcome) -> CoreCallerIdentity {
+    let role = core_role_from_identity(identity);
+    match header {
+        ActorHeaderOutcome::Present(actor) => CoreCallerIdentity::new(actor, role),
+        ActorHeaderOutcome::Absent => CoreCallerIdentity::new(identity.actor.clone(), role),
+        ActorHeaderOutcome::Invalid => {
+            // Reached only if `resolve_caller_identity` skipped its own
+            // validation; defensively return a non-actor-leaking fallback.
+            CoreCallerIdentity::new(identity.actor.clone(), role)
+        }
+    }
+}
 
 // ── Error response ────────────────────────────────────────────────────────────
 
@@ -346,6 +427,48 @@ fn default_namespace_health<S: StorageAdapter>(
         has_default_schema.then(|| format!("{DEFAULT_DATABASE}.{DEFAULT_SCHEMA}")),
         if has_default_schema { "ok" } else { "missing" },
     ))
+}
+
+/// Axum middleware that extracts the `x-axon-actor` header and injects a
+/// [`CoreCallerIdentity`] extension (FEAT-012).
+///
+/// Runs after [`authenticate_http_request`], so an [`Identity`] is already
+/// available in `request.extensions_mut()`. The header value, when present
+/// and valid, takes precedence over `Identity::actor` for audit entry
+/// provenance; when absent, the middleware preserves back-compat by
+/// populating `CallerIdentity::actor` from the authenticated identity
+/// (which is `"anonymous"` in `--no-auth` mode).
+///
+/// A header value containing ASCII control characters (CR, LF, or any
+/// `c.is_control()`) is rejected with `400 Bad Request` so callers cannot
+/// smuggle protocol-framing bytes into the audit log.
+pub(crate) async fn resolve_caller_identity(
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let identity = match request.extensions().get::<Identity>().cloned() {
+        Some(id) => id,
+        None => {
+            // Auth middleware did not run — fall back to anonymous-admin so
+            // unauthenticated test harnesses or misconfigurations still
+            // produce a usable CallerIdentity rather than panicking.
+            Identity::anonymous_admin()
+        }
+    };
+    let outcome = parse_actor_header(request.headers());
+    if matches!(outcome, ActorHeaderOutcome::Invalid) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new(
+                "invalid_argument",
+                "x-axon-actor header must not contain control characters",
+            )),
+        )
+            .into_response();
+    }
+    let caller = caller_from_parts(&identity, outcome);
+    request.extensions_mut().insert(caller);
+    next.run(request).await
 }
 
 /// Axum middleware layer that resolves the caller's [`Identity`] and injects
@@ -822,6 +945,7 @@ async fn create_entity(
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
@@ -836,13 +960,16 @@ async fn create_entity(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler.lock().await.create_entity(CreateEntityRequest {
-        collection: qualify_collection_name(&collection, &current_database),
-        id: EntityId::new(&id),
-        data: body.data,
-        actor: Some(identity.actor),
-        audit_metadata: None,
-    }) {
+    match handler.lock().await.create_entity_with_caller(
+        CreateEntityRequest {
+            collection: qualify_collection_name(&collection, &current_database),
+            id: EntityId::new(&id),
+            data: body.data,
+            actor: None,
+            audit_metadata: None,
+        },
+        &caller,
+    ) {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
             broadcast_entity_change(&broker, &resp.entity, "create");
@@ -932,6 +1059,7 @@ async fn update_entity(
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
@@ -946,14 +1074,17 @@ async fn update_entity(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler.lock().await.update_entity(UpdateEntityRequest {
-        collection: qualify_collection_name(&collection, &current_database),
-        id: EntityId::new(&id),
-        data: body.data,
-        expected_version: body.expected_version,
-        actor: Some(identity.actor),
-        audit_metadata: None,
-    }) {
+    match handler.lock().await.update_entity_with_caller(
+        UpdateEntityRequest {
+            collection: qualify_collection_name(&collection, &current_database),
+            id: EntityId::new(&id),
+            data: body.data,
+            expected_version: body.expected_version,
+            actor: None,
+            audit_metadata: None,
+        },
+        &caller,
+    ) {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
             broadcast_entity_change(&broker, &resp.entity, "update");
@@ -973,6 +1104,7 @@ async fn delete_entity(
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
@@ -987,13 +1119,16 @@ async fn delete_entity(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler.lock().await.delete_entity(DeleteEntityRequest {
-        collection: qualify_collection_name(&collection, &current_database),
-        id: EntityId::new(&id),
-        actor: Some(identity.actor),
-        audit_metadata: None,
-        force: false,
-    }) {
+    match handler.lock().await.delete_entity_with_caller(
+        DeleteEntityRequest {
+            collection: qualify_collection_name(&collection, &current_database),
+            id: EntityId::new(&id),
+            actor: None,
+            audit_metadata: None,
+            force: false,
+        },
+        &caller,
+    ) {
         Ok(resp) => {
             notify_entity_change_by_parts(&mcp_sessions, &current_database, &collection, &id);
             broadcast_entity_delete(&broker, &collection, &id);
@@ -1109,6 +1244,7 @@ async fn transition_lifecycle_handler(
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
@@ -1124,20 +1260,22 @@ async fn transition_lifecycle_handler(
         return rate_limit_response(&limited);
     }
 
-    let actor = body.actor.unwrap_or_else(|| identity.actor.clone());
+    // Body-level `actor` is ignored in favor of the transport-resolved caller
+    // (FEAT-012); `_with_caller` overrides `req.actor` with `caller.actor`.
+    let _ = body.actor;
 
-    match handler
-        .lock()
-        .await
-        .transition_lifecycle(TransitionLifecycleRequest {
+    match handler.lock().await.transition_lifecycle_with_caller(
+        TransitionLifecycleRequest {
             collection_id: qualify_collection_name(&collection, &current_database),
             entity_id: EntityId::new(&id),
             lifecycle_name: body.lifecycle_name,
             target_state: body.target_state,
             expected_version: body.expected_version,
-            actor: Some(actor),
+            actor: None,
             audit_metadata: body.audit_metadata,
-        }) {
+        },
+        &caller,
+    ) {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
             broadcast_entity_change(&broker, &resp.entity, "update");
@@ -1154,6 +1292,7 @@ async fn create_link(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
     Json(body): Json<CreateLinkBody>,
@@ -1167,15 +1306,18 @@ async fn create_link(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler.lock().await.create_link(CreateLinkRequest {
-        source_collection: qualify_collection_name(&body.source_collection, &current_database),
-        source_id: EntityId::new(&body.source_id),
-        target_collection: qualify_collection_name(&body.target_collection, &current_database),
-        target_id: EntityId::new(&body.target_id),
-        link_type: body.link_type,
-        metadata: body.metadata,
-        actor: Some(identity.actor),
-    }) {
+    match handler.lock().await.create_link_with_caller(
+        CreateLinkRequest {
+            source_collection: qualify_collection_name(&body.source_collection, &current_database),
+            source_id: EntityId::new(&body.source_id),
+            target_collection: qualify_collection_name(&body.target_collection, &current_database),
+            target_id: EntityId::new(&body.target_id),
+            link_type: body.link_type,
+            metadata: body.metadata,
+            actor: None,
+        },
+        &caller,
+    ) {
         Ok(resp) => {
             let link = resp.link;
             (
@@ -1201,6 +1343,7 @@ async fn delete_link(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
     Json(body): Json<DeleteLinkBody>,
@@ -1214,14 +1357,17 @@ async fn delete_link(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler.lock().await.delete_link(DeleteLinkRequest {
-        source_collection: qualify_collection_name(&body.source_collection, &current_database),
-        source_id: EntityId::new(&body.source_id),
-        target_collection: qualify_collection_name(&body.target_collection, &current_database),
-        target_id: EntityId::new(&body.target_id),
-        link_type: body.link_type,
-        actor: Some(identity.actor),
-    }) {
+    match handler.lock().await.delete_link_with_caller(
+        DeleteLinkRequest {
+            source_collection: qualify_collection_name(&body.source_collection, &current_database),
+            source_id: EntityId::new(&body.source_id),
+            target_collection: qualify_collection_name(&body.target_collection, &current_database),
+            target_id: EntityId::new(&body.target_id),
+            link_type: body.link_type,
+            actor: None,
+        },
+        &caller,
+    ) {
         Ok(resp) => Json(json!({
             "source_collection": resp.source_collection,
             "source_id": resp.source_id,
@@ -2106,6 +2252,7 @@ async fn commit_transaction(
     Extension(broker): Extension<BroadcastBroker>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
     Json(body): Json<TransactionBody>,
@@ -2197,11 +2344,15 @@ async fn commit_transaction(
         }
     }
 
+    // Body-level `actor` is ignored in favor of the caller identity resolved
+    // from `x-axon-actor` (FEAT-012); the authoritative actor is `caller.actor`.
+    let _ = body.actor;
+
     // Commit atomically.
     let tx_id = tx.id.clone();
     let mut h = handler.lock().await;
     let (storage, audit) = h.storage_and_audit_mut();
-    match tx.commit(storage, audit, Some(identity.actor)) {
+    match tx.commit(storage, audit, Some(caller.actor.clone())) {
         Ok(written) => {
             for entity in &written {
                 notify_entity_change(&mcp_sessions, &current_database, entity);
@@ -2553,8 +2704,11 @@ pub fn build_router_with_auth(
     }
 
     // Auth is the inner gatekeeper; CORS is the outer envelope so that OPTIONS
-    // preflights never reach the auth middleware.
+    // preflights never reach the auth middleware. The caller-identity
+    // middleware runs immediately after auth so route handlers see a fully
+    // resolved `CoreCallerIdentity` in their extensions (FEAT-012).
     router
+        .layer(middleware::from_fn(resolve_caller_identity))
         .layer(middleware::from_fn_with_state(
             auth,
             authenticate_http_request,
