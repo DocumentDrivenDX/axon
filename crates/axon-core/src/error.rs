@@ -70,6 +70,30 @@ pub enum AxonError {
         valid_transitions: Vec<String>,
     },
 
+    /// Entity is missing a value at the lifecycle field.
+    ///
+    /// Raised on update when the entity payload has no value at the field
+    /// named by a `LifecycleDef`. Create operations auto-populate with the
+    /// lifecycle's `initial` state instead of raising this error.
+    #[error("lifecycle field `{field}` is missing from entity data")]
+    LifecycleFieldMissing {
+        /// The lifecycle field path that is missing.
+        field: String,
+    },
+
+    /// Entity has an invalid value at the lifecycle field.
+    ///
+    /// The value is either not a string or is a string that is not a known
+    /// state for the lifecycle (not the `initial` state and not reachable
+    /// from any transition).
+    #[error("lifecycle field `{field}` has invalid value {actual}")]
+    LifecycleStateInvalid {
+        /// The lifecycle field path that holds the invalid value.
+        field: String,
+        /// The offending value as-seen in the entity data.
+        actual: serde_json::Value,
+    },
+
     #[error("storage error: {0}")]
     Storage(String),
 

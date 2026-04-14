@@ -159,6 +159,22 @@ fn axon_error_response(err: AxonError) -> Response {
             )),
         )
             .into_response(),
+        AxonError::LifecycleFieldMissing { field } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError::new(
+                "lifecycle_field_missing",
+                json!({"field": field}),
+            )),
+        )
+            .into_response(),
+        AxonError::LifecycleStateInvalid { field, actual } => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError::new(
+                "lifecycle_state_invalid",
+                json!({"field": field, "actual": actual}),
+            )),
+        )
+            .into_response(),
         AxonError::RateLimitExceeded { actor, retry_after_ms } => (
             StatusCode::TOO_MANY_REQUESTS,
             Json(ApiError::new(

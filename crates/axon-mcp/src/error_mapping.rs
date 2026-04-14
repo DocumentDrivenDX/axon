@@ -32,6 +32,12 @@ pub fn map_axon_error(error: AxonError) -> McpError {
         } => McpError::InvalidParams(format!(
             "invalid lifecycle '{lifecycle_name}' transition from '{current_state}' to '{target_state}'; valid: {valid_transitions:?}"
         )),
+        AxonError::LifecycleFieldMissing { field } => McpError::InvalidParams(format!(
+            "lifecycle field '{field}' is missing from entity data"
+        )),
+        AxonError::LifecycleStateInvalid { field, actual } => McpError::InvalidParams(format!(
+            "lifecycle field '{field}' has invalid value {actual}"
+        )),
         AxonError::RateLimitExceeded { actor, retry_after_ms } => McpError::InvalidParams(format!(
             "rate limit exceeded for actor '{actor}'; retry after {retry_after_ms}ms"
         )),

@@ -371,8 +371,21 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: CreateEntityRequest,
     ) -> Result<CreateEntityResponse, AxonError> {
-        // Schema validation.
+        let mut req = req;
+        // Lifecycle initial-state enforcement (FEAT-015).
+        // Auto-populates the lifecycle field with `initial` on create and
+        // rejects non-string/unknown-state values so downstream schema
+        // validation and audit records see the canonical state.
         let schema = self.storage.get_schema(&req.collection)?;
+        if let Some(schema) = &schema {
+            enforce_lifecycle_initial_state(
+                schema,
+                &mut req.data,
+                LifecycleEnforcementMode::Create,
+            )?;
+        }
+
+        // Schema validation.
         if let Some(schema) = &schema {
             validate(schema, &req.data)?;
         }
@@ -535,8 +548,21 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: UpdateEntityRequest,
     ) -> Result<UpdateEntityResponse, AxonError> {
-        // Schema validation.
+        let mut req = req;
+        // Lifecycle state enforcement (FEAT-015).
+        // Updates must already carry a known state at the lifecycle field;
+        // unlike create we do not auto-populate so the caller cannot silently
+        // elide a state change.
         let schema = self.storage.get_schema(&req.collection)?;
+        if let Some(schema) = &schema {
+            enforce_lifecycle_initial_state(
+                schema,
+                &mut req.data,
+                LifecycleEnforcementMode::Update,
+            )?;
+        }
+
+        // Schema validation.
         if let Some(schema) = &schema {
             validate(schema, &req.data)?;
         }
@@ -669,8 +695,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let mut merged = existing.data.clone();
         json_merge_patch(&mut merged, &req.patch);
 
-        // Schema validation on the merged result.
+        // Lifecycle state enforcement (FEAT-015).
+        // Patches run the update-mode check on the post-merge payload so
+        // callers cannot null-out or corrupt the lifecycle field via patch.
         let schema = self.storage.get_schema(&req.collection)?;
+        if let Some(schema) = &schema {
+            enforce_lifecycle_initial_state(schema, &mut merged, LifecycleEnforcementMode::Update)?;
+        }
+
+        // Schema validation on the merged result.
         if let Some(schema) = &schema {
             validate(schema, &merged)?;
         }
@@ -3878,6 +3911,101 @@ fn json_merge_patch(target: &mut serde_json::Value, patch: &serde_json::Value) {
     } else {
         *target = patch.clone();
     }
+}
+
+/// Operation mode for lifecycle field enforcement.
+///
+/// Only differs on what to do with a missing value: CREATE auto-populates with
+/// the lifecycle's `initial` state, UPDATE returns [`AxonError::LifecycleFieldMissing`].
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum LifecycleEnforcementMode {
+    Create,
+    Update,
+}
+
+/// Enforce lifecycle state invariants on a write (FEAT-015).
+///
+/// For each lifecycle defined on the collection schema:
+///
+/// - If the lifecycle field has no value on `data`:
+///   - CREATE: auto-populate with `lifecycle.initial`.
+///   - UPDATE: return [`AxonError::LifecycleFieldMissing`].
+/// - If the lifecycle field has a non-string or unknown-state value:
+///   return [`AxonError::LifecycleStateInvalid`].
+///
+/// A state is "known" if it equals `lifecycle.initial`, appears as a key in
+/// `transitions`, or appears in any transitions value list.
+fn enforce_lifecycle_initial_state(
+    schema: &CollectionSchema,
+    data: &mut serde_json::Value,
+    mode: LifecycleEnforcementMode,
+) -> Result<(), AxonError> {
+    if schema.lifecycles.is_empty() {
+        return Ok(());
+    }
+
+    for lifecycle in schema.lifecycles.values() {
+        let current = data.get(&lifecycle.field).cloned();
+        match current {
+            None | Some(serde_json::Value::Null) => match mode {
+                LifecycleEnforcementMode::Create => {
+                    if let Some(obj) = data.as_object_mut() {
+                        obj.insert(
+                            lifecycle.field.clone(),
+                            serde_json::Value::String(lifecycle.initial.clone()),
+                        );
+                    } else {
+                        // Entity data must be an object to carry a lifecycle
+                        // field; any other shape is a schema violation.
+                        return Err(AxonError::LifecycleFieldMissing {
+                            field: lifecycle.field.clone(),
+                        });
+                    }
+                }
+                LifecycleEnforcementMode::Update => {
+                    return Err(AxonError::LifecycleFieldMissing {
+                        field: lifecycle.field.clone(),
+                    });
+                }
+            },
+            Some(value) => {
+                let state = match value.as_str() {
+                    Some(s) => s.to_string(),
+                    None => {
+                        return Err(AxonError::LifecycleStateInvalid {
+                            field: lifecycle.field.clone(),
+                            actual: value,
+                        });
+                    }
+                };
+                if !is_known_lifecycle_state(lifecycle, &state) {
+                    return Err(AxonError::LifecycleStateInvalid {
+                        field: lifecycle.field.clone(),
+                        actual: serde_json::Value::String(state),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Returns `true` when `state` is a recognized state for `lifecycle`.
+///
+/// A state is recognized if it is the `initial` state, a key in `transitions`,
+/// or appears in any transitions value list.
+fn is_known_lifecycle_state(lifecycle: &axon_schema::schema::LifecycleDef, state: &str) -> bool {
+    if lifecycle.initial == state {
+        return true;
+    }
+    if lifecycle.transitions.contains_key(state) {
+        return true;
+    }
+    lifecycle
+        .transitions
+        .values()
+        .any(|targets| targets.iter().any(|t| t == state))
 }
 
 /// Check unique index constraints for an entity's data before write.
@@ -12741,5 +12869,261 @@ link_types:
         assert!(decode_snapshot_page_token("abc:xyz").is_err());
         // Length past payload end.
         assert!(decode_snapshot_page_token("99:abc").is_err());
+    }
+
+    // ── Lifecycle initial-state enforcement (FEAT-015) ───────────────────────
+
+    /// Install `tasks` with a `status` lifecycle: `draft -> submitted -> approved`.
+    fn register_tasks_with_status_lifecycle(
+        h: &mut AxonHandler<MemoryStorageAdapter>,
+    ) -> CollectionId {
+        use axon_schema::schema::LifecycleDef;
+        use std::collections::HashMap;
+
+        let col = CollectionId::new("tasks");
+        let mut transitions = HashMap::new();
+        transitions.insert("draft".to_string(), vec!["submitted".to_string()]);
+        transitions.insert("submitted".to_string(), vec!["approved".to_string()]);
+        transitions.insert("approved".to_string(), vec![]);
+
+        let mut lifecycles = HashMap::new();
+        lifecycles.insert(
+            "status".to_string(),
+            LifecycleDef {
+                field: "status".to_string(),
+                initial: "draft".to_string(),
+                transitions,
+            },
+        );
+
+        let schema = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: None,
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles,
+        };
+
+        ok_or_panic(
+            h.create_collection(CreateCollectionRequest {
+                name: col.clone(),
+                schema,
+                actor: None,
+            }),
+            "creating tasks collection with lifecycle",
+        );
+        col
+    }
+
+    #[test]
+    fn create_auto_populates_lifecycle_initial_state() {
+        let mut h = handler();
+        let col = register_tasks_with_status_lifecycle(&mut h);
+
+        let created = ok_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col,
+                id: EntityId::new("t-001"),
+                data: json!({"title": "design the thing"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating entity without explicit status",
+        );
+
+        assert_eq!(created.entity.data["status"], "draft");
+        assert_eq!(created.entity.data["title"], "design the thing");
+    }
+
+    #[test]
+    fn create_accepts_valid_lifecycle_state() {
+        let mut h = handler();
+        let col = register_tasks_with_status_lifecycle(&mut h);
+
+        let created = ok_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col,
+                id: EntityId::new("t-001"),
+                data: json!({"title": "design", "status": "draft"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating entity with explicit draft state",
+        );
+
+        assert_eq!(created.entity.data["status"], "draft");
+    }
+
+    #[test]
+    fn create_rejects_invalid_lifecycle_state() {
+        let mut h = handler();
+        let col = register_tasks_with_status_lifecycle(&mut h);
+
+        let err = err_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col,
+                id: EntityId::new("t-001"),
+                data: json!({"title": "design", "status": "invalid"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating entity with unknown status",
+        );
+
+        match err {
+            AxonError::LifecycleStateInvalid { field, actual } => {
+                assert_eq!(field, "status");
+                assert_eq!(actual, json!("invalid"));
+            }
+            other => panic!("expected LifecycleStateInvalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_rejects_non_string_lifecycle_value() {
+        let mut h = handler();
+        let col = register_tasks_with_status_lifecycle(&mut h);
+
+        let err = err_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col,
+                id: EntityId::new("t-001"),
+                data: json!({"title": "design", "status": 42}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating entity with non-string status",
+        );
+
+        match err {
+            AxonError::LifecycleStateInvalid { field, actual } => {
+                assert_eq!(field, "status");
+                assert_eq!(actual, json!(42));
+            }
+            other => panic!("expected LifecycleStateInvalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_requires_lifecycle_field() {
+        let mut h = handler();
+        let col = register_tasks_with_status_lifecycle(&mut h);
+
+        // Seed with an entity in draft so we have something to update.
+        let created = ok_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("t-001"),
+                data: json!({"title": "design"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "seeding entity",
+        );
+        assert_eq!(created.entity.data["status"], "draft");
+
+        // Update without a status field must fail.
+        let err = err_or_panic(
+            h.update_entity(UpdateEntityRequest {
+                collection: col,
+                id: EntityId::new("t-001"),
+                data: json!({"title": "design revised"}),
+                expected_version: created.entity.version,
+                actor: None,
+                audit_metadata: None,
+            }),
+            "updating entity without status",
+        );
+
+        match err {
+            AxonError::LifecycleFieldMissing { field } => {
+                assert_eq!(field, "status");
+            }
+            other => panic!("expected LifecycleFieldMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_rejects_invalid_state() {
+        let mut h = handler();
+        let col = register_tasks_with_status_lifecycle(&mut h);
+
+        let created = ok_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("t-001"),
+                data: json!({"title": "design"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "seeding entity",
+        );
+
+        let err = err_or_panic(
+            h.update_entity(UpdateEntityRequest {
+                collection: col,
+                id: EntityId::new("t-001"),
+                data: json!({"title": "design", "status": "not-a-state"}),
+                expected_version: created.entity.version,
+                actor: None,
+                audit_metadata: None,
+            }),
+            "updating entity with unknown status",
+        );
+
+        match err {
+            AxonError::LifecycleStateInvalid { field, actual } => {
+                assert_eq!(field, "status");
+                assert_eq!(actual, json!("not-a-state"));
+            }
+            other => panic!("expected LifecycleStateInvalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn create_with_no_lifecycle_ignores_field_check() {
+        let mut h = handler();
+        let col = CollectionId::new("notes");
+
+        // Collection with an empty lifecycles map.
+        ok_or_panic(
+            h.create_collection(CreateCollectionRequest {
+                name: col.clone(),
+                schema: CollectionSchema::new(col.clone()),
+                actor: None,
+            }),
+            "creating notes collection",
+        );
+
+        // Create and update with arbitrary data must succeed: the lifecycle
+        // enforcement check has nothing to enforce.
+        let created = ok_or_panic(
+            h.create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("n-001"),
+                data: json!({"body": "hello", "status": "whatever"}),
+                actor: None,
+                audit_metadata: None,
+            }),
+            "creating note",
+        );
+        assert_eq!(created.entity.data["status"], "whatever");
+
+        ok_or_panic(
+            h.update_entity(UpdateEntityRequest {
+                collection: col,
+                id: EntityId::new("n-001"),
+                data: json!({"body": "updated"}),
+                expected_version: created.entity.version,
+                actor: None,
+                audit_metadata: None,
+            }),
+            "updating note",
+        );
     }
 }

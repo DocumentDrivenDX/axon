@@ -1248,6 +1248,12 @@ fn to_tool_error(err: axon_core::error::AxonError) -> ToolError {
              valid transitions: [{}]",
             valid_transitions.join(", ")
         )),
+        AxonError::LifecycleFieldMissing { field } => ToolError::InvalidArgument(format!(
+            "lifecycle field `{field}` is missing from entity data"
+        )),
+        AxonError::LifecycleStateInvalid { field, actual } => ToolError::InvalidArgument(format!(
+            "lifecycle field `{field}` has invalid value {actual}"
+        )),
         AxonError::RateLimitExceeded { actor, retry_after_ms } => ToolError::InvalidArgument(format!(
             "rate limit exceeded for actor '{actor}'; retry after {retry_after_ms}ms"
         )),

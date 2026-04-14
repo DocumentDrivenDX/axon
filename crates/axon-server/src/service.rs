@@ -110,6 +110,16 @@ fn axon_to_status(err: AxonError) -> Status {
              \"current_state\":{current_state:?},\"target_state\":{target_state:?},\
              \"valid_transitions\":{valid_transitions:?}}}"
         )),
+        AxonError::LifecycleFieldMissing { field } => Status::failed_precondition(format!(
+            "{{\"code\":\"lifecycle_field_missing\",\"field\":{field:?}}}"
+        )),
+        AxonError::LifecycleStateInvalid { field, actual } => {
+            let actual_json =
+                serde_json::to_string(&actual).unwrap_or_else(|_| "null".to_string());
+            Status::failed_precondition(format!(
+                "{{\"code\":\"lifecycle_state_invalid\",\"field\":{field:?},\"actual\":{actual_json}}}"
+            ))
+        }
         AxonError::RateLimitExceeded { actor, retry_after_ms } => Status::resource_exhausted(format!(
             "{{\"code\":\"rate_limit_exceeded\",\"actor\":{actor:?},\"retry_after_ms\":{retry_after_ms}}}"
         )),
