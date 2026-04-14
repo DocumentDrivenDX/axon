@@ -365,7 +365,7 @@ mod tests {
             burst_allowance: 5.0,
         };
         let bucket = TokenBucket::new(&cfg, now);
-        assert_eq!(bucket.available_tokens(), 5.0);
+        assert!((bucket.available_tokens() - 5.0).abs() < 1e-9);
     }
 
     #[test]
@@ -397,7 +397,7 @@ mod tests {
         bucket.try_consume(now).unwrap();
         // After a long wait, tokens should be capped at capacity, not 100+.
         bucket.refill(now + Duration::from_secs(60));
-        assert_eq!(bucket.available_tokens(), 10.0);
+        assert!((bucket.available_tokens() - 10.0).abs() < 1e-9);
     }
 
     #[test]

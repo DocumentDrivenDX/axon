@@ -136,7 +136,7 @@ mod tests {
 
     fn store_with(origins: &[&str]) -> CorsStore {
         let store = CorsStore::default();
-        store.load_from_entries(origins.iter().map(|s| s.to_string()).collect());
+        store.load_from_entries(origins.iter().map(|s| (*s).to_string()).collect());
         store
     }
 

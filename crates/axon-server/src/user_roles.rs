@@ -225,7 +225,7 @@ mod tests {
             entries
                 .iter()
                 .map(|(l, r)| UserRoleEntry {
-                    login: l.to_string(),
+                    login: (*l).to_string(),
                     role: r.clone(),
                 })
                 .collect(),

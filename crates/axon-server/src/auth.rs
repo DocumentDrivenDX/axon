@@ -842,7 +842,7 @@ mod tests {
         // Tagged service nodes may have an empty user_login; fall back to node_name.
         let whois = TailscaleWhoisResponse {
             node_name: "agent-worker-1".into(),
-            user_login: "".into(),
+            user_login: String::new(),
             tags: vec!["tag:axon-agent".into()],
         };
         let id = identity_from_tailscale(&whois, &Role::Read);
