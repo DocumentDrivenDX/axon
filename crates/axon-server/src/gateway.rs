@@ -29,6 +29,7 @@ use crate::actor_scope::ActorScopeGuard;
 use crate::auth::{AuthContext, AuthError, Identity};
 use crate::collection_listing::{filter_audit_entries_to_database, list_collections_for_database};
 use crate::cors_config::CorsStore;
+use crate::idempotency::{IdempotencyStore, ReservationResult};
 use crate::mcp_http::{notify_entity_change, notify_entity_change_by_parts, McpHttpSessions};
 use crate::rate_limit::{RateLimited, WriteRateLimiter};
 use axon_api::handler::AxonHandler;
@@ -58,6 +59,19 @@ use crate::tenant_router::{TenantHandler, TenantRouter};
 /// use axum `State` for backward compatibility.
 #[allow(dead_code)]
 type SharedHandler<S> = Arc<Mutex<AxonHandler<S>>>;
+
+/// Idempotency store type used by the HTTP gateway.
+///
+/// Caches the JSON body of a successful `POST /transactions` response,
+/// keyed by `(database_id, idempotency_key)`, for up to 5 minutes
+/// (FEAT-008 US-081).
+pub type HttpIdempotencyStore = Arc<IdempotencyStore<Value>>;
+
+/// Header name for idempotency keys on `POST /transactions` (FEAT-008 US-081).
+const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+
+/// Response header emitted when returning a cached idempotent response.
+const IDEMPOTENCY_CACHE_HEADER: &str = "x-idempotent-cache";
 
 const AXON_DATABASE_HEADER: &str = "x-axon-database";
 
@@ -2255,6 +2269,8 @@ async fn commit_transaction(
     Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
+    Extension(idempotency): Extension<HttpIdempotencyStore>,
+    headers: HeaderMap,
     Json(body): Json<TransactionBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
@@ -2274,6 +2290,45 @@ async fn commit_transaction(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
+
+    // ── Idempotency check (FEAT-008 US-081) ─────────────────────────────────
+    //
+    // Keys are scoped per database. The default-database-only in-memory
+    // deployment shares a `default` sentinel with the `x-axon-database`
+    // routing, so the `current_database` extension is authoritative here.
+    let idem_key = headers
+        .get(IDEMPOTENCY_KEY_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    if let Some(ref key) = idem_key {
+        match idempotency.try_reserve(current_database.as_str(), key) {
+            ReservationResult::AlreadyCached(cached) => {
+                let mut response = (StatusCode::OK, Json(cached)).into_response();
+                response.headers_mut().insert(
+                    IDEMPOTENCY_CACHE_HEADER,
+                    axum::http::HeaderValue::from_static("hit"),
+                );
+                return response;
+            }
+            ReservationResult::InFlight { retry_after_ms } => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({
+                        "code": "in_flight",
+                        "retryable": true,
+                        "retry_after_ms": retry_after_ms,
+                    })),
+                )
+                    .into_response();
+            }
+            ReservationResult::Reserved => {
+                // Proceed with execution; we'll call store_response on
+                // success or release() on failure.
+            }
+        }
+    }
+
     use axon_api::transaction::Transaction;
     use axon_core::types::Entity;
 
@@ -2340,6 +2395,11 @@ async fn commit_transaction(
             }
         };
         if let Err(e) = result {
+            // Staging failure — not cacheable; release the reservation so
+            // the client can retry with the same key after correction.
+            if let Some(ref key) = idem_key {
+                idempotency.release(current_database.as_str(), key);
+            }
             return axon_error_response(e);
         }
     }
@@ -2368,16 +2428,26 @@ async fn commit_transaction(
                     })
                 })
                 .collect();
-            (
-                StatusCode::OK,
-                Json(json!({
-                    "transaction_id": tx_id,
-                    "entities": entities,
-                })),
-            )
-                .into_response()
+            let body = json!({
+                "transaction_id": tx_id,
+                "entities": entities,
+            });
+            // Cache the response body so a retry with the same key gets the
+            // same result without re-executing (FEAT-008 US-081).
+            if let Some(ref key) = idem_key {
+                idempotency.store_response(current_database.as_str(), key, body.clone());
+            }
+            (StatusCode::OK, Json(body)).into_response()
         }
-        Err(e) => axon_error_response(e),
+        Err(e) => {
+            // Failed transactions are NOT cached; release the reservation so
+            // the client can retry with the same key after correcting the
+            // payload (FEAT-008 US-081 AC4).
+            if let Some(ref key) = idem_key {
+                idempotency.release(current_database.as_str(), key);
+            }
+            axon_error_response(e)
+        }
     }
 }
 
@@ -2514,6 +2584,40 @@ pub fn build_router(
     )
 }
 
+/// Construct the default production [`HttpIdempotencyStore`] (5-minute TTL
+/// backed by a [`SystemClock`](axon_core::clock::SystemClock)).
+fn default_idempotency_store() -> HttpIdempotencyStore {
+    use axon_core::clock::SystemClock;
+    Arc::new(IdempotencyStore::with_default_ttl(Arc::new(SystemClock)))
+}
+
+/// Build the axum router for the HTTP gateway with an injected
+/// [`HttpIdempotencyStore`].
+///
+/// Tests use this entry point to exercise TTL expiry deterministically by
+/// passing a store whose clock is a [`FakeClock`](axon_core::clock::FakeClock)
+/// or whose TTL is a small duration. Production paths should use
+/// [`build_router`] or [`build_router_with_auth`], which construct a default
+/// store with a `SystemClock` and the FEAT-008 US-081 5-minute TTL.
+pub fn build_router_with_idempotency(
+    tenant_router: Arc<TenantRouter>,
+    backend: impl Into<String>,
+    ui_dir: Option<PathBuf>,
+    idempotency_store: HttpIdempotencyStore,
+) -> Router {
+    build_router_with_auth_inner(
+        tenant_router,
+        backend,
+        ui_dir,
+        AuthContext::no_auth(),
+        crate::rate_limit::RateLimitConfig::default(),
+        ActorScopeGuard::default(),
+        None,
+        CorsStore::default(),
+        idempotency_store,
+    )
+}
+
 /// Data routes for the HTTP gateway.
 ///
 /// Handlers extract the tenant-resolved handler from
@@ -2601,6 +2705,31 @@ pub fn build_router_with_auth(
     control_plane: Option<crate::control_plane_routes::ControlPlaneState>,
     cors: CorsStore,
 ) -> Router {
+    build_router_with_auth_inner(
+        tenant_router,
+        backend,
+        ui_dir,
+        auth,
+        rate_limit_config,
+        actor_scope,
+        control_plane,
+        cors,
+        default_idempotency_store(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_router_with_auth_inner(
+    tenant_router: Arc<TenantRouter>,
+    backend: impl Into<String>,
+    ui_dir: Option<PathBuf>,
+    auth: AuthContext,
+    rate_limit_config: crate::rate_limit::RateLimitConfig,
+    actor_scope: ActorScopeGuard,
+    control_plane: Option<crate::control_plane_routes::ControlPlaneState>,
+    cors: CorsStore,
+    idempotency_store: HttpIdempotencyStore,
+) -> Router {
     let start = Instant::now();
     let backend = backend.into();
     let mcp_sessions = McpHttpSessions::default();
@@ -2641,6 +2770,7 @@ pub fn build_router_with_auth(
         .layer(Extension(actor_scope))
         .layer(Extension(mcp_sessions))
         .layer(Extension(BroadcastBroker::default()))
+        .layer(Extension(idempotency_store))
         .layer(middleware::from_fn(resolve_tenant_handler))
         .layer(Extension(tenant_router))
         .route(

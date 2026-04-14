@@ -1330,6 +1330,324 @@ async fn http_caller_identity_per_operation_type() {
     assert_eq!(entries[2]["actor"], "deleter");
 }
 
+// ── Idempotency tests (FEAT-008 US-081) ──────────────────────────────────────
+
+/// AC1 + AC2: POST with `Idempotency-Key` stores the response; a retry with
+/// the same key within the TTL returns the cached body without re-executing.
+#[tokio::test]
+async fn http_transactions_idempotent_key_caches_success() {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    // Seed the entity at v1 so the transaction's update can reference a
+    // concrete expected_version.
+    http.post("/entities/idem/e-1")
+        .json(&json!({"data": {"v": 0}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let key = "idem-k-1";
+
+    let resp1 = http
+        .post("/transactions")
+        .add_header("idempotency-key", key)
+        .json(&json!({
+            "operations": [{
+                "op": "update",
+                "collection": "idem",
+                "id": "e-1",
+                "data": {"v": 1},
+                "expected_version": 1
+            }]
+        }))
+        .await;
+    resp1.assert_status_ok();
+    let body1: Value = resp1.json();
+    assert!(body1["transaction_id"].is_string());
+
+    // Entity is now at version 2; a fresh execution with expected_version=1
+    // would fail. The idempotency cache must return the original response
+    // without re-executing.
+    let resp2 = http
+        .post("/transactions")
+        .add_header("idempotency-key", key)
+        .json(&json!({
+            "operations": [{
+                "op": "update",
+                "collection": "idem",
+                "id": "e-1",
+                "data": {"v": 1},
+                "expected_version": 1
+            }]
+        }))
+        .await;
+    resp2.assert_status_ok();
+    let body2: Value = resp2.json();
+    assert_eq!(body1, body2, "second response must be byte-identical");
+
+    // Entity version must still be 2 (not re-applied to version 3).
+    let get_resp = http.get("/entities/idem/e-1").await;
+    get_resp.assert_status_ok();
+    let get_body: Value = get_resp.json();
+    assert_eq!(
+        get_body["entity"]["version"], 2,
+        "cached response must not re-execute the mutation"
+    );
+}
+
+/// Back-compat: POST without an `Idempotency-Key` header must still execute
+/// normally; the cache is not consulted.
+#[tokio::test]
+async fn http_transactions_without_key_executes_normally() {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    let resp1 = http
+        .post("/transactions")
+        .json(&json!({
+            "operations": [{
+                "op": "create",
+                "collection": "noidem",
+                "id": "e-1",
+                "data": {"v": 1}
+            }]
+        }))
+        .await;
+    resp1.assert_status_ok();
+
+    // Same body without a key — independent execution. Second create with
+    // the same id must fail with AlreadyExists (would have been masked by a
+    // cached response if the cache were active).
+    let resp2 = http
+        .post("/transactions")
+        .json(&json!({
+            "operations": [{
+                "op": "create",
+                "collection": "noidem",
+                "id": "e-1",
+                "data": {"v": 1}
+            }]
+        }))
+        .await;
+    assert_eq!(
+        resp2.status_code(),
+        axum::http::StatusCode::CONFLICT,
+        "second POST without idempotency key must re-execute and surface the conflict",
+    );
+}
+
+/// AC4: a failed transaction (version conflict) must NOT be cached — a
+/// retry with the same key re-executes.
+#[tokio::test]
+async fn http_transactions_idempotent_conflict_not_cached() {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    // Seed at v1, then update to v2 out-of-band so the transaction's
+    // expected_version=1 will fail deterministically.
+    http.post("/entities/conf/e-1")
+        .json(&json!({"data": {"v": 0}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+    http.put("/entities/conf/e-1")
+        .json(&json!({"data": {"v": 1}, "expected_version": 1}))
+        .await
+        .assert_status_ok();
+
+    let key = "conf-k-1";
+    let body = json!({
+        "operations": [{
+            "op": "update",
+            "collection": "conf",
+            "id": "e-1",
+            "data": {"v": 99},
+            "expected_version": 1
+        }]
+    });
+
+    let resp1 = http
+        .post("/transactions")
+        .add_header("idempotency-key", key)
+        .json(&body)
+        .await;
+    assert_eq!(
+        resp1.status_code(),
+        axum::http::StatusCode::CONFLICT,
+        "first attempt must produce a version conflict"
+    );
+
+    // Retry with the same key — failure was not cached, so this must also
+    // re-execute and return 409 (not a cached success).
+    let resp2 = http
+        .post("/transactions")
+        .add_header("idempotency-key", key)
+        .json(&body)
+        .await;
+    assert_eq!(
+        resp2.status_code(),
+        axum::http::StatusCode::CONFLICT,
+        "retry after a non-cacheable failure must re-execute"
+    );
+    let err_body: Value = resp2.json();
+    assert_eq!(err_body["code"], "version_conflict");
+}
+
+/// AC6: Idempotency keys are scoped per database. A key used in database A
+/// must not short-circuit execution in database B.
+#[tokio::test]
+async fn http_transactions_idempotent_different_databases_isolated() {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    let key = "shared-k-1";
+
+    // POST to database "alpha" creates an entity there.
+    let resp_a = http
+        .post("/transactions")
+        .add_header("idempotency-key", key)
+        .add_header("x-axon-database", "alpha")
+        .json(&json!({
+            "operations": [{
+                "op": "create",
+                "collection": "iso",
+                "id": "e-alpha",
+                "data": {"db": "alpha"}
+            }]
+        }))
+        .await;
+    resp_a.assert_status_ok();
+    let body_a: Value = resp_a.json();
+
+    // Same key in database "beta" — must execute independently (not hit the
+    // alpha cache entry).
+    let resp_b = http
+        .post("/transactions")
+        .add_header("idempotency-key", key)
+        .add_header("x-axon-database", "beta")
+        .json(&json!({
+            "operations": [{
+                "op": "create",
+                "collection": "iso",
+                "id": "e-beta",
+                "data": {"db": "beta"}
+            }]
+        }))
+        .await;
+    resp_b.assert_status_ok();
+    let body_b: Value = resp_b.json();
+
+    assert_ne!(
+        body_a["transaction_id"], body_b["transaction_id"],
+        "cross-database keys must not dedup — each request produces its own transaction",
+    );
+
+    // Both entities exist (TenantRouter::single stores them in the shared
+    // handler; collection names are qualified per-database, so the IDs are
+    // independent).
+    http.get("/entities/iso/e-alpha")
+        .add_header("x-axon-database", "alpha")
+        .await
+        .assert_status_ok();
+    http.get("/entities/iso/e-beta")
+        .add_header("x-axon-database", "beta")
+        .await
+        .assert_status_ok();
+}
+
+/// AC3: a retry after the TTL expires re-executes the transaction.
+///
+/// This test injects a 100 ms TTL store via [`build_router_with_idempotency`]
+/// and calls `tokio::time::sleep` once to cross the boundary. A FakeClock
+/// cannot be used here because the router constructs the store before any
+/// requests run — once the router is built we can't advance time inside the
+/// handler without threading the clock into the handler itself, and the
+/// gateway's current design already keys on (`Clock::now`, TTL). A real
+/// 100 ms sleep is still well below the test-suite default timeouts.
+#[tokio::test]
+async fn http_transactions_idempotent_expired_reexecutes() {
+    use axon_core::clock::SystemClock;
+    use axon_server::gateway::build_router_with_idempotency;
+    use axon_server::idempotency::IdempotencyStore;
+    use std::time::Duration;
+
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+
+    let store = Arc::new(IdempotencyStore::<Value>::new(
+        Arc::new(SystemClock),
+        Duration::from_millis(100),
+    ));
+    let http_app = build_router_with_idempotency(tenant_router, "memory", None, store);
+    let http = axum_test::TestServer::new(http_app);
+
+    // Seed an entity at v1 so each execution attempts a valid update.
+    http.post("/entities/exp/e-1")
+        .json(&json!({"data": {"v": 0}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let key = "exp-k-1";
+
+    let resp1 = http
+        .post("/transactions")
+        .add_header("idempotency-key", key)
+        .json(&json!({
+            "operations": [{
+                "op": "update",
+                "collection": "exp",
+                "id": "e-1",
+                "data": {"v": 1},
+                "expected_version": 1
+            }]
+        }))
+        .await;
+    resp1.assert_status_ok();
+
+    // Wait past the 100ms TTL.
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    // After expiry, the retry re-executes — but the entity is now at v2, so
+    // the same expected_version=1 payload would conflict. Surfacing the
+    // conflict proves re-execution (a cached response would have returned
+    // the original 200 OK body).
+    let resp2 = http
+        .post("/transactions")
+        .add_header("idempotency-key", key)
+        .json(&json!({
+            "operations": [{
+                "op": "update",
+                "collection": "exp",
+                "id": "e-1",
+                "data": {"v": 1},
+                "expected_version": 1
+            }]
+        }))
+        .await;
+    assert_eq!(
+        resp2.status_code(),
+        axum::http::StatusCode::CONFLICT,
+        "post-TTL retry must re-execute and surface the real version conflict"
+    );
+}
+
 #[tokio::test]
 async fn grpc_transition_lifecycle_uses_metadata_actor() {
     let mut client = setup_lifecycle_client().await;

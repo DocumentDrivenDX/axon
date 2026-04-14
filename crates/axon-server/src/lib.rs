@@ -50,6 +50,7 @@ pub mod control_plane_routes;
 pub mod cors_config;
 pub mod user_roles;
 pub mod gateway;
+pub mod idempotency;
 pub(crate) mod mcp_http;
 pub mod mcp_stdio;
 pub mod rate_limit;
