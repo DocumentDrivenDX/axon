@@ -246,7 +246,7 @@ pub async fn serve(args: ServeArgs) -> Result<(), String> {
     // Install a rustls crypto provider once per process before any TLS I/O.
     // Without this, processes that pull in both aws-lc-rs and ring (via
     // reqwest + tokio-rustls) will panic with "could not determine provider".
-    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
 
     init_tracing(args.mcp_stdio);
 

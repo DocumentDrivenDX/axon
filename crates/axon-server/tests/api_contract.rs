@@ -1035,3 +1035,158 @@ async fn grpc_create_collection_duplicate_fails() {
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::AlreadyExists);
 }
+
+// ── gRPC Lifecycle Tests (FEAT-015) ─────────────────────────────────────────
+
+/// JSON schema literal with a `status` lifecycle matching the HTTP tests:
+/// `draft -> submitted -> approved`.
+fn lifecycle_schema_json(collection: &str) -> String {
+    serde_json::json!({
+        "collection": collection,
+        "version": 1,
+        "lifecycles": {
+            "status": {
+                "field": "status",
+                "initial": "draft",
+                "transitions": {
+                    "draft": ["submitted"],
+                    "submitted": ["approved"],
+                    "approved": []
+                }
+            }
+        }
+    })
+    .to_string()
+}
+
+/// Provision the `tasks` collection (with the `status` lifecycle) and seed
+/// entity `t-001` in `status: "draft"` on a fresh gRPC server. Returns the
+/// connected client.
+async fn setup_lifecycle_client() -> proto::axon_service_client::AxonServiceClient<
+    tonic::transport::Channel,
+> {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    client
+        .create_collection(proto::CreateCollectionRequest {
+            name: "tasks".into(),
+            schema_json: lifecycle_schema_json("tasks"),
+            actor: "test-setup".into(),
+        })
+        .await
+        .unwrap();
+
+    client
+        .create_entity(proto::CreateEntityRequest {
+            collection: "tasks".into(),
+            id: "t-001".into(),
+            data_json: serde_json::json!({
+                "status": "draft",
+                "title": "design the thing"
+            })
+            .to_string(),
+            actor: "test-setup".into(),
+        })
+        .await
+        .unwrap();
+
+    client
+}
+
+#[tokio::test]
+async fn grpc_transition_lifecycle_happy_path() {
+    let mut client = setup_lifecycle_client().await;
+
+    let resp = client
+        .transition_lifecycle(proto::TransitionLifecycleRequest {
+            collection: "tasks".into(),
+            entity_id: "t-001".into(),
+            lifecycle_name: "status".into(),
+            target_state: "submitted".into(),
+            expected_version: 1,
+            actor: "alice".into(),
+        })
+        .await
+        .unwrap();
+
+    let entity = resp.into_inner().entity.unwrap();
+    assert_eq!(entity.collection, "tasks");
+    assert_eq!(entity.id, "t-001");
+    assert_eq!(entity.version, 2);
+    let data: Value = serde_json::from_str(&entity.data_json).unwrap();
+    assert_eq!(data["status"], "submitted");
+    assert_eq!(data["title"], "design the thing");
+}
+
+#[tokio::test]
+async fn grpc_transition_lifecycle_invalid_transition() {
+    let mut client = setup_lifecycle_client().await;
+
+    let err = client
+        .transition_lifecycle(proto::TransitionLifecycleRequest {
+            collection: "tasks".into(),
+            entity_id: "t-001".into(),
+            lifecycle_name: "status".into(),
+            target_state: "approved".into(),
+            expected_version: 1,
+            actor: String::new(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    let msg = err.message();
+    assert!(
+        msg.contains("invalid_transition"),
+        "message should include invalid_transition code: {msg}"
+    );
+    assert!(
+        msg.contains("submitted"),
+        "message should include valid_transitions list: {msg}"
+    );
+    assert!(
+        msg.contains("\"draft\""),
+        "message should include current_state: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn grpc_transition_lifecycle_not_found() {
+    let mut client = setup_lifecycle_client().await;
+
+    let err = client
+        .transition_lifecycle(proto::TransitionLifecycleRequest {
+            collection: "tasks".into(),
+            entity_id: "t-001".into(),
+            lifecycle_name: "does_not_exist".into(),
+            target_state: "whatever".into(),
+            expected_version: 1,
+            actor: String::new(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::NotFound);
+    assert!(err.message().contains("does_not_exist"));
+}
+
+#[tokio::test]
+async fn grpc_transition_lifecycle_version_conflict() {
+    let mut client = setup_lifecycle_client().await;
+
+    let err = client
+        .transition_lifecycle(proto::TransitionLifecycleRequest {
+            collection: "tasks".into(),
+            entity_id: "t-001".into(),
+            lifecycle_name: "status".into(),
+            target_state: "submitted".into(),
+            expected_version: 99,
+            actor: String::new(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code(), tonic::Code::FailedPrecondition);
+    assert!(err.message().contains("version_conflict"));
+}

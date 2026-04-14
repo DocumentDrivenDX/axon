@@ -11,7 +11,7 @@ use axon_api::handler::AxonHandler;
 use axon_core::id::DEFAULT_DATABASE;
 use axon_mcp::handlers::{
     build_aggregate_tool, build_crud_tools, build_link_candidates_tool, build_neighbors_tool,
-    build_query_tool,
+    build_query_tool, build_transition_lifecycle_tool,
 };
 use axon_mcp::prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
 use axon_mcp::protocol::McpServer;
@@ -54,7 +54,8 @@ fn build_registry<S: StorageAdapter + 'static>(
         registry.register(build_neighbors_tool(col, Arc::clone(&handler)));
     }
 
-    registry.register(build_query_tool(handler));
+    registry.register(build_query_tool(Arc::clone(&handler)));
+    registry.register(build_transition_lifecycle_tool(handler));
     Ok(registry)
 }
 
@@ -180,8 +181,9 @@ mod tests {
         let resp_str = server.handle_message(&req.to_string()).unwrap();
         let resp: serde_json::Value = serde_json::from_str(&resp_str).unwrap();
         let tools = resp["result"]["tools"].as_array().unwrap();
-        // 4 CRUD tools + aggregate + link_candidates + neighbors + query
-        assert_eq!(tools.len(), 8);
+        // 4 CRUD tools + aggregate + link_candidates + neighbors
+        //   + axon.query + axon.transition_lifecycle
+        assert_eq!(tools.len(), 9);
 
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"tasks.create"));
@@ -192,6 +194,7 @@ mod tests {
         assert!(names.contains(&"tasks.link_candidates"));
         assert!(names.contains(&"tasks.neighbors"));
         assert!(names.contains(&"axon.query"));
+        assert!(names.contains(&"axon.transition_lifecycle"));
     }
 
     #[test]

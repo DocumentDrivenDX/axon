@@ -16,8 +16,8 @@ use axon_api::handler::AxonHandler;
 use axon_api::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateEntityRequest,
     DeleteEntityRequest, FilterNode, FindLinkCandidatesRequest, GetEntityRequest,
-    ListCollectionsRequest, ListNeighborsRequest, QueryEntitiesRequest, TraverseDirection,
-    UpdateEntityRequest,
+    ListCollectionsRequest, ListNeighborsRequest, QueryEntitiesRequest, TransitionLifecycleRequest,
+    TraverseDirection, UpdateEntityRequest,
 };
 use axon_core::id::{CollectionId, EntityId};
 use axon_storage::adapter::StorageAdapter;
@@ -796,6 +796,97 @@ pub fn build_query_tool<S: StorageAdapter + 'static>(
         handler: Box::new(move |args| {
             let guard = lock_handler(&handler)?;
             execute_query(&guard, args)
+        }),
+    }
+}
+
+/// Build the global `axon.transition_lifecycle` tool (FEAT-015).
+///
+/// Transitions an entity through a named lifecycle state machine declared in
+/// its collection schema. `expected_version` is optional: when omitted, the
+/// tool reads the current entity version and uses it, which is the usual
+/// ergonomic mode for agent-driven callers. Supply it explicitly for strict
+/// OCC-guarded transitions.
+///
+/// Error mapping flows through [`to_tool_error`] so that `LifecycleNotFound`
+/// becomes `ToolError::NotFound` and `InvalidTransition` becomes
+/// `ToolError::InvalidArgument` with the list of valid transitions embedded
+/// in the message.
+pub fn build_transition_lifecycle_tool<S: StorageAdapter + 'static>(
+    handler: Arc<Mutex<AxonHandler<S>>>,
+) -> ToolDef {
+    ToolDef {
+        name: "axon.transition_lifecycle".into(),
+        description: "Transition an entity through a named lifecycle state machine. \
+            Returns the updated entity on success, or a structured error listing the \
+            valid transitions if the requested target state is not reachable."
+            .into(),
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "collection_id": {
+                    "type": "string",
+                    "description": "Collection name containing the entity"
+                },
+                "entity_id": {
+                    "type": "string",
+                    "description": "Entity ID to transition"
+                },
+                "lifecycle_name": {
+                    "type": "string",
+                    "description": "Name of the lifecycle declared in the collection schema"
+                },
+                "target_state": {
+                    "type": "string",
+                    "description": "The state to transition to"
+                },
+                "expected_version": {
+                    "type": "integer",
+                    "description": "Optional OCC guard — if omitted, the current entity version is used"
+                }
+            },
+            "required": ["collection_id", "entity_id", "lifecycle_name", "target_state"]
+        }),
+        handler: Box::new(move |args| {
+            let collection_id = get_required_string(args, "collection_id")?;
+            let entity_id = get_required_string(args, "entity_id")?;
+            let lifecycle_name = get_required_string(args, "lifecycle_name")?;
+            let target_state = get_required_string(args, "target_state")?;
+
+            let cid = CollectionId::new(&collection_id);
+            let eid = EntityId::new(&entity_id);
+
+            let expected_version = match args.get("expected_version") {
+                Some(Value::Null) | None => {
+                    // Read current version so callers can omit the OCC guard.
+                    let guard = lock_handler(&handler)?;
+                    let resp = guard
+                        .get_entity(GetEntityRequest {
+                            collection: cid.clone(),
+                            id: eid.clone(),
+                        })
+                        .map_err(to_tool_error)?;
+                    resp.entity.version
+                }
+                Some(v) => v.as_u64().ok_or_else(|| {
+                    ToolError::InvalidArgument("'expected_version' must be a u64".into())
+                })?,
+            };
+
+            let mut guard = lock_handler(&handler)?;
+            let resp = guard
+                .transition_lifecycle(TransitionLifecycleRequest {
+                    collection_id: cid,
+                    entity_id: eid,
+                    lifecycle_name,
+                    target_state,
+                    expected_version,
+                    actor: Some("mcp".into()),
+                    audit_metadata: None,
+                })
+                .map_err(to_tool_error)?;
+
+            text_tool_response(&resp.entity)
         }),
     }
 }

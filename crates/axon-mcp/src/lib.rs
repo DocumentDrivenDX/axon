@@ -25,6 +25,7 @@ pub use handlers::{
     build_aggregate_tool, build_aggregate_tool_tokio, build_crud_tools, build_crud_tools_tokio,
     build_link_candidates_tool, build_link_candidates_tool_tokio, build_neighbors_tool,
     build_neighbors_tool_tokio, build_query_tool, build_query_tool_tokio,
+    build_transition_lifecycle_tool,
 };
 pub use prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
 pub use protocol::{McpError, McpServer};

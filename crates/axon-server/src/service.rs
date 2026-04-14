@@ -9,7 +9,7 @@ use axon_api::request::{
     DropCollectionRequest, DropDatabaseRequest, DropNamespaceRequest, GetEntityRequest,
     GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
     ListNamespaceCollectionsRequest, ListNamespacesRequest, PutSchemaRequest, QueryEntitiesRequest,
-    TraverseRequest, UpdateEntityRequest,
+    TransitionLifecycleRequest, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::transaction::Transaction;
 use axon_audit::log::AuditLog;
@@ -58,9 +58,11 @@ pub use proto::{
     ListNamespacesResponse as ProtoListNamespacesResp, PutSchemaRequest as ProtoPutSchemaReq,
     PutSchemaResponse as ProtoPutSchemaResp, QueryAuditByEntityRequest, QueryAuditByEntityResponse,
     QueryEntitiesRequest as ProtoQueryEntitiesReq, QueryEntitiesResponse as ProtoQueryEntitiesResp,
-    TransactionOp as ProtoTxOp, TraverseRequest as ProtoTraverseReq,
-    TraverseResponse as ProtoTraverseResp, UpdateEntityRequest as ProtoUpdateEntityReq,
-    UpdateEntityResponse as ProtoUpdateEntityResp,
+    TransactionOp as ProtoTxOp,
+    TransitionLifecycleRequest as ProtoTransitionLifecycleReq,
+    TransitionLifecycleResponse as ProtoTransitionLifecycleResp,
+    TraverseRequest as ProtoTraverseReq, TraverseResponse as ProtoTraverseResp,
+    UpdateEntityRequest as ProtoUpdateEntityReq, UpdateEntityResponse as ProtoUpdateEntityResp,
 };
 
 /// Convert an [`AxonError`] to a gRPC [`Status`] with a structured message.
@@ -936,6 +938,44 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             database: resp.database,
             schema: resp.schema,
             collections_removed: resp.collections_removed as u64,
+        }))
+    }
+
+    /// Drive a schema-declared lifecycle transition against an entity
+    /// (FEAT-015). The proto `actor` field is optional — an empty string
+    /// causes the authenticated identity actor to be used instead.
+    async fn transition_lifecycle(
+        &self,
+        request: Request<ProtoTransitionLifecycleReq>,
+    ) -> Result<Response<ProtoTransitionLifecycleResp>, Status> {
+        let identity = self.authorize(request.remote_addr()).await?;
+        identity.require_write().map_err(auth_to_status)?;
+        let current_database = grpc_current_database(&request).to_string();
+        let req = request.into_inner();
+
+        let actor = if req.actor.is_empty() {
+            identity.actor
+        } else {
+            req.actor
+        };
+
+        let resp = self
+            .handler
+            .lock()
+            .await
+            .transition_lifecycle(TransitionLifecycleRequest {
+                collection_id: qualify_collection_name(&req.collection, &current_database),
+                entity_id: EntityId::new(&req.entity_id),
+                lifecycle_name: req.lifecycle_name,
+                target_state: req.target_state,
+                expected_version: req.expected_version,
+                actor: Some(actor),
+                audit_metadata: None,
+            })
+            .map_err(axon_to_status)?;
+
+        Ok(Response::new(ProtoTransitionLifecycleResp {
+            entity: Some(entity_to_proto(resp.entity)),
         }))
     }
 }

@@ -40,8 +40,8 @@ use axon_api::request::{
     ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
     ListNamespacesRequest, PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest,
     QueryEntitiesRequest, RevertEntityRequest, RollbackCollectionRequest, RollbackEntityRequest,
-    RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest, TraverseDirection,
-    TraverseRequest, UpdateEntityRequest,
+    RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest, TransitionLifecycleRequest,
+    TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
 use axon_audit::AuditLog;
@@ -691,6 +691,27 @@ pub struct PutCollectionTemplateBody {
     pub actor: Option<String>,
 }
 
+/// Request body for `POST /db/{database}/lifecycle/{collection}/{entity}/transition`.
+///
+/// Lifecycle transitions are driven by the named lifecycle declared in the
+/// collection schema. The body carries the lifecycle name, the target state,
+/// an OCC guard (`expected_version`), and optional audit metadata. The
+/// `actor` defaults to the authenticated identity when omitted.
+#[derive(Deserialize)]
+pub struct TransitionLifecycleBody {
+    /// Name of the lifecycle declared in the collection schema.
+    pub lifecycle_name: String,
+    /// State the caller wants to transition to.
+    pub target_state: String,
+    /// The version the caller believes is current (OCC guard).
+    pub expected_version: u64,
+    /// Optional override for the audit-log actor — falls back to identity.
+    pub actor: Option<String>,
+    /// Optional key-value metadata attached to the audit entry.
+    #[serde(default)]
+    pub audit_metadata: Option<std::collections::HashMap<String, String>>,
+}
+
 fn parse_collection_template_request(
     headers: &HeaderMap,
     body: Bytes,
@@ -1049,6 +1070,63 @@ async fn snapshot_entities_handler(
                 "entities": entities,
                 "audit_cursor": resp.audit_cursor,
                 "next_page_token": resp.next_page_token,
+            }))
+            .into_response()
+        }
+        Err(e) => axon_error_response(e),
+    }
+}
+
+/// `POST /db/{database}/lifecycle/{collection}/{entity}/transition` (and the
+/// un-prefixed `POST /lifecycle/{collection}/{entity}/transition`) — drive a
+/// schema-declared lifecycle transition against an entity (FEAT-015).
+///
+/// The body carries the lifecycle name, target state, and OCC guard. Errors
+/// map through [`axon_error_response`]:
+/// - [`AxonError::LifecycleNotFound`] -> `404 lifecycle_not_found`
+/// - [`AxonError::InvalidTransition`] -> `422 invalid_transition`
+/// - [`AxonError::ConflictingVersion`] -> `409 version_conflict`
+#[allow(clippy::too_many_arguments)]
+async fn transition_lifecycle_handler(
+    Extension(handler): Extension<TenantHandler>,
+    Extension(mcp_sessions): Extension<McpHttpSessions>,
+    Extension(broker): Extension<BroadcastBroker>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Extension(identity): Extension<Identity>,
+    Extension(rate_limiter): Extension<WriteRateLimiter>,
+    Extension(actor_scope): Extension<ActorScopeGuard>,
+    Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
+    Json(body): Json<TransitionLifecycleBody>,
+) -> Response {
+    if let Err(e) = identity.require_write() {
+        return auth_error_response(e);
+    }
+    if let Err(e) = actor_scope.check(&identity.actor, &collection, &identity.role) {
+        return auth_error_response(e);
+    }
+    if let Err(limited) = rate_limiter.check(&identity.actor).await {
+        return rate_limit_response(&limited);
+    }
+
+    let actor = body.actor.unwrap_or_else(|| identity.actor.clone());
+
+    match handler
+        .lock()
+        .await
+        .transition_lifecycle(TransitionLifecycleRequest {
+            collection_id: qualify_collection_name(&collection, &current_database),
+            entity_id: EntityId::new(&id),
+            lifecycle_name: body.lifecycle_name,
+            target_state: body.target_state,
+            expected_version: body.expected_version,
+            actor: Some(actor),
+            audit_metadata: body.audit_metadata,
+        }) {
+        Ok(resp) => {
+            notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
+            broadcast_entity_change(&broker, &resp.entity, "update");
+            Json(json!({
+                "entity": entity_payload(&resp.entity)
             }))
             .into_response()
         }
@@ -2298,6 +2376,10 @@ fn data_routes() -> Router {
         )
         .route("/collections/{collection}/query", post(query_entities))
         .route("/snapshot", post(snapshot_entities_handler))
+        .route(
+            "/lifecycle/{collection}/{id}/transition",
+            post(transition_lifecycle_handler),
+        )
         .route("/links", post(create_link))
         .route("/links", delete(delete_link))
         .route("/traverse/{collection}/{id}", get(traverse))

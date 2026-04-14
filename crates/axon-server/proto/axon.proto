@@ -152,6 +152,21 @@ message CommitTransactionResponse {
   repeated EntityProto entities = 2;
 }
 
+// ── Lifecycle operations (FEAT-015) ─────────────────────────────────────────
+
+message TransitionLifecycleRequest {
+  string collection = 1;
+  string entity_id = 2;
+  string lifecycle_name = 3;
+  string target_state = 4;
+  uint64 expected_version = 5;
+  string actor = 6;
+}
+
+message TransitionLifecycleResponse {
+  EntityProto entity = 1;
+}
+
 // ── Entity query operations ───────────────────────────────────────────────────
 
 message QueryEntitiesRequest {
@@ -351,4 +366,6 @@ service AxonService {
   rpc ListNamespaces(ListNamespacesRequest) returns (ListNamespacesResponse);
   rpc ListNamespaceCollections(ListNamespaceCollectionsRequest) returns (ListNamespaceCollectionsResponse);
   rpc DropNamespace(DropNamespaceRequest) returns (DropNamespaceResponse);
+  // Lifecycle transitions (FEAT-015)
+  rpc TransitionLifecycle(TransitionLifecycleRequest) returns (TransitionLifecycleResponse);
 }
