@@ -110,8 +110,6 @@ pub struct MemoryStorageAdapter {
     /// Dedicated link store (ADR-010): replaces __axon_links__ pseudo-collection
     /// for new code paths. Keyed by (source_col, source_id, link_type, target_col, target_id).
     links: BTreeMap<LinkKey, Link>,
-    /// Materialized gate results: (qualified collection, entity_id) → (gate_name → pass).
-    gate_results: HashMap<(CatalogKey, EntityId), HashMap<String, bool>>,
 }
 
 fn now_ns() -> u64 {
@@ -151,7 +149,6 @@ impl Default for MemoryStorageAdapter {
             compound_indexes: BTreeMap::new(),
             numeric_ids: NumericIdCache::default(),
             links: BTreeMap::new(),
-            gate_results: HashMap::new(),
         }
     }
 }
@@ -208,13 +205,10 @@ impl MemoryStorageAdapter {
             .retain(|(collection, _, _), _| collection != key);
         self.compound_indexes
             .retain(|(collection, _, _), _| collection != key);
-        self.gate_results
-            .retain(|(collection, _), _| collection != key);
     }
 
     fn purge_collection_entities(&mut self, collection: &CatalogKey) {
         self.data.remove(collection);
-        self.gate_results.retain(|(col, _), _| col != collection);
     }
 
     fn purge_doomed_collection_entities(&mut self, doomed: &[CatalogKey]) {
@@ -1041,59 +1035,8 @@ impl StorageAdapter for MemoryStorageAdapter {
             .collect())
     }
 
-    // ── Gate persistence (FEAT-019, US-067) ────────────────────────────
-
-    fn put_gate_results(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        gates: &std::collections::HashMap<String, bool>,
-    ) -> Result<(), AxonError> {
-        let key = self.resolve_catalog_key(collection)?;
-        self.gate_results
-            .insert((key, entity_id.clone()), gates.clone());
-        Ok(())
-    }
-
-    fn get_gate_results(
-        &self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-    ) -> Result<Option<std::collections::HashMap<String, bool>>, AxonError> {
-        let key = self.resolve_catalog_key(collection)?;
-        Ok(self.gate_results.get(&(key, entity_id.clone())).cloned())
-    }
-
-    fn gate_lookup(
-        &self,
-        collection: &CollectionId,
-        gate: &str,
-        pass: bool,
-    ) -> Result<Vec<EntityId>, AxonError> {
-        let key = self.resolve_catalog_key(collection)?;
-        let mut result = Vec::new();
-        for ((col, eid), gates) in &self.gate_results {
-            if col == &key {
-                if let Some(&gate_pass) = gates.get(gate) {
-                    if gate_pass == pass {
-                        result.push(eid.clone());
-                    }
-                }
-            }
-        }
-        result.sort();
-        Ok(result)
-    }
-
-    fn delete_gate_results(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-    ) -> Result<(), AxonError> {
-        let key = self.resolve_catalog_key(collection)?;
-        self.gate_results.remove(&(key, entity_id.clone()));
-        Ok(())
-    }
+    // Gate results now live on the Entity blob itself (FEAT-019); no
+    // dedicated side-table lives on the storage adapter anymore.
 }
 
 #[cfg(test)]

@@ -97,23 +97,10 @@ pub enum RequirementOp {
 }
 
 /// Result of evaluating a single rule against entity data.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuleViolation {
-    /// Rule name.
-    pub rule: String,
-    /// Field that failed.
-    pub field: String,
-    /// Human-readable message.
-    pub message: String,
-    /// Fix suggestion (if provided).
-    pub fix: Option<String>,
-    /// Gate this rule belongs to.
-    pub gate: Option<String>,
-    /// Whether this is advisory-only.
-    pub advisory: bool,
-    /// Context: which condition triggered the rule.
-    pub context: Option<Value>,
-}
+///
+/// Re-exported from `axon-core` so `Entity` can carry materialized gate
+/// results as a first-class field (FEAT-019).
+pub use axon_core::types::RuleViolation;
 
 /// Evaluate a validation rule against entity data.
 ///

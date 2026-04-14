@@ -54,6 +54,7 @@ proptest! {
             created_by: None,
             updated_by: None,
             schema_version: None,
+            gate_results: Default::default(),
             };
             let updated = store.compare_and_swap(candidate, current.version)
                 .expect("CAS with correct version must always succeed");
@@ -95,6 +96,7 @@ proptest! {
         created_by: None,
         updated_by: None,
         schema_version: None,
+        gate_results: Default::default(),
         }).expect("test operation should succeed");
 
         let wrong_version = 1 + version_delta; // always > 1
@@ -109,6 +111,7 @@ proptest! {
             created_by: None,
             updated_by: None,
             schema_version: None,
+            gate_results: Default::default(),
             },
             wrong_version,
         );

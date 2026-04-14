@@ -153,6 +153,7 @@ macro_rules! storage_conformance_tests {
                     created_by: None,
                     updated_by: None,
                     schema_version: None,
+                    gate_results: Default::default(),
                 };
 
                 let inserted = s
@@ -187,6 +188,7 @@ macro_rules! storage_conformance_tests {
                             created_by: None,
                             updated_by: None,
                             schema_version: None,
+                            gate_results: Default::default(),
                         },
                         2,
                     )

@@ -677,6 +677,7 @@ impl SqliteStorageAdapter {
             created_by: None,
             updated_by: None,
             schema_version: None,
+            gate_results: Default::default(),
         })
     }
 }

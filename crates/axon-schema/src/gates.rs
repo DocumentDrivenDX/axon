@@ -13,15 +13,10 @@ use crate::rules::{evaluate_rule, RuleViolation, ValidationRule};
 use crate::schema::GateDef;
 
 /// Result of evaluating a single gate for an entity.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GateResult {
-    /// Gate name.
-    pub gate: String,
-    /// Whether all rules in the gate (including inherited) pass.
-    pub pass: bool,
-    /// Violations for this gate.
-    pub failures: Vec<RuleViolation>,
-}
+///
+/// Re-exported from `axon-core` so `Entity` can carry materialized gate
+/// results as a first-class field (FEAT-019).
+pub use axon_core::types::GateResult;
 
 /// Complete gate evaluation result for an entity write.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

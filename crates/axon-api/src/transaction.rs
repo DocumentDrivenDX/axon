@@ -145,6 +145,7 @@ impl Transaction {
             created_by: None,
             updated_by: None,
             schema_version: None,
+            gate_results: Default::default(),
         };
         self.ops.push(WriteOp {
             entity: sentinel,

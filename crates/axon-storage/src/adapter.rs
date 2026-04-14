@@ -777,52 +777,8 @@ pub trait StorageAdapter: Send + Sync {
         Ok(links)
     }
 
-    // ── Gate persistence (FEAT-019, US-067) ─────────────────────────────────
-
-    /// Store materialized gate results for an entity.
-    ///
-    /// Replaces any existing gate results for this entity.
-    fn put_gate_results(
-        &mut self,
-        _collection: &CollectionId,
-        _entity_id: &EntityId,
-        _gates: &std::collections::HashMap<String, bool>,
-    ) -> Result<(), AxonError> {
-        Ok(())
-    }
-
-    /// Retrieve materialized gate results for an entity.
-    ///
-    /// Returns `None` if no gate results have been stored.
-    fn get_gate_results(
-        &self,
-        _collection: &CollectionId,
-        _entity_id: &EntityId,
-    ) -> Result<Option<std::collections::HashMap<String, bool>>, AxonError> {
-        Ok(None)
-    }
-
-    /// Look up entity IDs that have a specific gate pass/fail status.
-    ///
-    /// Returns entity IDs in the given collection where the named gate
-    /// has the specified pass/fail status.
-    fn gate_lookup(
-        &self,
-        _collection: &CollectionId,
-        _gate: &str,
-        _pass: bool,
-    ) -> Result<Vec<EntityId>, AxonError> {
-        Ok(Vec::new())
-    }
-
-    /// Remove gate results for a deleted entity.
-    fn delete_gate_results(
-        &mut self,
-        _collection: &CollectionId,
-        _entity_id: &EntityId,
-    ) -> Result<(), AxonError> {
-        Ok(())
-    }
+    // Gate results now live on the Entity blob itself (FEAT-019); there is
+    // no longer a dedicated side-table on the storage adapter.
 }
 
 /// Forward all `StorageAdapter` calls through a `Box<dyn StorageAdapter>`.
@@ -1104,35 +1060,5 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         link_type: Option<&str>,
     ) -> Result<Vec<axon_core::types::Link>, AxonError> {
         (**self).list_inbound_links(target_collection, target_id, link_type)
-    }
-    fn put_gate_results(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-        gates: &std::collections::HashMap<String, bool>,
-    ) -> Result<(), AxonError> {
-        (**self).put_gate_results(collection, entity_id, gates)
-    }
-    fn get_gate_results(
-        &self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-    ) -> Result<Option<std::collections::HashMap<String, bool>>, AxonError> {
-        (**self).get_gate_results(collection, entity_id)
-    }
-    fn gate_lookup(
-        &self,
-        collection: &CollectionId,
-        gate: &str,
-        pass: bool,
-    ) -> Result<Vec<EntityId>, AxonError> {
-        (**self).gate_lookup(collection, gate, pass)
-    }
-    fn delete_gate_results(
-        &mut self,
-        collection: &CollectionId,
-        entity_id: &EntityId,
-    ) -> Result<(), AxonError> {
-        (**self).delete_gate_results(collection, entity_id)
     }
 }

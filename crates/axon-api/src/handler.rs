@@ -518,6 +518,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
         entity.created_by = req.actor.clone();
         entity.updated_by = req.actor.clone();
         entity.schema_version = schema.as_ref().map(|s| s.version);
+        // Materialize gate results onto the entity itself before storage
+        // write so the persisted blob carries its gate verdicts (FEAT-019).
+        if let Some(eval) = gate_eval.as_ref() {
+            entity.gate_results = eval.gate_results.clone();
+        }
         self.storage.put(entity.clone())?;
 
         // Index maintenance (FEAT-013).
@@ -558,20 +563,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let appended = self.audit.append(audit_entry)?;
         let audit_id = Some(appended.id);
 
+        // Gate results were materialized onto the entity blob above; the
+        // response mirrors them (plus advisories) for the caller (FEAT-019).
         let (gates, advisories) = match gate_eval {
-            Some(eval) => {
-                // Materialize gate results to storage (FEAT-019, US-067).
-                if !eval.gate_results.is_empty() {
-                    let gate_bools: std::collections::HashMap<String, bool> = eval
-                        .gate_results
-                        .iter()
-                        .map(|(name, gr)| (name.clone(), gr.pass))
-                        .collect();
-                    self.storage
-                        .put_gate_results(&entity.collection, &entity.id, &gate_bools)?;
-                }
-                (eval.gate_results, eval.advisories)
-            }
+            Some(eval) => (eval.gate_results, eval.advisories),
             None => (Default::default(), Vec::new()),
         };
 
@@ -693,6 +688,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let existing = self.storage.get(&req.collection, &req.id)?;
         let before = existing.as_ref().map(|e| e.data.clone());
 
+        // Materialize gate results on the entity itself (FEAT-019).
+        let materialized_gates = gate_eval
+            .as_ref()
+            .map(|eval| eval.gate_results.clone())
+            .unwrap_or_default();
+
         // OCC write: preserve created_at/created_by, update updated_at/updated_by.
         let candidate = Entity {
             collection: req.collection.clone(),
@@ -704,6 +705,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             created_by: existing.as_ref().and_then(|e| e.created_by.clone()),
             updated_by: req.actor.clone(),
             schema_version: schema.as_ref().map(|s| s.version),
+            gate_results: materialized_gates,
         };
         let stored = self
             .storage
@@ -749,20 +751,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let appended = self.audit.append(audit_entry)?;
         let audit_id = Some(appended.id);
 
+        // Gate results were materialized on the entity itself before the
+        // storage write (FEAT-019); we only need to surface them (plus
+        // advisories) in the response here.
         let (gates, advisories) = match gate_eval {
-            Some(eval) => {
-                // Materialize gate results to storage (FEAT-019, US-067).
-                if !eval.gate_results.is_empty() {
-                    let gate_bools: std::collections::HashMap<String, bool> = eval
-                        .gate_results
-                        .iter()
-                        .map(|(name, gr)| (name.clone(), gr.pass))
-                        .collect();
-                    self.storage
-                        .put_gate_results(&req.collection, &updated.id, &gate_bools)?;
-                }
-                (eval.gate_results, eval.advisories)
-            }
+            Some(eval) => (eval.gate_results, eval.advisories),
             None => (Default::default(), Vec::new()),
         };
 
@@ -834,6 +827,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         let before = Some(existing.data.clone());
 
+        // Materialize gate results on the entity itself (FEAT-019).
+        let materialized_gates = gate_eval
+            .as_ref()
+            .map(|eval| eval.gate_results.clone())
+            .unwrap_or_default();
+
         // OCC write.
         let candidate = Entity {
             collection: req.collection.clone(),
@@ -845,6 +844,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             created_by: existing.created_by,
             updated_by: req.actor.clone(),
             schema_version: schema.as_ref().map(|s| s.version),
+            gate_results: materialized_gates,
         };
         let stored = self
             .storage
@@ -890,20 +890,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let appended = self.audit.append(audit_entry)?;
         let audit_id = Some(appended.id);
 
+        // Gate results were materialized on the entity itself before the
+        // storage write (FEAT-019); the response mirrors them here.
         let (gates, advisories) = match gate_eval {
-            Some(eval) => {
-                // Materialize gate results to storage (FEAT-019, US-067).
-                if !eval.gate_results.is_empty() {
-                    let gate_bools: std::collections::HashMap<String, bool> = eval
-                        .gate_results
-                        .iter()
-                        .map(|(name, gr)| (name.clone(), gr.pass))
-                        .collect();
-                    self.storage
-                        .put_gate_results(&req.collection, &updated.id, &gate_bools)?;
-                }
-                (eval.gate_results, eval.advisories)
-            }
+            Some(eval) => (eval.gate_results, eval.advisories),
             None => (Default::default(), Vec::new()),
         };
 
@@ -974,8 +964,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         self.storage.delete(&req.collection, &req.id)?;
-        // Clean up materialized gate results (FEAT-019).
-        self.storage.delete_gate_results(&req.collection, &req.id)?;
+        // Gate results live on the entity blob (FEAT-019); deleting the
+        // entity removes them implicitly.
 
         // Audit (only if the entity actually existed).
         let audit_id = if before.is_some() {
@@ -1504,6 +1494,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     created_by: existing.created_by.clone(),
                     updated_by: req.actor.clone(),
                     schema_version: schema.as_ref().map(|s| s.version),
+                    gate_results: Default::default(),
                 };
                 self.storage.compare_and_swap(candidate, existing.version)?
             }
@@ -1622,9 +1613,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             validate(schema, &target_data)?;
         }
 
-        let gate_eval = if let Some(schema) = &schema {
+        // Materialize gate results onto the rollback candidate so the
+        // persisted entity blob carries its gate verdicts (FEAT-019).
+        let materialized_gates = if let Some(schema) = &schema {
             if schema.validation_rules.is_empty() {
-                None
+                Default::default()
             } else {
                 let eval = evaluate_gates(&schema.validation_rules, &schema.gates, &target_data);
                 if !eval.save_passes() {
@@ -1637,10 +1630,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
                             .join("; ")
                     )));
                 }
-                Some(eval)
+                eval.gate_results
             }
         } else {
-            None
+            Default::default()
         };
 
         if let Some(ref s) = schema {
@@ -1657,6 +1650,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             created_by: created_by.clone(),
             updated_by: req.actor.clone(),
             schema_version: schema.as_ref().map(|s| s.version),
+            gate_results: materialized_gates.clone(),
         };
 
         if req.dry_run {
@@ -1684,6 +1678,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     created_by: current.created_by.clone(),
                     updated_by: req.actor.clone(),
                     schema_version: schema.as_ref().map(|s| s.version),
+                    gate_results: materialized_gates.clone(),
                 },
                 expected_version,
             )?
@@ -1698,6 +1693,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 created_by,
                 updated_by: req.actor.clone(),
                 schema_version: schema.as_ref().map(|s| s.version),
+                gate_results: materialized_gates,
             };
             self.storage.create_if_absent(recreated, expected_version)?
         };
@@ -1723,17 +1719,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
         }
 
-        if let Some(eval) = gate_eval {
-            if !eval.gate_results.is_empty() {
-                let gate_bools: std::collections::HashMap<String, bool> = eval
-                    .gate_results
-                    .iter()
-                    .map(|(name, gr)| (name.clone(), gr.pass))
-                    .collect();
-                self.storage
-                    .put_gate_results(&req.collection, &stored.id, &gate_bools)?;
-            }
-        }
+        // Gate results were materialized onto the entity blob above
+        // (FEAT-019); no separate side-table write is needed.
 
         let entity = Self::present_entity(&req.collection, stored);
         let mut audit_entry = AuditEntry::new(
@@ -1964,6 +1951,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                             created_by: existing.created_by.clone(),
                             updated_by: actor.map(String::from),
                             schema_version: schema.as_ref().map(|s| s.version),
+                            gate_results: Default::default(),
                         };
                         let stored = self.storage.compare_and_swap(restored, existing.version)?;
                         let mut audit_entry = AuditEntry::new(
@@ -2234,6 +2222,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                             created_by: existing.created_by.clone(),
                             updated_by: actor.map(String::from),
                             schema_version: schema.as_ref().map(|s| s.version),
+                            gate_results: Default::default(),
                         };
                         let stored =
                             self.storage.compare_and_swap(restored, existing.version)?;
@@ -4228,6 +4217,7 @@ mod tests {
                     created_by: Some("racer".into()),
                     updated_by: Some("racer".into()),
                     schema_version: None,
+                    gate_results: Default::default(),
                 })?;
             }
 
@@ -9329,6 +9319,76 @@ link_types:
         assert_eq!(schema.gates["review"].includes, vec!["complete"]);
     }
 
+    /// FEAT-019: gate results live on the entity blob; after a write the
+    /// persisted Entity must carry the materialized gate verdicts so a
+    /// subsequent read returns them without a storage side-table lookup.
+    #[test]
+    fn entity_write_persists_gate_results_via_storage_roundtrip() {
+        let mut h = handler_with_gated_schema();
+        let col = CollectionId::new("items");
+        let id = EntityId::new("rt-1");
+
+        // Create a bug with no description/priority — the "complete" gate
+        // should fail on creation and the verdict should be stored on the
+        // entity.
+        let create_resp = h
+            .create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+                data: json!({"bead_type": "bug"}),
+                actor: None,
+                audit_metadata: None,
+            })
+            .unwrap();
+        assert!(!create_resp.gates.get("complete").unwrap().pass);
+
+        let stored = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+            })
+            .unwrap()
+            .entity;
+        let complete_on_entity = stored
+            .gate_results
+            .get("complete")
+            .expect("complete gate result should be persisted on the entity blob");
+        assert!(!complete_on_entity.pass);
+        assert!(complete_on_entity
+            .failures
+            .iter()
+            .any(|f| f.rule == "need-desc" || f.rule == "bugs-need-priority"));
+
+        // Patch the entity to satisfy all the complete-gate rules; the
+        // updated verdict must flow onto the stored blob.
+        h.patch_entity(PatchEntityRequest {
+            collection: col.clone(),
+            id: id.clone(),
+            patch: json!({"description": "fix it", "priority": "high"}),
+            expected_version: stored.version,
+            actor: None,
+            audit_metadata: None,
+        })
+        .unwrap();
+
+        let after_patch = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: id.clone(),
+            })
+            .unwrap()
+            .entity;
+        let complete_after = after_patch
+            .gate_results
+            .get("complete")
+            .expect("complete gate result should still be persisted after patch");
+        assert!(
+            complete_after.pass,
+            "complete gate should pass after patch supplies description and priority"
+        );
+        assert!(complete_after.failures.is_empty());
+    }
+
     // ── Aggregation tests (US-062) ──────────────────────────────────────
 
     fn handler_with_entities() -> AxonHandler<MemoryStorageAdapter> {
@@ -12743,33 +12803,35 @@ link_types:
 
         assert_eq!(response.entity.collection, billing);
         assert!(response.gates["complete"].pass);
-        assert_eq!(
-            h.storage_mut()
-                .get_gate_results(&billing, &entity_id)
-                .unwrap()
-                .unwrap()
-                .get("complete"),
-            Some(&true)
-        );
-        assert_eq!(
-            h.audit_log().query_by_entity(&billing, &entity_id).unwrap()[1].collection,
-            billing
-        );
-        assert_eq!(
-            h.get_entity(GetEntityRequest {
+        // Gate results live on the entity blob (FEAT-019): re-read and
+        // assert the materialized verdict made it onto the entity.
+        let billing_stored = h
+            .get_entity(GetEntityRequest {
                 collection: billing.clone(),
                 id: entity_id.clone(),
             })
             .unwrap()
-            .entity
-            .collection,
+            .entity;
+        assert_eq!(billing_stored.collection, billing);
+        assert!(billing_stored.gate_results.get("complete").unwrap().pass);
+        assert_eq!(
+            h.audit_log().query_by_entity(&billing, &entity_id).unwrap()[1].collection,
             billing
         );
-        assert!(h
-            .storage_mut()
-            .get_gate_results(&engineering, &entity_id)
+        // The sibling namespace must not see any gate results since its
+        // entity was never patched with a description.
+        let engineering_stored = h
+            .get_entity(GetEntityRequest {
+                collection: engineering.clone(),
+                id: entity_id.clone(),
+            })
             .unwrap()
-            .is_none());
+            .entity;
+        assert!(!engineering_stored
+            .gate_results
+            .get("complete")
+            .map(|gr| gr.pass)
+            .unwrap_or(false));
     }
 
     #[test]

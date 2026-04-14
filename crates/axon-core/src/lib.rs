@@ -26,4 +26,4 @@ pub use id::{
     CollectionId, EntityId, LinkId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE,
     DEFAULT_SCHEMA,
 };
-pub use types::{Entity, Link, LINKS_COLLECTION};
+pub use types::{Entity, GateResult, Link, RuleViolation, LINKS_COLLECTION};
