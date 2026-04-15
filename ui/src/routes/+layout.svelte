@@ -28,6 +28,7 @@ const collectionsHref = `${base}/collections`;
 const schemasHref = `${base}/schemas`;
 const auditHref = `${base}/audit`;
 const tenantsHref = `${base}/tenants`;
+const credentialsHref = `${base}/credentials`;
 
 const isGuest = $derived(
 	authState.status === 'authenticated' && authState.identity.actor === 'guest',
@@ -95,6 +96,7 @@ onMount(() => {
 				<a class="nav-link" href={schemasHref}>Schemas</a>
 				<a class="nav-link" href={auditHref}>Audit Log</a>
 				<a class="nav-link" href={tenantsHref}>Tenants</a>
+				<a class="nav-link" href={credentialsHref}>Credentials</a>
 			</nav>
 		</div>
 

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 
-import { fetchAudit, fetchCollections } from './api';
+import { fetchAudit, fetchCollections, issueCredential, listCredentials, revokeCredential } from './api';
 
 const originalFetch = globalThis.fetch;
 
@@ -95,4 +95,66 @@ test('request() prefixes audit route with scope', async () => {
 	await fetchAudit({}, { tenant: 'acme', database: 'orders' });
 
 	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/audit/query');
+});
+
+// ── Credential API helpers ────────────────────────────────────────────────────
+
+test('listCredentials() calls GET /control/tenants/:id/credentials', async () => {
+	mockFetch({ credentials: [] });
+
+	await listCredentials('tenant-123');
+
+	expect(lastRequest?.url).toBe('/control/tenants/tenant-123/credentials');
+	// GET is the default — no explicit method set
+	expect(lastRequest?.init?.method).toBeUndefined();
+});
+
+test('listCredentials() URL-encodes tenant ID', async () => {
+	mockFetch({ credentials: [] });
+
+	await listCredentials('my tenant');
+
+	expect(lastRequest?.url).toBe('/control/tenants/my%20tenant/credentials');
+});
+
+test('issueCredential() calls POST /control/tenants/:id/credentials', async () => {
+	mockFetch({ jwt: 'eyJ...', jti: 'abc-jti', expires_at_ms: 9999999 });
+
+	await issueCredential('tenant-123', {
+		target_user: 'user-uuid',
+		ttl_seconds: 3600,
+		grants: { databases: [] },
+	});
+
+	expect(lastRequest?.url).toBe('/control/tenants/tenant-123/credentials');
+	expect(lastRequest?.init?.method).toBe('POST');
+});
+
+test('issueCredential() URL-encodes tenant ID', async () => {
+	mockFetch({ jwt: 'eyJ...', jti: 'abc-jti', expires_at_ms: 9999999 });
+
+	await issueCredential('my tenant', {
+		target_user: 'user-uuid',
+		ttl_seconds: 3600,
+		grants: { databases: [] },
+	});
+
+	expect(lastRequest?.url).toBe('/control/tenants/my%20tenant/credentials');
+});
+
+test('revokeCredential() calls DELETE /control/tenants/:id/credentials/:jti', async () => {
+	mockFetch({});
+
+	await revokeCredential('tenant-123', 'jti-abc');
+
+	expect(lastRequest?.url).toBe('/control/tenants/tenant-123/credentials/jti-abc');
+	expect(lastRequest?.init?.method).toBe('DELETE');
+});
+
+test('revokeCredential() URL-encodes jti', async () => {
+	mockFetch({});
+
+	await revokeCredential('tenant-123', 'jti/with/slash');
+
+	expect(lastRequest?.url).toBe('/control/tenants/tenant-123/credentials/jti%2Fwith%2Fslash');
 });

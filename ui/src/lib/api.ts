@@ -409,3 +409,60 @@ export async function fetchTenantDatabases(tenantId: string): Promise<TenantData
 	);
 	return response.databases;
 }
+
+// ── Credential management ────────────────────────────────────────────────────
+
+export type Credential = {
+	jti: string;
+	user_id: string;
+	tenant_id: string;
+	issued_at_ms: number;
+	expires_at_ms: number;
+	revoked: boolean;
+	grants: Grants;
+};
+
+export type Grants = {
+	databases: GrantedDatabase[];
+};
+
+export type GrantedDatabase = {
+	name: string;
+	ops: Array<'read' | 'write' | 'admin'>;
+};
+
+export type IssueCredentialRequest = {
+	target_user: string;
+	ttl_seconds: number;
+	grants: Grants;
+};
+
+export type IssueCredentialResponse = {
+	jwt: string;
+	jti: string;
+	expires_at_ms: number;
+};
+
+export async function listCredentials(tenantId: string): Promise<Credential[]> {
+	const response = await request<{ credentials: Credential[] }>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/credentials`,
+	);
+	return response.credentials;
+}
+
+export async function issueCredential(
+	tenantId: string,
+	body: IssueCredentialRequest,
+): Promise<IssueCredentialResponse> {
+	return request<IssueCredentialResponse>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/credentials`,
+		{ method: 'POST', body: JSON.stringify(body) },
+	);
+}
+
+export async function revokeCredential(tenantId: string, jti: string): Promise<void> {
+	await request<void>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/credentials/${encodeURIComponent(jti)}`,
+		{ method: 'DELETE' },
+	);
+}
