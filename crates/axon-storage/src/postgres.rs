@@ -1258,6 +1258,83 @@ impl StorageAdapter for PostgresStorageAdapter {
             role,
         }))
     }
+
+    fn upsert_user_identity(
+        &self,
+        provider: &str,
+        external_id: &str,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> Result<axon_core::auth::User, AxonError> {
+        // ADR-018 §6 ON CONFLICT pattern: three statements, no advisory locks.
+        // Under concurrent callers each client generates a unique new_user_id and
+        // tries to insert it; only the first INSERT into user_identities wins the
+        // race — all others get ON CONFLICT DO NOTHING.  The final SELECT returns
+        // the winning user_id for every caller.  Orphaned user rows (from losers
+        // in step 1) are an accepted cost of this pattern on PostgreSQL.
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let new_user_id = axon_core::auth::UserId::generate();
+
+        // Step 1: try to insert a candidate user row (first caller wins).
+        self.block(self.client.execute(
+            "INSERT INTO users (id, display_name, email, created_at_ms) \
+             VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+            &[&new_user_id.as_str(), &display_name, &email, &now_ms],
+        ))
+        .map_err(|e| {
+            if e.to_string().contains("does not exist") {
+                AxonError::Storage(
+                    "auth schema not applied; call apply_auth_migrations_postgres first".into(),
+                )
+            } else {
+                e
+            }
+        })?;
+
+        // Step 2: claim the identity (first caller wins).
+        self.block(self.client.execute(
+            "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms) \
+             VALUES ($1, $2, $3, $4) ON CONFLICT (provider, external_id) DO NOTHING",
+            &[&provider, &external_id, &new_user_id.as_str(), &now_ms],
+        ))
+        .or_else(|e| {
+            if e.to_string().contains("does not exist") {
+                Ok(0)
+            } else {
+                Err(e)
+            }
+        })?;
+
+        // Step 3: read back the winner's user_id.
+        let row = self
+            .block(self.client.query_one(
+                "SELECT user_id FROM user_identities WHERE provider = $1 AND external_id = $2",
+                &[&provider, &external_id],
+            ))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let winning_user_id: String = row.get("user_id");
+
+        // Step 4: return the full user record.
+        let user_row = self
+            .block(self.client.query_one(
+                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                 FROM users WHERE id = $1",
+                &[&winning_user_id],
+            ))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(axon_core::auth::User {
+            id: axon_core::auth::UserId::new(user_row.get::<_, String>("id")),
+            display_name: user_row.get("display_name"),
+            email: user_row.get("email"),
+            created_at_ms: user_row.get::<_, i64>("created_at_ms") as u64,
+            suspended_at_ms: user_row
+                .get::<_, Option<i64>>("suspended_at_ms")
+                .map(|v| v as u64),
+        })
+    }
 }
 
 // ── Per-tenant PostgreSQL provisioning ───────────────────────────────────────

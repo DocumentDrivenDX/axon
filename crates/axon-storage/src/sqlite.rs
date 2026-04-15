@@ -62,6 +62,43 @@ impl SqliteStorageAdapter {
         Ok(adapter)
     }
 
+    /// Apply auth/tenancy schema migrations to this adapter's SQLite connection.
+    ///
+    /// Creates the `users`, `user_identities`, `tenant_users`,
+    /// `credential_revocations`, and related tables. This is idempotent — it
+    /// can be called multiple times safely. Must be called before using any
+    /// auth-related adapter methods (`upsert_user_identity`, `is_jti_revoked`,
+    /// `get_user`, `get_tenant_member`).
+    pub fn apply_auth_migrations(&self) -> Result<(), AxonError> {
+        let conn = self.conn()?;
+        crate::auth_schema::apply_auth_migrations_sqlite(&conn)
+            .map_err(AxonError::Storage)
+    }
+
+    /// Return the total number of rows in the `users` table (for tests).
+    ///
+    /// Returns `0` when the auth schema has not been applied.
+    pub fn query_user_count(&self) -> Result<i64, AxonError> {
+        let conn = self.conn()?;
+        match conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0)) {
+            Ok(n) => Ok(n),
+            Err(e) if e.to_string().contains("no such table") => Ok(0),
+            Err(e) => Err(AxonError::Storage(e.to_string())),
+        }
+    }
+
+    /// Return the total number of rows in the `user_identities` table (for tests).
+    ///
+    /// Returns `0` when the auth schema has not been applied.
+    pub fn query_identity_count(&self) -> Result<i64, AxonError> {
+        let conn = self.conn()?;
+        match conn.query_row("SELECT COUNT(*) FROM user_identities", [], |row| row.get(0)) {
+            Ok(n) => Ok(n),
+            Err(e) if e.to_string().contains("no such table") => Ok(0),
+            Err(e) => Err(AxonError::Storage(e.to_string())),
+        }
+    }
+
     /// Acquire the inner `Connection` lock, converting a poisoned-mutex error into
     /// an `AxonError::Storage`.
     fn conn(&self) -> Result<MutexGuard<'_, Connection>, AxonError> {
@@ -1636,6 +1673,81 @@ impl StorageAdapter for SqliteStorageAdapter {
                 }
             }
         }
+    }
+
+    fn upsert_user_identity(
+        &self,
+        provider: &str,
+        external_id: &str,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> Result<axon_core::auth::User, AxonError> {
+        // The `Mutex<Connection>` serialises all callers at the OS level, so
+        // holding the lock for the entire check-then-insert sequence is
+        // equivalent to wrapping the three statements in a serialisable
+        // transaction: no other thread can interleave between the SELECT and
+        // the INSERT.  This gives the same 'exactly-one-row' guarantee as the
+        // ADR-018 §6 ON CONFLICT pattern for PostgreSQL, without orphaned
+        // user rows.
+        let conn = self.conn()?;
+
+        // Check whether this identity already exists.
+        let existing_user_id: Option<String> = match conn.query_row(
+            "SELECT user_id FROM user_identities WHERE provider = ?1 AND external_id = ?2",
+            params![provider, external_id],
+            |row| row.get::<_, String>(0),
+        ) {
+            Ok(id) => Some(id),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    return Err(AxonError::Storage(
+                        "auth schema not applied; call apply_auth_migrations first".into(),
+                    ));
+                }
+                return Err(AxonError::Storage(msg));
+            }
+        };
+
+        let user_id_str = if let Some(id) = existing_user_id {
+            id
+        } else {
+            let now_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as i64;
+            let new_id = axon_core::auth::UserId::generate();
+            conn.execute(
+                "INSERT INTO users (id, display_name, email, created_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![new_id.as_str(), display_name, email, now_ms],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            conn.execute(
+                "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![provider, external_id, new_id.as_str(), now_ms],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            new_id.0
+        };
+
+        conn.query_row(
+            "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+             FROM users WHERE id = ?1",
+            params![user_id_str],
+            |row| {
+                Ok(axon_core::auth::User {
+                    id: axon_core::auth::UserId::new(row.get::<_, String>(0)?),
+                    display_name: row.get(1)?,
+                    email: row.get(2)?,
+                    created_at_ms: row.get::<_, i64>(3)? as u64,
+                    suspended_at_ms: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+                })
+            },
+        )
+        .map_err(|e| AxonError::Storage(e.to_string()))
     }
 }
 

@@ -118,6 +118,13 @@ pub struct MemoryStorageAdapter {
     users: HashMap<UserId, User>,
     /// Tenant membership store (ADR-018).
     tenant_members: HashMap<(TenantId, UserId), TenantMember>,
+    /// Federation identity map: (provider, external_id) → User.
+    ///
+    /// Uses interior mutability (`Mutex`) so that `upsert_user_identity` can
+    /// take `&self` and be called concurrently from multiple threads without
+    /// requiring exclusive access to the whole adapter. The lock covers both
+    /// the check and the insert, making the operation atomic (no TOCTOU race).
+    user_identity_map: std::sync::Mutex<HashMap<(String, String), User>>,
 }
 
 fn now_ns() -> u64 {
@@ -160,6 +167,7 @@ impl Default for MemoryStorageAdapter {
             revoked_jtis: HashSet::new(),
             users: HashMap::new(),
             tenant_members: HashMap::new(),
+            user_identity_map: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -181,6 +189,33 @@ impl MemoryStorageAdapter {
     /// Mark a JWT ID as revoked in the in-memory store.
     pub fn revoke_jti(&mut self, jti: Uuid) {
         self.revoked_jtis.insert(jti);
+    }
+
+    /// Number of `(provider, external_id)` entries created via `upsert_user_identity`.
+    ///
+    /// Equivalent to `COUNT(*) FROM user_identities` on a SQL backend. Intended
+    /// for use in tests.
+    pub fn upsert_identity_count(&self) -> usize {
+        self.user_identity_map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
+    }
+
+    /// Number of unique users created via `upsert_user_identity`.
+    ///
+    /// Equivalent to `COUNT(DISTINCT user_id) FROM user_identities` on a SQL
+    /// backend. Intended for use in tests.
+    pub fn upserted_user_count(&self) -> usize {
+        let map = self
+            .user_identity_map
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut ids = std::collections::HashSet::new();
+        for user in map.values() {
+            ids.insert(user.id.0.clone());
+        }
+        ids.len()
     }
 
     // ── Catalog helpers ─────────────────────────────────────────────────────
@@ -1085,6 +1120,38 @@ impl StorageAdapter for MemoryStorageAdapter {
         user_id: UserId,
     ) -> Result<Option<TenantMember>, AxonError> {
         Ok(self.tenant_members.get(&(tenant_id, user_id)).cloned())
+    }
+
+    fn upsert_user_identity(
+        &self,
+        provider: &str,
+        external_id: &str,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> Result<User, AxonError> {
+        let key = (provider.to_string(), external_id.to_string());
+        // Lock covers both the existence check and the insert, so the
+        // operation is atomic — no TOCTOU race under concurrent callers.
+        let mut map = self
+            .user_identity_map
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("federation mutex poisoned: {e}")))?;
+        if let Some(user) = map.get(&key) {
+            return Ok(user.clone());
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let user = User {
+            id: UserId::generate(),
+            display_name: display_name.to_string(),
+            email: email.map(|s| s.to_string()),
+            created_at_ms: now_ms,
+            suspended_at_ms: None,
+        };
+        map.insert(key, user.clone());
+        Ok(user)
     }
 }
 

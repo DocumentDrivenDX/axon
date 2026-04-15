@@ -45,6 +45,7 @@ pub mod actor_scope;
 pub mod auth;
 pub mod auth_pipeline;
 mod collection_listing;
+pub mod federation;
 pub(crate) mod embedded_ui;
 pub mod control_plane;
 pub mod control_plane_routes;

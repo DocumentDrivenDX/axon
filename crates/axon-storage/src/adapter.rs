@@ -814,6 +814,45 @@ pub trait StorageAdapter: Send + Sync {
         let _ = (tenant_id, user_id);
         Ok(None)
     }
+
+    /// Upsert a `(provider, external_id)` → `User` mapping atomically.
+    ///
+    /// On first call for a given `(provider, external_id)` pair this creates a
+    /// new `users` row and a new `user_identities` row pointing at it. On
+    /// subsequent calls it returns the existing user unchanged. The method MUST
+    /// be concurrency-safe: N parallel calls with the same `(provider,
+    /// external_id)` must converge on exactly one `users` row and one
+    /// `user_identities` row.
+    ///
+    /// ADR-018 §6 specifies the SQL pattern for SQL backends:
+    ///
+    /// ```sql
+    /// INSERT INTO users (id, display_name, email, created_at_ms)
+    /// VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING;
+    /// INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
+    /// VALUES (?, ?, ?, ?) ON CONFLICT (provider, external_id) DO NOTHING;
+    /// SELECT user_id FROM user_identities WHERE provider = ? AND external_id = ?;
+    /// ```
+    ///
+    /// Returns the user that now owns this identity (whether freshly created
+    /// or pre-existing). Returns `Err` only on real storage errors, not on
+    /// 'already exists' races.
+    ///
+    /// The default implementation returns [`AxonError::InvalidOperation`] so
+    /// that adapters which have not been migrated with auth schema don't
+    /// silently succeed.
+    fn upsert_user_identity(
+        &self,
+        provider: &str,
+        external_id: &str,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> Result<User, AxonError> {
+        let _ = (provider, external_id, display_name, email);
+        Err(AxonError::InvalidOperation(
+            "upsert_user_identity not supported by this adapter".into(),
+        ))
+    }
 }
 
 /// Forward all `StorageAdapter` calls through a `Box<dyn StorageAdapter>`.
@@ -1123,5 +1162,15 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         user_id: UserId,
     ) -> Result<Option<TenantMember>, AxonError> {
         (**self).get_tenant_member(tenant_id, user_id)
+    }
+
+    fn upsert_user_identity(
+        &self,
+        provider: &str,
+        external_id: &str,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> Result<User, AxonError> {
+        (**self).upsert_user_identity(provider, external_id, display_name, email)
     }
 }
