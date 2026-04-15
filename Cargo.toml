@@ -122,6 +122,9 @@ toml = "0.8"
 rust-embed = "8"
 mime_guess = "2"
 
+# Metrics
+metrics = "0.24"
+
 # Testing
 pretty_assertions = "1"
 tempfile = "3"

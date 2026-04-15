@@ -42,6 +42,7 @@ tokio-stream.workspace = true
 uuid.workspace = true
 humantime.workspace = true
 jsonwebtoken = "9"
+metrics.workspace = true
 rusqlite.workspace = true
 rust-embed.workspace = true
 mime_guess.workspace = true

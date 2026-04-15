@@ -181,6 +181,8 @@ pub async fn jwt_verify_layer(
 
 // ── Core verification logic ───────────────────────────────────────────────────
 
+/// Outer entry point: sets up the rejection context, delegates to the inner
+/// pipeline, and fires the observability envelope on any early-return error.
 fn verify_request(
     state: &AuthPipelineState,
     headers: &HeaderMap,
@@ -188,11 +190,40 @@ fn verify_request(
     tenant: &str,
     database: &str,
 ) -> Result<ResolvedIdentity, AuthError> {
+    let mut ctx = AuthRejectionContext {
+        tenant_path: Some(tenant.to_string()),
+        database_path: Some(database.to_string()),
+        op: Some(if method == Method::GET {
+            Op::Read
+        } else {
+            Op::Write
+        }),
+        ..Default::default()
+    };
+    let result = verify_request_inner(state, headers, method, tenant, database, &mut ctx);
+    if let Err(ref e) = result {
+        record_auth_rejection(e, &ctx);
+    }
+    result
+}
+
+/// Inner pipeline: populates `ctx` incrementally as claims become available,
+/// then walks the 9-step ADR-018 §4 verification order.
+fn verify_request_inner(
+    state: &AuthPipelineState,
+    headers: &HeaderMap,
+    method: &Method,
+    tenant: &str,
+    database: &str,
+    ctx: &mut AuthRejectionContext,
+) -> Result<ResolvedIdentity, AuthError> {
     // Step 1: Extract Bearer token.
     let token = extract_bearer_token(headers)?;
 
     // Step 2: Verify JWT signature and structure.
     let claims = state.issuer.verify(token)?;
+    // Populate jti context now that the JWT has been parsed.
+    ctx.jti_if_known = claims.jti.parse().ok();
 
     // Step 3: Check iss.
     if claims.iss != state.issuer.issuer_id {
@@ -245,6 +276,8 @@ fn verify_request(
 
     // Step 7: Look up user, check suspension.
     let user_id = UserId::new(&claims.sub);
+    // Populate user_id context once sub has been resolved.
+    ctx.user_id_if_known = Some(user_id.clone());
     let user = {
         let storage = state
             .storage
@@ -332,6 +365,55 @@ pub fn extract_tenant_database(path: &str) -> Option<(&str, &str)> {
         }
         _ => None,
     }
+}
+
+// ── Observability ─────────────────────────────────────────────────────────────
+
+/// Context passed from the verification pipeline to the observability
+/// helper. All fields are optional because a rejection can happen before
+/// any of them are known.
+#[derive(Default)]
+struct AuthRejectionContext {
+    tenant_path: Option<String>,
+    database_path: Option<String>,
+    op: Option<Op>,
+    user_id_if_known: Option<UserId>,
+    jti_if_known: Option<Uuid>,
+    remote_addr: Option<String>,
+}
+
+/// Observability envelope emitted on every auth rejection.
+///
+/// Fields:
+/// - `error_code`: stable SDK-facing code from `AuthError::error_code()`
+/// - `tenant_path`: the URL's `{tenant}` segment when known, else `"(unknown)"`
+/// - `database_path`: the URL's `{database}` segment when known, else `"(unknown)"`
+/// - `op`: required op for the HTTP method (`"read"`|`"write"`|`"admin"`), when known
+/// - `user_id_if_known`: user UUID if sub resolved, else unset
+/// - `jti_if_known`: credential jti if JWT parsed, else unset
+/// - `remote_addr`: client IP as a string, when available
+fn record_auth_rejection(err: &AuthError, ctx: &AuthRejectionContext) {
+    let tenant = ctx.tenant_path.as_deref().unwrap_or("(unknown)");
+    let database = ctx.database_path.as_deref().unwrap_or("(unknown)");
+    let op_str = ctx.op.as_ref().map_or("", |o| match o {
+        Op::Read => "read",
+        Op::Write => "write",
+        Op::Admin => "admin",
+    });
+    tracing::warn!(
+        target: "axon.auth.reject",
+        error_code = %err.error_code(),
+        tenant_path = %tenant,
+        database_path = %database,
+        op = %op_str,
+        user_id_if_known = ?ctx.user_id_if_known,
+        jti_if_known = ?ctx.jti_if_known,
+        remote_addr = ?ctx.remote_addr,
+        "{}",
+        err.error_code()
+    );
+    metrics::counter!("axon_auth_rejections_total", "error_code" => err.error_code())
+        .increment(1);
 }
 
 // ── AuthError → axum Response ─────────────────────────────────────────────────
