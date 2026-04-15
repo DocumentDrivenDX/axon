@@ -10,6 +10,7 @@ const scope = $derived(
 const collectionsHref = $derived(`${base}/tenants/${scope}/collections`);
 const schemasHref = $derived(`${base}/tenants/${scope}/schemas`);
 const auditHref = $derived(`${base}/tenants/${scope}/audit`);
+const graphqlHref = $derived(`${base}/tenants/${scope}/graphql`);
 </script>
 
 <div class="page-header">
@@ -38,6 +39,10 @@ const auditHref = $derived(`${base}/tenants/${scope}/audit`);
 		<a class="section-card" href={auditHref}>
 			<h3>Audit Log</h3>
 			<p class="muted">Filter the immutable change history by collection, actor, or time.</p>
+		</a>
+		<a class="section-card" href={graphqlHref}>
+			<h3>GraphQL</h3>
+			<p class="muted">Run ad-hoc queries, mutations, and introspection against the database.</p>
 		</a>
 	</div>
 </section>

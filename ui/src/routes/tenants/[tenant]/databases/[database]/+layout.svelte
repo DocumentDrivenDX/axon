@@ -12,6 +12,7 @@ const dbHref = $derived(
 const collectionsHref = $derived(`${dbHref}/collections`);
 const schemasHref = $derived(`${dbHref}/schemas`);
 const auditHref = $derived(`${dbHref}/audit`);
+const graphqlHref = $derived(`${dbHref}/graphql`);
 
 function isActive(href: string): boolean {
 	return page.url.pathname === href || page.url.pathname.startsWith(`${href}/`);
@@ -34,6 +35,7 @@ function isActive(href: string): boolean {
 		</a>
 		<a class="subnav-link" class:active={isActive(schemasHref)} href={schemasHref}>Schemas</a>
 		<a class="subnav-link" class:active={isActive(auditHref)} href={auditHref}>Audit Log</a>
+		<a class="subnav-link" class:active={isActive(graphqlHref)} href={graphqlHref}>GraphQL</a>
 	</nav>
 </div>
 

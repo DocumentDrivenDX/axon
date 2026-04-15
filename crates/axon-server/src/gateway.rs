@@ -827,6 +827,11 @@ pub struct CreateCollectionSchemaBody {
     pub version: u32,
     pub entity_schema: Option<Value>,
     pub link_types: Option<std::collections::HashMap<String, axon_schema::LinkTypeDef>>,
+    pub gates: Option<std::collections::HashMap<String, axon_schema::GateDef>>,
+    pub validation_rules: Option<Vec<axon_schema::ValidationRule>>,
+    pub indexes: Option<Vec<axon_schema::IndexDef>>,
+    pub compound_indexes: Option<Vec<axon_schema::CompoundIndexDef>>,
+    pub lifecycles: Option<std::collections::HashMap<String, axon_schema::LifecycleDef>>,
 }
 
 fn default_schema_version() -> u32 {
@@ -861,6 +866,11 @@ pub struct PutSchemaBody {
     pub version: u32,
     pub entity_schema: Option<Value>,
     pub link_types: Option<std::collections::HashMap<String, axon_schema::LinkTypeDef>>,
+    pub gates: Option<std::collections::HashMap<String, axon_schema::GateDef>>,
+    pub validation_rules: Option<Vec<axon_schema::ValidationRule>>,
+    pub indexes: Option<Vec<axon_schema::IndexDef>>,
+    pub compound_indexes: Option<Vec<axon_schema::CompoundIndexDef>>,
+    pub lifecycles: Option<std::collections::HashMap<String, axon_schema::LifecycleDef>>,
     pub actor: Option<String>,
     /// If true, apply even if the change is classified as breaking.
     #[serde(default)]
@@ -1475,7 +1485,22 @@ async fn traverse(
                     })
                 })
                 .collect();
-            Json(json!({ "entities": entities })).into_response()
+            let paths: Vec<Value> = resp
+                .paths
+                .iter()
+                .flat_map(|p| {
+                    p.hops.iter().map(|hop| {
+                        json!({
+                            "source_collection": hop.link.source_collection.to_string(),
+                            "source_id": hop.link.source_id.to_string(),
+                            "target_collection": hop.link.target_collection.to_string(),
+                            "target_id": hop.link.target_id.to_string(),
+                            "link_type": hop.link.link_type,
+                        })
+                    })
+                })
+                .collect();
+            Json(json!({ "entities": entities, "paths": paths })).into_response()
         }
         Err(e) => axon_error_response(e),
     }
@@ -1934,11 +1959,11 @@ async fn create_collection(
         version: schema_body.version,
         entity_schema: schema_body.entity_schema,
         link_types: schema_body.link_types.unwrap_or_default(),
-        gates: Default::default(),
-        validation_rules: Default::default(),
-        indexes: Default::default(),
-        compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+        gates: schema_body.gates.unwrap_or_default(),
+        validation_rules: schema_body.validation_rules.unwrap_or_default(),
+        indexes: schema_body.indexes.unwrap_or_default(),
+        compound_indexes: schema_body.compound_indexes.unwrap_or_default(),
+        lifecycles: schema_body.lifecycles.unwrap_or_default(),
     };
     match handler
         .lock()
@@ -2123,11 +2148,11 @@ async fn put_schema(
         version: body.version,
         entity_schema: body.entity_schema,
         link_types: body.link_types.unwrap_or_default(),
-        gates: Default::default(),
-        validation_rules: Default::default(),
-        indexes: Default::default(),
-        compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+        gates: body.gates.unwrap_or_default(),
+        validation_rules: body.validation_rules.unwrap_or_default(),
+        indexes: body.indexes.unwrap_or_default(),
+        compound_indexes: body.compound_indexes.unwrap_or_default(),
+        lifecycles: body.lifecycles.unwrap_or_default(),
     };
     match handler.lock().await.handle_put_schema(PutSchemaRequest {
         schema,

@@ -15,24 +15,22 @@ import type { PageData } from './$types';
 const { data }: { data: PageData } = $props();
 const scope = $derived(data.scope);
 
-let collections: CollectionSummary[] = [];
-let selectedCollection = '';
-let selectedSchema: CollectionSchema | null = null;
-let editMode = false;
-let editJson = '';
-let validationError: string | null = null;
-let statusMessage: string | null = null;
-let error: string | null = null;
-let createCollectionName = '';
-// biome-ignore lint/style/useConst: Svelte template reassigns this via on:click handlers.
-let viewMode: 'structured' | 'raw' = 'structured';
-let preview: SchemaPreviewResult | null = null;
-let previewLoading = false;
-// biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
-let createSchemaJson = `{
+let collections = $state<CollectionSummary[]>([]);
+let selectedCollection = $state('');
+let selectedSchema = $state<CollectionSchema | null>(null);
+let editMode = $state(false);
+let editJson = $state('');
+let validationError = $state<string | null>(null);
+let statusMessage = $state<string | null>(null);
+let error = $state<string | null>(null);
+let createCollectionName = $state('');
+let viewMode = $state<'structured' | 'raw'>('structured');
+let preview = $state<SchemaPreviewResult | null>(null);
+let previewLoading = $state(false);
+let createSchemaJson = $state(`{
   "type": "object",
   "properties": {}
-}`;
+}`);
 
 // ── Helpers for structured schema display ─────────────────────────
 
@@ -337,7 +335,7 @@ onMount(() => {
 				<p class="muted">No collections registered yet.</p>
 			{/if}
 			{#each collections as collection}
-				<button on:click={() => selectCollection(collection.name)}>
+				<button onclick={() => selectCollection(collection.name)}>
 					{collection.name} · {collection.schema_version ? `v${collection.schema_version}` : 'No schema'}
 				</button>
 			{/each}
@@ -362,7 +360,7 @@ onMount(() => {
 					<button
 						class="primary"
 						disabled={!createCollectionName.trim()}
-						on:click={submitCreateCollection}
+						onclick={submitCreateCollection}
 					>
 						Create Collection
 					</button>
@@ -377,14 +375,14 @@ onMount(() => {
 					{#if selectedSchema && !editMode}
 						<button
 							class:active={viewMode === 'structured'}
-							on:click={() => (viewMode = 'structured')}
+							onclick={() => (viewMode = 'structured')}
 						>
 							Structured
 						</button>
-						<button class:active={viewMode === 'raw'} on:click={() => (viewMode = 'raw')}>
+						<button class:active={viewMode === 'raw'} onclick={() => (viewMode = 'raw')}>
 							Raw JSON
 						</button>
-						<button on:click={() => (editMode = true)}>Edit</button>
+						<button onclick={() => (editMode = true)}>Edit</button>
 					{/if}
 				</div>
 			</div>
@@ -392,7 +390,7 @@ onMount(() => {
 				{#if !selectedSchema}
 					<p class="muted">Select a collection to inspect its schema.</p>
 				{:else if editMode}
-					<textarea bind:value={editJson} on:input={() => { validateJson(); preview = null; }}></textarea>
+					<textarea bind:value={editJson} oninput={() => { validateJson(); preview = null; }}></textarea>
 					{#if validationError}
 						<p class="message error">{validationError}</p>
 					{/if}
@@ -432,11 +430,11 @@ onMount(() => {
 							{/if}
 
 							<div class="actions">
-								<button on:click={() => { preview = null; }}>Back to Edit</button>
+								<button onclick={() => { preview = null; }}>Back to Edit</button>
 								{#if preview.compatibility === 'breaking'}
-									<button class="danger" on:click={() => confirmSave(true)}>Force Save</button>
+									<button class="danger" onclick={() => confirmSave(true)}>Force Save</button>
 								{:else}
-									<button class="primary" on:click={() => confirmSave(false)}>Save Schema</button>
+									<button class="primary" onclick={() => confirmSave(false)}>Save Schema</button>
 								{/if}
 							</div>
 						</div>
@@ -444,7 +442,7 @@ onMount(() => {
 
 					<div class="actions">
 						<button
-							on:click={() => {
+							onclick={() => {
 								editMode = false;
 								editJson = JSON.stringify(selectedSchema, null, 2);
 								validationError = null;
@@ -455,7 +453,7 @@ onMount(() => {
 							Cancel
 						</button>
 						{#if !preview}
-							<button class="primary" disabled={!!validationError || previewLoading} on:click={requestPreview}>
+							<button class="primary" disabled={!!validationError || previewLoading} onclick={requestPreview}>
 								{previewLoading ? 'Checking...' : 'Preview Changes'}
 							</button>
 						{/if}

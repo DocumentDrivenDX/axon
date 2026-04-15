@@ -228,6 +228,35 @@ pub struct ControlPlaneReady {
 /// Called once per startup by both [`run_with_sqlite_storage`] and
 /// [`run_with_postgres_storage`].  Returns a [`ControlPlaneReady`] bundle that
 /// each path destructures to obtain only the pieces it needs.
+/// Read 32 cryptographically random bytes from `/dev/urandom`, falling
+/// back to a time-seeded PRNG mixing if urandom is unavailable. Only
+/// used as a dev-mode fallback when `AXON_JWT_KEY` is unset.
+fn random_secret_32() -> Vec<u8> {
+    use std::io::Read;
+    let mut buf = vec![0u8; 32];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        if f.read_exact(&mut buf).is_ok() {
+            return buf;
+        }
+    }
+    // Last-resort fallback: mix the nanosecond clock into the buffer.
+    // This is NOT cryptographically strong and only runs on platforms
+    // without /dev/urandom (Windows), where the warning above still
+    // applies — production must set AXON_JWT_KEY.
+    let mut seed = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0x9E37_79B9_7F4A_7C15);
+    for chunk in buf.chunks_mut(8) {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let bytes = seed.to_le_bytes();
+        for (i, b) in chunk.iter_mut().enumerate() {
+            *b = bytes[i];
+        }
+    }
+    buf
+}
+
 pub fn init_control_plane(
     control_plane_path: &str,
     auth: AuthContext,
@@ -269,6 +298,26 @@ pub fn init_control_plane(
     let adapter_arc: Arc<std::sync::Mutex<Box<dyn axon_storage::StorageAdapter + Send + Sync>>> =
         Arc::new(std::sync::Mutex::new(Box::new(adapter)));
 
+    // Configure a JwtIssuer so /control/tenants/{id}/credentials can mint
+    // tokens. Production deployments should set AXON_JWT_KEY to a stable
+    // HMAC secret; when unset we generate a random 32-byte key at startup
+    // and log a warning (dev mode — tokens do not survive a restart).
+    let jwt_secret: Vec<u8> = match std::env::var("AXON_JWT_KEY") {
+        Ok(s) if !s.trim().is_empty() => s.into_bytes(),
+        _ => {
+            tracing::warn!(
+                "AXON_JWT_KEY not set; using a random 32-byte secret for this process. \
+                 Issued credentials will not verify after a restart. Set AXON_JWT_KEY \
+                 in production."
+            );
+            random_secret_32()
+        }
+    };
+    let jwt_issuer = Arc::new(crate::auth_pipeline::JwtIssuer::new(
+        jwt_secret,
+        "axon-server".to_string(),
+    ));
+
     let db = std::sync::Arc::new(tokio::sync::Mutex::new(db));
     let state = crate::control_plane_routes::ControlPlaneState::new(
         db.clone(),
@@ -276,7 +325,8 @@ pub fn init_control_plane(
         user_roles,
         cors_store.clone(),
     )
-    .with_storage(adapter_arc);
+    .with_storage(adapter_arc)
+    .with_jwt_issuer(jwt_issuer);
 
     Ok(ControlPlaneReady { db, state, cors_store, auth, data_dir })
 }

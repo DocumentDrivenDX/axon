@@ -79,6 +79,8 @@ export type AuditEntry = {
 	data_after: unknown;
 	actor: string | null;
 	transaction_id?: number | null;
+	metadata?: Record<string, string> | null;
+	diff?: Record<string, unknown> | null;
 };
 
 export type AuditQueryResult = {
@@ -554,4 +556,223 @@ export async function revokeCredential(tenantId: string, jti: string): Promise<v
 		`/control/tenants/${encodeURIComponent(tenantId)}/credentials/${encodeURIComponent(jti)}`,
 		{ method: 'DELETE' },
 	);
+}
+
+// ── Per-entity audit history ────────────────────────────────────────────────
+
+export async function fetchEntityAudit(
+	collection: string,
+	id: string,
+	scope?: Scope,
+): Promise<AuditQueryResult> {
+	return request<AuditQueryResult>(
+		`/audit/entity/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
+		undefined,
+		scope,
+	);
+}
+
+// ── Links ────────────────────────────────────────────────────────────────────
+
+export type Link = {
+	source_collection: string;
+	source_id: string;
+	target_collection: string;
+	target_id: string;
+	link_type: string;
+	metadata?: Record<string, unknown>;
+};
+
+export type TraversePath = {
+	source_collection: string;
+	source_id: string;
+	target_collection: string;
+	target_id: string;
+	link_type: string;
+};
+
+export type TraverseResult = {
+	entities: EntityRecord[];
+	paths?: TraversePath[];
+};
+
+/** Traverse outbound links from the given entity, optionally filtered by link_type. */
+export async function traverseLinks(
+	collection: string,
+	id: string,
+	options: { linkType?: string } = {},
+	scope?: Scope,
+): Promise<TraverseResult> {
+	const qs = options.linkType
+		? `?link_type=${encodeURIComponent(options.linkType)}`
+		: '';
+	return request<TraverseResult>(
+		`/traverse/${encodeURIComponent(collection)}/${encodeURIComponent(id)}${qs}`,
+		undefined,
+		scope,
+	);
+}
+
+export async function createLink(body: Link, scope?: Scope): Promise<Link> {
+	const response = await request<{ link: Link }>(
+		'/links',
+		{
+			method: 'POST',
+			body: JSON.stringify({ ...body, actor: 'ui' }),
+		},
+		scope,
+	);
+	return response.link;
+}
+
+export async function deleteLink(
+	body: Omit<Link, 'metadata'>,
+	scope?: Scope,
+): Promise<void> {
+	await request<void>(
+		'/links',
+		{
+			method: 'DELETE',
+			body: JSON.stringify({ ...body, actor: 'ui' }),
+		},
+		scope,
+	);
+}
+
+// ── Markdown template CRUD ───────────────────────────────────────────────────
+
+export type CollectionView = {
+	collection: string;
+	template: string;
+	version: number;
+	updated_at_ns?: number | null;
+	updated_by?: string | null;
+};
+
+export async function fetchCollectionTemplate(
+	collection: string,
+	scope?: Scope,
+): Promise<CollectionView> {
+	return request<CollectionView>(
+		`/collections/${encodeURIComponent(collection)}/template`,
+		undefined,
+		scope,
+	);
+}
+
+export async function putCollectionTemplate(
+	collection: string,
+	template: string,
+	scope?: Scope,
+): Promise<CollectionView & { warnings?: string[] }> {
+	return request<CollectionView & { warnings?: string[] }>(
+		`/collections/${encodeURIComponent(collection)}/template`,
+		{
+			method: 'PUT',
+			body: JSON.stringify({ template }),
+		},
+		scope,
+	);
+}
+
+export async function deleteCollectionTemplate(
+	collection: string,
+	scope?: Scope,
+): Promise<void> {
+	await request<void>(
+		`/collections/${encodeURIComponent(collection)}/template`,
+		{ method: 'DELETE', body: JSON.stringify({}) },
+		scope,
+	);
+}
+
+/**
+ * Fetch the rendered markdown for an entity. Returns the raw markdown
+ * string as text/markdown from `?format=markdown` on the entity GET.
+ */
+export async function fetchRenderedEntity(
+	collection: string,
+	id: string,
+	scope?: Scope,
+): Promise<string> {
+	const base =
+		scope && { tenant: scope.tenant, database: scope.database }
+			? `/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}`
+			: '';
+	const url = `${base}/collections/${encodeURIComponent(collection)}/entities/${encodeURIComponent(id)}?format=markdown`;
+	const response = await fetch(url, { headers: { Accept: 'text/markdown' } });
+	if (!response.ok) {
+		const text = await response.text();
+		throw new Error(`rendered entity fetch failed (${response.status}): ${text}`);
+	}
+	return response.text();
+}
+
+// ── Lifecycle transitions ────────────────────────────────────────────────────
+
+export type LifecycleDef = {
+	field: string;
+	initial: string;
+	transitions: Record<string, string[]>;
+};
+
+export type TransitionLifecycleResponse = {
+	entity: EntityRecord;
+	audit_id?: number | null;
+};
+
+export async function transitionLifecycle(
+	collection: string,
+	id: string,
+	body: {
+		lifecycle_name: string;
+		target_state: string;
+		expected_version: number;
+	},
+	scope?: Scope,
+): Promise<TransitionLifecycleResponse> {
+	return request<TransitionLifecycleResponse>(
+		`/lifecycle/${encodeURIComponent(collection)}/${encodeURIComponent(id)}/transition`,
+		{
+			method: 'POST',
+			body: JSON.stringify({ ...body, actor: 'ui' }),
+		},
+		scope,
+	);
+}
+
+/** Extract lifecycle definitions from a collection schema. */
+export function lifecyclesFromSchema(
+	schema: CollectionSchema | null | undefined,
+): Record<string, LifecycleDef> {
+	if (!schema) return {};
+	const raw = (schema as unknown as Record<string, unknown>).lifecycles;
+	if (!raw || typeof raw !== 'object') return {};
+	return raw as Record<string, LifecycleDef>;
+}
+
+// ── Raw GraphQL passthrough for the playground page ─────────────────────────
+
+export type GraphQLResponse<T = unknown> = {
+	data?: T;
+	errors?: Array<{ message: string; path?: (string | number)[] }>;
+};
+
+export async function executeGraphql(
+	query: string,
+	variables: Record<string, unknown> | undefined,
+	scope: { tenant: string; database: string },
+): Promise<GraphQLResponse> {
+	const url = `/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}/graphql`;
+	const response = await fetch(url, {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ query, variables: variables ?? {} }),
+	});
+	const text = await response.text();
+	try {
+		return JSON.parse(text) as GraphQLResponse;
+	} catch {
+		throw new Error(`GraphQL response was not JSON (${response.status}): ${text.slice(0, 200)}`);
+	}
 }

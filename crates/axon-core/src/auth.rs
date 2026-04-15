@@ -909,6 +909,7 @@ impl TenantRole {
 
 /// An operation that can be granted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Op {
     Read,
     Write,
