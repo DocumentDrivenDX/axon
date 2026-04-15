@@ -41,6 +41,9 @@ pub fn map_axon_error(error: AxonError) -> McpError {
         AxonError::RateLimitExceeded { actor, retry_after_ms } => McpError::InvalidParams(format!(
             "rate limit exceeded for actor '{actor}'; retry after {retry_after_ms}ms"
         )),
+        AxonError::Forbidden(message) => McpError::InvalidParams(format!(
+            "forbidden: {message}"
+        )),
         AxonError::ScopeViolation {
             actor,
             entity_id,

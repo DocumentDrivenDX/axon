@@ -49,6 +49,7 @@ mod collection_listing;
 pub mod federation;
 pub(crate) mod embedded_ui;
 pub mod control_plane;
+pub mod control_plane_authz;
 pub mod control_plane_routes;
 pub mod cors_config;
 pub mod user_roles;

@@ -281,6 +281,11 @@ fn axon_error_response(err: AxonError) -> Response {
             )),
         )
             .into_response(),
+        AxonError::Forbidden(msg) => (
+            StatusCode::FORBIDDEN,
+            Json(ApiError::new("forbidden", msg)),
+        )
+            .into_response(),
         AxonError::ScopeViolation {
             actor,
             entity_id,
@@ -504,7 +509,7 @@ pub(crate) async fn resolve_caller_identity(
 /// ```
 /// and then call `identity.require_read()` / `require_write()` / `require_admin()`
 /// to enforce the minimum required role for that operation.
-pub(crate) async fn authenticate_http_request(
+pub async fn authenticate_http_request(
     State(auth): State<AuthContext>,
     mut request: axum::extract::Request,
     next: Next,

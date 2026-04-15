@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::ops::Bound;
 
 use axon_audit::entry::AuditEntry;
-use axon_core::auth::{TenantId, TenantMember, TenantRole, User, UserId};
+use axon_core::auth::{RetentionPolicy, TenantId, TenantMember, TenantRole, User, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId};
 use axon_core::types::{Entity, Link};
@@ -893,6 +893,45 @@ pub trait StorageAdapter: Send + Sync {
         let _ = (tenant_id, user_id);
         Ok(false)
     }
+
+    /// List all members of a tenant ordered by `added_at_ms` ascending.
+    ///
+    /// Returns an empty `Vec` when the tenant has no members or when the auth
+    /// schema has not been applied.
+    fn list_tenant_members(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<TenantMember>, AxonError> {
+        let _ = tenant_id;
+        Ok(vec![])
+    }
+
+    /// Look up the retention policy for a tenant.
+    ///
+    /// Returns `Ok(None)` when no explicit policy has been set; callers should
+    /// substitute [`RetentionPolicy::default()`] in that case.
+    fn get_retention_policy(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Option<RetentionPolicy>, AxonError> {
+        let _ = tenant_id;
+        Ok(None)
+    }
+
+    /// Persist a retention policy for a tenant (upsert).
+    ///
+    /// The default implementation returns `Err(AxonError::InvalidOperation)`
+    /// so that unmigrated adapters are explicit about the gap.
+    fn set_retention_policy(
+        &self,
+        tenant_id: TenantId,
+        policy: &RetentionPolicy,
+    ) -> Result<(), AxonError> {
+        let _ = (tenant_id, policy);
+        Err(AxonError::InvalidOperation(
+            "set_retention_policy not supported by this adapter".into(),
+        ))
+    }
 }
 
 /// Forward all `StorageAdapter` calls through a `Box<dyn StorageAdapter>`.
@@ -1229,5 +1268,27 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         user_id: UserId,
     ) -> Result<bool, AxonError> {
         (**self).remove_tenant_member(tenant_id, user_id)
+    }
+
+    fn list_tenant_members(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<TenantMember>, AxonError> {
+        (**self).list_tenant_members(tenant_id)
+    }
+
+    fn get_retention_policy(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Option<RetentionPolicy>, AxonError> {
+        (**self).get_retention_policy(tenant_id)
+    }
+
+    fn set_retention_policy(
+        &self,
+        tenant_id: TenantId,
+        policy: &RetentionPolicy,
+    ) -> Result<(), AxonError> {
+        (**self).set_retention_policy(tenant_id, policy)
     }
 }

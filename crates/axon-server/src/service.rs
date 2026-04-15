@@ -170,6 +170,9 @@ fn axon_to_status(err: AxonError) -> Status {
         AxonError::RateLimitExceeded { actor, retry_after_ms } => Status::resource_exhausted(format!(
             "{{\"code\":\"rate_limit_exceeded\",\"actor\":{actor:?},\"retry_after_ms\":{retry_after_ms}}}"
         )),
+        AxonError::Forbidden(msg) => Status::permission_denied(format!(
+            "{{\"code\":\"forbidden\",\"detail\":{msg:?}}}"
+        )),
         AxonError::ScopeViolation {
             actor,
             entity_id,

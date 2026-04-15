@@ -1097,6 +1097,30 @@ impl AuthError {
     }
 }
 
+/// Per-tenant data retention policy (ADR-018, bead axon-c6908e78).
+///
+/// Controls how long audit log and event data is retained before archival or
+/// purge.  The default aligns with a 7-year legal-hold period common in many
+/// jurisdictions.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct RetentionPolicy {
+    /// Seconds after which records are moved to cold/archive storage.
+    pub archive_after_seconds: u64,
+    /// Seconds after which records are permanently deleted.
+    /// `None` means records are never automatically purged after archival.
+    pub purge_after_seconds: Option<u64>,
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            // 7 years = 7 * 365 * 24 * 60 * 60 = 220_752_000 seconds
+            archive_after_seconds: 7 * 365 * 24 * 60 * 60,
+            purge_after_seconds: None,
+        }
+    }
+}
+
 /// A resolved identity installed into the request extension after successful JWT verification.
 ///
 /// Downstream handlers read this from `Extension<ResolvedIdentity>` and trust it completely.

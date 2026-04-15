@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection};
 
 use axon_audit::entry::AuditEntry;
+use axon_core::auth::RetentionPolicy;
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
@@ -1847,6 +1848,116 @@ impl StorageAdapter for SqliteStorageAdapter {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(rows_affected > 0)
+    }
+
+    fn list_tenant_members(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+    ) -> Result<Vec<axon_core::auth::TenantMember>, AxonError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT tenant_id, user_id, role, added_at_ms \
+                 FROM tenant_users \
+                 WHERE tenant_id = ?1 \
+                 ORDER BY added_at_ms ASC",
+            )
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    AxonError::Storage("auth schema not applied".into())
+                } else {
+                    AxonError::Storage(msg)
+                }
+            })?;
+
+        let rows = stmt
+            .query_map(params![tenant_id.as_str()], |row| {
+                let role_str: String = row.get(2)?;
+                let role = match role_str.as_str() {
+                    "admin" => axon_core::auth::TenantRole::Admin,
+                    "write" => axon_core::auth::TenantRole::Write,
+                    _ => axon_core::auth::TenantRole::Read,
+                };
+                Ok(axon_core::auth::TenantMember {
+                    tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>(0)?),
+                    user_id: axon_core::auth::UserId::new(row.get::<_, String>(1)?),
+                    role,
+                })
+            })
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let mut members = Vec::new();
+        for row in rows {
+            members.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
+        }
+        Ok(members)
+    }
+
+    fn get_retention_policy(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+    ) -> Result<Option<RetentionPolicy>, AxonError> {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT archive_after_seconds, purge_after_seconds \
+             FROM tenant_retention_policies \
+             WHERE tenant_id = ?1",
+            params![tenant_id.as_str()],
+            |row| {
+                Ok(RetentionPolicy {
+                    archive_after_seconds: row.get::<_, i64>(0)? as u64,
+                    purge_after_seconds: row.get::<_, Option<i64>>(1)?.map(|v| v as u64),
+                })
+            },
+        ) {
+            Ok(policy) => Ok(Some(policy)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    Ok(None)
+                } else {
+                    Err(AxonError::Storage(msg))
+                }
+            }
+        }
+    }
+
+    fn set_retention_policy(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        policy: &RetentionPolicy,
+    ) -> Result<(), AxonError> {
+        let conn = self.conn()?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO tenant_retention_policies \
+             (tenant_id, archive_after_seconds, purge_after_seconds, updated_at_ms) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT (tenant_id) DO UPDATE SET \
+             archive_after_seconds = excluded.archive_after_seconds, \
+             purge_after_seconds = excluded.purge_after_seconds, \
+             updated_at_ms = excluded.updated_at_ms",
+            params![
+                tenant_id.as_str(),
+                policy.archive_after_seconds as i64,
+                policy.purge_after_seconds.map(|v| v as i64),
+                now_ms,
+            ],
+        )
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("no such table") {
+                AxonError::Storage("auth schema not applied; call apply_auth_migrations first".into())
+            } else {
+                AxonError::Storage(msg)
+            }
+        })?;
+        Ok(())
     }
 }
 

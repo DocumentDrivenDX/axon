@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axon_core::auth::{TenantId, TenantMember, TenantRole, User, UserId};
+use axon_core::auth::{RetentionPolicy, TenantId, TenantMember, TenantRole, User, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
@@ -129,6 +129,10 @@ pub struct MemoryStorageAdapter {
     /// requiring exclusive access to the whole adapter. The lock covers both
     /// the check and the insert, making the operation atomic (no TOCTOU race).
     user_identity_map: std::sync::Mutex<HashMap<(String, String), User>>,
+    /// Per-tenant retention policies (axon-c6908e78).
+    ///
+    /// Uses interior mutability so that `set_retention_policy` can take `&self`.
+    retention_policies: std::sync::Mutex<HashMap<TenantId, RetentionPolicy>>,
 }
 
 fn now_ns() -> u64 {
@@ -172,6 +176,7 @@ impl Default for MemoryStorageAdapter {
             users: HashMap::new(),
             tenant_members: std::sync::Mutex::new(HashMap::new()),
             user_identity_map: std::sync::Mutex::new(HashMap::new()),
+            retention_policies: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -1177,6 +1182,49 @@ impl StorageAdapter for MemoryStorageAdapter {
             .remove(&(tenant_id, user_id))
             .is_some();
         Ok(removed)
+    }
+
+    fn list_tenant_members(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<TenantMember>, AxonError> {
+        let map = self
+            .tenant_members
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("tenant_members mutex poisoned: {e}")))?;
+        let mut members: Vec<TenantMember> = map
+            .iter()
+            .filter(|((tid, _), _)| *tid == tenant_id)
+            .map(|(_, m)| m.clone())
+            .collect();
+        // Stable sort by user_id for deterministic ordering in tests (in-memory
+        // has no added_at_ms; sort by user_id string as a proxy).
+        members.sort_by(|a, b| a.user_id.0.cmp(&b.user_id.0));
+        Ok(members)
+    }
+
+    fn get_retention_policy(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Option<RetentionPolicy>, AxonError> {
+        Ok(self
+            .retention_policies
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("retention_policies mutex poisoned: {e}")))?
+            .get(&tenant_id)
+            .copied())
+    }
+
+    fn set_retention_policy(
+        &self,
+        tenant_id: TenantId,
+        policy: &RetentionPolicy,
+    ) -> Result<(), AxonError> {
+        self.retention_policies
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("retention_policies mutex poisoned: {e}")))?
+            .insert(tenant_id, *policy);
+        Ok(())
     }
 
     fn upsert_user_identity(

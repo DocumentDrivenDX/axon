@@ -94,6 +94,13 @@ pub enum AxonError {
         actual: serde_json::Value,
     },
 
+    /// Access to the resource or operation is denied.
+    ///
+    /// Returned by control-plane authorization helpers when the caller does
+    /// not hold the required deployment-admin or tenant-admin role.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
     #[error("storage error: {0}")]
     Storage(String),
 

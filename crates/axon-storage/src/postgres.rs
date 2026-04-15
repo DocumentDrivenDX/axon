@@ -1435,6 +1435,109 @@ impl StorageAdapter for PostgresStorageAdapter {
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(rows_affected > 0)
     }
+
+    fn list_tenant_members(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+    ) -> Result<Vec<axon_core::auth::TenantMember>, AxonError> {
+        let rows = self
+            .block(self.client.query(
+                "SELECT tenant_id, user_id, role \
+                 FROM tenant_users \
+                 WHERE tenant_id = $1 \
+                 ORDER BY added_at_ms ASC",
+                &[&tenant_id.as_str()],
+            ))
+            .or_else(|e| {
+                if e.to_string().contains("does not exist") {
+                    Ok(vec![])
+                } else {
+                    Err(e)
+                }
+            })?;
+
+        let members = rows
+            .into_iter()
+            .map(|row| {
+                let role_str: String = row.get("role");
+                let role = match role_str.as_str() {
+                    "admin" => axon_core::auth::TenantRole::Admin,
+                    "write" => axon_core::auth::TenantRole::Write,
+                    _ => axon_core::auth::TenantRole::Read,
+                };
+                axon_core::auth::TenantMember {
+                    tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>("tenant_id")),
+                    user_id: axon_core::auth::UserId::new(row.get::<_, String>("user_id")),
+                    role,
+                }
+            })
+            .collect();
+        Ok(members)
+    }
+
+    fn get_retention_policy(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+    ) -> Result<Option<axon_core::auth::RetentionPolicy>, AxonError> {
+        let row = self
+            .block(self.client.query_opt(
+                "SELECT archive_after_seconds, purge_after_seconds \
+                 FROM tenant_retention_policies \
+                 WHERE tenant_id = $1",
+                &[&tenant_id.as_str()],
+            ))
+            .or_else(|e| {
+                if e.to_string().contains("does not exist") {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            })?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(axon_core::auth::RetentionPolicy {
+            archive_after_seconds: row.get::<_, i64>("archive_after_seconds") as u64,
+            purge_after_seconds: row.get::<_, Option<i64>>("purge_after_seconds").map(|v| v as u64),
+        }))
+    }
+
+    fn set_retention_policy(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        policy: &axon_core::auth::RetentionPolicy,
+    ) -> Result<(), AxonError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        self.block(self.client.execute(
+            "INSERT INTO tenant_retention_policies \
+             (tenant_id, archive_after_seconds, purge_after_seconds, updated_at_ms) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (tenant_id) DO UPDATE SET \
+             archive_after_seconds = EXCLUDED.archive_after_seconds, \
+             purge_after_seconds = EXCLUDED.purge_after_seconds, \
+             updated_at_ms = EXCLUDED.updated_at_ms",
+            &[
+                &tenant_id.as_str(),
+                &(policy.archive_after_seconds as i64),
+                &(policy.purge_after_seconds.map(|v| v as i64)),
+                &now_ms,
+            ],
+        ))
+        .map_err(|e| {
+            if e.to_string().contains("does not exist") {
+                AxonError::Storage(
+                    "auth schema not applied; call apply_auth_migrations_postgres first".into(),
+                )
+            } else {
+                AxonError::Storage(e.to_string())
+            }
+        })?;
+        Ok(())
+    }
 }
 
 // ── Per-tenant PostgreSQL provisioning ───────────────────────────────────────

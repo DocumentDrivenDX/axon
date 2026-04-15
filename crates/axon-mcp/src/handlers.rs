@@ -1257,6 +1257,7 @@ fn to_tool_error(err: axon_core::error::AxonError) -> ToolError {
         AxonError::RateLimitExceeded { actor, retry_after_ms } => ToolError::InvalidArgument(format!(
             "rate limit exceeded for actor '{actor}'; retry after {retry_after_ms}ms"
         )),
+        AxonError::Forbidden(msg) => ToolError::InvalidArgument(format!("forbidden: {msg}")),
         AxonError::ScopeViolation {
             actor,
             entity_id,

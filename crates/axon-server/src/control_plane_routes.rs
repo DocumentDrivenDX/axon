@@ -12,9 +12,11 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router};
@@ -22,8 +24,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::Mutex;
 
+use axon_core::auth::{ResolvedIdentity, RetentionPolicy, TenantId, TenantRole, UserId};
+use axon_storage::StorageAdapter;
+
 use crate::auth::{Identity, Role};
+use crate::auth_pipeline::JwtIssuer;
 use crate::control_plane::{ControlPlaneDb, Tenant};
+use crate::control_plane_authz;
 use crate::cors_config::CorsStore;
 use crate::gateway::{auth_error_response, ApiError};
 use crate::user_roles::UserRoleStore;
@@ -45,6 +52,17 @@ pub struct ControlPlaneState {
     /// Shared with the CORS middleware layer so that changes take effect on the
     /// next request without a server restart.
     pub cors_store: CorsStore,
+    /// Storage adapter for ADR-018 auth/membership tables.
+    ///
+    /// Populated when the server is configured with JWT-based auth support.
+    /// If `None` the membership and retention endpoints return 503.
+    pub storage: Option<Arc<std::sync::Mutex<Box<dyn StorageAdapter + Send + Sync>>>>,
+    /// JWT issuer used by the optional JWT extraction middleware.
+    ///
+    /// When `Some`, requests to the membership/retention endpoints that carry
+    /// an `Authorization: Bearer …` header are verified and a
+    /// [`ResolvedIdentity`] is installed into the request extensions.
+    pub jwt_issuer: Option<Arc<JwtIssuer>>,
 }
 
 /// Shared handle to the control-plane SQLite database (legacy alias).
@@ -62,7 +80,23 @@ impl ControlPlaneState {
         user_roles: UserRoleStore,
         cors_store: CorsStore,
     ) -> Self {
-        Self { db, data_dir, user_roles, cors_store }
+        Self { db, data_dir, user_roles, cors_store, storage: None, jwt_issuer: None }
+    }
+
+    /// Attach a storage adapter for ADR-018 membership and retention tables.
+    pub fn with_storage(
+        mut self,
+        storage: Arc<std::sync::Mutex<Box<dyn StorageAdapter + Send + Sync>>>,
+    ) -> Self {
+        self.storage = Some(storage);
+        self
+    }
+
+    /// Attach a JWT issuer to enable optional JWT verification on the
+    /// membership/retention endpoints.
+    pub fn with_jwt_issuer(mut self, issuer: Arc<JwtIssuer>) -> Self {
+        self.jwt_issuer = Some(issuer);
+        self
     }
 
     /// Build the file path for a tenant database.
@@ -163,6 +197,13 @@ pub fn control_plane_routes() -> Router<ControlPlaneState> {
         .route("/cors", get(list_cors_origins))
         .route("/cors", put(add_cors_origin))
         .route("/cors", delete(remove_cors_origin_handler))
+        // Tenant membership (ADR-018, axon-c6908e78)
+        .route("/tenants/{id}/members", get(list_tenant_members))
+        .route("/tenants/{id}/members/{user_id}", put(upsert_tenant_member))
+        .route("/tenants/{id}/members/{user_id}", delete(remove_tenant_member_handler))
+        // Tenant retention policy (axon-c6908e78)
+        .route("/tenants/{id}/retention", get(get_retention_policy_handler))
+        .route("/tenants/{id}/retention", put(set_retention_policy_handler))
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -488,6 +529,466 @@ async fn remove_cors_origin_handler(
                 "not_found",
                 format!("origin '{}' is not in the CORS allow-list", body.origin),
             )),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+// ── New membership + retention helpers ───────────────────────────────────────
+
+/// Return a 403 Forbidden response for authz failures.
+fn forbidden_response(msg: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(ApiError::new("forbidden", msg)),
+    )
+        .into_response()
+}
+
+/// Return a 503 Service Unavailable response when storage is not configured.
+fn storage_not_configured() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(ApiError::new(
+            "not_configured",
+            "storage adapter not configured for this endpoint",
+        )),
+    )
+        .into_response()
+}
+
+/// Optional JWT extraction middleware.
+///
+/// If the request carries an `Authorization: Bearer <token>` header AND the
+/// [`ControlPlaneState`] has a `jwt_issuer` configured, the token is verified
+/// and a [`ResolvedIdentity`] is inserted into the request extensions.
+///
+/// If no token is present the request passes through unchanged — handlers can
+/// fall back to the legacy [`Identity`] extension.
+///
+/// If a token is present but verification fails the middleware returns 401.
+pub async fn optional_jwt_middleware(
+    State(state): State<ControlPlaneState>,
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    use axum::http::header::AUTHORIZATION;
+
+    let auth_value = request.headers().get(AUTHORIZATION).cloned();
+    let Some(auth_header) = auth_value else {
+        // No token — fall through to legacy auth.
+        return next.run(request).await;
+    };
+
+    let Some(issuer) = &state.jwt_issuer else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(ApiError::new("unauthenticated", "JWT auth not configured")),
+        )
+            .into_response();
+    };
+
+    let auth_str = match auth_header.to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ApiError::new("unauthenticated", "malformed Authorization header")),
+            )
+                .into_response();
+        }
+    };
+
+    let token = match auth_str.strip_prefix("Bearer ") {
+        Some(t) => t.to_string(),
+        None => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ApiError::new("unauthenticated", "expected Bearer token")),
+            )
+                .into_response();
+        }
+    };
+
+    match issuer.verify(&token) {
+        Ok(claims) => {
+            // Validate exp/nbf with 30 s clock skew.
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            const SKEW: u64 = 30;
+            if claims.exp.saturating_add(SKEW) < now {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(ApiError::new("credential_expired", "JWT has expired")),
+                )
+                    .into_response();
+            }
+            if claims.nbf > now.saturating_add(SKEW) {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(ApiError::new("credential_not_yet_valid", "JWT not yet valid")),
+                )
+                    .into_response();
+            }
+
+            let identity = ResolvedIdentity {
+                user_id: UserId::new(&claims.sub),
+                tenant_id: TenantId::new(&claims.aud),
+                grants: claims.grants,
+            };
+            request.extensions_mut().insert(identity);
+        }
+        Err(_) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(ApiError::new("credential_invalid", "invalid JWT")),
+            )
+                .into_response();
+        }
+    }
+
+    next.run(request).await
+}
+
+// ── Membership request/response types ────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct UpsertMemberBody {
+    role: String,
+}
+
+#[derive(Serialize)]
+struct MemberResponse {
+    tenant_id: String,
+    user_id: String,
+    role: String,
+}
+
+fn tenant_role_from_str(s: &str) -> Option<TenantRole> {
+    match s {
+        "admin" => Some(TenantRole::Admin),
+        "write" => Some(TenantRole::Write),
+        "read" => Some(TenantRole::Read),
+        _ => None,
+    }
+}
+
+fn tenant_role_to_str(r: TenantRole) -> &'static str {
+    match r {
+        TenantRole::Admin => "admin",
+        TenantRole::Write => "write",
+        TenantRole::Read => "read",
+    }
+}
+
+// ── Membership handlers ───────────────────────────────────────────────────────
+
+/// `GET /control/tenants/{id}/members` — list tenant memberships.
+///
+/// Requires tenant-admin or deployment-admin.
+async fn list_tenant_members(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path(id): Path<String>,
+) -> Response {
+    // Authorization check.
+    match &resolved {
+        Some(Extension(r)) => {
+            let tenant_id = TenantId::new(&id);
+            let ok = control_plane_authz::require_tenant_admin(r, tenant_id, &state.user_roles)
+                .is_ok()
+                || control_plane_authz::require_deployment_admin(r, &state.user_roles).is_ok();
+            if !ok {
+                return forbidden_response("tenant admin or deployment admin required");
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let tenant_id = TenantId::new(&id);
+    let result = {
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.list_tenant_members(tenant_id),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(members) => {
+            let payload: Vec<MemberResponse> = members
+                .into_iter()
+                .map(|m| MemberResponse {
+                    tenant_id: m.tenant_id.0,
+                    user_id: m.user_id.0,
+                    role: tenant_role_to_str(m.role).to_string(),
+                })
+                .collect();
+            Json(json!({ "members": payload })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `PUT /control/tenants/{id}/members/{user_id}` — upsert tenant membership.
+///
+/// Requires deployment-admin.
+async fn upsert_tenant_member(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path((id, uid)): Path<(String, String)>,
+    Json(body): Json<UpsertMemberBody>,
+) -> Response {
+    // Authorization check.
+    match &resolved {
+        Some(Extension(r)) => {
+            if let Err(e) = control_plane_authz::require_deployment_admin(r, &state.user_roles) {
+                return forbidden_response(&e.to_string());
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    let Some(role) = tenant_role_from_str(&body.role) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new("invalid_role", format!("unknown role '{}'", body.role))),
+        )
+            .into_response();
+    };
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let tenant_id = TenantId::new(&id);
+    let user_id = UserId::new(&uid);
+    let result = {
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.upsert_tenant_member(tenant_id, user_id, role),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(member) => (
+            StatusCode::OK,
+            Json(json!({
+                "tenant_id": member.tenant_id.0,
+                "user_id": member.user_id.0,
+                "role": tenant_role_to_str(member.role),
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `DELETE /control/tenants/{id}/members/{user_id}` — remove tenant membership.
+///
+/// Requires deployment-admin. Returns 204 on success, 404 if the membership
+/// does not exist.
+async fn remove_tenant_member_handler(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path((id, uid)): Path<(String, String)>,
+) -> Response {
+    // Authorization check.
+    match &resolved {
+        Some(Extension(r)) => {
+            if let Err(e) = control_plane_authz::require_deployment_admin(r, &state.user_roles) {
+                return forbidden_response(&e.to_string());
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let tenant_id = TenantId::new(&id);
+    let user_id = UserId::new(&uid);
+    let result = {
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.remove_tenant_member(tenant_id, user_id),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("not_found", format!("member {uid} not found in tenant {id}"))),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+// ── Retention policy handlers ─────────────────────────────────────────────────
+
+#[derive(Serialize, Deserialize)]
+struct RetentionPolicyBody {
+    archive_after_seconds: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    purge_after_seconds: Option<u64>,
+}
+
+/// `GET /control/tenants/{id}/retention` — get the tenant's retention policy.
+///
+/// Returns the default 7-year policy if none has been explicitly configured.
+async fn get_retention_policy_handler(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path(id): Path<String>,
+) -> Response {
+    // Authorization check.
+    match &resolved {
+        Some(Extension(r)) => {
+            let tenant_id = TenantId::new(&id);
+            let ok = control_plane_authz::require_tenant_admin(r, tenant_id, &state.user_roles)
+                .is_ok()
+                || control_plane_authz::require_deployment_admin(r, &state.user_roles).is_ok();
+            if !ok {
+                return forbidden_response("tenant admin or deployment admin required");
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let tenant_id = TenantId::new(&id);
+    let result = {
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.get_retention_policy(tenant_id),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(policy) => {
+            let p = policy.unwrap_or_default();
+            Json(RetentionPolicyBody {
+                archive_after_seconds: p.archive_after_seconds,
+                purge_after_seconds: p.purge_after_seconds,
+            })
+            .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `PUT /control/tenants/{id}/retention` — set or update the tenant's retention policy.
+async fn set_retention_policy_handler(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path(id): Path<String>,
+    Json(body): Json<RetentionPolicyBody>,
+) -> Response {
+    // Authorization check.
+    match &resolved {
+        Some(Extension(r)) => {
+            if let Err(e) = control_plane_authz::require_deployment_admin(r, &state.user_roles) {
+                return forbidden_response(&e.to_string());
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let tenant_id = TenantId::new(&id);
+    let policy = RetentionPolicy {
+        archive_after_seconds: body.archive_after_seconds,
+        purge_after_seconds: body.purge_after_seconds,
+    };
+    let result = {
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.set_retention_policy(tenant_id, &policy),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(RetentionPolicyBody {
+                archive_after_seconds: policy.archive_after_seconds,
+                purge_after_seconds: policy.purge_after_seconds,
+            }),
         )
             .into_response(),
         Err(e) => (
