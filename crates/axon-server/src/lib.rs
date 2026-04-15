@@ -45,6 +45,7 @@ pub mod actor_scope;
 pub mod auth;
 pub mod auth_pipeline;
 pub mod bootstrap;
+pub mod database_router;
 pub mod no_auth;
 pub mod path_router;
 mod collection_listing;
@@ -66,6 +67,7 @@ pub mod service;
 pub mod tenant_router;
 
 pub use auth::{AuthContext, AuthMode, Identity, Role};
+pub use database_router::{DatabaseAdapterFactory, DatabaseRouter, MemoryAdapterFactory};
 pub use auth_pipeline::{InMemoryRevocationCache, JwtIssuer, jwt_verify_layer};
 pub use mcp_stdio::run_mcp_stdio;
 pub use no_auth::{no_auth_layer, synthesize_no_auth_identity};
