@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axon_core::auth::{RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User, UserId};
+use axon_core::auth::{CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
@@ -138,6 +138,10 @@ pub struct MemoryStorageAdapter {
     /// Uses interior mutability so that `create_tenant_database` and
     /// `delete_tenant_database` can take `&self`.
     tenant_databases: std::sync::Mutex<HashMap<(TenantId, String), TenantDatabase>>,
+    /// Credential issuance metadata (axon-906b527a).
+    ///
+    /// Uses interior mutability so that `track_credential_issuance` can take `&self`.
+    credential_issuances: std::sync::Mutex<HashMap<Uuid, CredentialMetadata>>,
 }
 
 fn now_ns() -> u64 {
@@ -183,6 +187,7 @@ impl Default for MemoryStorageAdapter {
             user_identity_map: std::sync::Mutex::new(HashMap::new()),
             retention_policies: std::sync::Mutex::new(HashMap::new()),
             tenant_databases: std::sync::Mutex::new(HashMap::new()),
+            credential_issuances: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -1138,7 +1143,16 @@ impl StorageAdapter for MemoryStorageAdapter {
     // ── Auth / tenancy (ADR-018) ─────────────────────────────────────────────
 
     fn is_jti_revoked(&self, jti: Uuid) -> Result<bool, AxonError> {
-        Ok(self.revoked_jtis.contains(&jti))
+        if self.revoked_jtis.contains(&jti) {
+            return Ok(true);
+        }
+        // Also check revoked flag set by revoke_credential.
+        if let Ok(issuances) = self.credential_issuances.lock() {
+            if let Some(meta) = issuances.get(&jti) {
+                return Ok(meta.revoked);
+            }
+        }
+        Ok(false)
     }
 
     fn get_user(&self, user_id: UserId) -> Result<Option<User>, AxonError> {
@@ -1321,6 +1335,82 @@ impl StorageAdapter for MemoryStorageAdapter {
         };
         map.insert(key, user.clone());
         Ok(user)
+    }
+
+    fn track_credential_issuance(
+        &self,
+        jti: Uuid,
+        user_id: UserId,
+        tenant_id: TenantId,
+        issued_at_ms: i64,
+        expires_at_ms: i64,
+        grants_json: &str,
+    ) -> Result<(), AxonError> {
+        let meta = CredentialMetadata {
+            jti: jti.to_string(),
+            user_id,
+            tenant_id,
+            issued_at_ms,
+            expires_at_ms,
+            revoked: false,
+            grants_json: grants_json.to_string(),
+        };
+        self.credential_issuances
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("credential_issuances mutex poisoned: {e}")))?
+            .insert(jti, meta);
+        Ok(())
+    }
+
+    fn list_credentials(
+        &self,
+        tenant_id: TenantId,
+        user_filter: Option<UserId>,
+    ) -> Result<Vec<CredentialMetadata>, AxonError> {
+        let issuances = self
+            .credential_issuances
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("credential_issuances mutex poisoned: {e}")))?;
+        let mut creds: Vec<CredentialMetadata> = issuances
+            .values()
+            .filter(|m| {
+                m.tenant_id == tenant_id
+                    && user_filter.as_ref().map_or(true, |uid| &m.user_id == uid)
+            })
+            .cloned()
+            .collect();
+        // Also check revoked_jtis for legacy revocations not tracked in credential_issuances.
+        for cred in &mut creds {
+            if !cred.revoked {
+                if let Ok(jti_uuid) = cred.jti.parse::<Uuid>() {
+                    if self.revoked_jtis.contains(&jti_uuid) {
+                        cred.revoked = true;
+                    }
+                }
+            }
+        }
+        creds.sort_by(|a, b| a.issued_at_ms.cmp(&b.issued_at_ms));
+        Ok(creds)
+    }
+
+    fn revoke_credential(
+        &self,
+        jti: Uuid,
+        _revoked_by: UserId,
+    ) -> Result<(), AxonError> {
+        // Insert into the in-memory revocation set.
+        // Note: MemoryStorageAdapter.revoked_jtis is not behind a Mutex (it's
+        // owned by &mut self in the trait's default), but here we need &self.
+        // We use the credential_issuances mutex to coordinate, and update the
+        // revoked flag in the issuance record.
+        let mut issuances = self
+            .credential_issuances
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("credential_issuances mutex poisoned: {e}")))?;
+        if let Some(meta) = issuances.get_mut(&jti) {
+            meta.revoked = true;
+        }
+        Ok(())
     }
 }
 

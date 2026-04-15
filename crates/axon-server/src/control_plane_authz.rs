@@ -59,3 +59,23 @@ pub fn require_tenant_admin(
 
     Err(AxonError::Forbidden("tenant admin required".into()))
 }
+
+/// Check that the caller is either a deployment admin OR the named target user.
+///
+/// Used by credential issuance to allow self-issue: a non-admin user may issue
+/// credentials to themselves, but not to other users.
+pub fn require_deployment_admin_or_self(
+    identity: &ResolvedIdentity,
+    target_user_id: &axon_core::auth::UserId,
+    user_roles: &UserRoleStore,
+) -> Result<(), AxonError> {
+    if require_deployment_admin(identity, user_roles).is_ok() {
+        return Ok(());
+    }
+    if &identity.user_id == target_user_id {
+        return Ok(());
+    }
+    Err(AxonError::Forbidden(
+        "deployment admin or self-issue required".into(),
+    ))
+}

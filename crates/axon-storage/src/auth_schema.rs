@@ -100,6 +100,19 @@ pub fn apply_auth_migrations_sqlite(conn: &rusqlite::Connection) -> Result<(), S
     )
     .map_err(|e| format!("tenant_retention_policies table: {e}"))?;
 
+    // Create credential_issuances table (axon-906b527a).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS credential_issuances (
+            jti            TEXT PRIMARY KEY,
+            user_id        TEXT NOT NULL,
+            tenant_id      TEXT NOT NULL,
+            issued_at_ms   INTEGER NOT NULL,
+            expires_at_ms  INTEGER NOT NULL,
+            grants_json    TEXT NOT NULL
+        )",
+    )
+    .map_err(|e| format!("credential_issuances table: {e}"))?;
+
     Ok(())
 }
 
@@ -206,6 +219,21 @@ pub async fn apply_auth_migrations_postgres(client: &tokio_postgres::Client) -> 
         .await
         .map_err(|e| format!("tenant_retention_policies table: {e}"))?;
 
+    // Create credential_issuances table (axon-906b527a).
+    client
+        .batch_execute(
+            "CREATE TABLE IF NOT EXISTS credential_issuances (
+                jti            TEXT PRIMARY KEY,
+                user_id        TEXT NOT NULL,
+                tenant_id      TEXT NOT NULL,
+                issued_at_ms   BIGINT NOT NULL,
+                expires_at_ms  BIGINT NOT NULL,
+                grants_json    TEXT NOT NULL
+            )",
+        )
+        .await
+        .map_err(|e| format!("credential_issuances table: {e}"))?;
+
     Ok(())
 }
 
@@ -233,13 +261,13 @@ mod tests {
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
                     'tenants', 'users', 'user_identities', 'tenant_users',
                     'tenant_databases', 'credential_revocations',
-                    'tenant_retention_policies'
+                    'tenant_retention_policies', 'credential_issuances'
                 )",
                 [],
                 |row| row.get(0),
             )
             .expect("query should succeed");
-        assert_eq!(count, 7, "all 7 auth tables should be created");
+        assert_eq!(count, 8, "all 8 auth tables should be created");
     }
 
     #[test]
@@ -266,13 +294,13 @@ mod tests {
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
                     'tenants', 'users', 'user_identities', 'tenant_users',
                     'tenant_databases', 'credential_revocations',
-                    'tenant_retention_policies'
+                    'tenant_retention_policies', 'credential_issuances'
                 )",
                 [],
                 |row| row.get(0),
             )
             .expect("query should succeed");
-        assert_eq!(count, 7, "still exactly 7 tables after re-run");
+        assert_eq!(count, 8, "still exactly 8 tables after re-run");
     }
 
     // ── Round-trip tests ──────────────────────────────────────────────────────

@@ -1620,6 +1620,99 @@ impl StorageAdapter for PostgresStorageAdapter {
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(rows_affected > 0)
     }
+
+    fn track_credential_issuance(
+        &self,
+        jti: uuid::Uuid,
+        user_id: axon_core::auth::UserId,
+        tenant_id: axon_core::auth::TenantId,
+        issued_at_ms: i64,
+        expires_at_ms: i64,
+        grants_json: &str,
+    ) -> Result<(), AxonError> {
+        let jti_str = jti.to_string();
+        self.block(self.client.execute(
+            "INSERT INTO credential_issuances \
+             (jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+            &[
+                &jti_str,
+                &user_id.as_str(),
+                &tenant_id.as_str(),
+                &issued_at_ms,
+                &expires_at_ms,
+                &grants_json,
+            ],
+        ))
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_credentials(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        user_filter: Option<axon_core::auth::UserId>,
+    ) -> Result<Vec<axon_core::auth::CredentialMetadata>, AxonError> {
+        let rows = self
+            .block(self.client.query(
+                "SELECT ci.jti, ci.user_id, ci.tenant_id, ci.issued_at_ms, ci.expires_at_ms, \
+                 ci.grants_json, \
+                 CASE WHEN cr.jti IS NOT NULL THEN TRUE ELSE FALSE END AS revoked \
+                 FROM credential_issuances ci \
+                 LEFT JOIN credential_revocations cr ON ci.jti = cr.jti \
+                 WHERE ci.tenant_id = $1 \
+                 ORDER BY ci.issued_at_ms ASC",
+                &[&tenant_id.as_str()],
+            ))
+            .or_else(|e| {
+                if e.to_string().contains("does not exist") {
+                    Ok(vec![])
+                } else {
+                    Err(e)
+                }
+            })
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let mut creds = Vec::new();
+        for row in rows {
+            let meta = axon_core::auth::CredentialMetadata {
+                jti: row.get::<_, String>("jti"),
+                user_id: axon_core::auth::UserId::new(row.get::<_, String>("user_id")),
+                tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>("tenant_id")),
+                issued_at_ms: row.get::<_, i64>("issued_at_ms"),
+                expires_at_ms: row.get::<_, i64>("expires_at_ms"),
+                grants_json: row.get::<_, String>("grants_json"),
+                revoked: row.get::<_, bool>("revoked"),
+            };
+            if let Some(ref uid) = user_filter {
+                if &meta.user_id != uid {
+                    continue;
+                }
+            }
+            creds.push(meta);
+        }
+        Ok(creds)
+    }
+
+    fn revoke_credential(
+        &self,
+        jti: uuid::Uuid,
+        revoked_by: axon_core::auth::UserId,
+    ) -> Result<(), AxonError> {
+        let jti_str = jti.to_string();
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        self.block(self.client.execute(
+            "INSERT INTO credential_revocations (jti, revoked_at_ms, revoked_by) \
+             VALUES ($1, $2, $3) \
+             ON CONFLICT (jti) DO NOTHING",
+            &[&jti_str, &now_ms, &revoked_by.as_str()],
+        ))
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
 }
 
 // ── Per-tenant PostgreSQL provisioning ───────────────────────────────────────

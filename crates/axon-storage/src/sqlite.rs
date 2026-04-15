@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection};
 
 use axon_audit::entry::AuditEntry;
-use axon_core::auth::{RetentionPolicy, TenantDatabase};
+use axon_core::auth::{CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
@@ -2048,6 +2048,98 @@ impl StorageAdapter for SqliteStorageAdapter {
             )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(rows_affected > 0)
+    }
+
+    fn track_credential_issuance(
+        &self,
+        jti: uuid::Uuid,
+        user_id: UserId,
+        tenant_id: TenantId,
+        issued_at_ms: i64,
+        expires_at_ms: i64,
+        grants_json: &str,
+    ) -> Result<(), AxonError> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO credential_issuances \
+             (jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                jti.to_string(),
+                user_id.as_str(),
+                tenant_id.as_str(),
+                issued_at_ms,
+                expires_at_ms,
+                grants_json,
+            ],
+        )
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    fn list_credentials(
+        &self,
+        tenant_id: TenantId,
+        user_filter: Option<UserId>,
+    ) -> Result<Vec<CredentialMetadata>, AxonError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT ci.jti, ci.user_id, ci.tenant_id, ci.issued_at_ms, ci.expires_at_ms, \
+                 ci.grants_json, \
+                 CASE WHEN cr.jti IS NOT NULL THEN 1 ELSE 0 END AS revoked \
+                 FROM credential_issuances ci \
+                 LEFT JOIN credential_revocations cr ON ci.jti = cr.jti \
+                 WHERE ci.tenant_id = ?1 \
+                 ORDER BY ci.issued_at_ms ASC",
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![tenant_id.as_str()], |row| {
+                Ok(CredentialMetadata {
+                    jti: row.get::<_, String>(0)?,
+                    user_id: UserId::new(row.get::<_, String>(1)?),
+                    tenant_id: TenantId::new(row.get::<_, String>(2)?),
+                    issued_at_ms: row.get::<_, i64>(3)?,
+                    expires_at_ms: row.get::<_, i64>(4)?,
+                    grants_json: row.get::<_, String>(5)?,
+                    revoked: row.get::<_, i64>(6)? != 0,
+                })
+            })
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let mut creds = Vec::new();
+        for row in rows {
+            let meta = row.map_err(|e| AxonError::Storage(e.to_string()))?;
+            if let Some(ref uid) = user_filter {
+                if &meta.user_id != uid {
+                    continue;
+                }
+            }
+            creds.push(meta);
+        }
+        Ok(creds)
+    }
+
+    fn revoke_credential(
+        &self,
+        jti: uuid::Uuid,
+        revoked_by: UserId,
+    ) -> Result<(), AxonError> {
+        let conn = self.conn()?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO credential_revocations (jti, revoked_at_ms, revoked_by) \
+             VALUES (?1, ?2, ?3) \
+             ON CONFLICT (jti) DO NOTHING",
+            params![jti.to_string(), now_ms, revoked_by.as_str()],
+        )
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
     }
 }
 

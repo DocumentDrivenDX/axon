@@ -803,6 +803,28 @@ pub struct TenantMember {
     pub role: TenantRole,
 }
 
+/// Metadata row for an issued credential (ADR-018 §4, axon-906b527a).
+///
+/// The signed JWT string is never persisted; only these metadata fields
+/// are stored to support listing and revocation queries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CredentialMetadata {
+    /// JWT ID — unique identifier for this credential.
+    pub jti: String,
+    /// User the credential was issued to.
+    pub user_id: UserId,
+    /// Tenant this credential is scoped to.
+    pub tenant_id: TenantId,
+    /// Issuance time in milliseconds since UNIX epoch.
+    pub issued_at_ms: i64,
+    /// Expiry time in milliseconds since UNIX epoch.
+    pub expires_at_ms: i64,
+    /// Whether this credential has been revoked.
+    pub revoked: bool,
+    /// Database grants as a JSON string.
+    pub grants_json: String,
+}
+
 /// A database registered within a tenant (ADR-018, FEAT-014).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TenantDatabase {

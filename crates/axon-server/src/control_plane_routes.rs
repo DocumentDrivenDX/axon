@@ -24,7 +24,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use axon_core::auth::{ResolvedIdentity, RetentionPolicy, TenantDatabase, TenantId, TenantRole, UserId};
+use axon_core::auth::{
+    AuthError, Grants, JwtClaims, ResolvedIdentity, RetentionPolicy,
+    TenantDatabase, TenantId, TenantRole, UserId,
+};
 use axon_storage::StorageAdapter;
 
 use crate::auth::{Identity, Role};
@@ -208,6 +211,10 @@ pub fn control_plane_routes() -> Router<ControlPlaneState> {
         .route("/tenants/{id}/databases", get(list_tenant_databases))
         .route("/tenants/{id}/databases", post(create_tenant_database))
         .route("/tenants/{id}/databases/{name}", delete(delete_tenant_database))
+        // Credential issuance (axon-906b527a)
+        .route("/tenants/{id}/credentials", post(issue_credential))
+        .route("/tenants/{id}/credentials", get(list_credentials_handler))
+        .route("/tenants/{id}/credentials/{jti}", delete(revoke_credential_handler))
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -1222,6 +1229,402 @@ async fn delete_tenant_database(
             )),
         )
             .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+// ── Credential handlers (axon-906b527a) ─────────────────────────────────────
+
+#[derive(serde::Deserialize)]
+struct IssueCredentialBody {
+    target_user: String,
+    grants: Grants,
+    ttl_seconds: u64,
+}
+
+#[derive(serde::Serialize)]
+struct IssueCredentialResponse {
+    jwt: String,
+    jti: String,
+    expires_at: u64,
+}
+
+/// Convert an `AuthError` into a 403 response with the canonical error code.
+fn auth_error_to_response(err: AuthError) -> Response {
+    (
+        axum::http::StatusCode::from_u16(err.status_code())
+            .unwrap_or(StatusCode::FORBIDDEN),
+        Json(ApiError::new(err.error_code(), err.to_string())),
+    )
+        .into_response()
+}
+
+/// `POST /control/tenants/{id}/credentials` — issue a signed JWT credential.
+///
+/// Authorization:
+/// - Deployment admin may issue to any user in the tenant (subject to target's role ceiling).
+/// - A user may self-issue (target_user == caller) within their own role ceiling.
+///
+/// The signed JWT is returned once in the response body and never persisted.
+async fn issue_credential(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path(id): Path<String>,
+    Json(body): Json<IssueCredentialBody>,
+) -> Response {
+    let target_user_id = UserId::new(&body.target_user);
+    let tenant_id = TenantId::new(&id);
+
+    // Determine caller identity and check authorization.
+    let caller_user_id: Option<UserId> = match &resolved {
+        Some(Extension(r)) => {
+            let is_deployment_admin =
+                control_plane_authz::require_deployment_admin(r, &state.user_roles).is_ok();
+            let is_self = r.user_id == target_user_id;
+            if !is_deployment_admin && !is_self {
+                return forbidden_response("deployment admin or self-issue required");
+            }
+            Some(r.user_id.clone())
+        }
+        None => {
+            // Legacy auth: only deployment admins.
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+            None
+        }
+    };
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+    let Some(issuer) = &state.jwt_issuer else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(ApiError::new("not_configured", "JWT issuer not configured")),
+        )
+            .into_response();
+    };
+
+    // Look up target user's membership and role.
+    let target_member = {
+        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.get_tenant_member(tenant_id.clone(), target_user_id.clone()),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    let target_member = match target_member {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(ApiError::new(
+                    "not_a_tenant_member",
+                    format!("user '{}' is not a member of tenant '{}'", body.target_user, id),
+                )),
+            )
+                .into_response();
+        }
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("storage_error", e.to_string())),
+            )
+                .into_response();
+        }
+    };
+
+    // Enforce target user's role ceiling (always applied).
+    if let Err(_err) = target_member.role.enforce_ceiling(&body.grants) {
+        return auth_error_to_response(AuthError::GrantsExceedRole);
+    }
+
+    // For self-issue, also enforce the caller's role ceiling (same as target
+    // ceiling when caller == target, but this makes the logic explicit and
+    // correctly handles any future cases where the caller is not the target).
+    if let Some(ref caller_id) = caller_user_id {
+        if caller_id == &target_user_id {
+            // Self-issue: enforce caller's own ceiling.
+            let caller_member = {
+                let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+                match s {
+                    Ok(s) => s.get_tenant_member(tenant_id.clone(), caller_id.clone()),
+                    Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+                }
+            };
+            match caller_member {
+                Ok(Some(m)) => {
+                    if m.role.enforce_ceiling(&body.grants).is_err() {
+                        return auth_error_to_response(AuthError::GrantsExceedRole);
+                    }
+                }
+                Ok(None) => {
+                    return forbidden_response("caller is not a member of this tenant");
+                }
+                Err(e) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError::new("storage_error", e.to_string())),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+
+    // Build claims.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let jti_uuid = uuid::Uuid::now_v7();
+    let expires_at = now + body.ttl_seconds;
+
+    let claims = JwtClaims {
+        iss: issuer.issuer_id.clone(),
+        sub: body.target_user.clone(),
+        aud: id.clone(),
+        jti: jti_uuid.to_string(),
+        iat: now,
+        nbf: now,
+        exp: expires_at,
+        grants: body.grants.clone(),
+    };
+
+    // Sign the JWT.
+    let jwt = match issuer.issue(&claims) {
+        Ok(t) => t,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("signing_error", e.to_string())),
+            )
+                .into_response();
+        }
+    };
+
+    // Persist issuance metadata.
+    let grants_json = match serde_json::to_string(&body.grants) {
+        Ok(j) => j,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("serialization_error", e.to_string())),
+            )
+                .into_response();
+        }
+    };
+
+    let track_result = {
+        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.track_credential_issuance(
+                jti_uuid,
+                target_user_id,
+                tenant_id,
+                now as i64 * 1000,
+                expires_at as i64 * 1000,
+                &grants_json,
+            ),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    if let Err(e) = track_result {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(IssueCredentialResponse {
+            jwt,
+            jti: jti_uuid.to_string(),
+            expires_at,
+        }),
+    )
+        .into_response()
+}
+
+/// `GET /control/tenants/{id}/credentials` — list credential metadata for a tenant.
+///
+/// Deployment admin sees all credentials; authenticated users see only their own.
+/// The signed JWT is never returned (it is not persisted).
+async fn list_credentials_handler(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path(id): Path<String>,
+) -> Response {
+    let tenant_id = TenantId::new(&id);
+
+    // Determine user_filter: admins see all, regular users see their own.
+    let user_filter: Option<UserId> = match &resolved {
+        Some(Extension(r)) => {
+            let is_admin =
+                control_plane_authz::require_deployment_admin(r, &state.user_roles).is_ok()
+                    || control_plane_authz::require_tenant_admin(
+                        r,
+                        tenant_id.clone(),
+                        &state.user_roles,
+                    )
+                    .is_ok();
+            if is_admin {
+                None // Admin sees all
+            } else {
+                Some(r.user_id.clone()) // Regular user sees own only
+            }
+        }
+        None => {
+            // Legacy auth: admin required.
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+            None
+        }
+    };
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let result = {
+        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.list_credentials(tenant_id, user_filter),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(creds) => {
+            let payload: Vec<serde_json::Value> = creds
+                .into_iter()
+                .map(|m| {
+                    serde_json::json!({
+                        "jti": m.jti,
+                        "user_id": m.user_id.as_str(),
+                        "tenant_id": m.tenant_id.as_str(),
+                        "issued_at_ms": m.issued_at_ms,
+                        "expires_at_ms": m.expires_at_ms,
+                        "revoked": m.revoked,
+                        "grants": m.grants_json,
+                    })
+                })
+                .collect();
+            Json(serde_json::json!({ "credentials": payload })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `DELETE /control/tenants/{id}/credentials/{jti}` — revoke a credential.
+///
+/// Requires tenant-admin OR the credential's owner.
+/// Returns 204 on success.
+async fn revoke_credential_handler(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path((id, jti_str)): Path<(String, String)>,
+) -> Response {
+    let tenant_id = TenantId::new(&id);
+
+    // Parse jti.
+    let jti_uuid = match jti_str.parse::<uuid::Uuid>() {
+        Ok(u) => u,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ApiError::new("invalid_jti", "jti must be a valid UUID")),
+            )
+                .into_response();
+        }
+    };
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    // Look up the credential to find its owner and validate it belongs to this tenant.
+    let cred_opt = {
+        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.list_credentials(tenant_id.clone(), None),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    let creds = match cred_opt {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError::new("storage_error", e.to_string())),
+            )
+                .into_response();
+        }
+    };
+
+    let cred = creds.into_iter().find(|m| m.jti == jti_str);
+    let Some(cred) = cred else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new("not_found", format!("credential '{jti_str}' not found"))),
+        )
+            .into_response();
+    };
+
+    // Authorization check.
+    let revoked_by: UserId = match &resolved {
+        Some(Extension(r)) => {
+            let is_admin =
+                control_plane_authz::require_deployment_admin(r, &state.user_roles).is_ok()
+                    || control_plane_authz::require_tenant_admin(
+                        r,
+                        tenant_id.clone(),
+                        &state.user_roles,
+                    )
+                    .is_ok();
+            let is_owner = r.user_id == cred.user_id;
+            if !is_admin && !is_owner {
+                return forbidden_response("tenant admin or credential owner required");
+            }
+            r.user_id.clone()
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+            UserId::new("legacy-admin")
+        }
+    };
+
+    // Revoke the credential.
+    let result = {
+        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.revoke_credential(jti_uuid, revoked_by),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError::new("storage_error", e.to_string())),

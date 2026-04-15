@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::ops::Bound;
 
 use axon_audit::entry::AuditEntry;
-use axon_core::auth::{RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User, UserId};
+use axon_core::auth::{CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId};
 use axon_core::types::{Entity, Link};
@@ -975,6 +975,60 @@ pub trait StorageAdapter: Send + Sync {
         let _ = (tenant_id, name);
         Ok(false)
     }
+
+    // ── Credential issuance tracking (axon-906b527a) ─────────────────────────
+
+    /// Persist issuance metadata for a newly signed credential.
+    ///
+    /// The signed JWT string is **not** stored; only the metadata needed for
+    /// listing and revocation is recorded.
+    ///
+    /// The default implementation returns [`AxonError::InvalidOperation`] so
+    /// that unmigrated adapters are explicit about the gap.
+    fn track_credential_issuance(
+        &self,
+        jti: Uuid,
+        user_id: UserId,
+        tenant_id: TenantId,
+        issued_at_ms: i64,
+        expires_at_ms: i64,
+        grants_json: &str,
+    ) -> Result<(), AxonError> {
+        let _ = (jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json);
+        Err(AxonError::InvalidOperation(
+            "track_credential_issuance not supported by this adapter".into(),
+        ))
+    }
+
+    /// List credential metadata for a tenant, optionally filtered by user.
+    ///
+    /// Each row is annotated with whether the jti appears in
+    /// `credential_revocations`. Returns an empty `Vec` for adapters that
+    /// have not been migrated.
+    fn list_credentials(
+        &self,
+        tenant_id: TenantId,
+        user_filter: Option<UserId>,
+    ) -> Result<Vec<CredentialMetadata>, AxonError> {
+        let _ = (tenant_id, user_filter);
+        Ok(vec![])
+    }
+
+    /// Revoke a credential by inserting its jti into `credential_revocations`.
+    ///
+    /// Returns `Ok(())` whether or not the jti was already revoked (idempotent).
+    /// The default implementation returns [`AxonError::InvalidOperation`] so
+    /// that unmigrated adapters are explicit about the gap.
+    fn revoke_credential(
+        &self,
+        jti: Uuid,
+        revoked_by: UserId,
+    ) -> Result<(), AxonError> {
+        let _ = (jti, revoked_by);
+        Err(AxonError::InvalidOperation(
+            "revoke_credential not supported by this adapter".into(),
+        ))
+    }
 }
 
 /// Forward all `StorageAdapter` calls through a `Box<dyn StorageAdapter>`.
@@ -1356,5 +1410,33 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         name: &str,
     ) -> Result<bool, AxonError> {
         (**self).delete_tenant_database(tenant_id, name)
+    }
+
+    fn track_credential_issuance(
+        &self,
+        jti: Uuid,
+        user_id: UserId,
+        tenant_id: TenantId,
+        issued_at_ms: i64,
+        expires_at_ms: i64,
+        grants_json: &str,
+    ) -> Result<(), AxonError> {
+        (**self).track_credential_issuance(jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json)
+    }
+
+    fn list_credentials(
+        &self,
+        tenant_id: TenantId,
+        user_filter: Option<UserId>,
+    ) -> Result<Vec<CredentialMetadata>, AxonError> {
+        (**self).list_credentials(tenant_id, user_filter)
+    }
+
+    fn revoke_credential(
+        &self,
+        jti: Uuid,
+        revoked_by: UserId,
+    ) -> Result<(), AxonError> {
+        (**self).revoke_credential(jti, revoked_by)
     }
 }
