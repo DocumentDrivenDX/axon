@@ -1,6 +1,9 @@
 /target/
 Cargo.lock
+.agent/
 .ddx/agent-logs/
+.ddx/executions/*/embedded/
+.ddx/server/
 .helix-logs/
 ui/build/
 ui/.svelte-kit/
