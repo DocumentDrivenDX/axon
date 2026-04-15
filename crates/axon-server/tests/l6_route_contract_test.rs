@@ -48,50 +48,10 @@ fn no_legacy_database_header_references() {
     );
 }
 
-#[test]
-fn no_unprefixed_graphql_route_registrations() {
-    // Verify that no route registrations use "/graphql" without the
-    // /tenants/{tenant}/databases/{database}/ prefix.  The playground at
-    // /graphql/playground is a top-level dev convenience and is allowed.
-    //
-    // We grep source files only (not test files, which deliberately reference
-    // the nested path).  The playground exception is handled by filtering.
-    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest
-        .parent()
-        .expect("crates dir")
-        .parent()
-        .expect("workspace root");
-
-    // Search for bare "/graphql" route strings in src/ files.
-    let output = std::process::Command::new("git")
-        .arg("grep")
-        .arg("-n")
-        // Match literal "/graphql" not preceded by /tenants and not the playground
-        .arg(r#""/graphql""#)
-        .arg("--")
-        .arg("crates/axon-server/src/")
-        .current_dir(workspace_root)
-        .output()
-        .expect("git grep should run");
-
-    let matches = String::from_utf8_lossy(&output.stdout);
-    // Allow lines that reference the nested path or the playground endpoint.
-    let violations: Vec<&str> = matches
-        .lines()
-        .filter(|line| {
-            // Exclude the playground config line (contains "graphql/playground" context)
-            // Exclude lines that contain the nested path
-            !line.contains("tenants/default/databases/default/graphql")
-                && !line.contains("graphql/playground")
-                && !line.contains("graphql-ws")
-                && !line.contains("graphql-transport-ws")
-        })
-        .collect();
-
-    assert!(
-        violations.is_empty(),
-        "Bare \"/graphql\" route registration found (should be under /tenants/{{t}}/databases/{{d}}/graphql):\n{}",
-        violations.join("\n")
-    );
-}
+// The `no_unprefixed_graphql_route_registrations` lexical check was removed
+// because axum's `.nest("/tenants/:t/databases/:d", inner)` composition is
+// not visible to a grep pass: the inner builder still contains `.route("/graphql"...)`
+// strings even though the routes resolve to `/tenants/:t/databases/:d/graphql`
+// at runtime. A runtime integration test that hits `/graphql` (without the
+// tenant prefix) and asserts 404 is a better verification than a lexical
+// grep, and it lives in the graphql_mutations / graphql_contract test files.
