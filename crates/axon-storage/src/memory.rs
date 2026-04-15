@@ -1344,7 +1344,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         store
@@ -1380,11 +1380,11 @@ mod tests {
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                lifecycles: Default::default(),
             })
             .expect("test operation should succeed");
         store
@@ -1394,11 +1394,11 @@ mod tests {
                 version: 2,
                 entity_schema: None,
                 link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                lifecycles: Default::default(),
             })
             .expect("test operation should succeed");
 
@@ -1427,7 +1427,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         // Persist a schema before the transaction.
@@ -1444,11 +1444,11 @@ mod tests {
                 version: 2,
                 entity_schema: None,
                 link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                lifecycles: Default::default(),
             })
             .expect("test operation should succeed");
         // Also add a schema for a second collection.
@@ -1460,11 +1460,11 @@ mod tests {
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                lifecycles: Default::default(),
             })
             .expect("test operation should succeed");
         store.abort_tx().expect("test operation should succeed");
@@ -1500,11 +1500,11 @@ mod tests {
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                lifecycles: Default::default(),
             })
             .expect("test operation should succeed");
         assert!(store

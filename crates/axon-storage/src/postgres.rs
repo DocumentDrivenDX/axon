@@ -653,10 +653,10 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Err(AxonError::AlreadyExists(format!("database '{name}'")));
         }
 
-        self.block(self.client.execute(
-            "INSERT INTO databases (name) VALUES ($1)",
-            &[&name],
-        ))?;
+        self.block(
+            self.client
+                .execute("INSERT INTO databases (name) VALUES ($1)", &[&name]),
+        )?;
         self.block(self.client.execute(
             "INSERT INTO namespaces (database_name, name) VALUES ($1, $2)",
             &[&name, &DEFAULT_SCHEMA],
@@ -665,10 +665,10 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn list_databases(&self) -> Result<Vec<String>, AxonError> {
-        let rows = self.block(self.client.query(
-            "SELECT name FROM databases ORDER BY name ASC",
-            &[],
-        ))?;
+        let rows = self.block(
+            self.client
+                .query("SELECT name FROM databases ORDER BY name ASC", &[]),
+        )?;
         Ok(rows.iter().map(|row| row.get("name")).collect())
     }
 
@@ -679,26 +679,26 @@ impl StorageAdapter for PostgresStorageAdapter {
 
         let doomed = self.database_collection_keys(name)?;
         self.purge_links_for_collections(&doomed)?;
-        self.block(self.client.execute(
-            "DELETE FROM entities WHERE database_name = $1",
-            &[&name],
-        ))?;
+        self.block(
+            self.client
+                .execute("DELETE FROM entities WHERE database_name = $1", &[&name]),
+        )?;
         self.block(self.client.execute(
             "DELETE FROM collection_views WHERE database_name = $1",
             &[&name],
         ))?;
-        self.block(self.client.execute(
-            "DELETE FROM schemas WHERE database_name = $1",
-            &[&name],
-        ))?;
-        self.block(self.client.execute(
-            "DELETE FROM collections WHERE database_name = $1",
-            &[&name],
-        ))?;
-        self.block(self.client.execute(
-            "DELETE FROM databases WHERE name = $1",
-            &[&name],
-        ))?;
+        self.block(
+            self.client
+                .execute("DELETE FROM schemas WHERE database_name = $1", &[&name]),
+        )?;
+        self.block(
+            self.client
+                .execute("DELETE FROM collections WHERE database_name = $1", &[&name]),
+        )?;
+        self.block(
+            self.client
+                .execute("DELETE FROM databases WHERE name = $1", &[&name]),
+        )?;
         Ok(())
     }
 
@@ -1270,7 +1270,9 @@ pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(
         let (client, connection) = tokio_postgres::connect(superadmin_dsn, NoTls)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        tokio::spawn(async move { let _ = connection.await; });
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
         let row = client
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
@@ -1315,7 +1317,9 @@ pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result
         let (client, connection) = tokio_postgres::connect(superadmin_dsn, NoTls)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        tokio::spawn(async move { let _ = connection.await; });
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
         let row = client
             .query_one(
                 "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
@@ -1434,8 +1438,6 @@ mod tests {
             .expect("PostgreSQL test guard lock should not be poisoned")
     }
 
-
-
     fn skip_postgres_test(test_name: &str, reason: &str) {
         tracing::warn!(test = test_name, reason, "skipping PostgreSQL storage test");
     }
@@ -1514,7 +1516,9 @@ mod tests {
         let (client, connection) = rt
             .block_on(tokio_postgres::connect(url, NoTls))
             .expect("test connection");
-        rt.spawn(async move { let _ = connection.await; });
+        rt.spawn(async move {
+            let _ = connection.await;
+        });
         (client, rt)
     }
 

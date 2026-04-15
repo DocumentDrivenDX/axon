@@ -43,7 +43,10 @@ impl SqliteStorageAdapter {
     /// Opens (or creates) a SQLite database at the given path.
     pub fn open(path: &str) -> Result<Self, AxonError> {
         let conn = Connection::open(path).map_err(|e| AxonError::Storage(e.to_string()))?;
-        let adapter = Self { conn: Mutex::new(conn), in_tx: false };
+        let adapter = Self {
+            conn: Mutex::new(conn),
+            in_tx: false,
+        };
         adapter.init_schema()?;
         Ok(adapter)
     }
@@ -51,7 +54,10 @@ impl SqliteStorageAdapter {
     /// Opens an in-memory SQLite database (useful for testing).
     pub fn open_in_memory() -> Result<Self, AxonError> {
         let conn = Connection::open_in_memory().map_err(|e| AxonError::Storage(e.to_string()))?;
-        let adapter = Self { conn: Mutex::new(conn), in_tx: false };
+        let adapter = Self {
+            conn: Mutex::new(conn),
+            in_tx: false,
+        };
         adapter.init_schema()?;
         Ok(adapter)
     }
@@ -183,7 +189,7 @@ impl SqliteStorageAdapter {
 
     fn table_info(&self, table: &str) -> Result<Vec<(String, i64)>, AxonError> {
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare(&format!("PRAGMA table_info({table})"))
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let rows = stmt
@@ -531,7 +537,7 @@ impl SqliteStorageAdapter {
         collection: &CollectionId,
     ) -> Result<Vec<Namespace>, AxonError> {
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare(
                 "SELECT database_name, schema_name FROM collections
                  WHERE name = ?1
@@ -597,7 +603,7 @@ impl SqliteStorageAdapter {
         namespace: &Namespace,
     ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare(
                 "SELECT name FROM collections
                  WHERE database_name = ?1 AND schema_name = ?2
@@ -623,7 +629,7 @@ impl SqliteStorageAdapter {
         database: &str,
     ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare(
                 "SELECT schema_name, name FROM collections
                  WHERE database_name = ?1
@@ -693,7 +699,7 @@ impl StorageAdapter for SqliteStorageAdapter {
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare_cached(
                 "SELECT collection, id, version, data FROM entities
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND id = ?4",
@@ -802,7 +808,7 @@ impl StorageAdapter for SqliteStorageAdapter {
                    LIMIT ?6";
 
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare_cached(sql)
             .map_err(|e| AxonError::Storage(e.to_string()))?;
 
@@ -987,7 +993,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 
     fn list_databases(&self) -> Result<Vec<String>, AxonError> {
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare("SELECT name FROM databases ORDER BY name ASC")
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let databases = stmt
@@ -1061,7 +1067,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         }
 
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare(
                 "SELECT name FROM namespaces
                  WHERE database_name = ?1
@@ -1130,7 +1136,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         }
 
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare(
                 "SELECT name FROM collections
                  WHERE database_name = ?1 AND schema_name = ?2
@@ -1236,7 +1242,7 @@ impl StorageAdapter for SqliteStorageAdapter {
     fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare_cached(
                 "SELECT schema_json FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3
@@ -1268,7 +1274,7 @@ impl StorageAdapter for SqliteStorageAdapter {
     ) -> Result<Option<CollectionSchema>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare_cached(
                 "SELECT schema_json FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND version = ?4",
@@ -1299,7 +1305,7 @@ impl StorageAdapter for SqliteStorageAdapter {
     ) -> Result<Vec<(u32, u64)>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare_cached(
                 "SELECT version, created_at FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3
@@ -1407,7 +1413,7 @@ impl StorageAdapter for SqliteStorageAdapter {
     ) -> Result<Option<CollectionView>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare_cached(
                 "SELECT view_json FROM collection_views
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
@@ -1513,7 +1519,7 @@ impl StorageAdapter for SqliteStorageAdapter {
 
     fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
         let conn = self.conn()?;
-            let mut stmt = conn
+        let mut stmt = conn
             .prepare_cached(
                 "SELECT name FROM collections
                  ORDER BY database_name ASC, schema_name ASC, name ASC",
@@ -2328,7 +2334,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         s.put_schema(&schema)
@@ -2367,7 +2373,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         let v2 = CollectionSchema {
             collection: col.clone(),
@@ -2379,7 +2385,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         s.put_schema(&v1).expect("test operation should succeed");
@@ -2410,7 +2416,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         s.put_schema(&schema)
@@ -2468,7 +2474,7 @@ mod tests {
 
         let stored_collections: Vec<String> = {
             let conn = s.conn.lock().expect("lock");
-                let mut stmt = conn
+            let mut stmt = conn
                 .prepare(
                     "SELECT collection FROM schema_versions
                      WHERE database_name = ?1 AND schema_name = ?2
@@ -2526,7 +2532,9 @@ mod tests {
         assert_eq!(stored.version, 1);
 
         let stored_collection: String = s
-            .conn.lock().expect("lock")
+            .conn
+            .lock()
+            .expect("lock")
             .query_row(
                 "SELECT collection FROM collection_views
                  WHERE database_name = ?1 AND schema_name = ?2",
@@ -2606,7 +2614,9 @@ mod tests {
 
         // Audit entry must also be absent (rolled back with the transaction).
         let count: i64 = s
-            .conn.lock().expect("lock")
+            .conn
+            .lock()
+            .expect("lock")
             .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
             .expect("test operation should succeed");
         assert_eq!(count, 0, "audit entry must be rolled back with the entity");
@@ -2644,7 +2654,9 @@ mod tests {
 
         // Audit entry must also be present.
         let count: i64 = s
-            .conn.lock().expect("lock")
+            .conn
+            .lock()
+            .expect("lock")
             .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
             .expect("test operation should succeed");
         assert_eq!(

@@ -1033,7 +1033,13 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         target_collection: &CollectionId,
         target_id: &EntityId,
     ) -> Result<(), AxonError> {
-        (**self).delete_link(source_collection, source_id, link_type, target_collection, target_id)
+        (**self).delete_link(
+            source_collection,
+            source_id,
+            link_type,
+            target_collection,
+            target_id,
+        )
     }
     fn get_link(
         &self,
@@ -1043,7 +1049,13 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         target_collection: &CollectionId,
         target_id: &EntityId,
     ) -> Result<Option<axon_core::types::Link>, AxonError> {
-        (**self).get_link(source_collection, source_id, link_type, target_collection, target_id)
+        (**self).get_link(
+            source_collection,
+            source_id,
+            link_type,
+            target_collection,
+            target_id,
+        )
     }
     fn list_outbound_links(
         &self,

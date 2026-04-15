@@ -574,10 +574,7 @@ mod tests {
                     .record_progress(&tasks(), "status", 1);
             }
             // Last entry has been written; flip the lifecycle and notify.
-            registry_task
-                .lock()
-                .await
-                .mark_ready(&tasks(), "status");
+            registry_task.lock().await.mark_ready(&tasks(), "status");
         });
 
         let outcome = rx.wait().await.expect("wait should succeed");
