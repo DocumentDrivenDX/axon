@@ -131,6 +131,38 @@ pub struct ServeArgs {
     /// Path to a PEM-encoded TLS private-key file. Requires `--tls-cert`.
     #[arg(long, env = "AXON_TLS_KEY", requires = "tls_cert")]
     pub tls_key: Option<PathBuf>,
+
+    /// Enable HTTPS with a self-signed certificate, generating one on first
+    /// start if the target paths do not already exist. When `--tls-cert` /
+    /// `--tls-key` are also set, those paths are used; otherwise the cert
+    /// lands in `$XDG_DATA_HOME/axon/tls/`. Intended for local development.
+    #[arg(
+        long,
+        env = "AXON_TLS_SELF_SIGNED",
+        num_args = 0..=1,
+        default_missing_value = "true",
+        default_value = "false",
+        value_parser = clap::builder::BoolishValueParser::new()
+    )]
+    pub tls_self_signed: bool,
+}
+
+/// Resolve the TLS material paths for this invocation, applying defaults and
+/// bootstrapping a self-signed pair when `--tls-self-signed` is set.
+///
+/// Returns `Ok(Some((cert, key)))` when HTTPS should be served, `Ok(None)`
+/// when the server should fall back to plain HTTP, or `Err` when the user
+/// asked for TLS but the material is unusable.
+pub fn resolve_tls_material(args: &ServeArgs) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    let explicit = args.tls_cert.clone().zip(args.tls_key.clone());
+
+    if args.tls_self_signed {
+        let (cert, key) = explicit.unwrap_or_else(crate::tls_bootstrap::default_tls_paths);
+        crate::tls_bootstrap::ensure_tls_material(&cert, &key)?;
+        return Ok(Some((cert, key)));
+    }
+
+    Ok(explicit)
 }
 
 /// Initialise the `tracing` subscriber.
@@ -329,10 +361,9 @@ pub async fn run_with_sqlite_storage(
         cors_store,
     );
     let http_addr: SocketAddr = ([0, 0, 0, 0], args.http_port).into();
+    let tls_material = resolve_tls_material(args)?;
 
-    let http_handle = if let (Some(cert), Some(key)) =
-        (args.tls_cert.clone(), args.tls_key.clone())
-    {
+    let http_handle = if let Some((cert, key)) = tls_material {
         tracing::info!("HTTPS gateway listening on {http_addr}");
         tokio::spawn(async move { bind_https(http_addr, http_app, cert, key).await })
     } else {
@@ -468,8 +499,9 @@ pub async fn run_with_postgres_storage(
         cors_store,
     );
     let http_addr: std::net::SocketAddr = ([0, 0, 0, 0], args.http_port).into();
+    let tls_material = resolve_tls_material(args)?;
 
-    if let (Some(cert), Some(key)) = (args.tls_cert.clone(), args.tls_key.clone()) {
+    if let Some((cert, key)) = tls_material {
         tracing::info!("HTTPS gateway (PostgreSQL) listening on {http_addr}");
         tokio::spawn(async move { bind_https(http_addr, http_app, cert, key).await })
     } else {

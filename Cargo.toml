@@ -100,6 +100,7 @@ axum = "0.8"
 reqwest = { version = "0.12", features = ["stream", "json", "rustls-tls"], default-features = false }
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
+rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs"] }
 
 # GraphQL
 async-graphql = "7"
@@ -113,6 +114,7 @@ clap = { version = "4", features = ["derive", "env"] }
 
 # Time
 humantime = "2"
+time = { version = "0.3", default-features = false, features = ["std"] }
 
 # Config
 dirs = "6"

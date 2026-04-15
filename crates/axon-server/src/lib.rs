@@ -65,6 +65,7 @@ pub mod schema_registry;
 pub mod serve;
 pub mod service;
 pub mod tenant_router;
+pub mod tls_bootstrap;
 
 pub use auth::{AuthContext, AuthMode, Identity, Role};
 pub use database_router::{DatabaseAdapterFactory, DatabaseRouter, MemoryAdapterFactory};
