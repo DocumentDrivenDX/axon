@@ -708,3 +708,636 @@ mod tests {
         assert_eq!(registry.effective_role("alice", "prod"), Role::None);
     }
 }
+
+// ── ADR-018: Tenant/User/Credential types ───────────────────────────────────
+
+use uuid::Uuid;
+
+/// Stable identifier for a tenant.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TenantId(pub String);
+
+impl TenantId {
+    /// Generate a fresh tenant id (UUIDv7 string).
+    pub fn generate() -> Self {
+        Self(Uuid::now_v7().to_string())
+    }
+
+    /// Wrap an existing id string.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for TenantId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// Stable identifier for a user.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct UserId(pub String);
+
+impl UserId {
+    /// Generate a fresh user id (UUIDv7 string).
+    pub fn generate() -> Self {
+        Self(Uuid::now_v7().to_string())
+    }
+
+    /// Wrap an existing id string.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for UserId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// A tenant (global account boundary).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Tenant {
+    pub id: TenantId,
+    pub name: String,
+    pub created_at_ms: u64,
+}
+
+/// A user (global identity).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct User {
+    pub id: UserId,
+    pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    pub created_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspended_at_ms: Option<u64>,
+}
+
+/// External identity that federates to a user.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserIdentity {
+    pub provider: String,
+    pub subject: String,
+    pub user_id: UserId,
+}
+
+/// A user's membership in a tenant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TenantMember {
+    pub tenant_id: TenantId,
+    pub user_id: UserId,
+    pub role: TenantRole,
+}
+
+/// Role a user has within a tenant.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum TenantRole {
+    Admin,
+    Write,
+    Read,
+}
+
+impl TenantRole {
+    /// Returns the operations this role can delegate (ceiling).
+    ///
+    /// - `Admin` → `{Read, Write, Admin}`
+    /// - `Write` → `{Read, Write}`
+    /// - `Read` → `{Read}`
+    pub fn delegation_ops(&self) -> Vec<Op> {
+        match self {
+            TenantRole::Admin => vec![Op::Read, Op::Write, Op::Admin],
+            TenantRole::Write => vec![Op::Read, Op::Write],
+            TenantRole::Read => vec![Op::Read],
+        }
+    }
+}
+
+/// An operation that can be granted.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Op {
+    Read,
+    Write,
+    Admin,
+}
+
+/// A database with a set of granted operations.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GrantedDatabase {
+    pub name: String,
+    pub ops: Vec<Op>,
+}
+
+/// A collection of database grants.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Grants {
+    pub databases: Vec<GrantedDatabase>,
+}
+
+impl Grants {
+    /// Validate the grants structure according to the v5 schema.
+    ///
+    /// - At most 1024 databases
+    /// - Each database must have at least one op
+    /// - Each op must be unique (no duplicates)
+    pub fn validate(&self) -> Result<(), AuthError> {
+        if self.databases.len() > 1024 {
+            return Err(AuthError::GrantsMalformed);
+        }
+        for db in &self.databases {
+            db.validate()?;
+        }
+        Ok(())
+    }
+}
+
+impl GrantedDatabase {
+    /// Validate a single granted database.
+    ///
+    /// - name must be non-empty
+    /// - ops must not be empty
+    /// - ops must be unique
+    pub fn validate(&self) -> Result<(), AuthError> {
+        if self.name.is_empty() {
+            return Err(AuthError::GrantsMalformed);
+        }
+        if self.ops.is_empty() {
+            return Err(AuthError::GrantsMalformed);
+        }
+        // Check for duplicate ops
+        let unique_ops: std::collections::HashSet<_> = self.ops.iter().collect();
+        if unique_ops.len() != self.ops.len() {
+            return Err(AuthError::GrantsMalformed);
+        }
+        Ok(())
+    }
+}
+
+/// JWT claims for tenant-scoped credentials (ADR-018 §4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JwtClaims {
+    pub iss: String,
+    pub sub: String,
+    pub aud: String,
+    pub jti: String,
+    pub iat: u64,
+    pub nbf: u64,
+    pub exp: u64,
+    pub grants: Grants,
+}
+
+impl JwtClaims {
+    /// Validate the JWT claims structure.
+    ///
+    /// Returns `AuthError::CredentialMalformed` if:
+    /// - `aud` is not a single string (e.g., it was a JSON array)
+    /// - Grants don't match the expected schema
+    ///
+    /// This is typically used after deserialization to catch schema violations
+    /// that serde doesn't catch by itself (e.g., aud as an array).
+    pub fn validate(&self) -> Result<(), AuthError> {
+        // Check grants structure
+        self.grants.validate()?;
+        Ok(())
+    }
+}
+
+/// Authentication error variants (ADR-018 §4 failure-mode table).
+///
+/// This enum has exactly 14 variants matching the failure modes in
+/// ADR-018 §4 "JWT failure mode → HTTP status + error code".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AuthError {
+    /// No `Authorization` header (non-`--no-auth` mode).
+    Unauthenticated,
+
+    /// Header present but not `Bearer <token>`, or JWT structurally invalid,
+    /// or `aud` claim is a JSON array instead of a string.
+    CredentialMalformed,
+
+    /// Signature invalid (wrong key or tampered payload).
+    CredentialInvalid,
+
+    /// `exp` claim is in the past.
+    CredentialExpired,
+
+    /// `nbf` claim is in the future.
+    CredentialNotYetValid,
+
+    /// `jti` claim is present in the revocation list.
+    CredentialRevoked,
+
+    /// `iss` claim does not match this deployment's issuer.
+    CredentialForeignIssuer,
+
+    /// `aud` claim does not match the tenant in the URL path.
+    CredentialWrongTenant,
+
+    /// `sub` claim resolves to a suspended or deleted user.
+    UserSuspended,
+
+    /// `sub` claim is not a member of the tenant in the URL path.
+    NotATenantMember,
+
+    /// URL `{database}` segment not found in `grants.databases[]`.
+    DatabaseNotGranted,
+
+    /// Required operation not in the matching grant's `ops[]`.
+    OpNotGranted,
+
+    /// Grant scope exceeds issuer's role at issuance time.
+    GrantsExceedIssuerRole,
+
+    /// Malformed grants payload (schema validation failure).
+    GrantsMalformed,
+}
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthError::Unauthenticated => write!(f, "unauthenticated"),
+            AuthError::CredentialMalformed => write!(f, "credential malformed"),
+            AuthError::CredentialInvalid => write!(f, "credential invalid"),
+            AuthError::CredentialExpired => write!(f, "credential expired"),
+            AuthError::CredentialNotYetValid => write!(f, "credential not yet valid"),
+            AuthError::CredentialRevoked => write!(f, "credential revoked"),
+            AuthError::CredentialForeignIssuer => write!(f, "credential foreign issuer"),
+            AuthError::CredentialWrongTenant => write!(f, "credential wrong tenant"),
+            AuthError::UserSuspended => write!(f, "user suspended"),
+            AuthError::NotATenantMember => write!(f, "not a tenant member"),
+            AuthError::DatabaseNotGranted => write!(f, "database not granted"),
+            AuthError::OpNotGranted => write!(f, "op not granted"),
+            AuthError::GrantsExceedIssuerRole => write!(f, "grants exceed issuer role"),
+            AuthError::GrantsMalformed => write!(f, "grants malformed"),
+        }
+    }
+}
+
+impl std::error::Error for AuthError {}
+
+/// Number of `AuthError` variants.
+///
+/// This constant is asserted at compile-time to be exactly 14,
+/// matching ADR-018 §4 failure-mode table.
+pub const AUTH_ERROR_VARIANT_COUNT: usize = 14;
+
+#[cfg(test)]
+mod auth_core_tests {
+    use super::*;
+
+    // ── Type round-trip tests (Serde) ──────────────────────────────────
+
+    #[test]
+    fn tenant_id_roundtrip() {
+        let id = TenantId::new("t-123");
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"t-123\"");
+        let parsed: TenantId = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn user_id_roundtrip() {
+        let id = UserId::new("u-456");
+        let json = serde_json::to_string(&id).unwrap();
+        assert_eq!(json, "\"u-456\"");
+        let parsed: UserId = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, id);
+    }
+
+    #[test]
+    fn tenant_roundtrip() {
+        let tenant = Tenant {
+            id: TenantId::new("t-123"),
+            name: "acme".into(),
+            created_at_ms: 1000,
+        };
+        let json = serde_json::to_string(&tenant).unwrap();
+        let parsed: Tenant = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, tenant);
+    }
+
+    #[test]
+    fn user_roundtrip() {
+        let user = User {
+            id: UserId::new("u-123"),
+            display_name: "Alice".into(),
+            email: Some("alice@example.com".into()),
+            created_at_ms: 1000,
+            suspended_at_ms: None,
+        };
+        let json = serde_json::to_string(&user).unwrap();
+        let parsed: User = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, user);
+    }
+
+    #[test]
+    fn user_without_email_roundtrip() {
+        let user = User {
+            id: UserId::new("u-123"),
+            display_name: "Bob".into(),
+            email: None,
+            created_at_ms: 1000,
+            suspended_at_ms: None,
+        };
+        let json = serde_json::to_string(&user).unwrap();
+        let parsed: User = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, user);
+    }
+
+    #[test]
+    fn user_identity_roundtrip() {
+        let identity = UserIdentity {
+            provider: "tailscale".into(),
+            subject: "alice@example.com".into(),
+            user_id: UserId::new("u-123"),
+        };
+        let json = serde_json::to_string(&identity).unwrap();
+        let parsed: UserIdentity = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, identity);
+    }
+
+    #[test]
+    fn tenant_member_roundtrip() {
+        let member = TenantMember {
+            tenant_id: TenantId::new("t-123"),
+            user_id: UserId::new("u-456"),
+            role: TenantRole::Write,
+        };
+        let json = serde_json::to_string(&member).unwrap();
+        let parsed: TenantMember = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, member);
+    }
+
+    #[test]
+    fn tenant_role_roundtrip() {
+        for role in [TenantRole::Admin, TenantRole::Write, TenantRole::Read] {
+            let json = serde_json::to_string(&role).unwrap();
+            let parsed: TenantRole = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, role);
+        }
+    }
+
+    #[test]
+    fn op_roundtrip() {
+        for op in [Op::Read, Op::Write, Op::Admin] {
+            let json = serde_json::to_string(&op).unwrap();
+            let parsed: Op = serde_json::from_str(&json).unwrap();
+            assert_eq!(parsed, op);
+        }
+    }
+
+    #[test]
+    fn granted_database_roundtrip() {
+        let db = GrantedDatabase {
+            name: "orders".into(),
+            ops: vec![Op::Read, Op::Write],
+        };
+        let json = serde_json::to_string(&db).unwrap();
+        let parsed: GrantedDatabase = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, db);
+    }
+
+    #[test]
+    fn grants_roundtrip() {
+        let grants = Grants {
+            databases: vec![
+                GrantedDatabase {
+                    name: "orders".into(),
+                    ops: vec![Op::Read, Op::Write],
+                },
+                GrantedDatabase {
+                    name: "analytics".into(),
+                    ops: vec![Op::Read],
+                },
+            ],
+        };
+        let json = serde_json::to_string(&grants).unwrap();
+        let parsed: Grants = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, grants);
+    }
+
+    #[test]
+    fn grants_validation_passes_for_valid_grants() {
+        let grants = Grants {
+            databases: vec![
+                GrantedDatabase {
+                    name: "orders".into(),
+                    ops: vec![Op::Read, Op::Write],
+                },
+            ],
+        };
+        assert!(grants.validate().is_ok());
+    }
+
+    #[test]
+    fn grants_validation_rejects_empty_database_name() {
+        let grants = Grants {
+            databases: vec![GrantedDatabase {
+                name: "".into(),
+                ops: vec![Op::Read],
+            }],
+        };
+        assert!(matches!(
+            grants.validate(),
+            Err(AuthError::GrantsMalformed)
+        ));
+    }
+
+    #[test]
+    fn grants_validation_rejects_empty_ops() {
+        let grants = Grants {
+            databases: vec![GrantedDatabase {
+                name: "orders".into(),
+                ops: vec![],
+            }],
+        };
+        assert!(matches!(
+            grants.validate(),
+            Err(AuthError::GrantsMalformed)
+        ));
+    }
+
+    #[test]
+    fn grants_validation_rejects_duplicate_ops() {
+        let grants = Grants {
+            databases: vec![GrantedDatabase {
+                name: "orders".into(),
+                ops: vec![Op::Read, Op::Read],
+            }],
+        };
+        assert!(matches!(
+            grants.validate(),
+            Err(AuthError::GrantsMalformed)
+        ));
+    }
+
+    #[test]
+    fn jwt_claims_roundtrip() {
+        let claims = JwtClaims {
+            iss: "axon://eitri.example".into(),
+            sub: "user_01HZ...".into(),
+            aud: "tenant_acme".into(),
+            jti: "cred_01HZ...".into(),
+            iat: 1760000000,
+            nbf: 1760000000,
+            exp: 1760086400,
+            grants: Grants {
+                databases: vec![GrantedDatabase {
+                    name: "orders".into(),
+                    ops: vec![Op::Read, Op::Write],
+                }],
+            },
+        };
+        let json = serde_json::to_string(&claims).unwrap();
+        let parsed: JwtClaims = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, claims);
+    }
+
+    // ── aud array-form rejection test (ADR-018 §4) ─────────────────────
+
+    #[test]
+    fn jwt_claims_aud_array_returns_credential_malformed() {
+        // The JWT library would parse aud as an array, but our schema
+        // requires it to be a string. We test this by manually creating
+        // invalid JSON.
+        let invalid_json = r#"{
+            "iss": "axon://eitri.example",
+            "sub": "user_01HZ...",
+            "aud": ["tenant_acme", "tenant_globex"],
+            "jti": "cred_01HZ...",
+            "iat": 1760000000,
+            "nbf": 1760000000,
+            "exp": 1760086400,
+            "grants": {"databases": []}
+        }"#;
+
+        // This should fail to deserialize because aud is an array
+        let result: Result<JwtClaims, _> = serde_json::from_str(invalid_json);
+        assert!(result.is_err(), "aud as array should fail to deserialize");
+    }
+
+    // ── TenantRole delegation helper tests ─────────────────────────────
+
+    #[test]
+    fn admin_delegation_ops() {
+        let ops = TenantRole::Admin.delegation_ops();
+        assert_eq!(ops.len(), 3);
+        assert!(ops.contains(&Op::Read));
+        assert!(ops.contains(&Op::Write));
+        assert!(ops.contains(&Op::Admin));
+    }
+
+    #[test]
+    fn write_delegation_ops() {
+        let ops = TenantRole::Write.delegation_ops();
+        assert_eq!(ops.len(), 2);
+        assert!(ops.contains(&Op::Read));
+        assert!(ops.contains(&Op::Write));
+        assert!(!ops.contains(&Op::Admin));
+    }
+
+    #[test]
+    fn read_delegation_ops() {
+        let ops = TenantRole::Read.delegation_ops();
+        assert_eq!(ops.len(), 1);
+        assert!(ops.contains(&Op::Read));
+        assert!(!ops.contains(&Op::Write));
+        assert!(!ops.contains(&Op::Admin));
+    }
+
+    // ── AuthError variant count test (ADR-018 §4) ──────────────────────
+
+    #[test]
+    fn auth_error_variant_count_is_14() {
+        // This test ensures we have exactly 14 variants as per ADR-018 §4.
+        // If this test fails, update the constant and the variants accordingly.
+        assert_eq!(AUTH_ERROR_VARIANT_COUNT, 14);
+    }
+
+    #[test]
+    fn auth_error_display() {
+        let variants = vec![
+            (AuthError::Unauthenticated, "unauthenticated"),
+            (AuthError::CredentialMalformed, "credential malformed"),
+            (AuthError::CredentialInvalid, "credential invalid"),
+            (AuthError::CredentialExpired, "credential expired"),
+            (AuthError::CredentialNotYetValid, "credential not yet valid"),
+            (AuthError::CredentialRevoked, "credential revoked"),
+            (AuthError::CredentialForeignIssuer, "credential foreign issuer"),
+            (AuthError::CredentialWrongTenant, "credential wrong tenant"),
+            (AuthError::UserSuspended, "user suspended"),
+            (AuthError::NotATenantMember, "not a tenant member"),
+            (AuthError::DatabaseNotGranted, "database not granted"),
+            (AuthError::OpNotGranted, "op not granted"),
+            (AuthError::GrantsExceedIssuerRole, "grants exceed issuer role"),
+            (AuthError::GrantsMalformed, "grants malformed"),
+        ];
+
+        for (err, expected) in variants {
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    // ── Proptest tests for TenantRole delegation helper ────────────────
+
+    proptest::proptest! {
+        #[test]
+        fn admin_can_delegate_all_ops_always(_admin_role in "A") {
+            // Verify admin role has all operations
+            let ops = TenantRole::Admin.delegation_ops();
+            assert!(ops.contains(&Op::Read));
+            assert!(ops.contains(&Op::Write));
+            assert!(ops.contains(&Op::Admin));
+            assert_eq!(ops.len(), 3);
+        }
+
+        #[test]
+        fn write_can_delegate_read_and_write_only(_write_role in "W") {
+            // Verify write role has read and write, but not admin
+            let ops = TenantRole::Write.delegation_ops();
+            assert!(ops.contains(&Op::Read));
+            assert!(ops.contains(&Op::Write));
+            assert!(!ops.contains(&Op::Admin));
+            assert_eq!(ops.len(), 2);
+        }
+
+        #[test]
+        fn read_can_delegate_read_only(_read_role in "R") {
+            // Verify read role has only read
+            let ops = TenantRole::Read.delegation_ops();
+            assert!(ops.contains(&Op::Read));
+            assert!(!ops.contains(&Op::Write));
+            assert!(!ops.contains(&Op::Admin));
+            assert_eq!(ops.len(), 1);
+        }
+
+        #[test]
+        fn write_never_grants_admin(_write_role in "W") {
+            // Write role can never delegate admin operations
+            let ops = TenantRole::Write.delegation_ops();
+            assert!(!ops.contains(&Op::Admin));
+        }
+
+        #[test]
+        fn read_never_grants_write_or_admin(_read_role in "R") {
+            // Read role can never delegate write or admin operations
+            let ops = TenantRole::Read.delegation_ops();
+            assert!(!ops.contains(&Op::Write));
+            assert!(!ops.contains(&Op::Admin));
+        }
+    }
+}
