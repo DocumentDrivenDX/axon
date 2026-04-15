@@ -65,6 +65,23 @@ Fallback chain on failure: agent/vidar-coder → claude/sonnet → claude/opus
 - BUT `execute-loop --once` (server mode) routes to whatever project_root the server's "current project" happens to be — no `--project` flag exists. From axon CWD, my submission landed on a ddx bead. Filed ddx-0b9c980a.
 - Interim: stuck with `--local` for multi-project ops until --project targeting exists.
 
+### B1 — iteration 1 (enhanced prompt + claude-sonnet-4-6)
+- **Prompt**: handcrafted `.ddx/prompts/b1-enhanced.md` — inlined ADR-018 §4 failure table verbatim, named exact file paths, cross-referenced A1/A2 landed work, explicit quality bar with "do not commit red code"
+- **Result**: first-pass merge at 73f9c903. 28 new tests (24 unit + 4 integration) + 355 LOC middleware + trait extensions across 3 storage backends. 20-minute wall-clock, $4.60.
+- **Review** (opus): APPROVE. All 13 ACs satisfied. Two non-blocking observations (mutex-poison mapping, sync vs async mutex) — both noted for future cleanup.
+- **Data point**: rich prompt → 1 iteration → zero review rejections. Dramatic improvement over A1 (2 iterations) and A2 (3 iterations) on the default template.
+
+### Ddx source improvements landed on branch prompt-improvements-2026-04-14
+- cli/internal/agent/execute_bead.go: rewrite `executeBeadInstructionsText` as two per-harness variants (claude-style for harnesses with rich system prompts, agent-style with more scaffolding and explicit "stop after commit" for embedded ddx-agent). Remove harmful "quality is separate / partial > none" language. Add "do not commit red code", "commit exactly once", "git add <specific-paths>", review-gate language.
+- `buildPrompt()` now takes `harness` and dispatches.
+- `buildPrompt()` emits `b.Notes` as `<notes>` section when present — this threads operator feedback and prior review findings into the prompt without requiring a description rewrite on reopen.
+- `executeBeadMissingGoverningText` generalized — no longer hardcodes `docs/helix/`; points the agent at the bead description as the primary contract.
+- Ddx binary at `~/bin/ddx` rebuilt from the branch; subsequent axon execute-bead runs use the new template.
+
+### B2 — iteration 1 (new default template + claude-sonnet-4-6)
+- **Prompt**: new default template from my prompt-improvements branch. I enriched the bead description before the run (inlined ADR-018 §4 table, named file paths, cross-referenced B1's landed work, listed out-of-scope items for follow-up beads).
+- **Running**: background task bqkv1xfw6.
+
 ### Automation gaps observed (candidates for ~/Projects/ddx beads)
 1. **Review loop is not integrated with execute-loop**. execute-loop marks the bead closed on merge; a post-merge review step is manual. Needed: `ddx agent execute-loop --post-review <harness>` that runs a review agent against the merge commit + AC and can reopen on REQUEST_CHANGES.
 2. **Reopening a bead for fallback** is a manual 3-step dance (update status, update notes, update description, update AC). Needed: `ddx bead reopen <id> --reason "<text>" --append-notes` that atomically flips status and appends review context.
