@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio_postgres::NoTls;
 
 use axon_audit::entry::AuditEntry;
+use axon_core::auth::TenantDatabase;
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
@@ -1537,6 +1538,87 @@ impl StorageAdapter for PostgresStorageAdapter {
             }
         })?;
         Ok(())
+    }
+
+    fn list_tenant_databases(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+    ) -> Result<Vec<TenantDatabase>, AxonError> {
+        let rows = self
+            .block(self.client.query(
+                "SELECT tenant_id, database_name, created_at_ms \
+                 FROM tenant_databases \
+                 WHERE tenant_id = $1 \
+                 ORDER BY created_at_ms ASC",
+                &[&tenant_id.as_str()],
+            ))
+            .or_else(|e| {
+                if e.to_string().contains("does not exist") {
+                    Ok(vec![])
+                } else {
+                    Err(e)
+                }
+            })
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let dbs = rows
+            .iter()
+            .map(|row| TenantDatabase {
+                tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>("tenant_id")),
+                name: row.get("database_name"),
+                created_at_ms: row.get::<_, i64>("created_at_ms") as u64,
+            })
+            .collect();
+        Ok(dbs)
+    }
+
+    fn create_tenant_database(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        name: &str,
+    ) -> Result<TenantDatabase, AxonError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let rows_affected = self
+            .block(self.client.execute(
+                "INSERT INTO tenant_databases (tenant_id, database_name, created_at_ms) \
+                 VALUES ($1, $2, $3) \
+                 ON CONFLICT (tenant_id, database_name) DO NOTHING",
+                &[&tenant_id.as_str(), &name, &now_ms],
+            ))
+            .map_err(|e| {
+                if e.to_string().contains("does not exist") {
+                    AxonError::Storage(
+                        "auth schema not applied; call apply_auth_migrations_postgres first".into(),
+                    )
+                } else {
+                    AxonError::Storage(e.to_string())
+                }
+            })?;
+        if rows_affected == 0 {
+            return Err(AxonError::AlreadyExists(format!(
+                "database '{}' already exists in tenant '{}'",
+                name,
+                tenant_id.as_str()
+            )));
+        }
+        Ok(TenantDatabase { tenant_id, name: name.to_string(), created_at_ms: now_ms as u64 })
+    }
+
+    fn delete_tenant_database(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        name: &str,
+    ) -> Result<bool, AxonError> {
+        let rows_affected = self
+            .block(self.client.execute(
+                "DELETE FROM tenant_databases WHERE tenant_id = $1 AND database_name = $2",
+                &[&tenant_id.as_str(), &name],
+            ))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows_affected > 0)
     }
 }
 

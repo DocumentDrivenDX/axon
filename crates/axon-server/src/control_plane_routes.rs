@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::Mutex;
 
-use axon_core::auth::{ResolvedIdentity, RetentionPolicy, TenantId, TenantRole, UserId};
+use axon_core::auth::{ResolvedIdentity, RetentionPolicy, TenantDatabase, TenantId, TenantRole, UserId};
 use axon_storage::StorageAdapter;
 
 use crate::auth::{Identity, Role};
@@ -204,6 +204,10 @@ pub fn control_plane_routes() -> Router<ControlPlaneState> {
         // Tenant retention policy (axon-c6908e78)
         .route("/tenants/{id}/retention", get(get_retention_policy_handler))
         .route("/tenants/{id}/retention", put(set_retention_policy_handler))
+        // Tenant database management (axon-df98e262)
+        .route("/tenants/{id}/databases", get(list_tenant_databases))
+        .route("/tenants/{id}/databases", post(create_tenant_database))
+        .route("/tenants/{id}/databases/{name}", delete(delete_tenant_database))
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -989,6 +993,233 @@ async fn set_retention_policy_handler(
                 archive_after_seconds: policy.archive_after_seconds,
                 purge_after_seconds: policy.purge_after_seconds,
             }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+// ── Tenant database management (axon-df98e262) ───────────────────────────────
+
+#[derive(Deserialize)]
+struct CreateDatabaseBody {
+    name: String,
+}
+
+/// Validate a database identifier against the D1 naming rules:
+/// - 1–63 characters
+/// - ASCII only: `[a-zA-Z0-9_-]`
+/// - First character must not be a digit
+fn is_valid_database_identifier(s: &str) -> bool {
+    if s.is_empty() || s.len() > 63 {
+        return false;
+    }
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_digit() => return false,
+        Some(c) if !matches!(c, 'a'..='z' | 'A'..='Z' | '_' | '-') => return false,
+        None => return false,
+        _ => {}
+    }
+    chars.all(|c| matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-'))
+}
+
+fn tenant_database_to_json(db: &TenantDatabase) -> serde_json::Value {
+    json!({
+        "tenant_id": db.tenant_id.as_str(),
+        "name": db.name,
+        "created_at_ms": db.created_at_ms,
+    })
+}
+
+/// `GET /control/tenants/{id}/databases` — list databases registered for a tenant.
+///
+/// Requires tenant-admin or deployment-admin.
+async fn list_tenant_databases(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path(id): Path<String>,
+) -> Response {
+    match &resolved {
+        Some(Extension(r)) => {
+            let tenant_id = TenantId::new(&id);
+            let ok = control_plane_authz::require_tenant_admin(r, tenant_id, &state.user_roles)
+                .is_ok()
+                || control_plane_authz::require_deployment_admin(r, &state.user_roles).is_ok();
+            if !ok {
+                return forbidden_response("tenant admin or deployment admin required");
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let tenant_id = TenantId::new(&id);
+    let result = {
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.list_tenant_databases(tenant_id),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(dbs) => {
+            let payload: Vec<serde_json::Value> =
+                dbs.iter().map(tenant_database_to_json).collect();
+            Json(json!({ "databases": payload })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /control/tenants/{id}/databases` — register a new database for a tenant.
+///
+/// Requires tenant-admin or deployment-admin. Returns 201 + the new row,
+/// 409 if the name already exists, or 400 if the name is invalid.
+async fn create_tenant_database(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path(id): Path<String>,
+    Json(body): Json<CreateDatabaseBody>,
+) -> Response {
+    match &resolved {
+        Some(Extension(r)) => {
+            let tenant_id = TenantId::new(&id);
+            let ok = control_plane_authz::require_tenant_admin(r, tenant_id, &state.user_roles)
+                .is_ok()
+                || control_plane_authz::require_deployment_admin(r, &state.user_roles).is_ok();
+            if !ok {
+                return forbidden_response("tenant admin or deployment admin required");
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    if !is_valid_database_identifier(&body.name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new(
+                "invalid_identifier",
+                format!(
+                    "database name '{}' is invalid: must be 1–63 ASCII characters \
+                     [a-zA-Z0-9_-] and must not start with a digit",
+                    body.name
+                ),
+            )),
+        )
+            .into_response();
+    }
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let tenant_id = TenantId::new(&id);
+    let result = {
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.create_tenant_database(tenant_id, &body.name),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(db) => (StatusCode::CREATED, Json(tenant_database_to_json(&db))).into_response(),
+        Err(axon_core::error::AxonError::AlreadyExists(_)) => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new(
+                "already_exists",
+                format!(
+                    "database '{}' already exists in tenant '{}'",
+                    body.name, id
+                ),
+            )),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `DELETE /control/tenants/{id}/databases/{name}` — remove a database registration.
+///
+/// Requires tenant-admin or deployment-admin. Returns 204 on success, 404 if
+/// the registration does not exist. Does NOT cascade-delete stored data.
+async fn delete_tenant_database(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path((id, name)): Path<(String, String)>,
+) -> Response {
+    match &resolved {
+        Some(Extension(r)) => {
+            let tenant_id = TenantId::new(&id);
+            let ok = control_plane_authz::require_tenant_admin(r, tenant_id, &state.user_roles)
+                .is_ok()
+                || control_plane_authz::require_deployment_admin(r, &state.user_roles).is_ok();
+            if !ok {
+                return forbidden_response("tenant admin or deployment admin required");
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let tenant_id = TenantId::new(&id);
+    let result = {
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.delete_tenant_database(tenant_id, &name),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => (
+            StatusCode::NOT_FOUND,
+            Json(ApiError::new(
+                "not_found",
+                format!("database '{}' not found in tenant '{}'", name, id),
+            )),
         )
             .into_response(),
         Err(e) => (

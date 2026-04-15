@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axon_core::auth::{RetentionPolicy, TenantId, TenantMember, TenantRole, User, UserId};
+use axon_core::auth::{RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
@@ -133,6 +133,11 @@ pub struct MemoryStorageAdapter {
     ///
     /// Uses interior mutability so that `set_retention_policy` can take `&self`.
     retention_policies: std::sync::Mutex<HashMap<TenantId, RetentionPolicy>>,
+    /// Tenant database registrations (axon-df98e262).
+    ///
+    /// Uses interior mutability so that `create_tenant_database` and
+    /// `delete_tenant_database` can take `&self`.
+    tenant_databases: std::sync::Mutex<HashMap<(TenantId, String), TenantDatabase>>,
 }
 
 fn now_ns() -> u64 {
@@ -177,6 +182,7 @@ impl Default for MemoryStorageAdapter {
             tenant_members: std::sync::Mutex::new(HashMap::new()),
             user_identity_map: std::sync::Mutex::new(HashMap::new()),
             retention_policies: std::sync::Mutex::new(HashMap::new()),
+            tenant_databases: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -1225,6 +1231,64 @@ impl StorageAdapter for MemoryStorageAdapter {
             .map_err(|e| AxonError::Storage(format!("retention_policies mutex poisoned: {e}")))?
             .insert(tenant_id, *policy);
         Ok(())
+    }
+
+    fn list_tenant_databases(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<TenantDatabase>, AxonError> {
+        let map = self
+            .tenant_databases
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("tenant_databases mutex poisoned: {e}")))?;
+        let mut dbs: Vec<TenantDatabase> = map
+            .iter()
+            .filter(|((tid, _), _)| *tid == tenant_id)
+            .map(|(_, db)| db.clone())
+            .collect();
+        dbs.sort_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms).then(a.name.cmp(&b.name)));
+        Ok(dbs)
+    }
+
+    fn create_tenant_database(
+        &self,
+        tenant_id: TenantId,
+        name: &str,
+    ) -> Result<TenantDatabase, AxonError> {
+        let key = (tenant_id.clone(), name.to_string());
+        let mut map = self
+            .tenant_databases
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("tenant_databases mutex poisoned: {e}")))?;
+        if map.contains_key(&key) {
+            return Err(AxonError::AlreadyExists(format!(
+                "database '{}' already exists in tenant '{}'",
+                name,
+                tenant_id.as_str()
+            )));
+        }
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let db = TenantDatabase { tenant_id, name: name.to_string(), created_at_ms: now_ms };
+        map.insert(key, db.clone());
+        Ok(db)
+    }
+
+    fn delete_tenant_database(
+        &self,
+        tenant_id: TenantId,
+        name: &str,
+    ) -> Result<bool, AxonError> {
+        let key = (tenant_id, name.to_string());
+        let removed = self
+            .tenant_databases
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("tenant_databases mutex poisoned: {e}")))?
+            .remove(&key)
+            .is_some();
+        Ok(removed)
     }
 
     fn upsert_user_identity(

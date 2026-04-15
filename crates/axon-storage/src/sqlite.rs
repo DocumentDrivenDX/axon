@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use rusqlite::{params, Connection};
 
 use axon_audit::entry::AuditEntry;
-use axon_core::auth::RetentionPolicy;
+use axon_core::auth::{RetentionPolicy, TenantDatabase};
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
@@ -1958,6 +1958,96 @@ impl StorageAdapter for SqliteStorageAdapter {
             }
         })?;
         Ok(())
+    }
+
+    fn list_tenant_databases(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+    ) -> Result<Vec<TenantDatabase>, AxonError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT tenant_id, database_name, created_at_ms \
+                 FROM tenant_databases \
+                 WHERE tenant_id = ?1 \
+                 ORDER BY created_at_ms ASC",
+            )
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    AxonError::Storage("auth schema not applied".into())
+                } else {
+                    AxonError::Storage(msg)
+                }
+            })?;
+
+        let rows = stmt
+            .query_map(params![tenant_id.as_str()], |row| {
+                Ok(TenantDatabase {
+                    tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>(0)?),
+                    name: row.get(1)?,
+                    created_at_ms: row.get::<_, i64>(2)? as u64,
+                })
+            })
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let mut dbs = Vec::new();
+        for row in rows {
+            dbs.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
+        }
+        Ok(dbs)
+    }
+
+    fn create_tenant_database(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        name: &str,
+    ) -> Result<TenantDatabase, AxonError> {
+        let conn = self.conn()?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let rows_affected = conn
+            .execute(
+                "INSERT INTO tenant_databases (tenant_id, database_name, created_at_ms) \
+                 VALUES (?1, ?2, ?3) \
+                 ON CONFLICT (tenant_id, database_name) DO NOTHING",
+                params![tenant_id.as_str(), name, now_ms],
+            )
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    AxonError::Storage(
+                        "auth schema not applied; call apply_auth_migrations first".into(),
+                    )
+                } else {
+                    AxonError::Storage(msg)
+                }
+            })?;
+        if rows_affected == 0 {
+            return Err(AxonError::AlreadyExists(format!(
+                "database '{}' already exists in tenant '{}'",
+                name,
+                tenant_id.as_str()
+            )));
+        }
+        Ok(TenantDatabase { tenant_id, name: name.to_string(), created_at_ms: now_ms as u64 })
+    }
+
+    fn delete_tenant_database(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        name: &str,
+    ) -> Result<bool, AxonError> {
+        let conn = self.conn()?;
+        let rows_affected = conn
+            .execute(
+                "DELETE FROM tenant_databases WHERE tenant_id = ?1 AND database_name = ?2",
+                params![tenant_id.as_str(), name],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows_affected > 0)
     }
 }
 

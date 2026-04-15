@@ -803,6 +803,14 @@ pub struct TenantMember {
     pub role: TenantRole,
 }
 
+/// A database registered within a tenant (ADR-018, FEAT-014).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TenantDatabase {
+    pub tenant_id: TenantId,
+    pub name: String,
+    pub created_at_ms: u64,
+}
+
 /// Role a user has within a tenant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TenantRole {

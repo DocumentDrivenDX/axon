@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::ops::Bound;
 
 use axon_audit::entry::AuditEntry;
-use axon_core::auth::{RetentionPolicy, TenantId, TenantMember, TenantRole, User, UserId};
+use axon_core::auth::{RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId};
 use axon_core::types::{Entity, Link};
@@ -932,6 +932,49 @@ pub trait StorageAdapter: Send + Sync {
             "set_retention_policy not supported by this adapter".into(),
         ))
     }
+
+    /// List all databases registered for a tenant, ordered by `created_at_ms` ascending.
+    ///
+    /// Returns an empty `Vec` when the tenant has no registered databases or
+    /// when the auth schema has not been applied.
+    fn list_tenant_databases(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<TenantDatabase>, AxonError> {
+        let _ = tenant_id;
+        Ok(vec![])
+    }
+
+    /// Register a new database for a tenant.
+    ///
+    /// Returns the new [`TenantDatabase`] row on success, or
+    /// [`AxonError::AlreadyExists`] if `(tenant_id, name)` already exists.
+    ///
+    /// The default implementation returns [`AxonError::InvalidOperation`] so
+    /// that unmigrated adapters are explicit about the gap.
+    fn create_tenant_database(
+        &self,
+        tenant_id: TenantId,
+        name: &str,
+    ) -> Result<TenantDatabase, AxonError> {
+        let _ = (tenant_id, name);
+        Err(AxonError::InvalidOperation(
+            "create_tenant_database not supported by this adapter".into(),
+        ))
+    }
+
+    /// Remove a database registration for a tenant.
+    ///
+    /// Returns `Ok(true)` if a row was deleted, `Ok(false)` if no such
+    /// registration existed.
+    fn delete_tenant_database(
+        &self,
+        tenant_id: TenantId,
+        name: &str,
+    ) -> Result<bool, AxonError> {
+        let _ = (tenant_id, name);
+        Ok(false)
+    }
 }
 
 /// Forward all `StorageAdapter` calls through a `Box<dyn StorageAdapter>`.
@@ -1290,5 +1333,28 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         policy: &RetentionPolicy,
     ) -> Result<(), AxonError> {
         (**self).set_retention_policy(tenant_id, policy)
+    }
+
+    fn list_tenant_databases(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<Vec<TenantDatabase>, AxonError> {
+        (**self).list_tenant_databases(tenant_id)
+    }
+
+    fn create_tenant_database(
+        &self,
+        tenant_id: TenantId,
+        name: &str,
+    ) -> Result<TenantDatabase, AxonError> {
+        (**self).create_tenant_database(tenant_id, name)
+    }
+
+    fn delete_tenant_database(
+        &self,
+        tenant_id: TenantId,
+        name: &str,
+    ) -> Result<bool, AxonError> {
+        (**self).delete_tenant_database(tenant_id, name)
     }
 }
