@@ -198,7 +198,7 @@ on the resolved user, never on the raw external identity.
      external_id=<tailnet handle>)`, and uses the resulting user_id
      (auto-provisioning on first seen). Auto-provisioning MUST use an
      `INSERT ... ON CONFLICT DO NOTHING` transaction on
-     `(provider, subject)` — never check-then-insert — so that parallel
+     `(provider, external_id)` — never check-then-insert — so that parallel
      first-seen requests for the same tailnet identity converge on a
      single `users` row. See ADR-018 Section 6 for the normative SQL
      pattern and the required concurrency invariant.

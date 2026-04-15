@@ -581,20 +581,21 @@ wins; the second becomes a no-op. After both commit, both requests see
 the bootstrapped state and proceed.
 
 **Tailscale auto-provision race**: the whois middleware does an identical
-`ON CONFLICT DO NOTHING` insert into `users` keyed on `(provider, subject)`
-in the `user_identities` table. The flow is:
+`ON CONFLICT DO NOTHING` insert into `users` keyed on `(provider, external_id)`
+in the `user_identities` table. The column is named `external_id` to match
+the normative schema in Section 3 above. The flow is:
 
 ```sql
 BEGIN;
 INSERT INTO users (id, created_at_ms)
 VALUES (?, ?) ON CONFLICT DO NOTHING;
 
-INSERT INTO user_identities (provider, subject, user_id)
+INSERT INTO user_identities (provider, external_id, user_id)
 VALUES ('tailscale', ?, ?)
-ON CONFLICT (provider, subject) DO NOTHING;
+ON CONFLICT (provider, external_id) DO NOTHING;
 
 SELECT user_id FROM user_identities
-WHERE provider = 'tailscale' AND subject = ?;
+WHERE provider = 'tailscale' AND external_id = ?;
 COMMIT;
 ```
 

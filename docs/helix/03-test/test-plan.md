@@ -209,7 +209,7 @@ both writes use the same backing store transaction.
 
 ### INV-021: Federation Consistency (ADR-018 §2, FEAT-012)
 
-**Statement**: A `user_identities` row with `(provider, subject)` resolves to exactly one `user_id`, and that `user_id` is stable across all subsequent resolutions for the same `(provider, subject)` pair — even under concurrent first-seen resolutions.
+**Statement**: A `user_identities` row with `(provider, external_id)` resolves to exactly one `user_id`, and that `user_id` is stable across all subsequent resolutions for the same `(provider, external_id)` pair — even under concurrent first-seen resolutions.
 
 **Verification**: Issue N parallel whois resolutions for the same tailnet identity on a fresh DB. Assert exactly one `users` row, exactly one `user_identities` row, all N requests return the same `user_id`. Then add a second provider (`oidc`) for the same human and assert the `users` row is preserved while two `user_identities` rows now point to it.
 
