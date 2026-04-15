@@ -1,6 +1,6 @@
 <script lang="ts">
 import { base } from '$app/paths';
-import { invalidate } from '$app/navigation';
+import { invalidateAll } from '$app/navigation';
 import { createTenantDatabase, deleteTenantDatabase } from '$lib/api';
 import type { PageData } from './$types';
 
@@ -23,7 +23,7 @@ async function handleCreate() {
 	try {
 		await createTenantDatabase(data.tenant.id, newDbName.trim());
 		newDbName = '';
-		await invalidate(() => true);
+		await invalidateAll();
 	} catch (e: unknown) {
 		createError = e instanceof Error ? e.message : 'Failed to create database';
 	} finally {
@@ -35,7 +35,7 @@ async function handleDelete(name: string) {
 	try {
 		await deleteTenantDatabase(data.tenant.id, name);
 		deletingName = null;
-		await invalidate(() => true);
+		await invalidateAll();
 	} catch (e: unknown) {
 		error = e instanceof Error ? e.message : 'Failed to delete database';
 		deletingName = null;

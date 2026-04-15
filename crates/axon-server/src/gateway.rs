@@ -2946,6 +2946,7 @@ fn build_router_full(
     } else {
         router = router
             .route("/ui", get(crate::embedded_ui::embedded_ui_handler))
+            .route("/ui/", get(crate::embedded_ui::embedded_ui_handler))
             .route("/ui/{*path}", get(crate::embedded_ui::embedded_ui_handler));
     }
 

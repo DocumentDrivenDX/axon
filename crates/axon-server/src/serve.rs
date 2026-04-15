@@ -257,13 +257,26 @@ pub fn init_control_plane(
         .unwrap_or_else(|| std::path::Path::new("."))
         .to_path_buf();
 
+    // Open a second SqliteStorageAdapter against the same control-plane file
+    // so the ControlPlaneState has an adapter implementing list_tenant_databases,
+    // upsert_tenant_member, etc.  Without this, the /control/tenants/{id}/databases
+    // and /control/tenants/{id}/members endpoints return "not_configured".
+    let adapter = SqliteStorageAdapter::open(control_plane_path)
+        .map_err(|e| format!("failed to open control-plane storage adapter: {e}"))?;
+    adapter
+        .apply_auth_migrations()
+        .map_err(|e| format!("failed to apply auth schema to control-plane db: {e}"))?;
+    let adapter_arc: Arc<std::sync::Mutex<Box<dyn axon_storage::StorageAdapter + Send + Sync>>> =
+        Arc::new(std::sync::Mutex::new(Box::new(adapter)));
+
     let db = std::sync::Arc::new(tokio::sync::Mutex::new(db));
     let state = crate::control_plane_routes::ControlPlaneState::new(
         db.clone(),
         data_dir.clone(),
         user_roles,
         cors_store.clone(),
-    );
+    )
+    .with_storage(adapter_arc);
 
     Ok(ControlPlaneReady { db, state, cors_store, auth, data_dir })
 }
