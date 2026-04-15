@@ -2,14 +2,15 @@
 import { base } from '$app/paths';
 // biome-ignore lint/correctness/noUnusedImports: Used in template onclick handler.
 import { type CollectionSummary, dropCollection, fetchCollections } from '$lib/api';
-import { getSelectedDatabase, getSelectedTenant } from '$lib/stores.svelte';
+import type { PageData } from './$types';
 
-function currentScope() {
-	const t = getSelectedTenant();
-	const d = getSelectedDatabase();
-	if (!t || !d) return { tenant: 'default', database: 'default' };
-	return { tenant: t.db_name, database: d.name };
-}
+const { data }: { data: PageData } = $props();
+
+const scope = $derived(data.scope);
+const basePath = $derived(
+	`${base}/tenants/${encodeURIComponent(data.tenant.db_name)}/databases/${encodeURIComponent(data.database.name)}`,
+);
+const schemasHref = $derived(`${basePath}/schemas`);
 
 let collections = $state<CollectionSummary[]>([]);
 let loading = $state(true);
@@ -17,10 +18,8 @@ let error = $state<string | null>(null);
 // biome-ignore lint/style/useConst: Svelte template onclick handlers mutate this state.
 let dropping = $state<string | null>(null);
 
-const schemasHref = `${base}/schemas`;
-
 function collectionHref(name: string): string {
-	return `${base}/collections/${encodeURIComponent(name)}`;
+	return `${basePath}/collections/${encodeURIComponent(name)}`;
 }
 
 function schemaHref(name: string): string {
@@ -37,7 +36,7 @@ function formatTimestamp(ns: number | null | undefined): string {
 async function loadCollections() {
 	loading = true;
 	try {
-		collections = await fetchCollections(currentScope());
+		collections = await fetchCollections(scope);
 		error = null;
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load collections';
@@ -47,9 +46,8 @@ async function loadCollections() {
 }
 
 $effect(() => {
-	// Access reactive state explicitly so the effect re-runs on tenant/database changes.
-	getSelectedTenant();
-	getSelectedDatabase();
+	// Re-run when scope changes.
+	void scope;
 	void loadCollections();
 });
 
@@ -120,27 +118,30 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 							<td class="muted">{formatTimestamp(collection.updated_at_ns)}</td>
 							<td>
 								<div class="actions">
-									<a class="button-link" href={collectionHref(collection.name)}>
-										Browse
-									</a>
-									<a class="button-link" href={schemaHref(collection.name)}>
-										Schema
-									</a>
+									<a class="button-link" href={collectionHref(collection.name)}>Browse</a>
+									<a class="button-link" href={schemaHref(collection.name)}>Schema</a>
 									{#if dropping === collection.name}
 										<span class="muted" style="font-size:0.85rem">Drop {collection.name}?</span>
-										<button class="danger" onclick={async () => {
-											try {
-												await dropCollection(collection.name, currentScope());
-												dropping = null;
-												await loadCollections();
-											} catch (e: unknown) {
-												error = e instanceof Error ? e.message : 'Failed to drop collection';
-												dropping = null;
-											}
-										}}>Confirm</button>
+										<button
+											class="danger"
+											onclick={async () => {
+												try {
+													await dropCollection(collection.name, scope);
+													dropping = null;
+													await loadCollections();
+												} catch (e: unknown) {
+													error = e instanceof Error ? e.message : 'Failed to drop collection';
+													dropping = null;
+												}
+											}}
+										>
+											Confirm
+										</button>
 										<button onclick={() => (dropping = null)}>Cancel</button>
 									{:else}
-										<button class="danger" onclick={() => (dropping = collection.name)}>Drop</button>
+										<button class="danger" onclick={() => (dropping = collection.name)}>
+											Drop
+										</button>
 									{/if}
 								</div>
 							</td>

@@ -9,15 +9,11 @@ import {
 	previewSchemaChange,
 	updateSchema,
 } from '$lib/api';
-import { getSelectedDatabase, getSelectedTenant } from '$lib/stores.svelte';
 import { onMount } from 'svelte';
+import type { PageData } from './$types';
 
-function currentScope() {
-	const t = getSelectedTenant();
-	const d = getSelectedDatabase();
-	if (!t || !d) return { tenant: 'default', database: 'default' };
-	return { tenant: t.db_name, database: d.name };
-}
+const { data }: { data: PageData } = $props();
+const scope = $derived(data.scope);
 
 let collections: CollectionSummary[] = [];
 let selectedCollection = '';
@@ -209,7 +205,6 @@ function extractCompoundIndexes(schema: CollectionSchema): CompoundIndexInfo[] {
 }
 
 async function loadCollections(preferredCollection?: string) {
-	const scope = currentScope();
 	collections = await fetchCollections(scope);
 	const nextSelection = preferredCollection ?? selectedCollection ?? collections[0]?.name;
 
@@ -220,7 +215,7 @@ async function loadCollections(preferredCollection?: string) {
 
 async function selectCollection(collectionName: string) {
 	selectedCollection = collectionName;
-	selectedSchema = await fetchSchema(collectionName, currentScope());
+	selectedSchema = await fetchSchema(collectionName, scope);
 	editJson = JSON.stringify(selectedSchema, null, 2);
 	editMode = false;
 	validationError = null;
@@ -256,7 +251,7 @@ async function requestPreview() {
 		preview = await previewSchemaChange(
 			selectedCollection,
 			JSON.parse(editJson) as CollectionSchema,
-			currentScope(),
+			scope,
 		);
 		statusMessage = null;
 	} catch (errorValue: unknown) {
@@ -276,7 +271,7 @@ async function confirmSave(force: boolean) {
 			selectedCollection,
 			JSON.parse(editJson) as CollectionSchema,
 			{ force },
-			currentScope(),
+			scope,
 		);
 		editJson = JSON.stringify(selectedSchema, null, 2);
 		editMode = false;
@@ -300,7 +295,7 @@ async function submitCreateCollection() {
 				entity_schema: entitySchema,
 				link_types: {},
 			},
-			currentScope(),
+			scope,
 		);
 		createCollectionName = '';
 		statusMessage = 'Collection created.';

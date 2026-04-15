@@ -16,15 +16,11 @@ import JsonTree from '$lib/components/JsonTree.svelte';
 // biome-ignore lint/correctness/noUnusedImports: Used in template for casting entity data.
 import type { JsonValue } from '$lib/components/json-tree-types';
 import { validateEntityData } from '$lib/schema-validation';
-import { getSelectedDatabase, getSelectedTenant } from '$lib/stores.svelte';
 import { onMount } from 'svelte';
+import type { PageData } from './$types';
 
-function currentScope() {
-	const t = getSelectedTenant();
-	const d = getSelectedDatabase();
-	if (!t || !d) return { tenant: 'default', database: 'default' };
-	return { tenant: t.db_name, database: d.name };
-}
+const { data }: { data: PageData } = $props();
+const scope = $derived(data.scope);
 
 let collectionName = $state('');
 let collection = $state<CollectionDetail | null>(null);
@@ -58,7 +54,6 @@ let confirmDelete = $state(false);
 let deleteMessage = $state<string | null>(null);
 
 async function loadCollection(targetCollection: string, afterId: string | null) {
-	const scope = currentScope();
 	loading = true;
 	try {
 		collection = await fetchCollection(targetCollection, scope);
@@ -91,7 +86,7 @@ async function openEntity(id: string) {
 	}
 
 	try {
-		selectedEntity = await fetchEntity(collectionName, id, currentScope());
+		selectedEntity = await fetchEntity(collectionName, id, scope);
 		editMode = false;
 		editData = null;
 		saveError = null;
@@ -139,7 +134,7 @@ async function saveEntity() {
 			selectedEntity.id,
 			editData,
 			selectedEntity.version,
-			currentScope(),
+			scope,
 		);
 		selectedEntity = updated;
 		editMode = false;
@@ -190,7 +185,7 @@ async function submitCreateEntity() {
 	}
 
 	try {
-		const entity = await createEntity(collectionName, createId.trim(), parsedData, currentScope());
+		const entity = await createEntity(collectionName, createId.trim(), parsedData, scope);
 		createMessage = `Created ${entity.id}.`;
 		createErrors = [];
 		createOpen = false;
@@ -243,29 +238,6 @@ onMount(() => {
 
 afterNavigate(() => {
 	void syncRoute();
-});
-
-let lastScopeKey: string | null = null;
-$effect(() => {
-	const t = getSelectedTenant();
-	const d = getSelectedDatabase();
-	const key = t && d ? `${t.db_name}/${d.name}` : 'default/default';
-	// Skip the first run (syncRoute on mount already handles the initial load),
-	// and only reload when the scope actually changes.
-	if (lastScopeKey === null) {
-		lastScopeKey = key;
-		return;
-	}
-	if (key === lastScopeKey) {
-		return;
-	}
-	lastScopeKey = key;
-	if (collectionName) {
-		paginationHistory = [null];
-		pageIndex = 0;
-		selectedEntity = null;
-		void loadCollection(collectionName, null);
-	}
 });
 </script>
 
@@ -384,20 +356,25 @@ $effect(() => {
 						<button onclick={startEdit}>Edit</button>
 						{#if confirmDelete}
 							<span class="muted" style="font-size:0.85rem">Delete?</span>
-							<button class="danger" onclick={async () => {
-								if (selectedEntity && collectionName) {
-									try {
-										await deleteEntity(collectionName, selectedEntity.id, currentScope());
-										deleteMessage = `Deleted ${selectedEntity.id}.`;
-										confirmDelete = false;
-										selectedEntity = null;
-										await loadCollection(collectionName, null);
-									} catch (e: unknown) {
-										error = e instanceof Error ? e.message : 'Failed to delete';
-										confirmDelete = false;
+							<button
+								class="danger"
+								onclick={async () => {
+									if (selectedEntity && collectionName) {
+										try {
+											await deleteEntity(collectionName, selectedEntity.id, scope);
+											deleteMessage = `Deleted ${selectedEntity.id}.`;
+											confirmDelete = false;
+											selectedEntity = null;
+											await loadCollection(collectionName, null);
+										} catch (e: unknown) {
+											error = e instanceof Error ? e.message : 'Failed to delete';
+											confirmDelete = false;
+										}
 									}
-								}
-							}}>Confirm</button>
+								}}
+							>
+								Confirm
+							</button>
 							<button onclick={() => (confirmDelete = false)}>Cancel</button>
 						{:else}
 							<button class="danger" onclick={() => (confirmDelete = true)}>Delete</button>
@@ -447,10 +424,18 @@ $effect(() => {
 				<div class="tree-container">
 					<div class="tree-header">
 						<span class="tree-title">Data</span>
-						<span class="type-badge">object{'{' + Object.keys(editMode && editData ? editData : selectedEntity.data).length + '}'}</span>
+						<span class="type-badge">
+							object{'{' +
+								Object.keys(editMode && editData ? editData : selectedEntity.data).length +
+								'}'}
+						</span>
 					</div>
 					{#if editMode && editData}
-						<JsonTree data={editData as unknown as JsonValue} editing={true} onupdate={handleTreeUpdate} />
+						<JsonTree
+							data={editData as unknown as JsonValue}
+							editing={true}
+							onupdate={handleTreeUpdate}
+						/>
 					{:else}
 						<JsonTree data={selectedEntity.data as unknown as JsonValue} />
 					{/if}

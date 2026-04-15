@@ -1,14 +1,10 @@
 <script lang="ts">
 import { type AuditEntry, fetchAudit } from '$lib/api';
-import { getSelectedDatabase, getSelectedTenant } from '$lib/stores.svelte';
 import { onMount } from 'svelte';
+import type { PageData } from './$types';
 
-function currentScope() {
-	const t = getSelectedTenant();
-	const d = getSelectedDatabase();
-	if (!t || !d) return { tenant: 'default', database: 'default' };
-	return { tenant: t.db_name, database: d.name };
-}
+const { data }: { data: PageData } = $props();
+const scope = $derived(data.scope);
 
 type AuditFilters = {
 	collection: string;
@@ -17,16 +13,16 @@ type AuditFilters = {
 	endDate: string;
 };
 
-let entries: AuditEntry[] = [];
-let loading = true;
-let error: string | null = null;
-const filters = {
+let entries = $state<AuditEntry[]>([]);
+let loading = $state(true);
+let error = $state<string | null>(null);
+const filters = $state<AuditFilters>({
 	collection: '',
 	actor: '',
 	startDate: '',
 	endDate: '',
-} satisfies AuditFilters;
-let selectedEntry: AuditEntry | null = null;
+});
+let selectedEntry = $state<AuditEntry | null>(null);
 
 function selectEntry(entry: AuditEntry) {
 	selectedEntry = entry;
@@ -71,7 +67,7 @@ async function loadEntries() {
 			auditFilters.untilNs = untilNs;
 		}
 
-		const response = await fetchAudit(auditFilters, currentScope());
+		const response = await fetchAudit(auditFilters, scope);
 		entries = response.entries;
 		selectedEntry = entries[0] ?? null;
 		error = null;
@@ -115,7 +111,7 @@ onMount(() => {
 			</label>
 		</div>
 		<div class="actions">
-			<button class="primary" on:click={() => loadEntries()}>Apply Filters</button>
+			<button class="primary" onclick={() => loadEntries()}>Apply Filters</button>
 		</div>
 	</div>
 </section>
@@ -149,7 +145,7 @@ onMount(() => {
 					</thead>
 					<tbody>
 						{#each entries as entry}
-							<tr on:click={() => selectEntry(entry)}>
+							<tr onclick={() => selectEntry(entry)}>
 								<td>{entry.id}</td>
 								<td>{formatTimestamp(entry.timestamp_ns)}</td>
 								<td>{entry.collection}</td>
@@ -173,7 +169,9 @@ onMount(() => {
 				<div>
 					<strong>{selectedEntry.mutation}</strong>
 					<p class="muted">
-						{selectedEntry.collection}/{selectedEntry.entity_id} · {formatTimestamp(selectedEntry.timestamp_ns)}
+						{selectedEntry.collection}/{selectedEntry.entity_id} · {formatTimestamp(
+							selectedEntry.timestamp_ns,
+						)}
 					</p>
 				</div>
 				<div>

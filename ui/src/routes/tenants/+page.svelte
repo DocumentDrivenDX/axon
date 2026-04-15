@@ -1,6 +1,7 @@
 <script lang="ts">
+import { base } from '$app/paths';
+import { goto } from '$app/navigation';
 import { type Tenant, createTenant, deleteTenant, fetchTenants } from '$lib/api';
-import { getSelectedTenant, setSelectedTenant } from '$lib/stores.svelte';
 
 let tenants = $state<Tenant[]>([]);
 let loading = $state(true);
@@ -9,6 +10,10 @@ let newName = $state('');
 let creating = $state(false);
 let createError = $state<string | null>(null);
 let deletingId = $state<string | null>(null);
+
+function tenantHref(tenant: Tenant): string {
+	return `${base}/tenants/${encodeURIComponent(tenant.db_name)}`;
+}
 
 async function loadTenants() {
 	loading = true;
@@ -30,8 +35,8 @@ async function handleCreate() {
 		const tenant = await createTenant(newName.trim());
 		newName = '';
 		await loadTenants();
-		// Auto-select newly created tenant.
-		setSelectedTenant(tenant);
+		// Navigate into the new tenant.
+		await goto(tenantHref(tenant));
 	} catch (e: unknown) {
 		createError = e instanceof Error ? e.message : 'Failed to create tenant';
 	} finally {
@@ -43,15 +48,7 @@ async function handleDelete(id: string) {
 	deletingId = id;
 	try {
 		await deleteTenant(id);
-		// Clear selection if we deleted the selected tenant.
-		if (getSelectedTenant()?.id === id) {
-			setSelectedTenant(null);
-		}
 		await loadTenants();
-		// Auto-select first remaining tenant if none selected.
-		if (!getSelectedTenant() && tenants.length > 0) {
-			setSelectedTenant(tenants[0] ?? null);
-		}
 	} catch (e: unknown) {
 		error = e instanceof Error ? e.message : 'Failed to delete tenant';
 	} finally {
@@ -67,7 +64,10 @@ $effect(() => {
 <div class="page-header">
 	<div>
 		<h1>Tenants</h1>
-		<p class="muted">Each tenant maps to an isolated database. Select a tenant in the top bar to scope collections, audit, and schemas.</p>
+		<p class="muted">
+			Each tenant owns one or more isolated databases. Click a tenant to manage its
+			databases, members, and credentials.
+		</p>
 	</div>
 </div>
 
@@ -76,7 +76,13 @@ $effect(() => {
 		<h2>Create Tenant</h2>
 	</div>
 	<div class="panel-body">
-		<form class="create-form" onsubmit={(e) => { e.preventDefault(); void handleCreate(); }}>
+		<form
+			class="create-form"
+			onsubmit={(e) => {
+				e.preventDefault();
+				void handleCreate();
+			}}
+		>
 			<input
 				class="name-input"
 				type="text"
@@ -116,7 +122,7 @@ $effect(() => {
 				<thead>
 					<tr>
 						<th>Name</th>
-						<th>Database</th>
+						<th>Database slug</th>
 						<th>Created</th>
 						<th>Actions</th>
 					</tr>
@@ -124,18 +130,26 @@ $effect(() => {
 				<tbody>
 					{#each tenants as tenant}
 						<tr>
-							<td><strong>{tenant.name}</strong></td>
+							<td>
+								<a href={tenantHref(tenant)}>
+									<strong>{tenant.name}</strong>
+								</a>
+							</td>
 							<td><code>{tenant.db_name}</code></td>
 							<td class="muted">{new Date(tenant.created_at).toLocaleDateString()}</td>
 							<td>
 								<div class="actions">
-									<button onclick={() => setSelectedTenant(tenant)}>Select</button>
+									<a class="button-link" href={tenantHref(tenant)}>Open</a>
 									{#if deletingId === tenant.id}
 										<span class="muted" style="font-size:0.85rem">Delete {tenant.name}?</span>
-										<button class="danger" onclick={() => void handleDelete(tenant.id)}>Confirm</button>
+										<button class="danger" onclick={() => void handleDelete(tenant.id)}>
+											Confirm
+										</button>
 										<button onclick={() => (deletingId = null)}>Cancel</button>
 									{:else}
-										<button class="danger" onclick={() => (deletingId = tenant.id)}>Delete</button>
+										<button class="danger" onclick={() => (deletingId = tenant.id)}>
+											Delete
+										</button>
 									{/if}
 								</div>
 							</td>

@@ -403,11 +403,100 @@ export async function deleteTenant(tenantId: string): Promise<void> {
 	});
 }
 
+export async function fetchTenant(tenantId: string): Promise<Tenant> {
+	return request<Tenant>(`/control/tenants/${encodeURIComponent(tenantId)}`);
+}
+
 export async function fetchTenantDatabases(tenantId: string): Promise<TenantDatabase[]> {
 	const response = await request<{ databases: TenantDatabase[] }>(
 		`/control/tenants/${encodeURIComponent(tenantId)}/databases`,
 	);
 	return response.databases;
+}
+
+export async function createTenantDatabase(
+	tenantId: string,
+	name: string,
+): Promise<TenantDatabase> {
+	return request<TenantDatabase>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/databases`,
+		{
+			method: 'POST',
+			body: JSON.stringify({ name }),
+		},
+	);
+}
+
+export async function deleteTenantDatabase(tenantId: string, name: string): Promise<void> {
+	await request<void>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/databases/${encodeURIComponent(name)}`,
+		{ method: 'DELETE' },
+	);
+}
+
+// ── Global user ACL (deployment-wide role assignments) ──────────────────────
+
+export type UserRole = 'admin' | 'write' | 'read';
+
+export type UserAclEntry = {
+	login: string;
+	role: UserRole;
+};
+
+export async function fetchUsers(): Promise<UserAclEntry[]> {
+	const response = await request<{ users: UserAclEntry[] }>('/control/users');
+	return response.users;
+}
+
+export async function setUserRole(login: string, role: UserRole): Promise<UserAclEntry> {
+	return request<UserAclEntry>(`/control/users/${encodeURIComponent(login)}`, {
+		method: 'PUT',
+		body: JSON.stringify({ role }),
+	});
+}
+
+export async function removeUserRole(login: string): Promise<void> {
+	await request<void>(`/control/users/${encodeURIComponent(login)}`, {
+		method: 'DELETE',
+	});
+}
+
+// ── Tenant membership ────────────────────────────────────────────────────────
+
+export type TenantMemberRole = 'admin' | 'write' | 'read';
+
+export type TenantMember = {
+	tenant_id: string;
+	user_id: string;
+	role: TenantMemberRole;
+};
+
+export async function fetchTenantMembers(tenantId: string): Promise<TenantMember[]> {
+	const response = await request<{ members: TenantMember[] }>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/members`,
+	);
+	return response.members;
+}
+
+export async function upsertTenantMember(
+	tenantId: string,
+	userId: string,
+	role: TenantMemberRole,
+): Promise<TenantMember> {
+	return request<TenantMember>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
+		{
+			method: 'PUT',
+			body: JSON.stringify({ role }),
+		},
+	);
+}
+
+export async function removeTenantMember(tenantId: string, userId: string): Promise<void> {
+	await request<void>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
+		{ method: 'DELETE' },
+	);
 }
 
 // ── Credential management ────────────────────────────────────────────────────

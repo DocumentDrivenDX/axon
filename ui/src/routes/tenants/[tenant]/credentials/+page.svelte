@@ -7,7 +7,10 @@ import {
 	listCredentials,
 	revokeCredential,
 } from '$lib/api';
-import { getSelectedTenant } from '$lib/stores.svelte';
+import type { PageData } from './$types';
+
+const { data }: { data: PageData } = $props();
+const tenant = $derived(data.tenant);
 
 const OPS = ['read', 'write', 'admin'] as const;
 type Op = (typeof OPS)[number];
@@ -43,12 +46,6 @@ function truncate(s: string, n = 12): string {
 }
 
 async function loadCredentials() {
-	const tenant = getSelectedTenant();
-	if (!tenant) {
-		loading = false;
-		credentials = [];
-		return;
-	}
 	loading = true;
 	try {
 		credentials = await listCredentials(tenant.id);
@@ -85,8 +82,6 @@ function toggleOp(i: number, op: Op) {
 }
 
 async function handleIssue() {
-	const tenant = getSelectedTenant();
-	if (!tenant) return;
 	issuing = true;
 	issueError = null;
 	try {
@@ -136,8 +131,6 @@ function closeJwtDialog() {
 }
 
 async function handleRevoke(jti: string) {
-	const tenant = getSelectedTenant();
-	if (!tenant) return;
 	revoking = true;
 	revokeError = null;
 	try {
@@ -159,22 +152,14 @@ $effect(() => {
 <div class="page-header">
 	<div>
 		<h1>Credentials</h1>
-		<p class="muted">Manage JWT credentials for the selected tenant.</p>
+		<p class="muted">JWT credentials for tenant <strong>{tenant.name}</strong>.</p>
 	</div>
 	<div class="header-actions">
-		<button class="primary" onclick={openIssueModal} disabled={!getSelectedTenant()}>
-			Issue Credential
-		</button>
+		<button class="primary" onclick={openIssueModal}>Issue Credential</button>
 	</div>
 </div>
 
-{#if !getSelectedTenant()}
-	<section class="panel">
-		<div class="panel-body">
-			<p class="muted">Select a tenant in the top bar to manage credentials.</p>
-		</div>
-	</section>
-{:else if loading}
+{#if loading}
 	<p class="message">Loading credentials…</p>
 {:else if error}
 	<p class="message error">{error}</p>

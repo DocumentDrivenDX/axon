@@ -4,8 +4,8 @@ import { base } from '$app/paths';
 import { onMount } from 'svelte';
 
 onMount(() => {
-	void goto(`${base}/collections`, { replaceState: true });
+	void goto(`${base}/tenants`, { replaceState: true });
 });
 </script>
 
-<p class="message">Redirecting to collections...</p>
+<p class="message">Redirecting to tenants...</p>
