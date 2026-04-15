@@ -115,7 +115,7 @@ async fn seed_tasks_collection(server: &axum_test::TestServer) {
 /// POST a GraphQL document and return the parsed JSON response body.
 async fn gql(server: &axum_test::TestServer, query: &str) -> Value {
     server
-        .post("/graphql")
+        .post("/tenants/default/databases/default/graphql")
         .json(&json!({ "query": query }))
         .await
         .json::<Value>()
@@ -125,7 +125,7 @@ async fn gql(server: &axum_test::TestServer, query: &str) -> Value {
 /// identity middleware records the request as coming from the given actor.
 async fn gql_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Value {
     server
-        .post("/graphql")
+        .post("/tenants/default/databases/default/graphql")
         .add_header("x-axon-actor", actor)
         .json(&json!({ "query": query }))
         .await

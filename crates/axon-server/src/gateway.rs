@@ -2625,7 +2625,8 @@ async fn graphql_ws_handler(
 /// GraphQL Playground — serves the interactive browser IDE at `/graphql/playground`.
 async fn graphql_playground_handler() -> impl IntoResponse {
     axum::response::Html(playground_source(
-        GraphQLPlaygroundConfig::new("/graphql").subscription_endpoint("/graphql/ws"),
+        GraphQLPlaygroundConfig::new("/tenants/default/databases/default/graphql")
+            .subscription_endpoint("/tenants/default/databases/default/graphql/ws"),
     ))
 }
 
@@ -2751,6 +2752,8 @@ fn data_routes() -> Router {
             "/transactions/{transaction_id}/rollback",
             post(rollback_transaction_handler),
         )
+        .route("/graphql", get(graphql_handler).post(graphql_handler))
+        .route("/graphql/ws", get(graphql_ws_handler))
 }
 
 /// Build the axum router for the HTTP gateway with request authentication.
@@ -2881,8 +2884,6 @@ fn build_router_full(
             "/databases/{database}/schemas/{schema}/collections",
             get(list_namespace_collections),
         )
-        .route("/graphql", get(graphql_handler).post(graphql_handler))
-        .route("/graphql/ws", get(graphql_ws_handler))
         .layer(Extension(rate_limiter))
         .layer(Extension(actor_scope))
         .layer(Extension(mcp_sessions))

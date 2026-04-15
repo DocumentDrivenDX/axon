@@ -82,7 +82,7 @@ async fn seed_constrained_collection(server: &axum_test::TestServer, name: &str)
 /// GraphQL always returns HTTP 200; errors live in the `errors` field of the body.
 async fn gql(server: &axum_test::TestServer, query: &str) -> Value {
     server
-        .post("/graphql")
+        .post("/tenants/default/databases/default/graphql")
         .json(&json!({"query": query}))
         .await
         .json::<Value>()
