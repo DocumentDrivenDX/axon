@@ -732,6 +732,20 @@ impl TenantId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Derive a deterministic `TenantId` from a human-readable tenant name.
+    ///
+    /// Uses UUIDv5 with a fixed Axon-specific namespace so the same name always
+    /// produces the same `TenantId` across calls and process restarts without
+    /// needing a database lookup.
+    pub fn from_name(name: &str) -> Self {
+        // Fixed 128-bit namespace UUID unique to Axon tenant name mapping.
+        const AXON_TENANT_NS: Uuid = Uuid::from_bytes([
+            0x7a, 0x78, 0x6f, 0x6e, 0x2d, 0x74, 0x65, 0x6e,
+            0x61, 0x6e, 0x74, 0x2d, 0x6e, 0x61, 0x6d, 0x65,
+        ]);
+        Self(Uuid::new_v5(&AXON_TENANT_NS, name.as_bytes()).to_string())
+    }
 }
 
 impl std::fmt::Display for TenantId {
@@ -758,6 +772,11 @@ impl UserId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Return the nil (all-zeros) user ID used for anonymous `--no-auth` requests.
+    pub fn nil() -> Self {
+        Self(Uuid::nil().to_string())
     }
 }
 
