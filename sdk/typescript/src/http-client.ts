@@ -10,6 +10,8 @@
  *     const e = await orders.getEntity("items", "item-1");
  */
 
+import { AUTH_ERROR_CODES, type AuthErrorCode } from "./auth-error-codes.js";
+
 // Minimal fetch interface — avoids DOM lib dependency while remaining
 // compatible with the global fetch in Node 18+ and all modern browsers.
 export type FetchResponse = {
@@ -165,10 +167,15 @@ export class DatabaseClient {
 export class AxonHttpError extends Error {
   constructor(
     public readonly status: number,
-    public readonly code: string,
+    public readonly code: AuthErrorCode | string,
     public readonly body: string,
   ) {
     super(`${status} ${code}: ${body}`);
     this.name = "AxonHttpError";
+  }
+
+  /** Narrow the code to AuthErrorCode if it matches a known variant. */
+  isAuthError(): this is AxonHttpError & { code: AuthErrorCode } {
+    return (AUTH_ERROR_CODES as readonly string[]).includes(this.code);
   }
 }

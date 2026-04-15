@@ -1,0 +1,21 @@
+{
+  "$schema": "https://axon.dev/schemas/auth-errors-manifest.v1.json",
+  "version": 1,
+  "variants": [
+    { "rust_name": "Unauthenticated",        "code": "unauthenticated",           "status": 401 },
+    { "rust_name": "CredentialMalformed",    "code": "credential_malformed",      "status": 401 },
+    { "rust_name": "CredentialInvalid",      "code": "credential_invalid",        "status": 401 },
+    { "rust_name": "CredentialExpired",      "code": "credential_expired",        "status": 401 },
+    { "rust_name": "CredentialNotYetValid",  "code": "credential_not_yet_valid",  "status": 401 },
+    { "rust_name": "CredentialRevoked",      "code": "credential_revoked",        "status": 401 },
+    { "rust_name": "CredentialForeignIssuer","code": "credential_foreign_issuer", "status": 401 },
+    { "rust_name": "CredentialWrongTenant",  "code": "credential_wrong_tenant",   "status": 403 },
+    { "rust_name": "UserSuspended",          "code": "user_suspended",            "status": 401 },
+    { "rust_name": "NotATenantMember",       "code": "not_a_tenant_member",       "status": 403 },
+    { "rust_name": "DatabaseNotGranted",     "code": "database_not_granted",      "status": 403 },
+    { "rust_name": "OpNotGranted",           "code": "op_not_granted",            "status": 403 },
+    { "rust_name": "GrantsExceedIssuerRole", "code": "grants_exceed_issuer_role", "status": 401 },
+    { "rust_name": "GrantsExceedRole",       "code": "grants_exceed_role",        "status": 403 },
+    { "rust_name": "GrantsMalformed",        "code": "grants_malformed",          "status": 401 }
+  ]
+}

@@ -14,6 +14,12 @@ export {
   AxonHttpError,
   type HttpAxonClientOptions,
 } from "./http-client.js";
+export {
+  AUTH_ERROR_CODES,
+  AUTH_ERROR_STATUS,
+  AUTH_ERROR_COUNT,
+  type AuthErrorCode,
+} from "./auth-error-codes.js";
 export type {
   Entity,
   Link,

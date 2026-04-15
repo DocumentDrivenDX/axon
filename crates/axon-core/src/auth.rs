@@ -1180,6 +1180,10 @@ pub struct ResolvedIdentity {
     pub grants: Grants,
 }
 
+/// Number of [`AuthError`] variants. Used by parity tests to detect drift
+/// between the Rust enum and the `schema/auth-errors.manifest.json` manifest.
+pub const AUTH_ERROR_VARIANT_COUNT: usize = 15;
+
 /// Compile-time exhaustive check that `AuthError` has exactly 15 variants
 /// (ADR-018 §4). Adding or removing a variant without updating this match
 /// will cause a compile error.
