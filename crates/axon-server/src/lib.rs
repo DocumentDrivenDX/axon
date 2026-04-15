@@ -44,6 +44,7 @@
 pub mod actor_scope;
 pub mod auth;
 pub mod auth_pipeline;
+pub mod bootstrap;
 pub mod path_router;
 mod collection_listing;
 pub mod federation;

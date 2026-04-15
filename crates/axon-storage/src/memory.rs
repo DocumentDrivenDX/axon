@@ -142,6 +142,12 @@ pub struct MemoryStorageAdapter {
     ///
     /// Uses interior mutability so that `track_credential_issuance` can take `&self`.
     credential_issuances: std::sync::Mutex<HashMap<Uuid, CredentialMetadata>>,
+    /// Tenant registry: name → TenantId (axon-e77f0e5b bootstrap).
+    ///
+    /// Uses interior mutability so that `upsert_default_tenant` can take
+    /// `&self` and be called concurrently from multiple threads. The lock
+    /// covers the check-and-insert atomically to prevent duplicate rows.
+    tenants: std::sync::Mutex<HashMap<String, TenantId>>,
 }
 
 fn now_ns() -> u64 {
@@ -188,6 +194,7 @@ impl Default for MemoryStorageAdapter {
             retention_policies: std::sync::Mutex::new(HashMap::new()),
             tenant_databases: std::sync::Mutex::new(HashMap::new()),
             credential_issuances: std::sync::Mutex::new(HashMap::new()),
+            tenants: std::sync::Mutex::new(HashMap::new()),
         }
     }
 }
@@ -1221,6 +1228,27 @@ impl StorageAdapter for MemoryStorageAdapter {
         // has no added_at_ms; sort by user_id string as a proxy).
         members.sort_by(|a, b| a.user_id.0.cmp(&b.user_id.0));
         Ok(members)
+    }
+
+    fn count_tenants(&self) -> Result<usize, AxonError> {
+        Ok(self
+            .tenants
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("tenants mutex poisoned: {e}")))?
+            .len())
+    }
+
+    fn upsert_default_tenant(&self, name: &str) -> Result<TenantId, AxonError> {
+        let mut map = self
+            .tenants
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("tenants mutex poisoned: {e}")))?;
+        if let Some(existing) = map.get(name) {
+            return Ok(existing.clone());
+        }
+        let id = TenantId::generate();
+        map.insert(name.to_string(), id.clone());
+        Ok(id)
     }
 
     fn get_retention_policy(

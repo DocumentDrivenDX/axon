@@ -129,6 +129,23 @@ impl SqliteStorageAdapter {
         Ok(())
     }
 
+    /// Insert a user row for test fixture setup (bootstrap tests).
+    ///
+    /// Uses `INSERT OR IGNORE` so the call is idempotent. Intended for
+    /// integration tests that need a valid FK reference in `users` before
+    /// calling `ensure_default_tenant`.
+    pub fn test_insert_user(&self, user_id: &str) -> Result<(), AxonError> {
+        let conn = self.conn()?;
+        let now = 1_000_000i64;
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, display_name, created_at_ms) \
+             VALUES (?1, ?2, ?3)",
+            params![user_id, user_id, now],
+        )
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
     /// Count tenant_users rows matching (tenant_id, user_id) for test assertions.
     pub fn test_count_tenant_members(
         &self,
@@ -1892,6 +1909,50 @@ impl StorageAdapter for SqliteStorageAdapter {
             members.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
         }
         Ok(members)
+    }
+
+    fn count_tenants(&self) -> Result<usize, AxonError> {
+        let conn = self.conn()?;
+        match conn.query_row("SELECT COUNT(*) FROM tenants", [], |row| row.get::<_, i64>(0)) {
+            Ok(n) => Ok(n as usize),
+            Err(e) if e.to_string().contains("no such table") => Ok(0),
+            Err(e) => Err(AxonError::Storage(e.to_string())),
+        }
+    }
+
+    fn upsert_default_tenant(&self, name: &str) -> Result<axon_core::auth::TenantId, AxonError> {
+        // The Mutex<Connection> serialises all callers, so INSERT + SELECT is
+        // effectively a transaction: no other thread can interleave between
+        // the two statements.  The ON CONFLICT DO NOTHING ensures the first
+        // caller's UUID wins; every caller then reads the same winning row.
+        let conn = self.conn()?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let new_id = axon_core::auth::TenantId::generate();
+        conn.execute(
+            "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (name) DO NOTHING",
+            params![new_id.as_str(), name, name, now_ms, now_ms],
+        )
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("no such table") {
+                AxonError::Storage(
+                    "auth schema not applied; call apply_auth_migrations first".into(),
+                )
+            } else {
+                AxonError::Storage(msg)
+            }
+        })?;
+        conn.query_row(
+            "SELECT id FROM tenants WHERE name = ?1",
+            params![name],
+            |row| row.get::<_, String>(0),
+        )
+        .map(axon_core::auth::TenantId::new)
+        .map_err(|e| AxonError::Storage(e.to_string()))
     }
 
     fn get_retention_policy(

@@ -906,6 +906,38 @@ pub trait StorageAdapter: Send + Sync {
         Ok(vec![])
     }
 
+    /// Return the total number of rows in the `tenants` table.
+    ///
+    /// Used by [`axon_server::bootstrap::ensure_default_tenant`] to detect
+    /// zero-tenant deployments. Returns `Ok(0)` by default; adapters that
+    /// back the bootstrap path must override this.
+    fn count_tenants(&self) -> Result<usize, AxonError> {
+        Ok(0)
+    }
+
+    /// Upsert a tenant row with the given `name` and return its id.
+    ///
+    /// Concurrency-safe: uses ON CONFLICT (name) DO NOTHING so that
+    /// N simultaneous first-requests all converge on the same row. After
+    /// the INSERT the winning id is returned via a subsequent SELECT.
+    ///
+    /// The SQL pattern (SQLite / Postgres) is:
+    ///
+    /// ```sql
+    /// INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
+    /// VALUES (?, ?, ?, ?, ?) ON CONFLICT (name) DO NOTHING;
+    /// SELECT id FROM tenants WHERE name = ?;
+    /// ```
+    ///
+    /// The default implementation returns [`AxonError::InvalidOperation`] so
+    /// that unmigrated adapters are explicit about the gap.
+    fn upsert_default_tenant(&self, name: &str) -> Result<TenantId, AxonError> {
+        let _ = name;
+        Err(AxonError::InvalidOperation(
+            "upsert_default_tenant not supported by this adapter".into(),
+        ))
+    }
+
     /// Look up the retention policy for a tenant.
     ///
     /// Returns `Ok(None)` when no explicit policy has been set; callers should
@@ -1372,6 +1404,14 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         tenant_id: TenantId,
     ) -> Result<Vec<TenantMember>, AxonError> {
         (**self).list_tenant_members(tenant_id)
+    }
+
+    fn count_tenants(&self) -> Result<usize, AxonError> {
+        (**self).count_tenants()
+    }
+
+    fn upsert_default_tenant(&self, name: &str) -> Result<TenantId, AxonError> {
+        (**self).upsert_default_tenant(name)
     }
 
     fn get_retention_policy(

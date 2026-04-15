@@ -1476,6 +1476,55 @@ impl StorageAdapter for PostgresStorageAdapter {
         Ok(members)
     }
 
+    fn count_tenants(&self) -> Result<usize, AxonError> {
+        let rows = match self.block(self.client.query("SELECT COUNT(*) FROM tenants", &[])) {
+            Ok(rows) => rows,
+            Err(e) if e.to_string().contains("does not exist") => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        if rows.is_empty() {
+            return Ok(0);
+        }
+        let count: i64 = rows[0].get(0);
+        Ok(count as usize)
+    }
+
+    fn upsert_default_tenant(&self, name: &str) -> Result<axon_core::auth::TenantId, AxonError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let new_id = axon_core::auth::TenantId::generate();
+        match self.block(self.client.execute(
+            "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (name) DO NOTHING",
+            &[&new_id.as_str(), &name, &name, &now_ms, &now_ms],
+        )) {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("does not exist") {
+                    return Err(AxonError::Storage(
+                        "auth schema not applied; call apply_auth_migrations_postgres first"
+                            .into(),
+                    ));
+                }
+                return Err(e);
+            }
+        }
+        let rows = self
+            .block(self.client.query(
+                "SELECT id FROM tenants WHERE name = $1",
+                &[&name],
+            ))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        rows.first()
+            .map(|row| axon_core::auth::TenantId::new(row.get::<_, String>(0)))
+            .ok_or_else(|| {
+                AxonError::Storage(format!("tenant '{name}' not found after upsert"))
+            })
+    }
+
     fn get_retention_policy(
         &self,
         tenant_id: axon_core::auth::TenantId,
