@@ -1,0 +1,41 @@
+{
+  "attempt_id": "20260415T002019-710d4b38",
+  "bead_id": "axon-0478a1de",
+  "base_rev": "fb090bf67c7f625e9abdbc1de052aadf757c40f3",
+  "created_at": "2026-04-15T00:20:20.378104062Z",
+  "requested": {
+    "harness": "agent",
+    "model": "qwen/qwen3-coder-next",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-0478a1de",
+    "title": "auth-schema: control-plane migrations for tenancy/auth tables",
+    "description": "Add migrations for: tenants, users, user_identities, tenant_users, tenant_databases, credential_revocations, audit_retention_policies. Enforce UNIQUE(tenants.name), UNIQUE(user_identities.provider, subject), PK(tenant_users.tenant_id, user_id). Runs on SQLite + Postgres via sqlx.\n\nDepends on: nothing (blocks A2 and everything downstream).\n\nTest as you implement:\n- Round-trip test: apply migration to empty DB, verify schema, tear down, re-apply (idempotent)\n- Constraint test: attempt duplicate inserts, verify rejection\n- Both backends (SQLite + Postgres) under axon-storage conformance suite",
+    "acceptance": "- [ ] Migration applies to empty SQLite + Postgres DB\n- [ ] Re-applying migration is idempotent (no errors, no duplicate rows)\n- [ ] UNIQUE(tenants.name) rejects duplicate tenant names\n- [ ] UNIQUE(user_identities.provider, subject) rejects duplicate federation rows\n- [ ] PK(tenant_users.tenant_id, user_id) rejects duplicate memberships\n- [ ] Round-trip test added to axon-storage tests\n- [ ] cargo test -p axon-storage green on both backends",
+    "parent": "axon-1e23edc8",
+    "labels": [
+      "helix",
+      "area:auth",
+      "area:storage",
+      "spec:ADR-018",
+      "spec:FEAT-014",
+      "phase:foundation"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-15T00:20:19Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4010187",
+      "execute-loop-heartbeat-at": "2026-04-15T00:20:19.926633626Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260415T002019-710d4b38",
+    "prompt": ".ddx/executions/20260415T002019-710d4b38/prompt.md",
+    "manifest": ".ddx/executions/20260415T002019-710d4b38/manifest.json",
+    "result": ".ddx/executions/20260415T002019-710d4b38/result.json",
+    "checks": ".ddx/executions/20260415T002019-710d4b38/checks.json",
+    "usage": ".ddx/executions/20260415T002019-710d4b38/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-0478a1de-20260415T002019-710d4b38"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260415T073952-d4992359",
+  "bead_id": "axon-93c7e048",
+  "base_rev": "60fec9e1793dd6b4e70a7af73526af1a8c8954d1",
+  "created_at": "2026-04-15T07:39:52.564745587Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-93c7e048",
+    "title": "graphql-path-nesting: GraphQL under /tenants/{t}/databases/{d}/graphql",
+    "description": "Move the GraphQL endpoints under /tenants/:t/databases/:d/graphql so every data-plane surface — REST and GraphQL — is consistently path-prefixed. D3 already migrated the REST routes. This bead is the analogous migration for GraphQL, plus rewriting the 2 graphql test files.\n\n## Scope\n\n### 1. gateway.rs — move GraphQL routes into the nested data-plane router\n\nCurrently in gateway.rs around line 2884:\n\n    .route(\"/graphql\", get(graphql_handler).post(graphql_handler))\n    .route(\"/graphql/ws\", get(graphql_ws_handler))\n\nAnd line 2937:\n\n    .route(\"/graphql/playground\", get(graphql_playground_handler))\n\nD3 already nested the REST routes under /tenants/:tenant/databases/:database/. Put the graphql_handler and graphql_ws_handler INSIDE that same nested router so they become /tenants/:tenant/databases/:database/graphql and /tenants/:tenant/databases/:database/graphql/ws.\n\nThe playground (/graphql/playground) is a developer UI — it can either:\n(a) stay at the top level /graphql/playground, and the playground HTML is updated to point at /tenants/default/databases/default/graphql as the endpoint, OR\n(b) move with the rest, under /tenants/:tenant/databases/:database/graphql/playground.\n\nGo with (a) — keep /graphql/playground as a top-level convenience route, but update the playground_source's endpoint URL to the nested path. The playground is a dev tool, not a production API surface.\n\nUpdate line 2628 region:\n\n    GraphQLPlaygroundConfig::new(\"/tenants/default/databases/default/graphql\").subscription_endpoint(\"/tenants/default/databases/default/graphql/ws\"),\n\nHard-code `default/default` in the playground's endpoint — the playground is meant for local dev against the default tenant.\n\n### 2. GraphQL handler signature\n\nThe handler currently reads the database via X-Axon-Database (maybe indirectly through a middleware). After D3, the REST path uses axum Path\u003c(String, String)\u003e extractor. Do the same for graphql_handler:\n\n    async fn graphql_handler(\n        Path((tenant, database)): Path\u003c(String, String)\u003e,\n        State(state): State\u003cAppState\u003e,\n        req: async_graphql_axum::GraphQLRequest,\n    ) -\u003e async_graphql_axum::GraphQLResponse {\n        // Resolve the handler for (tenant, database) — reuse the same\n        // pattern D3 uses for the REST handlers.\n        ...\n    }\n\nSame for graphql_ws_handler.\n\nIf D3 installed a shared middleware that resolves the handler from path params and puts it into request extensions, just read from extensions — don't re-resolve.\n\n### 3. Rewrite the 2 graphql test files\n\ncrates/axon-server/tests/graphql_mutations.rs — lines with `.post(\"/graphql\")`:\n\n- Line 118: .post(\"/graphql\") → .post(\"/tenants/default/databases/default/graphql\")\n- Line 128: .post(\"/graphql\") → .post(\"/tenants/default/databases/default/graphql\")\n- Similar for any other hardcoded paths\n\ncrates/axon-server/tests/graphql_contract.rs — same pattern.\n\n### 4. Add a ws_subscriptions test file (DEFER if too large)\n\nThe bead originally asked for a new ws_subscriptions.rs test exercising path-nested subscriptions. If GraphQL subscriptions are already covered in the existing test files, skip this — it's a nice-to-have, not a must-have. If NOT covered, add a minimal test that opens a WebSocket at /tenants/default/databases/default/graphql/ws, sends a subscribe message for a simple entity change, and asserts one event is received. If this test is non-trivial to set up (the WS infra is complex), write it as a compile-only test (#[test] that takes a TypedHandler reference but does not actually connect) or defer to a follow-up bead.\n\nPrefer shipping the core migration + existing test rewrites in this bead over fighting with a new WS test.\n\n### 5. L6 grep assertion for graphql paths\n\nExtend the existing L6 test or add a new one:\n\n    #[test]\n    fn no_unprefixed_graphql_references() {\n        // Scan source files for \"\\\"/graphql\\\"\" that is NOT under /tenants/\n        // Accept /graphql/playground as an exception.\n        ...\n    }\n\nAlternatively, just assert `git grep '\"/graphql\"' crates/axon-server/src/ -- --not-playground` finds only the expected nested strings.\n\n## Out of scope\n\n- SDK rewriting (G1)\n- UI rewriting (H1)\n- Full subscription roundtrip test (defer if non-trivial)\n\n## Context\n\n- D3 landed the REST path migration; reuse its pattern for GraphQL\n- The playground is a dev-only HTML page; can stay top-level\n- graphql_handler and graphql_ws_handler are in gateway.rs around lines 2524-2576\n- The existing graphql_mutations.rs and graphql_contract.rs tests are D3's explicit \"don't touch\" scope — D4 is when they get migrated\n\n## Files to touch\n\n- crates/axon-server/src/gateway.rs — move the 2 graphql routes into the nested router, update the playground endpoint URL\n- crates/axon-server/tests/graphql_mutations.rs — rewrite the hardcoded paths\n- crates/axon-server/tests/graphql_contract.rs — rewrite hardcoded paths\n\n## Files NOT to touch\n\n- crates/axon-graphql/* — the internal resolver machinery doesn't care about HTTP paths\n- crates/axon-server/src/auth_pipeline.rs — B1\n- The REST routes — D3 already migrated\n\n## Verification\n\n- cargo test -p axon-server --test graphql_mutations --test graphql_contract (must both pass)\n- cargo test --workspace (all prior tests green)\n- cargo clippy --workspace -- -D warnings clean",
+    "acceptance": "- [ ] gateway.rs: /graphql and /graphql/ws moved inside the /tenants/:t/databases/:d/ nested router\n- [ ] Playground endpoint URL updated to point at the nested path\n- [ ] graphql_mutations.rs hardcoded paths rewritten to /tenants/default/databases/default/graphql\n- [ ] graphql_contract.rs hardcoded paths rewritten similarly\n- [ ] graphql_handler extracts (tenant, database) from axum Path\n- [ ] cargo test -p axon-server --test graphql_mutations --test graphql_contract green\n- [ ] cargo test --workspace green\n- [ ] cargo clippy --workspace -- -D warnings clean",
+    "parent": "axon-60071281",
+    "labels": [
+      "helix",
+      "area:routing",
+      "area:graphql",
+      "spec:ADR-018",
+      "spec:FEAT-015",
+      "phase:routing"
+    ],
+    "metadata": {
+      "depends_on": "axon-3a2e4c4e,axon-130f129f,axon-dccbdf73"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260415T073952-d4992359",
+    "prompt": ".ddx/executions/20260415T073952-d4992359/prompt.md",
+    "manifest": ".ddx/executions/20260415T073952-d4992359/manifest.json",
+    "result": ".ddx/executions/20260415T073952-d4992359/result.json",
+    "checks": ".ddx/executions/20260415T073952-d4992359/checks.json",
+    "usage": ".ddx/executions/20260415T073952-d4992359/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-93c7e048-20260415T073952-d4992359"
+  }
+}

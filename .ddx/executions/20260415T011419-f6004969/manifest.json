@@ -1,0 +1,40 @@
+{
+  "attempt_id": "20260415T011419-f6004969",
+  "bead_id": "axon-43ed769b",
+  "base_rev": "699b7d2296698ec9711ef06c67df30630c209bea",
+  "created_at": "2026-04-15T01:14:19.876649964Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-43ed769b",
+    "title": "auth-core-types: Tenant/User/Credential/Grants/JwtClaims/AuthError",
+    "description": "Add the auth data types to axon-core behind a stable module path. Types:\n- TenantId, UserId (newtype UUIDs)\n- Tenant { id, name, created_at_ms }\n- User { id, display_name, email?, created_at_ms, suspended_at_ms? }\n- UserIdentity { provider, subject, user_id }\n- TenantMember { tenant_id, user_id, role: TenantRole }\n- TenantRole enum { Admin, Write, Read } with delegation helper\n- Op enum { Read, Write, Admin }\n- GrantedDatabase { name, ops: Vec\u003cOp\u003e }\n- Grants { databases: Vec\u003cGrantedDatabase\u003e }\n- JwtClaims { iss, sub, aud (String, not Vec), jti, iat, nbf, exp, grants }\n- AuthError enum with exactly 14 variants matching ADR-018 §4 failure-mode table\n\nDepends on: A1 (schema types reference table shapes).\n\nTest as you implement:\n- Serde round-trip for every type\n- JwtClaims where aud is a JSON array returns AuthError::CredentialMalformed\n- TenantRole delegation helper: admin→{R,W,A}, write→{R,W}, read→{R} via proptest\n- AuthError variant count assert == 14 (trait impl or constant)",
+    "acceptance": "- [ ] All types compile in axon-core with no unwrap/panic\n- [ ] Serde round-trip unit test per type\n- [ ] aud array-form → AuthError::CredentialMalformed test green\n- [ ] TenantRole delegation helper proptest green (admin/write/read ceilings)\n- [ ] AUTH_ERROR_VARIANT_COUNT == 14 compile-time assert\n- [ ] cargo test -p axon-core green\n- [ ] cargo clippy -p axon-core -- -D warnings clean",
+    "parent": "axon-1e23edc8",
+    "labels": [
+      "helix",
+      "area:auth",
+      "spec:ADR-018",
+      "phase:foundation"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-15T01:14:19Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4168345",
+      "depends_on": "axon-0478a1de",
+      "execute-loop-heartbeat-at": "2026-04-15T01:14:19.664116174Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260415T011419-f6004969",
+    "prompt": ".ddx/executions/20260415T011419-f6004969/prompt.md",
+    "manifest": ".ddx/executions/20260415T011419-f6004969/manifest.json",
+    "result": ".ddx/executions/20260415T011419-f6004969/result.json",
+    "checks": ".ddx/executions/20260415T011419-f6004969/checks.json",
+    "usage": ".ddx/executions/20260415T011419-f6004969/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-43ed769b-20260415T011419-f6004969"
+  }
+}

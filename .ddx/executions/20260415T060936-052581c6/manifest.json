@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260415T060936-052581c6",
+  "bead_id": "axon-e77f0e5b",
+  "base_rev": "52de2f57039a7882dc3e73a0ee2753eef4bae5f9",
+  "created_at": "2026-04-15T06:09:36.63895306Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-e77f0e5b",
+    "title": "default-tenant-bootstrap: concurrency-safe zero-tenant auto-bootstrap",
+    "description": "Concurrency-safe auto-bootstrap for zero-tenant deployments. On first authenticated request, create a default tenant + default database + add the caller as admin. All under ON CONFLICT DO NOTHING so concurrent first-requests converge on a single row.\n\n## Scope\n\n### 1. New module: crates/axon-server/src/bootstrap.rs\n\n    //! Default-tenant auto-bootstrap per ADR-018 §6.\n    //!\n    //! On a fresh deployment with zero tenants, the first authenticated\n    //! request creates:\n    //!   1. A \"default\" tenant row in the auth_schema tenants table\n    //!   2. A \"default\" database in tenant_databases\n    //!   3. A tenant_users row adding the caller as admin\n    //!\n    //! Idempotent — runs only when storage.count_tenants() returns 0, and\n    //! concurrency-safe via ON CONFLICT DO NOTHING.\n\n    pub async fn ensure_default_tenant(\n        storage: \u0026dyn StorageAdapter,\n        caller_user_id: UserId,\n    ) -\u003e Result\u003cDefaultTenantHandle, AxonError\u003e;\n\n    pub struct DefaultTenantHandle {\n        pub tenant_id: TenantId,\n        pub database_name: String,\n    }\n\nThe caller identity comes from B1 (ResolvedIdentity) for JWT flow or B3 (resolve_tailscale_identity) for Tailscale. In either case, by the time we reach bootstrap, the user row exists.\n\n### 2. Storage adapter: add a fast count + upsert path\n\n    fn count_tenants(\u0026self) -\u003e Result\u003cusize, AxonError\u003e {\n        Ok(0)\n    }\n\n    fn upsert_default_tenant(\n        \u0026self,\n        name: \u0026str,  // always \"default\"\n    ) -\u003e Result\u003cTenantId, AxonError\u003e;\n\nupsert_default_tenant SQL:\n\n    INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)\n    VALUES (?, ?, ?, ?, ?)\n    ON CONFLICT (name) DO NOTHING;\n\n    SELECT id FROM tenants WHERE name = ?;\n\nThe first call wins with its generated UUID; subsequent callers get the winning UUID back. Wrap in a transaction.\n\n### 3. ensure_default_tenant logic\n\n    1. count_tenants() — if \u003e 0, we're NOT in bootstrap; return Err(AxonError::NotFound) so caller uses the explicit tenant URL instead.\n    2. upsert_default_tenant(\"default\") — get the tenant_id.\n    3. create_tenant_database(tenant_id, \"default\") — ignore ON CONFLICT (idempotent).\n    4. upsert_tenant_member(tenant_id, caller_user_id, TenantRole::Admin) — idempotent.\n    5. Return DefaultTenantHandle { tenant_id, database_name: \"default\" }.\n\nEach step uses an idempotent write, and all callers converge on the same (tenant_id, database_name) pair.\n\n### 4. Tests: crates/axon-server/tests/bootstrap_test.rs (NEW)\n\n#### bootstrap_first_call_creates_everything\nEmpty DB → ensure_default_tenant → verify tenants has 1 row, tenant_databases has 1 row, tenant_users has 1 row.\n\n#### bootstrap_second_call_returns_same_handle\nCall twice with different user IDs → first call creates; second call adds the second user as admin without creating a new tenant. Verify tenants still has 1 row, tenant_users now has 2 rows.\n\n#### bootstrap_skips_when_tenants_present\nSeed with an explicit tenant → ensure_default_tenant returns NotFound error (not the default tenant). The middleware caller will then use the explicit URL path.\n\n#### concurrent_bootstrap_converges (INV-020 primitive)\nSpawn N=64 threads calling ensure_default_tenant with 64 distinct user UUIDs on a fresh DB. After join:\n- Exactly 1 tenant row with name=\"default\"\n- Exactly 1 tenant_databases row\n- 64 tenant_users rows (one per caller), all pointing at the same tenant_id\n- Every caller returned the same tenant_id in their DefaultTenantHandle\n\nRun on memory AND sqlite backends. This is INV-020 at the primitive level; the full axon-sim workload is a separate bead.\n\n#### bootstrap_uses_default_database_name\nAssert DefaultTenantHandle::database_name == \"default\".\n\n## Out of scope\n\n- Router wiring: this bead is the primitive + tests. The HTTP middleware/router that DECIDES when to call ensure_default_tenant (based on path prefix or config) is D3's job after the path-router is finalized.\n- --no-auth integration: E2 handles the no-auth path-based namespace. E1 is the auth-mode bootstrap.\n- Deleting the \"default\" tenant: out of scope. The default tenant behaves like any other tenant for deletion purposes (uses the legacy path).\n\n## Context\n\n- A1 schema: tenants table has UNIQUE(name) — that's the conflict target.\n- A2 types: TenantId, TenantRole, User, etc.\n- B1: ResolvedIdentity has user_id\n- B3: upsert_user_identity creates the user row before bootstrap runs\n- B4: upsert_tenant_member is what we call for the admin grant\n- C1: list_tenant_members exists (for tests)\n- C2: create_tenant_database exists (call it here)\n\n## Files to touch\n\n- crates/axon-server/src/bootstrap.rs — NEW\n- crates/axon-server/src/lib.rs — pub mod bootstrap; re-export\n- crates/axon-storage/src/adapter.rs — count_tenants + upsert_default_tenant trait methods\n- crates/axon-storage/src/memory.rs — impl\n- crates/axon-storage/src/sqlite.rs — impl\n- crates/axon-storage/src/postgres.rs — impl\n- crates/axon-server/tests/bootstrap_test.rs — NEW\n\n## Files NOT to touch\n\n- crates/axon-server/src/serve.rs — router wiring is D3\n- crates/axon-server/src/auth_pipeline.rs — B1 is canonical\n- crates/axon-server/src/control_plane.rs — legacy\n- crates/axon-server/src/control_plane_routes.rs — tenant CRUD handlers are C1/C2 territory\n\n## Verification\n\n- cargo test -p axon-server --test bootstrap_test  (5 tests must pass)\n- cargo test -p axon-storage  (2 new trait methods)\n- cargo test --workspace  (all prior tests green — additive)\n- cargo clippy --workspace -- -D warnings clean",
+    "acceptance": "- [ ] bootstrap.rs with ensure_default_tenant + DefaultTenantHandle\n- [ ] StorageAdapter: count_tenants + upsert_default_tenant\n- [ ] All 3 backends implement\n- [ ] bootstrap_test.rs with 5 tests (first call, second call, skips when tenants present, concurrent N=64, default name)\n- [ ] Concurrent N=64 test runs on memory AND sqlite\n- [ ] Uses ON CONFLICT DO NOTHING (no check-then-insert)\n- [ ] cargo test --workspace green\n- [ ] cargo clippy --workspace -- -D warnings clean",
+    "parent": "axon-475c24e0",
+    "labels": [
+      "helix",
+      "area:auth",
+      "area:bootstrap",
+      "spec:ADR-018",
+      "spec:FEAT-014",
+      "phase:bootstrap"
+    ],
+    "metadata": {
+      "depends_on": "axon-0478a1de,axon-ceaadfcb,axon-3a2e4c4e,axon-c6908e78"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260415T060936-052581c6",
+    "prompt": ".ddx/executions/20260415T060936-052581c6/prompt.md",
+    "manifest": ".ddx/executions/20260415T060936-052581c6/manifest.json",
+    "result": ".ddx/executions/20260415T060936-052581c6/result.json",
+    "checks": ".ddx/executions/20260415T060936-052581c6/checks.json",
+    "usage": ".ddx/executions/20260415T060936-052581c6/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-e77f0e5b-20260415T060936-052581c6"
+  }
+}

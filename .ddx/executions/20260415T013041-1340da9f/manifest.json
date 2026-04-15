@@ -1,0 +1,36 @@
+{
+  "attempt_id": "20260415T013041-1340da9f",
+  "bead_id": "axon-dccbdf73",
+  "base_rev": "6e4e42be1159cbc391d578667e84aae7970b8b80",
+  "created_at": "2026-04-15T01:30:41.747427368Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": ".ddx/prompts/b1-enhanced.md"
+  },
+  "bead": {
+    "id": "axon-dccbdf73",
+    "title": "auth-jwt-pipeline: sign + verify with revocation cache + request extension",
+    "description": "Implement the full JWT verification middleware in axon-server:\n1. Parse Authorization: Bearer header\n2. Verify signature (HS256 dev / RS256 prod via jsonwebtoken crate)\n3. Check exp / nbf with 30s clock skew\n4. Check jti against in-memory LRU cache → SQL fallback on miss\n5. Compare aud against URL {tenant} segment\n6. Resolve sub → User row; reject if suspended\n7. Walk grants.databases[] for URL {database}; intersect ops with method-op\n8. Install (user_id, tenant_id, grants) into axum request extension\n\nDepends on: A2, A1. Blocks B2, C-phase, D-phase.\n\nTest as you implement:\n- Unit test per verification step (happy path + failure)\n- Integration test hitting a dummy protected route with valid JWT → 200\n- Revocation propagation: DELETE jti, wait 1s, request → 401 credential_revoked\n- Clock skew: exp +5s accepted, exp -5s rejected\n- INV-018 grant enforcement workload in axon-sim: random ops × random grants, assert intersection correctness under 1k seeds",
+    "acceptance": "- [ ] Unit tests cover every verification step\n- [ ] Integration test: valid JWT → 200 on dummy protected route\n- [ ] Revocation propagates within 1s (LRU cache invalidation test)\n- [ ] INV-018 axon-sim workload passes 1k seeds\n- [ ] Request extension contains (user_id, tenant_id, grants) after middleware\n- [ ] cargo test -p axon-server green",
+    "parent": "axon-b170a173",
+    "labels": [
+      "helix",
+      "area:auth",
+      "spec:ADR-018",
+      "phase:middleware"
+    ],
+    "metadata": {
+      "depends_on": "axon-43ed769b,axon-0478a1de"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260415T013041-1340da9f",
+    "prompt": ".ddx/executions/20260415T013041-1340da9f/prompt.md",
+    "manifest": ".ddx/executions/20260415T013041-1340da9f/manifest.json",
+    "result": ".ddx/executions/20260415T013041-1340da9f/result.json",
+    "checks": ".ddx/executions/20260415T013041-1340da9f/checks.json",
+    "usage": ".ddx/executions/20260415T013041-1340da9f/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-dccbdf73-20260415T013041-1340da9f"
+  }
+}

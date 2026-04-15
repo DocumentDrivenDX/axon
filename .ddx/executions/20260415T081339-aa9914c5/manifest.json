@@ -1,0 +1,37 @@
+{
+  "attempt_id": "20260415T081339-aa9914c5",
+  "bead_id": "axon-0cbd48ce",
+  "base_rev": "c0f65ed300a971391c8f8c33095d7bce397ea060",
+  "created_at": "2026-04-15T08:13:39.383600403Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-0cbd48ce",
+    "title": "ui-credential-management: issue/list/revoke credentials",
+    "description": "Credential management UI: list, issue, revoke JWT credentials for a tenant. Builds on H1 (tenant/database picker), C1 (tenant-admin authz), and C3 (credential control-plane endpoints).\n\n## Scope\n\n### 1. New route: ui/src/routes/credentials/+page.svelte\n\nA new top-level page at /credentials that:\n\n- Shows the current tenant (from getSelectedTenant())\n- Lists existing credentials for that tenant (via GET /control/tenants/:id/credentials)\n- Has an \"Issue Credential\" button that opens a modal\n- Per-row revoke button\n\n### 2. Credential listing\n\nTable columns: jti (truncated), target user_id (truncated), issued_at, expires_at, grants summary, revoked flag, actions (Revoke button for non-revoked rows).\n\nUse a shared formatters util if it exists (e.g. ui/src/lib/format.ts) or inline Date(iss*1000).toISOString() formatting.\n\n### 3. Issue Credential modal\n\nFields:\n- Target user (text input for UserId UUID)\n- TTL seconds (number input, default 3600 = 1 hour)\n- Grants builder:\n  - Add a database row\n  - Per-database: name (text) + ops checkbox group {Read, Write, Admin}\n  - Multiple databases allowed\n\nOn submit:\n- POST /control/tenants/:id/credentials with body { target_user, ttl_seconds, grants: { databases: [...] } }\n- On 200/201: show a one-time dialog with the signed JWT. The JWT is returned ONCE and never again retrievable. Include a \"Copy to Clipboard\" button. After closing, the dialog's JWT value is wiped.\n- On 403: show the error.code (\"grants_exceed_role\" etc.) in a friendly message.\n- On other errors: show the server error detail.\n\n### 4. Revoke confirmation\n\nOn clicking Revoke: show a confirm dialog. On confirm, DELETE /control/tenants/:id/credentials/:jti. On success, refresh the list (the revoked credential should either disappear or show a \"revoked\" flag).\n\n### 5. API helpers in ui/src/lib/api.ts\n\nAdd these exports:\n\n    export type Credential = {\n      jti: string;\n      user_id: string;\n      tenant_id: string;\n      issued_at_ms: number;\n      expires_at_ms: number;\n      revoked: boolean;\n      grants: Grants;\n    };\n\n    export type Grants = {\n      databases: GrantedDatabase[];\n    };\n\n    export type GrantedDatabase = {\n      name: string;\n      ops: Array\u003c\"read\" | \"write\" | \"admin\"\u003e;\n    };\n\n    export type IssueCredentialRequest = {\n      target_user: string;\n      ttl_seconds: number;\n      grants: Grants;\n    };\n\n    export type IssueCredentialResponse = {\n      jwt: string;\n      jti: string;\n      expires_at_ms: number;\n    };\n\n    export async function listCredentials(tenantId: string): Promise\u003cCredential[]\u003e {\n      const response = await request\u003c{ credentials: Credential[] }\u003e(\n        `/control/tenants/${encodeURIComponent(tenantId)}/credentials`,\n      );\n      return response.credentials;\n    }\n\n    export async function issueCredential(\n      tenantId: string,\n      body: IssueCredentialRequest,\n    ): Promise\u003cIssueCredentialResponse\u003e {\n      return request\u003cIssueCredentialResponse\u003e(\n        `/control/tenants/${encodeURIComponent(tenantId)}/credentials`,\n        { method: \"POST\", body: JSON.stringify(body) },\n      );\n    }\n\n    export async function revokeCredential(\n      tenantId: string,\n      jti: string,\n    ): Promise\u003cvoid\u003e {\n      await request\u003cvoid\u003e(\n        `/control/tenants/${encodeURIComponent(tenantId)}/credentials/${encodeURIComponent(jti)}`,\n        { method: \"DELETE\" },\n      );\n    }\n\nThese are control-plane calls so they do NOT pass a scope.\n\n### 6. Navigation link\n\nAdd a /credentials link to the main navigation (wherever the existing tenant/schemas/collections/audit links live — probably ui/src/routes/+layout.svelte or a nav component).\n\n### 7. Tests\n\nbun test in ui/:\n- ui/src/lib/api.test.ts — extend with tests for listCredentials, issueCredential, revokeCredential URL building.\n- Component tests are optional for this bead; the primary verification is the type check + svelte-check + manual visual inspection.\n\nsvelte-check:\n- bun run check (or npm run check) must pass after all the new Svelte files land.\n\n## Out of scope\n\n- Login / JWT storage / authenticated SDK session — H2 assumes the existing dev-mode auth or --no-auth; a full login flow is a separate bead.\n- Self-issue vs admin-issue distinction at UI level — the server enforces this; the UI just posts and handles the 403.\n- Credential rotation / renewal — no UI for this.\n- Audit view showing which credential issued a change — later bead.\n\n## Context\n\n- C3 landed the server-side endpoints at /control/tenants/:id/credentials (POST/GET/DELETE)\n- H1 landed the tenant/database picker and the new path-based request helper\n- The UI is Svelte 5 with runes\n- The Copy-to-Clipboard function should use navigator.clipboard.writeText with a fallback\n\n## Files to touch\n\n- ui/src/lib/api.ts — add Credential types + listCredentials/issueCredential/revokeCredential\n- ui/src/routes/credentials/+page.svelte — NEW\n- ui/src/routes/+layout.svelte — add nav link (check the existing nav location)\n- ui/src/lib/api.test.ts — extend with URL-building tests for the new helpers\n\n## Files NOT to touch\n\n- Any Rust crate\n- sdk/typescript/*\n- The existing tenant/schemas/collections/audit pages\n\n## Verification\n\n- bun run check (svelte-check) passes\n- bun test passes (46 existing + new tests)\n- Manual dev server smoke: navigate to /credentials, see the list, try the issue modal (may 401 without a real auth session — that's OK for this bead, the UI should show the error clearly)",
+    "acceptance": "- [ ] ui/src/routes/credentials/+page.svelte exists with list + issue modal + revoke\n- [ ] ui/src/lib/api.ts has Credential type + listCredentials/issueCredential/revokeCredential\n- [ ] Issue modal submits to POST /control/tenants/:id/credentials\n- [ ] Response JWT shown ONCE in a copy-to-clipboard dialog\n- [ ] Revoke button calls DELETE and refreshes list\n- [ ] Navigation link to /credentials in layout\n- [ ] bun run check (svelte-check) passes\n- [ ] bun test passes (existing + new)",
+    "parent": "axon-642b1771",
+    "labels": [
+      "helix",
+      "area:ui",
+      "area:auth",
+      "spec:ADR-018",
+      "phase:ui"
+    ],
+    "metadata": {
+      "depends_on": "axon-906b527a,axon-8dbbad75,axon-2e7e0d61"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260415T081339-aa9914c5",
+    "prompt": ".ddx/executions/20260415T081339-aa9914c5/prompt.md",
+    "manifest": ".ddx/executions/20260415T081339-aa9914c5/manifest.json",
+    "result": ".ddx/executions/20260415T081339-aa9914c5/result.json",
+    "checks": ".ddx/executions/20260415T081339-aa9914c5/checks.json",
+    "usage": ".ddx/executions/20260415T081339-aa9914c5/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-0cbd48ce-20260415T081339-aa9914c5"
+  }
+}

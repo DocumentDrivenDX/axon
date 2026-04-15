@@ -1,0 +1,53 @@
+{
+  "attempt_id": "20260415T004010-382fa1b1",
+  "bead_id": "axon-0478a1de",
+  "base_rev": "64cd323819633f9272a6be011118850750840310",
+  "created_at": "2026-04-15T00:40:10.721705536Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-0478a1de",
+    "title": "auth-schema: control-plane migrations for tenancy/auth tables",
+    "description": "Add migrations for: tenants, users, user_identities, tenant_users, tenant_databases, credential_revocations. Enforce UNIQUE(tenants.name), UNIQUE(user_identities.provider, external_id), PK(tenant_users.tenant_id, user_id). Runs on SQLite + Postgres. (audit_retention_policies is NOT in scope — it belongs to F1 audit-attribution.)\n\nDepends on: nothing (blocks A2 and everything downstream).\n\nTest as you implement:\n- Round-trip test per table: insert full row, SELECT back, assert columns match\n- Constraint tests: attempt duplicate inserts, verify rejection\n- Both backends: SQLite unit tests + Postgres testcontainers tests (use the pattern from crates/axon-storage/tests/postgres_tenant_isolation.rs — skip gracefully if container runtime unavailable)",
+    "acceptance": "- [ ] Migration applies to empty SQLite + Postgres DB\n- [ ] Re-applying migration is idempotent (no errors, no duplicate rows)\n- [ ] UNIQUE(tenants.name) rejects duplicate tenant names\n- [ ] UNIQUE(user_identities.provider, external_id) rejects duplicate federation rows\n- [ ] PK(tenant_users.tenant_id, user_id) rejects duplicate memberships\n- [ ] Round-trip test per table (insert + SELECT) green\n- [ ] No audit_retention_policies table present (F1 territory)\n- [ ] SQLite unit tests green\n- [ ] Postgres testcontainers tests green (or gracefully skip)\n- [ ] cargo test -p axon-storage green",
+    "parent": "axon-1e23edc8",
+    "labels": [
+      "helix",
+      "area:auth",
+      "area:storage",
+      "spec:ADR-018",
+      "spec:FEAT-014",
+      "phase:foundation"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-15T00:40:10Z",
+      "claimed-machine": "eitri",
+      "claimed-pid": "4099212",
+      "closing_commit_sha": "e2b0d5d2b77dd1cb6bc7045c681e84b91c23c657",
+      "events": [
+        {
+          "actor": "erik",
+          "body": "success\nresult_rev=e2b0d5d2b77dd1cb6bc7045c681e84b91c23c657\nbase_rev=fb090bf67c7f625e9abdbc1de052aadf757c40f3",
+          "created_at": "2026-04-15T00:34:05.988818147Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "success"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-04-15T00:40:10.505561882Z",
+      "session_id": "eb-fc75af23"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260415T004010-382fa1b1",
+    "prompt": ".ddx/executions/20260415T004010-382fa1b1/prompt.md",
+    "manifest": ".ddx/executions/20260415T004010-382fa1b1/manifest.json",
+    "result": ".ddx/executions/20260415T004010-382fa1b1/result.json",
+    "checks": ".ddx/executions/20260415T004010-382fa1b1/checks.json",
+    "usage": ".ddx/executions/20260415T004010-382fa1b1/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-0478a1de-20260415T004010-382fa1b1"
+  }
+}

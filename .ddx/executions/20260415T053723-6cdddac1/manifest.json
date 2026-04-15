@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260415T053723-6cdddac1",
+  "bead_id": "axon-df98e262",
+  "base_rev": "15c6e73061fd86cbe37e8028f43ed58c700be28a",
+  "created_at": "2026-04-15T05:37:23.980537399Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-df98e262",
+    "title": "control-databases: POST/DELETE /control/tenants/{id}/databases",
+    "description": "Tenant-scoped database CRUD on the control plane. Extends C1's authz pattern and wires to the tenant_databases table from A1. Legacy /control/tenants CRUD stays untouched.\n\n## Scope\n\n### 1. Routes (extend control_plane_routes.rs)\n\n    .route(\"/tenants/:id/databases\", get(list_tenant_databases))\n    .route(\"/tenants/:id/databases\", post(create_tenant_database))\n    .route(\"/tenants/:id/databases/:name\", delete(delete_tenant_database))\n\nHandlers:\n\n- list_tenant_databases — require_tenant_admin (from C1 control_plane_authz) OR require_deployment_admin; return JSON array from storage.list_tenant_databases(tenant_id).\n\n- create_tenant_database — require_tenant_admin or deployment_admin. Body: { name: \"orders\" }. Validate name per the D1 identifier rule (1-63 ASCII, no leading digit, [a-zA-Z0-9_-]). Reject duplicates within tenant with 409 Conflict. Return 201 + the new row on success.\n\n- delete_tenant_database — require_tenant_admin or deployment_admin. Delete the tenant_databases row for (tenant_id, name). Return 204 on success, 404 if not found. Does NOT cascade-delete actual stored data (that's a later bead); just removes the registration.\n\n### 2. Storage adapter trait methods (adapter.rs)\n\n    fn list_tenant_databases(\n        \u0026self,\n        tenant_id: TenantId,\n    ) -\u003e Result\u003cVec\u003cTenantDatabase\u003e, AxonError\u003e {\n        Ok(vec![])\n    }\n\n    fn create_tenant_database(\n        \u0026self,\n        tenant_id: TenantId,\n        name: \u0026str,\n    ) -\u003e Result\u003cTenantDatabase, AxonError\u003e {\n        Err(AxonError::Internal(\"create_tenant_database not supported by this adapter\".into()))\n    }\n\n    fn delete_tenant_database(\n        \u0026self,\n        tenant_id: TenantId,\n        name: \u0026str,\n    ) -\u003e Result\u003cbool, AxonError\u003e {\n        Ok(false)\n    }\n\nAdd a small `TenantDatabase` struct to axon-core (or axon-storage) with `{ tenant_id, name, created_at_ms }`. Check axon-core/src/auth.rs first — if there is a near-equivalent already, use it. Otherwise add to axon-core/src/auth.rs alongside TenantMember.\n\nImplement on memory/sqlite/postgres. SQL uses the existing tenant_databases table (PK tenant_id, name). INSERT with ON CONFLICT (tenant_id, name) DO NOTHING and return-the-result pattern; DELETE returns affected row count; SELECT for list.\n\n### 3. Integration tests: crates/axon-server/tests/control_databases_test.rs (NEW)\n\n- admin_can_create_database — deployment admin creates a database in a tenant; 201 + row present in GET.\n- non_admin_cannot_create_database — non-admin JWT, 403.\n- create_duplicate_returns_409 — two create calls for same (tenant, name), second returns 409.\n- delete_removes_row — create then delete; GET shows empty.\n- delete_missing_returns_404 — delete a never-created database; 404.\n- two_tenants_same_database_name — verify (tenant_a, \"orders\") and (tenant_b, \"orders\") coexist (different rows, different tenants).\n- invalid_database_name_rejected — names violating the D1 identifier rule return 400.\n\n### Context\n\n- A1 schema already has tenant_databases (tenant_id, name, created_at_ms) with PK (tenant_id, name)\n- C1 landed control_plane_authz require_tenant_admin/deployment_admin — reuse\n- D1 landed the identifier validation rule — reuse/inline its regex or small helper\n- B1's JWT middleware already runs on /control if the caller sends a token\n- Legacy /control/tenants CRUD stays untouched\n\n## Files to touch\n\n- crates/axon-core/src/auth.rs — add TenantDatabase if not already present\n- crates/axon-storage/src/adapter.rs — 3 new trait methods\n- crates/axon-storage/src/memory.rs — impl\n- crates/axon-storage/src/sqlite.rs — impl\n- crates/axon-storage/src/postgres.rs — impl\n- crates/axon-server/src/control_plane_routes.rs — add routes + handlers\n- crates/axon-server/tests/control_databases_test.rs — NEW\n\n## Files NOT to touch\n\n- crates/axon-server/src/control_plane.rs — legacy CRUD\n- crates/axon-server/src/auth.rs — legacy Tailscale\n\n## Verification\n\n- cargo test -p axon-server --test control_databases_test (must pass 7 tests)\n- cargo test --workspace (all prior tests green — additive)\n- cargo clippy --workspace -- -D warnings clean",
+    "acceptance": "- [ ] Three new /control/tenants/:id/databases routes (GET, POST, DELETE)\n- [ ] Handlers gated by require_tenant_admin or require_deployment_admin\n- [ ] TenantDatabase struct in axon-core if not already present\n- [ ] StorageAdapter: list_tenant_databases, create_tenant_database, delete_tenant_database\n- [ ] All 3 backends implement\n- [ ] control_databases_test.rs with 7 integration tests\n- [ ] Invalid identifiers return 400\n- [ ] Duplicate create returns 409\n- [ ] Two tenants with same database name coexist\n- [ ] cargo test --workspace green\n- [ ] cargo clippy --workspace -- -D warnings clean\n- [ ] Legacy /control/tenants CRUD untouched",
+    "parent": "axon-27f4d93b",
+    "labels": [
+      "helix",
+      "area:auth",
+      "area:control-plane",
+      "spec:ADR-018",
+      "spec:FEAT-014",
+      "phase:control"
+    ],
+    "metadata": {
+      "depends_on": "axon-c6908e78"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260415T053723-6cdddac1",
+    "prompt": ".ddx/executions/20260415T053723-6cdddac1/prompt.md",
+    "manifest": ".ddx/executions/20260415T053723-6cdddac1/manifest.json",
+    "result": ".ddx/executions/20260415T053723-6cdddac1/result.json",
+    "checks": ".ddx/executions/20260415T053723-6cdddac1/checks.json",
+    "usage": ".ddx/executions/20260415T053723-6cdddac1/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-df98e262-20260415T053723-6cdddac1"
+  }
+}
