@@ -50,6 +50,21 @@ Fallback chain on failure: agent/vidar-coder → claude/sonnet → claude/opus
 - **Bead notes + description + AC updated** to carry gap list
 - **Iteration 2**: claude-sonnet-4-6 via claude harness (fallback per user's escalation rule)
 
+### A2 — iteration 1 (qwen/qwen3-coder-next via agent harness)
+- **Result**: commit 91d4bdb produced in worktree, 636 LOC + 109 green tests + clippy clean. BUT the agent process hung afterward in a post-commit compaction loop (33 MB session, 8461+ events, 249 messages, failed compaction retrying indefinitely). Parent SIGTERM'd; commit manually fast-forwarded to master.
+- **Bug filed**: ddx-25a41f51 — embedded agent post-commit compaction stuck-loop
+- **Review** (opus): REQUEST_CHANGES
+  - BLOCKER: UserIdentity field named `subject` instead of `external_id` — violates ADR-018 §3 even though the review prompt explicitly warned about this
+  - PARTIAL: aud-array test asserts serde_json::Error instead of AuthError::CredentialMalformed
+  - PARTIAL: AUTH_ERROR_VARIANT_COUNT is runtime, not compile-time assert
+  - NIT: delegation proptests use fixed single-char strategies
+- **Iteration 2**: claude-sonnet-4-6 via --local
+
+### Server-mode discoveries (multi-project gap)
+- `ddx agent execute-loop` default is server-worker. I should have been using it from the start.
+- BUT `execute-loop --once` (server mode) routes to whatever project_root the server's "current project" happens to be — no `--project` flag exists. From axon CWD, my submission landed on a ddx bead. Filed ddx-0b9c980a.
+- Interim: stuck with `--local` for multi-project ops until --project targeting exists.
+
 ### Automation gaps observed (candidates for ~/Projects/ddx beads)
 1. **Review loop is not integrated with execute-loop**. execute-loop marks the bead closed on merge; a post-merge review step is manual. Needed: `ddx agent execute-loop --post-review <harness>` that runs a review agent against the merge commit + AC and can reopen on REQUEST_CHANGES.
 2. **Reopening a bead for fallback** is a manual 3-step dance (update status, update notes, update description, update AC). Needed: `ddx bead reopen <id> --reason "<text>" --append-notes` that atomically flips status and appends review context.
