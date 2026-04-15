@@ -14,8 +14,9 @@ pub mod topology;
 pub mod types;
 
 pub use auth::{
-    AuthError, CallerIdentity, DatabaseGrant, EntityFilter, GrantRegistry, JwtClaims, Op,
-    Tenant, TenantId, TenantMember, TenantRole, User, UserId, UserIdentity, WritePolicy,
+    AuthError, CallerIdentity, DatabaseGrant, EntityFilter, GrantRegistry, GrantedDatabase,
+    Grants, JwtClaims, Op, ResolvedIdentity, Tenant, TenantId, TenantMember, TenantRole, User,
+    UserId, UserIdentity, WritePolicy,
 };
 pub use clock::{Clock, FakeClock, SystemClock};
 pub use guardrails::{

@@ -43,6 +43,7 @@
 //! gRPC follows the same pattern via [`service::AxonServiceImpl::authorize`].
 pub mod actor_scope;
 pub mod auth;
+pub mod auth_pipeline;
 mod collection_listing;
 pub(crate) mod embedded_ui;
 pub mod control_plane;
@@ -60,5 +61,6 @@ pub mod service;
 pub mod tenant_router;
 
 pub use auth::{AuthContext, AuthMode, Identity, Role};
+pub use auth_pipeline::{InMemoryRevocationCache, JwtIssuer, jwt_verify_layer};
 pub use mcp_stdio::run_mcp_stdio;
 pub use service::AxonServiceImpl;

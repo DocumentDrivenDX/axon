@@ -1000,6 +1000,74 @@ pub fn parse_claims(s: &str) -> Result<JwtClaims, AuthError> {
     serde_json::from_str(s).map_err(AuthError::from)
 }
 
+impl Grants {
+    /// Find a granted database by name.
+    pub fn find_database(&self, name: &str) -> Option<&GrantedDatabase> {
+        self.databases.iter().find(|db| db.name == name)
+    }
+}
+
+impl GrantedDatabase {
+    /// Returns `true` if the given operation is in this grant's ops list.
+    pub fn has_op(&self, op: Op) -> bool {
+        self.ops.contains(&op)
+    }
+}
+
+impl AuthError {
+    /// HTTP status code for this error (401 or 403).
+    ///
+    /// Credential-level failures → 401; scope-level failures → 403.
+    pub fn status_code(&self) -> u16 {
+        match self {
+            AuthError::Unauthenticated => 401,
+            AuthError::CredentialMalformed => 401,
+            AuthError::CredentialInvalid => 401,
+            AuthError::CredentialExpired => 401,
+            AuthError::CredentialNotYetValid => 401,
+            AuthError::CredentialRevoked => 401,
+            AuthError::CredentialForeignIssuer => 401,
+            AuthError::CredentialWrongTenant => 403,
+            AuthError::UserSuspended => 401,
+            AuthError::NotATenantMember => 403,
+            AuthError::DatabaseNotGranted => 403,
+            AuthError::OpNotGranted => 403,
+            AuthError::GrantsExceedIssuerRole => 401,
+            AuthError::GrantsMalformed => 401,
+        }
+    }
+
+    /// Stable machine-readable error code string (ADR-018 §4).
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            AuthError::Unauthenticated => "unauthenticated",
+            AuthError::CredentialMalformed => "credential_malformed",
+            AuthError::CredentialInvalid => "credential_invalid",
+            AuthError::CredentialExpired => "credential_expired",
+            AuthError::CredentialNotYetValid => "credential_not_yet_valid",
+            AuthError::CredentialRevoked => "credential_revoked",
+            AuthError::CredentialForeignIssuer => "credential_foreign_issuer",
+            AuthError::CredentialWrongTenant => "credential_wrong_tenant",
+            AuthError::UserSuspended => "user_suspended",
+            AuthError::NotATenantMember => "not_a_tenant_member",
+            AuthError::DatabaseNotGranted => "database_not_granted",
+            AuthError::OpNotGranted => "op_not_granted",
+            AuthError::GrantsExceedIssuerRole => "grants_exceed_issuer_role",
+            AuthError::GrantsMalformed => "grants_malformed",
+        }
+    }
+}
+
+/// A resolved identity installed into the request extension after successful JWT verification.
+///
+/// Downstream handlers read this from `Extension<ResolvedIdentity>` and trust it completely.
+#[derive(Debug, Clone)]
+pub struct ResolvedIdentity {
+    pub user_id: UserId,
+    pub tenant_id: TenantId,
+    pub grants: Grants,
+}
+
 /// Compile-time exhaustive check that `AuthError` has exactly 14 variants
 /// (ADR-018 §4). Adding or removing a variant without updating this match
 /// will cause a compile error.

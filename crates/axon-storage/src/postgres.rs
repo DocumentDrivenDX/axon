@@ -1173,6 +1173,91 @@ impl StorageAdapter for PostgresStorageAdapter {
     ) -> Result<bool, AxonError> {
         self.collection_exists_in_namespace(collection, namespace)
     }
+
+    // ── Auth / tenancy (ADR-018) ─────────────────────────────────────────────
+
+    fn is_jti_revoked(&self, jti: uuid::Uuid) -> Result<bool, AxonError> {
+        let jti_str = jti.to_string();
+        let row = self
+            .block(
+                self.client
+                    .query_opt("SELECT 1 FROM credential_revocations WHERE jti = $1", &[
+                        &jti_str,
+                    ]),
+            )
+            .or_else(|e| {
+                // Table may not exist if auth migrations haven't run.
+                if e.to_string().contains("does not exist") {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            })?;
+        Ok(row.is_some())
+    }
+
+    fn get_user(
+        &self,
+        user_id: axon_core::auth::UserId,
+    ) -> Result<Option<axon_core::auth::User>, AxonError> {
+        let row = self
+            .block(self.client.query_opt(
+                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                 FROM users WHERE id = $1",
+                &[&user_id.as_str()],
+            ))
+            .or_else(|e| {
+                if e.to_string().contains("does not exist") {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            })?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        Ok(Some(axon_core::auth::User {
+            id: axon_core::auth::UserId::new(row.get::<_, String>("id")),
+            display_name: row.get("display_name"),
+            email: row.get("email"),
+            created_at_ms: row.get::<_, i64>("created_at_ms") as u64,
+            suspended_at_ms: row.get::<_, Option<i64>>("suspended_at_ms").map(|v| v as u64),
+        }))
+    }
+
+    fn get_tenant_member(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        user_id: axon_core::auth::UserId,
+    ) -> Result<Option<axon_core::auth::TenantMember>, AxonError> {
+        let row = self
+            .block(self.client.query_opt(
+                "SELECT tenant_id, user_id, role FROM tenant_users \
+                 WHERE tenant_id = $1 AND user_id = $2",
+                &[&tenant_id.as_str(), &user_id.as_str()],
+            ))
+            .or_else(|e| {
+                if e.to_string().contains("does not exist") {
+                    Ok(None)
+                } else {
+                    Err(e)
+                }
+            })?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let role_str: String = row.get("role");
+        let role = match role_str.as_str() {
+            "admin" => axon_core::auth::TenantRole::Admin,
+            "write" => axon_core::auth::TenantRole::Write,
+            _ => axon_core::auth::TenantRole::Read,
+        };
+        Ok(Some(axon_core::auth::TenantMember {
+            tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>("tenant_id")),
+            user_id: axon_core::auth::UserId::new(row.get::<_, String>("user_id")),
+            role,
+        }))
+    }
 }
 
 // ── Per-tenant PostgreSQL provisioning ───────────────────────────────────────

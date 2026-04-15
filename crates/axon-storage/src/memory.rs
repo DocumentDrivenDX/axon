@@ -2,12 +2,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axon_core::auth::{TenantId, TenantMember, User, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
 };
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::{CollectionSchema, CollectionView};
+use uuid::Uuid;
 
 use crate::adapter::{
     extract_compound_key, extract_index_value, resolve_field_path, CompoundKey, IndexValue,
@@ -110,6 +112,12 @@ pub struct MemoryStorageAdapter {
     /// Dedicated link store (ADR-010): replaces __axon_links__ pseudo-collection
     /// for new code paths. Keyed by (source_col, source_id, link_type, target_col, target_id).
     links: BTreeMap<LinkKey, Link>,
+    /// Revoked JWT IDs (ADR-018).
+    revoked_jtis: HashSet<Uuid>,
+    /// User store (ADR-018).
+    users: HashMap<UserId, User>,
+    /// Tenant membership store (ADR-018).
+    tenant_members: HashMap<(TenantId, UserId), TenantMember>,
 }
 
 fn now_ns() -> u64 {
@@ -149,11 +157,34 @@ impl Default for MemoryStorageAdapter {
             compound_indexes: BTreeMap::new(),
             numeric_ids: NumericIdCache::default(),
             links: BTreeMap::new(),
+            revoked_jtis: HashSet::new(),
+            users: HashMap::new(),
+            tenant_members: HashMap::new(),
         }
     }
 }
 
 impl MemoryStorageAdapter {
+    // ── Auth helpers for tests (ADR-018) ────────────────────────────────────
+
+    /// Insert a user into the in-memory store.
+    pub fn insert_user(&mut self, user: User) {
+        self.users.insert(user.id.clone(), user);
+    }
+
+    /// Insert a tenant membership into the in-memory store.
+    pub fn insert_tenant_member(&mut self, member: TenantMember) {
+        self.tenant_members
+            .insert((member.tenant_id.clone(), member.user_id.clone()), member);
+    }
+
+    /// Mark a JWT ID as revoked in the in-memory store.
+    pub fn revoke_jti(&mut self, jti: Uuid) {
+        self.revoked_jtis.insert(jti);
+    }
+
+    // ── Catalog helpers ─────────────────────────────────────────────────────
+
     fn catalog_key(namespace: &Namespace, collection: &CollectionId) -> CatalogKey {
         CatalogKey::from_parts(namespace, collection)
     }
@@ -1037,6 +1068,24 @@ impl StorageAdapter for MemoryStorageAdapter {
 
     // Gate results now live on the Entity blob itself (FEAT-019); no
     // dedicated side-table lives on the storage adapter anymore.
+
+    // ── Auth / tenancy (ADR-018) ─────────────────────────────────────────────
+
+    fn is_jti_revoked(&self, jti: Uuid) -> Result<bool, AxonError> {
+        Ok(self.revoked_jtis.contains(&jti))
+    }
+
+    fn get_user(&self, user_id: UserId) -> Result<Option<User>, AxonError> {
+        Ok(self.users.get(&user_id).cloned())
+    }
+
+    fn get_tenant_member(
+        &self,
+        tenant_id: TenantId,
+        user_id: UserId,
+    ) -> Result<Option<TenantMember>, AxonError> {
+        Ok(self.tenant_members.get(&(tenant_id, user_id)).cloned())
+    }
 }
 
 #[cfg(test)]

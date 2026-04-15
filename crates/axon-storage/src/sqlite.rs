@@ -1546,6 +1546,97 @@ impl StorageAdapter for SqliteStorageAdapter {
     ) -> Result<bool, AxonError> {
         self.collection_exists_in_namespace(collection, namespace)
     }
+
+    // ── Auth / tenancy (ADR-018) ─────────────────────────────────────────────
+
+    fn is_jti_revoked(&self, jti: uuid::Uuid) -> Result<bool, axon_core::error::AxonError> {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT 1 FROM credential_revocations WHERE jti = ?1",
+            [jti.to_string()],
+            |_| Ok(()),
+        ) {
+            Ok(()) => Ok(true),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    Ok(false)
+                } else {
+                    Err(AxonError::Storage(msg))
+                }
+            }
+        }
+    }
+
+    fn get_user(
+        &self,
+        user_id: axon_core::auth::UserId,
+    ) -> Result<Option<axon_core::auth::User>, axon_core::error::AxonError> {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+             FROM users WHERE id = ?1",
+            [user_id.as_str()],
+            |row| {
+                Ok(axon_core::auth::User {
+                    id: axon_core::auth::UserId::new(row.get::<_, String>(0)?),
+                    display_name: row.get(1)?,
+                    email: row.get(2)?,
+                    created_at_ms: row.get::<_, i64>(3)? as u64,
+                    suspended_at_ms: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+                })
+            },
+        ) {
+            Ok(user) => Ok(Some(user)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    Ok(None)
+                } else {
+                    Err(AxonError::Storage(msg))
+                }
+            }
+        }
+    }
+
+    fn get_tenant_member(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        user_id: axon_core::auth::UserId,
+    ) -> Result<Option<axon_core::auth::TenantMember>, axon_core::error::AxonError> {
+        let conn = self.conn()?;
+        match conn.query_row(
+            "SELECT tenant_id, user_id, role FROM tenant_users \
+             WHERE tenant_id = ?1 AND user_id = ?2",
+            [tenant_id.as_str(), user_id.as_str()],
+            |row| {
+                let role_str: String = row.get(2)?;
+                let role = match role_str.as_str() {
+                    "admin" => axon_core::auth::TenantRole::Admin,
+                    "write" => axon_core::auth::TenantRole::Write,
+                    _ => axon_core::auth::TenantRole::Read,
+                };
+                Ok(axon_core::auth::TenantMember {
+                    tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>(0)?),
+                    user_id: axon_core::auth::UserId::new(row.get::<_, String>(1)?),
+                    role,
+                })
+            },
+        ) {
+            Ok(member) => Ok(Some(member)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    Ok(None)
+                } else {
+                    Err(AxonError::Storage(msg))
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

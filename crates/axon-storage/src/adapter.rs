@@ -2,10 +2,12 @@ use std::collections::BTreeSet;
 use std::ops::Bound;
 
 use axon_audit::entry::AuditEntry;
+use axon_core::auth::{TenantId, TenantMember, User, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::{CollectionSchema, CollectionView};
+use uuid::Uuid;
 
 /// A typed index value extracted from entity data.
 ///
@@ -779,6 +781,39 @@ pub trait StorageAdapter: Send + Sync {
 
     // Gate results now live on the Entity blob itself (FEAT-019); there is
     // no longer a dedicated side-table on the storage adapter.
+
+    // ── Auth / tenancy queries (ADR-018) ─────────────────────────────────────
+
+    /// Returns `true` if the given JWT ID has been revoked.
+    ///
+    /// Checks the `credential_revocations` table. Returns `false` for
+    /// adapters that have not been migrated with [`apply_auth_migrations`].
+    fn is_jti_revoked(&self, jti: Uuid) -> Result<bool, AxonError> {
+        let _ = jti;
+        Ok(false)
+    }
+
+    /// Look up a user by ID.
+    ///
+    /// Returns `Ok(None)` when the user does not exist or when the auth
+    /// schema has not been applied.
+    fn get_user(&self, user_id: UserId) -> Result<Option<User>, AxonError> {
+        let _ = user_id;
+        Ok(None)
+    }
+
+    /// Look up a tenant membership record.
+    ///
+    /// Returns `Ok(None)` when the user is not a member of the tenant or
+    /// when the auth schema has not been applied.
+    fn get_tenant_member(
+        &self,
+        tenant_id: TenantId,
+        user_id: UserId,
+    ) -> Result<Option<TenantMember>, AxonError> {
+        let _ = (tenant_id, user_id);
+        Ok(None)
+    }
 }
 
 /// Forward all `StorageAdapter` calls through a `Box<dyn StorageAdapter>`.
@@ -1072,5 +1107,21 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         link_type: Option<&str>,
     ) -> Result<Vec<axon_core::types::Link>, AxonError> {
         (**self).list_inbound_links(target_collection, target_id, link_type)
+    }
+
+    fn is_jti_revoked(&self, jti: Uuid) -> Result<bool, AxonError> {
+        (**self).is_jti_revoked(jti)
+    }
+
+    fn get_user(&self, user_id: UserId) -> Result<Option<User>, AxonError> {
+        (**self).get_user(user_id)
+    }
+
+    fn get_tenant_member(
+        &self,
+        tenant_id: TenantId,
+        user_id: UserId,
+    ) -> Result<Option<TenantMember>, AxonError> {
+        (**self).get_tenant_member(tenant_id, user_id)
     }
 }

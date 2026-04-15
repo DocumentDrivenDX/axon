@@ -20,6 +20,7 @@ tracing.workspace = true
 rusqlite.workspace = true
 tokio-postgres.workspace = true
 tokio = { workspace = true }
+uuid.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
