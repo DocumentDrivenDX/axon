@@ -791,7 +791,7 @@ pub struct User {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserIdentity {
     pub provider: String,
-    pub subject: String,
+    pub external_id: String,
     pub user_id: UserId,
 }
 
@@ -988,11 +988,43 @@ impl std::fmt::Display for AuthError {
 
 impl std::error::Error for AuthError {}
 
-/// Number of `AuthError` variants.
-///
-/// This constant is asserted at compile-time to be exactly 14,
-/// matching ADR-018 §4 failure-mode table.
-pub const AUTH_ERROR_VARIANT_COUNT: usize = 14;
+impl From<serde_json::Error> for AuthError {
+    fn from(_: serde_json::Error) -> Self {
+        AuthError::CredentialMalformed
+    }
+}
+
+/// Parse a JSON string into [`JwtClaims`], mapping any deserialization error
+/// to [`AuthError::CredentialMalformed`].
+pub fn parse_claims(s: &str) -> Result<JwtClaims, AuthError> {
+    serde_json::from_str(s).map_err(AuthError::from)
+}
+
+/// Compile-time exhaustive check that `AuthError` has exactly 14 variants
+/// (ADR-018 §4). Adding or removing a variant without updating this match
+/// will cause a compile error.
+const _: () = {
+    const fn _exhaustive_variant_check(e: &AuthError) -> usize {
+        match e {
+            AuthError::Unauthenticated => 0,
+            AuthError::CredentialMalformed => 1,
+            AuthError::CredentialInvalid => 2,
+            AuthError::CredentialExpired => 3,
+            AuthError::CredentialNotYetValid => 4,
+            AuthError::CredentialRevoked => 5,
+            AuthError::CredentialForeignIssuer => 6,
+            AuthError::CredentialWrongTenant => 7,
+            AuthError::UserSuspended => 8,
+            AuthError::NotATenantMember => 9,
+            AuthError::DatabaseNotGranted => 10,
+            AuthError::OpNotGranted => 11,
+            AuthError::GrantsExceedIssuerRole => 12,
+            AuthError::GrantsMalformed => 13,
+        }
+    }
+    // Suppress unused-function lint in const context.
+    let _ = _exhaustive_variant_check;
+};
 
 #[cfg(test)]
 mod auth_core_tests {
@@ -1062,7 +1094,7 @@ mod auth_core_tests {
     fn user_identity_roundtrip() {
         let identity = UserIdentity {
             provider: "tailscale".into(),
-            subject: "alice@example.com".into(),
+            external_id: "alice@example.com".into(),
             user_id: UserId::new("u-123"),
         };
         let json = serde_json::to_string(&identity).unwrap();
@@ -1225,9 +1257,13 @@ mod auth_core_tests {
             "grants": {"databases": []}
         }"#;
 
-        // This should fail to deserialize because aud is an array
-        let result: Result<JwtClaims, _> = serde_json::from_str(invalid_json);
-        assert!(result.is_err(), "aud as array should fail to deserialize");
+        // parse_claims maps serde errors to AuthError::CredentialMalformed.
+        let result = parse_claims(invalid_json);
+        assert!(
+            matches!(result, Err(AuthError::CredentialMalformed)),
+            "aud as array must produce AuthError::CredentialMalformed, got: {:?}",
+            result
+        );
     }
 
     // ── TenantRole delegation helper tests ─────────────────────────────
@@ -1259,14 +1295,9 @@ mod auth_core_tests {
         assert!(!ops.contains(&Op::Admin));
     }
 
-    // ── AuthError variant count test (ADR-018 §4) ──────────────────────
-
-    #[test]
-    fn auth_error_variant_count_is_14() {
-        // This test ensures we have exactly 14 variants as per ADR-018 §4.
-        // If this test fails, update the constant and the variants accordingly.
-        assert_eq!(AUTH_ERROR_VARIANT_COUNT, 14);
-    }
+    // ── AuthError variant count (ADR-018 §4): enforced at compile time ────
+    // The exhaustive match in `const _: () = { ... }` above the #[cfg(test)]
+    // block guarantees exactly 14 variants. No runtime assertion needed.
 
     #[test]
     fn auth_error_display() {
