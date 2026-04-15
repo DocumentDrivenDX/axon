@@ -105,6 +105,31 @@ pub fn compute_diff(before: &Value, after: &Value) -> HashMap<String, FieldDiff>
     diff
 }
 
+/// ADR-018 attribution tuple: stable identity + authenticating credential.
+///
+/// Carried on every audit entry that was authenticated via the ADR-018
+/// pipeline. Enables post-hoc forensic queries even after renames,
+/// suspensions, or revocations.
+///
+/// Field semantics (ADR-018 Implementation Notes):
+///
+/// - `user_id` — stable UUID of the User record. Does NOT change across
+///   display_name/email edits.
+/// - `tenant_id` — the tenant the action took place within. Stable UUID.
+/// - `jti` — the JWT credential ID that authenticated this request, when
+///   the auth path was JWT. `None` for Tailscale whois synthetic claims
+///   and for --no-auth mode.
+/// - `auth_method` — which path produced the identity: "jwt", "tailscale",
+///   or "no-auth". Stable string matched by the observability envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditAttribution {
+    pub user_id: String,   // serialized UserId/Uuid
+    pub tenant_id: String, // serialized TenantId/Uuid
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jti: Option<String>,
+    pub auth_method: String,
+}
+
 /// A single immutable record in the audit log.
 ///
 /// Fields follow the FEAT-003 specification:
@@ -140,6 +165,12 @@ pub struct AuditEntry {
     /// transaction share the same `transaction_id`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_id: Option<String>,
+    /// ADR-018 attribution tuple. Present when the request was authenticated
+    /// via the middleware pipeline. Authoritative for post-hoc forensic
+    /// queries; the `actor` field is a human-readable display string that
+    /// may drift over time (e.g. after a rename).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<AuditAttribution>,
 }
 
 impl AuditEntry {
@@ -182,12 +213,22 @@ impl AuditEntry {
             actor: actor.unwrap_or_else(|| "anonymous".into()),
             metadata: HashMap::new(),
             transaction_id: None,
+            attribution: None,
         }
     }
 
     /// Attach caller-supplied key-value metadata to this entry (builder style).
     pub fn with_metadata(mut self, metadata: HashMap<String, String>) -> Self {
         self.metadata = metadata;
+        self
+    }
+
+    /// Attach an ADR-018 attribution tuple to this entry (builder style).
+    ///
+    /// Call this after [`AuditEntry::new`] when the request was authenticated
+    /// via the middleware pipeline and a [`AuditAttribution`] is available.
+    pub fn with_attribution(mut self, attribution: AuditAttribution) -> Self {
+        self.attribution = Some(attribution);
         self
     }
 }
