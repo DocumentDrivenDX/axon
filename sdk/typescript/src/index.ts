@@ -7,6 +7,13 @@
 
 export { AxonClient, type AxonClientOptions } from "./client.js";
 export { AxonError, AxonErrorCode } from "./error.js";
+export {
+  HttpAxonClient,
+  TenantClient,
+  DatabaseClient,
+  AxonHttpError,
+  type HttpAxonClientOptions,
+} from "./http-client.js";
 export type {
   Entity,
   Link,
