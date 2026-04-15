@@ -98,6 +98,15 @@ export type HealthStatus = {
 	default_namespace: string;
 };
 
+export type TenantDatabase = {
+	tenant_id: string;
+	name: string;
+	created_at_ms: number;
+};
+
+/** Tenant + database routing scope for ADR-018 path-based URLs. */
+export type Scope = { tenant: string; database: string } | null;
+
 type QueryEntitiesInput = {
 	limit?: number;
 	afterId?: string | null;
@@ -121,16 +130,19 @@ function formatError(error: ApiError, status: number): string {
 	return error.code ? `${error.code}: ${detail}` : detail;
 }
 
-async function request<T>(path: string, init?: RequestInit, dbName?: string | null): Promise<T> {
+async function request<T>(path: string, init?: RequestInit, scope?: Scope): Promise<T> {
 	const headers = new Headers(init?.headers);
 	if (init?.body && !headers.has('Content-Type')) {
 		headers.set('Content-Type', 'application/json');
 	}
-	if (dbName) {
-		headers.set('X-Axon-Database', dbName);
-	}
 
-	const response = await fetch(path, {
+	// Control-plane routes (/control/*) are NOT tenant-scoped.
+	const url =
+		scope && !path.startsWith('/control/')
+			? `/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}${path}`
+			: path;
+
+	const response = await fetch(url, {
 		...init,
 		headers,
 	});
@@ -144,34 +156,46 @@ async function request<T>(path: string, init?: RequestInit, dbName?: string | nu
 	return payload as T;
 }
 
-export async function fetchCollections(dbName?: string | null): Promise<CollectionSummary[]> {
-	const response = await request<{ collections: CollectionSummary[] }>('/collections', undefined, dbName);
+export async function fetchCollections(scope?: Scope): Promise<CollectionSummary[]> {
+	const response = await request<{ collections: CollectionSummary[] }>(
+		'/collections',
+		undefined,
+		scope,
+	);
 	return response.collections;
 }
 
-export async function fetchCollection(name: string, dbName?: string | null): Promise<CollectionDetail> {
-	return request<CollectionDetail>(`/collections/${encodeURIComponent(name)}`, undefined, dbName);
+export async function fetchCollection(name: string, scope?: Scope): Promise<CollectionDetail> {
+	return request<CollectionDetail>(`/collections/${encodeURIComponent(name)}`, undefined, scope);
 }
 
 export async function fetchEntities(
 	collection: string,
 	options: QueryEntitiesInput = {},
-	dbName?: string | null,
+	scope?: Scope,
 ): Promise<QueryEntitiesResult> {
-	return request<QueryEntitiesResult>(`/collections/${encodeURIComponent(collection)}/query`, {
-		method: 'POST',
-		body: JSON.stringify({
-			limit: options.limit ?? 50,
-			after_id: options.afterId ?? null,
-		}),
-	}, dbName);
+	return request<QueryEntitiesResult>(
+		`/collections/${encodeURIComponent(collection)}/query`,
+		{
+			method: 'POST',
+			body: JSON.stringify({
+				limit: options.limit ?? 50,
+				after_id: options.afterId ?? null,
+			}),
+		},
+		scope,
+	);
 }
 
-export async function fetchEntity(collection: string, id: string, dbName?: string | null): Promise<EntityRecord> {
+export async function fetchEntity(
+	collection: string,
+	id: string,
+	scope?: Scope,
+): Promise<EntityRecord> {
 	const response = await request<{ entity: EntityRecord }>(
 		`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
 		undefined,
-		dbName,
+		scope,
 	);
 	return response.entity;
 }
@@ -180,7 +204,7 @@ export async function createEntity(
 	collection: string,
 	id: string,
 	data: Record<string, unknown>,
-	dbName?: string | null,
+	scope?: Scope,
 ): Promise<EntityRecord> {
 	const response = await request<{ entity: EntityRecord }>(
 		`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
@@ -188,7 +212,7 @@ export async function createEntity(
 			method: 'POST',
 			body: JSON.stringify({ data, actor: 'ui' }),
 		},
-		dbName,
+		scope,
 	);
 	return response.entity;
 }
@@ -198,7 +222,7 @@ export async function updateEntity(
 	id: string,
 	data: Record<string, unknown>,
 	expectedVersion: number,
-	dbName?: string | null,
+	scope?: Scope,
 ): Promise<EntityRecord> {
 	const response = await request<{ entity: EntityRecord }>(
 		`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
@@ -206,16 +230,16 @@ export async function updateEntity(
 			method: 'PUT',
 			body: JSON.stringify({ data, expected_version: expectedVersion, actor: 'ui' }),
 		},
-		dbName,
+		scope,
 	);
 	return response.entity;
 }
 
-export async function fetchSchema(collection: string, dbName?: string | null): Promise<CollectionSchema> {
+export async function fetchSchema(collection: string, scope?: Scope): Promise<CollectionSchema> {
 	const response = await request<{ schema: CollectionSchema }>(
 		`/collections/${encodeURIComponent(collection)}/schema`,
 		undefined,
-		dbName,
+		scope,
 	);
 	return response.schema;
 }
@@ -224,7 +248,7 @@ export async function updateSchema(
 	collection: string,
 	schema: CollectionSchema,
 	options?: { force?: boolean },
-	dbName?: string | null,
+	scope?: Scope,
 ): Promise<CollectionSchema> {
 	const response = await request<{ schema: CollectionSchema }>(
 		`/collections/${encodeURIComponent(collection)}/schema`,
@@ -239,7 +263,7 @@ export async function updateSchema(
 				force: options?.force ?? false,
 			}),
 		},
-		dbName,
+		scope,
 	);
 
 	return response.schema;
@@ -248,41 +272,52 @@ export async function updateSchema(
 export async function previewSchemaChange(
 	collection: string,
 	schema: CollectionSchema,
-	dbName?: string | null,
+	scope?: Scope,
 ): Promise<SchemaPreviewResult> {
-	return request<SchemaPreviewResult>(`/collections/${encodeURIComponent(collection)}/schema`, {
-		method: 'PUT',
-		body: JSON.stringify({
-			description: schema.description ?? null,
-			version: schema.version,
-			entity_schema: schema.entity_schema ?? null,
-			link_types: schema.link_types ?? {},
-			actor: 'ui',
-			dry_run: true,
-		}),
-	}, dbName);
+	return request<SchemaPreviewResult>(
+		`/collections/${encodeURIComponent(collection)}/schema`,
+		{
+			method: 'PUT',
+			body: JSON.stringify({
+				description: schema.description ?? null,
+				version: schema.version,
+				entity_schema: schema.entity_schema ?? null,
+				link_types: schema.link_types ?? {},
+				actor: 'ui',
+				dry_run: true,
+			}),
+		},
+		scope,
+	);
 }
 
 export async function createCollection(
 	name: string,
 	schema: Omit<CollectionSchema, 'collection'>,
-	dbName?: string | null,
+	scope?: Scope,
 ): Promise<void> {
-	await request<{ name: string }>(`/collections/${encodeURIComponent(name)}`, {
-		method: 'POST',
-		body: JSON.stringify({
-			schema: {
-				description: schema.description ?? null,
-				version: schema.version,
-				entity_schema: schema.entity_schema ?? null,
-				link_types: schema.link_types ?? {},
-			},
-			actor: 'ui',
-		}),
-	}, dbName);
+	await request<{ name: string }>(
+		`/collections/${encodeURIComponent(name)}`,
+		{
+			method: 'POST',
+			body: JSON.stringify({
+				schema: {
+					description: schema.description ?? null,
+					version: schema.version,
+					entity_schema: schema.entity_schema ?? null,
+					link_types: schema.link_types ?? {},
+				},
+				actor: 'ui',
+			}),
+		},
+		scope,
+	);
 }
 
-export async function fetchAudit(filters: AuditFilters = {}, dbName?: string | null): Promise<AuditQueryResult> {
+export async function fetchAudit(
+	filters: AuditFilters = {},
+	scope?: Scope,
+): Promise<AuditQueryResult> {
 	const params = new URLSearchParams();
 	if (filters.collection) {
 		params.set('collection', filters.collection);
@@ -298,7 +333,7 @@ export async function fetchAudit(filters: AuditFilters = {}, dbName?: string | n
 	}
 
 	const query = params.toString();
-	return request<AuditQueryResult>(`/audit/query${query ? `?${query}` : ''}`, undefined, dbName);
+	return request<AuditQueryResult>(`/audit/query${query ? `?${query}` : ''}`, undefined, scope);
 }
 
 export async function fetchHealth(): Promise<HealthStatus> {
@@ -319,18 +354,26 @@ export async function fetchAuthMe(): Promise<AuthIdentity> {
 	return request<AuthIdentity>('/auth/me');
 }
 
-export async function dropCollection(name: string, dbName?: string | null): Promise<void> {
-	await request<void>(`/collections/${encodeURIComponent(name)}`, {
-		method: 'DELETE',
-		body: JSON.stringify({ actor: 'ui' }),
-	}, dbName);
+export async function dropCollection(name: string, scope?: Scope): Promise<void> {
+	await request<void>(
+		`/collections/${encodeURIComponent(name)}`,
+		{
+			method: 'DELETE',
+			body: JSON.stringify({ actor: 'ui' }),
+		},
+		scope,
+	);
 }
 
-export async function deleteEntity(collection: string, id: string, dbName?: string | null): Promise<void> {
-	await request<void>(`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`, {
-		method: 'DELETE',
-		body: JSON.stringify({ actor: 'ui' }),
-	}, dbName);
+export async function deleteEntity(collection: string, id: string, scope?: Scope): Promise<void> {
+	await request<void>(
+		`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
+		{
+			method: 'DELETE',
+			body: JSON.stringify({ actor: 'ui' }),
+		},
+		scope,
+	);
 }
 
 // ── Tenant / control-plane API ───────────────────────────────────────────────
@@ -358,4 +401,11 @@ export async function deleteTenant(tenantId: string): Promise<void> {
 	await request<void>(`/control/tenants/${encodeURIComponent(tenantId)}`, {
 		method: 'DELETE',
 	});
+}
+
+export async function fetchTenantDatabases(tenantId: string): Promise<TenantDatabase[]> {
+	const response = await request<{ databases: TenantDatabase[] }>(
+		`/control/tenants/${encodeURIComponent(tenantId)}/databases`,
+	);
+	return response.databases;
 }

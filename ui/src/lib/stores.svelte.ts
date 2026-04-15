@@ -6,7 +6,7 @@
  * keeps the mutable variable local to this module.
  */
 
-import type { Tenant } from './api';
+import type { Tenant, TenantDatabase } from './api';
 
 // ---------------------------------------------------------------------------
 // Selected tenant
@@ -22,4 +22,20 @@ export function getSelectedTenant(): Tenant | null {
 /** Set the active tenant.  Pass `null` to deselect. */
 export function setSelectedTenant(tenant: Tenant | null): void {
 	selectedTenant = tenant;
+}
+
+// ---------------------------------------------------------------------------
+// Selected database
+// ---------------------------------------------------------------------------
+
+let selectedDatabase: TenantDatabase | null = $state(null);
+
+/** Return the currently-selected database (or null if none is selected). */
+export function getSelectedDatabase(): TenantDatabase | null {
+	return selectedDatabase;
+}
+
+/** Set the active database.  Pass `null` to deselect. */
+export function setSelectedDatabase(db: TenantDatabase | null): void {
+	selectedDatabase = db;
 }

@@ -1,11 +1,20 @@
 <script lang="ts">
 import { base } from '$app/paths';
+// biome-ignore lint/correctness/noUnusedImports: Used in template onclick handler.
 import { type CollectionSummary, dropCollection, fetchCollections } from '$lib/api';
-import { getSelectedTenant } from '$lib/stores.svelte';
+import { getSelectedDatabase, getSelectedTenant } from '$lib/stores.svelte';
+
+function currentScope() {
+	const t = getSelectedTenant();
+	const d = getSelectedDatabase();
+	if (!t || !d) return { tenant: 'default', database: 'default' };
+	return { tenant: t.db_name, database: d.name };
+}
 
 let collections = $state<CollectionSummary[]>([]);
 let loading = $state(true);
 let error = $state<string | null>(null);
+// biome-ignore lint/style/useConst: Svelte template onclick handlers mutate this state.
 let dropping = $state<string | null>(null);
 
 const schemasHref = `${base}/schemas`;
@@ -25,10 +34,10 @@ function formatTimestamp(ns: number | null | undefined): string {
 	return new Date(ns / 1_000_000).toLocaleDateString();
 }
 
-async function loadCollections(dbName?: string) {
+async function loadCollections() {
 	loading = true;
 	try {
-		collections = await fetchCollections(dbName);
+		collections = await fetchCollections(currentScope());
 		error = null;
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load collections';
@@ -38,8 +47,10 @@ async function loadCollections(dbName?: string) {
 }
 
 $effect(() => {
-	const tenant = getSelectedTenant();
-	void loadCollections(tenant?.db_name);
+	// Access reactive state explicitly so the effect re-runs on tenant/database changes.
+	getSelectedTenant();
+	getSelectedDatabase();
+	void loadCollections();
 });
 
 const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_count, 0));
@@ -51,7 +62,7 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 		<p class="muted">Browse registered collections with entity counts and schema versions.</p>
 	</div>
 	<div class="actions">
-		<button onclick={() => loadCollections(getSelectedTenant()?.db_name)}>Refresh</button>
+		<button onclick={() => loadCollections()}>Refresh</button>
 		<a class="button-link primary" href={schemasHref}>Create Collection</a>
 	</div>
 </div>
@@ -119,9 +130,9 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 										<span class="muted" style="font-size:0.85rem">Drop {collection.name}?</span>
 										<button class="danger" onclick={async () => {
 											try {
-												await dropCollection(collection.name, getSelectedTenant()?.db_name);
+												await dropCollection(collection.name, currentScope());
 												dropping = null;
-												await loadCollections(getSelectedTenant()?.db_name);
+												await loadCollections();
 											} catch (e: unknown) {
 												error = e instanceof Error ? e.message : 'Failed to drop collection';
 												dropping = null;

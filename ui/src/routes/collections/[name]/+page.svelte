@@ -4,6 +4,7 @@ import {
 	type CollectionDetail,
 	type EntityRecord,
 	createEntity,
+	// biome-ignore lint/correctness/noUnusedImports: Used in template onclick handler.
 	deleteEntity,
 	fetchCollection,
 	fetchEntities,
@@ -15,8 +16,15 @@ import JsonTree from '$lib/components/JsonTree.svelte';
 // biome-ignore lint/correctness/noUnusedImports: Used in template for casting entity data.
 import type { JsonValue } from '$lib/components/json-tree-types';
 import { validateEntityData } from '$lib/schema-validation';
-import { getSelectedTenant } from '$lib/stores.svelte';
+import { getSelectedDatabase, getSelectedTenant } from '$lib/stores.svelte';
 import { onMount } from 'svelte';
+
+function currentScope() {
+	const t = getSelectedTenant();
+	const d = getSelectedDatabase();
+	if (!t || !d) return { tenant: 'default', database: 'default' };
+	return { tenant: t.db_name, database: d.name };
+}
 
 let collectionName = $state('');
 let collection = $state<CollectionDetail | null>(null);
@@ -44,20 +52,29 @@ let saveError = $state<string | null>(null);
 let saveMessage = $state<string | null>(null);
 let saving = $state(false);
 
+// biome-ignore lint/style/useConst: Svelte template onclick handlers mutate this state.
 let confirmDelete = $state(false);
+// biome-ignore lint/style/useConst: Svelte template onclick handlers mutate this state.
 let deleteMessage = $state<string | null>(null);
 
-async function loadCollection(targetCollection: string, afterId: string | null, dbName?: string) {
+async function loadCollection(targetCollection: string, afterId: string | null) {
+	const scope = currentScope();
 	loading = true;
 	try {
-		collection = await fetchCollection(targetCollection, dbName);
-		const result = await fetchEntities(targetCollection, {
-			limit: 50,
-			afterId,
-		}, dbName);
+		collection = await fetchCollection(targetCollection, scope);
+		const result = await fetchEntities(
+			targetCollection,
+			{
+				limit: 50,
+				afterId,
+			},
+			scope,
+		);
 		entities = result.entities;
 		nextCursor = result.next_cursor;
-		selectedEntity = entities[0] ? await fetchEntity(targetCollection, entities[0].id, dbName) : null;
+		selectedEntity = entities[0]
+			? await fetchEntity(targetCollection, entities[0].id, scope)
+			: null;
 		editMode = false;
 		editData = null;
 		error = null;
@@ -74,7 +91,7 @@ async function openEntity(id: string) {
 	}
 
 	try {
-		selectedEntity = await fetchEntity(collectionName, id, getSelectedTenant()?.db_name);
+		selectedEntity = await fetchEntity(collectionName, id, currentScope());
 		editMode = false;
 		editData = null;
 		saveError = null;
@@ -122,7 +139,7 @@ async function saveEntity() {
 			selectedEntity.id,
 			editData,
 			selectedEntity.version,
-			getSelectedTenant()?.db_name,
+			currentScope(),
 		);
 		selectedEntity = updated;
 		editMode = false;
@@ -173,13 +190,13 @@ async function submitCreateEntity() {
 	}
 
 	try {
-		const entity = await createEntity(collectionName, createId.trim(), parsedData, getSelectedTenant()?.db_name);
+		const entity = await createEntity(collectionName, createId.trim(), parsedData, currentScope());
 		createMessage = `Created ${entity.id}.`;
 		createErrors = [];
 		createOpen = false;
 		paginationHistory = [null];
 		pageIndex = 0;
-		await loadCollection(collectionName, null, getSelectedTenant()?.db_name);
+		await loadCollection(collectionName, null);
 		selectedEntity = entity;
 	} catch (errorValue: unknown) {
 		createErrors = [errorValue instanceof Error ? errorValue.message : 'Failed to create entity'];
@@ -193,7 +210,7 @@ async function nextPage() {
 
 	pageIndex += 1;
 	paginationHistory = [...paginationHistory, nextCursor];
-	await loadCollection(collectionName, nextCursor, getSelectedTenant()?.db_name);
+	await loadCollection(collectionName, nextCursor);
 }
 
 async function previousPage() {
@@ -202,7 +219,7 @@ async function previousPage() {
 	}
 
 	pageIndex -= 1;
-	await loadCollection(collectionName, paginationHistory[pageIndex] ?? null, getSelectedTenant()?.db_name);
+	await loadCollection(collectionName, paginationHistory[pageIndex] ?? null);
 }
 
 async function syncRoute() {
@@ -217,7 +234,7 @@ async function syncRoute() {
 	paginationHistory = [null];
 	pageIndex = 0;
 	selectedEntity = null;
-	await loadCollection(routeCollectionName, null, getSelectedTenant()?.db_name);
+	await loadCollection(routeCollectionName, null);
 }
 
 onMount(() => {
@@ -228,25 +245,26 @@ afterNavigate(() => {
 	void syncRoute();
 });
 
-let lastLoadedDbName: string | undefined | null = null;
+let lastScopeKey: string | null = null;
 $effect(() => {
-	const tenant = getSelectedTenant();
-	const dbName = tenant?.db_name;
+	const t = getSelectedTenant();
+	const d = getSelectedDatabase();
+	const key = t && d ? `${t.db_name}/${d.name}` : 'default/default';
 	// Skip the first run (syncRoute on mount already handles the initial load),
-	// and only reload when the tenant actually changes.
-	if (lastLoadedDbName === null) {
-		lastLoadedDbName = dbName;
+	// and only reload when the scope actually changes.
+	if (lastScopeKey === null) {
+		lastScopeKey = key;
 		return;
 	}
-	if (dbName === lastLoadedDbName) {
+	if (key === lastScopeKey) {
 		return;
 	}
-	lastLoadedDbName = dbName;
+	lastScopeKey = key;
 	if (collectionName) {
 		paginationHistory = [null];
 		pageIndex = 0;
 		selectedEntity = null;
-		void loadCollection(collectionName, null, dbName);
+		void loadCollection(collectionName, null);
 	}
 });
 </script>
@@ -369,11 +387,11 @@ $effect(() => {
 							<button class="danger" onclick={async () => {
 								if (selectedEntity && collectionName) {
 									try {
-										await deleteEntity(collectionName, selectedEntity.id, getSelectedTenant()?.db_name);
+										await deleteEntity(collectionName, selectedEntity.id, currentScope());
 										deleteMessage = `Deleted ${selectedEntity.id}.`;
 										confirmDelete = false;
 										selectedEntity = null;
-										await loadCollection(collectionName, null, getSelectedTenant()?.db_name);
+										await loadCollection(collectionName, null);
 									} catch (e: unknown) {
 										error = e instanceof Error ? e.message : 'Failed to delete';
 										confirmDelete = false;

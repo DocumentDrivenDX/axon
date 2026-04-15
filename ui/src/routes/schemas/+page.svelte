@@ -9,8 +9,15 @@ import {
 	previewSchemaChange,
 	updateSchema,
 } from '$lib/api';
-import { getSelectedTenant } from '$lib/stores.svelte';
+import { getSelectedDatabase, getSelectedTenant } from '$lib/stores.svelte';
 import { onMount } from 'svelte';
+
+function currentScope() {
+	const t = getSelectedTenant();
+	const d = getSelectedDatabase();
+	if (!t || !d) return { tenant: 'default', database: 'default' };
+	return { tenant: t.db_name, database: d.name };
+}
 
 let collections: CollectionSummary[] = [];
 let selectedCollection = '';
@@ -201,18 +208,19 @@ function extractCompoundIndexes(schema: CollectionSchema): CompoundIndexInfo[] {
 	}));
 }
 
-async function loadCollections(dbName?: string, preferredCollection?: string) {
-	collections = await fetchCollections(dbName);
+async function loadCollections(preferredCollection?: string) {
+	const scope = currentScope();
+	collections = await fetchCollections(scope);
 	const nextSelection = preferredCollection ?? selectedCollection ?? collections[0]?.name;
 
 	if (nextSelection) {
-		await selectCollection(nextSelection, dbName);
+		await selectCollection(nextSelection);
 	}
 }
 
-async function selectCollection(collectionName: string, dbName?: string) {
+async function selectCollection(collectionName: string) {
 	selectedCollection = collectionName;
-	selectedSchema = await fetchSchema(collectionName, dbName ?? getSelectedTenant()?.db_name);
+	selectedSchema = await fetchSchema(collectionName, currentScope());
 	editJson = JSON.stringify(selectedSchema, null, 2);
 	editMode = false;
 	validationError = null;
@@ -248,7 +256,7 @@ async function requestPreview() {
 		preview = await previewSchemaChange(
 			selectedCollection,
 			JSON.parse(editJson) as CollectionSchema,
-			getSelectedTenant()?.db_name,
+			currentScope(),
 		);
 		statusMessage = null;
 	} catch (errorValue: unknown) {
@@ -268,14 +276,14 @@ async function confirmSave(force: boolean) {
 			selectedCollection,
 			JSON.parse(editJson) as CollectionSchema,
 			{ force },
-			getSelectedTenant()?.db_name,
+			currentScope(),
 		);
 		editJson = JSON.stringify(selectedSchema, null, 2);
 		editMode = false;
 		preview = null;
 		statusMessage = `Saved schema for ${selectedCollection}.`;
 		error = null;
-		await loadCollections(getSelectedTenant()?.db_name, selectedCollection);
+		await loadCollections(selectedCollection);
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to save schema';
 	}
@@ -284,23 +292,27 @@ async function confirmSave(force: boolean) {
 async function submitCreateCollection() {
 	try {
 		const entitySchema = createSchemaJson.trim() ? (JSON.parse(createSchemaJson) as unknown) : null;
-		await createCollection(createCollectionName, {
-			description: null,
-			version: 1,
-			entity_schema: entitySchema,
-			link_types: {},
-		}, getSelectedTenant()?.db_name);
+		await createCollection(
+			createCollectionName,
+			{
+				description: null,
+				version: 1,
+				entity_schema: entitySchema,
+				link_types: {},
+			},
+			currentScope(),
+		);
 		createCollectionName = '';
 		statusMessage = 'Collection created.';
 		error = null;
-		await loadCollections(getSelectedTenant()?.db_name);
+		await loadCollections();
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to create collection';
 	}
 }
 
 onMount(() => {
-	void loadCollections(getSelectedTenant()?.db_name);
+	void loadCollections();
 });
 </script>
 

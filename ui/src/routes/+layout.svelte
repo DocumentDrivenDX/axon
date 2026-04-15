@@ -2,7 +2,16 @@
 import '../app.css';
 
 import { base } from '$app/paths';
-import { type AuthState, type HealthStatus, type Tenant, fetchAuthMe, fetchHealth, fetchTenants } from '$lib/api';
+// biome-ignore lint/correctness/noUnusedImports: Used in the template as <DatabaseSelector />.
+import DatabaseSelector from '$lib/DatabaseSelector.svelte';
+import {
+	type AuthState,
+	type HealthStatus,
+	type Tenant,
+	fetchAuthMe,
+	fetchHealth,
+	fetchTenants,
+} from '$lib/api';
 import { getSelectedTenant, setSelectedTenant } from '$lib/stores.svelte';
 import type { Snippet } from 'svelte';
 import { onMount } from 'svelte';
@@ -104,6 +113,7 @@ onMount(() => {
 						{/each}
 					</select>
 				</div>
+				<DatabaseSelector />
 			{/if}
 		</div>
 

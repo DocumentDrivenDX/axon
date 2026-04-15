@@ -1,7 +1,14 @@
 <script lang="ts">
 import { type AuditEntry, fetchAudit } from '$lib/api';
-import { getSelectedTenant } from '$lib/stores.svelte';
+import { getSelectedDatabase, getSelectedTenant } from '$lib/stores.svelte';
 import { onMount } from 'svelte';
+
+function currentScope() {
+	const t = getSelectedTenant();
+	const d = getSelectedDatabase();
+	if (!t || !d) return { tenant: 'default', database: 'default' };
+	return { tenant: t.db_name, database: d.name };
+}
 
 type AuditFilters = {
 	collection: string;
@@ -39,7 +46,7 @@ function formatTimestamp(timestampNs: number): string {
 	return new Date(timestampNs / 1_000_000).toLocaleString();
 }
 
-async function loadEntries(dbName?: string) {
+async function loadEntries() {
 	loading = true;
 	try {
 		const auditFilters: {
@@ -64,7 +71,7 @@ async function loadEntries(dbName?: string) {
 			auditFilters.untilNs = untilNs;
 		}
 
-		const response = await fetchAudit(auditFilters, dbName);
+		const response = await fetchAudit(auditFilters, currentScope());
 		entries = response.entries;
 		selectedEntry = entries[0] ?? null;
 		error = null;
@@ -76,7 +83,7 @@ async function loadEntries(dbName?: string) {
 }
 
 onMount(() => {
-	void loadEntries(getSelectedTenant()?.db_name);
+	void loadEntries();
 });
 </script>
 
@@ -108,7 +115,7 @@ onMount(() => {
 			</label>
 		</div>
 		<div class="actions">
-			<button class="primary" on:click={() => loadEntries(getSelectedTenant()?.db_name)}>Apply Filters</button>
+			<button class="primary" on:click={() => loadEntries()}>Apply Filters</button>
 		</div>
 	</div>
 </section>
