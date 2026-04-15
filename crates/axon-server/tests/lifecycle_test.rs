@@ -79,7 +79,7 @@ async fn make_server_with_lifecycle() -> axum_test::TestServer {
 /// Create the seed entity `tasks/t-001` in `status: "draft"` so that each
 /// test starts from a known pre-condition.
 async fn seed_draft_entity(http: &axum_test::TestServer) {
-    http.post("/entities/tasks/t-001")
+    http.post("/tenants/default/databases/default/entities/tasks/t-001")
         .json(&json!({
             "data": {
                 "status": "draft",
@@ -99,7 +99,7 @@ async fn http_transition_lifecycle_happy_path() {
     seed_draft_entity(&http).await;
 
     let resp = http
-        .post("/lifecycle/tasks/t-001/transition")
+        .post("/tenants/default/databases/default/lifecycle/tasks/t-001/transition")
         .json(&json!({
             "lifecycle_name": "status",
             "target_state": "submitted",
@@ -127,7 +127,7 @@ async fn http_transition_lifecycle_invalid_transition() {
     seed_draft_entity(&http).await;
 
     let resp = http
-        .post("/lifecycle/tasks/t-001/transition")
+        .post("/tenants/default/databases/default/lifecycle/tasks/t-001/transition")
         .json(&json!({
             "lifecycle_name": "status",
             "target_state": "approved",
@@ -159,7 +159,7 @@ async fn http_transition_lifecycle_not_found() {
     seed_draft_entity(&http).await;
 
     let resp = http
-        .post("/lifecycle/tasks/t-001/transition")
+        .post("/tenants/default/databases/default/lifecycle/tasks/t-001/transition")
         .json(&json!({
             "lifecycle_name": "does_not_exist",
             "target_state": "anything",
@@ -183,7 +183,7 @@ async fn http_transition_lifecycle_version_conflict() {
 
     // Entity is at version 1; passing expected_version = 99 must conflict.
     let resp = http
-        .post("/lifecycle/tasks/t-001/transition")
+        .post("/tenants/default/databases/default/lifecycle/tasks/t-001/transition")
         .json(&json!({
             "lifecycle_name": "status",
             "target_state": "submitted",

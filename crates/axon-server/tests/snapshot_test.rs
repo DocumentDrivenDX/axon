@@ -39,7 +39,7 @@ fn make_server() -> axum_test::TestServer {
 
 async fn create_collection(server: &axum_test::TestServer, name: &str) {
     let resp = server
-        .post(&format!("/collections/{name}"))
+        .post(&format!("/tenants/default/databases/default/collections/{name}"))
         .json(&json!({
             "schema": {
                 "collection": name,
@@ -52,7 +52,7 @@ async fn create_collection(server: &axum_test::TestServer, name: &str) {
 
 async fn create_entity(server: &axum_test::TestServer, collection: &str, id: &str, data: Value) {
     let resp = server
-        .post(&format!("/entities/{collection}/{id}"))
+        .post(&format!("/tenants/default/databases/default/entities/{collection}/{id}"))
         .json(&json!({"data": data}))
         .await;
     resp.assert_status(axum::http::StatusCode::CREATED);
@@ -74,7 +74,7 @@ async fn snapshot_happy_path_returns_all_entities_and_cursor() {
     create_entity(&http, "notes", "n-001", json!({"text": "note one"})).await;
     create_entity(&http, "notes", "n-002", json!({"text": "note two"})).await;
 
-    let resp = http.post("/snapshot").json(&json!({})).await;
+    let resp = http.post("/tenants/default/databases/default/snapshot").json(&json!({})).await;
     resp.assert_status_ok();
     let body: Value = resp.json();
 
@@ -107,7 +107,7 @@ async fn snapshot_collections_filter_narrows_results() {
     create_entity(&http, "notes", "n-001", json!({"text": "note one"})).await;
 
     let resp = http
-        .post("/snapshot")
+        .post("/tenants/default/databases/default/snapshot")
         .json(&json!({"collections": ["tasks"]}))
         .await;
     resp.assert_status_ok();
@@ -133,7 +133,7 @@ async fn snapshot_cursor_is_race_free_against_post_snapshot_writes() {
     create_entity(&http, "tasks", "t-001", json!({"title": "one"})).await;
     create_entity(&http, "tasks", "t-002", json!({"title": "two"})).await;
 
-    let snap = http.post("/snapshot").json(&json!({})).await;
+    let snap = http.post("/tenants/default/databases/default/snapshot").json(&json!({})).await;
     snap.assert_status_ok();
     let snap_body: Value = snap.json();
     let cursor = snap_body["audit_cursor"].as_u64().unwrap();
@@ -153,7 +153,7 @@ async fn snapshot_cursor_is_race_free_against_post_snapshot_writes() {
     create_entity(&http, "tasks", "t-003", json!({"title": "three"})).await;
 
     // Audit tail query starting strictly after the snapshot cursor.
-    let tail = http.get(&format!("/audit/query?after_id={cursor}")).await;
+    let tail = http.get(&format!("/tenants/default/databases/default/audit/query?after_id={cursor}")).await;
     tail.assert_status_ok();
     let tail_body: Value = tail.json();
     let tail_entries = tail_body["entries"].as_array().unwrap();
@@ -185,7 +185,7 @@ async fn snapshot_cursor_is_race_free_against_post_snapshot_writes() {
 async fn snapshot_empty_database_returns_zero_cursor() {
     let http = make_server();
 
-    let resp = http.post("/snapshot").json(&json!({})).await;
+    let resp = http.post("/tenants/default/databases/default/snapshot").json(&json!({})).await;
     resp.assert_status_ok();
     let body: Value = resp.json();
 
@@ -212,7 +212,7 @@ async fn snapshot_pagination_walks_all_pages() {
     create_entity(&http, "notes", "n-002", json!({"text": "b"})).await;
 
     // Page 1 — 2 entities + token.
-    let p1 = http.post("/snapshot").json(&json!({"limit": 2})).await;
+    let p1 = http.post("/tenants/default/databases/default/snapshot").json(&json!({"limit": 2})).await;
     p1.assert_status_ok();
     let p1_body: Value = p1.json();
     let p1_entities = p1_body["entities"].as_array().unwrap();
@@ -223,7 +223,7 @@ async fn snapshot_pagination_walks_all_pages() {
     // Page 2 — 2 more entities + token. Every page carries the same
     // snapshot `audit_cursor` so consumers can merge pages safely.
     let p2 = http
-        .post("/snapshot")
+        .post("/tenants/default/databases/default/snapshot")
         .json(&json!({"limit": 2, "after_page_token": p1_token}))
         .await;
     p2.assert_status_ok();
@@ -235,7 +235,7 @@ async fn snapshot_pagination_walks_all_pages() {
 
     // Page 3 — the last entity + no next token.
     let p3 = http
-        .post("/snapshot")
+        .post("/tenants/default/databases/default/snapshot")
         .json(&json!({"limit": 2, "after_page_token": p2_token}))
         .await;
     p3.assert_status_ok();
@@ -277,7 +277,7 @@ async fn snapshot_route_is_available_under_db_prefix() {
     create_collection(&http, "tasks").await;
     create_entity(&http, "tasks", "t-001", json!({"title": "hello"})).await;
 
-    let resp = http.post("/db/default/snapshot").json(&json!({})).await;
+    let resp = http.post("/tenants/default/databases/default/snapshot").json(&json!({})).await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     assert_eq!(body["entities"].as_array().unwrap().len(), 1);

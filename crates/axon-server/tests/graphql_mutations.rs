@@ -94,7 +94,7 @@ async fn lifecycle_server() -> axum_test::TestServer {
 /// Register a plain `tasks` collection via the REST create-collection route.
 async fn seed_tasks_collection(server: &axum_test::TestServer) {
     server
-        .post("/collections/tasks")
+        .post("/tenants/default/databases/default/collections/tasks")
         .json(&json!({
             "schema": {
                 "version": 1,
@@ -352,7 +352,7 @@ async fn graphql_mutation_respects_caller_identity() {
 
     // Verify the audit entry for this entity was attributed to `agent-1`.
     let audit = server
-        .get("/audit/entity/tasks/aud-1")
+        .get("/tenants/default/databases/default/audit/entity/tasks/aud-1")
         .await
         .json::<Value>();
     let entries = audit["entries"].as_array().expect("audit entries array");

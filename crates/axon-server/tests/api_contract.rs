@@ -383,13 +383,13 @@ async fn parity_create_get_entity() {
     let http = axum_test::TestServer::new(http_app);
 
     let http_create = http
-        .post("/entities/tasks/t-001")
+        .post("/tenants/default/databases/default/entities/tasks/t-001")
         .json(&json!({"data": {"title": "hello"}, "actor": "test"}))
         .await;
     http_create.assert_status(axum::http::StatusCode::CREATED);
     let http_body: Value = http_create.json();
 
-    let http_get = http.get("/entities/tasks/t-001").await;
+    let http_get = http.get("/tenants/default/databases/default/entities/tasks/t-001").await;
     http_get.assert_status_ok();
     let http_get_body: Value = http_get.json();
 
@@ -445,13 +445,13 @@ async fn parity_update_entity() {
     let http_app = build_router(tenant_router, "memory", None);
     let http = axum_test::TestServer::new(http_app);
 
-    http.post("/entities/tasks/t-001")
+    http.post("/tenants/default/databases/default/entities/tasks/t-001")
         .json(&json!({"data": {"title": "v1"}}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
     let http_update = http
-        .put("/entities/tasks/t-001")
+        .put("/tenants/default/databases/default/entities/tasks/t-001")
         .json(&json!({"data": {"title": "v2"}, "expected_version": 1}))
         .await;
     http_update.assert_status_ok();
@@ -500,13 +500,13 @@ async fn parity_link_traverse() {
     let http_app = build_router(tenant_router, "memory", None);
     let http = axum_test::TestServer::new(http_app);
 
-    http.post("/entities/users/u-001")
+    http.post("/tenants/default/databases/default/entities/users/u-001")
         .json(&json!({"data": {"name": "Alice"}}))
         .await;
-    http.post("/entities/tasks/t-001")
+    http.post("/tenants/default/databases/default/entities/tasks/t-001")
         .json(&json!({"data": {"title": "Task 1"}}))
         .await;
-    http.post("/links")
+    http.post("/tenants/default/databases/default/links")
         .json(&json!({
             "source_collection": "users",
             "source_id": "u-001",
@@ -516,7 +516,7 @@ async fn parity_link_traverse() {
         }))
         .await;
 
-    let http_traverse = http.get("/traverse/users/u-001?link_type=owns").await;
+    let http_traverse = http.get("/tenants/default/databases/default/traverse/users/u-001?link_type=owns").await;
     http_traverse.assert_status_ok();
     let http_body: Value = http_traverse.json();
 
@@ -967,17 +967,17 @@ async fn http_traverse_direction_reverse() {
     let http = axum_test::TestServer::new(http_app);
 
     // Create entities A and B.
-    http.post("/entities/nodes/a")
+    http.post("/tenants/default/databases/default/entities/nodes/a")
         .json(&json!({"data": {"name": "A"}}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
-    http.post("/entities/nodes/b")
+    http.post("/tenants/default/databases/default/entities/nodes/b")
         .json(&json!({"data": {"name": "B"}}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
     // Create forward link: A -> B.
-    http.post("/links")
+    http.post("/tenants/default/databases/default/links")
         .json(&json!({
             "source_collection": "nodes",
             "source_id": "a",
@@ -990,7 +990,7 @@ async fn http_traverse_direction_reverse() {
 
     // Forward traversal from A should return B.
     let fwd = http
-        .get("/traverse/nodes/a?link_type=owns&direction=forward")
+        .get("/tenants/default/databases/default/traverse/nodes/a?link_type=owns&direction=forward")
         .await;
     fwd.assert_status_ok();
     let fwd_body: Value = fwd.json();
@@ -1000,7 +1000,7 @@ async fn http_traverse_direction_reverse() {
 
     // Reverse traversal from B should return A (A links TO B).
     let rev = http
-        .get("/traverse/nodes/b?link_type=owns&direction=reverse")
+        .get("/tenants/default/databases/default/traverse/nodes/b?link_type=owns&direction=reverse")
         .await;
     rev.assert_status_ok();
     let rev_body: Value = rev.json();
@@ -1213,13 +1213,13 @@ async fn http_caller_identity_from_header_recorded_in_audit() {
     let server = caller_identity_http_server();
 
     server
-        .post("/entities/tasks/t-001")
+        .post("/tenants/default/databases/default/entities/tasks/t-001")
         .add_header("x-axon-actor", "agent-1")
         .json(&json!({"data": {"title": "hello"}}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
-    let resp = server.get("/audit/entity/tasks/t-001").await;
+    let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-001").await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     let entries = body["entries"].as_array().unwrap();
@@ -1235,12 +1235,12 @@ async fn http_missing_caller_identity_records_anonymous_in_audit() {
     let server = caller_identity_http_server();
 
     server
-        .post("/entities/tasks/t-002")
+        .post("/tenants/default/databases/default/entities/tasks/t-002")
         .json(&json!({"data": {"title": "no-header"}}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
-    let resp = server.get("/audit/entity/tasks/t-002").await;
+    let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-002").await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     let entries = body["entries"].as_array().unwrap();
@@ -1258,12 +1258,12 @@ async fn http_caller_identity_body_actor_is_ignored() {
     // Body carries an actor field, but no x-axon-actor header. The header is
     // the authority — body-level actor must NOT leak into the audit entry.
     server
-        .post("/entities/tasks/t-003")
+        .post("/tenants/default/databases/default/entities/tasks/t-003")
         .json(&json!({"data": {"title": "imposter"}, "actor": "claimed-by-body"}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
-    let resp = server.get("/audit/entity/tasks/t-003").await;
+    let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-003").await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     let entries = body["entries"].as_array().unwrap();
@@ -1281,13 +1281,13 @@ async fn http_caller_identity_empty_header_falls_back_to_anonymous() {
     // An empty x-axon-actor header must be treated as "no header" rather
     // than recording an empty string as the actor.
     server
-        .post("/entities/tasks/t-006")
+        .post("/tenants/default/databases/default/entities/tasks/t-006")
         .add_header("x-axon-actor", "")
         .json(&json!({"data": {"title": "empty-header"}}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
-    let resp = server.get("/audit/entity/tasks/t-006").await;
+    let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-006").await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     let entries = body["entries"].as_array().unwrap();
@@ -1300,26 +1300,26 @@ async fn http_caller_identity_per_operation_type() {
     let server = caller_identity_http_server();
 
     server
-        .post("/entities/tasks/t-005")
+        .post("/tenants/default/databases/default/entities/tasks/t-005")
         .add_header("x-axon-actor", "creator")
         .json(&json!({"data": {"title": "v1"}}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
     server
-        .put("/entities/tasks/t-005")
+        .put("/tenants/default/databases/default/entities/tasks/t-005")
         .add_header("x-axon-actor", "updater")
         .json(&json!({"data": {"title": "v2"}, "expected_version": 1}))
         .await
         .assert_status_ok();
 
     server
-        .delete("/entities/tasks/t-005")
+        .delete("/tenants/default/databases/default/entities/tasks/t-005")
         .add_header("x-axon-actor", "deleter")
         .await
         .assert_status_ok();
 
-    let resp = server.get("/audit/entity/tasks/t-005").await;
+    let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-005").await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     let entries = body["entries"].as_array().unwrap();
@@ -1345,7 +1345,7 @@ async fn http_transactions_idempotent_key_caches_success() {
 
     // Seed the entity at v1 so the transaction's update can reference a
     // concrete expected_version.
-    http.post("/entities/idem/e-1")
+    http.post("/tenants/default/databases/default/entities/idem/e-1")
         .json(&json!({"data": {"v": 0}}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
@@ -1353,7 +1353,7 @@ async fn http_transactions_idempotent_key_caches_success() {
     let key = "idem-k-1";
 
     let resp1 = http
-        .post("/transactions")
+        .post("/tenants/default/databases/default/transactions")
         .add_header("idempotency-key", key)
         .json(&json!({
             "operations": [{
@@ -1373,7 +1373,7 @@ async fn http_transactions_idempotent_key_caches_success() {
     // would fail. The idempotency cache must return the original response
     // without re-executing.
     let resp2 = http
-        .post("/transactions")
+        .post("/tenants/default/databases/default/transactions")
         .add_header("idempotency-key", key)
         .json(&json!({
             "operations": [{
@@ -1390,7 +1390,7 @@ async fn http_transactions_idempotent_key_caches_success() {
     assert_eq!(body1, body2, "second response must be byte-identical");
 
     // Entity version must still be 2 (not re-applied to version 3).
-    let get_resp = http.get("/entities/idem/e-1").await;
+    let get_resp = http.get("/tenants/default/databases/default/entities/idem/e-1").await;
     get_resp.assert_status_ok();
     let get_body: Value = get_resp.json();
     assert_eq!(
@@ -1411,7 +1411,7 @@ async fn http_transactions_without_key_executes_normally() {
     let http = axum_test::TestServer::new(http_app);
 
     let resp1 = http
-        .post("/transactions")
+        .post("/tenants/default/databases/default/transactions")
         .json(&json!({
             "operations": [{
                 "op": "create",
@@ -1427,7 +1427,7 @@ async fn http_transactions_without_key_executes_normally() {
     // the same id must fail with AlreadyExists (would have been masked by a
     // cached response if the cache were active).
     let resp2 = http
-        .post("/transactions")
+        .post("/tenants/default/databases/default/transactions")
         .json(&json!({
             "operations": [{
                 "op": "create",
@@ -1457,11 +1457,11 @@ async fn http_transactions_idempotent_conflict_not_cached() {
 
     // Seed at v1, then update to v2 out-of-band so the transaction's
     // expected_version=1 will fail deterministically.
-    http.post("/entities/conf/e-1")
+    http.post("/tenants/default/databases/default/entities/conf/e-1")
         .json(&json!({"data": {"v": 0}}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
-    http.put("/entities/conf/e-1")
+    http.put("/tenants/default/databases/default/entities/conf/e-1")
         .json(&json!({"data": {"v": 1}, "expected_version": 1}))
         .await
         .assert_status_ok();
@@ -1478,7 +1478,7 @@ async fn http_transactions_idempotent_conflict_not_cached() {
     });
 
     let resp1 = http
-        .post("/transactions")
+        .post("/tenants/default/databases/default/transactions")
         .add_header("idempotency-key", key)
         .json(&body)
         .await;
@@ -1491,7 +1491,7 @@ async fn http_transactions_idempotent_conflict_not_cached() {
     // Retry with the same key — failure was not cached, so this must also
     // re-execute and return 409 (not a cached success).
     let resp2 = http
-        .post("/transactions")
+        .post("/tenants/default/databases/default/transactions")
         .add_header("idempotency-key", key)
         .json(&body)
         .await;
@@ -1517,11 +1517,10 @@ async fn http_transactions_idempotent_different_databases_isolated() {
 
     let key = "shared-k-1";
 
-    // POST to database "alpha" creates an entity there.
+    // POST to database "alpha" creates an entity there (path-scoped routing).
     let resp_a = http
-        .post("/transactions")
+        .post("/tenants/default/databases/alpha/transactions")
         .add_header("idempotency-key", key)
-        .add_header("x-axon-database", "alpha")
         .json(&json!({
             "operations": [{
                 "op": "create",
@@ -1537,9 +1536,8 @@ async fn http_transactions_idempotent_different_databases_isolated() {
     // Same key in database "beta" — must execute independently (not hit the
     // alpha cache entry).
     let resp_b = http
-        .post("/transactions")
+        .post("/tenants/default/databases/beta/transactions")
         .add_header("idempotency-key", key)
-        .add_header("x-axon-database", "beta")
         .json(&json!({
             "operations": [{
                 "op": "create",
@@ -1560,12 +1558,10 @@ async fn http_transactions_idempotent_different_databases_isolated() {
     // Both entities exist (TenantRouter::single stores them in the shared
     // handler; collection names are qualified per-database, so the IDs are
     // independent).
-    http.get("/entities/iso/e-alpha")
-        .add_header("x-axon-database", "alpha")
+    http.get("/tenants/default/databases/alpha/entities/iso/e-alpha")
         .await
         .assert_status_ok();
-    http.get("/entities/iso/e-beta")
-        .add_header("x-axon-database", "beta")
+    http.get("/tenants/default/databases/beta/entities/iso/e-beta")
         .await
         .assert_status_ok();
 }
@@ -1599,7 +1595,7 @@ async fn http_transactions_idempotent_expired_reexecutes() {
     let http = axum_test::TestServer::new(http_app);
 
     // Seed an entity at v1 so each execution attempts a valid update.
-    http.post("/entities/exp/e-1")
+    http.post("/tenants/default/databases/default/entities/exp/e-1")
         .json(&json!({"data": {"v": 0}}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
@@ -1607,7 +1603,7 @@ async fn http_transactions_idempotent_expired_reexecutes() {
     let key = "exp-k-1";
 
     let resp1 = http
-        .post("/transactions")
+        .post("/tenants/default/databases/default/transactions")
         .add_header("idempotency-key", key)
         .json(&json!({
             "operations": [{
@@ -1629,7 +1625,7 @@ async fn http_transactions_idempotent_expired_reexecutes() {
     // conflict proves re-execution (a cached response would have returned
     // the original 200 OK body).
     let resp2 = http
-        .post("/transactions")
+        .post("/tenants/default/databases/default/transactions")
         .add_header("idempotency-key", key)
         .json(&json!({
             "operations": [{
@@ -1706,7 +1702,7 @@ async fn http_create_entity_publishes_change_event_with_audit_id() {
     let http = axum_test::TestServer::new(http_app);
 
     // POST creates the first entity in this handler — its audit id is 1.
-    http.post("/entities/tasks/t-001")
+    http.post("/tenants/default/databases/default/entities/tasks/t-001")
         .json(&json!({"data": {"title": "hello"}, "actor": "test"}))
         .await
         .assert_status(axum::http::StatusCode::CREATED);

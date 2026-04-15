@@ -39,7 +39,7 @@ fn test_server() -> axum_test::TestServer {
 /// shows up in the per-request GraphQL schema.
 async fn seed_collection(server: &axum_test::TestServer, name: &str) {
     server
-        .post(&format!("/collections/{name}"))
+        .post(&format!("/tenants/default/databases/default/collections/{name}"))
         .json(&json!({
             "schema": {
                 "version": 1,
@@ -60,7 +60,7 @@ async fn seed_collection(server: &axum_test::TestServer, name: &str) {
 /// `title` — used by schema validation error tests.
 async fn seed_constrained_collection(server: &axum_test::TestServer, name: &str) {
     server
-        .post(&format!("/collections/{name}"))
+        .post(&format!("/tenants/default/databases/default/collections/{name}"))
         .json(&json!({
             "schema": {
                 "version": 1,

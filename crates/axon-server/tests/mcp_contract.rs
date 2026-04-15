@@ -37,7 +37,7 @@ fn test_server() -> axum_test::TestServer {
 /// Create a collection with a simple `label` field via the REST API.
 async fn seed_collection(server: &axum_test::TestServer, name: &str) {
     server
-        .post(&format!("/collections/{name}"))
+        .post(&format!("/tenants/default/databases/default/collections/{name}"))
         .json(&json!({
             "schema": {
                 "version": 1,
@@ -57,7 +57,7 @@ async fn seed_collection(server: &axum_test::TestServer, name: &str) {
 /// Create an entity via the REST API and return its version.
 async fn rest_create(server: &axum_test::TestServer, collection: &str, id: &str) -> u64 {
     let resp = server
-        .post(&format!("/entities/{collection}/{id}"))
+        .post(&format!("/tenants/default/databases/default/entities/{collection}/{id}"))
         .json(&json!({"data": {"label": "test"}, "actor": "test"}))
         .await;
     resp.assert_status(StatusCode::CREATED);

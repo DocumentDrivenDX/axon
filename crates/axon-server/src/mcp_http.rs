@@ -801,12 +801,12 @@ mod tests {
     async fn http_mcp_lists_and_reads_resources() {
         let server = test_server();
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "hello"}}))
             .await
             .assert_status(StatusCode::CREATED);
@@ -851,7 +851,7 @@ mod tests {
     async fn http_mcp_lists_templates_and_prompts_and_reports_read_errors() {
         let server = test_server();
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);

@@ -73,8 +73,6 @@ const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// Response header emitted when returning a cached idempotent response.
 const IDEMPOTENCY_CACHE_HEADER: &str = "x-idempotent-cache";
 
-const AXON_DATABASE_HEADER: &str = "x-axon-database";
-
 /// Header carrying the caller-declared actor identity (FEAT-012).
 ///
 /// The HTTP gateway and gRPC service read this header on every request and
@@ -390,23 +388,9 @@ impl RequestedDatabaseScope {
 }
 
 fn requested_database_scope(request: &axum::extract::Request) -> RequestedDatabaseScope {
-    if let Some(database) = request
-        .uri()
-        .path()
-        .strip_prefix("/db/")
-        .and_then(|rest| rest.split('/').next())
-        .filter(|database| !database.is_empty())
-    {
-        return RequestedDatabaseScope(Some(database.to_string()));
-    }
-
     RequestedDatabaseScope(
-        request
-            .headers()
-            .get(AXON_DATABASE_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .filter(|database| !database.is_empty())
-            .map(str::to_string),
+        crate::path_router::extract_tenant_database(request.uri().path())
+            .map(|(_tenant, database)| database),
     )
 }
 
@@ -606,22 +590,21 @@ pub(crate) async fn cors_middleware(
 /// Middleware that resolves the per-tenant handler from the `TenantRouter`
 /// and inserts it as a request [`Extension<TenantHandler>`].
 ///
-/// Reads the `X-Axon-Database` header (defaulting to `"default"`) and calls
-/// [`TenantRouter::get_or_create_any`] to obtain or lazily provision the
-/// tenant's handler, regardless of whether the backing store is SQLite or
-/// PostgreSQL.
+/// Reads `(tenant, database)` from the URL path for data-plane requests
+/// matching `/tenants/{tenant}/databases/{database}/…` and calls
+/// [`TenantRouter::get_or_create_any`] with the composite slug
+/// `{tenant}:{database}`. For all other paths (health, metrics, UI, etc.)
+/// falls back to the `"default"` handler.
 async fn resolve_tenant_handler(
     Extension(router): Extension<Arc<TenantRouter>>,
     mut request: axum::extract::Request,
     next: Next,
 ) -> Response {
-    let db_name = request
-        .headers()
-        .get(AXON_DATABASE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("default");
+    let slug = crate::path_router::extract_tenant_database(request.uri().path())
+        .map(|(tenant, database)| format!("{tenant}:{database}"))
+        .unwrap_or_else(|| "default".to_string());
 
-    match router.get_or_create_any(db_name).await {
+    match router.get_or_create_any(&slug).await {
         Ok(handler) => {
             request.extensions_mut().insert(handler);
             next.run(request).await
@@ -2362,9 +2345,8 @@ async fn commit_transaction(
 
     // ── Idempotency check (FEAT-008 US-081) ─────────────────────────────────
     //
-    // Keys are scoped per database. The default-database-only in-memory
-    // deployment shares a `default` sentinel with the `x-axon-database`
-    // routing, so the `current_database` extension is authoritative here.
+    // Keys are scoped per database. The `current_database` extension
+    // (populated from the URL path by the auth middleware) is authoritative.
     let idem_key = headers
         .get(IDEMPOTENCY_KEY_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -2774,8 +2756,8 @@ fn data_routes() -> Router {
 /// Build the axum router for the HTTP gateway with request authentication.
 ///
 /// The `tenant_router` provides per-database handler isolation.  A
-/// middleware layer resolves the tenant handler from the `X-Axon-Database`
-/// header before any route handler runs.
+/// middleware layer resolves the tenant handler from the URL path
+/// before any route handler runs.
 ///
 /// `cors` controls the CORS allowed-origin policy.  An empty `CorsStore`
 /// (the default) disables CORS headers entirely, preserving backward
@@ -2881,11 +2863,8 @@ fn build_router_full(
         .with_state(handler.clone());
 
     let mut router = Router::new()
-        .merge(data_routes())
-        .merge(mcp_routes.clone())
-        .nest("/db/{database}", data_routes().merge(mcp_routes.clone()))
-        .nest("/v1", data_routes().merge(mcp_routes.clone()))
-        .nest("/db/{database}/v1", data_routes().merge(mcp_routes))
+        .merge(mcp_routes)
+        .nest("/tenants/{tenant}/databases/{database}", data_routes())
         .route("/databases", get(list_databases))
         .route("/databases/{name}", post(create_database))
         .route("/databases/{name}", delete(drop_database))
@@ -3097,7 +3076,7 @@ mod tests {
 
         // Create
         let resp = server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "hello"}, "actor": "test"}))
             .await;
         resp.assert_status(StatusCode::CREATED);
@@ -3105,7 +3084,7 @@ mod tests {
         assert_eq!(body["entity"]["version"], 1);
 
         // Get
-        let resp = server.get("/entities/tasks/t-001").await;
+        let resp = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entity"]["data"]["title"], "hello");
@@ -3114,7 +3093,7 @@ mod tests {
     #[tokio::test]
     async fn http_get_missing_returns_404() {
         let server = test_server();
-        let resp = server.get("/entities/tasks/ghost").await;
+        let resp = server.get("/tenants/default/databases/default/entities/tasks/ghost").await;
         resp.assert_status_not_found();
         let body: Value = resp.json();
         assert_eq!(body["code"], "not_found");
@@ -3125,12 +3104,12 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "hello"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
-        let resp = server.get("/collections/tasks/entities/t-001").await;
+        let resp = server.get("/tenants/default/databases/default/collections/tasks/entities/t-001").await;
 
         resp.assert_status_ok();
         resp.assert_header("content-type", "application/json");
@@ -3143,12 +3122,12 @@ mod tests {
         let (server, handler) = test_server_with_handler();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "hello", "status": "open"}}))
             .await
             .assert_status(StatusCode::CREATED);
@@ -3166,7 +3145,7 @@ mod tests {
         );
 
         let resp = server
-            .get("/collections/tasks/entities/t-001?format=markdown")
+            .get("/tenants/default/databases/default/collections/tasks/entities/t-001?format=markdown")
             .await;
 
         resp.assert_status_ok();
@@ -3179,18 +3158,18 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "hello"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         let resp = server
-            .get("/collections/tasks/entities/t-001?format=markdown")
+            .get("/tenants/default/databases/default/collections/tasks/entities/t-001?format=markdown")
             .await;
 
         resp.assert_status(StatusCode::BAD_REQUEST);
@@ -3207,12 +3186,12 @@ mod tests {
         let (server, handler) = test_server_with_handler();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "hello", "status": "open"}}))
             .await
             .assert_status(StatusCode::CREATED);
@@ -3230,7 +3209,7 @@ mod tests {
         );
 
         let resp = server
-            .get("/collections/tasks/entities/t-001?format=markdown")
+            .get("/tenants/default/databases/default/collections/tasks/entities/t-001?format=markdown")
             .await;
 
         resp.assert_status(StatusCode::INTERNAL_SERVER_ERROR);
@@ -3253,7 +3232,7 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({
                 "schema": {
                     "entity_schema": {
@@ -3270,7 +3249,7 @@ mod tests {
             .assert_status(StatusCode::CREATED);
 
         let put = server
-            .put("/collections/tasks/template")
+            .put("/tenants/default/databases/default/collections/tasks/template")
             .json(&json!({
                 "template": "# {{title}}\n\n{{notes}}",
                 "actor": "operator"
@@ -3284,19 +3263,19 @@ mod tests {
         assert_eq!(body["updated_by"], "anonymous");
         assert_eq!(body["warnings"].as_array().map_or(0, Vec::len), 1);
 
-        let get = server.get("/collections/tasks/template").await;
+        let get = server.get("/tenants/default/databases/default/collections/tasks/template").await;
         get.assert_status_ok();
         let body: Value = get.json();
         assert_eq!(body["template"], "# {{title}}\n\n{{notes}}");
 
-        let delete = server.delete("/collections/tasks/template").await;
+        let delete = server.delete("/tenants/default/databases/default/collections/tasks/template").await;
         delete.assert_status_ok();
         let body: Value = delete.json();
         assert_eq!(body["collection"], "tasks");
         assert_eq!(body["status"], "deleted");
 
         server
-            .get("/collections/tasks/template")
+            .get("/tenants/default/databases/default/collections/tasks/template")
             .await
             .assert_status(StatusCode::NOT_FOUND);
     }
@@ -3306,13 +3285,13 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         server
-            .put("/collections/tasks/template")
+            .put("/tenants/default/databases/default/collections/tasks/template")
             .json(&json!({
                 "template": "# {{title}}"
             }))
@@ -3320,7 +3299,7 @@ mod tests {
             .assert_status_ok();
 
         let delete = server
-            .delete("/collections/tasks/template")
+            .delete("/tenants/default/databases/default/collections/tasks/template")
             .content_type("application/json")
             .bytes(Bytes::new())
             .await;
@@ -3377,7 +3356,7 @@ mod tests {
         }
 
         let put = server
-            .put("/collections/prod.billing.tasks/template")
+            .put("/tenants/default/databases/default/collections/prod.billing.tasks/template")
             .json(&json!({
                 "template": "# {{title}}",
                 "actor": "operator"
@@ -3388,7 +3367,7 @@ mod tests {
         assert_eq!(body["collection"], "prod.billing.tasks");
         assert_eq!(body["template"], "# {{title}}");
 
-        let get = server.get("/collections/prod.billing.tasks/template").await;
+        let get = server.get("/tenants/default/databases/default/collections/prod.billing.tasks/template").await;
         get.assert_status_ok();
         let body: Value = get.json();
         assert_eq!(body["collection"], "prod.billing.tasks");
@@ -3400,13 +3379,13 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         let put = server
-            .put("/collections/tasks/template")
+            .put("/tenants/default/databases/default/collections/tasks/template")
             .text("# {{title}}")
             .await;
         put.assert_status_ok();
@@ -3415,13 +3394,13 @@ mod tests {
         assert_eq!(body["warnings"], json!([]));
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "hello"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         let markdown = server
-            .get("/collections/tasks/entities/t-001?format=markdown")
+            .get("/tenants/default/databases/default/collections/tasks/entities/t-001?format=markdown")
             .await;
         markdown.assert_status_ok();
         assert_eq!(markdown.text(), "# hello");
@@ -3432,7 +3411,7 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({
                 "schema": {
                     "entity_schema": {
@@ -3448,7 +3427,7 @@ mod tests {
             .assert_status(StatusCode::CREATED);
 
         let resp = server
-            .put("/collections/tasks/template")
+            .put("/tenants/default/databases/default/collections/tasks/template")
             .json(&json!({"template": "{{ghost}}"}))
             .await;
 
@@ -3466,13 +3445,13 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         let resp = server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v2"}, "expected_version": 1}))
             .await;
         resp.assert_status_ok();
@@ -3485,13 +3464,13 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         let resp = server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v2"}, "expected_version": 99}))
             .await;
         resp.assert_status(StatusCode::CONFLICT);
@@ -3515,18 +3494,18 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "bye"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         server
-            .delete("/entities/tasks/t-001")
+            .delete("/tenants/default/databases/default/entities/tasks/t-001")
             .await
             .assert_status_ok();
 
         server
-            .get("/entities/tasks/t-001")
+            .get("/tenants/default/databases/default/entities/tasks/t-001")
             .await
             .assert_status_not_found();
     }
@@ -3537,19 +3516,19 @@ mod tests {
 
         // Create two entities.
         server
-            .post("/entities/users/u-001")
+            .post("/tenants/default/databases/default/entities/users/u-001")
             .json(&json!({"data": {"name": "Alice"}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "Task 1"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         // Create link.
         let resp = server
-            .post("/links")
+            .post("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "users",
                 "source_id": "u-001",
@@ -3561,7 +3540,7 @@ mod tests {
         resp.assert_status(StatusCode::CREATED);
 
         // Traverse.
-        let resp = server.get("/traverse/users/u-001?link_type=owns").await;
+        let resp = server.get("/tenants/default/databases/default/traverse/users/u-001?link_type=owns").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entities"].as_array().unwrap().len(), 1);
@@ -3574,19 +3553,19 @@ mod tests {
 
         // Create two entities.
         server
-            .post("/entities/users/u-001")
+            .post("/tenants/default/databases/default/entities/users/u-001")
             .json(&json!({"data": {"name": "Alice"}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "Task 1"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         // Create link.
         server
-            .post("/links")
+            .post("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "users",
                 "source_id": "u-001",
@@ -3598,14 +3577,14 @@ mod tests {
             .assert_status(StatusCode::CREATED);
 
         // Verify traverse returns the linked entity.
-        let resp = server.get("/traverse/users/u-001?link_type=owns").await;
+        let resp = server.get("/tenants/default/databases/default/traverse/users/u-001?link_type=owns").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entities"].as_array().unwrap().len(), 1);
 
         // Delete the link.
         let resp = server
-            .delete("/links")
+            .delete("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "users",
                 "source_id": "u-001",
@@ -3620,7 +3599,7 @@ mod tests {
         assert_eq!(body["link_type"], "owns");
 
         // Traverse now returns no entities.
-        let resp = server.get("/traverse/users/u-001?link_type=owns").await;
+        let resp = server.get("/tenants/default/databases/default/traverse/users/u-001?link_type=owns").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entities"].as_array().unwrap().len(), 0);
@@ -3631,12 +3610,12 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}, "actor": "agent-1"}))
             .await
             .assert_status(StatusCode::CREATED);
 
-        let resp = server.get("/audit/entity/tasks/t-001").await;
+        let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-001").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         let entries = body["entries"].as_array().unwrap();
@@ -3649,7 +3628,7 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
@@ -3658,23 +3637,25 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/db/prod/collections/tasks")
+            .post("/tenants/default/databases/prod/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"scope": "default"}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/db/prod/entities/tasks/t-001")
+            .post("/tenants/default/databases/prod/entities/tasks/t-001")
             .json(&json!({"data": {"scope": "prod"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
-        let path_scoped_resp = server.get("/db/prod/audit/entity/tasks/t-001").await;
+        // Path-scoped: auditing tasks/t-001 in the prod database returns entries
+        // for the fully-qualified "prod.default.tasks" collection.
+        let path_scoped_resp = server.get("/tenants/default/databases/prod/audit/entity/tasks/t-001").await;
         path_scoped_resp.assert_status_ok();
         let path_scoped_body: Value = path_scoped_resp.json();
         let path_scoped_entries = path_scoped_body["entries"]
@@ -3685,23 +3666,10 @@ mod tests {
             .iter()
             .all(|entry| entry["collection"] == "prod.default.tasks"));
 
-        let header_scoped_resp = server
-            .get("/audit/entity/tasks/t-001")
-            .add_header(AXON_DATABASE_HEADER, "prod")
-            .await;
-        header_scoped_resp.assert_status_ok();
-        let header_scoped_body: Value = header_scoped_resp.json();
-        let header_scoped_entries = header_scoped_body["entries"]
-            .as_array()
-            .expect("header-scoped audit/entity should return an entries array");
-        assert!(!header_scoped_entries.is_empty());
-        assert!(header_scoped_entries
-            .iter()
-            .all(|entry| entry["collection"] == "prod.default.tasks"));
-
+        // Cross-database: querying prod database for "default.default.tasks" (a
+        // default-scope collection) must return empty — the namespaces don't overlap.
         let cross_database_resp = server
-            .get("/audit/entity/default.default.tasks/t-001")
-            .add_header(AXON_DATABASE_HEADER, "prod")
+            .get("/tenants/default/databases/prod/audit/entity/default.default.tasks/t-001")
             .await;
         cross_database_resp.assert_status_ok();
         let cross_database_body: Value = cross_database_resp.json();
@@ -3716,18 +3684,18 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}, "actor": "alice"}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/tasks/t-002")
+            .post("/tenants/default/databases/default/entities/tasks/t-002")
             .json(&json!({"data": {"title": "v2"}, "actor": "bob"}))
             .await
             .assert_status(StatusCode::CREATED);
 
         // Filter by actor.
-        let resp = server.get("/audit/query?actor=anonymous").await;
+        let resp = server.get("/tenants/default/databases/default/audit/query?actor=anonymous").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         let entries = body["entries"].as_array().unwrap();
@@ -3735,7 +3703,7 @@ mod tests {
         assert_eq!(entries[0]["actor"], "anonymous");
 
         // Filter by collection.
-        let resp = server.get("/audit/query?collection=tasks").await;
+        let resp = server.get("/tenants/default/databases/default/audit/query?collection=tasks").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entries"].as_array().unwrap().len(), 2);
@@ -3752,28 +3720,28 @@ mod tests {
         // and must be excluded from the response, while the cursor must still advance
         // past it in global audit_id order.
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}, "actor": "agent"}))
             .await
             .assert_status(StatusCode::CREATED); // audit id = 1
         server
-            .post("/entities/beads/b-001")
+            .post("/tenants/default/databases/default/entities/beads/b-001")
             .json(&json!({"data": {"name": "b1"}, "actor": "agent"}))
             .await
             .assert_status(StatusCode::CREATED); // audit id = 2
         server
-            .post("/entities/users/u-001")
+            .post("/tenants/default/databases/default/entities/users/u-001")
             .json(&json!({"data": {"name": "u1"}, "actor": "agent"}))
             .await
             .assert_status(StatusCode::CREATED); // audit id = 3 — excluded by filter
         server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v2"}, "expected_version": 1, "actor": "agent"}))
             .await
             .assert_status_ok(); // audit id = 4
 
         // Multi-collection tail: request tasks + beads, expect 3 entries in global id order.
-        let resp = server.get("/audit/query?collections=tasks,beads").await;
+        let resp = server.get("/tenants/default/databases/default/audit/query?collections=tasks,beads").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         let entries = body["entries"].as_array().unwrap();
@@ -3792,7 +3760,7 @@ mod tests {
         // Cursor walks: after_id=ids[0] should skip the first tasks entry.
         let resp = server
             .get(&format!(
-                "/audit/query?collections=tasks,beads&after_id={}",
+                "/tenants/default/databases/default/audit/query?collections=tasks,beads&after_id={}",
                 ids[0]
             ))
             .await;
@@ -3804,7 +3772,7 @@ mod tests {
 
         // Union semantics: ?collection=tasks combined with ?collections=beads should return both.
         let resp = server
-            .get("/audit/query?collection=tasks&collections=beads")
+            .get("/tenants/default/databases/default/audit/query?collection=tasks&collections=beads")
             .await;
         resp.assert_status_ok();
         let body: Value = resp.json();
@@ -3835,12 +3803,12 @@ mod tests {
         let server = test_server_with_auth(peer, auth);
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}, "actor": "spoofed"}))
             .await
             .assert_status(StatusCode::CREATED);
 
-        let resp = server.get("/audit/query?actor=agent@example.com").await;
+        let resp = server.get("/tenants/default/databases/default/audit/query?actor=agent@example.com").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         let entries = body["entries"].as_array().unwrap();
@@ -3866,7 +3834,7 @@ mod tests {
         let server = test_server_with_auth(peer, auth);
 
         let resp = server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}, "actor": "spoofed"}))
             .await;
         resp.assert_status(StatusCode::UNAUTHORIZED);
@@ -3879,19 +3847,19 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}, "actor": "alice"}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v2"}, "expected_version": 1, "actor": "alice"}))
             .await
             .assert_status_ok();
 
         // Get audit entries to find the entry_id for the create.
         let resp = server
-            .get("/audit/query?entity_id=t-001&collection=tasks")
+            .get("/tenants/default/databases/default/audit/query?entity_id=t-001&collection=tasks")
             .await;
         resp.assert_status_ok();
         let body: Value = resp.json();
@@ -3902,7 +3870,7 @@ mod tests {
         // Revert back to v1 state — but entry 0 is a create (no before), so use entry 1 (update).
         let update_entry_id = entries[1]["id"].as_u64().unwrap();
         let resp = server
-            .post("/audit/revert")
+            .post("/tenants/default/databases/default/audit/revert")
             .json(&json!({"audit_entry_id": update_entry_id, "actor": "admin"}))
             .await;
         resp.assert_status_ok();
@@ -3917,18 +3885,18 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}, "actor": "alice"}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v2"}, "expected_version": 1, "actor": "alice"}))
             .await
             .assert_status_ok();
 
         let resp = server
-            .post("/v1/collections/tasks/entities/t-001/rollback")
+            .post("/tenants/default/databases/default/collections/tasks/entities/t-001/rollback")
             .json(&json!({"to_version": 1}))
             .await;
         resp.assert_status_ok();
@@ -3948,22 +3916,22 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}, "actor": "creator"}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v2"}, "expected_version": 1, "actor": "editor"}))
             .await
             .assert_status_ok();
         server
-            .delete("/entities/tasks/t-001")
+            .delete("/tenants/default/databases/default/entities/tasks/t-001")
             .await
             .assert_status_ok();
 
         let resp = server
-            .post("/v1/collections/tasks/entities/t-001/rollback")
+            .post("/tenants/default/databases/default/collections/tasks/entities/t-001/rollback")
             .json(&json!({"to_version": 1}))
             .await;
         resp.assert_status_ok();
@@ -3979,7 +3947,7 @@ mod tests {
             "1"
         );
 
-        let restored = server.get("/entities/tasks/t-001").await;
+        let restored = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         restored.assert_status_ok();
         let restored_body: Value = restored.json();
         assert_eq!(restored_body["entity"]["version"], 3);
@@ -3991,18 +3959,18 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v2"}, "expected_version": 1}))
             .await
             .assert_status_ok();
 
         let resp = server
-            .post("/collections/tasks/entities/t-001/rollback")
+            .post("/tenants/default/databases/default/collections/tasks/entities/t-001/rollback")
             .json(&json!({"to_version": 1, "dry_run": true}))
             .await;
         resp.assert_status_ok();
@@ -4014,7 +3982,7 @@ mod tests {
         assert_eq!(body["target"]["data"]["title"], "v1");
         assert_eq!(body["diff"]["title"]["after"], "v1");
 
-        let current = server.get("/entities/tasks/t-001").await;
+        let current = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         current.assert_status_ok();
         let current_body: Value = current.json();
         assert_eq!(current_body["entity"]["version"], 2);
@@ -4026,12 +3994,12 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1", "status": "draft"}, "actor": "alice"}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({
                 "data": {"title": "v2", "status": "published"},
                 "expected_version": 1,
@@ -4040,12 +4008,12 @@ mod tests {
             .await
             .assert_status_ok();
         server
-            .delete("/entities/tasks/t-001")
+            .delete("/tenants/default/databases/default/entities/tasks/t-001")
             .await
             .assert_status_ok();
 
         let resp = server
-            .post("/v1/collections/tasks/entities/t-001/rollback")
+            .post("/tenants/default/databases/default/collections/tasks/entities/t-001/rollback")
             .json(&json!({"to_version": 1, "dry_run": true}))
             .await;
         resp.assert_status_ok();
@@ -4060,7 +4028,7 @@ mod tests {
         assert_eq!(body["diff"]["status"]["after"], "draft");
 
         server
-            .get("/entities/tasks/t-001")
+            .get("/tenants/default/databases/default/entities/tasks/t-001")
             .await
             .assert_status(StatusCode::NOT_FOUND);
     }
@@ -4140,7 +4108,7 @@ mod tests {
         }
 
         let resp = server
-            .post("/collections/items/entities/g-1/rollback")
+            .post("/tenants/default/databases/default/collections/items/entities/g-1/rollback")
             .json(&json!({"to_version": 1}))
             .await;
         resp.assert_status(StatusCode::CONFLICT);
@@ -4154,7 +4122,7 @@ mod tests {
 
         // Create collection.
         let resp = server
-            .post("/collections/my-col")
+            .post("/tenants/default/databases/default/collections/my-col")
             .json(&json!({"schema": {}, "actor": "admin"}))
             .await;
         resp.assert_status(StatusCode::CREATED);
@@ -4163,7 +4131,7 @@ mod tests {
 
         // Duplicate create returns 409.
         let resp = server
-            .post("/collections/my-col")
+            .post("/tenants/default/databases/default/collections/my-col")
             .json(&json!({"schema": {}, "actor": "admin"}))
             .await;
         resp.assert_status(StatusCode::CONFLICT);
@@ -4171,7 +4139,7 @@ mod tests {
         assert_eq!(body["code"], "already_exists");
 
         // Drop collection.
-        let resp = server.delete("/collections/my-col").await;
+        let resp = server.delete("/tenants/default/databases/default/collections/my-col").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["name"], "my-col");
@@ -4184,7 +4152,7 @@ mod tests {
         // Seed three tasks.
         for (id, status) in [("t-1", "open"), ("t-2", "done"), ("t-3", "open")] {
             server
-                .post(&format!("/entities/tasks/{id}"))
+                .post(&format!("/tenants/default/databases/default/entities/tasks/{id}"))
                 .json(&json!({"data": {"status": status}}))
                 .await
                 .assert_status(StatusCode::CREATED);
@@ -4192,7 +4160,7 @@ mod tests {
 
         // Filter: status = "open"
         let resp = server
-            .post("/collections/tasks/query")
+            .post("/tenants/default/databases/default/collections/tasks/query")
             .json(&json!({
                 "filter": {
                     "type": "field",
@@ -4209,7 +4177,7 @@ mod tests {
 
         // count_only
         let resp2 = server
-            .post("/collections/tasks/query")
+            .post("/tenants/default/databases/default/collections/tasks/query")
             .json(&json!({
                 "filter": {
                     "type": "field",
@@ -4231,7 +4199,7 @@ mod tests {
     #[tokio::test]
     async fn http_list_collections_empty() {
         let server = test_server();
-        let resp = server.get("/collections").await;
+        let resp = server.get("/tenants/default/databases/default/collections").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["collections"].as_array().unwrap().len(), 0);
@@ -4243,25 +4211,25 @@ mod tests {
 
         // Create two collections.
         server
-            .post("/collections/apples")
+            .post("/tenants/default/databases/default/collections/apples")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/collections/bananas")
+            .post("/tenants/default/databases/default/collections/bananas")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         // Seed an entity into "bananas".
         server
-            .post("/entities/bananas/b-001")
+            .post("/tenants/default/databases/default/entities/bananas/b-001")
             .json(&json!({"data": {"name": "cavendish"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         // List.
-        let resp = server.get("/collections").await;
+        let resp = server.get("/tenants/default/databases/default/collections").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         let cols = body["collections"].as_array().unwrap();
@@ -4272,7 +4240,7 @@ mod tests {
         assert_eq!(cols[1]["entity_count"], 1);
 
         // Describe "bananas".
-        let resp = server.get("/collections/bananas").await;
+        let resp = server.get("/tenants/default/databases/default/collections/bananas").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["name"], "bananas");
@@ -4282,7 +4250,7 @@ mod tests {
     #[tokio::test]
     async fn http_describe_unknown_collection_returns_404() {
         let server = test_server();
-        let resp = server.get("/collections/ghost").await;
+        let resp = server.get("/tenants/default/databases/default/collections/ghost").await;
         resp.assert_status_not_found();
         let body: Value = resp.json();
         assert_eq!(body["code"], "not_found");
@@ -4292,7 +4260,7 @@ mod tests {
     async fn http_create_collection_with_invalid_name_returns_400() {
         let server = test_server();
         let resp = server
-            .post("/collections/BadName")
+            .post("/tenants/default/databases/default/collections/BadName")
             .json(&json!({"schema": {}}))
             .await;
         resp.assert_status(StatusCode::BAD_REQUEST);
@@ -4303,7 +4271,7 @@ mod tests {
     #[tokio::test]
     async fn http_create_collection_without_schema_returns_400() {
         let server = test_server();
-        let resp = server.post("/collections/good-name").json(&json!({})).await;
+        let resp = server.post("/tenants/default/databases/default/collections/good-name").json(&json!({})).await;
         resp.assert_status(StatusCode::BAD_REQUEST);
         let body: Value = resp.json();
         assert_eq!(body["code"], "invalid_argument");
@@ -4317,7 +4285,7 @@ mod tests {
 
         // PUT schema.
         let resp = server
-            .put("/collections/invoices/schema")
+            .put("/tenants/default/databases/default/collections/invoices/schema")
             .json(&json!({
                 "collection": "invoices",
                 "version": 1,
@@ -4335,7 +4303,7 @@ mod tests {
         assert_eq!(body["schema"]["collection"], "invoices");
 
         // GET schema — must return what was stored.
-        let resp = server.get("/collections/invoices/schema").await;
+        let resp = server.get("/tenants/default/databases/default/collections/invoices/schema").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["schema"]["collection"], "invoices");
@@ -4346,7 +4314,7 @@ mod tests {
     #[tokio::test]
     async fn http_get_schema_missing_returns_404() {
         let server = test_server();
-        let resp = server.get("/collections/nonexistent/schema").await;
+        let resp = server.get("/tenants/default/databases/default/collections/nonexistent/schema").await;
         resp.assert_status_not_found();
         let body: Value = resp.json();
         assert_eq!(body["code"], "not_found");
@@ -4358,7 +4326,7 @@ mod tests {
 
         // Register a schema requiring "amount" field.
         server
-            .put("/collections/payments/schema")
+            .put("/tenants/default/databases/default/collections/payments/schema")
             .json(&json!({
                 "collection": "payments",
                 "version": 1,
@@ -4375,7 +4343,7 @@ mod tests {
 
         // Entity without "amount" must be rejected.
         let resp = server
-            .post("/entities/payments/p-001")
+            .post("/tenants/default/databases/default/entities/payments/p-001")
             .json(&json!({"data": {"note": "oops"}}))
             .await;
         resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
@@ -4384,7 +4352,7 @@ mod tests {
 
         // Entity with "amount" must succeed.
         let resp = server
-            .post("/entities/payments/p-001")
+            .post("/tenants/default/databases/default/entities/payments/p-001")
             .json(&json!({"data": {"amount": 42.0}}))
             .await;
         resp.assert_status(StatusCode::CREATED);
@@ -4396,7 +4364,7 @@ mod tests {
 
         // PUT schema with an explicit actor.
         server
-            .put("/collections/invoices/schema")
+            .put("/tenants/default/databases/default/collections/invoices/schema")
             .json(&json!({
                 "version": 1,
                 "actor": "schema-admin"
@@ -4405,7 +4373,7 @@ mod tests {
             .assert_status_ok();
 
         // Audit log must contain a SchemaUpdate entry with the resolved actor.
-        let resp = server.get("/audit/query?collection=invoices").await;
+        let resp = server.get("/tenants/default/databases/default/audit/query?collection=invoices").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         let entries = body["entries"].as_array().unwrap();
@@ -4419,18 +4387,18 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-1")
+            .post("/tenants/default/databases/default/entities/tasks/t-1")
             .json(&json!({"data": {"status": "open", "assignee": "alice"}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/tasks/t-2")
+            .post("/tenants/default/databases/default/entities/tasks/t-2")
             .json(&json!({"data": {"status": "open", "assignee": "bob"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         let resp = server
-            .post("/collections/tasks/query")
+            .post("/tenants/default/databases/default/collections/tasks/query")
             .json(&json!({
                 "filter": {
                     "type": "and",
@@ -4454,7 +4422,7 @@ mod tests {
 
         // POST /entities/tasks/query must create an entity with ID "query".
         let resp = server
-            .post("/entities/tasks/query")
+            .post("/tenants/default/databases/default/entities/tasks/query")
             .json(&json!({"data": {"title": "reserved-id"}}))
             .await;
         resp.assert_status(StatusCode::CREATED);
@@ -4462,7 +4430,7 @@ mod tests {
         assert_eq!(body["entity"]["id"], "query");
 
         // GET /entities/tasks/query must retrieve the entity with ID "query".
-        let resp = server.get("/entities/tasks/query").await;
+        let resp = server.get("/tenants/default/databases/default/entities/tasks/query").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entity"]["id"], "query");
@@ -4474,14 +4442,14 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/tasks/t-1")
+            .post("/tenants/default/databases/default/entities/tasks/t-1")
             .json(&json!({"data": {"status": "open"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         // POST /collections/{collection}/query is the non-conflicting query endpoint.
         let resp = server
-            .post("/collections/tasks/query")
+            .post("/tenants/default/databases/default/collections/tasks/query")
             .json(&json!({
                 "filter": {
                     "type": "field",
@@ -4502,13 +4470,13 @@ mod tests {
 
         // Version conflict includes expected/actual fields.
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v1"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         let resp = server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "v2"}, "expected_version": 5}))
             .await;
         let body: Value = resp.json();
@@ -4526,19 +4494,19 @@ mod tests {
 
         // Create two entities first.
         server
-            .post("/entities/accounts/A")
+            .post("/tenants/default/databases/default/entities/accounts/A")
             .json(&json!({"data": {"balance": 100}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/accounts/B")
+            .post("/tenants/default/databases/default/entities/accounts/B")
             .json(&json!({"data": {"balance": 50}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         // Commit a transaction: debit A, credit B.
         let resp = server
-            .post("/transactions")
+            .post("/tenants/default/databases/default/transactions")
             .json(&json!({
                 "operations": [
                     {"op": "update", "collection": "accounts", "id": "A", "data": {"balance": 70}, "expected_version": 1},
@@ -4553,7 +4521,7 @@ mod tests {
         assert_eq!(body["entities"].as_array().unwrap().len(), 2);
 
         // Verify updates applied.
-        let resp = server.get("/entities/accounts/A").await;
+        let resp = server.get("/tenants/default/databases/default/entities/accounts/A").await;
         let body: Value = resp.json();
         assert_eq!(body["entity"]["data"]["balance"], 70);
         assert_eq!(body["entity"]["version"], 2);
@@ -4564,14 +4532,14 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/entities/accounts/X")
+            .post("/tenants/default/databases/default/entities/accounts/X")
             .json(&json!({"data": {"balance": 100}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         // Transaction with wrong expected_version.
         let resp = server
-            .post("/transactions")
+            .post("/tenants/default/databases/default/transactions")
             .json(&json!({
                 "operations": [
                     {"op": "update", "collection": "accounts", "id": "X", "data": {"balance": 0}, "expected_version": 99}
@@ -4583,7 +4551,7 @@ mod tests {
         assert_eq!(body["code"], "version_conflict");
 
         // Entity must be unchanged.
-        let resp = server.get("/entities/accounts/X").await;
+        let resp = server.get("/tenants/default/databases/default/entities/accounts/X").await;
         let body: Value = resp.json();
         assert_eq!(body["entity"]["data"]["balance"], 100);
     }
@@ -4594,14 +4562,14 @@ mod tests {
 
         // Seed an entity to delete.
         server
-            .post("/entities/temp/d-001")
+            .post("/tenants/default/databases/default/entities/temp/d-001")
             .json(&json!({"data": {"x": 1}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         // Transaction: create one entity, delete another.
         let resp = server
-            .post("/transactions")
+            .post("/tenants/default/databases/default/transactions")
             .json(&json!({
                 "operations": [
                     {"op": "create", "collection": "temp", "id": "c-001", "data": {"y": 2}},
@@ -4613,10 +4581,10 @@ mod tests {
         resp.assert_status_ok();
 
         // c-001 should exist.
-        server.get("/entities/temp/c-001").await.assert_status_ok();
+        server.get("/tenants/default/databases/default/entities/temp/c-001").await.assert_status_ok();
         // d-001 should be gone.
         server
-            .get("/entities/temp/d-001")
+            .get("/tenants/default/databases/default/entities/temp/d-001")
             .await
             .assert_status_not_found();
     }
@@ -4674,24 +4642,24 @@ mod tests {
         }
 
         server
-            .post("/entities/prod.billing.invoices/inv-001")
+            .post("/tenants/default/databases/default/entities/prod.billing.invoices/inv-001")
             .json(&json!({"data": {"external_id": "shared-1", "scope": "billing"}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/prod.engineering.invoices/inv-001")
+            .post("/tenants/default/databases/default/entities/prod.engineering.invoices/inv-001")
             .json(&json!({"data": {"external_id": "shared-1", "scope": "engineering"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
-        let resp = server.get("/entities/prod.billing.invoices/inv-001").await;
+        let resp = server.get("/tenants/default/databases/default/entities/prod.billing.invoices/inv-001").await;
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entity"]["collection"], "prod.billing.invoices");
         assert_eq!(body["entity"]["data"]["scope"], "billing");
 
         let resp = server
-            .post("/collections/prod.engineering.invoices/query")
+            .post("/tenants/default/databases/default/collections/prod.engineering.invoices/query")
             .json(&json!({
                 "filter": {
                     "type": "field",
@@ -4711,25 +4679,25 @@ mod tests {
         assert_eq!(body["entities"][0]["data"]["scope"], "engineering");
 
         server
-            .delete("/entities/prod.billing.invoices/inv-001")
+            .delete("/tenants/default/databases/default/entities/prod.billing.invoices/inv-001")
             .await
             .assert_status_ok();
         server
-            .get("/entities/prod.billing.invoices/inv-001")
+            .get("/tenants/default/databases/default/entities/prod.billing.invoices/inv-001")
             .await
             .assert_status_not_found();
         server
-            .get("/entities/prod.engineering.invoices/inv-001")
+            .get("/tenants/default/databases/default/entities/prod.engineering.invoices/inv-001")
             .await
             .assert_status_ok();
     }
 
     #[tokio::test]
-    async fn http_header_current_database_routes_unqualified_collection_operations() {
+    async fn http_path_current_database_routes_unqualified_collection_operations() {
         let server = test_server();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
@@ -4738,32 +4706,29 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/collections/tasks")
-            .add_header(AXON_DATABASE_HEADER, "prod")
+            .post("/tenants/default/databases/prod/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"scope": "default"}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/entities/tasks/t-001")
-            .add_header(AXON_DATABASE_HEADER, "prod")
+            .post("/tenants/default/databases/prod/entities/tasks/t-001")
             .json(&json!({"data": {"scope": "prod"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
-        let default_resp = server.get("/entities/tasks/t-001").await;
+        let default_resp = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         default_resp.assert_status_ok();
         let default_body: Value = default_resp.json();
         assert_eq!(default_body["entity"]["data"]["scope"], "default");
 
         let prod_resp = server
-            .get("/entities/tasks/t-001")
-            .add_header(AXON_DATABASE_HEADER, "prod")
+            .get("/tenants/default/databases/prod/entities/tasks/t-001")
             .await;
         prod_resp.assert_status_ok();
         let prod_body: Value = prod_resp.json();
@@ -4776,7 +4741,7 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
@@ -4785,29 +4750,29 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/db/prod/collections/tasks")
+            .post("/tenants/default/databases/prod/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"scope": "default"}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/db/prod/entities/tasks/t-001")
+            .post("/tenants/default/databases/prod/entities/tasks/t-001")
             .json(&json!({"data": {"scope": "prod"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
-        let prod_resp = server.get("/db/prod/entities/tasks/t-001").await;
+        let prod_resp = server.get("/tenants/default/databases/prod/entities/tasks/t-001").await;
         prod_resp.assert_status_ok();
         let prod_body: Value = prod_resp.json();
         assert_eq!(prod_body["entity"]["collection"], "prod.default.tasks");
         assert_eq!(prod_body["entity"]["data"]["scope"], "prod");
 
-        let default_resp = server.get("/entities/tasks/t-001").await;
+        let default_resp = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         default_resp.assert_status_ok();
         let default_body: Value = default_resp.json();
         assert_eq!(default_body["entity"]["data"]["scope"], "default");
@@ -4818,7 +4783,7 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
@@ -4827,39 +4792,23 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/db/prod/collections/tasks")
+            .post("/tenants/default/databases/prod/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
 
-        let global_resp = server.get("/collections").await;
-        global_resp.assert_status_ok();
-        let global_body: Value = global_resp.json();
-        let global_names: Vec<&str> = global_body["collections"]
+        // Default-scoped: only collections belonging to the default database.
+        let default_resp = server.get("/tenants/default/databases/default/collections").await;
+        default_resp.assert_status_ok();
+        let default_body: Value = default_resp.json();
+        let default_collections = default_body["collections"]
             .as_array()
-            .expect("global collection list should be an array")
-            .iter()
-            .map(|collection| {
-                collection["name"]
-                    .as_str()
-                    .expect("collection metadata should include a name")
-            })
-            .collect();
-        assert_eq!(global_names, vec!["tasks", "tasks"]);
+            .expect("default-scoped collection list should be an array");
+        assert_eq!(default_collections.len(), 1);
+        assert_eq!(default_collections[0]["name"], "tasks");
 
-        let header_scoped_resp = server
-            .get("/collections")
-            .add_header(AXON_DATABASE_HEADER, "prod")
-            .await;
-        header_scoped_resp.assert_status_ok();
-        let header_scoped_body: Value = header_scoped_resp.json();
-        let header_scoped_collections = header_scoped_body["collections"]
-            .as_array()
-            .expect("header scoped collection list should be an array");
-        assert_eq!(header_scoped_collections.len(), 1);
-        assert_eq!(header_scoped_collections[0]["name"], "prod.default.tasks");
-
-        let path_scoped_resp = server.get("/db/prod/collections").await;
+        // Prod-scoped: only collections belonging to the prod database.
+        let path_scoped_resp = server.get("/tenants/default/databases/prod/collections").await;
         path_scoped_resp.assert_status_ok();
         let path_scoped_body: Value = path_scoped_resp.json();
         let path_scoped_collections = path_scoped_body["collections"]
@@ -4874,7 +4823,7 @@ mod tests {
         let server = test_server();
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
@@ -4883,50 +4832,38 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/db/prod/collections/tasks")
+            .post("/tenants/default/databases/prod/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
 
         server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"scope": "default"}}))
             .await
             .assert_status(StatusCode::CREATED);
         server
-            .post("/db/prod/entities/tasks/t-001")
+            .post("/tenants/default/databases/prod/entities/tasks/t-001")
             .json(&json!({"data": {"scope": "prod"}}))
             .await
             .assert_status(StatusCode::CREATED);
 
-        let global_resp = server.get("/audit/query").await;
-        global_resp.assert_status_ok();
-        let global_body: Value = global_resp.json();
-        let global_entries = global_body["entries"]
+        // Default-scoped: audit query returns only entries for default database.
+        let default_resp = server.get("/tenants/default/databases/default/audit/query").await;
+        default_resp.assert_status_ok();
+        let default_body: Value = default_resp.json();
+        let default_entries = default_body["entries"]
             .as_array()
-            .expect("global audit query should return an entries array");
-        assert!(global_entries
+            .expect("default-scoped audit query should return an entries array");
+        assert!(default_entries
             .iter()
             .any(|entry| entry["collection"] == "tasks"));
-        assert!(global_entries
+        assert!(!default_entries
             .iter()
             .any(|entry| entry["collection"] == "prod.default.tasks"));
 
-        let header_scoped_resp = server
-            .get("/audit/query")
-            .add_header(AXON_DATABASE_HEADER, "prod")
-            .await;
-        header_scoped_resp.assert_status_ok();
-        let header_scoped_body: Value = header_scoped_resp.json();
-        let header_scoped_entries = header_scoped_body["entries"]
-            .as_array()
-            .expect("header scoped audit query should return an entries array");
-        assert!(!header_scoped_entries.is_empty());
-        assert!(header_scoped_entries
-            .iter()
-            .all(|entry| entry["collection"] == "prod.default.tasks"));
-
-        let path_scoped_resp = server.get("/db/prod/audit/query").await;
+        // Prod-scoped: audit query returns only entries for prod database.
+        let path_scoped_resp = server.get("/tenants/default/databases/prod/audit/query").await;
         path_scoped_resp.assert_status_ok();
         let path_scoped_body: Value = path_scoped_resp.json();
         let path_scoped_entries = path_scoped_body["entries"]
@@ -4992,7 +4929,7 @@ mod tests {
             .contains("database 'default' is implicit and cannot be dropped"));
 
         server
-            .post("/collections/tasks")
+            .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
@@ -5258,7 +5195,7 @@ mod tests {
     async fn rbac_admin_can_create_entity() {
         let server = test_server_with_role(Role::Admin);
         let resp = server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "hello"}}))
             .await;
         resp.assert_status(StatusCode::CREATED);
@@ -5267,7 +5204,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_admin_can_get_entity() {
         let server = seeded_server_with_role(Role::Admin).await;
-        let resp = server.get("/entities/tasks/t-001").await;
+        let resp = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
@@ -5275,7 +5212,7 @@ mod tests {
     async fn rbac_admin_can_update_entity() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "updated"}, "expected_version": 1}))
             .await;
         resp.assert_status_ok();
@@ -5284,7 +5221,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_admin_can_delete_entity() {
         let server = seeded_server_with_role(Role::Admin).await;
-        let resp = server.delete("/entities/tasks/t-001").await;
+        let resp = server.delete("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
@@ -5292,7 +5229,7 @@ mod tests {
     async fn rbac_admin_can_create_collection() {
         let server = test_server_with_role(Role::Admin);
         let resp = server
-            .post("/collections/new-col")
+            .post("/tenants/default/databases/default/collections/new-col")
             .json(&json!({"schema": {}}))
             .await;
         resp.assert_status(StatusCode::CREATED);
@@ -5301,7 +5238,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_admin_can_drop_collection() {
         let server = seeded_server_with_role(Role::Admin).await;
-        let resp = server.delete("/collections/tasks").await;
+        let resp = server.delete("/tenants/default/databases/default/collections/tasks").await;
         resp.assert_status_ok();
     }
 
@@ -5309,7 +5246,7 @@ mod tests {
     async fn rbac_admin_can_put_schema() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server
-            .put("/collections/tasks/schema")
+            .put("/tenants/default/databases/default/collections/tasks/schema")
             .json(&json!({
                 "version": 2,
                 "entity_schema": {"type": "object"}
@@ -5322,7 +5259,7 @@ mod tests {
     async fn rbac_admin_can_create_link() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server
-            .post("/links")
+            .post("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "tasks",
                 "source_id": "t-001",
@@ -5339,7 +5276,7 @@ mod tests {
         let server = seeded_server_with_role(Role::Admin).await;
         // Create a link first.
         server
-            .post("/links")
+            .post("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "tasks",
                 "source_id": "t-001",
@@ -5350,7 +5287,7 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
         let resp = server
-            .delete("/links")
+            .delete("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "tasks",
                 "source_id": "t-001",
@@ -5366,7 +5303,7 @@ mod tests {
     async fn rbac_admin_can_put_template() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server
-            .put("/collections/tasks/template")
+            .put("/tenants/default/databases/default/collections/tasks/template")
             .json(&json!({"template": "# {{title}}"}))
             .await;
         resp.assert_status_ok();
@@ -5376,11 +5313,11 @@ mod tests {
     async fn rbac_admin_can_delete_template() {
         let server = seeded_server_with_role(Role::Admin).await;
         server
-            .put("/collections/tasks/template")
+            .put("/tenants/default/databases/default/collections/tasks/template")
             .json(&json!({"template": "# {{title}}"}))
             .await
             .assert_status_ok();
-        let resp = server.delete("/collections/tasks/template").await;
+        let resp = server.delete("/tenants/default/databases/default/collections/tasks/template").await;
         resp.assert_status_ok();
     }
 
@@ -5390,7 +5327,7 @@ mod tests {
     async fn rbac_write_can_create_entity() {
         let server = test_server_with_role(Role::Write);
         let resp = server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "hello"}}))
             .await;
         resp.assert_status(StatusCode::CREATED);
@@ -5399,7 +5336,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_write_can_get_entity() {
         let server = seeded_server_with_role(Role::Write).await;
-        let resp = server.get("/entities/tasks/t-001").await;
+        let resp = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
@@ -5407,7 +5344,7 @@ mod tests {
     async fn rbac_write_can_update_entity() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "updated"}, "expected_version": 1}))
             .await;
         resp.assert_status_ok();
@@ -5416,7 +5353,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_write_can_delete_entity() {
         let server = seeded_server_with_role(Role::Write).await;
-        let resp = server.delete("/entities/tasks/t-001").await;
+        let resp = server.delete("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
@@ -5424,7 +5361,7 @@ mod tests {
     async fn rbac_write_can_create_link() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server
-            .post("/links")
+            .post("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "tasks",
                 "source_id": "t-001",
@@ -5440,7 +5377,7 @@ mod tests {
     async fn rbac_write_can_delete_link() {
         let server = seeded_server_with_role(Role::Write).await;
         server
-            .post("/links")
+            .post("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "tasks",
                 "source_id": "t-001",
@@ -5451,7 +5388,7 @@ mod tests {
             .await
             .assert_status(StatusCode::CREATED);
         let resp = server
-            .delete("/links")
+            .delete("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "tasks",
                 "source_id": "t-001",
@@ -5467,7 +5404,7 @@ mod tests {
     async fn rbac_write_cannot_create_collection() {
         let server = test_server_with_role(Role::Write);
         let resp = server
-            .post("/collections/new-col")
+            .post("/tenants/default/databases/default/collections/new-col")
             .json(&json!({"schema": {}}))
             .await;
         resp.assert_status(StatusCode::FORBIDDEN);
@@ -5478,7 +5415,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_write_cannot_drop_collection() {
         let server = seeded_server_with_role(Role::Write).await;
-        let resp = server.delete("/collections/tasks").await;
+        let resp = server.delete("/tenants/default/databases/default/collections/tasks").await;
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
@@ -5486,7 +5423,7 @@ mod tests {
     async fn rbac_write_cannot_put_schema() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server
-            .put("/collections/tasks/schema")
+            .put("/tenants/default/databases/default/collections/tasks/schema")
             .json(&json!({
                 "version": 2,
                 "entity_schema": {"type": "object"}
@@ -5499,7 +5436,7 @@ mod tests {
     async fn rbac_write_cannot_put_template() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server
-            .put("/collections/tasks/template")
+            .put("/tenants/default/databases/default/collections/tasks/template")
             .json(&json!({"template": "# {{title}}"}))
             .await;
         resp.assert_status(StatusCode::FORBIDDEN);
@@ -5508,7 +5445,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_write_cannot_delete_template() {
         let server = seeded_server_with_role(Role::Write).await;
-        let resp = server.delete("/collections/tasks/template").await;
+        let resp = server.delete("/tenants/default/databases/default/collections/tasks/template").await;
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
@@ -5517,42 +5454,42 @@ mod tests {
     #[tokio::test]
     async fn rbac_read_can_get_entity() {
         let server = seeded_server_with_role(Role::Read).await;
-        let resp = server.get("/entities/tasks/t-001").await;
+        let resp = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
     #[tokio::test]
     async fn rbac_read_can_list_collections() {
         let server = seeded_server_with_role(Role::Read).await;
-        let resp = server.get("/collections").await;
+        let resp = server.get("/tenants/default/databases/default/collections").await;
         resp.assert_status_ok();
     }
 
     #[tokio::test]
     async fn rbac_read_can_describe_collection() {
         let server = seeded_server_with_role(Role::Read).await;
-        let resp = server.get("/collections/tasks").await;
+        let resp = server.get("/tenants/default/databases/default/collections/tasks").await;
         resp.assert_status_ok();
     }
 
     #[tokio::test]
     async fn rbac_read_can_get_schema() {
         let server = seeded_server_with_role(Role::Read).await;
-        let resp = server.get("/collections/tasks/schema").await;
+        let resp = server.get("/tenants/default/databases/default/collections/tasks/schema").await;
         resp.assert_status_ok();
     }
 
     #[tokio::test]
     async fn rbac_read_can_traverse() {
         let server = seeded_server_with_role(Role::Read).await;
-        let resp = server.get("/traverse/tasks/t-001?link_type=blocks").await;
+        let resp = server.get("/tenants/default/databases/default/traverse/tasks/t-001?link_type=blocks").await;
         resp.assert_status_ok();
     }
 
     #[tokio::test]
     async fn rbac_read_can_query_audit() {
         let server = seeded_server_with_role(Role::Read).await;
-        let resp = server.get("/audit/entity/tasks/t-001").await;
+        let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
@@ -5560,7 +5497,7 @@ mod tests {
     async fn rbac_read_can_query_entities() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
-            .post("/collections/tasks/query")
+            .post("/tenants/default/databases/default/collections/tasks/query")
             .json(&json!({}))
             .await;
         resp.assert_status_ok();
@@ -5570,7 +5507,7 @@ mod tests {
     async fn rbac_read_cannot_create_entity() {
         let server = test_server_with_role(Role::Read);
         let resp = server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "hello"}}))
             .await;
         resp.assert_status(StatusCode::FORBIDDEN);
@@ -5582,7 +5519,7 @@ mod tests {
     async fn rbac_read_cannot_update_entity() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
-            .put("/entities/tasks/t-001")
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "updated"}, "expected_version": 1}))
             .await;
         resp.assert_status(StatusCode::FORBIDDEN);
@@ -5591,7 +5528,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_read_cannot_delete_entity() {
         let server = seeded_server_with_role(Role::Read).await;
-        let resp = server.delete("/entities/tasks/t-001").await;
+        let resp = server.delete("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
@@ -5599,7 +5536,7 @@ mod tests {
     async fn rbac_read_cannot_create_link() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
-            .post("/links")
+            .post("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "tasks",
                 "source_id": "t-001",
@@ -5615,7 +5552,7 @@ mod tests {
     async fn rbac_read_cannot_delete_link() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
-            .delete("/links")
+            .delete("/tenants/default/databases/default/links")
             .json(&json!({
                 "source_collection": "tasks",
                 "source_id": "t-001",
@@ -5631,7 +5568,7 @@ mod tests {
     async fn rbac_read_cannot_create_collection() {
         let server = test_server_with_role(Role::Read);
         let resp = server
-            .post("/collections/new-col")
+            .post("/tenants/default/databases/default/collections/new-col")
             .json(&json!({"schema": {}}))
             .await;
         resp.assert_status(StatusCode::FORBIDDEN);
@@ -5640,7 +5577,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_read_cannot_drop_collection() {
         let server = seeded_server_with_role(Role::Read).await;
-        let resp = server.delete("/collections/tasks").await;
+        let resp = server.delete("/tenants/default/databases/default/collections/tasks").await;
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
@@ -5648,7 +5585,7 @@ mod tests {
     async fn rbac_read_cannot_put_schema() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
-            .put("/collections/tasks/schema")
+            .put("/tenants/default/databases/default/collections/tasks/schema")
             .json(&json!({
                 "version": 2,
                 "entity_schema": {"type": "object"}
@@ -5661,7 +5598,7 @@ mod tests {
     async fn rbac_read_cannot_put_template() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
-            .put("/collections/tasks/template")
+            .put("/tenants/default/databases/default/collections/tasks/template")
             .json(&json!({"template": "# {{title}}"}))
             .await;
         resp.assert_status(StatusCode::FORBIDDEN);
@@ -5670,7 +5607,7 @@ mod tests {
     #[tokio::test]
     async fn rbac_read_cannot_delete_template() {
         let server = seeded_server_with_role(Role::Read).await;
-        let resp = server.delete("/collections/tasks/template").await;
+        let resp = server.delete("/tenants/default/databases/default/collections/tasks/template").await;
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
@@ -5678,7 +5615,7 @@ mod tests {
     async fn rbac_read_cannot_commit_transaction() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
-            .post("/transactions")
+            .post("/tenants/default/databases/default/transactions")
             .json(&json!({
                 "operations": [{
                     "op": "create",
@@ -5697,7 +5634,7 @@ mod tests {
     async fn rbac_forbidden_response_is_descriptive() {
         let server = test_server_with_role(Role::Read);
         let resp = server
-            .post("/entities/tasks/t-001")
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
             .json(&json!({"data": {"title": "nope"}}))
             .await;
         resp.assert_status(StatusCode::FORBIDDEN);
@@ -5718,7 +5655,7 @@ mod tests {
     async fn rbac_write_forbidden_for_admin_op_is_descriptive() {
         let server = test_server_with_role(Role::Write);
         let resp = server
-            .post("/collections/new-col")
+            .post("/tenants/default/databases/default/collections/new-col")
             .json(&json!({"schema": {}}))
             .await;
         resp.assert_status(StatusCode::FORBIDDEN);
@@ -5835,7 +5772,7 @@ mod tests {
         let server = cors_server(cors);
 
         let resp = server
-            .method(axum::http::Method::OPTIONS, "/entities/tasks/t-001")
+            .method(axum::http::Method::OPTIONS, "/tenants/default/databases/default/entities/tasks/t-001")
             .add_header(
                 axum::http::header::ORIGIN,
                 axum::http::HeaderValue::from_static("https://sindri:5173"),
@@ -5863,7 +5800,7 @@ mod tests {
         let server = cors_server(cors);
 
         let resp = server
-            .method(axum::http::Method::OPTIONS, "/entities/tasks/t-001")
+            .method(axum::http::Method::OPTIONS, "/tenants/default/databases/default/entities/tasks/t-001")
             .add_header(
                 axum::http::header::ORIGIN,
                 axum::http::HeaderValue::from_static("https://evil.example.com"),
@@ -5884,7 +5821,7 @@ mod tests {
         let server = cors_server(cors);
 
         let resp = server
-            .method(axum::http::Method::OPTIONS, "/entities/tasks/t-001")
+            .method(axum::http::Method::OPTIONS, "/tenants/default/databases/default/entities/tasks/t-001")
             .add_header(
                 axum::http::header::ORIGIN,
                 axum::http::HeaderValue::from_static("https://any.example.com"),
@@ -5908,7 +5845,7 @@ mod tests {
 
         // POST to a real endpoint (create entity).
         let resp = server
-            .post("/entities/tasks/t-cors-test")
+            .post("/tenants/default/databases/default/entities/tasks/t-cors-test")
             .add_header(
                 axum::http::header::ORIGIN,
                 axum::http::HeaderValue::from_static("https://sindri:5173"),

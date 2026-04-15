@@ -197,7 +197,7 @@ pub struct QueryAuditRequest {
     /// Restrict to entries visible within this database scope.
     ///
     /// This is only set when the transport explicitly selected a current
-    /// database (for example, `X-Axon-Database` or `/db/{database}`).
+    /// database via the URL path (e.g. `/tenants/{tenant}/databases/{database}/…`).
     pub database: Option<String>,
     /// Restrict to entries for this collection (single-collection path; kept for
     /// backward compatibility). When `collection_ids` is also provided, the two
