@@ -64,3 +64,4 @@ axum = { version = "0.8", features = [] }
 tower = "0.5"
 reqwest.workspace = true
 serde_json.workspace = true
+proptest.workspace = true

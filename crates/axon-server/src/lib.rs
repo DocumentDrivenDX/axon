@@ -44,6 +44,7 @@
 pub mod actor_scope;
 pub mod auth;
 pub mod auth_pipeline;
+pub mod path_router;
 mod collection_listing;
 pub mod federation;
 pub(crate) mod embedded_ui;
@@ -64,4 +65,5 @@ pub mod tenant_router;
 pub use auth::{AuthContext, AuthMode, Identity, Role};
 pub use auth_pipeline::{InMemoryRevocationCache, JwtIssuer, jwt_verify_layer};
 pub use mcp_stdio::run_mcp_stdio;
+pub use path_router::{ResolvedPath, extract_tenant_database, path_router_layer};
 pub use service::AxonServiceImpl;
