@@ -99,6 +99,51 @@ impl SqliteStorageAdapter {
         }
     }
 
+    /// Insert a tenant and user row for test fixture setup.
+    ///
+    /// Both rows are inserted with `INSERT OR IGNORE` so the call is
+    /// idempotent.  Intended for integration tests that need valid FK
+    /// references in `tenants` and `users` before calling
+    /// `upsert_tenant_member`.
+    pub fn test_insert_tenant_and_user(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<(), AxonError> {
+        let conn = self.conn()?;
+        let now = 1_000_000i64;
+        conn.execute(
+            "INSERT OR IGNORE INTO tenants \
+             (id, name, display_name, created_at_ms, updated_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![tenant_id, tenant_id, tenant_id, now, now],
+        )
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO users (id, display_name, created_at_ms) \
+             VALUES (?1, ?2, ?3)",
+            params![user_id, user_id, now],
+        )
+        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Count tenant_users rows matching (tenant_id, user_id) for test assertions.
+    pub fn test_count_tenant_members(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<i64, AxonError> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM tenant_users \
+             WHERE tenant_id = ?1 AND user_id = ?2",
+            params![tenant_id, user_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| AxonError::Storage(e.to_string()))
+    }
+
     /// Acquire the inner `Connection` lock, converting a poisoned-mutex error into
     /// an `AxonError::Storage`.
     fn conn(&self) -> Result<MutexGuard<'_, Connection>, AxonError> {
@@ -1748,6 +1793,60 @@ impl StorageAdapter for SqliteStorageAdapter {
             },
         )
         .map_err(|e| AxonError::Storage(e.to_string()))
+    }
+
+    fn upsert_tenant_member(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        user_id: axon_core::auth::UserId,
+        role: axon_core::auth::TenantRole,
+    ) -> Result<axon_core::auth::TenantMember, AxonError> {
+        let conn = self.conn()?;
+        let role_str = match role {
+            axon_core::auth::TenantRole::Admin => "admin",
+            axon_core::auth::TenantRole::Write => "write",
+            axon_core::auth::TenantRole::Read => "read",
+        };
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        conn.execute(
+            "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = excluded.role",
+            params![tenant_id.as_str(), user_id.as_str(), role_str, now_ms],
+        )
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("no such table") {
+                AxonError::Storage(
+                    "auth schema not applied; call apply_auth_migrations first".into(),
+                )
+            } else {
+                AxonError::Storage(msg)
+            }
+        })?;
+        Ok(axon_core::auth::TenantMember {
+            tenant_id,
+            user_id,
+            role,
+        })
+    }
+
+    fn remove_tenant_member(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        user_id: axon_core::auth::UserId,
+    ) -> Result<bool, AxonError> {
+        let conn = self.conn()?;
+        let rows_affected = conn
+            .execute(
+                "DELETE FROM tenant_users WHERE tenant_id = ?1 AND user_id = ?2",
+                params![tenant_id.as_str(), user_id.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows_affected > 0)
     }
 }
 

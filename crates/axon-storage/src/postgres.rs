@@ -82,6 +82,55 @@ impl PostgresStorageAdapter {
         .map_err(|e| AxonError::Storage(e.to_string()))
     }
 
+    /// Apply auth/tenancy schema migrations to this adapter's PostgreSQL connection.
+    ///
+    /// Creates the `users`, `user_identities`, `tenant_users`, and related tables.
+    /// This is idempotent — safe to call multiple times.
+    pub fn apply_auth_migrations(&self) -> Result<(), AxonError> {
+        self.handle
+            .block_on(crate::auth_schema::apply_auth_migrations_postgres(&self.client))
+            .map_err(AxonError::Storage)
+    }
+
+    /// Insert a tenant and user row for test fixture setup.
+    ///
+    /// Both rows are inserted with `ON CONFLICT DO NOTHING` so the call is
+    /// idempotent.  Intended for integration tests that need valid FK
+    /// references in `tenants` and `users` before calling
+    /// `upsert_tenant_member`.
+    pub fn test_insert_tenant_and_user(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<(), AxonError> {
+        let now = 1_000_000i64;
+        self.block(self.client.execute(
+            "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms) \
+             VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+            &[&tenant_id, &tenant_id, &tenant_id, &now, &now],
+        ))?;
+        self.block(self.client.execute(
+            "INSERT INTO users (id, display_name, created_at_ms) \
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            &[&user_id, &user_id, &now],
+        ))?;
+        Ok(())
+    }
+
+    /// Count tenant_users rows matching (tenant_id, user_id) for test assertions.
+    pub fn test_count_tenant_members(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> Result<i64, AxonError> {
+        let row = self.block(self.client.query_one(
+            "SELECT COUNT(*) FROM tenant_users \
+             WHERE tenant_id = $1 AND user_id = $2",
+            &[&tenant_id, &user_id],
+        ))?;
+        Ok(row.get::<_, i64>(0))
+    }
+
     fn init_schema(&mut self) -> Result<(), AxonError> {
         self.block(self.client.batch_execute(
             "CREATE TABLE IF NOT EXISTS databases (
@@ -1334,6 +1383,57 @@ impl StorageAdapter for PostgresStorageAdapter {
                 .get::<_, Option<i64>>("suspended_at_ms")
                 .map(|v| v as u64),
         })
+    }
+
+    fn upsert_tenant_member(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        user_id: axon_core::auth::UserId,
+        role: axon_core::auth::TenantRole,
+    ) -> Result<axon_core::auth::TenantMember, AxonError> {
+        let role_str = match role {
+            axon_core::auth::TenantRole::Admin => "admin",
+            axon_core::auth::TenantRole::Write => "write",
+            axon_core::auth::TenantRole::Read => "read",
+        };
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        self.block(self.client.execute(
+            "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms) \
+             VALUES ($1, $2, $3, $4) \
+             ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role",
+            &[&tenant_id.as_str(), &user_id.as_str(), &role_str, &now_ms],
+        ))
+        .map_err(|e| {
+            if e.to_string().contains("does not exist") {
+                AxonError::Storage(
+                    "auth schema not applied; call apply_auth_migrations_postgres first".into(),
+                )
+            } else {
+                AxonError::Storage(e.to_string())
+            }
+        })?;
+        Ok(axon_core::auth::TenantMember {
+            tenant_id,
+            user_id,
+            role,
+        })
+    }
+
+    fn remove_tenant_member(
+        &self,
+        tenant_id: axon_core::auth::TenantId,
+        user_id: axon_core::auth::UserId,
+    ) -> Result<bool, AxonError> {
+        let rows_affected = self
+            .block(self.client.execute(
+                "DELETE FROM tenant_users WHERE tenant_id = $1 AND user_id = $2",
+                &[&tenant_id.as_str(), &user_id.as_str()],
+            ))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows_affected > 0)
     }
 }
 

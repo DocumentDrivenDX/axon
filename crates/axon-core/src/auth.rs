@@ -804,7 +804,7 @@ pub struct TenantMember {
 }
 
 /// Role a user has within a tenant.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum TenantRole {
     Admin,
     Write,
@@ -824,10 +824,42 @@ impl TenantRole {
             TenantRole::Read => vec![Op::Read],
         }
     }
+
+    /// The set of ops this role is allowed to delegate to a credential it
+    /// issues. Per ADR-018 §4 grants rule table:
+    ///   Admin → {Read, Write, Admin}
+    ///   Write → {Read, Write}       (cannot delegate Admin)
+    ///   Read  → {Read}
+    pub const fn delegable_ops(self) -> &'static [Op] {
+        match self {
+            TenantRole::Admin => &[Op::Read, Op::Write, Op::Admin],
+            TenantRole::Write => &[Op::Read, Op::Write],
+            TenantRole::Read => &[Op::Read],
+        }
+    }
+
+    /// Check if this role can delegate a single op.
+    pub fn can_delegate(self, op: Op) -> bool {
+        self.delegable_ops().contains(&op)
+    }
+
+    /// Check if a requested grants set is wholly within this role's ceiling.
+    /// Returns `Err(AuthError::GrantsExceedRole)` if any requested op on any
+    /// database is outside the ceiling.
+    pub fn enforce_ceiling(self, grants: &Grants) -> Result<(), AuthError> {
+        for db in &grants.databases {
+            for op in &db.ops {
+                if !self.can_delegate(*op) {
+                    return Err(AuthError::GrantsExceedRole);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// An operation that can be granted.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Op {
     Read,
     Write,
@@ -917,7 +949,7 @@ impl JwtClaims {
 
 /// Authentication error variants (ADR-018 §4 failure-mode table).
 ///
-/// This enum has exactly 14 variants matching the failure modes in
+/// This enum has exactly 15 variants matching the failure modes in
 /// ADR-018 §4 "JWT failure mode → HTTP status + error code".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuthError {
@@ -961,6 +993,10 @@ pub enum AuthError {
     /// Grant scope exceeds issuer's role at issuance time.
     GrantsExceedIssuerRole,
 
+    /// Grant scope exceeds the issuer's own tenant role (credential-issuance
+    /// control-plane check, ADR-018 §4). Returns 403 grants_exceed_role.
+    GrantsExceedRole,
+
     /// Malformed grants payload (schema validation failure).
     GrantsMalformed,
 }
@@ -981,6 +1017,7 @@ impl std::fmt::Display for AuthError {
             AuthError::DatabaseNotGranted => write!(f, "database not granted"),
             AuthError::OpNotGranted => write!(f, "op not granted"),
             AuthError::GrantsExceedIssuerRole => write!(f, "grants exceed issuer role"),
+            AuthError::GrantsExceedRole => write!(f, "grants exceed role"),
             AuthError::GrantsMalformed => write!(f, "grants malformed"),
         }
     }
@@ -1033,6 +1070,7 @@ impl AuthError {
             AuthError::DatabaseNotGranted => 403,
             AuthError::OpNotGranted => 403,
             AuthError::GrantsExceedIssuerRole => 401,
+            AuthError::GrantsExceedRole => 403,
             AuthError::GrantsMalformed => 401,
         }
     }
@@ -1053,6 +1091,7 @@ impl AuthError {
             AuthError::DatabaseNotGranted => "database_not_granted",
             AuthError::OpNotGranted => "op_not_granted",
             AuthError::GrantsExceedIssuerRole => "grants_exceed_issuer_role",
+            AuthError::GrantsExceedRole => "grants_exceed_role",
             AuthError::GrantsMalformed => "grants_malformed",
         }
     }
@@ -1068,7 +1107,7 @@ pub struct ResolvedIdentity {
     pub grants: Grants,
 }
 
-/// Compile-time exhaustive check that `AuthError` has exactly 14 variants
+/// Compile-time exhaustive check that `AuthError` has exactly 15 variants
 /// (ADR-018 §4). Adding or removing a variant without updating this match
 /// will cause a compile error.
 const _: () = {
@@ -1087,7 +1126,8 @@ const _: () = {
             AuthError::DatabaseNotGranted => 10,
             AuthError::OpNotGranted => 11,
             AuthError::GrantsExceedIssuerRole => 12,
-            AuthError::GrantsMalformed => 13,
+            AuthError::GrantsExceedRole => 13,
+            AuthError::GrantsMalformed => 14,
         }
     }
     // Suppress unused-function lint in const context.
@@ -1365,7 +1405,7 @@ mod auth_core_tests {
 
     // ── AuthError variant count (ADR-018 §4): enforced at compile time ────
     // The exhaustive match in `const _: () = { ... }` above the #[cfg(test)]
-    // block guarantees exactly 14 variants. No runtime assertion needed.
+    // block guarantees exactly 15 variants. No runtime assertion needed.
 
     #[test]
     fn auth_error_display() {
@@ -1383,6 +1423,7 @@ mod auth_core_tests {
             (AuthError::DatabaseNotGranted, "database not granted"),
             (AuthError::OpNotGranted, "op not granted"),
             (AuthError::GrantsExceedIssuerRole, "grants exceed issuer role"),
+            (AuthError::GrantsExceedRole, "grants exceed role"),
             (AuthError::GrantsMalformed, "grants malformed"),
         ];
 
@@ -1437,6 +1478,129 @@ mod auth_core_tests {
             let ops = TenantRole::Read.delegation_ops();
             assert!(!ops.contains(&Op::Write));
             assert!(!ops.contains(&Op::Admin));
+        }
+    }
+
+    // ── delegable_ops unit tests ───────────────────────────────────────
+
+    #[test]
+    fn delegable_ops_admin() {
+        let ops = TenantRole::Admin.delegable_ops();
+        assert_eq!(ops.len(), 3);
+        assert!(ops.contains(&Op::Read));
+        assert!(ops.contains(&Op::Write));
+        assert!(ops.contains(&Op::Admin));
+    }
+
+    #[test]
+    fn delegable_ops_write() {
+        let ops = TenantRole::Write.delegable_ops();
+        assert_eq!(ops.len(), 2);
+        assert!(ops.contains(&Op::Read));
+        assert!(ops.contains(&Op::Write));
+        assert!(!ops.contains(&Op::Admin), "Write must not be able to delegate Admin");
+    }
+
+    #[test]
+    fn delegable_ops_read() {
+        let ops = TenantRole::Read.delegable_ops();
+        assert_eq!(ops.len(), 1);
+        assert!(ops.contains(&Op::Read));
+        assert!(!ops.contains(&Op::Write));
+        assert!(!ops.contains(&Op::Admin));
+    }
+
+    // ── PROP-009: enforce_ceiling property tests ──────────────────────
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            cases: 1000,
+            ..Default::default()
+        })]
+
+        /// PROP-009a: Admin role accepts any combination of ops in any grants.
+        #[test]
+        fn enforce_ceiling_admin_accepts_any(
+            // Generate 1-5 databases, each with 1-3 ops from {Read, Write, Admin}.
+            // Using prop_oneof! + Just(Op::X) as required by PROP-009.
+            dbs in proptest::collection::vec(
+                (
+                    "db_[a-z]{1,6}",
+                    proptest::collection::vec(
+                        proptest::prop_oneof![
+                            proptest::strategy::Just(Op::Read),
+                            proptest::strategy::Just(Op::Write),
+                            proptest::strategy::Just(Op::Admin),
+                        ],
+                        1..=3usize,
+                    ),
+                ),
+                1..=5usize,
+            )
+        ) {
+            let grants = Grants {
+                databases: dbs
+                    .into_iter()
+                    .map(|(name, ops)| GrantedDatabase { name, ops })
+                    .collect(),
+            };
+            proptest::prop_assert!(
+                TenantRole::Admin.enforce_ceiling(&grants).is_ok(),
+                "Admin must accept any grants"
+            );
+        }
+
+        /// PROP-009b: Write role rejects grants that include Admin op on any database.
+        #[test]
+        fn enforce_ceiling_write_rejects_admin_ops(
+            // Extra ops on the bad database (Read and/or Write — Admin is forced in).
+            extra_ops in proptest::collection::vec(
+                proptest::prop_oneof![
+                    proptest::strategy::Just(Op::Read),
+                    proptest::strategy::Just(Op::Write),
+                ],
+                0..=2usize,
+            )
+        ) {
+            // The bad database always includes Op::Admin.
+            let mut ops = extra_ops;
+            ops.push(Op::Admin);
+            let grants = Grants {
+                databases: vec![GrantedDatabase {
+                    name: "restricted".to_string(),
+                    ops,
+                }],
+            };
+            proptest::prop_assert_eq!(
+                TenantRole::Write.enforce_ceiling(&grants),
+                Err(AuthError::GrantsExceedRole),
+                "Write must reject grants containing Admin op"
+            );
+        }
+
+        /// PROP-009c: Read role rejects grants that include Write or Admin op on any database.
+        #[test]
+        fn enforce_ceiling_read_rejects_write_or_admin(
+            bad_op in proptest::prop_oneof![
+                proptest::strategy::Just(Op::Write),
+                proptest::strategy::Just(Op::Admin),
+            ],
+            extra_read_count in 0usize..=2usize,
+        ) {
+            // Construct ops: some Read ops plus one bad op.
+            let mut ops: Vec<Op> = (0..extra_read_count).map(|_| Op::Read).collect();
+            ops.push(bad_op);
+            let grants = Grants {
+                databases: vec![GrantedDatabase {
+                    name: "restricted".to_string(),
+                    ops,
+                }],
+            };
+            proptest::prop_assert_eq!(
+                TenantRole::Read.enforce_ceiling(&grants),
+                Err(AuthError::GrantsExceedRole),
+                "Read must reject grants containing Write or Admin op"
+            );
         }
     }
 }

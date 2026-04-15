@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::ops::Bound;
 
 use axon_audit::entry::AuditEntry;
-use axon_core::auth::{TenantId, TenantMember, User, UserId};
+use axon_core::auth::{TenantId, TenantMember, TenantRole, User, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId};
 use axon_core::types::{Entity, Link};
@@ -853,6 +853,46 @@ pub trait StorageAdapter: Send + Sync {
             "upsert_user_identity not supported by this adapter".into(),
         ))
     }
+
+    /// Add or update a user's tenant membership. Idempotent on `(tenant_id,
+    /// user_id)`: if the row exists, the role is updated to the given value
+    /// (this lets the same call act as both 'grant' and 'change role').
+    ///
+    /// ADR-018 §3 specifies tenant_users is keyed on `(tenant_id, user_id)`.
+    /// The SQL pattern is:
+    /// ```sql
+    /// INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
+    /// VALUES (?, ?, ?, ?)
+    /// ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = excluded.role;
+    /// ```
+    ///
+    /// The default implementation returns `Err(AxonError::Internal)` so that
+    /// unmigrated adapters are explicit about the gap.
+    fn upsert_tenant_member(
+        &self,
+        tenant_id: TenantId,
+        user_id: UserId,
+        role: TenantRole,
+    ) -> Result<TenantMember, AxonError> {
+        let _ = (tenant_id, user_id, role);
+        Err(AxonError::InvalidOperation(
+            "upsert_tenant_member not supported by this adapter".into(),
+        ))
+    }
+
+    /// Remove a user's tenant membership. Returns `Ok(true)` if a row was
+    /// deleted, `Ok(false)` if no such membership existed.
+    ///
+    /// The default implementation returns `Ok(false)` so that unmigrated
+    /// adapters are explicit about the gap without erroring.
+    fn remove_tenant_member(
+        &self,
+        tenant_id: TenantId,
+        user_id: UserId,
+    ) -> Result<bool, AxonError> {
+        let _ = (tenant_id, user_id);
+        Ok(false)
+    }
 }
 
 /// Forward all `StorageAdapter` calls through a `Box<dyn StorageAdapter>`.
@@ -1172,5 +1212,22 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         email: Option<&str>,
     ) -> Result<User, AxonError> {
         (**self).upsert_user_identity(provider, external_id, display_name, email)
+    }
+
+    fn upsert_tenant_member(
+        &self,
+        tenant_id: TenantId,
+        user_id: UserId,
+        role: TenantRole,
+    ) -> Result<TenantMember, AxonError> {
+        (**self).upsert_tenant_member(tenant_id, user_id, role)
+    }
+
+    fn remove_tenant_member(
+        &self,
+        tenant_id: TenantId,
+        user_id: UserId,
+    ) -> Result<bool, AxonError> {
+        (**self).remove_tenant_member(tenant_id, user_id)
     }
 }

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axon_core::auth::{TenantId, TenantMember, User, UserId};
+use axon_core::auth::{TenantId, TenantMember, TenantRole, User, UserId};
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
@@ -117,7 +117,11 @@ pub struct MemoryStorageAdapter {
     /// User store (ADR-018).
     users: HashMap<UserId, User>,
     /// Tenant membership store (ADR-018).
-    tenant_members: HashMap<(TenantId, UserId), TenantMember>,
+    ///
+    /// Uses interior mutability (`Mutex`) so that `upsert_tenant_member` and
+    /// `remove_tenant_member` can take `&self` (matching the trait signature)
+    /// and be called without exclusive access to the whole adapter.
+    tenant_members: std::sync::Mutex<HashMap<(TenantId, UserId), TenantMember>>,
     /// Federation identity map: (provider, external_id) → User.
     ///
     /// Uses interior mutability (`Mutex`) so that `upsert_user_identity` can
@@ -166,7 +170,7 @@ impl Default for MemoryStorageAdapter {
             links: BTreeMap::new(),
             revoked_jtis: HashSet::new(),
             users: HashMap::new(),
-            tenant_members: HashMap::new(),
+            tenant_members: std::sync::Mutex::new(HashMap::new()),
             user_identity_map: std::sync::Mutex::new(HashMap::new()),
         }
     }
@@ -183,12 +187,28 @@ impl MemoryStorageAdapter {
     /// Insert a tenant membership into the in-memory store.
     pub fn insert_tenant_member(&mut self, member: TenantMember) {
         self.tenant_members
+            .lock()
+            .expect("tenant_members mutex should not be poisoned")
             .insert((member.tenant_id.clone(), member.user_id.clone()), member);
     }
 
     /// Mark a JWT ID as revoked in the in-memory store.
     pub fn revoke_jti(&mut self, jti: Uuid) {
         self.revoked_jtis.insert(jti);
+    }
+
+    /// Count tenant_users entries matching (tenant_id, user_id) for test assertions.
+    pub fn test_count_tenant_members(
+        &self,
+        tenant_id: &str,
+        user_id: &str,
+    ) -> usize {
+        let map = self
+            .tenant_members
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let key = (TenantId::new(tenant_id), UserId::new(user_id));
+        usize::from(map.contains_key(&key))
     }
 
     /// Number of `(provider, external_id)` entries created via `upsert_user_identity`.
@@ -1119,7 +1139,44 @@ impl StorageAdapter for MemoryStorageAdapter {
         tenant_id: TenantId,
         user_id: UserId,
     ) -> Result<Option<TenantMember>, AxonError> {
-        Ok(self.tenant_members.get(&(tenant_id, user_id)).cloned())
+        Ok(self
+            .tenant_members
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("tenant_members mutex poisoned: {e}")))?
+            .get(&(tenant_id, user_id))
+            .cloned())
+    }
+
+    fn upsert_tenant_member(
+        &self,
+        tenant_id: TenantId,
+        user_id: UserId,
+        role: TenantRole,
+    ) -> Result<TenantMember, AxonError> {
+        let member = TenantMember {
+            tenant_id: tenant_id.clone(),
+            user_id: user_id.clone(),
+            role,
+        };
+        self.tenant_members
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("tenant_members mutex poisoned: {e}")))?
+            .insert((tenant_id, user_id), member.clone());
+        Ok(member)
+    }
+
+    fn remove_tenant_member(
+        &self,
+        tenant_id: TenantId,
+        user_id: UserId,
+    ) -> Result<bool, AxonError> {
+        let removed = self
+            .tenant_members
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("tenant_members mutex poisoned: {e}")))?
+            .remove(&(tenant_id, user_id))
+            .is_some();
+        Ok(removed)
     }
 
     fn upsert_user_identity(
