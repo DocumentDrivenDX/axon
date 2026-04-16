@@ -126,119 +126,116 @@ pub fn apply_auth_migrations_sqlite(
 ///
 /// This is idempotent — running it multiple times on the same database
 /// produces the same result without errors or duplicate rows.
-pub async fn apply_auth_migrations_postgres(client: &tokio_postgres::Client) -> Result<(), String> {
+pub async fn apply_auth_migrations_postgres(pool: &sqlx::PgPool) -> Result<(), String> {
     // Create tenants table.
-    // UNIQUE(name) enforced by the UNIQUE constraint on the name column.
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS tenants (
-                id                 TEXT PRIMARY KEY,
-                name               TEXT NOT NULL UNIQUE,
-                display_name       TEXT NOT NULL,
-                created_at_ms      BIGINT NOT NULL,
-                updated_at_ms      BIGINT NOT NULL
-            )",
-        )
-        .await
-        .map_err(|e| format!("tenants table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS tenants (
+            id                 TEXT PRIMARY KEY,
+            name               TEXT NOT NULL UNIQUE,
+            display_name       TEXT NOT NULL,
+            created_at_ms      BIGINT NOT NULL,
+            updated_at_ms      BIGINT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("tenants table: {e}"))?;
 
     // Create users table.
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS users (
-                id                 TEXT PRIMARY KEY,
-                display_name       TEXT NOT NULL,
-                email              TEXT,
-                created_at_ms      BIGINT NOT NULL,
-                suspended_at_ms    BIGINT
-            )",
-        )
-        .await
-        .map_err(|e| format!("users table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS users (
+            id                 TEXT PRIMARY KEY,
+            display_name       TEXT NOT NULL,
+            email              TEXT,
+            created_at_ms      BIGINT NOT NULL,
+            suspended_at_ms    BIGINT
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("users table: {e}"))?;
 
     // Create user_identities table.
-    // PRIMARY KEY (provider, external_id) enforces UNIQUE(provider, external_id).
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS user_identities (
-                provider       TEXT NOT NULL,
-                external_id    TEXT NOT NULL,
-                user_id        TEXT NOT NULL REFERENCES users(id),
-                created_at_ms  BIGINT NOT NULL,
-                PRIMARY KEY (provider, external_id)
-            )",
-        )
-        .await
-        .map_err(|e| format!("user_identities table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS user_identities (
+            provider       TEXT NOT NULL,
+            external_id    TEXT NOT NULL,
+            user_id        TEXT NOT NULL REFERENCES users(id),
+            created_at_ms  BIGINT NOT NULL,
+            PRIMARY KEY (provider, external_id)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("user_identities table: {e}"))?;
 
     // Create tenant_users table.
-    // PRIMARY KEY (tenant_id, user_id) is the composite PK required by ADR-018.
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS tenant_users (
-                tenant_id    TEXT NOT NULL REFERENCES tenants(id),
-                user_id      TEXT NOT NULL REFERENCES users(id),
-                role         TEXT NOT NULL,
-                added_at_ms  BIGINT NOT NULL,
-                PRIMARY KEY (tenant_id, user_id)
-            )",
-        )
-        .await
-        .map_err(|e| format!("tenant_users table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS tenant_users (
+            tenant_id    TEXT NOT NULL REFERENCES tenants(id),
+            user_id      TEXT NOT NULL REFERENCES users(id),
+            role         TEXT NOT NULL,
+            added_at_ms  BIGINT NOT NULL,
+            PRIMARY KEY (tenant_id, user_id)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("tenant_users table: {e}"))?;
 
     // Create tenant_databases table.
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS tenant_databases (
-                tenant_id      TEXT NOT NULL REFERENCES tenants(id),
-                database_name  TEXT NOT NULL,
-                created_at_ms  BIGINT NOT NULL,
-                PRIMARY KEY (tenant_id, database_name)
-            )",
-        )
-        .await
-        .map_err(|e| format!("tenant_databases table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS tenant_databases (
+            tenant_id      TEXT NOT NULL REFERENCES tenants(id),
+            database_name  TEXT NOT NULL,
+            created_at_ms  BIGINT NOT NULL,
+            PRIMARY KEY (tenant_id, database_name)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("tenant_databases table: {e}"))?;
 
     // Create credential_revocations table.
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS credential_revocations (
-                jti            TEXT PRIMARY KEY,
-                revoked_at_ms  BIGINT NOT NULL,
-                revoked_by     TEXT
-            )",
-        )
-        .await
-        .map_err(|e| format!("credential_revocations table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS credential_revocations (
+            jti            TEXT PRIMARY KEY,
+            revoked_at_ms  BIGINT NOT NULL,
+            revoked_by     TEXT
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("credential_revocations table: {e}"))?;
 
-    // Create tenant_retention_policies table (axon-c6908e78).
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS tenant_retention_policies (
-                tenant_id                TEXT NOT NULL,
-                archive_after_seconds    BIGINT NOT NULL,
-                purge_after_seconds      BIGINT,
-                updated_at_ms            BIGINT NOT NULL,
-                PRIMARY KEY (tenant_id)
-            )",
-        )
-        .await
-        .map_err(|e| format!("tenant_retention_policies table: {e}"))?;
+    // Create tenant_retention_policies table.
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS tenant_retention_policies (
+            tenant_id                TEXT NOT NULL,
+            archive_after_seconds    BIGINT NOT NULL,
+            purge_after_seconds      BIGINT,
+            updated_at_ms            BIGINT NOT NULL,
+            PRIMARY KEY (tenant_id)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("tenant_retention_policies table: {e}"))?;
 
-    // Create credential_issuances table (axon-906b527a).
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS credential_issuances (
-                jti            TEXT PRIMARY KEY,
-                user_id        TEXT NOT NULL,
-                tenant_id      TEXT NOT NULL,
-                issued_at_ms   BIGINT NOT NULL,
-                expires_at_ms  BIGINT NOT NULL,
-                grants_json    TEXT NOT NULL
-            )",
-        )
-        .await
-        .map_err(|e| format!("credential_issuances table: {e}"))?;
+    // Create credential_issuances table.
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS credential_issuances (
+            jti            TEXT PRIMARY KEY,
+            user_id        TEXT NOT NULL,
+            tenant_id      TEXT NOT NULL,
+            issued_at_ms   BIGINT NOT NULL,
+            expires_at_ms  BIGINT NOT NULL,
+            grants_json    TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("credential_issuances table: {e}"))?;
 
     Ok(())
 }

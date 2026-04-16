@@ -1185,7 +1185,7 @@ mod tests {
     /// FEAT-004 US-010 AC4 / FEAT-008 US-021 AC2:
     /// A version-conflict gRPC response must include the current entity state so
     /// the caller can merge and retry without a separate GetEntity round-trip.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn grpc_version_conflict_includes_current_entity() {
         let svc = make_service_with_entity("tasks", "t-001").await;
 
@@ -1226,7 +1226,7 @@ mod tests {
     }
 
     /// Verify that a version conflict with no surviving entity yields current_entity: null.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn grpc_version_conflict_null_current_entity_when_missing() {
         // We can trigger a null current_entity by injecting an AxonError directly
         // through axon_to_status (the private function under test).
@@ -1245,7 +1245,7 @@ mod tests {
         assert!(msg["current_entity"].is_null());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn grpc_database_and_namespace_round_trip() {
         let svc = AxonServiceImpl::new_in_memory();
 
@@ -1286,7 +1286,7 @@ mod tests {
         assert!(namespaces.schemas.iter().any(|schema| schema == "billing"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn grpc_metadata_current_database_routes_unqualified_collection_operations() {
         let svc = AxonServiceImpl::new_in_memory();
         let default_schema = serde_json::to_string(&axon_schema::schema::CollectionSchema::new(
@@ -1377,7 +1377,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn grpc_query_audit_by_entity_scopes_to_requested_database() {
         let svc = AxonServiceImpl::new_in_memory();
         let schema = serde_json::to_string(&axon_schema::schema::CollectionSchema::new(
@@ -1463,7 +1463,7 @@ mod tests {
         assert!(cross_database_entries.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn grpc_list_collections_scopes_to_metadata_database_only_when_present() {
         let svc = AxonServiceImpl::new_in_memory();
         let default_schema = serde_json::to_string(&axon_schema::schema::CollectionSchema::new(
@@ -1514,7 +1514,7 @@ mod tests {
         assert_eq!(prod.collections[0].name, "prod.default.tasks");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn grpc_tailscale_identity_overrides_body_actor_in_audit() {
         let peer = SocketAddr::from(([100, 64, 0, 11], 50051));
         let auth = AuthContext::with_provider(
@@ -1564,7 +1564,7 @@ mod tests {
         assert_eq!(resp.entries[0].actor, "agent@example.com");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn grpc_tailscale_rejects_non_tailnet_peer() {
         let peer = SocketAddr::from(([127, 0, 0, 1], 50051));
         let auth = AuthContext::with_provider(

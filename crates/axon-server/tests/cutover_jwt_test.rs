@@ -168,7 +168,7 @@ fn entity_body(value: i32) -> Value {
 
 // ── Test 1: No auth header falls through to no-auth mode ─────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn cutover_no_auth_header_falls_through_to_no_auth_201() {
     let jw = issuer();
     let (server, _handler) = make_server(jw);
@@ -183,7 +183,7 @@ async fn cutover_no_auth_header_falls_through_to_no_auth_201() {
 
 // ── Test 2: Valid JWT with write grant → 201 ─────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn cutover_valid_jwt_write_grant_creates_entity_201() {
     let jw = issuer();
     let token = make_token(&jw, write_grants());
@@ -204,7 +204,7 @@ async fn cutover_valid_jwt_write_grant_creates_entity_201() {
 
 // ── Test 3: JWT with read-only grant blocks POST → 403 ───────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn cutover_jwt_read_only_grant_blocks_post_403() {
     let jw = issuer();
     let token = make_token(&jw, read_only_grants());
@@ -229,7 +229,7 @@ async fn cutover_jwt_read_only_grant_blocks_post_403() {
 
 // ── Test 4: JWT write → attribution populated in audit entry ─────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn cutover_audit_entry_has_attribution_after_jwt_write() {
     let jw = issuer();
     let token = make_token(&jw, write_grants());
@@ -290,7 +290,7 @@ async fn cutover_audit_entry_has_attribution_after_jwt_write() {
 /// Verify that the composite `{tenant}:{database}` header value is parsed
 /// correctly by `grpc_requested_database` (exercised indirectly here through
 /// the handler calls in other tests, but we also do a direct unit-style check).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn cutover_grpc_composite_header_roundtrip() {
     // This test verifies that a gRPC call using the new composite header format
     // succeeds in reaching the right database.  We do this by starting a

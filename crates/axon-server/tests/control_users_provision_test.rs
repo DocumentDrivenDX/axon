@@ -118,7 +118,7 @@ fn auth_header(jwt: &str) -> (http::HeaderName, HeaderValue) {
 
 /// admin_can_create_user — deployment admin POSTs to /control/users/provision;
 /// receives 201 with a generated id.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn admin_can_create_user() {
     let (server, issuer, admin_uid, _) = build_test_env();
     let jwt = make_jwt(&issuer, &admin_uid);
@@ -140,7 +140,7 @@ async fn admin_can_create_user() {
 
 /// list_users_returns_created_user — after creating a user, GET /control/users/list
 /// returns that user in the response.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn list_users_returns_created_user() {
     let (server, issuer, admin_uid, _) = build_test_env();
     let jwt = make_jwt(&issuer, &admin_uid);
@@ -170,7 +170,7 @@ async fn list_users_returns_created_user() {
 
 /// duplicate_display_name_is_accepted — two users with the same display_name
 /// are accepted (no uniqueness constraint on display_name).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn duplicate_display_name_is_accepted() {
     let (server, issuer, admin_uid, _) = build_test_env();
     let jwt = make_jwt(&issuer, &admin_uid);
@@ -202,7 +202,7 @@ async fn duplicate_display_name_is_accepted() {
 
 /// suspend_user_sets_suspended_at_ms — after suspending a user, listing shows
 /// suspended_at_ms is set.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn suspend_user_sets_suspended_at_ms() {
     let (server, issuer, admin_uid, _) = build_test_env();
     let jwt = make_jwt(&issuer, &admin_uid);
@@ -244,7 +244,7 @@ async fn suspend_user_sets_suspended_at_ms() {
 }
 
 /// non_admin_gets_403 — a non-admin JWT receives 403 on all three endpoints.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn non_admin_gets_403() {
     let (server, issuer, _, non_admin_uid) = build_test_env();
     let jwt = make_jwt(&issuer, &non_admin_uid);

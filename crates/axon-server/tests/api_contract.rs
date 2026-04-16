@@ -56,7 +56,7 @@ async fn grpc_client(addr: SocketAddr) -> AxonServiceClient<tonic::transport::Ch
 
 // ── gRPC Contract Tests ──────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_create_then_get_entity() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -92,7 +92,7 @@ async fn grpc_create_then_get_entity() {
     assert_eq!(data["title"], "hello");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_get_missing_returns_not_found() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -108,7 +108,7 @@ async fn grpc_get_missing_returns_not_found() {
     assert_eq!(err.code(), tonic::Code::NotFound);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_update_entity() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -140,7 +140,7 @@ async fn grpc_update_entity() {
     assert_eq!(data["title"], "v2");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_update_version_conflict() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -170,7 +170,7 @@ async fn grpc_update_version_conflict() {
     assert!(err.message().contains("version_conflict"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_delete_entity() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -209,7 +209,7 @@ async fn grpc_delete_entity() {
     assert_eq!(err.code(), tonic::Code::NotFound);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_create_link_and_traverse() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -269,7 +269,7 @@ async fn grpc_create_link_and_traverse() {
     assert_eq!(entities[0].id, "t-001");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_delete_link() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -335,7 +335,7 @@ async fn grpc_delete_link() {
     assert!(resp.into_inner().entities.is_empty());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_query_audit_by_entity() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -372,7 +372,7 @@ async fn grpc_query_audit_by_entity() {
 /// Since axum_test and tonic test servers don't share state easily, we test
 /// parity by running the same sequence independently and comparing outputs.
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn parity_create_get_entity() {
     // HTTP
     let storage: Box<dyn StorageAdapter + Send + Sync> =
@@ -435,7 +435,7 @@ async fn parity_create_get_entity() {
     assert_eq!(http_data, &grpc_data);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn parity_update_entity() {
     // HTTP
     let storage: Box<dyn StorageAdapter + Send + Sync> =
@@ -490,7 +490,7 @@ async fn parity_update_entity() {
     assert_eq!(http_data, &grpc_data);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn parity_link_traverse() {
     // HTTP
     let storage: Box<dyn StorageAdapter + Send + Sync> =
@@ -578,7 +578,7 @@ async fn parity_link_traverse() {
     assert_eq!(http_data, &grpc_data);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_commit_transaction_atomic() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -654,7 +654,7 @@ fn minimal_schema_json(collection: &str) -> String {
     .to_string()
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_query_entities_basic() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -685,7 +685,7 @@ async fn grpc_query_entities_basic() {
     assert_eq!(inner.total_count, 3);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_query_entities_with_filter() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -721,7 +721,7 @@ async fn grpc_query_entities_with_filter() {
     assert_eq!(inner.entities.len(), 3, "expected v=3,4,5");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_query_entities_with_pagination() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -764,7 +764,7 @@ async fn grpc_query_entities_with_pagination() {
     assert_eq!(inner2.entities.len(), 2);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_put_and_get_schema() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -804,7 +804,7 @@ async fn grpc_put_and_get_schema() {
     assert_eq!(returned["collection"], "docs");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_get_schema_not_found() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -819,7 +819,7 @@ async fn grpc_get_schema_not_found() {
     assert_eq!(err.code(), tonic::Code::NotFound);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_put_schema_dry_run() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -847,7 +847,7 @@ async fn grpc_put_schema_dry_run() {
     assert_eq!(err.code(), tonic::Code::NotFound);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_collection_lifecycle() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -926,7 +926,7 @@ async fn grpc_collection_lifecycle() {
     assert_eq!(err.code(), tonic::Code::NotFound);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_drop_collection_requires_confirm() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -957,7 +957,7 @@ async fn grpc_drop_collection_requires_confirm() {
 ///
 /// Forward traversal from A should return B.
 /// Reverse traversal from B should return A (A links TO B).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_traverse_direction_reverse() {
     let storage: Box<dyn StorageAdapter + Send + Sync> =
         Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
@@ -1009,7 +1009,7 @@ async fn http_traverse_direction_reverse() {
     assert_eq!(rev_entities[0]["id"], "a", "reverse from B should return A");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_create_collection_duplicate_fails() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -1094,7 +1094,7 @@ async fn setup_lifecycle_client() -> proto::axon_service_client::AxonServiceClie
     client
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_transition_lifecycle_happy_path() {
     let mut client = setup_lifecycle_client().await;
 
@@ -1119,7 +1119,7 @@ async fn grpc_transition_lifecycle_happy_path() {
     assert_eq!(data["title"], "design the thing");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_transition_lifecycle_invalid_transition() {
     let mut client = setup_lifecycle_client().await;
 
@@ -1151,7 +1151,7 @@ async fn grpc_transition_lifecycle_invalid_transition() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_transition_lifecycle_not_found() {
     let mut client = setup_lifecycle_client().await;
 
@@ -1171,7 +1171,7 @@ async fn grpc_transition_lifecycle_not_found() {
     assert!(err.message().contains("does_not_exist"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_transition_lifecycle_version_conflict() {
     let mut client = setup_lifecycle_client().await;
 
@@ -1208,7 +1208,7 @@ fn caller_identity_http_server() -> axum_test::TestServer {
     axum_test::TestServer::new(http_app)
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_caller_identity_from_header_recorded_in_audit() {
     let server = caller_identity_http_server();
 
@@ -1230,7 +1230,7 @@ async fn http_caller_identity_from_header_recorded_in_audit() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_missing_caller_identity_records_anonymous_in_audit() {
     let server = caller_identity_http_server();
 
@@ -1251,7 +1251,7 @@ async fn http_missing_caller_identity_records_anonymous_in_audit() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_caller_identity_body_actor_is_ignored() {
     let server = caller_identity_http_server();
 
@@ -1274,7 +1274,7 @@ async fn http_caller_identity_body_actor_is_ignored() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_caller_identity_empty_header_falls_back_to_anonymous() {
     let server = caller_identity_http_server();
 
@@ -1294,7 +1294,7 @@ async fn http_caller_identity_empty_header_falls_back_to_anonymous() {
     assert_eq!(entries[0]["actor"], "anonymous");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_caller_identity_per_operation_type() {
     // Create, update, and delete all receive identity from the header.
     let server = caller_identity_http_server();
@@ -1334,7 +1334,7 @@ async fn http_caller_identity_per_operation_type() {
 
 /// AC1 + AC2: POST with `Idempotency-Key` stores the response; a retry with
 /// the same key within the TTL returns the cached body without re-executing.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_transactions_idempotent_key_caches_success() {
     let storage: Box<dyn StorageAdapter + Send + Sync> =
         Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
@@ -1401,7 +1401,7 @@ async fn http_transactions_idempotent_key_caches_success() {
 
 /// Back-compat: POST without an `Idempotency-Key` header must still execute
 /// normally; the cache is not consulted.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_transactions_without_key_executes_normally() {
     let storage: Box<dyn StorageAdapter + Send + Sync> =
         Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
@@ -1446,7 +1446,7 @@ async fn http_transactions_without_key_executes_normally() {
 
 /// AC4: a failed transaction (version conflict) must NOT be cached — a
 /// retry with the same key re-executes.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_transactions_idempotent_conflict_not_cached() {
     let storage: Box<dyn StorageAdapter + Send + Sync> =
         Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
@@ -1506,7 +1506,7 @@ async fn http_transactions_idempotent_conflict_not_cached() {
 
 /// AC6: Idempotency keys are scoped per database. A key used in database A
 /// must not short-circuit execution in database B.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_transactions_idempotent_different_databases_isolated() {
     let storage: Box<dyn StorageAdapter + Send + Sync> =
         Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
@@ -1575,7 +1575,7 @@ async fn http_transactions_idempotent_different_databases_isolated() {
 /// handler without threading the clock into the handler itself, and the
 /// gateway's current design already keys on (`Clock::now`, TTL). A real
 /// 100 ms sleep is still well below the test-suite default timeouts.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_transactions_idempotent_expired_reexecutes() {
     use axon_core::clock::SystemClock;
     use axon_server::gateway::build_router_with_idempotency;
@@ -1644,7 +1644,7 @@ async fn http_transactions_idempotent_expired_reexecutes() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_transition_lifecycle_uses_metadata_actor() {
     let mut client = setup_lifecycle_client().await;
 
@@ -1684,7 +1684,7 @@ async fn grpc_transition_lifecycle_uses_metadata_actor() {
 /// FEAT-026 — `ChangeEvent.audit_id` must be populated from the audit append
 /// result so live subscribers can use it as a resume cursor. Before this fix
 /// the gateway broadcast functions hard-coded `audit_id: String::new()`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_create_entity_publishes_change_event_with_audit_id() {
     use axon_graphql::subscriptions::BroadcastBroker;
     use axon_server::gateway::build_router_with_broker;

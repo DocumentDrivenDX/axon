@@ -137,7 +137,7 @@ fn insert_member(
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 /// admin_can_list_members — deployment-admin JWT can GET /members and sees all members.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn admin_can_list_members() {
     let (server, issuer, admin_uid, _, storage, _) = build_test_env();
 
@@ -164,7 +164,7 @@ async fn admin_can_list_members() {
 }
 
 /// non_admin_cannot_upsert_member — non-admin JWT receives 403.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn non_admin_cannot_upsert_member() {
     let (server, issuer, _, non_admin_uid, _, _) = build_test_env();
 
@@ -185,7 +185,7 @@ async fn non_admin_cannot_upsert_member() {
 }
 
 /// admin_upsert_creates_row — admin PUT .../members/:uid → 200 + row appears in GET.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn admin_upsert_creates_row() {
     let (server, issuer, admin_uid, _, _storage, _) = build_test_env();
 
@@ -225,7 +225,7 @@ async fn admin_upsert_creates_row() {
 }
 
 /// admin_remove_deletes_row — admin DELETE .../members/:uid → 204 + row gone.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn admin_remove_deletes_row() {
     let (server, issuer, admin_uid, _, storage, _) = build_test_env();
 
@@ -267,7 +267,7 @@ async fn admin_remove_deletes_row() {
 }
 
 /// retention_default_is_7y — fresh tenant has default 220752000 s archive window.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn retention_default_is_7y() {
     let (server, issuer, admin_uid, _, _, _) = build_test_env();
     let tenant_id = "tenant-rdy-01";
@@ -292,7 +292,7 @@ async fn retention_default_is_7y() {
 }
 
 /// retention_can_be_overridden — PUT custom policy, GET returns it.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn retention_can_be_overridden() {
     let (server, issuer, admin_uid, _, _, _) = build_test_env();
     let tenant_id = "tenant-rcbo-01";
@@ -327,7 +327,7 @@ async fn retention_can_be_overridden() {
 
 /// SCN-012 user_in_two_tenants — same user as admin in A and read in B;
 /// GET /members on each returns independent role assignments.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn scn_012_user_in_two_tenants() {
     let (server, issuer, admin_uid, _, storage, _) = build_test_env();
 

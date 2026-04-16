@@ -200,7 +200,7 @@ fn invalid_leading_digit_database() {
 // Middleware integration
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn middleware_installs_resolved_path_extension() {
     // Build a minimal router with the path_router_layer installed.
     // The handler reads ResolvedPath from extensions and returns 200 if present.
@@ -228,7 +228,7 @@ async fn middleware_installs_resolved_path_extension() {
     assert_eq!(body_bytes, "acme:orders");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn middleware_does_not_insert_extension_for_health() {
     // For reserved paths the extension must NOT be set and next must still be called.
     async fn health_handler() -> &'static str {

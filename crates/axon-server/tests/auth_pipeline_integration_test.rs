@@ -113,7 +113,7 @@ fn orders_read_grants() -> Grants {
 
 // ── Test 1: No auth header → 401 unauthenticated ──────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn integration_no_auth_header_returns_401() {
     let state = make_state();
     let app = make_app(state);
@@ -132,7 +132,7 @@ async fn integration_no_auth_header_returns_401() {
 
 // ── Test 2: Valid JWT with read grants → 200 ──────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn integration_valid_jwt_with_read_grant_returns_200() {
     let state = make_state();
     let token = valid_token(&state.issuer, orders_read_grants());
@@ -149,7 +149,7 @@ async fn integration_valid_jwt_with_read_grant_returns_200() {
 
 // ── Test 3: Wrong tenant in aud → 403 credential_wrong_tenant ─────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn integration_wrong_tenant_returns_403() {
     let state = make_state();
     let now = now_secs();
@@ -181,7 +181,7 @@ async fn integration_wrong_tenant_returns_403() {
 
 // ── Test 4: Grants for different database → 403 database_not_granted ──────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn integration_wrong_database_returns_403() {
     let state = make_state();
     let grants = Grants {

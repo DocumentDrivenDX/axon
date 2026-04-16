@@ -93,7 +93,7 @@ async fn seed_draft_entity(http: &axum_test::TestServer) {
 /// Acceptance test 1 (happy path): `draft -> submitted` on a `status`
 /// lifecycle returns `200 OK` and the entity at version 2 with
 /// `data.status == "submitted"`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_transition_lifecycle_happy_path() {
     let http = make_server_with_lifecycle().await;
     seed_draft_entity(&http).await;
@@ -121,7 +121,7 @@ async fn http_transition_lifecycle_happy_path() {
 /// `draft -> submitted` is in the transition table). The response must be
 /// `422 Unprocessable Entity` with `code: "invalid_transition"` and must
 /// include the `current_state` and the list of `valid_transitions`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_transition_lifecycle_invalid_transition() {
     let http = make_server_with_lifecycle().await;
     seed_draft_entity(&http).await;
@@ -153,7 +153,7 @@ async fn http_transition_lifecycle_invalid_transition() {
 
 /// Acceptance test 3: unknown lifecycle name returns `404` with
 /// `code: "lifecycle_not_found"` and echoes the requested lifecycle name.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_transition_lifecycle_not_found() {
     let http = make_server_with_lifecycle().await;
     seed_draft_entity(&http).await;
@@ -176,7 +176,7 @@ async fn http_transition_lifecycle_not_found() {
 /// Acceptance test 4: stale `expected_version` returns `409 Conflict` with
 /// `code: "version_conflict"` and echoes the expected / actual version so
 /// clients can reconcile.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn http_transition_lifecycle_version_conflict() {
     let http = make_server_with_lifecycle().await;
     seed_draft_entity(&http).await;

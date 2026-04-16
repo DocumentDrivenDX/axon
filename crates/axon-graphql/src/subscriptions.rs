@@ -420,7 +420,7 @@ mod tests {
 
     // -- BroadcastBroker tests -----------------------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn broadcast_broker_publish_and_receive() {
         let broker = BroadcastBroker::default();
         let mut rx = broker.subscribe();
@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(received.entity_id, "t-001");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn broadcast_broker_multiple_receivers() {
         let broker = BroadcastBroker::default();
         let mut rx1 = broker.subscribe();

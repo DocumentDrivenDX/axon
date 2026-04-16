@@ -77,7 +77,7 @@ async fn mcp(server: &axum_test::TestServer, request: &Value) -> Value {
 
 // ── Protocol basics ───────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_ping_returns_empty_result() {
     let server = test_server();
     let body = mcp(&server, &json!({"jsonrpc":"2.0","id":1,"method":"ping"})).await;
@@ -86,7 +86,7 @@ async fn mcp_ping_returns_empty_result() {
     assert_eq!(body["result"], json!({}));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_initialize_returns_server_capabilities() {
     let server = test_server();
     let body = mcp(
@@ -114,7 +114,7 @@ async fn mcp_initialize_returns_server_capabilities() {
     assert_eq!(result["capabilities"]["prompts"]["listChanged"], false);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_notification_returns_no_content() {
     let server = test_server();
     // Notifications have no `id` field — the server must return 204 No Content.
@@ -125,7 +125,7 @@ async fn mcp_notification_returns_no_content() {
     resp.assert_status(StatusCode::NO_CONTENT);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_unknown_method_returns_error_code() {
     let server = test_server();
     let body = mcp(
@@ -138,7 +138,7 @@ async fn mcp_unknown_method_returns_error_code() {
     assert_eq!(body["error"]["code"], -32601);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_malformed_json_returns_parse_error() {
     let server = test_server();
     let resp = server.post("/mcp").text("not json {{{").await;
@@ -148,7 +148,7 @@ async fn mcp_malformed_json_returns_parse_error() {
     assert_eq!(body["error"]["code"], -32700);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_session_id_issued_on_first_request() {
     let server = test_server();
     let resp = server
@@ -164,7 +164,7 @@ async fn mcp_session_id_issued_on_first_request() {
 
 // ── tools/list ────────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_tools_list_always_includes_axon_query() {
     let server = test_server();
     let body = mcp(
@@ -179,7 +179,7 @@ async fn mcp_tools_list_always_includes_axon_query() {
     assert!(names.contains(&"axon.query"), "axon.query always present: {names:?}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_tools_list_includes_crud_after_collection_created() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -201,7 +201,7 @@ async fn mcp_tools_list_includes_crud_after_collection_created() {
 
 // ── tools/call: CRUD ──────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_create_tool_returns_entity() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -227,7 +227,7 @@ async fn mcp_create_tool_returns_entity() {
     assert!(body["result"]["isError"].is_null() || body["result"]["isError"] == false);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_get_tool_returns_entity() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -250,7 +250,7 @@ async fn mcp_get_tool_returns_entity() {
     assert_eq!(entity["version"], 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_get_tool_missing_entity_is_error() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -272,7 +272,7 @@ async fn mcp_get_tool_missing_entity_is_error() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_patch_tool_updates_entity() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -302,7 +302,7 @@ async fn mcp_patch_tool_updates_entity() {
     assert_eq!(entity["version"], version + 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_patch_tool_version_conflict_is_error() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -338,7 +338,7 @@ async fn mcp_patch_tool_version_conflict_is_error() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_delete_tool_removes_entity() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -361,7 +361,7 @@ async fn mcp_delete_tool_removes_entity() {
     assert_eq!(result["status"], "deleted");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_unknown_tool_is_error() {
     let server = test_server();
 
@@ -385,7 +385,7 @@ async fn mcp_unknown_tool_is_error() {
 
 // ── tools/call: aggregate ─────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_aggregate_count_tool() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -416,7 +416,7 @@ async fn mcp_aggregate_count_tool() {
 
 // ── resources/list ────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_resources_list_always_has_meta_resources() {
     let server = test_server();
     let body = mcp(
@@ -432,7 +432,7 @@ async fn mcp_resources_list_always_has_meta_resources() {
     assert!(uris.contains(&"axon://_schemas"), "missing _schemas: {uris:?}");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_resources_list_includes_collection_resource_after_creation() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -454,7 +454,7 @@ async fn mcp_resources_list_includes_collection_resource_after_creation() {
 
 // ── resources/templates/list ──────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_resource_templates_list_returns_standard_templates() {
     let server = test_server();
     let body = mcp(
@@ -481,7 +481,7 @@ async fn mcp_resource_templates_list_returns_standard_templates() {
 
 // ── resources/read ────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_resources_read_collections_meta() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -506,7 +506,7 @@ async fn mcp_resources_read_collections_meta() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_resources_read_collection_listing() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -532,7 +532,7 @@ async fn mcp_resources_read_collection_listing() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_resources_read_entity_by_uri() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -555,7 +555,7 @@ async fn mcp_resources_read_entity_by_uri() {
     assert_eq!(payload["entity"]["version"], 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_resources_read_missing_entity_is_error() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -577,7 +577,7 @@ async fn mcp_resources_read_missing_entity_is_error() {
 
 // ── resources/subscribe + unsubscribe ─────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_resources_subscribe_returns_subscription_id() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -600,7 +600,7 @@ async fn mcp_resources_subscribe_returns_subscription_id() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_resources_unsubscribe_succeeds() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -625,7 +625,7 @@ async fn mcp_resources_unsubscribe_succeeds() {
 
 // ── prompts/list ──────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_prompts_list_returns_known_prompts() {
     let server = test_server();
     let body = mcp(
@@ -645,7 +645,7 @@ async fn mcp_prompts_list_returns_known_prompts() {
 
 // ── prompts/get ───────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_prompts_get_schema_review_returns_messages() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -672,7 +672,7 @@ async fn mcp_prompts_get_schema_review_returns_messages() {
     assert_eq!(content_type, "text");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_prompts_get_unknown_prompt_is_error() {
     let server = test_server();
 
@@ -696,7 +696,7 @@ async fn mcp_prompts_get_unknown_prompt_is_error() {
 /// to /mcp/sse starts an event-stream. Uses a real HTTP transport so the
 /// connection can be established without the in-process transport short-circuiting
 /// the streaming response.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn mcp_sse_endpoint_delivers_ready_event() {
     use axon_storage::SqliteStorageAdapter as Sqlite;
 

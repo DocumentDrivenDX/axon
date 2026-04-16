@@ -66,7 +66,7 @@ fn different_names_different_ids() {
 // Integration: middleware_installs_identity
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn middleware_installs_identity() {
     async fn handler(Extension(identity): Extension<ResolvedIdentity>) -> impl IntoResponse {
         // Return the database name from the first grant to prove identity was set.
@@ -104,7 +104,7 @@ async fn middleware_installs_identity() {
 // Integration: middleware_skips_when_path_not_data_plane
 // ---------------------------------------------------------------------------
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn middleware_skips_when_path_not_data_plane() {
     // Handler that returns 200 when no ResolvedIdentity is present,
     // 500 when one is unexpectedly injected.

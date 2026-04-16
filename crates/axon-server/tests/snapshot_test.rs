@@ -61,7 +61,7 @@ async fn create_entity(server: &axum_test::TestServer, collection: &str, id: &st
 /// Acceptance test 1 (happy path): 5 entities across 2 collections are all
 /// returned and `audit_cursor` is at least 5 (MemoryAuditLog IDs are
 /// monotonic so the cursor is >= the total number of audit entries so far).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn snapshot_happy_path_returns_all_entities_and_cursor() {
     let http = make_server();
 
@@ -96,7 +96,7 @@ async fn snapshot_happy_path_returns_all_entities_and_cursor() {
 
 /// Acceptance test 2: passing `collections: Some(vec!["tasks"])` returns
 /// only entities from the tasks collection.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn snapshot_collections_filter_narrows_results() {
     let http = make_server();
 
@@ -124,7 +124,7 @@ async fn snapshot_collections_filter_narrows_results() {
 /// mutations. Entities created after the snapshot appear in the audit tail
 /// when querying `after_id=<audit_cursor>`, but the audit entries that the
 /// snapshot reflected do NOT appear in that tail.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn snapshot_cursor_is_race_free_against_post_snapshot_writes() {
     let http = make_server();
 
@@ -181,7 +181,7 @@ async fn snapshot_cursor_is_race_free_against_post_snapshot_writes() {
 
 /// Acceptance test 4: snapshotting an empty database returns an empty
 /// entity list and `audit_cursor: 0`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn snapshot_empty_database_returns_zero_cursor() {
     let http = make_server();
 
@@ -197,7 +197,7 @@ async fn snapshot_empty_database_returns_zero_cursor() {
 /// Acceptance test 5: pagination with `limit: 2` over 5 entities returns
 /// two entities + page token, two entities + page token, then one entity
 /// and `next_page_token: None`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn snapshot_pagination_walks_all_pages() {
     let http = make_server();
 
@@ -270,7 +270,7 @@ async fn snapshot_pagination_walks_all_pages() {
 /// prompt. The default tenant router maps any database name back to the
 /// single in-memory handler, so we exercise the route with the alias
 /// `"default"` to confirm the nested path binds to the same handler.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn snapshot_route_is_available_under_db_prefix() {
     let http = make_server();
 

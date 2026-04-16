@@ -12,11 +12,11 @@
 #![allow(clippy::unwrap_used)]
 
 use axon_storage::apply_auth_migrations_postgres;
+use sqlx::Row;
 use testcontainers_modules::{
     postgres,
     testcontainers::{runners::SyncRunner, Container},
 };
-use tokio_postgres::{Client, NoTls};
 
 // ── Infrastructure ────────────────────────────────────────────────────────────
 
@@ -51,8 +51,7 @@ fn cluster_or_skip(test_name: &str) -> Option<TestPg> {
             let port = container
                 .get_host_port_ipv4(5432)
                 .expect("container port should be available");
-            let dsn =
-                format!("host={host} port={port} user=postgres password=postgres dbname=postgres");
+            let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");
             Some(TestPg {
                 dsn,
                 _container: Some(container),
@@ -68,50 +67,18 @@ fn cluster_or_skip(test_name: &str) -> Option<TestPg> {
     }
 }
 
-/// Connect to Postgres and apply auth migrations. Returns the client.
-#[allow(dead_code)]
-fn connect_and_migrate(dsn: &str) -> Client {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime should build");
-
-    rt.block_on(async {
-        let (client, connection) = tokio_postgres::connect(dsn, NoTls)
-            .await
-            .expect("postgres connect should succeed");
-
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("postgres connection error: {e}");
-            }
-        });
-
-        apply_auth_migrations_postgres(&client)
-            .await
-            .expect("migrations should apply");
-
-        client
-    })
-}
-
 // Wrapper that runs an async block synchronously using a fresh single-threaded runtime.
 macro_rules! pg_test {
-    ($test_name:expr, $dsn:expr, |$client:ident| $body:block) => {{
+    ($test_name:expr, $dsn:expr, |$pool:ident| $body:block) => {{
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("tokio runtime should build");
         rt.block_on(async {
-            let ($client, connection) = tokio_postgres::connect($dsn, NoTls)
+            let $pool = sqlx::PgPool::connect($dsn)
                 .await
                 .expect("postgres connect should succeed");
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    eprintln!("postgres connection error: {e}");
-                }
-            });
-            apply_auth_migrations_postgres(&$client)
+            apply_auth_migrations_postgres(&$pool)
                 .await
                 .expect("migrations should apply");
             $body
@@ -127,19 +94,18 @@ fn pg_creates_all_six_auth_tables() {
         return;
     };
 
-    pg_test!("pg_creates_all_six_auth_tables", &cluster.dsn, |client| {
-        let row = client
-            .query_one(
-                "SELECT COUNT(*) FROM information_schema.tables
-                 WHERE table_schema = 'public'
-                   AND table_name IN (
-                       'tenants', 'users', 'user_identities', 'tenant_users',
-                       'tenant_databases', 'credential_revocations'
-                   )",
-                &[],
-            )
-            .await
-            .expect("query should succeed");
+    pg_test!("pg_creates_all_six_auth_tables", &cluster.dsn, |pool| {
+        let row = sqlx::query(
+            "SELECT COUNT(*) FROM information_schema.tables
+             WHERE table_schema = 'public'
+               AND table_name IN (
+                   'tenants', 'users', 'user_identities', 'tenant_users',
+                   'tenant_databases', 'credential_revocations'
+               )",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("query should succeed");
         let count: i64 = row.get(0);
         assert_eq!(count, 6, "all 6 auth tables should be created");
     });
@@ -151,16 +117,15 @@ fn pg_audit_retention_policies_absent() {
         return;
     };
 
-    pg_test!("pg_audit_retention_policies_absent", &cluster.dsn, |client| {
-        let row = client
-            .query_one(
-                "SELECT COUNT(*) FROM information_schema.tables
-                 WHERE table_schema = 'public'
-                   AND table_name = 'audit_retention_policies'",
-                &[],
-            )
-            .await
-            .expect("query should succeed");
+    pg_test!("pg_audit_retention_policies_absent", &cluster.dsn, |pool| {
+        let row = sqlx::query(
+            "SELECT COUNT(*) FROM information_schema.tables
+             WHERE table_schema = 'public'
+               AND table_name = 'audit_retention_policies'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("query should succeed");
         let count: i64 = row.get(0);
         assert_eq!(
             count, 0,
@@ -181,34 +146,28 @@ fn pg_migrations_are_idempotent() {
         .expect("tokio runtime should build");
 
     rt.block_on(async {
-        let (client, connection) = tokio_postgres::connect(&cluster.dsn, NoTls)
+        let pool = sqlx::PgPool::connect(&cluster.dsn)
             .await
             .expect("connect should succeed");
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                eprintln!("postgres connection error: {e}");
-            }
-        });
 
-        apply_auth_migrations_postgres(&client)
+        apply_auth_migrations_postgres(&pool)
             .await
             .expect("first migration should succeed");
-        apply_auth_migrations_postgres(&client)
+        apply_auth_migrations_postgres(&pool)
             .await
             .expect("second migration should be idempotent");
 
-        let row = client
-            .query_one(
-                "SELECT COUNT(*) FROM information_schema.tables
-                 WHERE table_schema = 'public'
-                   AND table_name IN (
-                       'tenants', 'users', 'user_identities', 'tenant_users',
-                       'tenant_databases', 'credential_revocations'
-                   )",
-                &[],
-            )
-            .await
-            .expect("query should succeed");
+        let row = sqlx::query(
+            "SELECT COUNT(*) FROM information_schema.tables
+             WHERE table_schema = 'public'
+               AND table_name IN (
+                   'tenants', 'users', 'user_identities', 'tenant_users',
+                   'tenant_databases', 'credential_revocations'
+               )",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("query should succeed");
         let count: i64 = row.get(0);
         assert_eq!(count, 6, "still exactly 6 tables after re-run");
     });
@@ -222,36 +181,34 @@ fn pg_round_trip_tenants() {
         return;
     };
 
-    pg_test!("pg_round_trip_tenants", &cluster.dsn, |client| {
-        client
-            .execute(
-                "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
-                 VALUES ($1, $2, $3, $4, $5)",
-                &[
-                    &"t-001",
-                    &"acme",
-                    &"Acme Corp",
-                    &1_000_000i64,
-                    &1_000_001i64,
-                ],
-            )
-            .await
-            .expect("insert should succeed");
+    pg_test!("pg_round_trip_tenants", &cluster.dsn, |pool| {
+        sqlx::query(
+            "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind("t-001")
+        .bind("acme")
+        .bind("Acme Corp")
+        .bind(1_000_000i64)
+        .bind(1_000_001i64)
+        .execute(&pool)
+        .await
+        .expect("insert should succeed");
 
-        let row = client
-            .query_one(
-                "SELECT id, name, display_name, created_at_ms, updated_at_ms
-                 FROM tenants WHERE id = $1",
-                &[&"t-001"],
-            )
-            .await
-            .expect("SELECT should succeed");
+        let row = sqlx::query(
+            "SELECT id, name, display_name, created_at_ms, updated_at_ms
+             FROM tenants WHERE id = $1",
+        )
+        .bind("t-001")
+        .fetch_one(&pool)
+        .await
+        .expect("SELECT should succeed");
 
-        assert_eq!(row.get::<_, &str>(0), "t-001");
-        assert_eq!(row.get::<_, &str>(1), "acme");
-        assert_eq!(row.get::<_, &str>(2), "Acme Corp");
-        assert_eq!(row.get::<_, i64>(3), 1_000_000);
-        assert_eq!(row.get::<_, i64>(4), 1_000_001);
+        assert_eq!(row.get::<String, _>(0), "t-001");
+        assert_eq!(row.get::<String, _>(1), "acme");
+        assert_eq!(row.get::<String, _>(2), "Acme Corp");
+        assert_eq!(row.get::<i64, _>(3), 1_000_000);
+        assert_eq!(row.get::<i64, _>(4), 1_000_001);
     });
 }
 
@@ -261,30 +218,36 @@ fn pg_round_trip_users() {
         return;
     };
 
-    pg_test!("pg_round_trip_users", &cluster.dsn, |client| {
-        client
-            .execute(
-                "INSERT INTO users (id, display_name, email, created_at_ms)
-                 VALUES ($1, $2, $3, $4)",
-                &[&"u-001", &"Alice", &"alice@example.com", &2_000_000i64],
-            )
-            .await
-            .expect("insert should succeed");
+    pg_test!("pg_round_trip_users", &cluster.dsn, |pool| {
+        sqlx::query(
+            "INSERT INTO users (id, display_name, email, created_at_ms)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind("u-001")
+        .bind("Alice")
+        .bind("alice@example.com")
+        .bind(2_000_000i64)
+        .execute(&pool)
+        .await
+        .expect("insert should succeed");
 
-        let row = client
-            .query_one(
-                "SELECT id, display_name, email, created_at_ms, suspended_at_ms
-                 FROM users WHERE id = $1",
-                &[&"u-001"],
-            )
-            .await
-            .expect("SELECT should succeed");
+        let row = sqlx::query(
+            "SELECT id, display_name, email, created_at_ms, suspended_at_ms
+             FROM users WHERE id = $1",
+        )
+        .bind("u-001")
+        .fetch_one(&pool)
+        .await
+        .expect("SELECT should succeed");
 
-        assert_eq!(row.get::<_, &str>(0), "u-001");
-        assert_eq!(row.get::<_, &str>(1), "Alice");
-        assert_eq!(row.get::<_, Option<&str>>(2), Some("alice@example.com"));
-        assert_eq!(row.get::<_, i64>(3), 2_000_000);
-        assert!(row.get::<_, Option<i64>>(4).is_none());
+        assert_eq!(row.get::<String, _>(0), "u-001");
+        assert_eq!(row.get::<String, _>(1), "Alice");
+        assert_eq!(
+            row.get::<Option<String>, _>(2),
+            Some("alice@example.com".to_string())
+        );
+        assert_eq!(row.get::<i64, _>(3), 2_000_000);
+        assert!(row.get::<Option<i64>, _>(4).is_none());
     });
 }
 
@@ -294,37 +257,41 @@ fn pg_round_trip_user_identities() {
         return;
     };
 
-    pg_test!("pg_round_trip_user_identities", &cluster.dsn, |client| {
-        client
-            .execute(
-                "INSERT INTO users (id, display_name, created_at_ms) VALUES ($1, $2, $3)",
-                &[&"u-001", &"Alice", &1_000_000i64],
-            )
+    pg_test!("pg_round_trip_user_identities", &cluster.dsn, |pool| {
+        sqlx::query("INSERT INTO users (id, display_name, created_at_ms) VALUES ($1, $2, $3)")
+            .bind("u-001")
+            .bind("Alice")
+            .bind(1_000_000i64)
+            .execute(&pool)
             .await
             .unwrap();
 
-        client
-            .execute(
-                "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
-                 VALUES ($1, $2, $3, $4)",
-                &[&"tailscale", &"alice@tailnet", &"u-001", &3_000_000i64],
-            )
-            .await
-            .expect("insert should succeed");
+        sqlx::query(
+            "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind("tailscale")
+        .bind("alice@tailnet")
+        .bind("u-001")
+        .bind(3_000_000i64)
+        .execute(&pool)
+        .await
+        .expect("insert should succeed");
 
-        let row = client
-            .query_one(
-                "SELECT provider, external_id, user_id, created_at_ms
-                 FROM user_identities WHERE provider = $1 AND external_id = $2",
-                &[&"tailscale", &"alice@tailnet"],
-            )
-            .await
-            .expect("SELECT should succeed");
+        let row = sqlx::query(
+            "SELECT provider, external_id, user_id, created_at_ms
+             FROM user_identities WHERE provider = $1 AND external_id = $2",
+        )
+        .bind("tailscale")
+        .bind("alice@tailnet")
+        .fetch_one(&pool)
+        .await
+        .expect("SELECT should succeed");
 
-        assert_eq!(row.get::<_, &str>(0), "tailscale");
-        assert_eq!(row.get::<_, &str>(1), "alice@tailnet");
-        assert_eq!(row.get::<_, &str>(2), "u-001");
-        assert_eq!(row.get::<_, i64>(3), 3_000_000);
+        assert_eq!(row.get::<String, _>(0), "tailscale");
+        assert_eq!(row.get::<String, _>(1), "alice@tailnet");
+        assert_eq!(row.get::<String, _>(2), "u-001");
+        assert_eq!(row.get::<i64, _>(3), 3_000_000);
     });
 }
 
@@ -334,45 +301,53 @@ fn pg_round_trip_tenant_users() {
         return;
     };
 
-    pg_test!("pg_round_trip_tenant_users", &cluster.dsn, |client| {
-        client
-            .execute(
-                "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
-                 VALUES ($1, $2, $3, $4, $5)",
-                &[&"t-001", &"acme", &"Acme Corp", &1_000_000i64, &1_000_000i64],
-            )
+    pg_test!("pg_round_trip_tenant_users", &cluster.dsn, |pool| {
+        sqlx::query(
+            "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind("t-001")
+        .bind("acme")
+        .bind("Acme Corp")
+        .bind(1_000_000i64)
+        .bind(1_000_000i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO users (id, display_name, created_at_ms) VALUES ($1, $2, $3)")
+            .bind("u-001")
+            .bind("Alice")
+            .bind(1_000_000i64)
+            .execute(&pool)
             .await
             .unwrap();
-        client
-            .execute(
-                "INSERT INTO users (id, display_name, created_at_ms) VALUES ($1, $2, $3)",
-                &[&"u-001", &"Alice", &1_000_000i64],
-            )
-            .await
-            .unwrap();
 
-        client
-            .execute(
-                "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
-                 VALUES ($1, $2, $3, $4)",
-                &[&"t-001", &"u-001", &"admin", &4_000_000i64],
-            )
-            .await
-            .expect("insert should succeed");
+        sqlx::query(
+            "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind("t-001")
+        .bind("u-001")
+        .bind("admin")
+        .bind(4_000_000i64)
+        .execute(&pool)
+        .await
+        .expect("insert should succeed");
 
-        let row = client
-            .query_one(
-                "SELECT tenant_id, user_id, role, added_at_ms
-                 FROM tenant_users WHERE tenant_id = $1 AND user_id = $2",
-                &[&"t-001", &"u-001"],
-            )
-            .await
-            .expect("SELECT should succeed");
+        let row = sqlx::query(
+            "SELECT tenant_id, user_id, role, added_at_ms
+             FROM tenant_users WHERE tenant_id = $1 AND user_id = $2",
+        )
+        .bind("t-001")
+        .bind("u-001")
+        .fetch_one(&pool)
+        .await
+        .expect("SELECT should succeed");
 
-        assert_eq!(row.get::<_, &str>(0), "t-001");
-        assert_eq!(row.get::<_, &str>(1), "u-001");
-        assert_eq!(row.get::<_, &str>(2), "admin");
-        assert_eq!(row.get::<_, i64>(3), 4_000_000);
+        assert_eq!(row.get::<String, _>(0), "t-001");
+        assert_eq!(row.get::<String, _>(1), "u-001");
+        assert_eq!(row.get::<String, _>(2), "admin");
+        assert_eq!(row.get::<i64, _>(3), 4_000_000);
     });
 }
 
@@ -382,37 +357,44 @@ fn pg_round_trip_tenant_databases() {
         return;
     };
 
-    pg_test!("pg_round_trip_tenant_databases", &cluster.dsn, |client| {
-        client
-            .execute(
-                "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
-                 VALUES ($1, $2, $3, $4, $5)",
-                &[&"t-001", &"acme", &"Acme Corp", &1_000_000i64, &1_000_000i64],
-            )
-            .await
-            .unwrap();
+    pg_test!("pg_round_trip_tenant_databases", &cluster.dsn, |pool| {
+        sqlx::query(
+            "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind("t-001")
+        .bind("acme")
+        .bind("Acme Corp")
+        .bind(1_000_000i64)
+        .bind(1_000_000i64)
+        .execute(&pool)
+        .await
+        .unwrap();
 
-        client
-            .execute(
-                "INSERT INTO tenant_databases (tenant_id, database_name, created_at_ms)
-                 VALUES ($1, $2, $3)",
-                &[&"t-001", &"orders", &5_000_000i64],
-            )
-            .await
-            .expect("insert should succeed");
+        sqlx::query(
+            "INSERT INTO tenant_databases (tenant_id, database_name, created_at_ms)
+             VALUES ($1, $2, $3)",
+        )
+        .bind("t-001")
+        .bind("orders")
+        .bind(5_000_000i64)
+        .execute(&pool)
+        .await
+        .expect("insert should succeed");
 
-        let row = client
-            .query_one(
-                "SELECT tenant_id, database_name, created_at_ms
-                 FROM tenant_databases WHERE tenant_id = $1 AND database_name = $2",
-                &[&"t-001", &"orders"],
-            )
-            .await
-            .expect("SELECT should succeed");
+        let row = sqlx::query(
+            "SELECT tenant_id, database_name, created_at_ms
+             FROM tenant_databases WHERE tenant_id = $1 AND database_name = $2",
+        )
+        .bind("t-001")
+        .bind("orders")
+        .fetch_one(&pool)
+        .await
+        .expect("SELECT should succeed");
 
-        assert_eq!(row.get::<_, &str>(0), "t-001");
-        assert_eq!(row.get::<_, &str>(1), "orders");
-        assert_eq!(row.get::<_, i64>(2), 5_000_000);
+        assert_eq!(row.get::<String, _>(0), "t-001");
+        assert_eq!(row.get::<String, _>(1), "orders");
+        assert_eq!(row.get::<i64, _>(2), 5_000_000);
     });
 }
 
@@ -422,29 +404,35 @@ fn pg_round_trip_credential_revocations() {
         return;
     };
 
-    pg_test!("pg_round_trip_credential_revocations", &cluster.dsn, |client| {
-        client
-            .execute(
+    pg_test!(
+        "pg_round_trip_credential_revocations",
+        &cluster.dsn,
+        |pool| {
+            sqlx::query(
                 "INSERT INTO credential_revocations (jti, revoked_at_ms, revoked_by)
-                 VALUES ($1, $2, $3)",
-                &[&"jti-abc123", &6_000_000i64, &"u-001"],
+             VALUES ($1, $2, $3)",
             )
+            .bind("jti-abc123")
+            .bind(6_000_000i64)
+            .bind("u-001")
+            .execute(&pool)
             .await
             .expect("insert should succeed");
 
-        let row = client
-            .query_one(
+            let row = sqlx::query(
                 "SELECT jti, revoked_at_ms, revoked_by
-                 FROM credential_revocations WHERE jti = $1",
-                &[&"jti-abc123"],
+             FROM credential_revocations WHERE jti = $1",
             )
+            .bind("jti-abc123")
+            .fetch_one(&pool)
             .await
             .expect("SELECT should succeed");
 
-        assert_eq!(row.get::<_, &str>(0), "jti-abc123");
-        assert_eq!(row.get::<_, i64>(1), 6_000_000);
-        assert_eq!(row.get::<_, Option<&str>>(2), Some("u-001"));
-    });
+            assert_eq!(row.get::<String, _>(0), "jti-abc123");
+            assert_eq!(row.get::<i64, _>(1), 6_000_000);
+            assert_eq!(row.get::<Option<String>, _>(2), Some("u-001".to_string()));
+        }
+    );
 }
 
 // ── Constraint tests ──────────────────────────────────────────────────────────
@@ -458,35 +446,31 @@ fn pg_unique_tenant_name_rejected_on_duplicate() {
     pg_test!(
         "pg_unique_tenant_name_rejected_on_duplicate",
         &cluster.dsn,
-        |client| {
-            client
-                .execute(
-                    "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
-                     VALUES ($1, $2, $3, $4, $5)",
-                    &[
-                        &"t-001",
-                        &"dup-tenant",
-                        &"Tenant One",
-                        &1_000_000i64,
-                        &1_000_000i64,
-                    ],
-                )
-                .await
-                .expect("first insert should succeed");
+        |pool| {
+            sqlx::query(
+                "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind("t-001")
+            .bind("dup-tenant")
+            .bind("Tenant One")
+            .bind(1_000_000i64)
+            .bind(1_000_000i64)
+            .execute(&pool)
+            .await
+            .expect("first insert should succeed");
 
-            let result = client
-                .execute(
-                    "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
-                     VALUES ($1, $2, $3, $4, $5)",
-                    &[
-                        &"t-002",
-                        &"dup-tenant",
-                        &"Tenant Duplicate",
-                        &2_000_000i64,
-                        &2_000_000i64,
-                    ],
-                )
-                .await;
+            let result = sqlx::query(
+                "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind("t-002")
+            .bind("dup-tenant")
+            .bind("Tenant Duplicate")
+            .bind(2_000_000i64)
+            .bind(2_000_000i64)
+            .execute(&pool)
+            .await;
             assert!(result.is_err(), "duplicate tenant name should be rejected");
         }
     );
@@ -501,31 +485,37 @@ fn pg_unique_user_identity_rejected_on_duplicate() {
     pg_test!(
         "pg_unique_user_identity_rejected_on_duplicate",
         &cluster.dsn,
-        |client| {
-            client
-                .execute(
-                    "INSERT INTO users (id, display_name, created_at_ms) VALUES ($1, $2, $3)",
-                    &[&"u-001", &"Alice", &1_000_000i64],
-                )
+        |pool| {
+            sqlx::query("INSERT INTO users (id, display_name, created_at_ms) VALUES ($1, $2, $3)")
+                .bind("u-001")
+                .bind("Alice")
+                .bind(1_000_000i64)
+                .execute(&pool)
                 .await
                 .unwrap();
 
-            client
-                .execute(
-                    "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
-                     VALUES ($1, $2, $3, $4)",
-                    &[&"tailscale", &"dup@tailnet", &"u-001", &1_000_000i64],
-                )
-                .await
-                .expect("first identity should succeed");
+            sqlx::query(
+                "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind("tailscale")
+            .bind("dup@tailnet")
+            .bind("u-001")
+            .bind(1_000_000i64)
+            .execute(&pool)
+            .await
+            .expect("first identity should succeed");
 
-            let result = client
-                .execute(
-                    "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
-                     VALUES ($1, $2, $3, $4)",
-                    &[&"tailscale", &"dup@tailnet", &"u-001", &2_000_000i64],
-                )
-                .await;
+            let result = sqlx::query(
+                "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind("tailscale")
+            .bind("dup@tailnet")
+            .bind("u-001")
+            .bind(2_000_000i64)
+            .execute(&pool)
+            .await;
             assert!(
                 result.is_err(),
                 "duplicate provider+external_id should be rejected"
@@ -536,54 +526,56 @@ fn pg_unique_user_identity_rejected_on_duplicate() {
 
 #[test]
 fn pg_tenant_user_composite_pk_rejected_on_duplicate() {
-    let Some(cluster) =
-        cluster_or_skip("pg_tenant_user_composite_pk_rejected_on_duplicate")
-    else {
+    let Some(cluster) = cluster_or_skip("pg_tenant_user_composite_pk_rejected_on_duplicate") else {
         return;
     };
 
     pg_test!(
         "pg_tenant_user_composite_pk_rejected_on_duplicate",
         &cluster.dsn,
-        |client| {
-            client
-                .execute(
-                    "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
-                     VALUES ($1, $2, $3, $4, $5)",
-                    &[
-                        &"t-001",
-                        &"dup-tenant-u",
-                        &"Tenant",
-                        &1_000_000i64,
-                        &1_000_000i64,
-                    ],
-                )
-                .await
-                .unwrap();
-            client
-                .execute(
-                    "INSERT INTO users (id, display_name, created_at_ms) VALUES ($1, $2, $3)",
-                    &[&"u-001", &"Alice", &1_000_000i64],
-                )
+        |pool| {
+            sqlx::query(
+                "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind("t-001")
+            .bind("dup-tenant-u")
+            .bind("Tenant")
+            .bind(1_000_000i64)
+            .bind(1_000_000i64)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO users (id, display_name, created_at_ms) VALUES ($1, $2, $3)")
+                .bind("u-001")
+                .bind("Alice")
+                .bind(1_000_000i64)
+                .execute(&pool)
                 .await
                 .unwrap();
 
-            client
-                .execute(
-                    "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
-                     VALUES ($1, $2, $3, $4)",
-                    &[&"t-001", &"u-001", &"admin", &1_000_000i64],
-                )
-                .await
-                .expect("first membership should succeed");
+            sqlx::query(
+                "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind("t-001")
+            .bind("u-001")
+            .bind("admin")
+            .bind(1_000_000i64)
+            .execute(&pool)
+            .await
+            .expect("first membership should succeed");
 
-            let result = client
-                .execute(
-                    "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
-                     VALUES ($1, $2, $3, $4)",
-                    &[&"t-001", &"u-001", &"write", &2_000_000i64],
-                )
-                .await;
+            let result = sqlx::query(
+                "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind("t-001")
+            .bind("u-001")
+            .bind("write")
+            .bind(2_000_000i64)
+            .execute(&pool)
+            .await;
             assert!(
                 result.is_err(),
                 "duplicate tenant+user membership should be rejected"

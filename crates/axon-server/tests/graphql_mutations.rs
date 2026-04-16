@@ -134,7 +134,7 @@ async fn gql_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Val
 
 // ── Happy-path mutations ─────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_create_entity_mutation_happy_path() {
     let server = test_server();
     seed_tasks_collection(&server).await;
@@ -165,7 +165,7 @@ async fn graphql_create_entity_mutation_happy_path() {
 
 // ── Error contracts ──────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_update_entity_version_conflict_returns_structured_error() {
     let server = test_server();
     seed_tasks_collection(&server).await;
@@ -204,7 +204,7 @@ async fn graphql_update_entity_version_conflict_returns_structured_error() {
     assert_eq!(ext["currentEntity"]["data"]["title"], "v1");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_delete_entity_mutation() {
     let server = test_server();
     seed_tasks_collection(&server).await;
@@ -235,7 +235,7 @@ async fn graphql_delete_entity_mutation() {
 
 // ── Lifecycle transitions ────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_transition_lifecycle_mutation() {
     let server = lifecycle_server().await;
 
@@ -287,7 +287,7 @@ async fn graphql_transition_lifecycle_mutation() {
     assert_eq!(get_body["data"]["tasks"]["status"], "submitted");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_invalid_transition_error_has_valid_transitions_extension() {
     let server = lifecycle_server().await;
 
@@ -337,7 +337,7 @@ async fn graphql_invalid_transition_error_has_valid_transitions_extension() {
 
 // ── Caller identity propagation ──────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_mutation_respects_caller_identity() {
     let server = test_server();
     seed_tasks_collection(&server).await;

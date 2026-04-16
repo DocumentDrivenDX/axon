@@ -1896,7 +1896,7 @@ mod tests {
 
     // -- POST /control/tenants ------------------------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn create_tenant_returns_201_with_db_name() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
@@ -1912,7 +1912,7 @@ mod tests {
         assert!(body["created_at"].as_str().is_some());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn create_tenant_provisions_db_file() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
@@ -1927,7 +1927,7 @@ mod tests {
         assert!(expected_path.exists(), "provisioned db file should exist");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn create_duplicate_tenant_returns_409() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
@@ -1945,7 +1945,7 @@ mod tests {
 
     // -- GET /control/tenants -------------------------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn list_tenants_returns_empty() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
@@ -1955,7 +1955,7 @@ mod tests {
         assert_eq!(body["tenants"].as_array().unwrap().len(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn list_tenants_includes_db_name() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
@@ -1970,7 +1970,7 @@ mod tests {
 
     // -- GET /control/tenants/{id} --------------------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_tenant_returns_200_with_db_name() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
@@ -1984,7 +1984,7 @@ mod tests {
         assert!(body["db_name"].as_str().unwrap().starts_with("acme-"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_nonexistent_tenant_returns_404() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
@@ -1996,7 +1996,7 @@ mod tests {
 
     // -- DELETE /control/tenants/{id} -----------------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_tenant_returns_200() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
@@ -2009,7 +2009,7 @@ mod tests {
         assert_eq!(body["tenant_id"], id);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_tenant_removes_db_file() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);
@@ -2026,7 +2026,7 @@ mod tests {
         assert!(!db_path.exists(), "db file should be removed after delete");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn delete_nonexistent_tenant_returns_404() {
         let tmp = tempfile::tempdir().unwrap();
         let server = test_control_plane_server_with_dir(&tmp);

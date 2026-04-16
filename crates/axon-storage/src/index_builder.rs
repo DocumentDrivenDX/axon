@@ -449,7 +449,7 @@ mod tests {
 
     // -- Completion channel tests (FEAT-013) ---------------------------------
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn completion_receiver_resolves_on_mark_ready() {
         let mut registry = IndexBuildRegistry::default();
         let rx = registry.start_build(tasks(), "status".into(), 100);
@@ -468,7 +468,7 @@ mod tests {
         assert_eq!(outcome, BuildOutcome::Ready);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn completion_receiver_resolves_on_mark_failed() {
         let mut registry = IndexBuildRegistry::default();
         let rx = registry.start_build(tasks(), "status".into(), 100);
@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(outcome, BuildOutcome::Failed("disk full".to_string()));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn completion_receiver_observes_already_terminal_status() {
         let mut registry = IndexBuildRegistry::default();
         let rx = registry.start_build(tasks(), "status".into(), 100);
@@ -501,7 +501,7 @@ mod tests {
         assert_eq!(outcome, BuildOutcome::Ready);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn completion_receiver_errors_when_sender_dropped() {
         let mut registry = IndexBuildRegistry::default();
         let rx = registry.start_build(tasks(), "status".into(), 100);
@@ -521,7 +521,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_yields_receiver_for_active_build() {
         let mut registry = IndexBuildRegistry::default();
         let _starter = registry.start_build(tasks(), "status".into(), 100);
@@ -536,13 +536,13 @@ mod tests {
         assert_eq!(outcome, BuildOutcome::Ready);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_returns_none_for_unknown_build() {
         let registry = IndexBuildRegistry::default();
         assert!(registry.subscribe(&tasks(), "status").is_none());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn background_task_drives_completion_without_sleep() {
         // This test mirrors the shape of a real background index scan:
         // the registry lives behind a Mutex, a spawned task walks the

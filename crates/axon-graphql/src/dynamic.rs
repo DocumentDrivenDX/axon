@@ -1155,7 +1155,7 @@ mod tests {
         assert_eq!(pascal_case("a_b_c"), "ABC");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn build_schema_from_single_collection() {
         let schema = build_schema(&[test_schema()]).expect("schema should build");
         let sdl = schema.schema.sdl();
@@ -1167,7 +1167,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn build_schema_with_broker_includes_subscription_type() {
         let ts = test_schema();
         let handler = make_handler(std::slice::from_ref(&ts)).await;
@@ -1191,7 +1191,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn build_schema_without_broker_has_no_subscription() {
         let ts = test_schema();
         let handler = make_handler(std::slice::from_ref(&ts)).await;
@@ -1205,7 +1205,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn build_schema_with_multiple_collections() {
         let tasks = test_schema();
         let users = CollectionSchema {
@@ -1233,7 +1233,7 @@ mod tests {
         assert!(sdl.contains("type Users"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn introspection_query_works() {
         let schema = build_schema(&[test_schema()]).expect("schema should build");
         let result = schema
@@ -1243,7 +1243,7 @@ mod tests {
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn ui_helper_queries_do_not_match_current_dynamic_schema() {
         let schema = build_schema(&[test_schema()]).expect("schema should build");
         let helper_queries = [
@@ -1280,7 +1280,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn ui_helper_queries_fail_fast_against_feat_015_generic_contract() {
         let schema = feat_015_schema();
 
@@ -1333,7 +1333,7 @@ mod tests {
 
     // ── Live handler integration tests ──────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn handler_schema_get_entity_by_id() {
         let ts = test_schema();
         let handler = make_handler(std::slice::from_ref(&ts)).await;
@@ -1369,7 +1369,7 @@ mod tests {
         assert_eq!(task["status"], "open");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn handler_schema_list_entities() {
         let ts = test_schema();
         let handler = make_handler(std::slice::from_ref(&ts)).await;
@@ -1404,7 +1404,7 @@ mod tests {
         assert_eq!(tasks.len(), 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn handler_schema_create_mutation() {
         let ts = test_schema();
         let handler = make_handler(std::slice::from_ref(&ts)).await;
@@ -1426,7 +1426,7 @@ mod tests {
         assert_eq!(data["createTasks"]["title"], "New");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn handler_schema_update_mutation() {
         let ts = test_schema();
         let handler = make_handler(std::slice::from_ref(&ts)).await;
@@ -1461,7 +1461,7 @@ mod tests {
         assert_eq!(data["updateTasks"]["title"], "Updated");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn handler_schema_update_version_conflict() {
         let ts = test_schema();
         let handler = make_handler(std::slice::from_ref(&ts)).await;
@@ -1522,7 +1522,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn handler_schema_delete_mutation() {
         let ts = test_schema();
         let handler = make_handler(std::slice::from_ref(&ts)).await;
@@ -1560,7 +1560,7 @@ mod tests {
         assert!(get_data["tasks"].is_null());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn handler_schema_patch_mutation() {
         let ts = test_schema();
         let handler = make_handler(std::slice::from_ref(&ts)).await;
@@ -1596,7 +1596,7 @@ mod tests {
         assert_eq!(data["patchTasks"]["status"], "closed");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn handler_schema_get_not_found_returns_null() {
         let ts = test_schema();
         let handler = make_handler(std::slice::from_ref(&ts)).await;

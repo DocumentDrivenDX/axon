@@ -40,19 +40,31 @@ pub struct SqliteStorageAdapter {
 }
 
 impl SqliteStorageAdapter {
+    /// Helper: run an async future on the given runtime handle, handling the
+    /// case where we may already be inside a tokio context.
+    fn run_blocking<T>(
+        handle: &tokio::runtime::Handle,
+        fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
+    ) -> Result<T, AxonError> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => tokio::task::block_in_place(|| handle.block_on(fut)),
+            Err(_) => handle.block_on(fut),
+        }
+        .map_err(|e| AxonError::Storage(e.to_string()))
+    }
+
     /// Opens (or creates) a SQLite database at the given path.
     pub fn open(path: &str) -> Result<Self, AxonError> {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let pool = rt
-            .block_on(
-                sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect(&format!("sqlite:{}?mode=rwc", path)),
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let pool = Self::run_blocking(
+            rt.handle(),
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect(&format!("sqlite:{}?mode=rwc", path)),
+        )?;
         let adapter = Self {
             pool,
             rt,
@@ -68,13 +80,12 @@ impl SqliteStorageAdapter {
             .enable_all()
             .build()
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let pool = rt
-            .block_on(
-                sqlx::sqlite::SqlitePoolOptions::new()
-                    .max_connections(1)
-                    .connect("sqlite::memory:"),
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let pool = Self::run_blocking(
+            rt.handle(),
+            sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect("sqlite::memory:"),
+        )?;
         let adapter = Self {
             pool,
             rt,
@@ -210,9 +221,7 @@ impl SqliteStorageAdapter {
         &self,
         fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
     ) -> Result<T, AxonError> {
-        self.rt
-            .block_on(fut)
-            .map_err(|e| AxonError::Storage(e.to_string()))
+        Self::run_blocking(self.rt.handle(), fut)
     }
 
     fn init_schema(&self) -> Result<(), AxonError> {

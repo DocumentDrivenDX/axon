@@ -130,7 +130,7 @@ fn auth_header(jwt: &str) -> (http::HeaderName, HeaderValue) {
 
 /// admin_can_create_database — deployment admin creates a database in a tenant;
 /// 201 + row present in subsequent GET.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn admin_can_create_database() {
     let (server, issuer, admin_uid, _, _) = build_test_env();
     let tenant_id = "tenant-acdb-01";
@@ -163,7 +163,7 @@ async fn admin_can_create_database() {
 }
 
 /// non_admin_cannot_create_database — non-admin JWT receives 403.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn non_admin_cannot_create_database() {
     let (server, issuer, _, non_admin_uid, _) = build_test_env();
     let tenant_id = "tenant-nacd-01";
@@ -182,7 +182,7 @@ async fn non_admin_cannot_create_database() {
 
 /// create_duplicate_returns_409 — two create calls for same (tenant, name),
 /// second returns 409.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn create_duplicate_returns_409() {
     let (server, issuer, admin_uid, _, _) = build_test_env();
     let tenant_id = "tenant-cdr409-01";
@@ -208,7 +208,7 @@ async fn create_duplicate_returns_409() {
 }
 
 /// delete_removes_row — create then delete; GET shows empty.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn delete_removes_row() {
     let (server, issuer, admin_uid, _, _) = build_test_env();
     let tenant_id = "tenant-drr-01";
@@ -242,7 +242,7 @@ async fn delete_removes_row() {
 }
 
 /// delete_missing_returns_404 — delete a never-created database returns 404.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn delete_missing_returns_404() {
     let (server, issuer, admin_uid, _, _) = build_test_env();
     let tenant_id = "tenant-dmr404-01";
@@ -259,7 +259,7 @@ async fn delete_missing_returns_404() {
 
 /// two_tenants_same_database_name — verify (tenant_a, "orders") and
 /// (tenant_b, "orders") coexist (different rows, different tenants).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn two_tenants_same_database_name() {
     let (server, issuer, admin_uid, _, _) = build_test_env();
     let tenant_a = "tenant-ttsdn-a";
@@ -311,7 +311,7 @@ async fn two_tenants_same_database_name() {
 
 /// invalid_database_name_rejected — names violating the D1 identifier rule
 /// return 400.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn invalid_database_name_rejected() {
     let (server, issuer, admin_uid, _, _) = build_test_env();
     let tenant_id = "tenant-idnr-01";

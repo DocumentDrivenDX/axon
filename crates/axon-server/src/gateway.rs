@@ -3189,7 +3189,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_create_then_get_entity() {
         let server = test_server();
 
@@ -3209,7 +3209,7 @@ mod tests {
         assert_eq!(body["entity"]["data"]["title"], "hello");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_get_missing_returns_404() {
         let server = test_server();
         let resp = server.get("/tenants/default/databases/default/entities/tasks/ghost").await;
@@ -3218,7 +3218,7 @@ mod tests {
         assert_eq!(body["code"], "not_found");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_entity_get_defaults_to_json() {
         let server = test_server();
 
@@ -3236,7 +3236,7 @@ mod tests {
         assert_eq!(body["entity"]["data"]["title"], "hello");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_entity_get_markdown_returns_text_markdown() {
         let (server, handler) = test_server_with_handler();
 
@@ -3272,7 +3272,7 @@ mod tests {
         assert_eq!(resp.text(), "# hello\n\nStatus: open");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_entity_get_markdown_requires_template() {
         let server = test_server();
 
@@ -3300,7 +3300,7 @@ mod tests {
             .contains("has no markdown template defined"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_entity_get_markdown_render_failure_returns_entity_payload() {
         let (server, handler) = test_server_with_handler();
 
@@ -3346,7 +3346,7 @@ mod tests {
         assert_eq!(body["entity"]["data"]["status"], "open");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_template_crud_round_trip_uses_public_surface() {
         let server = test_server();
 
@@ -3399,7 +3399,7 @@ mod tests {
             .assert_status(StatusCode::NOT_FOUND);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_template_delete_accepts_empty_json_body() {
         let server = test_server();
 
@@ -3428,7 +3428,7 @@ mod tests {
         assert_eq!(body["status"], "deleted");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_template_responses_preserve_qualified_collection_id() {
         let (server, handler) = test_server_with_handler();
         let qualified = CollectionId::new("prod.billing.tasks");
@@ -3493,7 +3493,7 @@ mod tests {
         assert_eq!(body["template"], "# {{title}}");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_template_put_accepts_text_plain_body() {
         let server = test_server();
 
@@ -3525,7 +3525,7 @@ mod tests {
         assert_eq!(markdown.text(), "# hello");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_template_put_rejects_unknown_schema_fields() {
         let server = test_server();
 
@@ -3559,7 +3559,7 @@ mod tests {
             .contains("template references field 'ghost'"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_update_entity() {
         let server = test_server();
 
@@ -3578,7 +3578,7 @@ mod tests {
         assert_eq!(body["entity"]["version"], 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_update_version_conflict_returns_409() {
         let server = test_server();
 
@@ -3608,7 +3608,7 @@ mod tests {
         assert_eq!(current["data"]["title"], "v1");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_delete_entity() {
         let server = test_server();
 
@@ -3629,7 +3629,7 @@ mod tests {
             .assert_status_not_found();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_create_link_and_traverse() {
         let server = test_server();
 
@@ -3666,7 +3666,7 @@ mod tests {
         assert_eq!(body["entities"][0]["id"], "t-001");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_create_then_delete_link() {
         let server = test_server();
 
@@ -3724,7 +3724,7 @@ mod tests {
         assert_eq!(body["entities"].as_array().unwrap().len(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_query_audit_log() {
         let server = test_server();
 
@@ -3742,7 +3742,7 @@ mod tests {
         assert_eq!(entries[0]["actor"], "anonymous");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_query_audit_by_entity_scopes_to_requested_database() {
         let server = test_server();
 
@@ -3798,7 +3798,7 @@ mod tests {
         assert!(cross_database_entries.is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_query_audit_filtered() {
         let server = test_server();
 
@@ -3831,7 +3831,7 @@ mod tests {
     /// Verifies that GET /audit/query honors the multi-collection `collections=` query
     /// parameter (FEAT-003 US-079) and returns entries from the union of requested
     /// collections globally ordered by `audit_id` ascending.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_query_audit_multi_collection_tail() {
         let server = test_server();
 
@@ -3902,7 +3902,7 @@ mod tests {
             .all(|e| e["collection"] == "tasks" || e["collection"] == "beads"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_tailscale_identity_overrides_body_actor_in_audit() {
         let peer = SocketAddr::from(([100, 64, 0, 10], 3000));
         let auth = AuthContext::with_provider(
@@ -3935,7 +3935,7 @@ mod tests {
         assert_eq!(entries[0]["actor"], "agent@example.com");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_tailscale_rejects_non_tailnet_peer() {
         let peer = SocketAddr::from(([127, 0, 0, 1], 3000));
         let auth = AuthContext::with_provider(
@@ -3961,7 +3961,7 @@ mod tests {
         assert_eq!(body["code"], "unauthorized");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_revert_entity() {
         let server = test_server();
 
@@ -3999,7 +3999,7 @@ mod tests {
         let _ = create_entry_id;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_entity_rollback_by_version_on_v1_route() {
         let server = test_server();
 
@@ -4030,7 +4030,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_entity_rollback_recreates_deleted_entity_on_v1_route() {
         let server = test_server();
 
@@ -4073,7 +4073,7 @@ mod tests {
         assert_eq!(restored_body["entity"]["data"]["title"], "v1");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_entity_rollback_dry_run_returns_preview_without_write() {
         let server = test_server();
 
@@ -4108,7 +4108,7 @@ mod tests {
         assert_eq!(current_body["entity"]["data"]["title"], "v2");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_entity_rollback_dry_run_previews_deleted_entity_without_recreate() {
         let server = test_server();
 
@@ -4152,7 +4152,7 @@ mod tests {
             .assert_status(StatusCode::NOT_FOUND);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_entity_rollback_save_gate_failure_returns_conflict() {
         use axon_api::request::{
             CreateCollectionRequest, CreateEntityRequest, UpdateEntityRequest,
@@ -4237,7 +4237,7 @@ mod tests {
         assert_eq!(body["code"], "schema_validation");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_create_and_drop_collection() {
         let server = test_server();
 
@@ -4266,7 +4266,7 @@ mod tests {
         assert_eq!(body["name"], "my-col");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_query_entities_filter_and_count() {
         let server = test_server();
 
@@ -4317,7 +4317,7 @@ mod tests {
 
     // ── Collection list / describe endpoints ─────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_list_collections_empty() {
         let server = test_server();
         let resp = server.get("/tenants/default/databases/default/collections").await;
@@ -4326,7 +4326,7 @@ mod tests {
         assert_eq!(body["collections"].as_array().unwrap().len(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_list_and_describe_collections() {
         let server = test_server();
 
@@ -4368,7 +4368,7 @@ mod tests {
         assert_eq!(body["entity_count"], 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_describe_unknown_collection_returns_404() {
         let server = test_server();
         let resp = server.get("/tenants/default/databases/default/collections/ghost").await;
@@ -4377,7 +4377,7 @@ mod tests {
         assert_eq!(body["code"], "not_found");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_create_collection_with_invalid_name_returns_400() {
         let server = test_server();
         let resp = server
@@ -4389,7 +4389,7 @@ mod tests {
         assert_eq!(body["code"], "invalid_argument");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_create_collection_without_schema_returns_400() {
         let server = test_server();
         let resp = server.post("/tenants/default/databases/default/collections/good-name").json(&json!({})).await;
@@ -4400,7 +4400,7 @@ mod tests {
 
     // ── Schema endpoints ─────────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_put_and_get_schema() {
         let server = test_server();
 
@@ -4432,7 +4432,7 @@ mod tests {
         assert!(body["schema"]["entity_schema"]["required"].is_array());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_get_schema_missing_returns_404() {
         let server = test_server();
         let resp = server.get("/tenants/default/databases/default/collections/nonexistent/schema").await;
@@ -4441,7 +4441,7 @@ mod tests {
         assert_eq!(body["code"], "not_found");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_schema_enforced_on_entity_create() {
         let server = test_server();
 
@@ -4479,7 +4479,7 @@ mod tests {
         resp.assert_status(StatusCode::CREATED);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_put_schema_actor_recorded_in_audit() {
         let server = test_server();
 
@@ -4503,7 +4503,7 @@ mod tests {
         assert_eq!(entries[0]["mutation"], "schema.update");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_query_entities_and_combinator() {
         let server = test_server();
 
@@ -4537,7 +4537,7 @@ mod tests {
 
     // Regression tests for route conflict: literal "query" segment must not shadow
     // the {id} capture in /entities/{collection}/{id}.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_entity_with_id_query_create_and_get() {
         let server = test_server();
 
@@ -4558,7 +4558,7 @@ mod tests {
         assert_eq!(body["entity"]["data"]["title"], "reserved-id");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_query_endpoint_accessible_at_collections_path() {
         let server = test_server();
 
@@ -4585,7 +4585,7 @@ mod tests {
         assert_eq!(body["total_count"], 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_errors_are_structured_with_field_level_details() {
         let server = test_server();
 
@@ -4609,7 +4609,7 @@ mod tests {
 
     // ── Transaction endpoint ────────────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_transaction_commits_atomically() {
         let server = test_server();
 
@@ -4648,7 +4648,7 @@ mod tests {
         assert_eq!(body["entity"]["version"], 2);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_transaction_rolls_back_on_conflict() {
         let server = test_server();
 
@@ -4677,7 +4677,7 @@ mod tests {
         assert_eq!(body["entity"]["data"]["balance"], 100);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_transaction_creates_and_deletes() {
         let server = test_server();
 
@@ -4710,7 +4710,7 @@ mod tests {
             .assert_status_not_found();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_namespaced_entity_paths_isolate_same_named_collections() {
         let (server, handler) = test_server_with_handler();
         let billing = Namespace::new("prod", "billing");
@@ -4813,7 +4813,7 @@ mod tests {
             .assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_path_current_database_routes_unqualified_collection_operations() {
         let server = test_server();
 
@@ -4857,7 +4857,7 @@ mod tests {
         assert_eq!(prod_body["entity"]["data"]["scope"], "prod");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_db_path_prefix_routes_unqualified_collection_operations() {
         let server = test_server();
 
@@ -4899,7 +4899,7 @@ mod tests {
         assert_eq!(default_body["entity"]["data"]["scope"], "default");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_listings_scope_to_selected_database_only_when_requested() {
         let server = test_server();
 
@@ -4939,7 +4939,7 @@ mod tests {
         assert_eq!(path_scoped_collections[0]["name"], "prod.default.tasks");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_audit_queries_scope_to_selected_database_only_when_requested() {
         let server = test_server();
 
@@ -4996,7 +4996,7 @@ mod tests {
             .all(|entry| entry["collection"] == "prod.default.tasks"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_health_returns_ok_with_version() {
         let server = test_server();
         let resp = server.get("/health").await;
@@ -5012,7 +5012,7 @@ mod tests {
         assert!(body["databases"].is_array());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_health_reports_default_namespace_from_storage_state() {
         let (server, handler) = test_server_with_handler();
 
@@ -5036,7 +5036,7 @@ mod tests {
             .any(|database| database.as_str() == Some(DEFAULT_DATABASE)));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_rejects_dropping_default_database_and_preserves_zero_config_paths() {
         let server = test_server();
 
@@ -5083,7 +5083,7 @@ mod tests {
     // default when axon is run without --ui-dir.  They rely on the real
     // ui/build assets compiled into the binary via rust-embed.
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_root_redirects_to_ui() {
         let server = test_server();
         let resp = server.get("/").await;
@@ -5099,7 +5099,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_embedded_ui_index_returns_html() {
         let server = test_server();
         let resp = server.get("/ui").await;
@@ -5117,7 +5117,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_embedded_ui_static_asset_served_with_correct_content_type() {
         // _app/env.js is a stable filename generated by SvelteKit.
         let server = test_server();
@@ -5134,7 +5134,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_embedded_ui_unknown_path_falls_back_to_index_html() {
         // Unrecognised paths must return index.html so SvelteKit's client-side
         // router can handle them without a hard 404.
@@ -5156,7 +5156,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_database_and_namespace_endpoints_round_trip() {
         let server = test_server();
 
@@ -5314,7 +5314,7 @@ mod tests {
 
     // ── Admin role: all operations succeed ────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_create_entity() {
         let server = test_server_with_role(Role::Admin);
         let resp = server
@@ -5324,14 +5324,14 @@ mod tests {
         resp.assert_status(StatusCode::CREATED);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_get_entity() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_update_entity() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server
@@ -5341,14 +5341,14 @@ mod tests {
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_delete_entity() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server.delete("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_create_collection() {
         let server = test_server_with_role(Role::Admin);
         let resp = server
@@ -5358,14 +5358,14 @@ mod tests {
         resp.assert_status(StatusCode::CREATED);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_drop_collection() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server.delete("/tenants/default/databases/default/collections/tasks").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_put_schema() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server
@@ -5378,7 +5378,7 @@ mod tests {
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_create_link() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server
@@ -5394,7 +5394,7 @@ mod tests {
         resp.assert_status(StatusCode::CREATED);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_delete_link() {
         let server = seeded_server_with_role(Role::Admin).await;
         // Create a link first.
@@ -5422,7 +5422,7 @@ mod tests {
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_put_template() {
         let server = seeded_server_with_role(Role::Admin).await;
         let resp = server
@@ -5432,7 +5432,7 @@ mod tests {
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_admin_can_delete_template() {
         let server = seeded_server_with_role(Role::Admin).await;
         server
@@ -5446,7 +5446,7 @@ mod tests {
 
     // ── Write role: write ops succeed, admin ops return 403 ──────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_can_create_entity() {
         let server = test_server_with_role(Role::Write);
         let resp = server
@@ -5456,14 +5456,14 @@ mod tests {
         resp.assert_status(StatusCode::CREATED);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_can_get_entity() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_can_update_entity() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server
@@ -5473,14 +5473,14 @@ mod tests {
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_can_delete_entity() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server.delete("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_can_create_link() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server
@@ -5496,7 +5496,7 @@ mod tests {
         resp.assert_status(StatusCode::CREATED);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_can_delete_link() {
         let server = seeded_server_with_role(Role::Write).await;
         server
@@ -5523,7 +5523,7 @@ mod tests {
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_cannot_create_collection() {
         let server = test_server_with_role(Role::Write);
         let resp = server
@@ -5535,14 +5535,14 @@ mod tests {
         assert_eq!(body["code"], "forbidden");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_cannot_drop_collection() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server.delete("/tenants/default/databases/default/collections/tasks").await;
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_cannot_put_schema() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server
@@ -5555,7 +5555,7 @@ mod tests {
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_cannot_put_template() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server
@@ -5565,7 +5565,7 @@ mod tests {
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_cannot_delete_template() {
         let server = seeded_server_with_role(Role::Write).await;
         let resp = server.delete("/tenants/default/databases/default/collections/tasks/template").await;
@@ -5574,49 +5574,49 @@ mod tests {
 
     // ── Read role: only read ops succeed, write/admin ops return 403 ─────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_can_get_entity() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server.get("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_can_list_collections() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server.get("/tenants/default/databases/default/collections").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_can_describe_collection() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server.get("/tenants/default/databases/default/collections/tasks").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_can_get_schema() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server.get("/tenants/default/databases/default/collections/tasks/schema").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_can_traverse() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server.get("/tenants/default/databases/default/traverse/tasks/t-001?link_type=blocks").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_can_query_audit() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-001").await;
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_can_query_entities() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
@@ -5626,7 +5626,7 @@ mod tests {
         resp.assert_status_ok();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_create_entity() {
         let server = test_server_with_role(Role::Read);
         let resp = server
@@ -5638,7 +5638,7 @@ mod tests {
         assert_eq!(body["code"], "forbidden");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_update_entity() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
@@ -5648,14 +5648,14 @@ mod tests {
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_delete_entity() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server.delete("/tenants/default/databases/default/entities/tasks/t-001").await;
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_create_link() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
@@ -5671,7 +5671,7 @@ mod tests {
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_delete_link() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
@@ -5687,7 +5687,7 @@ mod tests {
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_create_collection() {
         let server = test_server_with_role(Role::Read);
         let resp = server
@@ -5697,14 +5697,14 @@ mod tests {
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_drop_collection() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server.delete("/tenants/default/databases/default/collections/tasks").await;
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_put_schema() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
@@ -5717,7 +5717,7 @@ mod tests {
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_put_template() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
@@ -5727,14 +5727,14 @@ mod tests {
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_delete_template() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server.delete("/tenants/default/databases/default/collections/tasks/template").await;
         resp.assert_status(StatusCode::FORBIDDEN);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_read_cannot_commit_transaction() {
         let server = seeded_server_with_role(Role::Read).await;
         let resp = server
@@ -5753,7 +5753,7 @@ mod tests {
 
     // ── Cross-role boundary: forbidden error contains descriptive message ─
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_forbidden_response_is_descriptive() {
         let server = test_server_with_role(Role::Read);
         let resp = server
@@ -5774,7 +5774,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rbac_write_forbidden_for_admin_op_is_descriptive() {
         let server = test_server_with_role(Role::Write);
         let resp = server
@@ -5801,7 +5801,7 @@ mod tests {
 
     // ── /auth/me endpoint tests ────────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn auth_me_returns_anonymous_admin_in_no_auth_mode() {
         let server = test_server();
         let resp = server.get("/auth/me").await;
@@ -5811,7 +5811,7 @@ mod tests {
         assert_eq!(body["role"], "admin");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn auth_me_returns_guest_identity_in_guest_mode() {
         let peer = SocketAddr::from(([127, 0, 0, 1], 3000));
         let auth = AuthContext::guest(Role::Read);
@@ -5823,7 +5823,7 @@ mod tests {
         assert_eq!(body["role"], "read");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn auth_me_returns_tailscale_identity() {
         let peer = SocketAddr::from(([100, 101, 102, 103], 443));
         let auth = AuthContext::with_provider(
@@ -5848,7 +5848,7 @@ mod tests {
         assert_eq!(body["role"], "admin");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn auth_me_returns_401_for_unauthorized_peer() {
         let peer = SocketAddr::from(([127, 0, 0, 1], 3000));
         let auth = AuthContext::with_provider(
@@ -5888,7 +5888,7 @@ mod tests {
         axum_test::TestServer::new(app)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn cors_options_preflight_allowed_origin_returns_200_with_headers() {
         let cors = CorsStore::default();
         cors.add_cached("https://sindri:5173");
@@ -5916,7 +5916,7 @@ mod tests {
         assert!(resp.headers().contains_key("access-control-allow-methods"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn cors_options_preflight_unknown_origin_returns_200_no_cors_headers() {
         let cors = CorsStore::default();
         cors.add_cached("https://allowed.example.com");
@@ -5937,7 +5937,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn cors_wildcard_echoes_star_for_any_origin() {
         let cors = CorsStore::default();
         cors.add_cached("*");
@@ -5960,7 +5960,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn cors_non_options_request_gets_acao_header_for_allowed_origin() {
         let cors = CorsStore::default();
         cors.add_cached("https://sindri:5173");
@@ -5986,7 +5986,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn cors_empty_store_adds_no_headers() {
         let server = cors_server(CorsStore::default());
 

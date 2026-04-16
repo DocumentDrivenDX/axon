@@ -110,7 +110,7 @@ mod tests {
         })
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn allows_writes_under_limit() {
         let rl = limiter(3, 60);
         assert!(rl.check("alice").await.is_ok());
@@ -118,7 +118,7 @@ mod tests {
         assert!(rl.check("alice").await.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn rejects_write_at_limit() {
         let rl = limiter(2, 60);
         assert!(rl.check("alice").await.is_ok());
@@ -127,7 +127,7 @@ mod tests {
         assert!(err.retry_after_secs > 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn tracks_actors_independently() {
         let rl = limiter(1, 60);
         assert!(rl.check("alice").await.is_ok());
@@ -136,7 +136,7 @@ mod tests {
         assert!(rl.check("bob").await.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn expired_entries_are_pruned() {
         let rl = limiter(2, 10);
         let now = Instant::now();
@@ -151,7 +151,7 @@ mod tests {
         assert!(rl.check_at("alice", after_window).await.is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn retry_after_reflects_oldest_entry_expiry() {
         let rl = limiter(2, 60);
         let now = Instant::now();
@@ -172,7 +172,7 @@ mod tests {
         assert_eq!(err.retry_after_secs, 45);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn sliding_window_allows_after_partial_expiry() {
         let rl = limiter(2, 10);
         let now = Instant::now();
@@ -194,14 +194,14 @@ mod tests {
         assert!(rl.check_at("alice", t11).await.is_err());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn default_config_is_1000_per_60s() {
         let config = RateLimitConfig::default();
         assert_eq!(config.max_writes, 1000);
         assert_eq!(config.window, Duration::from_secs(60));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn clone_shares_state() {
         let rl = limiter(2, 60);
         let rl2 = rl.clone();

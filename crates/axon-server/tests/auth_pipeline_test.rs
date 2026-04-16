@@ -153,7 +153,7 @@ fn jwt_roundtrip_succeeds() {
 // ── ADR-018 §4 failure-mode table ─────────────────────────────────────────────
 
 /// Row 1: No Authorization header → 401 unauthenticated
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_no_auth_header() {
     let state = make_state();
     let app = make_app(state);
@@ -164,7 +164,7 @@ async fn error_no_auth_header() {
 }
 
 /// Row 2a: Header present but not `Bearer` → 401 credential_malformed
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_not_bearer_scheme() {
     let state = make_state();
     let app = make_app(state);
@@ -179,7 +179,7 @@ async fn error_not_bearer_scheme() {
 }
 
 /// Row 2b: JWT structurally invalid → 401 credential_malformed
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_jwt_malformed() {
     let state = make_state();
     let app = make_app(state);
@@ -190,7 +190,7 @@ async fn error_jwt_malformed() {
 }
 
 /// Row 2c: `aud` as JSON array → 401 credential_malformed
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_aud_is_array() {
     #[derive(Serialize)]
     struct ArrayAudClaims {
@@ -234,7 +234,7 @@ async fn error_aud_is_array() {
 }
 
 /// Row 3: Signature invalid → 401 credential_invalid
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_signature_invalid() {
     let wrong_issuer = JwtIssuer::new(b"wrong-secret".to_vec(), ISSUER_ID.to_string());
     let claims = valid_claims();
@@ -248,7 +248,7 @@ async fn error_signature_invalid() {
 }
 
 /// Row 4: `exp` in past beyond skew → 401 credential_expired
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_exp_expired() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let now = now_secs();
@@ -264,7 +264,7 @@ async fn error_exp_expired() {
 }
 
 /// Row 5: `nbf` in future beyond skew → 401 credential_not_yet_valid
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_nbf_future() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let now = now_secs();
@@ -280,7 +280,7 @@ async fn error_nbf_future() {
 }
 
 /// Row 6: `jti` revoked → 401 credential_revoked
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_jti_revoked() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let claims = valid_claims();
@@ -299,7 +299,7 @@ async fn error_jti_revoked() {
 }
 
 /// Row 7: `iss` unknown → 401 credential_foreign_issuer
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_foreign_issuer() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let mut claims = valid_claims();
@@ -314,7 +314,7 @@ async fn error_foreign_issuer() {
 }
 
 /// Row 8: `aud` ≠ URL tenant → 403 credential_wrong_tenant
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_wrong_tenant() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let mut claims = valid_claims();
@@ -329,7 +329,7 @@ async fn error_wrong_tenant() {
 }
 
 /// Row 9: `sub` suspended → 401 user_suspended
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_user_suspended() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let claims = valid_claims();
@@ -360,7 +360,7 @@ async fn error_user_suspended() {
 }
 
 /// Row 10: `sub` not a tenant member → 403 not_a_tenant_member
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_not_tenant_member() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let claims = valid_claims();
@@ -390,7 +390,7 @@ async fn error_not_tenant_member() {
 }
 
 /// Row 11: URL database not in grants → 403 database_not_granted
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_database_not_granted() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let mut claims = valid_claims();
@@ -411,7 +411,7 @@ async fn error_database_not_granted() {
 }
 
 /// Row 12: Op not in grant → 403 op_not_granted
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn error_op_not_granted() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let mut claims = valid_claims();
@@ -446,7 +446,7 @@ async fn identity_handler(
     axum::Json(serde_json::json!({"user_id": identity.user_id.as_str()}))
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn valid_jwt_populates_request_extension() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let claims = valid_claims();
@@ -468,7 +468,7 @@ async fn valid_jwt_populates_request_extension() {
 
 // ── revocation_takes_effect_within_one_second ─────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn revocation_takes_effect_within_one_second() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let claims = valid_claims();
@@ -494,7 +494,7 @@ async fn revocation_takes_effect_within_one_second() {
 
 // ── clock_skew_30s_accepted_31s_rejected ─────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn clock_skew_exp_29s_accepted() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let now = now_secs();
@@ -506,7 +506,7 @@ async fn clock_skew_exp_29s_accepted() {
     assert_eq!(status, StatusCode::OK);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn clock_skew_exp_31s_rejected() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let now = now_secs();
@@ -519,7 +519,7 @@ async fn clock_skew_exp_31s_rejected() {
     assert_eq!(error_code(&json), "credential_expired");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn clock_skew_nbf_29s_future_accepted() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let now = now_secs();
@@ -531,7 +531,7 @@ async fn clock_skew_nbf_29s_future_accepted() {
     assert_eq!(status, StatusCode::OK);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn clock_skew_nbf_31s_future_rejected() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let now = now_secs();
@@ -546,7 +546,7 @@ async fn clock_skew_nbf_31s_future_rejected() {
 
 // ── ops_matrix ────────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn ops_matrix() {
     use http::Method;
 
@@ -654,7 +654,7 @@ fn auth_error_status_and_code_coverage() {
 
 // ── revocation via storage fallback ───────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn revocation_via_storage_fallback() {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
     let claims = valid_claims();

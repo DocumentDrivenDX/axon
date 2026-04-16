@@ -54,7 +54,7 @@ fn make_multi_tenant_server(tmp: &std::path::Path) -> axum_test::TestServer {
 /// An entity created under `acme/default` is accessible to `acme/default` but
 /// invisible to `beta/default` (different tenant) and `acme/extra` (different
 /// database), confirming physical isolation between slugs.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn cross_tenant_entity_is_not_visible_from_other_tenants() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let http = make_multi_tenant_server(tmp.path());

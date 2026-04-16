@@ -142,7 +142,7 @@ fn build_test_env(
 
 /// issue_with_deployment_admin — POST with admin JWT, verify response has signed
 /// JWT + jti; verify that the credential issuance can be listed.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn issue_with_deployment_admin() {
     let mut mem = MemoryStorageAdapter::default();
     let target_user_id = Uuid::now_v7().to_string();
@@ -192,7 +192,7 @@ async fn issue_with_deployment_admin() {
 
 /// issue_over_scoped_returns_403 — caller's role is Write; tries to issue admin
 /// grants → 403 grants_exceed_role.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn issue_over_scoped_returns_403() {
     let mut mem = MemoryStorageAdapter::default();
     let write_uid = Uuid::now_v7().to_string();
@@ -232,7 +232,7 @@ async fn issue_over_scoped_returns_403() {
 
 /// self_issue_within_ceiling — caller issues to themselves with grants ⊆ their
 /// own role; succeeds.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn self_issue_within_ceiling() {
     let mut mem = MemoryStorageAdapter::default();
     let write_uid = Uuid::now_v7().to_string();
@@ -267,7 +267,7 @@ async fn self_issue_within_ceiling() {
 }
 
 /// list_credentials_admin — admin sees all credentials in tenant.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn list_credentials_admin() {
     let mut mem = MemoryStorageAdapter::default();
     let user_a = Uuid::now_v7().to_string();
@@ -315,7 +315,7 @@ async fn list_credentials_admin() {
 }
 
 /// list_credentials_self — non-admin sees only their own credentials.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn list_credentials_self() {
     let mut mem = MemoryStorageAdapter::default();
     let user_a = Uuid::now_v7().to_string();
@@ -371,7 +371,7 @@ async fn list_credentials_self() {
 
 /// list_never_returns_signed_jwt — assert that the list response does not
 /// contain a "jwt" field at any level.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn list_never_returns_signed_jwt() {
     let mut mem = MemoryStorageAdapter::default();
     let target_uid = Uuid::now_v7().to_string();
@@ -415,7 +415,7 @@ async fn list_never_returns_signed_jwt() {
 }
 
 /// revoke_by_admin — admin revokes a jti; subsequent list shows revoked=true.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn revoke_by_admin() {
     let mut mem = MemoryStorageAdapter::default();
     let target_uid = Uuid::now_v7().to_string();
@@ -467,7 +467,7 @@ async fn revoke_by_admin() {
 }
 
 /// revoke_by_owner — credential owner revokes their own; succeeds.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn revoke_by_owner() {
     let mut mem = MemoryStorageAdapter::default();
     let write_uid = Uuid::now_v7().to_string();
@@ -508,7 +508,7 @@ async fn revoke_by_owner() {
 
 /// revoke_by_unrelated_user_returns_403 — a different user tries to revoke
 /// someone else's credential; receives 403.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn revoke_by_unrelated_user_returns_403() {
     let mut mem = MemoryStorageAdapter::default();
     let owner_uid = Uuid::now_v7().to_string();
@@ -555,7 +555,7 @@ async fn revoke_by_unrelated_user_returns_403() {
 
 /// revoked_credential_rejected_on_next_request — issue a credential, revoke it,
 /// then use it via B1's jwt_verify_layer; assert credential_revoked rejection.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn revoked_credential_rejected_on_next_request() {
     let tenant = "acme-cred-revoke";
     let database = "orders";

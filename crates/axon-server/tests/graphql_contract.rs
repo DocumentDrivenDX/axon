@@ -90,7 +90,7 @@ async fn gql(server: &axum_test::TestServer, query: &str) -> Value {
 
 // ── Playground ────────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_playground_returns_html() {
     let server = test_server();
     let resp = server.get("/graphql/playground").await;
@@ -104,7 +104,7 @@ async fn graphql_playground_returns_html() {
 
 // ── Introspection ─────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_introspection_root_types() {
     let server = test_server();
     // At least one collection is required — async-graphql rejects a Query with no fields.
@@ -124,7 +124,7 @@ async fn graphql_introspection_root_types() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_collection_type_visible_after_creation() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -144,7 +144,7 @@ async fn graphql_collection_type_visible_after_creation() {
     assert!(names.contains(&"items"), "should have plural query 'items'");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_mutation_fields_registered_per_collection() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -166,7 +166,7 @@ async fn graphql_mutation_fields_registered_per_collection() {
     assert!(names.contains(&"deleteItem"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_multiple_collections_in_schema() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -191,7 +191,7 @@ async fn graphql_multiple_collections_in_schema() {
 
 // ── Queries ───────────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_get_missing_entity_returns_null() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -209,7 +209,7 @@ async fn graphql_get_missing_entity_returns_null() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_list_empty_before_any_entities() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -222,7 +222,7 @@ async fn graphql_list_empty_before_any_entities() {
 
 // ── Mutations: create ─────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_create_entity_returns_system_fields() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -239,7 +239,7 @@ async fn graphql_create_entity_returns_system_fields() {
     assert_eq!(entity["version"], 1);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_get_entity_after_create() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -261,7 +261,7 @@ async fn graphql_get_entity_after_create() {
 
 // ── Queries: list + pagination ────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_list_entities_after_creates() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -281,7 +281,7 @@ async fn graphql_list_entities_after_creates() {
     assert_eq!(list.len(), 3, "should list all 3 created entities");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_list_with_limit() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -301,7 +301,7 @@ async fn graphql_list_with_limit() {
     assert_eq!(list.len(), 2, "limit: 2 should return exactly 2 items");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_list_pagination_via_after_id() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -347,7 +347,7 @@ async fn graphql_list_pagination_via_after_id() {
 
 // ── Mutations: update ─────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_update_entity_success() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -371,7 +371,7 @@ async fn graphql_update_entity_success() {
     assert_eq!(entity["label"], "v2");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_update_version_conflict_error_code() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -400,7 +400,7 @@ async fn graphql_update_version_conflict_error_code() {
 
 // ── Mutations: patch ──────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_patch_entity_success() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -424,7 +424,7 @@ async fn graphql_patch_entity_success() {
     assert_eq!(entity["label"], "patched");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_patch_version_conflict_error_code() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -452,7 +452,7 @@ async fn graphql_patch_version_conflict_error_code() {
 
 // ── Mutations: delete ─────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_delete_entity_returns_true() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -472,7 +472,7 @@ async fn graphql_delete_entity_returns_true() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_get_after_delete_returns_null() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -498,7 +498,7 @@ async fn graphql_get_after_delete_returns_null() {
 
 // ── Error paths ───────────────────────────────────────────────────────────────
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_schema_validation_error() {
     let server = test_server();
     // title must be at least 3 characters.
@@ -520,7 +520,7 @@ async fn graphql_schema_validation_error() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_invalid_json_input_returns_error() {
     let server = test_server();
     seed_collection(&server, "item").await;
