@@ -192,10 +192,14 @@ pub fn control_plane_routes() -> Router<ControlPlaneState> {
         .route("/tenants", get(list_tenants))
         .route("/tenants/{id}", get(get_tenant))
         .route("/tenants/{id}", delete(delete_tenant))
-        // User-role management
+        // User-role management (legacy login-based assignments)
         .route("/users", get(list_users))
         .route("/users/{login}", put(set_user_role))
         .route("/users/{login}", delete(remove_user_role))
+        // User provisioning (ADR-018, axon-0a6eb28a)
+        .route("/users/provision", post(create_user_handler))
+        .route("/users/list", get(list_users_handler))
+        .route("/users/suspend/{id}", delete(suspend_user_handler))
         // CORS origin management
         .route("/cors", get(list_cors_origins))
         .route("/cors", put(add_cors_origin))
@@ -1625,6 +1629,173 @@ async fn revoke_credential_handler(
 
     match result {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+// ── User provisioning handlers (axon-0a6eb28a) ───────────────────────────────
+
+#[derive(Deserialize)]
+struct CreateUserBody {
+    display_name: String,
+    #[serde(default)]
+    email: Option<String>,
+}
+
+/// `POST /control/users/provision` — create a bare user row.
+///
+/// Requires deployment-admin. Generates a fresh UserId, inserts a `users`
+/// row, and returns 201 with the new user's fields.
+async fn create_user_handler(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Json(body): Json<CreateUserBody>,
+) -> Response {
+    match &resolved {
+        Some(Extension(r)) => {
+            if let Err(e) = control_plane_authz::require_deployment_admin(r, &state.user_roles) {
+                return forbidden_response(&e.to_string());
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let new_id = axon_core::auth::UserId::generate();
+    let result = {
+        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.create_user(&new_id, &body.display_name, body.email.as_deref()),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(user) => (
+            StatusCode::CREATED,
+            Json(json!({
+                "id": user.id.as_str(),
+                "display_name": user.display_name,
+                "email": user.email,
+                "created_at_ms": user.created_at_ms,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `GET /control/users/list` — list all provisioned users deployment-wide.
+///
+/// Requires deployment-admin. Returns newest-first by `created_at_ms`.
+async fn list_users_handler(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+) -> Response {
+    match &resolved {
+        Some(Extension(r)) => {
+            if let Err(e) = control_plane_authz::require_deployment_admin(r, &state.user_roles) {
+                return forbidden_response(&e.to_string());
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let result = {
+        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.list_users(),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(users) => {
+            let payload: Vec<serde_json::Value> = users
+                .into_iter()
+                .map(|u| {
+                    json!({
+                        "id": u.id.as_str(),
+                        "display_name": u.display_name,
+                        "email": u.email,
+                        "created_at_ms": u.created_at_ms,
+                        "suspended_at_ms": u.suspended_at_ms,
+                    })
+                })
+                .collect();
+            Json(json!({ "users": payload })).into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError::new("storage_error", e.to_string())),
+        )
+            .into_response(),
+    }
+}
+
+/// `DELETE /control/users/suspend/{id}` — soft-delete a user by setting `suspended_at_ms`.
+///
+/// Requires deployment-admin. Idempotent: returns 200 whether or not the user
+/// was found.
+async fn suspend_user_handler(
+    State(state): State<ControlPlaneState>,
+    Extension(legacy): Extension<Identity>,
+    resolved: Option<Extension<ResolvedIdentity>>,
+    Path(id): Path<String>,
+) -> Response {
+    match &resolved {
+        Some(Extension(r)) => {
+            if let Err(e) = control_plane_authz::require_deployment_admin(r, &state.user_roles) {
+                return forbidden_response(&e.to_string());
+            }
+        }
+        None => {
+            if let Err(e) = legacy.require_admin() {
+                return auth_error_response(e);
+            }
+        }
+    }
+
+    let Some(storage) = &state.storage else {
+        return storage_not_configured();
+    };
+
+    let user_id = UserId::new(&id);
+    let result = {
+        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        match s {
+            Ok(s) => s.suspend_user(&user_id),
+            Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
+        }
+    };
+
+    match result {
+        Ok(_found) => Json(json!({})).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ApiError::new("storage_error", e.to_string())),

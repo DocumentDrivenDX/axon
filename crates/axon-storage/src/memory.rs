@@ -115,7 +115,11 @@ pub struct MemoryStorageAdapter {
     /// Revoked JWT IDs (ADR-018).
     revoked_jtis: HashSet<Uuid>,
     /// User store (ADR-018).
-    users: HashMap<UserId, User>,
+    ///
+    /// Uses interior mutability so that `create_user` and `suspend_user` can
+    /// take `&self` and be called concurrently from multiple threads without
+    /// requiring exclusive access to the whole adapter.
+    users: std::sync::Mutex<HashMap<UserId, User>>,
     /// Tenant membership store (ADR-018).
     ///
     /// Uses interior mutability (`Mutex`) so that `upsert_tenant_member` and
@@ -188,7 +192,7 @@ impl Default for MemoryStorageAdapter {
             numeric_ids: NumericIdCache::default(),
             links: BTreeMap::new(),
             revoked_jtis: HashSet::new(),
-            users: HashMap::new(),
+            users: std::sync::Mutex::new(HashMap::new()),
             tenant_members: std::sync::Mutex::new(HashMap::new()),
             user_identity_map: std::sync::Mutex::new(HashMap::new()),
             retention_policies: std::sync::Mutex::new(HashMap::new()),
@@ -204,7 +208,10 @@ impl MemoryStorageAdapter {
 
     /// Insert a user into the in-memory store.
     pub fn insert_user(&mut self, user: User) {
-        self.users.insert(user.id.clone(), user);
+        self.users
+            .lock()
+            .expect("users mutex not poisoned")
+            .insert(user.id.clone(), user);
     }
 
     /// Insert a tenant membership into the in-memory store.
@@ -1163,7 +1170,70 @@ impl StorageAdapter for MemoryStorageAdapter {
     }
 
     fn get_user(&self, user_id: UserId) -> Result<Option<User>, AxonError> {
-        Ok(self.users.get(&user_id).cloned())
+        Ok(self
+            .users
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("users mutex poisoned: {e}")))?
+            .get(&user_id)
+            .cloned())
+    }
+
+    fn create_user(
+        &self,
+        id: &UserId,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> Result<User, AxonError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let mut map = self
+            .users
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("users mutex poisoned: {e}")))?;
+        if map.contains_key(id) {
+            return Err(AxonError::AlreadyExists(format!(
+                "user '{}' already exists",
+                id.as_str()
+            )));
+        }
+        let user = User {
+            id: id.clone(),
+            display_name: display_name.to_string(),
+            email: email.map(|s| s.to_string()),
+            created_at_ms: now_ms,
+            suspended_at_ms: None,
+        };
+        map.insert(id.clone(), user.clone());
+        Ok(user)
+    }
+
+    fn list_users(&self) -> Result<Vec<User>, AxonError> {
+        let map = self
+            .users
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("users mutex poisoned: {e}")))?;
+        let mut users: Vec<User> = map.values().cloned().collect();
+        users.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        Ok(users)
+    }
+
+    fn suspend_user(&self, id: &UserId) -> Result<bool, AxonError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let mut map = self
+            .users
+            .lock()
+            .map_err(|e| AxonError::Storage(format!("users mutex poisoned: {e}")))?;
+        if let Some(user) = map.get_mut(id) {
+            user.suspended_at_ms = Some(now_ms);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 
     fn get_tenant_member(

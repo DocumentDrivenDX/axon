@@ -1813,6 +1813,108 @@ impl StorageAdapter for SqliteStorageAdapter {
         .map_err(|e| AxonError::Storage(e.to_string()))
     }
 
+    fn create_user(
+        &self,
+        id: &axon_core::auth::UserId,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> Result<axon_core::auth::User, AxonError> {
+        let conn = self.conn()?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let rows_affected = conn
+            .execute(
+                "INSERT INTO users (id, display_name, email, created_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id.as_str(), display_name, email, now_ms],
+            )
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("UNIQUE constraint failed") {
+                    AxonError::AlreadyExists(format!("user '{}' already exists", id.as_str()))
+                } else if msg.contains("no such table") {
+                    AxonError::Storage(
+                        "auth schema not applied; call apply_auth_migrations first".into(),
+                    )
+                } else {
+                    AxonError::Storage(msg)
+                }
+            })?;
+        if rows_affected == 0 {
+            return Err(AxonError::AlreadyExists(format!(
+                "user '{}' already exists",
+                id.as_str()
+            )));
+        }
+        conn.query_row(
+            "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+             FROM users WHERE id = ?1",
+            params![id.as_str()],
+            |row| {
+                Ok(axon_core::auth::User {
+                    id: axon_core::auth::UserId::new(row.get::<_, String>(0)?),
+                    display_name: row.get(1)?,
+                    email: row.get(2)?,
+                    created_at_ms: row.get::<_, i64>(3)? as u64,
+                    suspended_at_ms: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+                })
+            },
+        )
+        .map_err(|e| AxonError::Storage(e.to_string()))
+    }
+
+    fn list_users(&self) -> Result<Vec<axon_core::auth::User>, AxonError> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                 FROM users ORDER BY created_at_ms DESC",
+            )
+            .map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    AxonError::Storage("auth schema not applied".into())
+                } else {
+                    AxonError::Storage(msg)
+                }
+            })?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(axon_core::auth::User {
+                    id: axon_core::auth::UserId::new(row.get::<_, String>(0)?),
+                    display_name: row.get(1)?,
+                    email: row.get(2)?,
+                    created_at_ms: row.get::<_, i64>(3)? as u64,
+                    suspended_at_ms: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+                })
+            })
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let mut users = Vec::new();
+        for row in rows {
+            users.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
+        }
+        Ok(users)
+    }
+
+    fn suspend_user(&self, id: &axon_core::auth::UserId) -> Result<bool, AxonError> {
+        let conn = self.conn()?;
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let rows_affected = conn
+            .execute(
+                "UPDATE users SET suspended_at_ms = ?1 WHERE id = ?2",
+                params![now_ms, id.as_str()],
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows_affected > 0)
+    }
+
     fn upsert_tenant_member(
         &self,
         tenant_id: axon_core::auth::TenantId,

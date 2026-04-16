@@ -1386,6 +1386,96 @@ impl StorageAdapter for PostgresStorageAdapter {
         })
     }
 
+    fn create_user(
+        &self,
+        id: &axon_core::auth::UserId,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> Result<axon_core::auth::User, AxonError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        self.block(self.client.execute(
+            "INSERT INTO users (id, display_name, email, created_at_ms) \
+             VALUES ($1, $2, $3, $4)",
+            &[&id.as_str(), &display_name, &email, &now_ms],
+        ))
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("duplicate key") || msg.contains("unique") {
+                AxonError::AlreadyExists(format!("user '{}' already exists", id.as_str()))
+            } else if msg.contains("does not exist") {
+                AxonError::Storage(
+                    "auth schema not applied; call apply_auth_migrations_postgres first".into(),
+                )
+            } else {
+                AxonError::Storage(msg)
+            }
+        })?;
+        let row = self
+            .block(self.client.query_one(
+                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                 FROM users WHERE id = $1",
+                &[&id.as_str()],
+            ))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(axon_core::auth::User {
+            id: axon_core::auth::UserId::new(row.get::<_, String>("id")),
+            display_name: row.get("display_name"),
+            email: row.get("email"),
+            created_at_ms: row.get::<_, i64>("created_at_ms") as u64,
+            suspended_at_ms: row
+                .get::<_, Option<i64>>("suspended_at_ms")
+                .map(|v| v as u64),
+        })
+    }
+
+    fn list_users(&self) -> Result<Vec<axon_core::auth::User>, AxonError> {
+        let rows = self
+            .block(self.client.query(
+                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                 FROM users ORDER BY created_at_ms DESC",
+                &[],
+            ))
+            .or_else(|e| {
+                if e.to_string().contains("does not exist") {
+                    Ok(vec![])
+                } else {
+                    Err(e)
+                }
+            })
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+
+        let users = rows
+            .iter()
+            .map(|row| axon_core::auth::User {
+                id: axon_core::auth::UserId::new(row.get::<_, String>("id")),
+                display_name: row.get("display_name"),
+                email: row.get("email"),
+                created_at_ms: row.get::<_, i64>("created_at_ms") as u64,
+                suspended_at_ms: row
+                    .get::<_, Option<i64>>("suspended_at_ms")
+                    .map(|v| v as u64),
+            })
+            .collect();
+        Ok(users)
+    }
+
+    fn suspend_user(&self, id: &axon_core::auth::UserId) -> Result<bool, AxonError> {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let rows_affected = self
+            .block(self.client.execute(
+                "UPDATE users SET suspended_at_ms = $1 WHERE id = $2",
+                &[&now_ms, &id.as_str()],
+            ))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        Ok(rows_affected > 0)
+    }
+
     fn upsert_tenant_member(
         &self,
         tenant_id: axon_core::auth::TenantId,

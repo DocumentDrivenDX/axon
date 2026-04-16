@@ -854,6 +854,46 @@ pub trait StorageAdapter: Send + Sync {
         ))
     }
 
+    /// Create a bare user row with the given id, display_name, and optional email.
+    ///
+    /// Returns [`AxonError::AlreadyExists`] if a user with the given `id`
+    /// already exists.  Callers should generate a fresh [`UserId`] with
+    /// [`UserId::generate`] when they do not need a specific id.
+    ///
+    /// The default implementation returns [`AxonError::InvalidOperation`] so
+    /// that unmigrated adapters are explicit about the gap.
+    fn create_user(
+        &self,
+        id: &UserId,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> Result<User, AxonError> {
+        let _ = (id, display_name, email);
+        Err(AxonError::InvalidOperation(
+            "create_user not supported by this adapter".into(),
+        ))
+    }
+
+    /// List all users deployment-wide, newest-first by `created_at_ms`.
+    ///
+    /// Returns an empty `Vec` when there are no users or when the auth schema
+    /// has not been applied.
+    fn list_users(&self) -> Result<Vec<User>, AxonError> {
+        Ok(vec![])
+    }
+
+    /// Soft-delete a user by setting `suspended_at_ms` to the current time.
+    ///
+    /// Idempotent: if the user is already suspended the timestamp is updated.
+    /// Returns `Ok(true)` when the user was found, `Ok(false)` when not found.
+    ///
+    /// The default implementation returns `Ok(false)` so that unmigrated
+    /// adapters are explicit about the gap without erroring.
+    fn suspend_user(&self, id: &UserId) -> Result<bool, AxonError> {
+        let _ = id;
+        Ok(false)
+    }
+
     /// Add or update a user's tenant membership. Idempotent on `(tenant_id,
     /// user_id)`: if the row exists, the role is updated to the given value
     /// (this lets the same call act as both 'grant' and 'change role').
@@ -1380,6 +1420,23 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         email: Option<&str>,
     ) -> Result<User, AxonError> {
         (**self).upsert_user_identity(provider, external_id, display_name, email)
+    }
+
+    fn create_user(
+        &self,
+        id: &UserId,
+        display_name: &str,
+        email: Option<&str>,
+    ) -> Result<User, AxonError> {
+        (**self).create_user(id, display_name, email)
+    }
+
+    fn list_users(&self) -> Result<Vec<User>, AxonError> {
+        (**self).list_users()
+    }
+
+    fn suspend_user(&self, id: &UserId) -> Result<bool, AxonError> {
+        (**self).suspend_user(id)
     }
 
     fn upsert_tenant_member(
