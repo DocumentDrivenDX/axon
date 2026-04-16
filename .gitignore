@@ -1,7 +1,9 @@
 /target/
 Cargo.lock
 .agent/
+.claude/worktrees/
 .ddx/agent-logs/
+.ddx/*.bak
 .ddx/executions/*/embedded/
 .ddx/server/
 .helix-logs/
@@ -15,3 +17,4 @@ ui/test-results/
 website/public/
 website/.hugo_build.lock
 docs/demos/quickstart/recordings/
+collections
