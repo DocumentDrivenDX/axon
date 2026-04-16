@@ -7,6 +7,7 @@ import {
 	listCredentials,
 	revokeCredential,
 } from '$lib/api';
+import UserPicker from '$lib/UserPicker.svelte';
 import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();
@@ -263,16 +264,15 @@ $effect(() => {
 					void handleIssue();
 				}}
 			>
-				<label>
-					<span>Target User ID</span>
-					<input
-						type="text"
-						placeholder="UUID"
-						bind:value={issueTargetUser}
+				<div class="field-group">
+					<span class="field-label">Target User</span>
+					<UserPicker
+						value={issueTargetUser || null}
+						onselect={(id) => (issueTargetUser = id)}
 						disabled={issuing}
-						required
+						placeholder="Search or pick user…"
 					/>
-				</label>
+				</div>
 				<label>
 					<span>TTL (seconds)</span>
 					<input
@@ -522,5 +522,16 @@ $effect(() => {
 	.pill-error {
 		border-color: rgba(251, 113, 133, 0.4);
 		color: var(--danger, #fb7185);
+	}
+
+	.field-group {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.field-label {
+		font-size: 0.85rem;
+		color: var(--muted, rgba(255, 255, 255, 0.55));
 	}
 </style>

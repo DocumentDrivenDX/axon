@@ -6,6 +6,7 @@ import {
 	removeTenantMember,
 	upsertTenantMember,
 } from '$lib/api';
+import UserPicker from '$lib/UserPicker.svelte';
 import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();
@@ -97,12 +98,11 @@ $effect(() => {
 				void handleAdd();
 			}}
 		>
-			<input
-				class="user-input"
-				type="text"
-				placeholder="User ID (UUID)"
-				bind:value={newUserId}
+			<UserPicker
+				value={newUserId || null}
+				onselect={(id) => (newUserId = id)}
 				disabled={adding}
+				placeholder="Search or pick user…"
 			/>
 			<select bind:value={newRole} disabled={adding}>
 				{#each ROLES as role}
@@ -194,11 +194,6 @@ $effect(() => {
 		display: flex;
 		gap: 0.5rem;
 		align-items: center;
-	}
-
-	.user-input {
-		flex: 1;
-		max-width: 24rem;
 	}
 
 	button.danger {

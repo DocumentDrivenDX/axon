@@ -112,3 +112,25 @@ export async function selectFirstEntity(page: Page): Promise<void> {
 	const firstRow = page.locator('table tr').nth(1);
 	await firstRow.click();
 }
+
+export type TestUser = {
+	id: string;
+	display_name: string;
+	email: string | null;
+	created_at_ms: number;
+	suspended_at_ms: number | null;
+};
+
+/** Provision a user row via POST /control/users/provision. */
+export async function createTestUser(
+	request: APIRequestContext,
+	displayName?: string,
+	email?: string | null,
+): Promise<TestUser> {
+	const name = displayName ?? `test-${Date.now().toString(36)}`;
+	const response = await request.post('/control/users/provision', {
+		data: { display_name: name, email: email ?? null },
+	});
+	expect(response.ok(), `create user ${name}`).toBe(true);
+	return (await response.json()) as TestUser;
+}

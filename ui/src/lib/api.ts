@@ -436,6 +436,34 @@ export async function deleteTenantDatabase(tenantId: string, name: string): Prom
 	);
 }
 
+// ── User provisioning (deployment-wide user rows) ────────────────────────────
+
+export type User = {
+	id: string;
+	display_name: string;
+	email: string | null;
+	created_at_ms: number;
+	suspended_at_ms: number | null;
+};
+
+export async function createUser(displayName: string, email: string | null): Promise<User> {
+	return request<User>('/control/users/provision', {
+		method: 'POST',
+		body: JSON.stringify({ display_name: displayName, email }),
+	});
+}
+
+export async function listUsers(): Promise<User[]> {
+	const response = await request<{ users: User[] }>('/control/users/list');
+	return response.users;
+}
+
+export async function suspendUser(id: string): Promise<void> {
+	await request<void>(`/control/users/suspend/${encodeURIComponent(id)}`, {
+		method: 'DELETE',
+	});
+}
+
 // ── Global user ACL (deployment-wide role assignments) ──────────────────────
 
 export type UserRole = 'admin' | 'write' | 'read';

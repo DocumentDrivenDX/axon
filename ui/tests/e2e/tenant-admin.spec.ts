@@ -2,8 +2,10 @@ import { expect, test } from '@playwright/test';
 import {
 	createTestDatabase,
 	createTestTenant,
+	createTestUser,
 	tenantUrl,
 	type TestTenant,
+	type TestUser,
 } from './helpers';
 
 /**
@@ -14,22 +16,23 @@ import {
 
 test.describe('Credentials — issue and display JWT', () => {
 	let tenant: TestTenant;
+	let testUser: TestUser;
 
 	test.beforeAll(async ({ request }) => {
 		tenant = await createTestTenant(request, 'cred');
 		await createTestDatabase(request, tenant);
+		testUser = await createTestUser(request, 'cred-test-user');
 	});
 
-	// Skipped: issuing a credential requires the target_user to be a member of
-	// the tenant, which requires a user row in `users`, which requires OIDC
-	// federation (there's no REST path to provision a user). Same gap as the
-	// "tenant members" test. Tracked as a DDx bead.
-	test.skip('Issue Credential modal mints a JWT and shows it once', async ({ page }) => {
+	test('Issue Credential modal mints a JWT and shows it once', async ({ page }) => {
 		await page.goto(tenantUrl(tenant, 'credentials'));
 		await page.getByRole('button', { name: 'Issue Credential' }).click();
 
-		// Fill the issue form.
-		await page.getByPlaceholder('UUID').fill('00000000-0000-0000-0000-000000000042');
+		// Fill the issue form — use UUID paste mode since the user picker needs
+		// the user to exist in the list returned by /control/users/list.
+		await page.getByRole('button', { name: 'UUID' }).click();
+		await page.getByPlaceholder('Paste user UUID…').fill(testUser.id);
+		await page.getByRole('button', { name: 'Use' }).click();
 		// TTL default is fine; grants are pre-populated with one empty row.
 		const grantRow = page.locator('.grant-row').first();
 		await grantRow.getByPlaceholder('Database name').fill('default');
@@ -58,40 +61,40 @@ test.describe('Credentials — issue and display JWT', () => {
 
 test.describe('Tenant members — add, change role, remove', () => {
 	let tenant: TestTenant;
-	// A throwaway UUID string to use as a user_id.
-	const userId = '11111111-1111-1111-1111-111111111111';
+	let testUser: TestUser;
 
 	test.beforeAll(async ({ request }) => {
 		tenant = await createTestTenant(request, 'mbr');
+		testUser = await createTestUser(request, 'mbr-test-user');
 	});
 
-	// Skipped until the backend exposes a user-provisioning endpoint.
-	// Adding a member currently fails with a FOREIGN KEY constraint because
-	// tenant_users.user_id → users.id and there's no REST path that inserts
-	// a bare user row (only upsert_user_identity via OIDC federation).
-	// Tracked as a DDx bead.
-	test.skip('add a member, change role via dropdown, then remove', async ({ page }) => {
+	test('add a member, change role via dropdown, then remove', async ({ page }) => {
 		await page.goto(tenantUrl(tenant, 'members'));
 
-		// Add.
-		await page.getByPlaceholder('User ID (UUID)').fill(userId);
+		// Add via UUID paste mode (the user picker's fallback for direct UUID entry).
+		await page.getByRole('button', { name: 'UUID' }).click();
+		await page.getByPlaceholder('Paste user UUID…').fill(testUser.id);
+		await page.getByRole('button', { name: 'Use' }).click();
 		await page.getByRole('button', { name: 'Add' }).click();
-		await expect(page.locator('table').getByText(userId)).toBeVisible({ timeout: 5_000 });
+		await expect(page.locator('table').getByText(testUser.id.slice(0, 8))).toBeVisible({
+			timeout: 5_000,
+		});
 
 		// Change role via dropdown: find the row, change the select to 'admin'.
-		const row = page.locator('tr', { hasText: userId });
+		const idPrefix = testUser.id.slice(0, 8);
+		const row = page.locator('tr', { hasText: idPrefix });
 		await row.locator('select').selectOption('admin');
 
 		// Reload and verify the role stuck.
 		await page.reload();
 		await expect(
-			page.locator('tr', { hasText: userId }).locator('select'),
+			page.locator('tr', { hasText: idPrefix }).locator('select'),
 		).toHaveValue('admin');
 
 		// Remove.
-		await page.locator('tr', { hasText: userId }).getByRole('button', { name: 'Remove' }).click();
+		await page.locator('tr', { hasText: idPrefix }).getByRole('button', { name: 'Remove' }).click();
 		await page.getByRole('button', { name: 'Confirm' }).click();
-		await expect(page.locator('table').getByText(userId)).toHaveCount(0);
+		await expect(page.locator('table').getByText(idPrefix)).toHaveCount(0);
 	});
 });
 
