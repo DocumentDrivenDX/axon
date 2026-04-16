@@ -1,0 +1,21 @@
+{
+  "bead_id": "axon-9cf8b234",
+  "attempt_id": "20260416T194307-1647ea9e",
+  "base_rev": "9087d57c81024881dfd6b9b1c0dfcd7f0bc1c27d",
+  "result_rev": "9087d57c81024881dfd6b9b1c0dfcd7f0bc1c27d",
+  "outcome": "task_failed",
+  "status": "execution_failed",
+  "detail": "model \"qwen3.5-27b\" did not match any provider, catalog ref, or model-route; specify --provider or --model-ref explicitly",
+  "harness": "agent",
+  "model": "qwen3.5-27b",
+  "session_id": "eb-e689d780",
+  "duration_ms": 0,
+  "exit_code": 1,
+  "error": "model \"qwen3.5-27b\" did not match any provider, catalog ref, or model-route; specify --provider or --model-ref explicitly",
+  "execution_dir": ".ddx/executions/20260416T194307-1647ea9e",
+  "prompt_file": ".ddx/executions/20260416T194307-1647ea9e/prompt.md",
+  "manifest_file": ".ddx/executions/20260416T194307-1647ea9e/manifest.json",
+  "result_file": ".ddx/executions/20260416T194307-1647ea9e/result.json",
+  "started_at": "2026-04-16T19:43:08.377984649Z",
+  "finished_at": "2026-04-16T19:43:08.377988783Z"
+}

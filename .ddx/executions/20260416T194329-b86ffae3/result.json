@@ -1,0 +1,22 @@
+{
+  "bead_id": "axon-f496363a",
+  "attempt_id": "20260416T194329-b86ffae3",
+  "base_rev": "090e91808107d687ef82000003473170edff0250",
+  "result_rev": "090e91808107d687ef82000003473170edff0250",
+  "outcome": "task_failed",
+  "status": "execution_failed",
+  "detail": "script harness: unknown directive \"\u003cexecute-bead\u003e\" at index 0",
+  "harness": "script",
+  "provider": "script",
+  "model": "/home/erik/Projects/axon/.ddx/executions/20260416T194329-b86ffae3/prompt.md",
+  "session_id": "eb-40737122",
+  "duration_ms": 0,
+  "exit_code": 1,
+  "error": "script harness: unknown directive \"\u003cexecute-bead\u003e\" at index 0",
+  "execution_dir": ".ddx/executions/20260416T194329-b86ffae3",
+  "prompt_file": ".ddx/executions/20260416T194329-b86ffae3/prompt.md",
+  "manifest_file": ".ddx/executions/20260416T194329-b86ffae3/manifest.json",
+  "result_file": ".ddx/executions/20260416T194329-b86ffae3/result.json",
+  "started_at": "2026-04-16T19:43:29.953628663Z",
+  "finished_at": "2026-04-16T19:43:29.953677209Z"
+}

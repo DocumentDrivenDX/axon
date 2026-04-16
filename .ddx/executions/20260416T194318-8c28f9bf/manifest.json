@@ -1,0 +1,43 @@
+{
+  "attempt_id": "20260416T194318-8c28f9bf",
+  "bead_id": "axon-08f6c73f",
+  "base_rev": "5ea9b87df138fb98c0f2fd4aa6958b2f40c7e077",
+  "created_at": "2026-04-16T19:43:19.179697893Z",
+  "requested": {
+    "harness": "lmstudio",
+    "model": "qwen3.5-27b",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-08f6c73f",
+    "title": "fix(security): update rustls-webpki to \u003e=0.103.12 to resolve RUSTSEC-2026-0098 and RUSTSEC-2026-0099 (HIGH CVEs)",
+    "labels": [
+      "helix",
+      "phase:build",
+      "kind:security",
+      "area:governance"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-16T19:43:09Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "111213",
+      "execute-loop-heartbeat-at": "2026-04-16T19:43:09.05290922Z",
+      "spec-id": "docs/helix/01-frame/principles.md"
+    }
+  },
+  "governing": [
+    {
+      "id": "docs/helix/01-frame/principles.md",
+      "path": "docs/helix/01-frame/principles.md"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260416T194318-8c28f9bf",
+    "prompt": ".ddx/executions/20260416T194318-8c28f9bf/prompt.md",
+    "manifest": ".ddx/executions/20260416T194318-8c28f9bf/manifest.json",
+    "result": ".ddx/executions/20260416T194318-8c28f9bf/result.json",
+    "checks": ".ddx/executions/20260416T194318-8c28f9bf/checks.json",
+    "usage": ".ddx/executions/20260416T194318-8c28f9bf/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-08f6c73f-20260416T194318-8c28f9bf"
+  }
+}

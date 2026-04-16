@@ -1,0 +1,21 @@
+{
+  "bead_id": "axon-6d816f52",
+  "attempt_id": "20260416T194352-fa7d5735",
+  "base_rev": "ddd91c783211c210c402d4df9ba1497e846b1c4d",
+  "result_rev": "ddd91c783211c210c402d4df9ba1497e846b1c4d",
+  "outcome": "task_failed",
+  "status": "execution_failed",
+  "detail": "cancelled: auth/rate-limit detected (\\b401\\b)",
+  "harness": "codex",
+  "model": "gpt-5.4-mini",
+  "session_id": "eb-9d5cd2fe",
+  "duration_ms": 516,
+  "exit_code": -1,
+  "error": "cancelled: auth/rate-limit detected (\\b401\\b)",
+  "execution_dir": ".ddx/executions/20260416T194352-fa7d5735",
+  "prompt_file": ".ddx/executions/20260416T194352-fa7d5735/prompt.md",
+  "manifest_file": ".ddx/executions/20260416T194352-fa7d5735/manifest.json",
+  "result_file": ".ddx/executions/20260416T194352-fa7d5735/result.json",
+  "started_at": "2026-04-16T19:43:52.491476601Z",
+  "finished_at": "2026-04-16T19:43:53.007592807Z"
+}

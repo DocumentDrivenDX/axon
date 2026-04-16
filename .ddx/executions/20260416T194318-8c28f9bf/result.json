@@ -1,0 +1,21 @@
+{
+  "bead_id": "axon-08f6c73f",
+  "attempt_id": "20260416T194318-8c28f9bf",
+  "base_rev": "5ea9b87df138fb98c0f2fd4aa6958b2f40c7e077",
+  "result_rev": "5ea9b87df138fb98c0f2fd4aa6958b2f40c7e077",
+  "outcome": "task_failed",
+  "status": "execution_failed",
+  "detail": "agent: harness lmstudio not available:  not found in PATH",
+  "harness": "lmstudio",
+  "model": "qwen3.5-27b",
+  "session_id": "eb-64ef6492",
+  "duration_ms": 0,
+  "exit_code": 1,
+  "error": "agent: harness lmstudio not available:  not found in PATH",
+  "execution_dir": ".ddx/executions/20260416T194318-8c28f9bf",
+  "prompt_file": ".ddx/executions/20260416T194318-8c28f9bf/prompt.md",
+  "manifest_file": ".ddx/executions/20260416T194318-8c28f9bf/manifest.json",
+  "result_file": ".ddx/executions/20260416T194318-8c28f9bf/result.json",
+  "started_at": "2026-04-16T19:43:19.18059607Z",
+  "finished_at": "2026-04-16T19:43:19.180599821Z"
+}

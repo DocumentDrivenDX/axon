@@ -1,0 +1,31 @@
+{
+  "attempt_id": "20260416T204030-49ff9c27",
+  "bead_id": "axon-7b652723",
+  "base_rev": "2d1de4dd6bc0323f5970211133968caf674d927e",
+  "created_at": "2026-04-16T20:40:31.221280826Z",
+  "requested": {
+    "provider": "vidar",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-7b652723",
+    "title": "sqlx-step-4: migrate axon-server direct rusqlite usage to sqlx",
+    "description": "Three files in axon-server use rusqlite::Connection directly (NOT through StorageAdapter). Rewrite all 3 to use sqlx::SqlitePool.\n\n## Files to rewrite\n- crates/axon-server/src/control_plane.rs (324 lines) — control plane SQLite DB for tenant/node management\n- crates/axon-server/src/cors_config.rs (233 lines) — CORS configuration SQLite DB\n- crates/axon-server/src/user_roles.rs (326 lines) — user role assignment SQLite DB\n\n## Pattern\nEach file currently does:\n- `rusqlite::Connection::open(path)` or `::open_in_memory()`\n- `conn.execute(sql, params![...])`\n- `conn.prepare(sql).query_map(params, |row| ...)`\n\nReplace with:\n- `sqlx::SqlitePool::connect(url)` (via a small Runtime block_on wrapper or using an existing Runtime handle)\n- `sqlx::query(sql).bind(...).execute(\u0026pool).await` (wrapped in block_on)\n- `sqlx::query(sql).bind(...).fetch_all(\u0026pool).await` (wrapped in block_on)\n\n## Cargo.toml changes\n- crates/axon-server/Cargo.toml: remove `rusqlite.workspace = true`, add `sqlx.workspace = true`\n\n## Do NOT change\n- Any files in axon-storage\n- The StorageAdapter trait\n- Any other axon-server files\n\n## Acceptance Criteria\n- cargo check --workspace passes\n- cargo test -p axon-server passes\n- `use rusqlite` no longer appears in any axon-server .rs file\n- rusqlite is not in crates/axon-server/Cargo.toml",
+    "labels": [
+      "helix",
+      "phase:build",
+      "storage",
+      "sqlx",
+      "server"
+    ]
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260416T204030-49ff9c27",
+    "prompt": ".ddx/executions/20260416T204030-49ff9c27/prompt.md",
+    "manifest": ".ddx/executions/20260416T204030-49ff9c27/manifest.json",
+    "result": ".ddx/executions/20260416T204030-49ff9c27/result.json",
+    "checks": ".ddx/executions/20260416T204030-49ff9c27/checks.json",
+    "usage": ".ddx/executions/20260416T204030-49ff9c27/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-7b652723-20260416T204030-49ff9c27"
+  }
+}

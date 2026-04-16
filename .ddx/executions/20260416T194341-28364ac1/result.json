@@ -1,0 +1,21 @@
+{
+  "bead_id": "axon-bf49fded",
+  "attempt_id": "20260416T194341-28364ac1",
+  "base_rev": "ee6ee575f7ac7848371e52d935ee37ea2ac21b92",
+  "result_rev": "ee6ee575f7ac7848371e52d935ee37ea2ac21b92",
+  "outcome": "task_failed",
+  "status": "execution_failed",
+  "detail": "no recorded response for prompt (hash b928a6b20dff3f40). Record one with: ddx agent run --harness \u003cname\u003e --record --prompt \u003cfile\u003e",
+  "harness": "virtual",
+  "model": "recorded",
+  "session_id": "eb-17f326ec",
+  "duration_ms": 0,
+  "exit_code": 1,
+  "error": "no recorded response for prompt (hash b928a6b20dff3f40). Record one with: ddx agent run --harness \u003cname\u003e --record --prompt \u003cfile\u003e",
+  "execution_dir": ".ddx/executions/20260416T194341-28364ac1",
+  "prompt_file": ".ddx/executions/20260416T194341-28364ac1/prompt.md",
+  "manifest_file": ".ddx/executions/20260416T194341-28364ac1/manifest.json",
+  "result_file": ".ddx/executions/20260416T194341-28364ac1/result.json",
+  "started_at": "2026-04-16T19:43:41.620563879Z",
+  "finished_at": "2026-04-16T19:43:41.62148751Z"
+}

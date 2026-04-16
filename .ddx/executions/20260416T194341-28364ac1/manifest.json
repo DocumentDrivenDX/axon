@@ -1,0 +1,43 @@
+{
+  "attempt_id": "20260416T194341-28364ac1",
+  "bead_id": "axon-bf49fded",
+  "base_rev": "ee6ee575f7ac7848371e52d935ee37ea2ac21b92",
+  "created_at": "2026-04-16T19:43:41.619393726Z",
+  "requested": {
+    "harness": "virtual",
+    "model": "recorded",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-bf49fded",
+    "title": "chore(deps): address rustls-pemfile unmaintained advisory RUSTSEC-2025-0134",
+    "labels": [
+      "helix",
+      "phase:build",
+      "kind:quality",
+      "area:governance"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-16T19:43:30Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "111213",
+      "execute-loop-heartbeat-at": "2026-04-16T19:43:30.620766394Z",
+      "spec-id": "docs/helix/01-frame/principles.md"
+    }
+  },
+  "governing": [
+    {
+      "id": "docs/helix/01-frame/principles.md",
+      "path": "docs/helix/01-frame/principles.md"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260416T194341-28364ac1",
+    "prompt": ".ddx/executions/20260416T194341-28364ac1/prompt.md",
+    "manifest": ".ddx/executions/20260416T194341-28364ac1/manifest.json",
+    "result": ".ddx/executions/20260416T194341-28364ac1/result.json",
+    "checks": ".ddx/executions/20260416T194341-28364ac1/checks.json",
+    "usage": ".ddx/executions/20260416T194341-28364ac1/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-bf49fded-20260416T194341-28364ac1"
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "attempt_id": "20260416T194329-b86ffae3",
+  "bead_id": "axon-f496363a",
+  "base_rev": "090e91808107d687ef82000003473170edff0250",
+  "created_at": "2026-04-16T19:43:29.952729309Z",
+  "requested": {
+    "harness": "script",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-f496363a",
+    "title": "chore(planning): refresh implementation-plan.md to reflect current feature statuses, test counts, and resolved compile errors",
+    "labels": [
+      "helix",
+      "phase:review",
+      "kind:planning",
+      "area:governance"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-16T19:43:19Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "111213",
+      "execute-loop-heartbeat-at": "2026-04-16T19:43:19.803934849Z",
+      "spec-id": "docs/helix/04-build/implementation-plan.md"
+    }
+  },
+  "governing": [
+    {
+      "id": "docs/helix/04-build/implementation-plan.md",
+      "path": "docs/helix/04-build/implementation-plan.md"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260416T194329-b86ffae3",
+    "prompt": ".ddx/executions/20260416T194329-b86ffae3/prompt.md",
+    "manifest": ".ddx/executions/20260416T194329-b86ffae3/manifest.json",
+    "result": ".ddx/executions/20260416T194329-b86ffae3/result.json",
+    "checks": ".ddx/executions/20260416T194329-b86ffae3/checks.json",
+    "usage": ".ddx/executions/20260416T194329-b86ffae3/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-f496363a-20260416T194329-b86ffae3"
+  }
+}

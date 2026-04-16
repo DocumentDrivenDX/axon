@@ -1,0 +1,59 @@
+{
+  "attempt_id": "20260416T194352-fa7d5735",
+  "bead_id": "axon-6d816f52",
+  "base_rev": "ddd91c783211c210c402d4df9ba1497e846b1c4d",
+  "created_at": "2026-04-16T19:43:52.490538844Z",
+  "requested": {
+    "harness": "codex",
+    "model": "gpt-5.4-mini",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-6d816f52",
+    "title": "storage: migrate both adapters to sqlx with async Pool\u003cDB\u003e",
+    "description": "Migrate SqliteStorageAdapter (rusqlite, sync) and PostgresStorageAdapter (tokio-postgres + block_in_place bridge) to sqlx with async Pool\u003cPostgres\u003e / Pool\u003cSqlite\u003e.\n\n## Motivation\n- Eliminate the block_in_place hack in PostgresStorageAdapter::block()\n- Eliminate the dedicated per-adapter Tokio runtime (_rt: Runtime)\n- Unified async pooling via sqlx::Pool\u003cDB\u003e\n- Optionally: compile-time verified SQL via sqlx::query! macros\n\n## Migration Plan\n\nStep 1 — Make StorageAdapter async\n  Use async fn in trait (stable in Rust 1.75, workspace minimum).\n  Async trait methods propagate through AxonHandler.\n\nStep 2 — Postgres adapter\n  Replace { client, handle, _rt } with { pool: Pool\u003cPostgres\u003e }.\n  All ~40 SQL methods become async; remove block_in_place entirely.\n  Keep provision/deprovision helpers with short-lived pools.\n\nStep 3 — SQLite adapter\n  Replace { conn: Connection } with { pool: Pool\u003cSqlite\u003e }.\n\nStep 4 — Gateway integration\n  TenantHandler pattern can simplify once blocking is no longer needed.\n  handler.lock().await.method().await replaces the current sync calls.\n\nStep 5 — Test migration\n  Update all tests that call SqliteStorageAdapter::open_in_memory() to async.\n\n## Key Files\n- crates/axon-storage/src/adapter.rs (trait)\n- crates/axon-storage/src/postgres.rs (rewrite)\n- crates/axon-storage/src/sqlite.rs (rewrite)\n- crates/axon-storage/Cargo.toml (add sqlx, remove rusqlite + tokio-postgres)\n- crates/axon-api/src/handler.rs (async handler methods)\n- Cargo.toml (workspace dep: sqlx 0.8 with runtime-tokio-rustls, postgres, sqlite, json)\n\n## Acceptance Criteria\n- All axon-storage and axon-server tests pass\n- No block_in_place or dedicated runtime in any adapter\n- Clippy clean",
+    "labels": [
+      "storage",
+      "postgres",
+      "sqlite",
+      "sqlx",
+      "tech-debt"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-16T19:43:42Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "111213",
+      "events": [
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"agent\",\"resolved_model\":\"qwen3.5-27b\",\"route_reason\":\"direct-override\",\"fallback_chain\":[],\"base_url\":\"http://bragi:1234/v1\"}",
+          "created_at": "2026-04-16T00:30:31.726435238Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=agent model=qwen3.5-27b reason=direct-override"
+        },
+        {
+          "actor": "ddx",
+          "body": "agent: provider error: POST \"http://bragi:1234/v1/chat/completions\": 502 Bad Gateway \nresult_rev=bfdcebdd17289becf91e19cc7ba4c40a6e40e0b5\nbase_rev=bfdcebdd17289becf91e19cc7ba4c40a6e40e0b5\nretry_after=2026-04-16T06:30:31Z",
+          "created_at": "2026-04-16T00:30:31.879801807Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-04-16T19:43:42.27329693Z",
+      "execute-loop-last-detail": "agent: provider error: POST \"http://bragi:1234/v1/chat/completions\": 502 Bad Gateway ",
+      "execute-loop-last-status": "execution_failed",
+      "execute-loop-retry-after": "2026-04-16T06:30:31Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260416T194352-fa7d5735",
+    "prompt": ".ddx/executions/20260416T194352-fa7d5735/prompt.md",
+    "manifest": ".ddx/executions/20260416T194352-fa7d5735/manifest.json",
+    "result": ".ddx/executions/20260416T194352-fa7d5735/result.json",
+    "checks": ".ddx/executions/20260416T194352-fa7d5735/checks.json",
+    "usage": ".ddx/executions/20260416T194352-fa7d5735/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-6d816f52-20260416T194352-fa7d5735"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260416T202823-5b5d54a5",
+  "bead_id": "axon-68ce4acd",
+  "base_rev": "1a2487995b04a9353bf0b0f98feb3f7b9765d9bb",
+  "created_at": "2026-04-16T20:28:25.092445997Z",
+  "requested": {
+    "harness": "agent",
+    "model": "qwen3.5-27b",
+    "provider": "vidar",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-68ce4acd",
+    "title": "sqlx-step-1: add sqlx to workspace dependencies",
+    "description": "Add sqlx = { version = \"0.8\", features = [\"runtime-tokio\", \"sqlite\", \"postgres\", \"json\", \"uuid\"] } to [workspace.dependencies] in root Cargo.toml. Add sqlx.workspace = true to crates/axon-storage/Cargo.toml. Do NOT remove rusqlite or tokio-postgres. Do NOT change any .rs files.\n\n## Files to change\n- Cargo.toml (root, workspace deps section)\n- crates/axon-storage/Cargo.toml (add sqlx.workspace = true)\n\n## Acceptance Criteria\n- cargo check --workspace passes\n- cargo test --workspace passes\n- sqlx appears in Cargo.lock\n- No .rs files changed",
+    "labels": [
+      "helix",
+      "phase:build",
+      "storage",
+      "sqlx"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-16T20:28:12Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "311815",
+      "execute-loop-heartbeat-at": "2026-04-16T20:28:12.569509058Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260416T202823-5b5d54a5",
+    "prompt": ".ddx/executions/20260416T202823-5b5d54a5/prompt.md",
+    "manifest": ".ddx/executions/20260416T202823-5b5d54a5/manifest.json",
+    "result": ".ddx/executions/20260416T202823-5b5d54a5/result.json",
+    "checks": ".ddx/executions/20260416T202823-5b5d54a5/checks.json",
+    "usage": ".ddx/executions/20260416T202823-5b5d54a5/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-68ce4acd-20260416T202823-5b5d54a5"
+  }
+}
