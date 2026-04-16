@@ -12,7 +12,8 @@
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
-use rusqlite::{params, Connection};
+use sqlx::sqlite::SqlitePool;
+use sqlx::Row;
 
 use axon_core::error::AxonError;
 
@@ -76,55 +77,54 @@ impl CorsStore {
 
 /// Add the `cors_origins` table to an existing control-plane database.
 /// Called from `ControlPlaneDb::migrate()`.
-pub fn migrate_cors_origins(conn: &Connection) -> Result<(), AxonError> {
-    conn.execute_batch(
+pub async fn migrate_cors_origins(pool: &SqlitePool) -> Result<(), AxonError> {
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS cors_origins (
              origin     TEXT PRIMARY KEY,
              created_at TEXT NOT NULL
-         );",
+         )",
     )
-    .map_err(|e| AxonError::Storage(e.to_string()))
+    .execute(pool)
+    .await
+    .map_err(|e| AxonError::Storage(e.to_string()))?;
+    Ok(())
 }
 
 /// Load all allowed origins from the database.
-pub fn db_list(conn: &Connection) -> Result<Vec<String>, AxonError> {
-    let mut stmt = conn
-        .prepare("SELECT origin FROM cors_origins ORDER BY origin")
+pub async fn db_list(pool: &SqlitePool) -> Result<Vec<String>, AxonError> {
+    let rows = sqlx::query("SELECT origin FROM cors_origins ORDER BY origin")
+        .fetch_all(pool)
+        .await
         .map_err(|e| AxonError::Storage(e.to_string()))?;
 
-    let rows = stmt
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-    let mut origins = Vec::new();
-    for row in rows {
-        origins.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
-    }
+    let origins: Vec<String> = rows.iter().map(|row| row.get("origin")).collect();
     Ok(origins)
 }
 
 /// Insert an allowed origin (idempotent — no error if already present).
-pub fn db_add(conn: &Connection, origin: &str) -> Result<(), AxonError> {
+pub async fn db_add(pool: &SqlitePool, origin: &str) -> Result<(), AxonError> {
     let now = crate::user_roles::chrono_now();
-    conn.execute(
-        "INSERT INTO cors_origins (origin, created_at) VALUES (?1, ?2)
+    sqlx::query(
+        "INSERT INTO cors_origins (origin, created_at) VALUES (?, ?)
          ON CONFLICT(origin) DO NOTHING",
-        params![origin, now],
     )
+    .bind(origin)
+    .bind(now)
+    .execute(pool)
+    .await
     .map_err(|e| AxonError::Storage(e.to_string()))?;
     Ok(())
 }
 
 /// Remove an allowed origin from the database.
 /// Returns `true` if a row was deleted.
-pub fn db_remove(conn: &Connection, origin: &str) -> Result<bool, AxonError> {
-    let n = conn
-        .execute(
-            "DELETE FROM cors_origins WHERE origin = ?1",
-            params![origin],
-        )
+pub async fn db_remove(pool: &SqlitePool, origin: &str) -> Result<bool, AxonError> {
+    let result = sqlx::query("DELETE FROM cors_origins WHERE origin = ?")
+        .bind(origin)
+        .execute(pool)
+        .await
         .map_err(|e| AxonError::Storage(e.to_string()))?;
-    Ok(n > 0)
+    Ok(result.rows_affected() > 0)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -194,40 +194,46 @@ mod tests {
         assert!(clone.is_allowed("https://shared:4000"));
     }
 
-    #[test]
-    fn db_round_trip() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate_cors_origins(&conn).unwrap();
-        db_add(&conn, "https://sindri:5173").unwrap();
-        db_add(&conn, "*").unwrap();
-        let origins = db_list(&conn).unwrap();
+    async fn test_pool() -> SqlitePool {
+        SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("open in-memory pool")
+    }
+
+    #[tokio::test]
+    async fn db_round_trip() {
+        let pool = test_pool().await;
+        migrate_cors_origins(&pool).await.unwrap();
+        db_add(&pool, "https://sindri:5173").await.unwrap();
+        db_add(&pool, "*").await.unwrap();
+        let origins = db_list(&pool).await.unwrap();
         assert_eq!(origins.len(), 2);
         assert!(origins.contains(&"*".to_string()));
         assert!(origins.contains(&"https://sindri:5173".to_string()));
     }
 
-    #[test]
-    fn db_add_is_idempotent() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate_cors_origins(&conn).unwrap();
-        db_add(&conn, "https://foo:3000").unwrap();
-        db_add(&conn, "https://foo:3000").unwrap(); // should not error
-        assert_eq!(db_list(&conn).unwrap().len(), 1);
+    #[tokio::test]
+    async fn db_add_is_idempotent() {
+        let pool = test_pool().await;
+        migrate_cors_origins(&pool).await.unwrap();
+        db_add(&pool, "https://foo:3000").await.unwrap();
+        db_add(&pool, "https://foo:3000").await.unwrap(); // should not error
+        assert_eq!(db_list(&pool).await.unwrap().len(), 1);
     }
 
-    #[test]
-    fn db_remove_returns_true_on_deletion() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate_cors_origins(&conn).unwrap();
-        db_add(&conn, "https://foo:3000").unwrap();
-        assert!(db_remove(&conn, "https://foo:3000").unwrap());
-        assert!(db_list(&conn).unwrap().is_empty());
+    #[tokio::test]
+    async fn db_remove_returns_true_on_deletion() {
+        let pool = test_pool().await;
+        migrate_cors_origins(&pool).await.unwrap();
+        db_add(&pool, "https://foo:3000").await.unwrap();
+        assert!(db_remove(&pool, "https://foo:3000").await.unwrap());
+        assert!(db_list(&pool).await.unwrap().is_empty());
     }
 
-    #[test]
-    fn db_remove_returns_false_when_absent() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate_cors_origins(&conn).unwrap();
-        assert!(!db_remove(&conn, "https://nobody:9000").unwrap());
+    #[tokio::test]
+    async fn db_remove_returns_false_when_absent() {
+        let pool = test_pool().await;
+        migrate_cors_origins(&pool).await.unwrap();
+        assert!(!db_remove(&pool, "https://nobody:9000").await.unwrap());
     }
 }
