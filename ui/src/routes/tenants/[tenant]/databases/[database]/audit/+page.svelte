@@ -1,5 +1,5 @@
 <script lang="ts">
-import { type AuditEntry, fetchAudit, revertAuditEntry } from '$lib/api';
+import { type AuditEntry, fetchAudit, revertAuditEntry, rollbackTransaction } from '$lib/api';
 import { onMount } from 'svelte';
 import type { PageData } from './$types';
 
@@ -29,11 +29,38 @@ let revertConfirming = $state(false);
 let revertMessage = $state<string | null>(null);
 let revertError = $state<string | null>(null);
 
+// Transaction rollback state
+let txRollbackConfirming = $state(false);
+let txRollbackMessage = $state<string | null>(null);
+let txRollbackError = $state<string | null>(null);
+
+function txSiblingCount(txId: number | null | undefined): number {
+	if (!txId) return 0;
+	return entries.filter((e) => e.transaction_id === txId).length;
+}
+
 function selectEntry(entry: AuditEntry) {
 	selectedEntry = entry;
 	revertConfirming = false;
 	revertMessage = null;
 	revertError = null;
+	txRollbackConfirming = false;
+	txRollbackMessage = null;
+	txRollbackError = null;
+}
+
+async function doTxRollback() {
+	if (!selectedEntry?.transaction_id || !scope) return;
+	try {
+		const result = await rollbackTransaction(String(selectedEntry.transaction_id), false, scope);
+		txRollbackMessage = `Transaction rolled back: ${result.entities_rolled_back} entity/entities restored.`;
+		txRollbackConfirming = false;
+		txRollbackError = null;
+		await loadEntries();
+	} catch (err: unknown) {
+		txRollbackError = err instanceof Error ? err.message : 'Rollback failed';
+		txRollbackConfirming = false;
+	}
 }
 
 async function doRevert() {
@@ -172,7 +199,12 @@ onMount(() => {
 								<td>{formatTimestamp(entry.timestamp_ns)}</td>
 								<td>{entry.collection}</td>
 								<td>{entry.entity_id}</td>
-								<td>{entry.mutation}</td>
+								<td>
+									{entry.mutation}
+									{#if entry.transaction_id}
+										<span class="pill">tx #{String(entry.transaction_id).substring(0, 8)}</span>
+									{/if}
+								</td>
 								<td>{entry.actor ?? 'system'}</td>
 							</tr>
 						{/each}
@@ -216,6 +248,36 @@ onMount(() => {
 							</button>
 						</div>
 					{/if}
+				{/if}
+				{#if selectedEntry.transaction_id}
+					<div>
+						<h3>Transaction</h3>
+						<p class="muted">
+							Transaction ID: {selectedEntry.transaction_id}<br />
+							{txSiblingCount(selectedEntry.transaction_id)} audit entries share this transaction.
+						</p>
+						{#if txRollbackMessage}
+							<p class="message success">{txRollbackMessage}</p>
+						{/if}
+						{#if txRollbackError}
+							<p class="message error">{txRollbackError}</p>
+						{/if}
+						{#if txRollbackConfirming}
+							<div class="actions">
+								<span>
+									Undo all {txSiblingCount(selectedEntry.transaction_id)} mutations in transaction {selectedEntry.transaction_id}?
+								</span>
+								<button class="danger" onclick={() => doTxRollback()}>Yes</button>
+								<button onclick={() => (txRollbackConfirming = false)}>No</button>
+							</div>
+						{:else}
+							<div class="actions">
+								<button onclick={() => { txRollbackConfirming = true; txRollbackMessage = null; txRollbackError = null; }}>
+									Rollback this transaction
+								</button>
+							</div>
+						{/if}
+					</div>
 				{/if}
 				<div>
 					<h3>Before</h3>

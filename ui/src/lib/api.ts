@@ -586,6 +586,32 @@ export async function revokeCredential(tenantId: string, jti: string): Promise<v
 	);
 }
 
+// ── Transaction rollback ─────────────────────────────────────────────────────
+
+export interface TransactionRollbackResult {
+	transaction_id: string;
+	entities_affected: number;
+	entities_rolled_back: number;
+	errors: string[];
+	dry_run: boolean;
+	details: unknown[];
+}
+
+export async function rollbackTransaction(
+	transactionId: string,
+	dryRun: boolean,
+	scope: Scope,
+): Promise<TransactionRollbackResult> {
+	return request<TransactionRollbackResult>(
+		`/transactions/${encodeURIComponent(transactionId)}/rollback`,
+		{
+			method: 'POST',
+			body: JSON.stringify({ dry_run: dryRun }),
+		},
+		scope,
+	);
+}
+
 // ── Audit revert ─────────────────────────────────────────────────────────────
 
 export type RevertResult = {
