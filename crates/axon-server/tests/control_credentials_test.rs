@@ -162,7 +162,7 @@ async fn issue_with_deployment_admin() {
         .add_header(hname.clone(), hval.clone())
         .json(&json!({
             "target_user": target_user_id,
-            "grants": { "databases": [{ "name": "mydb", "ops": ["Read"] }] },
+            "grants": { "databases": [{ "name": "mydb", "ops": ["read"] }] },
             "ttl_seconds": 3600
         }))
         .await;
@@ -213,7 +213,7 @@ async fn issue_over_scoped_returns_403() {
         .add_header(hname, hval)
         .json(&json!({
             "target_user": write_uid,
-            "grants": { "databases": [{ "name": "mydb", "ops": ["Admin"] }] },
+            "grants": { "databases": [{ "name": "mydb", "ops": ["admin"] }] },
             "ttl_seconds": 3600
         }))
         .await;
@@ -252,7 +252,7 @@ async fn self_issue_within_ceiling() {
         .add_header(hname, hval)
         .json(&json!({
             "target_user": write_uid,
-            "grants": { "databases": [{ "name": "mydb", "ops": ["Read", "Write"] }] },
+            "grants": { "databases": [{ "name": "mydb", "ops": ["read", "write"] }] },
             "ttl_seconds": 1800
         }))
         .await;
@@ -293,7 +293,7 @@ async fn list_credentials_admin() {
             .add_header(hname.clone(), hval.clone())
             .json(&json!({
                 "target_user": uid,
-                "grants": { "databases": [{ "name": "db1", "ops": ["Read"] }] },
+                "grants": { "databases": [{ "name": "db1", "ops": ["read"] }] },
                 "ttl_seconds": 3600
             }))
             .await;
@@ -341,7 +341,7 @@ async fn list_credentials_self() {
             .add_header(admin_hname.clone(), admin_hval.clone())
             .json(&json!({
                 "target_user": uid,
-                "grants": { "databases": [{ "name": "db1", "ops": ["Read"] }] },
+                "grants": { "databases": [{ "name": "db1", "ops": ["read"] }] },
                 "ttl_seconds": 3600
             }))
             .await;
@@ -390,7 +390,7 @@ async fn list_never_returns_signed_jwt() {
         .add_header(hname.clone(), hval.clone())
         .json(&json!({
             "target_user": target_uid,
-            "grants": { "databases": [{ "name": "db1", "ops": ["Read"] }] },
+            "grants": { "databases": [{ "name": "db1", "ops": ["read"] }] },
             "ttl_seconds": 3600
         }))
         .await;
@@ -434,7 +434,7 @@ async fn revoke_by_admin() {
         .add_header(hname.clone(), hval.clone())
         .json(&json!({
             "target_user": target_uid,
-            "grants": { "databases": [{ "name": "db1", "ops": ["Read"] }] },
+            "grants": { "databases": [{ "name": "db1", "ops": ["read"] }] },
             "ttl_seconds": 3600
         }))
         .await;
@@ -487,7 +487,7 @@ async fn revoke_by_owner() {
         .add_header(admin_hname, admin_hval)
         .json(&json!({
             "target_user": write_uid,
-            "grants": { "databases": [{ "name": "db1", "ops": ["Read"] }] },
+            "grants": { "databases": [{ "name": "db1", "ops": ["read"] }] },
             "ttl_seconds": 3600
         }))
         .await;
@@ -534,7 +534,7 @@ async fn revoke_by_unrelated_user_returns_403() {
         .add_header(admin_hname, admin_hval)
         .json(&json!({
             "target_user": owner_uid,
-            "grants": { "databases": [{ "name": "db1", "ops": ["Read"] }] },
+            "grants": { "databases": [{ "name": "db1", "ops": ["read"] }] },
             "ttl_seconds": 3600
         }))
         .await;
@@ -635,7 +635,7 @@ async fn revoked_credential_rejected_on_next_request() {
             "grants": {
                 "databases": [{
                     "name": database,
-                    "ops": ["Read", "Write"]
+                    "ops": ["read", "write"]
                 }]
             },
             "ttl_seconds": 3600
