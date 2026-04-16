@@ -45,8 +45,9 @@ use axon_api::request::{
     TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
+use axon_audit::entry::AuditAttribution;
 use axon_audit::AuditLog;
-use axon_core::auth::{CallerIdentity as CoreCallerIdentity, Role as CoreRole};
+use axon_core::auth::{CallerIdentity as CoreCallerIdentity, ResolvedIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 use axon_core::types::Entity;
@@ -1004,6 +1005,7 @@ async fn create_entity(
     Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
+    jwt_identity: Option<Extension<ResolvedIdentity>>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<CreateEntityBody>,
 ) -> Response {
@@ -1016,7 +1018,10 @@ async fn create_entity(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler.lock().await.create_entity_with_caller(
+    let attribution = attribution_from_jwt(jwt_identity);
+    let mut guard = handler.lock().await;
+    axon_api::handler::set_pending_attribution(attribution);
+    let result = guard.create_entity_with_caller(
         CreateEntityRequest {
             collection: qualify_collection_name(&collection, &current_database),
             id: EntityId::new(&id),
@@ -1025,7 +1030,9 @@ async fn create_entity(
             audit_metadata: None,
         },
         &caller,
-    ) {
+    );
+    axon_api::handler::set_pending_attribution(None);
+    match result {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
             broadcast_entity_change(
@@ -1123,6 +1130,7 @@ async fn update_entity(
     Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
+    jwt_identity: Option<Extension<ResolvedIdentity>>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<UpdateEntityBody>,
 ) -> Response {
@@ -1135,7 +1143,10 @@ async fn update_entity(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler.lock().await.update_entity_with_caller(
+    let attribution = attribution_from_jwt(jwt_identity);
+    let mut guard = handler.lock().await;
+    axon_api::handler::set_pending_attribution(attribution);
+    let result = guard.update_entity_with_caller(
         UpdateEntityRequest {
             collection: qualify_collection_name(&collection, &current_database),
             id: EntityId::new(&id),
@@ -1145,7 +1156,9 @@ async fn update_entity(
             audit_metadata: None,
         },
         &caller,
-    ) {
+    );
+    axon_api::handler::set_pending_attribution(None);
+    match result {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
             broadcast_entity_change(
@@ -1173,6 +1186,7 @@ async fn delete_entity(
     Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
+    jwt_identity: Option<Extension<ResolvedIdentity>>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     _body: Option<Json<DeleteEntityBody>>,
 ) -> Response {
@@ -1185,7 +1199,10 @@ async fn delete_entity(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler.lock().await.delete_entity_with_caller(
+    let attribution = attribution_from_jwt(jwt_identity);
+    let mut guard = handler.lock().await;
+    axon_api::handler::set_pending_attribution(attribution);
+    let result = guard.delete_entity_with_caller(
         DeleteEntityRequest {
             collection: qualify_collection_name(&collection, &current_database),
             id: EntityId::new(&id),
@@ -1194,7 +1211,9 @@ async fn delete_entity(
             force: false,
         },
         &caller,
-    ) {
+    );
+    axon_api::handler::set_pending_attribution(None);
+    match result {
         Ok(resp) => {
             notify_entity_change_by_parts(&mcp_sessions, &current_database, &collection, &id);
             broadcast_entity_delete(&broker, &collection, &id, audit_id_string(resp.audit_id));
@@ -1313,6 +1332,7 @@ async fn transition_lifecycle_handler(
     Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
+    jwt_identity: Option<Extension<ResolvedIdentity>>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<TransitionLifecycleBody>,
 ) -> Response {
@@ -1330,7 +1350,10 @@ async fn transition_lifecycle_handler(
     // (FEAT-012); `_with_caller` overrides `req.actor` with `caller.actor`.
     let _ = body.actor;
 
-    match handler.lock().await.transition_lifecycle_with_caller(
+    let attribution = attribution_from_jwt(jwt_identity);
+    let mut guard = handler.lock().await;
+    axon_api::handler::set_pending_attribution(attribution);
+    let result = guard.transition_lifecycle_with_caller(
         TransitionLifecycleRequest {
             collection_id: qualify_collection_name(&collection, &current_database),
             entity_id: EntityId::new(&id),
@@ -1341,7 +1364,9 @@ async fn transition_lifecycle_handler(
             audit_metadata: body.audit_metadata,
         },
         &caller,
-    ) {
+    );
+    axon_api::handler::set_pending_attribution(None);
+    match result {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
             broadcast_entity_change(
@@ -1359,6 +1384,7 @@ async fn transition_lifecycle_handler(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn create_link(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -1366,6 +1392,7 @@ async fn create_link(
     Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
+    jwt_identity: Option<Extension<ResolvedIdentity>>,
     Json(body): Json<CreateLinkBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
@@ -1377,7 +1404,10 @@ async fn create_link(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler.lock().await.create_link_with_caller(
+    let attribution = attribution_from_jwt(jwt_identity);
+    let mut guard = handler.lock().await;
+    axon_api::handler::set_pending_attribution(attribution);
+    let result = guard.create_link_with_caller(
         CreateLinkRequest {
             source_collection: qualify_collection_name(&body.source_collection, &current_database),
             source_id: EntityId::new(&body.source_id),
@@ -1388,7 +1418,9 @@ async fn create_link(
             actor: None,
         },
         &caller,
-    ) {
+    );
+    axon_api::handler::set_pending_attribution(None);
+    match result {
         Ok(resp) => {
             let link = resp.link;
             (
@@ -1410,6 +1442,7 @@ async fn create_link(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn delete_link(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
@@ -1417,6 +1450,7 @@ async fn delete_link(
     Extension(caller): Extension<CoreCallerIdentity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
+    jwt_identity: Option<Extension<ResolvedIdentity>>,
     Json(body): Json<DeleteLinkBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
@@ -1428,7 +1462,10 @@ async fn delete_link(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler.lock().await.delete_link_with_caller(
+    let attribution = attribution_from_jwt(jwt_identity);
+    let mut guard = handler.lock().await;
+    axon_api::handler::set_pending_attribution(attribution);
+    let result = guard.delete_link_with_caller(
         DeleteLinkRequest {
             source_collection: qualify_collection_name(&body.source_collection, &current_database),
             source_id: EntityId::new(&body.source_id),
@@ -1438,7 +1475,9 @@ async fn delete_link(
             actor: None,
         },
         &caller,
-    ) {
+    );
+    axon_api::handler::set_pending_attribution(None);
+    match result {
         Ok(resp) => Json(json!({
             "source_collection": resp.source_collection,
             "source_id": resp.source_id,
@@ -1613,6 +1652,7 @@ async fn query_audit(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn revert_entity(
     Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
@@ -1620,6 +1660,7 @@ async fn revert_entity(
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
+    jwt_identity: Option<Extension<ResolvedIdentity>>,
     Json(body): Json<RevertEntityBody>,
 ) -> Response {
     if let Err(e) = identity.require_write() {
@@ -1628,14 +1669,17 @@ async fn revert_entity(
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
         return rate_limit_response(&limited);
     }
-    match handler
-        .lock()
-        .await
-        .revert_entity_to_audit_entry(RevertEntityRequest {
-            audit_entry_id: body.audit_entry_id,
-            actor: Some(identity.actor),
-            force: body.force,
-        }) {
+    let attribution = attribution_from_jwt(jwt_identity);
+    let actor = identity.actor.clone();
+    let mut guard = handler.lock().await;
+    axon_api::handler::set_pending_attribution(attribution);
+    let result = guard.revert_entity_to_audit_entry(RevertEntityRequest {
+        audit_entry_id: body.audit_entry_id,
+        actor: Some(actor),
+        force: body.force,
+    });
+    axon_api::handler::set_pending_attribution(None);
+    match result {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
             broadcast_entity_change(
@@ -2347,6 +2391,7 @@ async fn commit_transaction(
     Extension(rate_limiter): Extension<WriteRateLimiter>,
     Extension(actor_scope): Extension<ActorScopeGuard>,
     Extension(idempotency): Extension<HttpIdempotencyStore>,
+    jwt_identity: Option<Extension<ResolvedIdentity>>,
     headers: HeaderMap,
     Json(body): Json<TransactionBody>,
 ) -> Response {
@@ -2488,7 +2533,10 @@ async fn commit_transaction(
     let tx_id = tx.id.clone();
     let mut h = handler.lock().await;
     let (storage, audit) = h.storage_and_audit_mut();
-    match tx.commit(storage, audit, Some(caller.actor.clone())) {
+    axon_api::handler::set_pending_attribution(attribution_from_jwt(jwt_identity));
+    let commit_result = tx.commit(storage, audit, Some(caller.actor.clone()));
+    axon_api::handler::set_pending_attribution(None);
+    match commit_result {
         Ok(written) => {
             // Look up the audit entries produced by this transaction so we can
             // stamp each broadcast ChangeEvent with a resume cursor. All
@@ -2865,6 +2913,38 @@ pub fn build_router_with_broker(
     )
 }
 
+/// Optional JWT verification middleware (ADR-018 cutover).
+///
+/// Falls through to the next handler when no `Authorization` header is
+/// present so that existing Tailscale / guest / no-auth sessions continue
+/// to work unchanged. When the header IS present the request is forwarded
+/// to the canonical [`crate::auth_pipeline::jwt_verify_layer`] which either
+/// installs a [`ResolvedIdentity`] extension or returns a 401/403 error.
+async fn optional_jwt_verify_layer(
+    State(state): State<Arc<crate::auth_pipeline::AuthPipelineState>>,
+    request: axum::extract::Request,
+    next: Next,
+) -> Response {
+    if !request.headers().contains_key(axum::http::header::AUTHORIZATION) {
+        return next.run(request).await;
+    }
+    crate::auth_pipeline::jwt_verify_layer(State(state), request, next).await
+}
+
+/// Build an [`AuditAttribution`] from a [`ResolvedIdentity`] installed by the
+/// JWT middleware, if one is present in the request extensions.
+///
+/// Returns `None` when the request was authenticated by Tailscale or `--no-auth`.
+#[allow(clippy::single_option_map)]
+fn attribution_from_jwt(jwt_identity: Option<Extension<ResolvedIdentity>>) -> Option<AuditAttribution> {
+    jwt_identity.map(|Extension(id)| AuditAttribution {
+        user_id: id.user_id.to_string(),
+        tenant_id: id.tenant_id.to_string(),
+        jti: None, // JTI is in the claims but not copied into ResolvedIdentity
+        auth_method: "jwt".to_string(),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_router_full(
     tenant_router: Arc<TenantRouter>,
@@ -2976,6 +3056,21 @@ fn build_router_full(
     }
 
     if let Some(cp) = control_plane {
+        // Install the optional JWT verification layer when the control plane
+        // has both an issuer and a storage adapter configured (ADR-018 cutover).
+        // This runs *inside* the CORS/auth stack so it fires after Tailscale auth
+        // but the ResolvedIdentity it installs is available to all route handlers.
+        if let (Some(issuer), Some(storage)) = (cp.jwt_issuer.clone(), cp.storage.clone()) {
+            let pipeline_state = Arc::new(crate::auth_pipeline::AuthPipelineState {
+                issuer,
+                revocation_cache: Arc::new(crate::auth_pipeline::InMemoryRevocationCache::new()),
+                storage,
+            });
+            router = router.layer(middleware::from_fn_with_state(
+                pipeline_state,
+                optional_jwt_verify_layer,
+            ));
+        }
         let cp_routes = crate::control_plane_routes::control_plane_routes().with_state(cp);
         router = router.nest("/control", cp_routes);
     }

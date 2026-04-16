@@ -23,7 +23,12 @@ use tokio::sync::Mutex;
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status};
 
-const AXON_DATABASE_HEADER: &str = "x-axon-database";
+/// Composite tenant+database header: value is `"{tenant}:{database}"`.
+///
+/// Replaces the legacy `x-axon-database` header so the gRPC path carries
+/// the same information as the REST `tenants/{tenant}/databases/{database}`
+/// URL segments (ADR-018 cutover).
+const AXON_TENANT_DATABASE_HEADER: &str = "x-axon-tenant-database";
 
 /// Metadata key carrying the caller-declared actor identity (FEAT-012).
 ///
@@ -219,8 +224,13 @@ fn grpc_current_database<T>(request: &Request<T>) -> &str {
 fn grpc_requested_database<T>(request: &Request<T>) -> Option<&str> {
     request
         .metadata()
-        .get(AXON_DATABASE_HEADER)
+        .get(AXON_TENANT_DATABASE_HEADER)
         .and_then(|value| value.to_str().ok())
+        .filter(|composite| !composite.is_empty())
+        .and_then(|composite| {
+            // Composite form: "{tenant}:{database}". Extract the database part.
+            composite.find(':').map(|pos| &composite[pos + 1..])
+        })
         .filter(|database| !database.is_empty())
 }
 
@@ -1135,9 +1145,10 @@ mod tests {
 
     fn request_with_database<T>(message: T, database: &str) -> Request<T> {
         let mut request = Request::new(message);
+        let composite = format!("test:{database}");
         request.metadata_mut().insert(
-            AXON_DATABASE_HEADER,
-            MetadataValue::try_from(database).expect("database metadata must be valid"),
+            AXON_TENANT_DATABASE_HEADER,
+            MetadataValue::try_from(composite.as_str()).expect("database metadata must be valid"),
         );
         request
     }

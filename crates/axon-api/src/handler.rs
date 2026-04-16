@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -9,6 +10,35 @@ fn now_ns() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(0)
+}
+
+// ── ADR-018 attribution thread-local ─────────────────────────────────────────
+
+thread_local! {
+    /// Holds the `AuditAttribution` to stamp onto the next audit write.
+    ///
+    /// Set by the HTTP/gRPC gateway _after_ acquiring the handler mutex but
+    /// _before_ calling any write method.  The write method picks it up via
+    /// [`clone_pending_attribution`] and clears it immediately after use.
+    /// Thread-locals are safe here because all `AxonHandler` write methods are
+    /// fully synchronous — there are no `.await` points between the `set` and
+    /// the `clear`, so the value cannot leak to a different request even under
+    /// Tokio's work-stealing scheduler.
+    static PENDING_ATTRIBUTION: RefCell<Option<axon_audit::entry::AuditAttribution>> =
+        const { RefCell::new(None) };
+}
+
+/// Install an [`AuditAttribution`] for the next synchronous write operation.
+///
+/// Call this immediately before invoking a handler write method while holding
+/// the handler mutex, and call it again with `None` right after to clear it.
+pub fn set_pending_attribution(attr: Option<axon_audit::entry::AuditAttribution>) {
+    PENDING_ATTRIBUTION.with(|a| *a.borrow_mut() = attr);
+}
+
+/// Consume the pending attribution (crate-internal use by write methods).
+pub(crate) fn clone_pending_attribution() -> Option<axon_audit::entry::AuditAttribution> {
+    PENDING_ATTRIBUTION.with(|a| a.borrow().clone())
 }
 
 use axon_audit::entry::{compute_diff, AuditEntry, MutationType};
@@ -560,6 +590,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(meta) = req.audit_metadata {
             audit_entry = audit_entry.with_metadata(meta);
         }
+        if let Some(attr) = clone_pending_attribution() {
+            audit_entry = audit_entry.with_attribution(attr);
+        }
         let appended = self.audit.append(audit_entry)?;
         let audit_id = Some(appended.id);
 
@@ -748,6 +781,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(meta) = req.audit_metadata {
             audit_entry = audit_entry.with_metadata(meta);
         }
+        if let Some(attr) = clone_pending_attribution() {
+            audit_entry = audit_entry.with_attribution(attr);
+        }
         let appended = self.audit.append(audit_entry)?;
         let audit_id = Some(appended.id);
 
@@ -887,6 +923,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(meta) = req.audit_metadata {
             audit_entry = audit_entry.with_metadata(meta);
         }
+        if let Some(attr) = clone_pending_attribution() {
+            audit_entry = audit_entry.with_attribution(attr);
+        }
         let appended = self.audit.append(audit_entry)?;
         let audit_id = Some(appended.id);
 
@@ -980,6 +1019,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
             );
             if let Some(meta) = req.audit_metadata {
                 audit_entry = audit_entry.with_metadata(meta);
+            }
+            if let Some(attr) = clone_pending_attribution() {
+                audit_entry = audit_entry.with_attribution(attr);
             }
             let appended = self.audit.append(audit_entry)?;
             Some(appended.id)
@@ -1524,6 +1566,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
             "reverted_from_entry_id".into(),
             req.audit_entry_id.to_string(),
         );
+        if let Some(attr) = clone_pending_attribution() {
+            revert_entry = revert_entry.with_attribution(attr);
+        }
 
         let appended = self.audit.append(revert_entry)?;
 
@@ -3171,7 +3216,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.storage.put(link_entity.clone())?;
 
         // Audit: record the link creation.
-        self.audit.append(AuditEntry::new(
+        let mut link_audit_entry = AuditEntry::new(
             link_entity.collection,
             link_entity.id,
             link_entity.version,
@@ -3179,7 +3224,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None,
             Some(link_entity.data),
             req.actor,
-        ))?;
+        );
+        if let Some(attr) = clone_pending_attribution() {
+            link_audit_entry = link_audit_entry.with_attribution(attr);
+        }
+        self.audit.append(link_audit_entry)?;
 
         Ok(CreateLinkResponse { link })
     }
@@ -3226,7 +3275,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.storage.delete(&Link::links_collection(), &link_id)?;
 
         // Audit: record the link deletion.
-        self.audit.append(AuditEntry::new(
+        let mut link_audit_entry = AuditEntry::new(
             link_entity.collection,
             link_entity.id,
             link_entity.version,
@@ -3234,7 +3283,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             Some(link_entity.data),
             None,
             req.actor,
-        ))?;
+        );
+        if let Some(attr) = clone_pending_attribution() {
+            link_audit_entry = link_audit_entry.with_attribution(attr);
+        }
+        self.audit.append(link_audit_entry)?;
 
         Ok(DeleteLinkResponse {
             source_collection: req.source_collection.to_string(),

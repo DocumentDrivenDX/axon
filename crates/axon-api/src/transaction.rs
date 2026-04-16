@@ -299,6 +299,10 @@ impl Transaction {
         let mut written = Vec::new();
         let mut pending_entries = Vec::new();
 
+        // Snapshot the pending attribution once for the entire transaction;
+        // all entries produced by a single commit share the same credential.
+        let tx_attribution = crate::handler::clone_pending_attribution();
+
         for op in self.ops {
             match op.mutation {
                 MutationType::EntityCreate => {
@@ -314,6 +318,9 @@ impl Transaction {
                         Some(actor_str.into()),
                     );
                     entry.transaction_id = Some(tx_id.clone());
+                    if let Some(ref attr) = tx_attribution {
+                        entry = entry.with_attribution(attr.clone());
+                    }
                     pending_entries.push(entry);
                     written.push(op.entity);
                 }
@@ -331,6 +338,9 @@ impl Transaction {
                         Some(actor_str.into()),
                     );
                     entry.transaction_id = Some(tx_id.clone());
+                    if let Some(ref attr) = tx_attribution {
+                        entry = entry.with_attribution(attr.clone());
+                    }
                     pending_entries.push(entry);
                     written.push(updated);
                 }
@@ -346,6 +356,9 @@ impl Transaction {
                         Some(actor_str.into()),
                     );
                     entry.transaction_id = Some(tx_id.clone());
+                    if let Some(ref attr) = tx_attribution {
+                        entry = entry.with_attribution(attr.clone());
+                    }
                     pending_entries.push(entry);
                     written.push(op.entity);
                 }
