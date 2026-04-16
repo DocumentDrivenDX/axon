@@ -25,6 +25,7 @@ import {
 	fetchEntity,
 	fetchEntityAudit,
 	fetchRenderedEntity,
+	revertAuditEntry,
 	lifecyclesFromSchema,
 	previewEntityRollback,
 	putCollectionTemplate,
@@ -83,6 +84,11 @@ let activeTab = $state<EntityTab>('data');
 let auditEntries = $state<AuditEntry[]>([]);
 let auditLoading = $state(false);
 let auditError = $state<string | null>(null);
+
+// Audit revert
+let revertConfirmId = $state<number | null>(null);
+let revertMessage = $state<string | null>(null);
+let revertError = $state<string | null>(null);
 
 // Rollback
 let rollbackPreview = $state<RollbackPreview | null>(null);
@@ -194,6 +200,20 @@ async function loadMarkdownTab() {
 async function ensureAuditLoaded() {
 	if (auditEntries.length === 0 && !auditLoading) {
 		await loadAuditTab();
+	}
+}
+
+async function doRevertAuditEntry(entryId: number) {
+	if (!scope) return;
+	try {
+		await revertAuditEntry(entryId, scope);
+		revertMessage = `Entry #${entryId} reverted successfully.`;
+		revertError = null;
+		revertConfirmId = null;
+		await loadAuditTab();
+	} catch (e: unknown) {
+		revertError = e instanceof Error ? e.message : 'Revert failed';
+		revertConfirmId = null;
 	}
 }
 
@@ -902,6 +922,12 @@ afterNavigate(() => {
 						{:else if auditEntries.length === 0}
 							<p class="muted">No audit entries for this entity.</p>
 						{:else}
+							{#if revertMessage}
+								<p class="message success">{revertMessage}</p>
+							{/if}
+							{#if revertError}
+								<p class="message error">{revertError}</p>
+							{/if}
 							<ol class="audit-timeline" data-testid="entity-audit-timeline">
 								{#each auditEntries as entry}
 									<li class="audit-entry">
@@ -912,6 +938,17 @@ afterNavigate(() => {
 												{new Date(entry.timestamp_ns / 1_000_000).toLocaleString()}
 											</span>
 											<span class="muted">· {entry.actor ?? 'system'}</span>
+											{#if entry.data_before !== null}
+												{#if revertConfirmId === entry.id}
+													<span>Revert entry #{entry.id}?</span>
+													<button class="danger" onclick={() => void doRevertAuditEntry(entry.id)}>Yes</button>
+													<button onclick={() => (revertConfirmId = null)}>No</button>
+												{:else}
+													<button onclick={() => { revertConfirmId = entry.id; revertMessage = null; revertError = null; }}>
+														Revert
+													</button>
+												{/if}
+											{/if}
 										</div>
 										{#if entry.data_after}
 											<details>

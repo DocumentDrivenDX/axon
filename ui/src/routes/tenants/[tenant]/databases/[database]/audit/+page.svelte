@@ -1,5 +1,5 @@
 <script lang="ts">
-import { type AuditEntry, fetchAudit } from '$lib/api';
+import { type AuditEntry, fetchAudit, revertAuditEntry } from '$lib/api';
 import { onMount } from 'svelte';
 import type { PageData } from './$types';
 
@@ -24,8 +24,30 @@ const filters = $state<AuditFilters>({
 });
 let selectedEntry = $state<AuditEntry | null>(null);
 
+// Revert state
+let revertConfirming = $state(false);
+let revertMessage = $state<string | null>(null);
+let revertError = $state<string | null>(null);
+
 function selectEntry(entry: AuditEntry) {
 	selectedEntry = entry;
+	revertConfirming = false;
+	revertMessage = null;
+	revertError = null;
+}
+
+async function doRevert() {
+	if (!selectedEntry || !scope) return;
+	try {
+		await revertAuditEntry(selectedEntry.id, scope);
+		revertMessage = `Entry #${selectedEntry.id} reverted successfully.`;
+		revertConfirming = false;
+		revertError = null;
+		await loadEntries();
+	} catch (err: unknown) {
+		revertError = err instanceof Error ? err.message : 'Revert failed';
+		revertConfirming = false;
+	}
 }
 
 function dateToNs(date: string, isEndOfDay = false): string | undefined {
@@ -174,6 +196,27 @@ onMount(() => {
 						)}
 					</p>
 				</div>
+				{#if revertMessage}
+					<p class="message success">{revertMessage}</p>
+				{/if}
+				{#if revertError}
+					<p class="message error">{revertError}</p>
+				{/if}
+				{#if selectedEntry.data_before !== null}
+					{#if revertConfirming}
+						<div class="actions">
+							<span>Revert entry #{selectedEntry.id}?</span>
+							<button class="danger" onclick={() => doRevert()}>Yes</button>
+							<button onclick={() => (revertConfirming = false)}>No</button>
+						</div>
+					{:else}
+						<div class="actions">
+							<button onclick={() => { revertConfirming = true; revertMessage = null; revertError = null; }}>
+								Revert this change
+							</button>
+						</div>
+					{/if}
+				{/if}
 				<div>
 					<h3>Before</h3>
 					<pre>{JSON.stringify(selectedEntry.data_before, null, 2) || 'null'}</pre>

@@ -586,6 +586,24 @@ export async function revokeCredential(tenantId: string, jti: string): Promise<v
 	);
 }
 
+// ── Audit revert ─────────────────────────────────────────────────────────────
+
+export type RevertResult = {
+	entity: EntityRecord;
+	audit_entry_id: number;
+};
+
+export async function revertAuditEntry(auditEntryId: number, scope: Scope): Promise<RevertResult> {
+	return request<RevertResult>(
+		'/audit/revert',
+		{
+			method: 'POST',
+			body: JSON.stringify({ audit_entry_id: auditEntryId, actor: 'ui' }),
+		},
+		scope,
+	);
+}
+
 // ── Per-entity audit history ────────────────────────────────────────────────
 
 export async function fetchEntityAudit(
