@@ -1365,7 +1365,7 @@ mod auth_core_tests {
     fn grants_validation_rejects_empty_database_name() {
         let grants = Grants {
             databases: vec![GrantedDatabase {
-                name: "".into(),
+                name: String::new(),
                 ops: vec![Op::Read],
             }],
         };

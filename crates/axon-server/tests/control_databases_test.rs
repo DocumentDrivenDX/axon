@@ -69,6 +69,7 @@ fn make_jwt(issuer: &JwtIssuer, user_id: &str) -> String {
 ///
 /// The `admin_user_id` is registered as `Role::Admin` in the user_roles store.
 /// The `non_admin_user_id` has no explicit role assignment.
+#[allow(clippy::type_complexity)]
 fn build_test_env() -> (
     TestServer,
     Arc<JwtIssuer>,

@@ -557,13 +557,13 @@ async fn auth_rejection_matrix() {
     for (row, setup) in cases {
         let capture = CaptureLayer::default();
         let subscriber = tracing_subscriber::registry().with(capture.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let guard = tracing::subscriber::set_default(subscriber);
 
         let (state, req) = setup();
         let app = make_app(state);
         let (status, json) = send(app, req).await;
 
-        drop(_guard);
+        drop(guard);
 
         assert_eq!(
             status.as_u16(),

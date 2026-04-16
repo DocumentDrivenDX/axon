@@ -141,7 +141,6 @@ fn restrict_dir_mode(_path: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::BufReader;
 
     #[test]
     fn generates_when_missing() {
@@ -154,18 +153,19 @@ mod tests {
         assert!(cert.exists());
         assert!(key.exists());
 
-        // Parseable as PEM cert + PKCS8 key by rustls-pemfile (the same loader
+        // Parseable as PEM cert + PKCS8 key by rustls-pki-types (the same loader
         // serve.rs uses), so the output is wire-compatible with the listener.
-        let cert_bytes = std::fs::read(&cert).expect("read cert");
-        let certs: Vec<_> = rustls_pemfile::certs(&mut BufReader::new(cert_bytes.as_slice()))
-            .collect::<Result<_, _>>()
-            .expect("parse certs");
+        use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+
+        let certs: Vec<CertificateDer<'static>> =
+            CertificateDer::pem_file_iter(&cert)
+                .expect("open cert")
+                .collect::<Result<_, _>>()
+                .expect("parse certs");
         assert_eq!(certs.len(), 1);
 
-        let key_bytes = std::fs::read(&key).expect("read key");
-        let parsed_key = rustls_pemfile::private_key(&mut BufReader::new(key_bytes.as_slice()))
-            .expect("parse key");
-        assert!(parsed_key.is_some(), "PEM contained a private key");
+        let _parsed_key = PrivateKeyDer::from_pem_file(&key)
+            .expect("PEM contained a private key");
     }
 
     #[test]

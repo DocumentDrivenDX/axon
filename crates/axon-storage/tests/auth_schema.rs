@@ -69,6 +69,7 @@ fn cluster_or_skip(test_name: &str) -> Option<TestPg> {
 }
 
 /// Connect to Postgres and apply auth migrations. Returns the client.
+#[allow(dead_code)]
 fn connect_and_migrate(dsn: &str) -> Client {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

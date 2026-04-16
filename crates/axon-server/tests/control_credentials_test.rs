@@ -83,6 +83,7 @@ fn auth_header(jwt: &str) -> (http::HeaderName, HeaderValue) {
 ///
 /// Returns (TestServer, Arc<JwtIssuer>, admin_user_id, write_user_id,
 ///          other_user_id, Arc<Mutex<StorageAdapter>>, UserRoleStore).
+#[allow(clippy::type_complexity)]
 fn build_test_env(
     mem: MemoryStorageAdapter,
 ) -> (
@@ -457,9 +458,8 @@ async fn revoke_by_admin() {
     let list_body: Value = list_resp.json();
     let creds = list_body["credentials"].as_array().unwrap();
     assert_eq!(creds.len(), 1, "should have one credential");
-    assert_eq!(
+    assert!(
         creds[0]["revoked"].as_bool().unwrap(),
-        true,
         "credential should be marked revoked"
     );
 

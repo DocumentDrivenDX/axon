@@ -602,20 +602,15 @@ fn load_tls_config(
     cert_path: &PathBuf,
     key_path: &PathBuf,
 ) -> Result<tokio_rustls::rustls::ServerConfig, String> {
-    use std::fs::File;
-    use std::io::BufReader;
+    use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 
-    let cert_file = File::open(cert_path)
-        .map_err(|e| format!("failed to open TLS cert {}: {e}", cert_path.display()))?;
-    let certs: Vec<_> = rustls_pemfile::certs(&mut BufReader::new(cert_file))
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert_path)
+        .map_err(|e| format!("failed to open TLS cert {}: {e}", cert_path.display()))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("failed to read TLS certificates: {e}"))?;
 
-    let key_file = File::open(key_path)
-        .map_err(|e| format!("failed to open TLS key {}: {e}", key_path.display()))?;
-    let key = rustls_pemfile::private_key(&mut BufReader::new(key_file))
-        .map_err(|e| format!("failed to read TLS private key: {e}"))?
-        .ok_or_else(|| format!("no private key found in {}", key_path.display()))?;
+    let key = PrivateKeyDer::from_pem_file(key_path)
+        .map_err(|e| format!("failed to read TLS private key from {}: {e}", key_path.display()))?;
 
     tokio_rustls::rustls::ServerConfig::builder()
         .with_no_client_auth()

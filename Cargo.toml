@@ -86,6 +86,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Storage
 rusqlite = { version = "0.32", features = ["bundled"] }
 tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres", "json", "uuid"] }
 
 # Schema validation
 jsonschema = "0.28"
@@ -99,7 +100,7 @@ prost = "0.13"
 axum = "0.8"
 reqwest = { version = "0.12", features = ["stream", "json", "rustls-tls"], default-features = false }
 tokio-rustls = "0.26"
-rustls-pemfile = "2"
+rustls-pki-types = { version = "1", features = ["std"] }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "aws_lc_rs"] }
 
 # GraphQL

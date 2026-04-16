@@ -103,7 +103,7 @@ fn upsert_same_identity_is_idempotent_sqlite() {
 fn concurrent_upsert_converges_memory() {
     let adapter = Arc::new(fresh_memory());
     let results: Vec<_> = std::thread::scope(|s| {
-        let handles: Vec<_> = (0..64)
+        (0..64)
             .map(|_| {
                 let adapter = Arc::clone(&adapter);
                 s.spawn(move || {
@@ -112,8 +112,8 @@ fn concurrent_upsert_converges_memory() {
                         .expect("concurrent upsert should succeed")
                 })
             })
-            .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+            .map(|h| h.join().unwrap())
+            .collect()
     });
 
     let first_id = results[0].id.clone();
@@ -129,7 +129,7 @@ fn concurrent_upsert_converges_memory() {
 fn concurrent_upsert_converges_sqlite() {
     let adapter = Arc::new(fresh_sqlite());
     let results: Vec<_> = std::thread::scope(|s| {
-        let handles: Vec<_> = (0..64)
+        (0..64)
             .map(|_| {
                 let adapter = Arc::clone(&adapter);
                 s.spawn(move || {
@@ -138,8 +138,8 @@ fn concurrent_upsert_converges_sqlite() {
                         .expect("concurrent upsert should succeed")
                 })
             })
-            .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+            .map(|h| h.join().unwrap())
+            .collect()
     });
 
     let first_id = results[0].id.clone();

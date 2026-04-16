@@ -142,6 +142,7 @@ impl StorageAdapter for LockableAdapter {
 
 /// Factory used by cross_tenant_isolation to track the Arc<Mutex<MemoryStorageAdapter>>
 /// behind each created LockableAdapter so the test can write to them directly.
+#[allow(clippy::type_complexity)]
 struct IsolationFactory {
     adapters: Mutex<HashMap<(TenantId, String), Arc<Mutex<MemoryStorageAdapter>>>>,
 }

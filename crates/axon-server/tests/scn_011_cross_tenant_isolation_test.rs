@@ -8,9 +8,9 @@
 //!     mode.  Each composite slug derived from the URL path (`{tenant}:{database}`)
 //!     gets its own physically isolated SQLite file under `data_dir/tenants/`.
 //!   - `resolve_tenant_handler` maps the URL path to the slug, so:
-//!       `/tenants/acme/databases/default/…` → `"acme:default"` (handler A)
-//!       `/tenants/beta/databases/default/…` → `"beta:default"` (handler B)
-//!       `/tenants/acme/databases/extra/…`   → `"acme:extra"`   (handler C)
+//!     `/tenants/acme/databases/default/…` → `"acme:default"` (handler A)
+//!     `/tenants/beta/databases/default/…` → `"beta:default"` (handler B)
+//!     `/tenants/acme/databases/extra/…`   → `"acme:extra"`   (handler C)
 //!
 //! Note: we use `databases/default` for the entity-creation path because
 //! `qualify_collection_name` short-circuits for the `"default"` database name
