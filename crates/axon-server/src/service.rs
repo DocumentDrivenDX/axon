@@ -314,8 +314,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     data,
                     actor: None,
                     audit_metadata: None,
+                attribution: None,
                 },
                 &caller,
+                        None,
             )
             .map_err(axon_to_status)?;
 
@@ -370,8 +372,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     expected_version: req.expected_version,
                     actor: None,
                     audit_metadata: None,
+                attribution: None,
                 },
                 &caller,
+                        None,
             )
             .map_err(axon_to_status)?;
 
@@ -401,8 +405,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     actor: None,
                     audit_metadata: None,
                     force: false,
+                attribution: None,
                 },
                 &caller,
+                        None,
             )
             .map_err(axon_to_status)?;
 
@@ -447,8 +453,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     link_type: req.link_type.clone(),
                     metadata,
                     actor: None,
+                    attribution: None,
                 },
                 &caller,
+                None,
             )
             .map_err(axon_to_status)?;
 
@@ -493,8 +501,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     target_id: EntityId::new(&req.target_id),
                     link_type: req.link_type.clone(),
                     actor: None,
+                    attribution: None,
                 },
                 &caller,
+                None,
             )
             .map_err(axon_to_status)?;
 
@@ -665,7 +675,7 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         let mut h = self.handler.lock().await;
         let (storage, audit) = h.storage_and_audit_mut();
         let written = tx
-            .commit(storage, audit, Some(caller.actor.clone()))
+            .commit(storage, audit, Some(caller.actor.clone()), None)
             .map_err(axon_to_status)?;
 
         Ok(Response::new(ProtoCommitTxResp {
@@ -1062,8 +1072,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     expected_version: req.expected_version,
                     actor: None,
                     audit_metadata: None,
+                attribution: None,
                 },
                 &caller,
+                        None,
             )
             .map_err(axon_to_status)?;
 

@@ -157,7 +157,7 @@ fn bm_003_multi_entity_transaction(c: &mut Criterion) {
                 );
             }
             black_box(
-                tx.commit(&mut storage, &mut audit, Some("bench".into()))
+                tx.commit(&mut storage, &mut audit, Some("bench".into()), None)
                     .unwrap(),
             );
         })
@@ -407,7 +407,7 @@ fn bm_008_concurrent_writers(c: &mut Criterion) {
                     current.version,
                     Some(current.data),
                 );
-                tx.commit(&mut storage, &mut audit, Some(format!("agent-{round}")))
+                tx.commit(&mut storage, &mut audit, Some(format!("agent-{round}")), None)
                     .unwrap();
             }
             round += 1;

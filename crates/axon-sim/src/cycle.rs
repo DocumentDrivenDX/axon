@@ -107,6 +107,7 @@ pub fn run_cycle_test(config: &CycleConfig) -> CycleResult {
                 data: json!({ "index": i, "visits": 0 }),
                 actor: Some("sim".into()),
                 audit_metadata: None,
+                        attribution: None,
             })
             .expect("node creation should not fail during setup");
     }
@@ -122,6 +123,7 @@ pub fn run_cycle_test(config: &CycleConfig) -> CycleResult {
                 link_type: LINK_TYPE.into(),
                 metadata: json!(null),
                 actor: Some("sim".into()),
+                attribution: None,
             })
             .expect("link creation should not fail during setup");
     }
@@ -206,7 +208,7 @@ pub fn run_cycle_test(config: &CycleConfig) -> CycleResult {
         )
         .expect("second node update should stage successfully");
 
-        match handler.commit_transaction(tx, Some("sim".into())) {
+        match handler.commit_transaction(tx, Some("sim".into()), None) {
             Ok(_) => swaps_committed += 1,
             Err(AxonError::ConflictingVersion { .. }) => {
                 // Retry on OCC conflict — expected under BUGGIFY.
@@ -306,6 +308,7 @@ pub fn setup_cycle_handler(ring_size: usize) -> AxonHandler<MemoryStorageAdapter
                 data: json!({ "index": i }),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .expect("cycle setup should create each node");
     }
@@ -320,6 +323,7 @@ pub fn setup_cycle_handler(ring_size: usize) -> AxonHandler<MemoryStorageAdapter
                 link_type: LINK_TYPE.into(),
                 metadata: json!(null),
                 actor: None,
+                attribution: None,
             })
             .expect("cycle setup should create each link");
     }

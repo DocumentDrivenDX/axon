@@ -107,6 +107,7 @@ pub fn run_audit_completeness_workload(
                 data: json!({ "index": i, "value": i * 10 }),
                 actor: Some("sim".into()),
                 audit_metadata: None,
+                        attribution: None,
             })
             .expect("entity creation must not fail during setup");
         ids.push(eid);
@@ -132,6 +133,7 @@ pub fn run_audit_completeness_workload(
                         expected_version: resp.entity.version,
                         actor: Some("sim".into()),
                         audit_metadata: None,
+                                        attribution: None,
                     })
                     .is_ok()
                 {
@@ -157,6 +159,7 @@ pub fn run_audit_completeness_workload(
                         expected_version: resp.entity.version,
                         actor: Some("sim".into()),
                         audit_metadata: None,
+                                        attribution: None,
                     })
                     .is_ok()
                 {
@@ -178,6 +181,7 @@ pub fn run_audit_completeness_workload(
                     actor: Some("sim".into()),
                     audit_metadata: None,
                     force: false,
+                attribution: None,
                 })
                 .is_ok()
             {

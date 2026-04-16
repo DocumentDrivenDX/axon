@@ -382,8 +382,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             data,
                             actor: None,
                             audit_metadata: None,
+                                                attribution: None,
                         },
                         &caller,
+                                        None,
                     ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -425,8 +427,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             expected_version: version,
                             actor: None,
                             audit_metadata: None,
+                                                attribution: None,
                         },
                         &caller,
+                                        None,
                     ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -469,8 +473,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             expected_version: version,
                             actor: None,
                             audit_metadata: None,
+                                                attribution: None,
                         },
                         &caller,
+                                        None,
                     ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -505,8 +511,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             actor: None,
                             force: false,
                             audit_metadata: None,
+                                                attribution: None,
                         },
                         &caller,
+                                        None,
                     ) {
                         Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -545,8 +553,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             expected_version,
                             actor: None,
                             audit_metadata: None,
+                                                attribution: None,
                         },
                         &caller,
+                                        None,
                     ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -612,8 +622,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             link_type,
                             metadata,
                             actor: None,
+                        attribution: None,
                         },
                         &caller,
+                                        None,
                     ) {
                         Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -663,8 +675,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             target_id: EntityId::new(target_id),
                             link_type,
                             actor: None,
+                        attribution: None,
                         },
                         &caller,
+                                        None,
                     ) {
                         Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -1333,6 +1347,7 @@ mod tests {
                     data: json!({"title": "Hello", "status": "open"}),
                     actor: None,
                     audit_metadata: None,
+                                attribution: None,
                 })
                 .expect("create should succeed");
         }
@@ -1369,6 +1384,7 @@ mod tests {
                         data: json!({"title": format!("Task {i}")}),
                         actor: None,
                         audit_metadata: None,
+                                        attribution: None,
                     })
                     .expect("create should succeed");
             }
@@ -1424,6 +1440,7 @@ mod tests {
                     data: json!({"title": "Old"}),
                     actor: None,
                     audit_metadata: None,
+                                attribution: None,
                 })
                 .expect("create should succeed");
         }
@@ -1458,6 +1475,7 @@ mod tests {
                     data: json!({"title": "V1"}),
                     actor: None,
                     audit_metadata: None,
+                                attribution: None,
                 })
                 .expect("create should succeed");
             guard
@@ -1468,6 +1486,7 @@ mod tests {
                     expected_version: 1,
                     actor: None,
                     audit_metadata: None,
+                                attribution: None,
                 })
                 .expect("update should succeed");
         }
@@ -1517,6 +1536,7 @@ mod tests {
                     data: json!({"title": "To delete"}),
                     actor: None,
                     audit_metadata: None,
+                                attribution: None,
                 })
                 .expect("create should succeed");
         }
@@ -1554,6 +1574,7 @@ mod tests {
                     data: json!({"title": "Original", "status": "open"}),
                     actor: None,
                     audit_metadata: None,
+                                attribution: None,
                 })
                 .expect("create should succeed");
         }

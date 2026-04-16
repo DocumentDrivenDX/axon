@@ -47,6 +47,7 @@ proptest! {
             data:       json!({"val": update_values[0]}),
             actor:      Some("prop-test".into()),
             audit_metadata: None,
+        attribution: None,
         }).unwrap();
 
         // Apply subsequent values as updates.
@@ -63,6 +64,7 @@ proptest! {
                 expected_version: current.version,
                 actor:            Some("prop-test".into()),
                 audit_metadata: None,
+            attribution: None,
             }).unwrap();
         }
 
@@ -76,6 +78,7 @@ proptest! {
                 actor:      Some("prop-test".into()),
                 audit_metadata: None,
                 force: false,
+            attribution: None,
             }).unwrap();
             expected_ops += 1;
         }
@@ -195,11 +198,11 @@ proptest! {
         }
 
         // T1 commits first — must succeed on the fresh initial state.
-        t1.commit(&mut storage, &mut audit, Some("t1".into()))
+        t1.commit(&mut storage, &mut audit, Some("t1".into()), None)
             .expect("T1 must commit on fresh initial state");
 
         // T2 must fail: all its expected_version values are now stale.
-        let t2_result = t2.commit(&mut storage, &mut audit, Some("t2".into()));
+        let t2_result = t2.commit(&mut storage, &mut audit, Some("t2".into()), None);
         prop_assert!(
             t2_result.is_err(),
             "T2 must be rejected after T1 incremented the overlapping entity versions"
@@ -262,6 +265,7 @@ proptest! {
                 data:       json!({"i": i}),
                 actor:      None,
                 audit_metadata: None,
+            attribution: None,
             }).unwrap();
         }
 
@@ -282,6 +286,7 @@ proptest! {
                 link_type:         "connects".into(),
                 metadata:          serde_json::Value::Null,
                 actor:             None,
+                attribution:       None,
             }).unwrap();
         }
 

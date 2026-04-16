@@ -1020,7 +1020,6 @@ async fn create_entity(
     }
     let attribution = attribution_from_jwt(jwt_identity);
     let mut guard = handler.lock().await;
-    axon_api::handler::set_pending_attribution(attribution);
     let result = guard.create_entity_with_caller(
         CreateEntityRequest {
             collection: qualify_collection_name(&collection, &current_database),
@@ -1028,10 +1027,11 @@ async fn create_entity(
             data: body.data,
             actor: None,
             audit_metadata: None,
+            attribution: None,
         },
         &caller,
+        attribution,
     );
-    axon_api::handler::set_pending_attribution(None);
     match result {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
@@ -1145,7 +1145,6 @@ async fn update_entity(
     }
     let attribution = attribution_from_jwt(jwt_identity);
     let mut guard = handler.lock().await;
-    axon_api::handler::set_pending_attribution(attribution);
     let result = guard.update_entity_with_caller(
         UpdateEntityRequest {
             collection: qualify_collection_name(&collection, &current_database),
@@ -1154,10 +1153,11 @@ async fn update_entity(
             expected_version: body.expected_version,
             actor: None,
             audit_metadata: None,
+            attribution: None,
         },
         &caller,
+        attribution,
     );
-    axon_api::handler::set_pending_attribution(None);
     match result {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
@@ -1201,7 +1201,6 @@ async fn delete_entity(
     }
     let attribution = attribution_from_jwt(jwt_identity);
     let mut guard = handler.lock().await;
-    axon_api::handler::set_pending_attribution(attribution);
     let result = guard.delete_entity_with_caller(
         DeleteEntityRequest {
             collection: qualify_collection_name(&collection, &current_database),
@@ -1209,10 +1208,11 @@ async fn delete_entity(
             actor: None,
             audit_metadata: None,
             force: false,
+            attribution: None,
         },
         &caller,
+        attribution,
     );
-    axon_api::handler::set_pending_attribution(None);
     match result {
         Ok(resp) => {
             notify_entity_change_by_parts(&mcp_sessions, &current_database, &collection, &id);
@@ -1352,7 +1352,6 @@ async fn transition_lifecycle_handler(
 
     let attribution = attribution_from_jwt(jwt_identity);
     let mut guard = handler.lock().await;
-    axon_api::handler::set_pending_attribution(attribution);
     let result = guard.transition_lifecycle_with_caller(
         TransitionLifecycleRequest {
             collection_id: qualify_collection_name(&collection, &current_database),
@@ -1362,10 +1361,11 @@ async fn transition_lifecycle_handler(
             expected_version: body.expected_version,
             actor: None,
             audit_metadata: body.audit_metadata,
+            attribution: None,
         },
         &caller,
+        attribution,
     );
-    axon_api::handler::set_pending_attribution(None);
     match result {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
@@ -1406,7 +1406,6 @@ async fn create_link(
     }
     let attribution = attribution_from_jwt(jwt_identity);
     let mut guard = handler.lock().await;
-    axon_api::handler::set_pending_attribution(attribution);
     let result = guard.create_link_with_caller(
         CreateLinkRequest {
             source_collection: qualify_collection_name(&body.source_collection, &current_database),
@@ -1416,10 +1415,11 @@ async fn create_link(
             link_type: body.link_type,
             metadata: body.metadata,
             actor: None,
+            attribution: None,
         },
         &caller,
+        attribution,
     );
-    axon_api::handler::set_pending_attribution(None);
     match result {
         Ok(resp) => {
             let link = resp.link;
@@ -1464,7 +1464,6 @@ async fn delete_link(
     }
     let attribution = attribution_from_jwt(jwt_identity);
     let mut guard = handler.lock().await;
-    axon_api::handler::set_pending_attribution(attribution);
     let result = guard.delete_link_with_caller(
         DeleteLinkRequest {
             source_collection: qualify_collection_name(&body.source_collection, &current_database),
@@ -1473,10 +1472,11 @@ async fn delete_link(
             target_id: EntityId::new(&body.target_id),
             link_type: body.link_type,
             actor: None,
+            attribution: None,
         },
         &caller,
+        attribution,
     );
-    axon_api::handler::set_pending_attribution(None);
     match result {
         Ok(resp) => Json(json!({
             "source_collection": resp.source_collection,
@@ -1672,13 +1672,12 @@ async fn revert_entity(
     let attribution = attribution_from_jwt(jwt_identity);
     let actor = identity.actor.clone();
     let mut guard = handler.lock().await;
-    axon_api::handler::set_pending_attribution(attribution);
     let result = guard.revert_entity_to_audit_entry(RevertEntityRequest {
         audit_entry_id: body.audit_entry_id,
         actor: Some(actor),
         force: body.force,
+        attribution,
     });
-    axon_api::handler::set_pending_attribution(None);
     match result {
         Ok(resp) => {
             notify_entity_change(&mcp_sessions, &current_database, &resp.entity);
@@ -2533,9 +2532,7 @@ async fn commit_transaction(
     let tx_id = tx.id.clone();
     let mut h = handler.lock().await;
     let (storage, audit) = h.storage_and_audit_mut();
-    axon_api::handler::set_pending_attribution(attribution_from_jwt(jwt_identity));
-    let commit_result = tx.commit(storage, audit, Some(caller.actor.clone()));
-    axon_api::handler::set_pending_attribution(None);
+    let commit_result = tx.commit(storage, audit, Some(caller.actor.clone()), attribution_from_jwt(jwt_identity));
     match commit_result {
         Ok(written) => {
             // Look up the audit entries produced by this transaction so we can
@@ -4184,6 +4181,7 @@ mod tests {
                     data: json!({"title": "draft"}),
                     actor: None,
                     audit_metadata: None,
+                attribution: None,
                 })
                 .unwrap();
             guard
@@ -4225,6 +4223,7 @@ mod tests {
                     expected_version: 1,
                     actor: None,
                     audit_metadata: None,
+                attribution: None,
                 })
                 .unwrap();
         }
@@ -5282,6 +5281,7 @@ mod tests {
                     data: json!({"title": "seed entity"}),
                     actor: None,
                     audit_metadata: None,
+                attribution: None,
                 })
                 .unwrap();
             // Create a second entity for link tests.
@@ -5292,6 +5292,7 @@ mod tests {
                     data: json!({"title": "link target"}),
                     actor: None,
                     audit_metadata: None,
+                attribution: None,
                 })
                 .unwrap();
         }

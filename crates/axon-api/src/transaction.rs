@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use axon_audit::entry::{AuditEntry, MutationType};
+use axon_audit::entry::{AuditAttribution, AuditEntry, MutationType};
 use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
@@ -193,6 +193,7 @@ impl Transaction {
         storage: &mut S,
         audit: &mut L,
         actor: Option<String>,
+        attribution: Option<AuditAttribution>,
     ) -> Result<Vec<Entity>, AxonError> {
         // Check timeout before entering the commit path (FEAT-008).
         let elapsed = self.created_at.elapsed();
@@ -206,7 +207,7 @@ impl Transaction {
 
         storage.begin_tx()?;
 
-        match self.execute(storage, actor) {
+        match self.execute(storage, actor, attribution) {
             Ok((written, pending_entries)) => {
                 // ── Phase 3: co-located audit writes ────────────────────────
                 // Write audit entries inside the storage transaction so that
@@ -259,6 +260,7 @@ impl Transaction {
         self,
         storage: &mut S,
         actor: Option<String>,
+        attribution: Option<AuditAttribution>,
     ) -> Result<(Vec<Entity>, Vec<AuditEntry>), AxonError> {
         let tx_id = self.id.clone();
         let actor_str = actor.as_deref().unwrap_or("anonymous");
@@ -299,9 +301,8 @@ impl Transaction {
         let mut written = Vec::new();
         let mut pending_entries = Vec::new();
 
-        // Snapshot the pending attribution once for the entire transaction;
-        // all entries produced by a single commit share the same credential.
-        let tx_attribution = crate::handler::clone_pending_attribution();
+        // Attribution is shared across all entries in a single transaction commit.
+        let tx_attribution = attribution;
 
         for op in self.ops {
             match op.mutation {
@@ -506,7 +507,7 @@ mod tests {
         .unwrap();
 
         let written = tx
-            .commit(&mut storage, &mut audit, Some("system".into()))
+            .commit(&mut storage, &mut audit, Some("system".into()), None)
             .unwrap();
         assert_eq!(written.len(), 2);
 
@@ -534,7 +535,7 @@ mod tests {
         tx.update(account("A", 70), 1, None).unwrap(); // correct version
         tx.update(account("B", 80), 99, None).unwrap(); // WRONG version — should abort all
 
-        let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
+        let err = tx.commit(&mut storage, &mut audit, None, None).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -582,7 +583,7 @@ mod tests {
         tx.update(account("A", 70), 1, None).unwrap(); // OK
         tx.update(account("C", 190), 99, None).unwrap(); // WRONG version — triggers abort
 
-        let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
+        let err = tx.commit(&mut storage, &mut audit, None, None).unwrap_err();
         assert!(matches!(err, AxonError::ConflictingVersion { .. }));
 
         // A must be unchanged.
@@ -609,7 +610,7 @@ mod tests {
         tx.update(account("A", 90), a_before.version, Some(a_before.data))
             .unwrap();
 
-        let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
+        let err = tx.commit(&mut storage, &mut audit, None, None).unwrap_err();
         assert!(
             matches!(err, AxonError::Storage(_)),
             "expected storage error from simulated commit failure, got: {err}"
@@ -658,7 +659,7 @@ mod tests {
         let mut tx = Transaction::new();
         tx.update(account("A", 70), 99, None).unwrap(); // WRONG version
 
-        let _ = tx.commit(&mut storage, &mut audit, None);
+        let _ = tx.commit(&mut storage, &mut audit, None, None);
 
         assert_eq!(audit.len(), 0, "no audit entries on version-conflict abort");
     }
@@ -685,7 +686,7 @@ mod tests {
         tx.update(account("A", 70), a.version, None).unwrap();
         tx.update(account("B", 80), b.version, None).unwrap();
 
-        tx.commit(&mut storage, &mut audit, None).unwrap();
+        tx.commit(&mut storage, &mut audit, None, None).unwrap();
 
         let entries = audit.entries();
         assert_eq!(entries.len(), 2);
@@ -737,7 +738,7 @@ mod tests {
         // Small sleep to ensure timeout fires.
         std::thread::sleep(Duration::from_millis(1));
 
-        let err = tx.commit(&mut storage, &mut audit, None).unwrap_err();
+        let err = tx.commit(&mut storage, &mut audit, None, None).unwrap_err();
         assert!(
             matches!(err, AxonError::InvalidOperation(_)),
             "expected timeout error, got: {err}"

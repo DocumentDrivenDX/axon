@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use axon_audit::entry::AuditAttribution;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -17,6 +18,9 @@ pub struct CreateEntityRequest {
     /// Optional key-value metadata attached to the audit entry (US-009).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_metadata: Option<HashMap<String, String>>,
+    /// JWT-derived attribution stamped onto the audit entry (gateway-only; not part of the wire format).
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
 }
 
 /// Request to read an entity.
@@ -42,6 +46,9 @@ pub struct UpdateEntityRequest {
     /// Optional key-value metadata attached to the audit entry (US-009).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_metadata: Option<HashMap<String, String>>,
+    /// JWT-derived attribution stamped onto the audit entry (gateway-only; not part of the wire format).
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
 }
 
 /// Request to partially update an entity using RFC 7396 JSON Merge Patch.
@@ -64,6 +71,9 @@ pub struct PatchEntityRequest {
     /// Optional key-value metadata attached to the audit entry (US-009).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_metadata: Option<HashMap<String, String>>,
+    /// JWT-derived attribution stamped onto the audit entry (gateway-only; not part of the wire format).
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
 }
 
 /// Request to delete an entity.
@@ -79,6 +89,9 @@ pub struct DeleteEntityRequest {
     /// Optional key-value metadata attached to the audit entry (US-009).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_metadata: Option<HashMap<String, String>>,
+    /// JWT-derived attribution stamped onto the audit entry (gateway-only; not part of the wire format).
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
 }
 
 /// Request to create a typed link between two entities.
@@ -94,6 +107,9 @@ pub struct CreateLinkRequest {
     #[serde(default)]
     pub metadata: Value,
     pub actor: Option<String>,
+    /// JWT-derived attribution stamped onto the audit entry (gateway-only; not part of the wire format).
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
 }
 
 /// Request to delete a typed link between two entities.
@@ -106,6 +122,9 @@ pub struct DeleteLinkRequest {
     /// Semantic label for the edge (e.g., `"belongs-to"`, `"depends-on"`).
     pub link_type: String,
     pub actor: Option<String>,
+    /// JWT-derived attribution stamped onto the audit entry (gateway-only; not part of the wire format).
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
 }
 
 /// Direction for link traversal.
@@ -238,6 +257,9 @@ pub struct RevertEntityRequest {
     /// Use only when the schema has changed since the audit entry was recorded.
     #[serde(default)]
     pub force: bool,
+    /// JWT-derived attribution stamped onto the audit entry (gateway-only; not part of the wire format).
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
 }
 
 /// Roll an entity back to a prior state recorded in the audit log.
@@ -655,4 +677,7 @@ pub struct TransitionLifecycleRequest {
     /// Optional key-value metadata attached to the audit entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit_metadata: Option<HashMap<String, String>>,
+    /// JWT-derived attribution stamped onto the audit entry (gateway-only; not part of the wire format).
+    #[serde(skip)]
+    pub attribution: Option<AuditAttribution>,
 }

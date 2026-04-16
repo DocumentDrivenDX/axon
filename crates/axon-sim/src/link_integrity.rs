@@ -67,6 +67,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
                 data: json!({ "index": i }),
                 actor: Some("sim".into()),
                 audit_metadata: None,
+                        attribution: None,
             })
             .expect("source entity creation must not fail");
     }
@@ -78,6 +79,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
                 data: json!({ "index": i }),
                 actor: Some("sim".into()),
                 audit_metadata: None,
+                        attribution: None,
             })
             .expect("target entity creation must not fail");
     }
@@ -94,6 +96,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
             link_type: LINK_TYPE.into(),
             metadata: json!(null),
             actor: Some("sim".into()),
+            attribution: None,
         })
         .expect("valid link creation must not fail");
 
@@ -106,6 +109,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
             link_type: LINK_TYPE.into(),
             metadata: json!(null),
             actor: Some("sim".into()),
+            attribution: None,
         })
         .expect("valid link creation must not fail");
 
@@ -119,6 +123,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
             link_type: LINK_TYPE.into(),
             metadata: json!(null),
             actor: Some("sim".into()),
+            attribution: None,
         }),
         Err(AxonError::NotFound(_))
     );
@@ -131,6 +136,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
             actor: Some("sim".into()),
             audit_metadata: None,
             force: false,
+        attribution: None,
         }),
         Err(AxonError::InvalidOperation(_))
     );
@@ -143,6 +149,7 @@ pub fn run_link_integrity_workload() -> LinkIntegrityResult {
             actor: Some("sim".into()),
             audit_metadata: None,
             force: false,
+        attribution: None,
         })
         .is_ok();
 

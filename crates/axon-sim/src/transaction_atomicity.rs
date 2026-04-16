@@ -103,6 +103,7 @@ pub fn run_transaction_atomicity_workload(
                 data: json!({ "balance": INITIAL_BALANCE }),
                 actor: Some("sim".into()),
                 audit_metadata: None,
+                        attribution: None,
             })
             .expect("account creation must not fail during setup");
     }
@@ -182,7 +183,7 @@ pub fn run_transaction_atomicity_workload(
         )
         .expect("credit operation should stage successfully");
 
-        match handler.commit_transaction(tx, Some("sim".into())) {
+        match handler.commit_transaction(tx, Some("sim".into()), None) {
             Ok(_) => {
                 committed += 1;
                 committed_tx_ids.push((tx_id, 2)); // 2 ops: debit + credit

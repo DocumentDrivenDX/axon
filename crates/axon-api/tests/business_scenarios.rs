@@ -43,6 +43,7 @@ fn create(h: &mut AxonHandler<MemoryStorageAdapter>, collection: &str, id: &str,
         data,
         actor: None,
         audit_metadata: None,
+    attribution: None,
     })
     .unwrap();
 }
@@ -70,6 +71,7 @@ fn update(
         expected_version: version,
         actor: None,
         audit_metadata: None,
+    attribution: None,
     })
     .unwrap()
     .entity
@@ -92,6 +94,7 @@ fn link(
         link_type: link_type.into(),
         metadata,
         actor: None,
+    attribution: None,
     })
     .unwrap();
 }
@@ -211,7 +214,7 @@ fn scn_001_payment_application_with_partial_payment() {
 
     let (storage, audit) = h.storage_and_audit_mut();
     let written = tx
-        .commit(storage, audit, Some("payment-agent".into()))
+        .commit(storage, audit, Some("payment-agent".into()), None)
         .unwrap();
     assert_eq!(written.len(), 5);
 
@@ -280,7 +283,7 @@ fn scn_001_payment_application_with_partial_payment() {
         )
         .unwrap();
     let (storage, audit) = h.storage_and_audit_mut();
-    let err = bad_tx.commit(storage, audit, None).unwrap_err();
+    let err = bad_tx.commit(storage, audit, None, None).unwrap_err();
     assert!(matches!(err, AxonError::ConflictingVersion { .. }));
 
     // INV-040 must be unchanged (no partial application).
@@ -378,7 +381,7 @@ fn scn_002_contact_merge_duplicate_resolution() {
     .unwrap();
 
     let (storage, audit) = h.storage_and_audit_mut();
-    tx.commit(storage, audit, Some("merge-agent".into()))
+    tx.commit(storage, audit, Some("merge-agent".into()), None)
         .unwrap();
 
     // Re-link Deal-1 from Contact-A to Contact-B.
@@ -878,7 +881,7 @@ fn scn_007_bead_lifecycle_concurrent_agents() {
             Some(bead.data.clone()),
         )
         .unwrap();
-        tx.commit(&mut storage, &mut audit, Some((*agent).into()))
+        tx.commit(&mut storage, &mut audit, Some((*agent).into()), None)
             .unwrap();
 
         claims.push((agent.to_string(), bead_id));
@@ -909,7 +912,7 @@ fn scn_007_bead_lifecycle_concurrent_agents() {
             None,
         )
         .unwrap();
-    let err = dup_tx.commit(&mut storage, &mut audit, None).unwrap_err();
+    let err = dup_tx.commit(&mut storage, &mut audit, None, None).unwrap_err();
     assert!(
         matches!(err, AxonError::ConflictingVersion { .. }),
         "double-claim should fail with version conflict"
@@ -930,7 +933,7 @@ fn scn_007_bead_lifecycle_concurrent_agents() {
             Some(bead.data.clone()),
         )
         .unwrap();
-        tx.commit(&mut storage, &mut audit, None).unwrap();
+        tx.commit(&mut storage, &mut audit, None, None).unwrap();
     }
 
     // CHECK: all beads reach "done".
@@ -998,7 +1001,7 @@ fn scn_008_golden_record_merge_with_survivorship() {
     ))
     .unwrap();
     let (storage, audit) = h.storage_and_audit_mut();
-    tx.commit(storage, audit, Some("mdm-engine".into()))
+    tx.commit(storage, audit, Some("mdm-engine".into()), None)
         .unwrap();
 
     // Link sources to golden record.

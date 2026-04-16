@@ -1327,6 +1327,7 @@ fn run_entity(
                     data,
                     actor,
                     audit_metadata: None,
+                attribution: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_entity(entity_to_json(&resp.entity), format);
@@ -1424,6 +1425,7 @@ fn run_entity(
                     expected_version: version,
                     actor,
                     audit_metadata: None,
+                attribution: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_entity(entity_to_json(&resp.entity), format);
@@ -1440,6 +1442,7 @@ fn run_entity(
                     actor,
                     audit_metadata: None,
                     force: false,
+                attribution: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
@@ -1576,6 +1579,7 @@ fn create_link_and_print(
             link_type,
             metadata: serde_json::json!(null),
             actor,
+            attribution: None,
         })
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let link = &resp.link;
@@ -1955,6 +1959,7 @@ fn run_audit(
                     audit_entry_id,
                     actor,
                     force,
+                    attribution: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
@@ -2642,6 +2647,7 @@ mod tests {
                 data: serde_json::json!({"title": "hi"}),
                 actor: Some("agent-1".into()),
                 audit_metadata: None,
+            attribution: None,
             })
             .unwrap();
 
@@ -2686,6 +2692,7 @@ mod tests {
                 data: serde_json::json!({"title": "hi"}),
                 actor: Some("agent-1".into()),
                 audit_metadata: None,
+            attribution: None,
             })
             .unwrap();
 
@@ -2795,6 +2802,7 @@ mod tests {
                 data: serde_json::json!({"title": "hi"}),
                 actor: None,
                 audit_metadata: None,
+            attribution: None,
             })
             .unwrap();
 

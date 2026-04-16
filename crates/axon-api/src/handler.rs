@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -12,36 +11,7 @@ fn now_ns() -> u64 {
         .unwrap_or(0)
 }
 
-// ── ADR-018 attribution thread-local ─────────────────────────────────────────
-
-thread_local! {
-    /// Holds the `AuditAttribution` to stamp onto the next audit write.
-    ///
-    /// Set by the HTTP/gRPC gateway _after_ acquiring the handler mutex but
-    /// _before_ calling any write method.  The write method picks it up via
-    /// [`clone_pending_attribution`] and clears it immediately after use.
-    /// Thread-locals are safe here because all `AxonHandler` write methods are
-    /// fully synchronous — there are no `.await` points between the `set` and
-    /// the `clear`, so the value cannot leak to a different request even under
-    /// Tokio's work-stealing scheduler.
-    static PENDING_ATTRIBUTION: RefCell<Option<axon_audit::entry::AuditAttribution>> =
-        const { RefCell::new(None) };
-}
-
-/// Install an [`AuditAttribution`] for the next synchronous write operation.
-///
-/// Call this immediately before invoking a handler write method while holding
-/// the handler mutex, and call it again with `None` right after to clear it.
-pub fn set_pending_attribution(attr: Option<axon_audit::entry::AuditAttribution>) {
-    PENDING_ATTRIBUTION.with(|a| *a.borrow_mut() = attr);
-}
-
-/// Consume the pending attribution (crate-internal use by write methods).
-pub(crate) fn clone_pending_attribution() -> Option<axon_audit::entry::AuditAttribution> {
-    PENDING_ATTRIBUTION.with(|a| a.borrow().clone())
-}
-
-use axon_audit::entry::{compute_diff, AuditEntry, MutationType};
+use axon_audit::entry::{compute_diff, AuditAttribution, AuditEntry, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::auth::CallerIdentity;
 use axon_core::error::AxonError;
@@ -380,8 +350,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         tx: crate::transaction::Transaction,
         actor: Option<String>,
+        attribution: Option<AuditAttribution>,
     ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
-        tx.commit(&mut self.storage, &mut self.audit, actor)
+        tx.commit(&mut self.storage, &mut self.audit, actor, attribution)
     }
 
     // ── Identity-propagating wrappers (FEAT-012) ────────────────────────────
@@ -399,8 +370,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         mut req: CreateEntityRequest,
         caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
     ) -> Result<CreateEntityResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
         self.create_entity(req)
     }
 
@@ -409,8 +382,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         mut req: UpdateEntityRequest,
         caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
     ) -> Result<UpdateEntityResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
         self.update_entity(req)
     }
 
@@ -419,8 +394,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         mut req: PatchEntityRequest,
         caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
     ) -> Result<PatchEntityResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
         self.patch_entity(req)
     }
 
@@ -429,8 +406,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         mut req: DeleteEntityRequest,
         caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
     ) -> Result<DeleteEntityResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
         self.delete_entity(req)
     }
 
@@ -442,8 +421,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         tx: crate::transaction::Transaction,
         caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
     ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
-        self.commit_transaction(tx, Some(caller.actor.clone()))
+        self.commit_transaction(tx, Some(caller.actor.clone()), attribution)
     }
 
     /// Create a link, overriding `req.actor` with the caller identity.
@@ -451,8 +431,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         mut req: CreateLinkRequest,
         caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
     ) -> Result<CreateLinkResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
         self.create_link(req)
     }
 
@@ -461,8 +443,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         mut req: DeleteLinkRequest,
         caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
     ) -> Result<DeleteLinkResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
         self.delete_link(req)
     }
 
@@ -471,8 +455,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         mut req: TransitionLifecycleRequest,
         caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
     ) -> Result<TransitionLifecycleResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
         self.transition_lifecycle(req)
     }
 
@@ -590,7 +576,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(meta) = req.audit_metadata {
             audit_entry = audit_entry.with_metadata(meta);
         }
-        if let Some(attr) = clone_pending_attribution() {
+        if let Some(attr) = req.attribution.clone() {
             audit_entry = audit_entry.with_attribution(attr);
         }
         let appended = self.audit.append(audit_entry)?;
@@ -781,7 +767,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(meta) = req.audit_metadata {
             audit_entry = audit_entry.with_metadata(meta);
         }
-        if let Some(attr) = clone_pending_attribution() {
+        if let Some(attr) = req.attribution.clone() {
             audit_entry = audit_entry.with_attribution(attr);
         }
         let appended = self.audit.append(audit_entry)?;
@@ -923,7 +909,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if let Some(meta) = req.audit_metadata {
             audit_entry = audit_entry.with_metadata(meta);
         }
-        if let Some(attr) = clone_pending_attribution() {
+        if let Some(attr) = req.attribution.clone() {
             audit_entry = audit_entry.with_attribution(attr);
         }
         let appended = self.audit.append(audit_entry)?;
@@ -1020,7 +1006,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             if let Some(meta) = req.audit_metadata {
                 audit_entry = audit_entry.with_metadata(meta);
             }
-            if let Some(attr) = clone_pending_attribution() {
+            if let Some(attr) = req.attribution.clone() {
                 audit_entry = audit_entry.with_attribution(attr);
             }
             let appended = self.audit.append(audit_entry)?;
@@ -1566,7 +1552,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             "reverted_from_entry_id".into(),
             req.audit_entry_id.to_string(),
         );
-        if let Some(attr) = clone_pending_attribution() {
+        if let Some(attr) = req.attribution.clone() {
             revert_entry = revert_entry.with_attribution(attr);
         }
 
@@ -3225,7 +3211,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             Some(link_entity.data),
             req.actor,
         );
-        if let Some(attr) = clone_pending_attribution() {
+        if let Some(attr) = req.attribution.clone() {
             link_audit_entry = link_audit_entry.with_attribution(attr);
         }
         self.audit.append(link_audit_entry)?;
@@ -3284,7 +3270,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None,
             req.actor,
         );
-        if let Some(attr) = clone_pending_attribution() {
+        if let Some(attr) = req.attribution.clone() {
             link_audit_entry = link_audit_entry.with_attribution(attr);
         }
         self.audit.append(link_audit_entry)?;
@@ -3750,6 +3736,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             expected_version: req.expected_version,
             actor: req.actor,
             audit_metadata: req.audit_metadata,
+            attribution: req.attribution,
         })?;
 
         Ok(TransitionLifecycleResponse {
@@ -4379,6 +4366,7 @@ mod tests {
                 data: json!({"title": title}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating entity for markdown cache test",
         );
@@ -4407,6 +4395,7 @@ mod tests {
                 data: json!({"title": "hello"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         assert_eq!(created.entity.version, 1);
@@ -4451,6 +4440,7 @@ mod tests {
                 data: json!({"title": "hello", "status": "open"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating entity for markdown render test",
         );
@@ -4500,6 +4490,7 @@ mod tests {
                 data: json!({"title": "hello", "status": "open"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating entity for template cache test",
         );
@@ -4612,6 +4603,7 @@ mod tests {
                 data: json!({"title": "hello"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating entity for missing template test",
         );
@@ -4748,6 +4740,7 @@ mod tests {
                 data: json!({"title": "hello"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating entity for template delete test",
         );
@@ -4975,6 +4968,7 @@ mod tests {
             data: json!({"title": "Qualified", "notes": "Scoped"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .expect("qualified entity create should succeed");
 
@@ -5044,6 +5038,7 @@ mod tests {
                 data: json!({"title": "hello"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating entity for render failure test",
         );
@@ -5082,6 +5077,7 @@ mod tests {
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5093,6 +5089,7 @@ mod tests {
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -5112,6 +5109,7 @@ mod tests {
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5123,6 +5121,7 @@ mod tests {
                 expected_version: 99, // wrong version
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap_err();
 
@@ -5156,6 +5155,7 @@ mod tests {
             data: json!({"title": "to-delete"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5165,6 +5165,7 @@ mod tests {
             actor: None,
             audit_metadata: None,
             force: false,
+        attribution: None,
         })
         .unwrap();
 
@@ -5187,6 +5188,7 @@ mod tests {
             data: json!({"title": "v1"}),
             actor: Some("agent-1".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5197,6 +5199,7 @@ mod tests {
             expected_version: 1,
             actor: Some("agent-1".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5206,6 +5209,7 @@ mod tests {
             actor: None,
             audit_metadata: None,
             force: false,
+        attribution: None,
         })
         .unwrap();
 
@@ -5248,6 +5252,7 @@ entity_schema:
                 data: json!({"done": false}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap_err();
 
@@ -5272,6 +5277,7 @@ entity_schema:
             data: json!({"title": "My task", "done": false}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         });
 
         assert!(result.is_ok(), "valid entity should be accepted");
@@ -5286,6 +5292,7 @@ entity_schema:
             data: json!({"name": id}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
     }
@@ -5305,6 +5312,7 @@ entity_schema:
                 link_type: "assigned-to".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
 
@@ -5325,6 +5333,7 @@ entity_schema:
                 link_type: "assigned-to".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap_err();
 
@@ -5348,6 +5357,7 @@ entity_schema:
             link_type: "assigned-to".into(),
             metadata: json!(null),
             actor: Some("agent-1".into()),
+        attribution: None,
         })
         .unwrap();
 
@@ -5391,6 +5401,7 @@ entity_schema:
             link_type: "assigned-to".into(),
             metadata: json!(null),
             actor: None,
+        attribution: None,
         })
         .unwrap();
 
@@ -5403,6 +5414,7 @@ entity_schema:
             target_id: EntityId::new("t-001"),
             link_type: "assigned-to".into(),
             actor: Some("agent-2".into()),
+        attribution: None,
         })
         .unwrap();
 
@@ -5448,6 +5460,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
         }
@@ -5485,6 +5498,7 @@ entity_schema:
                 link_type: "edge".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
         }
@@ -5521,6 +5535,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
         }
@@ -5558,6 +5573,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
         }
@@ -5610,6 +5626,7 @@ entity_schema:
             data: json!({"status": "inactive"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -5618,6 +5635,7 @@ entity_schema:
             data: json!({"status": "active"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5630,6 +5648,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
         }
@@ -5672,6 +5691,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
         }
@@ -5707,6 +5727,7 @@ entity_schema:
             link_type: "next".into(),
             metadata: json!(null),
             actor: None,
+        attribution: None,
         })
         .unwrap();
 
@@ -5762,6 +5783,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
         }
@@ -5797,6 +5819,7 @@ entity_schema:
             data: json!({"title": "v1", "done": false}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5807,6 +5830,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5838,6 +5862,7 @@ entity_schema:
             data: json!({"title": "by alice"}),
             actor: Some("alice".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5847,6 +5872,7 @@ entity_schema:
             data: json!({"title": "by bob"}),
             actor: Some("bob".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5880,6 +5906,7 @@ entity_schema:
             data: json!({"scope": "default"}),
             actor: Some("default-agent".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -5888,6 +5915,7 @@ entity_schema:
             data: json!({"scope": "prod"}),
             actor: Some("prod-agent".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5914,6 +5942,7 @@ entity_schema:
                 data: json!({"title": format!("task {i}")}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -5961,6 +5990,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5971,6 +6001,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -5986,6 +6017,7 @@ entity_schema:
                 audit_entry_id: update_entry.id,
                 actor: Some("admin".into()),
                 force: false,
+            attribution: None,
             })
             .unwrap();
 
@@ -6016,6 +6048,7 @@ entity_schema:
                 audit_entry_id: 9999,
                 actor: None,
                 force: false,
+            attribution: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::NotFound(_)));
@@ -6033,6 +6066,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6044,6 +6078,7 @@ entity_schema:
                 audit_entry_id: create_entry.id,
                 actor: None,
                 force: false,
+            attribution: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::InvalidOperation(_)));
@@ -6061,6 +6096,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6071,6 +6107,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6081,6 +6118,7 @@ entity_schema:
             expected_version: 2,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6127,6 +6165,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6137,6 +6176,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6191,6 +6231,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6220,6 +6261,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: Some("alice".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6230,6 +6272,7 @@ entity_schema:
             expected_version: 1,
             actor: Some("alice".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6239,6 +6282,7 @@ entity_schema:
             actor: Some("alice".into()),
             force: false,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6298,6 +6342,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: Some("alice".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6308,6 +6353,7 @@ entity_schema:
             expected_version: 1,
             actor: Some("alice".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6317,6 +6363,7 @@ entity_schema:
             actor: Some("alice".into()),
             force: false,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6379,6 +6426,7 @@ entity_schema:
             data: json!({"title": "v1", "status": "draft"}),
             actor: Some("alice".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6389,6 +6437,7 @@ entity_schema:
             expected_version: 1,
             actor: Some("alice".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6398,6 +6447,7 @@ entity_schema:
             actor: Some("alice".into()),
             force: false,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6459,6 +6509,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6469,6 +6520,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6512,6 +6564,7 @@ entity_schema:
             data: json!({"title": "draft"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6534,6 +6587,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6566,6 +6620,7 @@ entity_schema:
             data: json!({"title": "original"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6581,6 +6636,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6591,6 +6647,7 @@ entity_schema:
             data: json!({"title": "new entity"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6639,6 +6696,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6652,6 +6710,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6689,6 +6748,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6718,6 +6778,7 @@ entity_schema:
             data: json!({"title": "alive"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6731,6 +6792,7 @@ entity_schema:
             actor: None,
             force: false,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6767,6 +6829,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6780,6 +6843,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6822,6 +6886,7 @@ entity_schema:
             data: json!({"balance": 100}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -6830,6 +6895,7 @@ entity_schema:
             data: json!({"balance": 50}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6853,7 +6919,7 @@ entity_schema:
         )
         .unwrap();
 
-        h.commit_transaction(tx, Some("system".into())).unwrap();
+        h.commit_transaction(tx, Some("system".into()), None).unwrap();
 
         // Verify the transaction was applied.
         let a = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("a") }).unwrap();
@@ -6897,7 +6963,7 @@ entity_schema:
         tx.create(Entity::new(col.clone(), EntityId::new("y"), json!({"balance": 300})))
             .unwrap();
 
-        h.commit_transaction(tx, Some("system".into())).unwrap();
+        h.commit_transaction(tx, Some("system".into()), None).unwrap();
 
         // Both entities should exist.
         assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("x") }).is_ok());
@@ -6933,6 +6999,7 @@ entity_schema:
             data: json!({"balance": 999}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6944,7 +7011,7 @@ entity_schema:
         tx.delete(col.clone(), EntityId::new("z"), z_before.version, Some(z_before.data.clone()))
             .unwrap();
 
-        h.commit_transaction(tx, Some("system".into())).unwrap();
+        h.commit_transaction(tx, Some("system".into()), None).unwrap();
 
         // Entity should be gone.
         assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("z") }).is_err());
@@ -6977,6 +7044,7 @@ entity_schema:
             data: json!({"balance": 100}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -6992,7 +7060,7 @@ entity_schema:
         )
         .unwrap();
 
-        h.commit_transaction(tx, Some("system".into())).unwrap();
+        h.commit_transaction(tx, Some("system".into()), None).unwrap();
 
         // Dry-run rollback.
         let resp = h
@@ -7036,6 +7104,7 @@ entity_schema:
             data: json!({"balance": 100}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -7051,7 +7120,7 @@ entity_schema:
         )
         .unwrap();
 
-        h.commit_transaction(tx, Some("system".into())).unwrap();
+        h.commit_transaction(tx, Some("system".into()), None).unwrap();
 
         h.rollback_transaction(RollbackTransactionRequest {
             transaction_id: tx_id.clone(),
@@ -7096,6 +7165,7 @@ entity_schema:
                 data: json!({"name": format!("widget {i}")}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -7341,6 +7411,7 @@ entity_schema:
                 data: json!({"name": format!("b-{i}")}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -7417,6 +7488,7 @@ entity_schema:
             data: json!({}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -7539,6 +7611,7 @@ entity_schema:
             link_type: "assigned-to".into(),
             metadata: json!(null),
             actor: None,
+        attribution: None,
         })
         .unwrap();
 
@@ -7551,6 +7624,7 @@ entity_schema:
                 target_id: EntityId::new("t-001"),
                 link_type: "assigned-to".into(),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
 
@@ -7576,6 +7650,7 @@ entity_schema:
             actor: None,
             audit_metadata: None,
             force: false,
+        attribution: None,
         })
         .expect("delete_entity must succeed after reverse-index entry is removed");
     }
@@ -7594,6 +7669,7 @@ entity_schema:
                 target_id: EntityId::new("t-001"),
                 link_type: "assigned-to".into(),
                 actor: None,
+            attribution: None,
             })
             .unwrap_err();
 
@@ -7657,6 +7733,7 @@ link_types:
                 link_type: "undeclared-type".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap_err();
 
@@ -7683,6 +7760,7 @@ link_types:
                 link_type: "assigned-to".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap_err();
 
@@ -7709,6 +7787,7 @@ link_types:
                 link_type: "mentor".into(),
                 metadata: json!({}), // missing required "since"
                 actor: None,
+            attribution: None,
             })
             .unwrap_err();
 
@@ -7734,6 +7813,7 @@ link_types:
                 link_type: "mentor".into(),
                 metadata: json!({"since": "2026-01-01"}),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
 
@@ -7755,6 +7835,7 @@ link_types:
             link_type: "assigned-to".into(),
             metadata: json!(null),
             actor: None,
+        attribution: None,
         })
         .unwrap();
 
@@ -7768,6 +7849,7 @@ link_types:
                 link_type: "assigned-to".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap_err();
 
@@ -7793,6 +7875,7 @@ link_types:
                 link_type: "anything".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
 
@@ -7815,6 +7898,7 @@ link_types:
             data: json!({"title": "Task 1"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -7823,6 +7907,7 @@ link_types:
             data: json!({"title": "Task 2"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -7835,6 +7920,7 @@ link_types:
                 link_type: "depends-on".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
 
@@ -7860,6 +7946,7 @@ link_types:
             link_type: "mentor".into(),
             metadata: json!({"since": "2026-01-01"}),
             actor: None,
+        attribution: None,
         })
         .unwrap();
 
@@ -7873,6 +7960,7 @@ link_types:
                 link_type: "mentor".into(),
                 metadata: json!({"since": "2026-02-01"}),
                 actor: None,
+            attribution: None,
             })
             .unwrap_err();
 
@@ -7899,6 +7987,7 @@ link_types:
             link_type: "manager".into(),
             metadata: json!(null),
             actor: None,
+        attribution: None,
         })
         .unwrap();
 
@@ -7912,6 +8001,7 @@ link_types:
                 link_type: "manager".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap_err();
         assert!(
@@ -7929,6 +8019,7 @@ link_types:
                 link_type: "manager".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap_err();
         assert!(
@@ -7956,6 +8047,7 @@ link_types:
                 link_type: "assigned-to".into(),
                 metadata: json!(null),
                 actor: None,
+            attribution: None,
             })
             .unwrap();
         }
@@ -7975,6 +8067,7 @@ link_types:
             data,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
     }
@@ -8629,6 +8722,7 @@ link_types:
                 data: json!({"done": false}), // missing required "title"
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::SchemaValidation(_)));
@@ -8640,6 +8734,7 @@ link_types:
             data: json!({"title": "ok", "done": false}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
     }
@@ -9194,6 +9289,7 @@ link_types:
             data: json!({"title": "Test"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         });
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -9212,6 +9308,7 @@ link_types:
                 data: json!({"bead_type": "task"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -9240,6 +9337,7 @@ link_types:
                 data: json!({"bead_type": "task"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -9263,6 +9361,7 @@ link_types:
                 }),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -9285,6 +9384,7 @@ link_types:
                 data: json!({"bead_type": "task"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -9296,6 +9396,7 @@ link_types:
             expected_version: resp.entity.version,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("save gate failed"));
@@ -9311,6 +9412,7 @@ link_types:
                 data: json!({"bead_type": "bug"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -9326,6 +9428,7 @@ link_types:
                 expected_version: create_resp.entity.version,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -9347,6 +9450,7 @@ link_types:
                 data: json!({"bead_type": "task"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -9391,6 +9495,7 @@ link_types:
                 data: json!({"bead_type": "bug"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         assert!(!create_resp.gates.get("complete").unwrap().pass);
@@ -9421,6 +9526,7 @@ link_types:
             expected_version: stored.version,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -9470,6 +9576,7 @@ link_types:
                 data,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -10067,6 +10174,7 @@ link_types:
                 data: json!({ "title": id }),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -10080,7 +10188,8 @@ link_types:
                 link_type: "relates-to".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-            },
+                            attribution: None,
+},
             CreateLinkRequest {
                 source_collection: keep.clone(),
                 source_id: EntityId::new("keep-001"),
@@ -10089,7 +10198,8 @@ link_types:
                 link_type: "references".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-            },
+                            attribution: None,
+},
             CreateLinkRequest {
                 source_collection: keep.clone(),
                 source_id: EntityId::new("keep-001"),
@@ -10098,7 +10208,8 @@ link_types:
                 link_type: "references".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-            },
+                            attribution: None,
+},
         ] {
             h.create_link(request).unwrap();
         }
@@ -10166,6 +10277,7 @@ link_types:
             data: json!({"title": "old", "status": "open"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         let initial_view = h
@@ -10196,6 +10308,7 @@ link_types:
             data: json!({"title": "new", "status": "closed"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         let recreated_view = h
@@ -10245,6 +10358,7 @@ link_types:
             data: json!({"title": "old", "status": "open"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         let initial_view = h
@@ -10268,6 +10382,7 @@ link_types:
             data: json!({"title": "new", "status": "closed"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         let sibling_view = h
@@ -10342,6 +10457,7 @@ link_types:
             data: json!({"title": "valid"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -10373,6 +10489,7 @@ link_types:
             data: json!({"title": "valid"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -10381,6 +10498,7 @@ link_types:
             data: json!({"no_title": true}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -10469,6 +10587,7 @@ link_types:
             }),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -10477,6 +10596,7 @@ link_types:
             data: json!({"bead_type": "task"}), // missing description
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -10516,6 +10636,7 @@ link_types:
             }),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -10524,6 +10645,7 @@ link_types:
             data: json!({"bead_type": "task"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -10564,6 +10686,7 @@ link_types:
             }),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -10578,6 +10701,7 @@ link_types:
             }),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -10586,6 +10710,7 @@ link_types:
             data: json!({"bead_type": "task"}), // fails complete
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -10633,6 +10758,7 @@ link_types:
             data: json!({"title": "test"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -10880,6 +11006,7 @@ link_types:
                 data,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -11062,6 +11189,7 @@ link_types:
                 data: json!({"status": status, "priority": priority}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -11185,6 +11313,7 @@ link_types:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -11250,6 +11379,7 @@ link_types:
                 data: json!({ "status": "pending" }),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -11262,6 +11392,7 @@ link_types:
                 expected_version: 1,
                 actor: Some("agent-1".into()),
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -11313,6 +11444,7 @@ link_types:
             actor: None,
             audit_metadata: None,
             force: false,
+        attribution: None,
         })
         .unwrap();
 
@@ -11415,6 +11547,7 @@ link_types:
             data: json!({"email": "alice@example.com", "name": "Alice"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -11425,6 +11558,7 @@ link_types:
                 data: json!({"email": "alice@example.com", "name": "Bob"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap_err();
 
@@ -11447,6 +11581,7 @@ link_types:
             data: json!({"email": "alice@example.com"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -11456,6 +11591,7 @@ link_types:
             data: json!({"email": "bob@example.com"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
     }
@@ -11470,6 +11606,7 @@ link_types:
             data: json!({"email": "alice@example.com", "name": "Alice"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -11481,6 +11618,7 @@ link_types:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
     }
@@ -11495,6 +11633,7 @@ link_types:
             data: json!({"email": "alice@example.com"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -11504,6 +11643,7 @@ link_types:
             data: json!({"email": "bob@example.com"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -11516,6 +11656,7 @@ link_types:
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap_err();
 
@@ -11535,6 +11676,7 @@ link_types:
             data: json!({"email": "alice@example.com"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -11544,6 +11686,7 @@ link_types:
             actor: None,
             audit_metadata: None,
             force: false,
+        attribution: None,
         })
         .unwrap();
 
@@ -11554,6 +11697,7 @@ link_types:
             data: json!({"email": "alice@example.com"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
     }
@@ -11586,6 +11730,7 @@ link_types:
                 data: json!({"title": id}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -11600,6 +11745,7 @@ link_types:
             link_type: "depends-on".into(),
             metadata: serde_json::Value::Null,
             actor: None,
+        attribution: None,
         })
         .unwrap();
 
@@ -11611,6 +11757,7 @@ link_types:
             link_type: "depends-on".into(),
             metadata: serde_json::Value::Null,
             actor: None,
+        attribution: None,
         })
         .unwrap();
 
@@ -11622,6 +11769,7 @@ link_types:
             link_type: "assigned-to".into(),
             metadata: serde_json::Value::Null,
             actor: None,
+        attribution: None,
         })
         .unwrap();
 
@@ -12148,6 +12296,7 @@ link_types:
                 data: json!({ "title": id }),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -12161,7 +12310,8 @@ link_types:
                 link_type: "references".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-            },
+                            attribution: None,
+},
             CreateLinkRequest {
                 source_collection: rollups.clone(),
                 source_id: EntityId::new("sum-001"),
@@ -12170,7 +12320,8 @@ link_types:
                 link_type: "feeds".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-            },
+                            attribution: None,
+},
             CreateLinkRequest {
                 source_collection: keep.clone(),
                 source_id: EntityId::new("keep-001"),
@@ -12179,7 +12330,8 @@ link_types:
                 link_type: "references".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-            },
+                            attribution: None,
+},
         ] {
             h.create_link(request).unwrap();
         }
@@ -12249,6 +12401,7 @@ link_types:
             data: json!({"title": "old", "status": "draft"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         let initial_view = h
@@ -12282,6 +12435,7 @@ link_types:
             data: json!({"title": "new", "status": "published"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         let recreated_view = h
@@ -12330,6 +12484,7 @@ link_types:
             data: json!({"title": "old", "status": "draft"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         let initial_view = h
@@ -12357,6 +12512,7 @@ link_types:
             data: json!({"title": "new", "status": "published"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         let sibling_view = h
@@ -12393,7 +12549,8 @@ link_types:
             data: json!({"title": "hello"}),
             actor: Some("agent-1".into()),
             audit_metadata: Some(meta),
-        })
+                    attribution: None,
+})
         .unwrap();
 
         let audit = h
@@ -12417,6 +12574,7 @@ link_types:
             data: json!({"title": "hello"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -12429,7 +12587,8 @@ link_types:
             expected_version: 1,
             actor: None,
             audit_metadata: Some(meta),
-        })
+                    attribution: None,
+})
         .unwrap();
 
         let audit = h
@@ -12453,6 +12612,7 @@ link_types:
             data: json!({"title": "hello"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -12464,7 +12624,8 @@ link_types:
             actor: None,
             force: false,
             audit_metadata: Some(meta),
-        })
+                    attribution: None,
+})
         .unwrap();
 
         let audit = h
@@ -12486,6 +12647,7 @@ link_types:
             data: json!({"title": "hello"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -12575,6 +12737,7 @@ link_types:
                 data: json!({"name": format!("widget-{i}")}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -12609,6 +12772,7 @@ link_types:
             data: json!({"title": "hello", "status": "draft", "priority": 3}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -12620,6 +12784,7 @@ link_types:
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -12640,6 +12805,7 @@ link_types:
             data: json!({"title": "hello", "notes": "some notes"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -12651,6 +12817,7 @@ link_types:
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -12668,6 +12835,7 @@ link_types:
             data: json!({"title": "hello"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -12679,6 +12847,7 @@ link_types:
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -12696,6 +12865,7 @@ link_types:
             data: json!({"title": "hello"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -12707,6 +12877,7 @@ link_types:
                 expected_version: 99,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::ConflictingVersion { .. }));
@@ -12723,6 +12894,7 @@ link_types:
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::NotFound(_)));
@@ -12738,6 +12910,7 @@ link_types:
             data: json!({"title": "hello", "status": "draft"}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -12748,6 +12921,7 @@ link_types:
             expected_version: 1,
             actor: Some("agent-1".into()),
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -12832,6 +13006,7 @@ link_types:
             data: json!({ "bead_type": "invoice" }),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -12840,6 +13015,7 @@ link_types:
             data: json!({ "bead_type": "invoice" }),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -12851,6 +13027,7 @@ link_types:
                 expected_version: 1,
                 actor: Some("agent-1".into()),
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
 
@@ -12927,6 +13104,7 @@ link_types:
                 data: json!({"n": i}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -12937,6 +13115,7 @@ link_types:
                 data: json!({"n": i}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             })
             .unwrap();
         }
@@ -12995,6 +13174,7 @@ link_types:
             data: json!({"n": 99}),
             actor: None,
             audit_metadata: None,
+                attribution: None,
         })
         .unwrap();
 
@@ -13151,6 +13331,7 @@ link_types:
                 data: json!({"title": "design the thing"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating entity without explicit status",
         );
@@ -13171,6 +13352,7 @@ link_types:
                 data: json!({"title": "design", "status": "draft"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating entity with explicit draft state",
         );
@@ -13190,6 +13372,7 @@ link_types:
                 data: json!({"title": "design", "status": "invalid"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating entity with unknown status",
         );
@@ -13215,6 +13398,7 @@ link_types:
                 data: json!({"title": "design", "status": 42}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating entity with non-string status",
         );
@@ -13241,6 +13425,7 @@ link_types:
                 data: json!({"title": "design"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "seeding entity",
         );
@@ -13255,6 +13440,7 @@ link_types:
                 expected_version: created.entity.version,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "updating entity without status",
         );
@@ -13279,6 +13465,7 @@ link_types:
                 data: json!({"title": "design"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "seeding entity",
         );
@@ -13291,6 +13478,7 @@ link_types:
                 expected_version: created.entity.version,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "updating entity with unknown status",
         );
@@ -13328,6 +13516,7 @@ link_types:
                 data: json!({"body": "hello", "status": "whatever"}),
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "creating note",
         );
@@ -13341,6 +13530,7 @@ link_types:
                 expected_version: created.entity.version,
                 actor: None,
                 audit_metadata: None,
+                        attribution: None,
             }),
             "updating note",
         );
