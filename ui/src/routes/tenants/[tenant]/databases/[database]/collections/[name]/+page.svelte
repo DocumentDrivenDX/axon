@@ -5,9 +5,12 @@ import {
 	type CollectionDetail,
 	type CollectionView,
 	type EntityRecord,
+	type FieldDiff,
 	type LifecycleDef,
 	type Link,
+	type RollbackPreview,
 	type TraverseResult,
+	applyEntityRollback,
 	createEntity,
 	createLink,
 	// biome-ignore lint/correctness/noUnusedImports: Used in template onclick handler.
@@ -23,6 +26,7 @@ import {
 	fetchEntityAudit,
 	fetchRenderedEntity,
 	lifecyclesFromSchema,
+	previewEntityRollback,
 	putCollectionTemplate,
 	transitionLifecycle,
 	traverseLinks,
@@ -72,13 +76,22 @@ let deleteMessage = $state<string | null>(null);
 
 // ── Entity detail tab state ────────────────────────────────────────────────
 
-type EntityTab = 'data' | 'audit' | 'links' | 'lifecycle' | 'markdown';
+type EntityTab = 'data' | 'audit' | 'links' | 'lifecycle' | 'markdown' | 'rollback';
 let activeTab = $state<EntityTab>('data');
 
 // Audit
 let auditEntries = $state<AuditEntry[]>([]);
 let auditLoading = $state(false);
 let auditError = $state<string | null>(null);
+
+// Rollback
+let rollbackPreview = $state<RollbackPreview | null>(null);
+let rollbackPreviewVersion = $state<number | null>(null);
+let rollbackPreviewLoading = $state(false);
+let rollbackPreviewError = $state<string | null>(null);
+let rollbackApplying = $state(false);
+let rollbackApplyError = $state<string | null>(null);
+let rollbackApplyMessage = $state<string | null>(null);
 
 // Links
 let links = $state<Link[]>([]);
@@ -175,6 +188,57 @@ async function loadMarkdownTab() {
 		renderedMarkdown = await fetchRenderedEntity(collectionName, selectedEntity.id, scope);
 	} catch (e: unknown) {
 		renderedError = e instanceof Error ? e.message : 'Failed to render markdown';
+	}
+}
+
+async function ensureAuditLoaded() {
+	if (auditEntries.length === 0 && !auditLoading) {
+		await loadAuditTab();
+	}
+}
+
+async function doPreviewRollback(toVersion: number) {
+	if (!selectedEntity || !collectionName) return;
+	rollbackPreviewLoading = true;
+	rollbackPreviewError = null;
+	rollbackPreview = null;
+	rollbackPreviewVersion = toVersion;
+	rollbackApplyError = null;
+	rollbackApplyMessage = null;
+	try {
+		rollbackPreview = await previewEntityRollback(collectionName, selectedEntity.id, toVersion, scope);
+	} catch (e: unknown) {
+		rollbackPreviewError = e instanceof Error ? e.message : 'Failed to preview rollback';
+	} finally {
+		rollbackPreviewLoading = false;
+	}
+}
+
+async function doApplyRollback() {
+	if (!selectedEntity || !collectionName || rollbackPreviewVersion === null) return;
+	rollbackApplying = true;
+	rollbackApplyError = null;
+	rollbackApplyMessage = null;
+	try {
+		const result = await applyEntityRollback(
+			collectionName,
+			selectedEntity.id,
+			rollbackPreviewVersion,
+			selectedEntity.version,
+			scope,
+		);
+		selectedEntity = result.entity;
+		const idx = entities.findIndex((e) => e.id === result.entity.id);
+		if (idx >= 0) entities[idx] = result.entity;
+		rollbackApplyMessage = `Rolled back to v${rollbackPreviewVersion}. Now at v${result.entity.version}.`;
+		rollbackPreview = null;
+		rollbackPreviewVersion = null;
+		// Reload audit entries to show the rollback entry
+		await loadAuditTab();
+	} catch (e: unknown) {
+		rollbackApplyError = e instanceof Error ? e.message : 'Failed to apply rollback';
+	} finally {
+		rollbackApplying = false;
 	}
 }
 
@@ -314,9 +378,15 @@ $effect(() => {
 	links = [];
 	traverse = null;
 	renderedMarkdown = null;
+	rollbackPreview = null;
+	rollbackPreviewVersion = null;
+	rollbackPreviewError = null;
+	rollbackApplyError = null;
+	rollbackApplyMessage = null;
 	if (activeTab === 'audit') void loadAuditTab();
 	else if (activeTab === 'links') void loadLinksTab();
 	else if (activeTab === 'markdown') void loadMarkdownTab();
+	else if (activeTab === 'rollback') void ensureAuditLoaded();
 });
 
 async function loadCollection(targetCollection: string, afterId: string | null) {
@@ -790,6 +860,17 @@ afterNavigate(() => {
 					>
 						Markdown
 					</button>
+					<button
+						class:active={activeTab === 'rollback'}
+						role="tab"
+						data-testid="entity-tab-rollback"
+						onclick={() => {
+							activeTab = 'rollback';
+							void ensureAuditLoaded();
+						}}
+					>
+						Rollback
+					</button>
 				</div>
 
 				{#if activeTab === 'data'}
@@ -983,6 +1064,111 @@ afterNavigate(() => {
 							<pre data-testid="entity-markdown-output">{renderedMarkdown}</pre>
 						{/if}
 					</div>
+				{:else if activeTab === 'rollback'}
+					<div class="tab-pane stack" data-testid="entity-rollback-pane">
+						{#if rollbackApplyMessage}
+							<p class="message success">{rollbackApplyMessage}</p>
+						{/if}
+						{#if rollbackApplyError}
+							<p class="message error">{rollbackApplyError}</p>
+						{/if}
+						<h3 style="font-size:0.9rem;margin:0">Version History</h3>
+						{#if auditLoading}
+							<p class="muted">Loading history…</p>
+						{:else if auditError}
+							<p class="message error">{auditError}</p>
+						{:else if auditEntries.length <= 1}
+							<p class="muted">No prior versions to roll back to.</p>
+						{:else}
+							<table data-testid="entity-rollback-table">
+								<thead>
+									<tr>
+										<th>Version</th>
+										<th>Operation</th>
+										<th>Actor</th>
+										<th>Timestamp</th>
+										<th>Data Preview</th>
+										<th></th>
+									</tr>
+								</thead>
+								<tbody>
+									{#each auditEntries.filter((e) => e.version < (selectedEntity?.version ?? 0)) as entry}
+										<tr>
+											<td><strong>v{entry.version}</strong></td>
+											<td><span class="pill">{entry.mutation}</span></td>
+											<td>{entry.actor ?? 'system'}</td>
+											<td class="muted" style="font-size:0.78rem">
+												{new Date(entry.timestamp_ns / 1_000_000).toLocaleString()}
+											</td>
+											<td>
+												<code style="font-size:0.75rem">
+													{JSON.stringify(entry.data_after).slice(0, 60)}
+												</code>
+											</td>
+											<td>
+												<button
+													onclick={() => void doPreviewRollback(entry.version)}
+													data-testid={`rollback-preview-v${entry.version}`}
+												>
+													Preview
+												</button>
+											</td>
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						{/if}
+
+						{#if rollbackPreviewLoading}
+							<p class="muted">Loading preview…</p>
+						{/if}
+						{#if rollbackPreviewError}
+							<p class="message error">{rollbackPreviewError}</p>
+						{/if}
+						{#if rollbackPreview !== null && rollbackPreviewVersion !== null}
+							<div class="rollback-preview" data-testid="entity-rollback-preview">
+								<div class="rollback-preview-header">
+									<h3 style="font-size:0.9rem;margin:0">
+										Preview: Roll back to v{rollbackPreviewVersion}
+									</h3>
+									<button
+										class="primary"
+										disabled={rollbackApplying}
+										onclick={() => void doApplyRollback()}
+										data-testid="rollback-apply-button"
+									>
+										{rollbackApplying ? 'Applying…' : 'Apply Rollback'}
+									</button>
+								</div>
+								<h4 style="font-size:0.82rem;margin:0.5rem 0 0.25rem">Target data</h4>
+								<pre style="font-size:0.78rem">{JSON.stringify(rollbackPreview.target.data, null, 2)}</pre>
+								{#if Object.keys(rollbackPreview.diff).length > 0}
+									<h4 style="font-size:0.82rem;margin:0.5rem 0 0.25rem">Field changes</h4>
+									<table data-testid="entity-rollback-diff-table">
+										<thead>
+											<tr>
+												<th>Field</th>
+												<th>Kind</th>
+												<th>Description</th>
+											</tr>
+										</thead>
+										<tbody>
+											{#each Object.entries(rollbackPreview.diff) as [field, d]}
+												{@const diff = d as FieldDiff}
+												<tr>
+													<td><code>{field}</code></td>
+													<td><span class="pill">{diff.kind}</span></td>
+													<td>{diff.description}</td>
+												</tr>
+											{/each}
+										</tbody>
+									</table>
+								{:else}
+									<p class="muted">No field-level diff returned.</p>
+								{/if}
+							</div>
+						{/if}
+					</div>
 				{/if}
 			{:else}
 				<p class="muted">Select an entity row to inspect its data.</p>
@@ -1171,5 +1357,30 @@ afterNavigate(() => {
 		min-height: 8rem;
 		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 		font-size: 0.85rem;
+	}
+
+	.rollback-preview {
+		border: 1px solid rgba(125, 211, 252, 0.2);
+		border-radius: 0.5rem;
+		padding: 0.75rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.rollback-preview-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 1rem;
+	}
+
+	.rollback-preview pre {
+		font-size: 0.78rem;
+		background: rgba(0, 0, 0, 0.2);
+		padding: 0.5rem;
+		border-radius: 0.3rem;
+		white-space: pre-wrap;
+		margin: 0;
 	}
 </style>

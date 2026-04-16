@@ -89,6 +89,22 @@ export async function createTestEntity(
 	expect(response.ok(), `create entity ${id}`).toBe(true);
 }
 
+/** Update an entity in a collection (PATCH/PUT). */
+export async function updateTestEntity(
+	request: APIRequestContext,
+	db: TestDatabase,
+	collection: string,
+	id: string,
+	data: Record<string, unknown>,
+	expectedVersion: number,
+): Promise<void> {
+	const url = `/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`;
+	const response = await request.put(url, {
+		data: { data, expected_version: expectedVersion, actor: 'e2e' },
+	});
+	expect(response.ok(), `update entity ${id}`).toBe(true);
+}
+
 /** Build a UI URL for the database collections page. */
 export function dbCollectionsUrl(db: TestDatabase): string {
 	return `/ui/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/collections`;

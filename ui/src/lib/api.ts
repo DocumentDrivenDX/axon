@@ -779,6 +779,63 @@ export function lifecyclesFromSchema(
 	return raw as Record<string, LifecycleDef>;
 }
 
+// ── Entity rollback ──────────────────────────────────────────────────────────
+
+export type FieldDiff = {
+	path: string;
+	kind: string;
+	description: string;
+};
+
+export type RollbackPreview = {
+	current: EntityRecord | null;
+	target: EntityRecord;
+	diff: Record<string, FieldDiff>;
+};
+
+export type RollbackApplied = {
+	entity: EntityRecord;
+	audit_entry: AuditEntry;
+};
+
+export async function previewEntityRollback(
+	collection: string,
+	id: string,
+	toVersion: number,
+	scope?: Scope,
+): Promise<RollbackPreview> {
+	return request<RollbackPreview>(
+		`/collections/${encodeURIComponent(collection)}/entities/${encodeURIComponent(id)}/rollback`,
+		{
+			method: 'POST',
+			body: JSON.stringify({ to_version: toVersion, actor: 'ui', dry_run: true }),
+		},
+		scope,
+	);
+}
+
+export async function applyEntityRollback(
+	collection: string,
+	id: string,
+	toVersion: number,
+	expectedVersion: number,
+	scope?: Scope,
+): Promise<RollbackApplied> {
+	return request<RollbackApplied>(
+		`/collections/${encodeURIComponent(collection)}/entities/${encodeURIComponent(id)}/rollback`,
+		{
+			method: 'POST',
+			body: JSON.stringify({
+				to_version: toVersion,
+				expected_version: expectedVersion,
+				actor: 'ui',
+				dry_run: false,
+			}),
+		},
+		scope,
+	);
+}
+
 // ── Raw GraphQL passthrough for the playground page ─────────────────────────
 
 export type GraphQLResponse<T = unknown> = {
