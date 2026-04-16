@@ -12,7 +12,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use rusqlite::{params, Connection};
+use sqlx::sqlite::SqlitePool;
+use sqlx::Row;
 
 use axon_core::error::AxonError;
 
@@ -84,40 +85,37 @@ pub struct UserRoleEntry {
 
 // ── SQLite persistence helpers ────────────────────────────────────────────────
 //
-// These are free functions that operate on an existing rusqlite `Connection`
+// These are free functions that operate on an existing sqlx `SqlitePool`
 // (owned by `ControlPlaneDb`).  They are called by the control-plane routes
-// and by the CLI, which each have their own way of obtaining the connection.
+// and by the CLI, which each have their own way of obtaining the pool.
 
 /// Add the `user_roles` table to an existing control-plane database.
 /// This is called from `ControlPlaneDb::migrate()`.
-pub fn migrate_user_roles(conn: &Connection) -> Result<(), AxonError> {
-    conn.execute_batch(
+pub async fn migrate_user_roles(pool: &SqlitePool) -> Result<(), AxonError> {
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS user_roles (
              login      TEXT PRIMARY KEY,
              role       TEXT NOT NULL,
              granted_at TEXT NOT NULL
-         );",
+         )",
     )
-    .map_err(|e| AxonError::Storage(e.to_string()))
+    .execute(pool)
+    .await
+    .map_err(|e| AxonError::Storage(e.to_string()))?;
+    Ok(())
 }
 
 /// Load all user-role assignments from the database.
-pub fn db_list(conn: &Connection) -> Result<Vec<UserRoleEntry>, AxonError> {
-    let mut stmt = conn
-        .prepare("SELECT login, role FROM user_roles ORDER BY login")
-        .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-    let rows = stmt
-        .query_map([], |row| {
-            let login: String = row.get(0)?;
-            let role_str: String = row.get(1)?;
-            Ok((login, role_str))
-        })
+pub async fn db_list(pool: &SqlitePool) -> Result<Vec<UserRoleEntry>, AxonError> {
+    let rows = sqlx::query("SELECT login, role FROM user_roles ORDER BY login")
+        .fetch_all(pool)
+        .await
         .map_err(|e| AxonError::Storage(e.to_string()))?;
 
     let mut entries = Vec::new();
     for row in rows {
-        let (login, role_str) = row.map_err(|e| AxonError::Storage(e.to_string()))?;
+        let login: String = row.get("login");
+        let role_str: String = row.get("role");
         let role = parse_role(&role_str)?;
         entries.push(UserRoleEntry { login, role });
     }
@@ -125,25 +123,31 @@ pub fn db_list(conn: &Connection) -> Result<Vec<UserRoleEntry>, AxonError> {
 }
 
 /// Upsert a user-role assignment in the database.
-pub fn db_set(conn: &Connection, login: &str, role: &Role) -> Result<(), AxonError> {
+pub async fn db_set(pool: &SqlitePool, login: &str, role: &Role) -> Result<(), AxonError> {
     let now = chrono_now();
-    conn.execute(
+    sqlx::query(
         "INSERT INTO user_roles (login, role, granted_at)
-         VALUES (?1, ?2, ?3)
+         VALUES (?, ?, ?)
          ON CONFLICT(login) DO UPDATE SET role = excluded.role, granted_at = excluded.granted_at",
-        params![login, role_str(role), now],
     )
+    .bind(login)
+    .bind(role_str(role))
+    .bind(now)
+    .execute(pool)
+    .await
     .map_err(|e| AxonError::Storage(e.to_string()))?;
     Ok(())
 }
 
 /// Remove a user-role assignment from the database.
 /// Returns `true` if a row was deleted.
-pub fn db_remove(conn: &Connection, login: &str) -> Result<bool, AxonError> {
-    let n = conn
-        .execute("DELETE FROM user_roles WHERE login = ?1", params![login])
+pub async fn db_remove(pool: &SqlitePool, login: &str) -> Result<bool, AxonError> {
+    let result = sqlx::query("DELETE FROM user_roles WHERE login = ?")
+        .bind(login)
+        .execute(pool)
+        .await
         .map_err(|e| AxonError::Storage(e.to_string()))?;
-    Ok(n > 0)
+    Ok(result.rows_affected() > 0)
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -284,43 +288,49 @@ mod tests {
         assert_eq!(clone.get("erik@example.com"), Some(Role::Admin));
     }
 
-    #[test]
-    fn db_round_trip() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate_user_roles(&conn).unwrap();
-        db_set(&conn, "erik@example.com", &Role::Admin).unwrap();
-        db_set(&conn, "alice@example.com", &Role::Write).unwrap();
-        let entries = db_list(&conn).unwrap();
+    async fn test_pool() -> SqlitePool {
+        SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("open in-memory pool")
+    }
+
+    #[tokio::test]
+    async fn db_round_trip() {
+        let pool = test_pool().await;
+        migrate_user_roles(&pool).await.unwrap();
+        db_set(&pool, "erik@example.com", &Role::Admin).await.unwrap();
+        db_set(&pool, "alice@example.com", &Role::Write).await.unwrap();
+        let entries = db_list(&pool).await.unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].login, "alice@example.com");
         assert_eq!(entries[1].login, "erik@example.com");
         assert!(matches!(entries[1].role, Role::Admin));
     }
 
-    #[test]
-    fn db_upsert_updates_existing() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate_user_roles(&conn).unwrap();
-        db_set(&conn, "erik@example.com", &Role::Read).unwrap();
-        db_set(&conn, "erik@example.com", &Role::Admin).unwrap();
-        let entries = db_list(&conn).unwrap();
+    #[tokio::test]
+    async fn db_upsert_updates_existing() {
+        let pool = test_pool().await;
+        migrate_user_roles(&pool).await.unwrap();
+        db_set(&pool, "erik@example.com", &Role::Read).await.unwrap();
+        db_set(&pool, "erik@example.com", &Role::Admin).await.unwrap();
+        let entries = db_list(&pool).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert!(matches!(entries[0].role, Role::Admin));
     }
 
-    #[test]
-    fn db_remove_returns_true_on_deletion() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate_user_roles(&conn).unwrap();
-        db_set(&conn, "erik@example.com", &Role::Admin).unwrap();
-        assert!(db_remove(&conn, "erik@example.com").unwrap());
-        assert!(db_list(&conn).unwrap().is_empty());
+    #[tokio::test]
+    async fn db_remove_returns_true_on_deletion() {
+        let pool = test_pool().await;
+        migrate_user_roles(&pool).await.unwrap();
+        db_set(&pool, "erik@example.com", &Role::Admin).await.unwrap();
+        assert!(db_remove(&pool, "erik@example.com").await.unwrap());
+        assert!(db_list(&pool).await.unwrap().is_empty());
     }
 
-    #[test]
-    fn db_remove_returns_false_when_absent() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate_user_roles(&conn).unwrap();
-        assert!(!db_remove(&conn, "nobody@example.com").unwrap());
+    #[tokio::test]
+    async fn db_remove_returns_false_when_absent() {
+        let pool = test_pool().await;
+        migrate_user_roles(&pool).await.unwrap();
+        assert!(!db_remove(&pool, "nobody@example.com").await.unwrap());
     }
 }

@@ -46,6 +46,7 @@ humantime.workspace = true
 jsonwebtoken = "9"
 metrics.workspace = true
 rusqlite.workspace = true
+sqlx.workspace = true
 rust-embed.workspace = true
 mime_guess.workspace = true
 

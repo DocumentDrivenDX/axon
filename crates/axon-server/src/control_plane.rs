@@ -4,7 +4,8 @@
 //! tenant lifecycle: each tenant owns exactly one database, identified by the
 //! `db_name` slug generated at creation time.
 
-use rusqlite::{params, Connection};
+use sqlx::sqlite::SqlitePool;
+use sqlx::Row;
 
 use axon_core::error::AxonError;
 
@@ -28,22 +29,48 @@ pub struct Tenant {
 
 /// Handle to the control-plane SQLite database.
 pub struct ControlPlaneDb {
-    conn: Connection,
+    pool: SqlitePool,
+    rt: tokio::runtime::Runtime,
 }
 
 impl ControlPlaneDb {
+    /// Helper: run an async future on the embedded runtime, handling the case
+    /// where we may already be inside a tokio context.
+    fn block_on<T>(
+        &self,
+        fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
+    ) -> Result<T, String> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => tokio::task::block_in_place(|| self.rt.handle().block_on(fut)),
+            Err(_) => self.rt.handle().block_on(fut),
+        }
+        .map_err(|e| e.to_string())
+    }
+
     /// Open (or create) a control-plane database at the given file path.
     pub fn open(path: &str) -> Result<Self, AxonError> {
-        let conn = Connection::open(path).map_err(|e| AxonError::Storage(e.to_string()))?;
-        let db = Self { conn };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let pool = rt
+            .block_on(SqlitePool::connect(&format!("sqlite:{path}?mode=rwc")))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let db = Self { pool, rt };
         db.migrate()?;
         Ok(db)
     }
 
     /// Open an in-memory database (useful for testing).
     pub fn open_in_memory() -> Result<Self, AxonError> {
-        let conn = Connection::open_in_memory().map_err(|e| AxonError::Storage(e.to_string()))?;
-        let db = Self { conn };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let pool = rt
+            .block_on(SqlitePool::connect("sqlite::memory:"))
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let db = Self { pool, rt };
         db.migrate()?;
         Ok(db)
     }
@@ -51,37 +78,44 @@ impl ControlPlaneDb {
     /// Apply schema migrations.  Idempotent — safe to run on existing databases.
     pub fn migrate(&self) -> Result<(), AxonError> {
         // Step 1: ensure the tenants table exists with at least the base columns.
-        self.conn
-            .execute_batch(
-                "PRAGMA foreign_keys = ON;
-
-                 CREATE TABLE IF NOT EXISTS tenants (
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS tenants (
                      id         TEXT PRIMARY KEY,
                      name       TEXT UNIQUE NOT NULL,
                      db_name    TEXT NOT NULL DEFAULT '',
                      created_at TEXT NOT NULL
-                 );",
+                 )",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .execute(&self.pool),
+        )
+        .map_err(AxonError::Storage)?;
+
+        // Enable foreign keys via a separate statement.
+        self.block_on(sqlx::query("PRAGMA foreign_keys = ON").execute(&self.pool))
+            .map_err(AxonError::Storage)?;
 
         // Step 2: add db_name column to pre-existing tenants tables that lack it.
         // Ignoring the error is safe: if the column already exists the ALTER fails
         // with "duplicate column name", which we treat as a no-op.
-        let _ = self.conn.execute(
-            "ALTER TABLE tenants ADD COLUMN db_name TEXT NOT NULL DEFAULT ''",
-            [],
+        let _ = self.block_on(
+            sqlx::query("ALTER TABLE tenants ADD COLUMN db_name TEXT NOT NULL DEFAULT ''")
+                .execute(&self.pool),
         );
 
         // Step 3: drop obsolete junction tables introduced in earlier schema revisions.
-        self.conn
-            .execute_batch(
-                "DROP TABLE IF EXISTS tenant_databases;
-                 DROP TABLE IF EXISTS nodes;",
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query("DROP TABLE IF EXISTS tenant_databases").execute(&self.pool),
+        )
+        .map_err(AxonError::Storage)?;
 
-        crate::user_roles::migrate_user_roles(&self.conn)?;
-        crate::cors_config::migrate_cors_origins(&self.conn)?;
+        self.block_on(sqlx::query("DROP TABLE IF EXISTS nodes").execute(&self.pool))
+            .map_err(AxonError::Storage)?;
+
+        self.rt
+            .block_on(crate::user_roles::migrate_user_roles(&self.pool))?;
+        self.rt
+            .block_on(crate::cors_config::migrate_cors_origins(&self.pool))?;
         Ok(())
     }
 
@@ -89,24 +123,26 @@ impl ControlPlaneDb {
 
     /// List all configured CORS allowed origins.
     pub fn list_cors_origins(&self) -> Result<Vec<String>, AxonError> {
-        crate::cors_config::db_list(&self.conn)
+        self.rt.block_on(crate::cors_config::db_list(&self.pool))
     }
 
     /// Add (or no-op if already present) a CORS allowed origin.
     pub fn add_cors_origin(&self, origin: &str) -> Result<(), AxonError> {
-        crate::cors_config::db_add(&self.conn, origin)
+        self.rt
+            .block_on(crate::cors_config::db_add(&self.pool, origin))
     }
 
     /// Remove a CORS allowed origin.  Returns `true` if a row was deleted.
     pub fn remove_cors_origin(&self, origin: &str) -> Result<bool, AxonError> {
-        crate::cors_config::db_remove(&self.conn, origin)
+        self.rt
+            .block_on(crate::cors_config::db_remove(&self.pool, origin))
     }
 
     // -- user_roles ------------------------------------------------------------
 
     /// List all user-role assignments.
     pub fn list_user_roles(&self) -> Result<Vec<crate::user_roles::UserRoleEntry>, AxonError> {
-        crate::user_roles::db_list(&self.conn)
+        self.rt.block_on(crate::user_roles::db_list(&self.pool))
     }
 
     /// Upsert a user-role assignment.
@@ -115,12 +151,14 @@ impl ControlPlaneDb {
         login: &str,
         role: &crate::auth::Role,
     ) -> Result<(), AxonError> {
-        crate::user_roles::db_set(&self.conn, login, role)
+        self.rt
+            .block_on(crate::user_roles::db_set(&self.pool, login, role))
     }
 
     /// Remove a user-role assignment.  Returns `true` if a row was deleted.
     pub fn remove_user_role(&self, login: &str) -> Result<bool, AxonError> {
-        crate::user_roles::db_remove(&self.conn, login)
+        self.rt
+            .block_on(crate::user_roles::db_remove(&self.pool, login))
     }
 
     // -- tenants ---------------------------------------------------------------
@@ -133,58 +171,64 @@ impl ControlPlaneDb {
         db_name: &str,
         created_at: &str,
     ) -> Result<(), AxonError> {
-        self.conn
-            .execute(
-                "INSERT INTO tenants (id, name, db_name, created_at) VALUES (?1, ?2, ?3, ?4)",
-                params![id, name, db_name, created_at],
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO tenants (id, name, db_name, created_at) VALUES (?, ?, ?, ?)",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(id)
+            .bind(name)
+            .bind(db_name)
+            .bind(created_at)
+            .execute(&self.pool),
+        )
+        .map_err(AxonError::Storage)?;
         Ok(())
     }
 
     /// Get a tenant by id.
     pub fn get_tenant(&self, id: &str) -> Result<Tenant, AxonError> {
-        self.conn
-            .query_row(
-                "SELECT id, name, db_name, created_at FROM tenants WHERE id = ?1",
-                params![id],
-                |row| {
-                    Ok(Tenant {
-                        id: row.get(0)?,
-                        name: row.get(1)?,
-                        db_name: row.get(2)?,
-                        created_at: row.get(3)?,
-                    })
-                },
+        let row = self
+            .block_on(
+                sqlx::query("SELECT id, name, db_name, created_at FROM tenants WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&self.pool),
             )
-            .map_err(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => AxonError::NotFound(format!("tenant {id}")),
-                other => AxonError::Storage(other.to_string()),
-            })
+            .map_err(|e| {
+                if e.contains("no rows") {
+                    AxonError::NotFound(format!("tenant {id}"))
+                } else {
+                    AxonError::Storage(e)
+                }
+            })?;
+
+        Ok(Tenant {
+            id: row.get("id"),
+            name: row.get("name"),
+            db_name: row.get("db_name"),
+            created_at: row.get("created_at"),
+        })
     }
 
     /// List all tenants, ordered by `created_at`.
     pub fn list_tenants(&self) -> Result<Vec<Tenant>, AxonError> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id, name, db_name, created_at FROM tenants ORDER BY created_at")
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let rows = self
+            .block_on(
+                sqlx::query(
+                    "SELECT id, name, db_name, created_at FROM tenants ORDER BY created_at",
+                )
+                .fetch_all(&self.pool),
+            )
+            .map_err(AxonError::Storage)?;
 
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(Tenant {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    db_name: row.get(2)?,
-                    created_at: row.get(3)?,
-                })
+        let tenants = rows
+            .iter()
+            .map(|row| Tenant {
+                id: row.get("id"),
+                name: row.get("name"),
+                db_name: row.get("db_name"),
+                created_at: row.get("created_at"),
             })
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-        let mut tenants = Vec::new();
-        for row in rows {
-            tenants.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
-        }
+            .collect();
         Ok(tenants)
     }
 
@@ -196,9 +240,12 @@ impl ControlPlaneDb {
     pub fn delete_tenant(&self, tenant_id: &str) -> Result<String, AxonError> {
         let tenant = self.get_tenant(tenant_id)?;
 
-        self.conn
-            .execute("DELETE FROM tenants WHERE id = ?1", params![tenant_id])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query("DELETE FROM tenants WHERE id = ?")
+                .bind(tenant_id)
+                .execute(&self.pool),
+        )
+        .map_err(AxonError::Storage)?;
 
         Ok(tenant.db_name)
     }
@@ -228,16 +275,16 @@ mod tests {
     #[test]
     fn tables_exist_after_migration() {
         let db = setup();
-        let tables: Vec<String> = db
-            .conn
-            .prepare(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+        let rows = db
+            .block_on(
+                sqlx::query(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+                )
+                .fetch_all(&db.pool),
             )
-            .expect("prepare")
-            .query_map([], |row| row.get(0))
-            .expect("query")
-            .filter_map(Result::ok)
-            .collect();
+            .expect("query");
+
+        let tables: Vec<String> = rows.iter().map(|row| row.get("name")).collect();
 
         assert!(tables.contains(&"tenants".to_string()));
         // Old tables must not be present.
