@@ -1815,17 +1815,28 @@ fn provision_tenant_database(path: &std::path::Path) -> Result<(), axon_core::er
                 parent.display()
             )))?;
     }
-    let conn = rusqlite::Connection::open(path)
-        .map_err(|e| axon_core::error::AxonError::Storage(format!(
-            "failed to create tenant database at {}: {e}",
-            path.display()
-        )))?;
-    conn.execute_batch("PRAGMA journal_mode=WAL;")
-        .map_err(|e| axon_core::error::AxonError::Storage(format!(
-            "failed to initialize tenant database at {}: {e}",
-            path.display()
-        )))?;
-    Ok(())
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| axon_core::error::AxonError::Storage(e.to_string()))?;
+    let url = format!("sqlite:{}?mode=rwc", path.display());
+    let run = async {
+        let pool = sqlx::SqlitePool::connect(&url).await
+            .map_err(|e| axon_core::error::AxonError::Storage(format!(
+                "failed to create tenant database at {}: {e}",
+                path.display()
+            )))?;
+        sqlx::query("PRAGMA journal_mode=WAL").execute(&pool).await
+            .map_err(|e| axon_core::error::AxonError::Storage(format!(
+                "failed to initialize tenant database at {}: {e}",
+                path.display()
+            )))?;
+        Ok(())
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(_) => tokio::task::block_in_place(|| rt.handle().block_on(run)),
+        Err(_) => rt.handle().block_on(run),
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────
