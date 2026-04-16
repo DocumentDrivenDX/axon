@@ -1,6 +1,5 @@
 <script lang="ts">
 import { type AuditEntry, fetchAudit, revertAuditEntry, rollbackTransaction } from '$lib/api';
-import { onMount } from 'svelte';
 import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();
@@ -127,7 +126,9 @@ async function loadEntries() {
 	}
 }
 
-onMount(() => {
+$effect(() => {
+	// Re-run when scope changes.
+	void scope;
 	void loadEntries();
 });
 </script>

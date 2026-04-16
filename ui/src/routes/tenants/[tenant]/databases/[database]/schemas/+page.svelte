@@ -9,7 +9,6 @@ import {
 	previewSchemaChange,
 	updateSchema,
 } from '$lib/api';
-import { onMount } from 'svelte';
 import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();
@@ -304,7 +303,9 @@ async function submitCreateCollection() {
 	}
 }
 
-onMount(() => {
+$effect(() => {
+	// Re-run when scope changes.
+	void scope;
 	void loadCollections();
 });
 </script>
