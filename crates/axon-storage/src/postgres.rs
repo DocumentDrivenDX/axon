@@ -1,8 +1,6 @@
 use std::future::Future;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use tokio_postgres::NoTls;
-
 use axon_audit::entry::AuditEntry;
 use axon_core::auth::TenantDatabase;
 use axon_core::error::AxonError;
@@ -16,69 +14,55 @@ use crate::adapter::StorageAdapter;
 
 /// PostgreSQL-backed storage adapter.
 ///
-/// Uses the asynchronous `tokio-postgres` crate driven from a dedicated Tokio
-/// runtime. Because `StorageAdapter` is synchronous, each database call
-/// blocks the calling thread via `handle.block_on(...)`.
+/// Uses `sqlx::PgPool` for connection pooling. Because `StorageAdapter` is
+/// synchronous, each database call blocks the calling thread via a dedicated
+/// Tokio runtime.
 ///
 /// Transactions are handled via `BEGIN` / `COMMIT` / `ROLLBACK` statements.
 /// The adapter creates the required tables on initialization if they do not
 /// exist.
 pub struct PostgresStorageAdapter {
-    client: tokio_postgres::Client,
-    handle: tokio::runtime::Handle,
-    _rt: tokio::runtime::Runtime,
+    pool: sqlx::PgPool,
+    rt: tokio::runtime::Runtime,
     in_tx: bool,
 }
 
 impl PostgresStorageAdapter {
     /// Connect to a PostgreSQL database using a connection string.
     ///
-    /// Example: `"host=localhost user=axon dbname=axon"`
+    /// Example: `"host=localhost user=axon dbname=axon"` or
+    /// `"postgres://axon@localhost/axon"`
     pub fn connect(params: &str) -> Result<Self, AxonError> {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let handle = rt.handle().clone();
-        let (client, connection) = handle
-            .block_on(tokio_postgres::connect(params, NoTls))
+        let pool = rt
+            .block_on(sqlx::PgPool::connect(params))
             .map_err(|e| AxonError::Storage(format!("connection failed: {e}")))?;
-        handle.spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::error!("postgres connection error: {e}");
-            }
-        });
         let mut adapter = Self {
-            client,
-            handle,
-            _rt: rt,
+            pool,
+            rt,
             in_tx: false,
         };
         adapter.init_schema()?;
         Ok(adapter)
     }
 
-    /// Block the current thread on a `tokio_postgres` future, converting any
-    /// error into `AxonError::Storage`.
+    /// Block the current thread on an sqlx future, converting any error into
+    /// `AxonError::Storage`.
     ///
     /// When called from within a Tokio async task, uses
-    /// [`tokio::task::block_in_place`] to temporarily un-enter the async
-    /// context before blocking on the adapter's dedicated runtime.  This
-    /// prevents the "cannot call `block_on` from within an async context"
-    /// panic that would otherwise occur when gateway route handlers drive
-    /// storage calls.
-    ///
-    /// Requires the multi-thread Tokio scheduler (used by the production
-    /// server).  Tests that use the default `current_thread` scheduler must
-    /// call adapter methods from a `spawn_blocking` closure.
-    fn block<T>(
+    /// [`tokio::task::block_in_place`] to temporarily yield the async context
+    /// before blocking on the adapter's dedicated runtime.
+    fn block_on<T>(
         &self,
-        fut: impl Future<Output = Result<T, tokio_postgres::Error>>,
+        fut: impl Future<Output = Result<T, sqlx::Error>>,
     ) -> Result<T, AxonError> {
         match tokio::runtime::Handle::try_current() {
-            Ok(_) => tokio::task::block_in_place(|| self.handle.block_on(fut)),
-            Err(_) => self.handle.block_on(fut),
+            Ok(_) => tokio::task::block_in_place(|| self.rt.handle().block_on(fut)),
+            Err(_) => self.rt.handle().block_on(fut),
         }
         .map_err(|e| AxonError::Storage(e.to_string()))
     }
@@ -88,9 +72,11 @@ impl PostgresStorageAdapter {
     /// Creates the `users`, `user_identities`, `tenant_users`, and related tables.
     /// This is idempotent — safe to call multiple times.
     pub fn apply_auth_migrations(&self) -> Result<(), AxonError> {
-        self.handle
-            .block_on(crate::auth_schema::apply_auth_migrations_postgres(&self.client))
-            .map_err(AxonError::Storage)
+        self.block_on(async {
+            crate::auth_schema::apply_auth_migrations_postgres(&self.pool)
+                .await
+                .map_err(sqlx::Error::Protocol)
+        })
     }
 
     /// Insert a tenant and user row for test fixture setup.
@@ -105,16 +91,28 @@ impl PostgresStorageAdapter {
         user_id: &str,
     ) -> Result<(), AxonError> {
         let now = 1_000_000i64;
-        self.block(self.client.execute(
-            "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms) \
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-            &[&tenant_id, &tenant_id, &tenant_id, &now, &now],
-        ))?;
-        self.block(self.client.execute(
-            "INSERT INTO users (id, display_name, created_at_ms) \
-             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
-            &[&user_id, &user_id, &now],
-        ))?;
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms) \
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+            )
+            .bind(tenant_id)
+            .bind(tenant_id)
+            .bind(tenant_id)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO users (id, display_name, created_at_ms) \
+                 VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+            )
+            .bind(user_id)
+            .bind(user_id)
+            .bind(now)
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -124,17 +122,22 @@ impl PostgresStorageAdapter {
         tenant_id: &str,
         user_id: &str,
     ) -> Result<i64, AxonError> {
-        let row = self.block(self.client.query_one(
-            "SELECT COUNT(*) FROM tenant_users \
-             WHERE tenant_id = $1 AND user_id = $2",
-            &[&tenant_id, &user_id],
-        ))?;
-        Ok(row.get::<_, i64>(0))
+        let row = self.block_on(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM tenant_users \
+                 WHERE tenant_id = $1 AND user_id = $2",
+            )
+            .bind(tenant_id)
+            .bind(user_id)
+            .fetch_one(&self.pool),
+        )?;
+        Ok(row)
     }
 
     fn init_schema(&mut self) -> Result<(), AxonError> {
-        self.block(self.client.batch_execute(
-            "CREATE TABLE IF NOT EXISTS databases (
+        self.block_on(
+            sqlx::raw_sql(
+                "CREATE TABLE IF NOT EXISTS databases (
                     name TEXT NOT NULL PRIMARY KEY
                 );
                 CREATE TABLE IF NOT EXISTS namespaces (
@@ -190,7 +193,9 @@ impl PostgresStorageAdapter {
                     transaction_id TEXT,
                     entry_json     JSONB NOT NULL
                 );",
-        ))?;
+            )
+            .execute(&self.pool),
+        )?;
         self.ensure_namespace_catalog_tables()?;
         self.ensure_default_namespace()
     }
@@ -200,52 +205,73 @@ impl PostgresStorageAdapter {
         collection: &CollectionId,
         namespace: &Namespace,
     ) -> Result<bool, AxonError> {
-        let row = self.block(self.client.query_one(
-            "SELECT EXISTS(
+        use sqlx::Row;
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT EXISTS(
                     SELECT 1 FROM collections
                     WHERE name = $1 AND database_name = $2 AND schema_name = $3
                 )",
-            &[&collection.as_str(), &namespace.database, &namespace.schema],
-        ))?;
-        Ok(row.get(0))
+            )
+            .bind(collection.as_str())
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .fetch_one(&self.pool),
+        )?;
+        Ok(row.get::<bool, _>(0))
     }
 
     fn database_exists(&self, database: &str) -> Result<bool, AxonError> {
-        let row = self.block(self.client.query_one(
-            "SELECT EXISTS(SELECT 1 FROM databases WHERE name = $1)",
-            &[&database],
-        ))?;
-        Ok(row.get(0))
+        use sqlx::Row;
+        let row = self.block_on(
+            sqlx::query("SELECT EXISTS(SELECT 1 FROM databases WHERE name = $1)")
+                .bind(database)
+                .fetch_one(&self.pool),
+        )?;
+        Ok(row.get::<bool, _>(0))
     }
 
     fn namespace_exists(&self, namespace: &Namespace) -> Result<bool, AxonError> {
-        let row = self.block(self.client.query_one(
-            "SELECT EXISTS(
+        use sqlx::Row;
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT EXISTS(
                     SELECT 1 FROM namespaces
                     WHERE database_name = $1 AND name = $2
                 )",
-            &[&namespace.database, &namespace.schema],
-        ))?;
-        Ok(row.get(0))
+            )
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .fetch_one(&self.pool),
+        )?;
+        Ok(row.get::<bool, _>(0))
     }
 
     fn table_pk_columns(&self, table: &str) -> Result<Vec<String>, AxonError> {
-        let rows = self.block(self.client.query(
-            "SELECT a.attname
+        use sqlx::Row;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT a.attname
                  FROM pg_index i
                  JOIN pg_class t ON t.oid = i.indrelid
                  JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS cols(attnum, ord) ON TRUE
                  JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = cols.attnum
                  WHERE t.relname = $1 AND i.indisprimary
                  ORDER BY cols.ord",
-            &[&table],
-        ))?;
-        Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
+            )
+            .bind(table)
+            .fetch_all(&self.pool),
+        )?;
+        Ok(rows
+            .iter()
+            .map(|row| row.get::<String, _>("attname"))
+            .collect())
     }
 
     fn ensure_namespace_catalog_tables(&mut self) -> Result<(), AxonError> {
-        self.block(self.client.batch_execute(
-            "ALTER TABLE entities
+        self.block_on(
+            sqlx::raw_sql(
+                "ALTER TABLE entities
                      ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
                  ALTER TABLE entities
                      ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';
@@ -263,66 +289,85 @@ impl PostgresStorageAdapter {
                      ADD COLUMN IF NOT EXISTS database_name TEXT NOT NULL DEFAULT 'default';
                  ALTER TABLE collection_views
                      ADD COLUMN IF NOT EXISTS schema_name TEXT NOT NULL DEFAULT 'default';",
-        ))?;
+            )
+            .execute(&self.pool),
+        )?;
 
         if self.table_pk_columns("entities")?
             != vec!["database_name", "schema_name", "collection", "id"]
         {
-            self.block(self.client.batch_execute(
-                "ALTER TABLE entities DROP CONSTRAINT IF EXISTS entities_pkey;
+            self.block_on(
+                sqlx::raw_sql(
+                    "ALTER TABLE entities DROP CONSTRAINT IF EXISTS entities_pkey;
                      ALTER TABLE entities ADD PRIMARY KEY (database_name, schema_name, collection, id);",
-            ))?;
+                )
+                .execute(&self.pool),
+            )?;
         }
 
-        self.block(self.client.execute(
-            "UPDATE schemas s
+        self.block_on(
+            sqlx::query(
+                "UPDATE schemas s
                  SET database_name = c.database_name,
                      schema_name = c.schema_name
                  FROM collections c
                  WHERE s.collection = c.name
                    AND (s.database_name = 'default' OR s.schema_name = 'default')",
-            &[],
-        ))?;
-        self.block(self.client.execute(
-            "UPDATE collection_views v
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "UPDATE collection_views v
                  SET database_name = c.database_name,
                      schema_name = c.schema_name
                  FROM collections c
                  WHERE v.collection = c.name
                    AND (v.database_name = 'default' OR v.schema_name = 'default')",
-            &[],
-        ))?;
+            )
+            .execute(&self.pool),
+        )?;
 
         if self.table_pk_columns("collections")? != vec!["database_name", "schema_name", "name"] {
-            self.block(self.client.batch_execute(
-                "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_collection_fkey;
+            self.block_on(
+                sqlx::raw_sql(
+                    "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_collection_fkey;
                      ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_pkey;
                      ALTER TABLE collections DROP CONSTRAINT IF EXISTS collections_pkey;
                      ALTER TABLE collections ADD PRIMARY KEY (database_name, schema_name, name);",
-            ))?;
+                )
+                .execute(&self.pool),
+            )?;
         }
 
         if self.table_pk_columns("schemas")?
             != vec!["database_name", "schema_name", "collection", "version"]
         {
-            self.block(self.client.batch_execute(
-                "ALTER TABLE schemas DROP CONSTRAINT IF EXISTS schemas_pkey;
+            self.block_on(
+                sqlx::raw_sql(
+                    "ALTER TABLE schemas DROP CONSTRAINT IF EXISTS schemas_pkey;
                      ALTER TABLE schemas
                          ADD PRIMARY KEY (database_name, schema_name, collection, version);",
-            ))?;
+                )
+                .execute(&self.pool),
+            )?;
         }
 
         if self.table_pk_columns("collection_views")?
             != vec!["database_name", "schema_name", "collection"]
         {
-            self.block(self.client.batch_execute(
-                "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_pkey;
+            self.block_on(
+                sqlx::raw_sql(
+                    "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_pkey;
                      ALTER TABLE collection_views ADD PRIMARY KEY (database_name, schema_name, collection);",
-            ))?;
+                )
+                .execute(&self.pool),
+            )?;
         }
 
-        self.block(self.client.batch_execute(
-            "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_collection_fkey;
+        self.block_on(
+            sqlx::raw_sql(
+                "ALTER TABLE collection_views DROP CONSTRAINT IF EXISTS collection_views_collection_fkey;
                  ALTER TABLE collection_views
                      ADD CONSTRAINT collection_views_collection_fkey
                      FOREIGN KEY (database_name, schema_name, collection)
@@ -330,7 +375,9 @@ impl PostgresStorageAdapter {
                      ON DELETE CASCADE;
                  CREATE INDEX IF NOT EXISTS idx_collections_namespace
                      ON collections (database_name, schema_name, name);",
-        ))?;
+            )
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -338,8 +385,10 @@ impl PostgresStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Vec<Namespace>, AxonError> {
-        let rows = self.block(self.client.query(
-            "SELECT database_name, schema_name FROM collections
+        use sqlx::Row;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT database_name, schema_name FROM collections
                  WHERE name = $1
                  ORDER BY CASE
                      WHEN database_name = 'default' AND schema_name = 'default' THEN 0
@@ -347,11 +396,18 @@ impl PostgresStorageAdapter {
                  END,
                  database_name,
                  schema_name",
-            &[&collection.as_str()],
-        ))?;
+            )
+            .bind(collection.as_str())
+            .fetch_all(&self.pool),
+        )?;
         Ok(rows
             .iter()
-            .map(|row| Namespace::new(row.get::<_, String>(0), row.get::<_, String>(1)))
+            .map(|row| {
+                Namespace::new(
+                    row.get::<String, _>("database_name"),
+                    row.get::<String, _>("schema_name"),
+                )
+            })
             .collect())
     }
 
@@ -395,18 +451,23 @@ impl PostgresStorageAdapter {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
-        let rows = self.block(self.client.query(
-            "SELECT name FROM collections
+        use sqlx::Row;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT name FROM collections
                  WHERE database_name = $1 AND schema_name = $2
                  ORDER BY name ASC",
-            &[&namespace.database, &namespace.schema],
-        ))?;
+            )
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .fetch_all(&self.pool),
+        )?;
         Ok(rows
             .iter()
             .map(|row| {
                 QualifiedCollectionId::from_parts(
                     namespace,
-                    &CollectionId::new(row.get::<_, String>("name")),
+                    &CollectionId::new(row.get::<String, _>("name")),
                 )
             })
             .collect())
@@ -416,38 +477,48 @@ impl PostgresStorageAdapter {
         &self,
         database: &str,
     ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
-        let rows = self.block(self.client.query(
-            "SELECT schema_name, name FROM collections
+        use sqlx::Row;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT schema_name, name FROM collections
                  WHERE database_name = $1
                  ORDER BY schema_name ASC, name ASC",
-            &[&database],
-        ))?;
+            )
+            .bind(database)
+            .fetch_all(&self.pool),
+        )?;
         Ok(rows
             .iter()
             .map(|row| {
                 QualifiedCollectionId::from_parts(
-                    &Namespace::new(database, row.get::<_, String>("schema_name")),
-                    &CollectionId::new(row.get::<_, String>("name")),
+                    &Namespace::new(database, row.get::<String, _>("schema_name")),
+                    &CollectionId::new(row.get::<String, _>("name")),
                 )
             })
             .collect())
     }
 
     fn ensure_default_namespace(&self) -> Result<(), AxonError> {
-        self.block(self.client.execute(
-            "INSERT INTO databases (name) VALUES ($1) ON CONFLICT DO NOTHING",
-            &[&DEFAULT_DATABASE],
-        ))?;
-        self.block(self.client.execute(
-            "INSERT INTO namespaces (database_name, name)
+        self.block_on(
+            sqlx::query("INSERT INTO databases (name) VALUES ($1) ON CONFLICT DO NOTHING")
+                .bind(DEFAULT_DATABASE)
+                .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO namespaces (database_name, name)
                  VALUES ($1, $2)
                  ON CONFLICT DO NOTHING",
-            &[&DEFAULT_DATABASE, &DEFAULT_SCHEMA],
-        ))?;
+            )
+            .bind(DEFAULT_DATABASE)
+            .bind(DEFAULT_SCHEMA)
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
-    fn row_to_entity(row: &tokio_postgres::Row) -> Result<Entity, AxonError> {
+    fn row_to_entity(row: &sqlx::postgres::PgRow) -> Result<Entity, AxonError> {
+        use sqlx::Row;
         let collection: String = row.get("collection");
         let id: String = row.get("id");
         let version: i64 = row.get("version");
@@ -477,20 +548,21 @@ impl StorageAdapter for PostgresStorageAdapter {
 
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        let rows = self.block(self.client.query(
-            "SELECT collection, id, version, data
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT collection, id, version, data
                  FROM entities
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3 AND id = $4",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-                &id.as_str(),
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(id.as_str())
+            .fetch_optional(&self.pool),
+        )?;
 
-        match rows.first() {
-            Some(row) => Ok(Some(Self::row_to_entity(row)?)),
+        match row {
+            Some(ref r) => Ok(Some(Self::row_to_entity(r)?)),
             None => Ok(None),
         }
     }
@@ -498,50 +570,52 @@ impl StorageAdapter for PostgresStorageAdapter {
     fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_value(&entity.data)?;
-        self.block(self.client.execute(
-            "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
                  VALUES ($1, $2, $3, $4, $5, $6)
                  ON CONFLICT (database_name, schema_name, collection, id)
                  DO UPDATE SET version = $5, data = $6",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-                &entity.id.as_str(),
-                &(entity.version as i64),
-                &data_json,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(entity.id.as_str())
+            .bind(entity.version as i64)
+            .bind(data_json)
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.block(self.client.execute(
-            "DELETE FROM entities
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entities
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3 AND id = $4",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-                &id.as_str(),
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(id.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        let row = self.block(self.client.query_one(
-            "SELECT COUNT(*) FROM entities
+        let count: i64 = self.block_on(
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM entities
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-            ],
-        ))?;
-        let count: i64 = row.get(0);
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_one(&self.pool),
+        )?;
         Ok(count as usize)
     }
 
@@ -557,8 +631,9 @@ impl StorageAdapter for PostgresStorageAdapter {
         let end_str = end.map(|e| e.as_str().to_string());
         let limit_val = limit.map(|l| l as i64);
 
-        let rows = self.block(self.client.query(
-            "SELECT collection, id, version, data FROM entities
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT collection, id, version, data FROM entities
                  WHERE collection = $1
                    AND database_name = $2
                    AND schema_name = $3
@@ -566,15 +641,15 @@ impl StorageAdapter for PostgresStorageAdapter {
                    AND ($5::text IS NULL OR id <= $5)
                  ORDER BY id ASC
                  LIMIT $6",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-                &start_str.as_deref(),
-                &end_str.as_deref(),
-                &limit_val,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(start_str.as_deref())
+            .bind(end_str.as_deref())
+            .bind(limit_val)
+            .fetch_all(&self.pool),
+        )?;
 
         rows.iter().map(Self::row_to_entity).collect()
     }
@@ -600,21 +675,22 @@ impl StorageAdapter for PostgresStorageAdapter {
         let new_version = expected_version + 1;
         let data_json = serde_json::to_value(&entity.data)?;
 
-        let changed = self.block(self.client.execute(
-            "UPDATE entities SET version = $3, data = $4
+        let result = self.block_on(
+            sqlx::query(
+                "UPDATE entities SET version = $3, data = $4
                  WHERE collection = $1 AND database_name = $5 AND schema_name = $6 AND id = $2 AND version = $7",
-            &[
-                &key.collection.as_str(),
-                &entity.id.as_str(),
-                &(new_version as i64),
-                &data_json,
-                &key.namespace.database,
-                &key.namespace.schema,
-                &(expected_version as i64),
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(entity.id.as_str())
+            .bind(new_version as i64)
+            .bind(data_json)
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(expected_version as i64)
+            .execute(&self.pool),
+        )?;
 
-        if changed == 0 {
+        if result.rows_affected() == 0 {
             let current_after_race = self.get(&entity.collection, &entity.id)?;
             let actual = current_after_race.as_ref().map(|e| e.version).unwrap_or(0);
             return Err(AxonError::ConflictingVersion {
@@ -638,21 +714,22 @@ impl StorageAdapter for PostgresStorageAdapter {
     ) -> Result<Entity, AxonError> {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_value(&entity.data)?;
-        let changed = self.block(self.client.execute(
-            "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
+        let result = self.block_on(
+            sqlx::query(
+                "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
                  VALUES ($1, $2, $3, $4, $5, $6)
                  ON CONFLICT (database_name, schema_name, collection, id) DO NOTHING",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-                &entity.id.as_str(),
-                &(entity.version as i64),
-                &data_json,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(entity.id.as_str())
+            .bind(entity.version as i64)
+            .bind(data_json)
+            .execute(&self.pool),
+        )?;
 
-        if changed == 0 {
+        if result.rows_affected() == 0 {
             let current = self.get(&entity.collection, &entity.id)?;
             let actual = current
                 .as_ref()
@@ -675,7 +752,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         if self.in_tx {
             return Err(AxonError::Storage("transaction already active".into()));
         }
-        self.block(self.client.batch_execute("BEGIN"))?;
+        self.block_on(sqlx::raw_sql("BEGIN").execute(&self.pool))?;
         self.in_tx = true;
         Ok(())
     }
@@ -684,7 +761,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         if !self.in_tx {
             return Err(AxonError::Storage("no active transaction".into()));
         }
-        self.block(self.client.batch_execute("COMMIT"))?;
+        self.block_on(sqlx::raw_sql("COMMIT").execute(&self.pool))?;
         self.in_tx = false;
         Ok(())
     }
@@ -693,7 +770,7 @@ impl StorageAdapter for PostgresStorageAdapter {
         if !self.in_tx {
             return Ok(());
         }
-        self.block(self.client.batch_execute("ROLLBACK"))?;
+        self.block_on(sqlx::raw_sql("ROLLBACK").execute(&self.pool))?;
         self.in_tx = false;
         Ok(())
     }
@@ -703,23 +780,29 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Err(AxonError::AlreadyExists(format!("database '{name}'")));
         }
 
-        self.block(
-            self.client
-                .execute("INSERT INTO databases (name) VALUES ($1)", &[&name]),
+        self.block_on(
+            sqlx::query("INSERT INTO databases (name) VALUES ($1)")
+                .bind(name)
+                .execute(&self.pool),
         )?;
-        self.block(self.client.execute(
-            "INSERT INTO namespaces (database_name, name) VALUES ($1, $2)",
-            &[&name, &DEFAULT_SCHEMA],
-        ))?;
+        self.block_on(
+            sqlx::query("INSERT INTO namespaces (database_name, name) VALUES ($1, $2)")
+                .bind(name)
+                .bind(DEFAULT_SCHEMA)
+                .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn list_databases(&self) -> Result<Vec<String>, AxonError> {
-        let rows = self.block(
-            self.client
-                .query("SELECT name FROM databases ORDER BY name ASC", &[]),
+        use sqlx::Row;
+        let rows = self.block_on(
+            sqlx::query("SELECT name FROM databases ORDER BY name ASC").fetch_all(&self.pool),
         )?;
-        Ok(rows.iter().map(|row| row.get("name")).collect())
+        Ok(rows
+            .iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect())
     }
 
     fn drop_database(&mut self, name: &str) -> Result<(), AxonError> {
@@ -729,25 +812,30 @@ impl StorageAdapter for PostgresStorageAdapter {
 
         let doomed = self.database_collection_keys(name)?;
         self.purge_links_for_collections(&doomed)?;
-        self.block(
-            self.client
-                .execute("DELETE FROM entities WHERE database_name = $1", &[&name]),
+        self.block_on(
+            sqlx::query("DELETE FROM entities WHERE database_name = $1")
+                .bind(name)
+                .execute(&self.pool),
         )?;
-        self.block(self.client.execute(
-            "DELETE FROM collection_views WHERE database_name = $1",
-            &[&name],
-        ))?;
-        self.block(
-            self.client
-                .execute("DELETE FROM schemas WHERE database_name = $1", &[&name]),
+        self.block_on(
+            sqlx::query("DELETE FROM collection_views WHERE database_name = $1")
+                .bind(name)
+                .execute(&self.pool),
         )?;
-        self.block(
-            self.client
-                .execute("DELETE FROM collections WHERE database_name = $1", &[&name]),
+        self.block_on(
+            sqlx::query("DELETE FROM schemas WHERE database_name = $1")
+                .bind(name)
+                .execute(&self.pool),
         )?;
-        self.block(
-            self.client
-                .execute("DELETE FROM databases WHERE name = $1", &[&name]),
+        self.block_on(
+            sqlx::query("DELETE FROM collections WHERE database_name = $1")
+                .bind(name)
+                .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query("DELETE FROM databases WHERE name = $1")
+                .bind(name)
+                .execute(&self.pool),
         )?;
         Ok(())
     }
@@ -763,25 +851,34 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Err(AxonError::AlreadyExists(format!("namespace '{namespace}'")));
         }
 
-        self.block(self.client.execute(
-            "INSERT INTO namespaces (database_name, name) VALUES ($1, $2)",
-            &[&namespace.database, &namespace.schema],
-        ))?;
+        self.block_on(
+            sqlx::query("INSERT INTO namespaces (database_name, name) VALUES ($1, $2)")
+                .bind(namespace.database.as_str())
+                .bind(namespace.schema.as_str())
+                .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn list_namespaces(&self, database: &str) -> Result<Vec<String>, AxonError> {
+        use sqlx::Row;
         if !self.database_exists(database)? {
             return Err(AxonError::NotFound(format!("database '{database}'")));
         }
 
-        let rows = self.block(self.client.query(
-            "SELECT name FROM namespaces
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT name FROM namespaces
                  WHERE database_name = $1
                  ORDER BY name ASC",
-            &[&database],
-        ))?;
-        Ok(rows.iter().map(|row| row.get("name")).collect())
+            )
+            .bind(database)
+            .fetch_all(&self.pool),
+        )?;
+        Ok(rows
+            .iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect())
     }
 
     fn drop_namespace(&mut self, namespace: &Namespace) -> Result<(), AxonError> {
@@ -791,31 +888,51 @@ impl StorageAdapter for PostgresStorageAdapter {
 
         let doomed = self.namespace_collection_keys(namespace)?;
         self.purge_links_for_collections(&doomed)?;
-        self.block(self.client.execute(
-            "DELETE FROM entities
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM entities
                  WHERE database_name = $1 AND schema_name = $2",
-            &[&namespace.database, &namespace.schema],
-        ))?;
-        self.block(self.client.execute(
-            "DELETE FROM collection_views
+            )
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM collection_views
                  WHERE database_name = $1 AND schema_name = $2",
-            &[&namespace.database, &namespace.schema],
-        ))?;
-        self.block(self.client.execute(
-            "DELETE FROM schemas
+            )
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM schemas
                  WHERE database_name = $1 AND schema_name = $2",
-            &[&namespace.database, &namespace.schema],
-        ))?;
-        self.block(self.client.execute(
-            "DELETE FROM collections
+            )
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM collections
                  WHERE database_name = $1 AND schema_name = $2",
-            &[&namespace.database, &namespace.schema],
-        ))?;
-        self.block(self.client.execute(
-            "DELETE FROM namespaces
+            )
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM namespaces
                  WHERE database_name = $1 AND name = $2",
-            &[&namespace.database, &namespace.schema],
-        ))?;
+            )
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -823,16 +940,21 @@ impl StorageAdapter for PostgresStorageAdapter {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<CollectionId>, AxonError> {
+        use sqlx::Row;
         if !self.namespace_exists(namespace)? {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
-        let rows = self.block(self.client.query(
-            "SELECT name FROM collections
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT name FROM collections
                  WHERE database_name = $1 AND schema_name = $2
                  ORDER BY name ASC",
-            &[&namespace.database, &namespace.schema],
-        ))?;
+            )
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .fetch_all(&self.pool),
+        )?;
         Ok(rows
             .iter()
             .map(|row| {
@@ -843,6 +965,7 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn append_audit_entry(&mut self, mut entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+        use sqlx::Row;
         if entry.timestamp_ns == 0 {
             entry.timestamp_ns = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -852,21 +975,22 @@ impl StorageAdapter for PostgresStorageAdapter {
 
         let entry_json = serde_json::to_value(&entry)?;
 
-        let row = self.block(self.client.query_one(
-            "INSERT INTO audit_log (timestamp_ns, collection, entity_id, version, mutation, actor, transaction_id, entry_json)
+        let row = self.block_on(
+            sqlx::query(
+                "INSERT INTO audit_log (timestamp_ns, collection, entity_id, version, mutation, actor, transaction_id, entry_json)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                  RETURNING id",
-            &[
-                &(entry.timestamp_ns as i64),
-                &entry.collection.as_str(),
-                &entry.entity_id.as_str(),
-                &(entry.version as i64),
-                &entry.mutation.to_string().as_str(),
-                &entry.actor.as_str(),
-                &entry.transaction_id.as_deref(),
-                &entry_json,
-            ],
-        ))?;
+            )
+            .bind(entry.timestamp_ns as i64)
+            .bind(entry.collection.as_str())
+            .bind(entry.entity_id.as_str())
+            .bind(entry.version as i64)
+            .bind(entry.mutation.to_string())
+            .bind(entry.actor.as_str())
+            .bind(entry.transaction_id.as_deref())
+            .bind(entry_json)
+            .fetch_one(&self.pool),
+        )?;
 
         let id: i64 = row.get(0);
         entry.id = id as u64;
@@ -875,17 +999,19 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(&schema.collection)?;
-        let row = self.block(self.client.query_one(
-            "SELECT COALESCE(MAX(version), 0) FROM schemas
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT COALESCE(MAX(version), 0) FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-            ],
-        ))?;
-        let next_version = row.get::<_, i32>(0) + 1;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_one(&self.pool),
+        )?;
+        let next_version = row.get::<i32, _>(0) + 1;
         let created_at_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -895,39 +1021,42 @@ impl StorageAdapter for PostgresStorageAdapter {
         versioned.collection = key.collection.clone();
         versioned.version = next_version as u32;
         let schema_json = serde_json::to_value(&versioned)?;
-        self.block(self.client.execute(
-            "INSERT INTO schemas
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO schemas
                     (collection, database_name, schema_name, version, schema_json, created_at_ns)
                  VALUES ($1, $2, $3, $4, $5, $6)",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-                &next_version,
-                &schema_json,
-                &created_at_ns,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(next_version)
+            .bind(schema_json)
+            .bind(created_at_ns)
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(collection)?;
-        let rows = self.block(self.client.query(
-            "SELECT schema_json FROM schemas
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT schema_json FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3
                  ORDER BY version DESC
                  LIMIT 1",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_optional(&self.pool),
+        )?;
 
-        match rows.first() {
-            Some(row) => {
-                let schema_json: serde_json::Value = row.get("schema_json");
+        match row {
+            Some(r) => {
+                let schema_json: serde_json::Value = r.get("schema_json");
                 let schema: CollectionSchema = serde_json::from_value(schema_json)?;
                 Ok(Some(schema))
             }
@@ -940,21 +1069,23 @@ impl StorageAdapter for PostgresStorageAdapter {
         collection: &CollectionId,
         version: u32,
     ) -> Result<Option<CollectionSchema>, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(collection)?;
-        let rows = self.block(self.client.query(
-            "SELECT schema_json FROM schemas
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT schema_json FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3 AND version = $4",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-                &(version as i32),
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(version as i32)
+            .fetch_optional(&self.pool),
+        )?;
 
-        match rows.first() {
-            Some(row) => {
-                let schema_json: serde_json::Value = row.get("schema_json");
+        match row {
+            Some(r) => {
+                let schema_json: serde_json::Value = r.get("schema_json");
                 let schema: CollectionSchema = serde_json::from_value(schema_json)?;
                 Ok(Some(schema))
             }
@@ -966,24 +1097,26 @@ impl StorageAdapter for PostgresStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Vec<(u32, u64)>, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(collection)?;
-        let rows = self.block(self.client.query(
-            "SELECT version, created_at_ns FROM schemas
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT version, created_at_ns FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3
                  ORDER BY version ASC",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_all(&self.pool),
+        )?;
 
         Ok(rows
             .into_iter()
             .map(|row| {
                 (
-                    row.get::<_, i32>("version") as u32,
-                    row.get::<_, i64>("created_at_ns") as u64,
+                    row.get::<i32, _>("version") as u32,
+                    row.get::<i64, _>("created_at_ns") as u64,
                 )
             })
             .collect())
@@ -991,19 +1124,21 @@ impl StorageAdapter for PostgresStorageAdapter {
 
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.block(self.client.execute(
-            "DELETE FROM schemas
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn put_collection_view(&mut self, view: &CollectionView) -> Result<CollectionView, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(&view.collection)?;
         if !self.collection_exists_in_namespace(&key.collection, &key.namespace)? {
             return Err(AxonError::InvalidArgument(format!(
@@ -1013,16 +1148,17 @@ impl StorageAdapter for PostgresStorageAdapter {
         }
 
         let current_version = self
-            .block(self.client.query_opt(
-                "SELECT version FROM collection_views
-                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
-                &[
-                    &key.collection.as_str(),
-                    &key.namespace.database,
-                    &key.namespace.schema,
-                ],
-            ))?
-            .map_or(0, |row| row.get::<_, i32>("version"));
+            .block_on(
+                sqlx::query(
+                    "SELECT version FROM collection_views
+                     WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+                )
+                .bind(key.collection.as_str())
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .fetch_optional(&self.pool),
+            )?
+            .map_or(0, |row| row.get::<i32, _>("version"));
         let next_version = current_version + 1;
 
         let updated_at_ns = SystemTime::now()
@@ -1036,8 +1172,9 @@ impl StorageAdapter for PostgresStorageAdapter {
         versioned.updated_at_ns = Some(updated_at_ns as u64);
         let view_json = serde_json::to_value(&versioned)?;
 
-        self.block(self.client.execute(
-            "INSERT INTO collection_views
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO collection_views
                     (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)
                  ON CONFLICT (database_name, schema_name, collection) DO UPDATE SET
@@ -1045,16 +1182,16 @@ impl StorageAdapter for PostgresStorageAdapter {
                      view_json = EXCLUDED.view_json,
                      updated_at_ns = EXCLUDED.updated_at_ns,
                      updated_by = EXCLUDED.updated_by",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-                &next_version,
-                &view_json,
-                &updated_at_ns,
-                &versioned.updated_by,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(next_version)
+            .bind(view_json)
+            .bind(updated_at_ns)
+            .bind(versioned.updated_by.as_deref())
+            .execute(&self.pool),
+        )?;
         Ok(versioned)
     }
 
@@ -1062,20 +1199,22 @@ impl StorageAdapter for PostgresStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Option<CollectionView>, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(collection)?;
-        let rows = self.block(self.client.query(
-            "SELECT view_json FROM collection_views
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT view_json FROM collection_views
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_optional(&self.pool),
+        )?;
 
-        match rows.first() {
-            Some(row) => {
-                let view_json: serde_json::Value = row.get("view_json");
+        match row {
+            Some(r) => {
+                let view_json: serde_json::Value = r.get("view_json");
                 let view: CollectionView = serde_json::from_value(view_json)?;
                 Ok(Some(view))
             }
@@ -1085,15 +1224,16 @@ impl StorageAdapter for PostgresStorageAdapter {
 
     fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.block(self.client.execute(
-            "DELETE FROM collection_views
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM collection_views
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -1106,12 +1246,17 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
-        self.block(self.client.execute(
-            "INSERT INTO collections (name, database_name, schema_name)
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO collections (name, database_name, schema_name)
                  VALUES ($1, $2, $3)
                  ON CONFLICT DO NOTHING",
-            &[&collection.as_str(), &namespace.database, &namespace.schema],
-        ))?;
+            )
+            .bind(collection.as_str())
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -1125,87 +1270,96 @@ impl StorageAdapter for PostgresStorageAdapter {
         // either the resolved namespace or the old default/default namespace,
         // so clean them up explicitly instead of relying solely on ON DELETE
         // CASCADE.
-        self.block(self.client.execute(
-            "DELETE FROM collection_views
-                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-            ],
-        ))?;
-        if raw_collection != key.collection.as_str() {
-            self.block(self.client.execute(
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM collection_views
-                     WHERE collection = $1
-                       AND ((database_name = $2 AND schema_name = $3)
-                            OR (database_name = $4 AND schema_name = $5))",
-                &[
-                    &raw_collection,
-                    &key.namespace.database,
-                    &key.namespace.schema,
-                    &default_namespace.database,
-                    &default_namespace.schema,
-                ],
-            ))?;
-        }
-        self.block(self.client.execute(
-            "DELETE FROM schemas
                  WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-            ],
-        ))?;
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         if raw_collection != key.collection.as_str() {
-            self.block(self.client.execute(
-                "DELETE FROM schemas
+            self.block_on(
+                sqlx::query(
+                    "DELETE FROM collection_views
                      WHERE collection = $1
                        AND ((database_name = $2 AND schema_name = $3)
                             OR (database_name = $4 AND schema_name = $5))",
-                &[
-                    &raw_collection,
-                    &key.namespace.database,
-                    &key.namespace.schema,
-                    &default_namespace.database,
-                    &default_namespace.schema,
-                ],
-            ))?;
+                )
+                .bind(raw_collection)
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(default_namespace.database.as_str())
+                .bind(default_namespace.schema.as_str())
+                .execute(&self.pool),
+            )?;
         }
-        self.block(self.client.execute(
-            "DELETE FROM collections
-                 WHERE name = $1 AND database_name = $2 AND schema_name = $3",
-            &[
-                &key.collection.as_str(),
-                &key.namespace.database,
-                &key.namespace.schema,
-            ],
-        ))?;
+        self.block_on(
+            sqlx::query(
+                "DELETE FROM schemas
+                 WHERE collection = $1 AND database_name = $2 AND schema_name = $3",
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         if raw_collection != key.collection.as_str() {
-            self.block(self.client.execute(
+            self.block_on(
+                sqlx::query(
+                    "DELETE FROM schemas
+                     WHERE collection = $1
+                       AND ((database_name = $2 AND schema_name = $3)
+                            OR (database_name = $4 AND schema_name = $5))",
+                )
+                .bind(raw_collection)
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(default_namespace.database.as_str())
+                .bind(default_namespace.schema.as_str())
+                .execute(&self.pool),
+            )?;
+        }
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM collections
+                 WHERE name = $1 AND database_name = $2 AND schema_name = $3",
+            )
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        if raw_collection != key.collection.as_str() {
+            self.block_on(
+                sqlx::query(
+                    "DELETE FROM collections
                      WHERE name = $1
                        AND ((database_name = $2 AND schema_name = $3)
                             OR (database_name = $4 AND schema_name = $5))",
-                &[
-                    &raw_collection,
-                    &key.namespace.database,
-                    &key.namespace.schema,
-                    &default_namespace.database,
-                    &default_namespace.schema,
-                ],
-            ))?;
+                )
+                .bind(raw_collection)
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(default_namespace.database.as_str())
+                .bind(default_namespace.schema.as_str())
+                .execute(&self.pool),
+            )?;
         }
         Ok(())
     }
 
     fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
-        let rows = self.block(self.client.query(
-            "SELECT name FROM collections
+        use sqlx::Row;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT name FROM collections
                  ORDER BY database_name ASC, schema_name ASC, name ASC",
-            &[],
-        ))?;
+            )
+            .fetch_all(&self.pool),
+        )?;
 
         Ok(rows
             .iter()
@@ -1229,11 +1383,10 @@ impl StorageAdapter for PostgresStorageAdapter {
     fn is_jti_revoked(&self, jti: uuid::Uuid) -> Result<bool, AxonError> {
         let jti_str = jti.to_string();
         let row = self
-            .block(
-                self.client
-                    .query_opt("SELECT 1 FROM credential_revocations WHERE jti = $1", &[
-                        &jti_str,
-                    ]),
+            .block_on(
+                sqlx::query("SELECT 1 AS one FROM credential_revocations WHERE jti = $1")
+                    .bind(&jti_str)
+                    .fetch_optional(&self.pool),
             )
             .or_else(|e| {
                 // Table may not exist if auth migrations haven't run.
@@ -1250,12 +1403,16 @@ impl StorageAdapter for PostgresStorageAdapter {
         &self,
         user_id: axon_core::auth::UserId,
     ) -> Result<Option<axon_core::auth::User>, AxonError> {
+        use sqlx::Row;
         let row = self
-            .block(self.client.query_opt(
-                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
-                 FROM users WHERE id = $1",
-                &[&user_id.as_str()],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                     FROM users WHERE id = $1",
+                )
+                .bind(user_id.as_str())
+                .fetch_optional(&self.pool),
+            )
             .or_else(|e| {
                 if e.to_string().contains("does not exist") {
                     Ok(None)
@@ -1267,11 +1424,13 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Ok(None);
         };
         Ok(Some(axon_core::auth::User {
-            id: axon_core::auth::UserId::new(row.get::<_, String>("id")),
+            id: axon_core::auth::UserId::new(row.get::<String, _>("id")),
             display_name: row.get("display_name"),
             email: row.get("email"),
-            created_at_ms: row.get::<_, i64>("created_at_ms") as u64,
-            suspended_at_ms: row.get::<_, Option<i64>>("suspended_at_ms").map(|v| v as u64),
+            created_at_ms: row.get::<i64, _>("created_at_ms") as u64,
+            suspended_at_ms: row
+                .get::<Option<i64>, _>("suspended_at_ms")
+                .map(|v| v as u64),
         }))
     }
 
@@ -1280,12 +1439,17 @@ impl StorageAdapter for PostgresStorageAdapter {
         tenant_id: axon_core::auth::TenantId,
         user_id: axon_core::auth::UserId,
     ) -> Result<Option<axon_core::auth::TenantMember>, AxonError> {
+        use sqlx::Row;
         let row = self
-            .block(self.client.query_opt(
-                "SELECT tenant_id, user_id, role FROM tenant_users \
-                 WHERE tenant_id = $1 AND user_id = $2",
-                &[&tenant_id.as_str(), &user_id.as_str()],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT tenant_id, user_id, role FROM tenant_users \
+                     WHERE tenant_id = $1 AND user_id = $2",
+                )
+                .bind(tenant_id.as_str())
+                .bind(user_id.as_str())
+                .fetch_optional(&self.pool),
+            )
             .or_else(|e| {
                 if e.to_string().contains("does not exist") {
                     Ok(None)
@@ -1303,8 +1467,8 @@ impl StorageAdapter for PostgresStorageAdapter {
             _ => axon_core::auth::TenantRole::Read,
         };
         Ok(Some(axon_core::auth::TenantMember {
-            tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>("tenant_id")),
-            user_id: axon_core::auth::UserId::new(row.get::<_, String>("user_id")),
+            tenant_id: axon_core::auth::TenantId::new(row.get::<String, _>("tenant_id")),
+            user_id: axon_core::auth::UserId::new(row.get::<String, _>("user_id")),
             role,
         }))
     }
@@ -1316,12 +1480,8 @@ impl StorageAdapter for PostgresStorageAdapter {
         display_name: &str,
         email: Option<&str>,
     ) -> Result<axon_core::auth::User, AxonError> {
+        use sqlx::Row;
         // ADR-018 §6 ON CONFLICT pattern: three statements, no advisory locks.
-        // Under concurrent callers each client generates a unique new_user_id and
-        // tries to insert it; only the first INSERT into user_identities wins the
-        // race — all others get ON CONFLICT DO NOTHING.  The final SELECT returns
-        // the winning user_id for every caller.  Orphaned user rows (from losers
-        // in step 1) are an accepted cost of this pattern on PostgreSQL.
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -1329,11 +1489,17 @@ impl StorageAdapter for PostgresStorageAdapter {
         let new_user_id = axon_core::auth::UserId::generate();
 
         // Step 1: try to insert a candidate user row (first caller wins).
-        self.block(self.client.execute(
-            "INSERT INTO users (id, display_name, email, created_at_ms) \
-             VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
-            &[&new_user_id.as_str(), &display_name, &email, &now_ms],
-        ))
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO users (id, display_name, email, created_at_ms) \
+                 VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING",
+            )
+            .bind(new_user_id.as_str())
+            .bind(display_name)
+            .bind(email)
+            .bind(now_ms)
+            .execute(&self.pool),
+        )
         .map_err(|e| {
             if e.to_string().contains("does not exist") {
                 AxonError::Storage(
@@ -1345,14 +1511,20 @@ impl StorageAdapter for PostgresStorageAdapter {
         })?;
 
         // Step 2: claim the identity (first caller wins).
-        self.block(self.client.execute(
-            "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms) \
-             VALUES ($1, $2, $3, $4) ON CONFLICT (provider, external_id) DO NOTHING",
-            &[&provider, &external_id, &new_user_id.as_str(), &now_ms],
-        ))
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms) \
+                 VALUES ($1, $2, $3, $4) ON CONFLICT (provider, external_id) DO NOTHING",
+            )
+            .bind(provider)
+            .bind(external_id)
+            .bind(new_user_id.as_str())
+            .bind(now_ms)
+            .execute(&self.pool),
+        )
         .or_else(|e| {
             if e.to_string().contains("does not exist") {
-                Ok(0)
+                Ok(sqlx::postgres::PgQueryResult::default())
             } else {
                 Err(e)
             }
@@ -1360,28 +1532,35 @@ impl StorageAdapter for PostgresStorageAdapter {
 
         // Step 3: read back the winner's user_id.
         let row = self
-            .block(self.client.query_one(
-                "SELECT user_id FROM user_identities WHERE provider = $1 AND external_id = $2",
-                &[&provider, &external_id],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT user_id FROM user_identities WHERE provider = $1 AND external_id = $2",
+                )
+                .bind(provider)
+                .bind(external_id)
+                .fetch_one(&self.pool),
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let winning_user_id: String = row.get("user_id");
 
         // Step 4: return the full user record.
         let user_row = self
-            .block(self.client.query_one(
-                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
-                 FROM users WHERE id = $1",
-                &[&winning_user_id],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                     FROM users WHERE id = $1",
+                )
+                .bind(&winning_user_id)
+                .fetch_one(&self.pool),
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(axon_core::auth::User {
-            id: axon_core::auth::UserId::new(user_row.get::<_, String>("id")),
+            id: axon_core::auth::UserId::new(user_row.get::<String, _>("id")),
             display_name: user_row.get("display_name"),
             email: user_row.get("email"),
-            created_at_ms: user_row.get::<_, i64>("created_at_ms") as u64,
+            created_at_ms: user_row.get::<i64, _>("created_at_ms") as u64,
             suspended_at_ms: user_row
-                .get::<_, Option<i64>>("suspended_at_ms")
+                .get::<Option<i64>, _>("suspended_at_ms")
                 .map(|v| v as u64),
         })
     }
@@ -1392,15 +1571,22 @@ impl StorageAdapter for PostgresStorageAdapter {
         display_name: &str,
         email: Option<&str>,
     ) -> Result<axon_core::auth::User, AxonError> {
+        use sqlx::Row;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        self.block(self.client.execute(
-            "INSERT INTO users (id, display_name, email, created_at_ms) \
-             VALUES ($1, $2, $3, $4)",
-            &[&id.as_str(), &display_name, &email, &now_ms],
-        ))
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO users (id, display_name, email, created_at_ms) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(id.as_str())
+            .bind(display_name)
+            .bind(email)
+            .bind(now_ms)
+            .execute(&self.pool),
+        )
         .map_err(|e| {
             let msg = e.to_string();
             if msg.contains("duplicate key") || msg.contains("unique") {
@@ -1414,30 +1600,36 @@ impl StorageAdapter for PostgresStorageAdapter {
             }
         })?;
         let row = self
-            .block(self.client.query_one(
-                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
-                 FROM users WHERE id = $1",
-                &[&id.as_str()],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                     FROM users WHERE id = $1",
+                )
+                .bind(id.as_str())
+                .fetch_one(&self.pool),
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(axon_core::auth::User {
-            id: axon_core::auth::UserId::new(row.get::<_, String>("id")),
+            id: axon_core::auth::UserId::new(row.get::<String, _>("id")),
             display_name: row.get("display_name"),
             email: row.get("email"),
-            created_at_ms: row.get::<_, i64>("created_at_ms") as u64,
+            created_at_ms: row.get::<i64, _>("created_at_ms") as u64,
             suspended_at_ms: row
-                .get::<_, Option<i64>>("suspended_at_ms")
+                .get::<Option<i64>, _>("suspended_at_ms")
                 .map(|v| v as u64),
         })
     }
 
     fn list_users(&self) -> Result<Vec<axon_core::auth::User>, AxonError> {
+        use sqlx::Row;
         let rows = self
-            .block(self.client.query(
-                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
-                 FROM users ORDER BY created_at_ms DESC",
-                &[],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                     FROM users ORDER BY created_at_ms DESC",
+                )
+                .fetch_all(&self.pool),
+            )
             .or_else(|e| {
                 if e.to_string().contains("does not exist") {
                     Ok(vec![])
@@ -1450,12 +1642,12 @@ impl StorageAdapter for PostgresStorageAdapter {
         let users = rows
             .iter()
             .map(|row| axon_core::auth::User {
-                id: axon_core::auth::UserId::new(row.get::<_, String>("id")),
+                id: axon_core::auth::UserId::new(row.get::<String, _>("id")),
                 display_name: row.get("display_name"),
                 email: row.get("email"),
-                created_at_ms: row.get::<_, i64>("created_at_ms") as u64,
+                created_at_ms: row.get::<i64, _>("created_at_ms") as u64,
                 suspended_at_ms: row
-                    .get::<_, Option<i64>>("suspended_at_ms")
+                    .get::<Option<i64>, _>("suspended_at_ms")
                     .map(|v| v as u64),
             })
             .collect();
@@ -1467,13 +1659,15 @@ impl StorageAdapter for PostgresStorageAdapter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        let rows_affected = self
-            .block(self.client.execute(
-                "UPDATE users SET suspended_at_ms = $1 WHERE id = $2",
-                &[&now_ms, &id.as_str()],
-            ))
+        let result = self
+            .block_on(
+                sqlx::query("UPDATE users SET suspended_at_ms = $1 WHERE id = $2")
+                    .bind(now_ms)
+                    .bind(id.as_str())
+                    .execute(&self.pool),
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        Ok(rows_affected > 0)
+        Ok(result.rows_affected() > 0)
     }
 
     fn upsert_tenant_member(
@@ -1491,12 +1685,18 @@ impl StorageAdapter for PostgresStorageAdapter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        self.block(self.client.execute(
-            "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms) \
-             VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role",
-            &[&tenant_id.as_str(), &user_id.as_str(), &role_str, &now_ms],
-        ))
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms) \
+                 VALUES ($1, $2, $3, $4) \
+                 ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role",
+            )
+            .bind(tenant_id.as_str())
+            .bind(user_id.as_str())
+            .bind(role_str)
+            .bind(now_ms)
+            .execute(&self.pool),
+        )
         .map_err(|e| {
             if e.to_string().contains("does not exist") {
                 AxonError::Storage(
@@ -1518,27 +1718,33 @@ impl StorageAdapter for PostgresStorageAdapter {
         tenant_id: axon_core::auth::TenantId,
         user_id: axon_core::auth::UserId,
     ) -> Result<bool, AxonError> {
-        let rows_affected = self
-            .block(self.client.execute(
-                "DELETE FROM tenant_users WHERE tenant_id = $1 AND user_id = $2",
-                &[&tenant_id.as_str(), &user_id.as_str()],
-            ))
+        let result = self
+            .block_on(
+                sqlx::query("DELETE FROM tenant_users WHERE tenant_id = $1 AND user_id = $2")
+                    .bind(tenant_id.as_str())
+                    .bind(user_id.as_str())
+                    .execute(&self.pool),
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        Ok(rows_affected > 0)
+        Ok(result.rows_affected() > 0)
     }
 
     fn list_tenant_members(
         &self,
         tenant_id: axon_core::auth::TenantId,
     ) -> Result<Vec<axon_core::auth::TenantMember>, AxonError> {
+        use sqlx::Row;
         let rows = self
-            .block(self.client.query(
-                "SELECT tenant_id, user_id, role \
-                 FROM tenant_users \
-                 WHERE tenant_id = $1 \
-                 ORDER BY added_at_ms ASC",
-                &[&tenant_id.as_str()],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT tenant_id, user_id, role \
+                     FROM tenant_users \
+                     WHERE tenant_id = $1 \
+                     ORDER BY added_at_ms ASC",
+                )
+                .bind(tenant_id.as_str())
+                .fetch_all(&self.pool),
+            )
             .or_else(|e| {
                 if e.to_string().contains("does not exist") {
                     Ok(vec![])
@@ -1557,8 +1763,8 @@ impl StorageAdapter for PostgresStorageAdapter {
                     _ => axon_core::auth::TenantRole::Read,
                 };
                 axon_core::auth::TenantMember {
-                    tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>("tenant_id")),
-                    user_id: axon_core::auth::UserId::new(row.get::<_, String>("user_id")),
+                    tenant_id: axon_core::auth::TenantId::new(row.get::<String, _>("tenant_id")),
+                    user_id: axon_core::auth::UserId::new(row.get::<String, _>("user_id")),
                     role,
                 }
             })
@@ -1567,65 +1773,72 @@ impl StorageAdapter for PostgresStorageAdapter {
     }
 
     fn count_tenants(&self) -> Result<usize, AxonError> {
-        let rows = match self.block(self.client.query("SELECT COUNT(*) FROM tenants", &[])) {
-            Ok(rows) => rows,
-            Err(e) if e.to_string().contains("does not exist") => return Ok(0),
-            Err(e) => return Err(e),
-        };
-        if rows.is_empty() {
-            return Ok(0);
+        let result = self.block_on(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tenants").fetch_one(&self.pool),
+        );
+        match result {
+            Ok(count) => Ok(count as usize),
+            Err(e) if e.to_string().contains("does not exist") => Ok(0),
+            Err(e) => Err(e),
         }
-        let count: i64 = rows[0].get(0);
-        Ok(count as usize)
     }
 
     fn upsert_default_tenant(&self, name: &str) -> Result<axon_core::auth::TenantId, AxonError> {
+        use sqlx::Row;
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
         let new_id = axon_core::auth::TenantId::generate();
-        match self.block(self.client.execute(
-            "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms) \
-             VALUES ($1, $2, $3, $4, $5) ON CONFLICT (name) DO NOTHING",
-            &[&new_id.as_str(), &name, &name, &now_ms, &now_ms],
-        )) {
+        match self.block_on(
+            sqlx::query(
+                "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms) \
+                 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (name) DO NOTHING",
+            )
+            .bind(new_id.as_str())
+            .bind(name)
+            .bind(name)
+            .bind(now_ms)
+            .bind(now_ms)
+            .execute(&self.pool),
+        ) {
             Ok(_) => {}
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("does not exist") {
                     return Err(AxonError::Storage(
-                        "auth schema not applied; call apply_auth_migrations_postgres first"
-                            .into(),
+                        "auth schema not applied; call apply_auth_migrations_postgres first".into(),
                     ));
                 }
                 return Err(e);
             }
         }
-        let rows = self
-            .block(self.client.query(
-                "SELECT id FROM tenants WHERE name = $1",
-                &[&name],
-            ))
+        let row = self
+            .block_on(
+                sqlx::query("SELECT id FROM tenants WHERE name = $1")
+                    .bind(name)
+                    .fetch_optional(&self.pool),
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        rows.first()
-            .map(|row| axon_core::auth::TenantId::new(row.get::<_, String>(0)))
-            .ok_or_else(|| {
-                AxonError::Storage(format!("tenant '{name}' not found after upsert"))
-            })
+        row.map(|r| axon_core::auth::TenantId::new(r.get::<String, _>(0)))
+            .ok_or_else(|| AxonError::Storage(format!("tenant '{name}' not found after upsert")))
     }
 
     fn get_retention_policy(
         &self,
         tenant_id: axon_core::auth::TenantId,
     ) -> Result<Option<axon_core::auth::RetentionPolicy>, AxonError> {
+        use sqlx::Row;
         let row = self
-            .block(self.client.query_opt(
-                "SELECT archive_after_seconds, purge_after_seconds \
-                 FROM tenant_retention_policies \
-                 WHERE tenant_id = $1",
-                &[&tenant_id.as_str()],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT archive_after_seconds, purge_after_seconds \
+                     FROM tenant_retention_policies \
+                     WHERE tenant_id = $1",
+                )
+                .bind(tenant_id.as_str())
+                .fetch_optional(&self.pool),
+            )
             .or_else(|e| {
                 if e.to_string().contains("does not exist") {
                     Ok(None)
@@ -1638,8 +1851,10 @@ impl StorageAdapter for PostgresStorageAdapter {
             return Ok(None);
         };
         Ok(Some(axon_core::auth::RetentionPolicy {
-            archive_after_seconds: row.get::<_, i64>("archive_after_seconds") as u64,
-            purge_after_seconds: row.get::<_, Option<i64>>("purge_after_seconds").map(|v| v as u64),
+            archive_after_seconds: row.get::<i64, _>("archive_after_seconds") as u64,
+            purge_after_seconds: row
+                .get::<Option<i64>, _>("purge_after_seconds")
+                .map(|v| v as u64),
         }))
     }
 
@@ -1652,21 +1867,22 @@ impl StorageAdapter for PostgresStorageAdapter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        self.block(self.client.execute(
-            "INSERT INTO tenant_retention_policies \
-             (tenant_id, archive_after_seconds, purge_after_seconds, updated_at_ms) \
-             VALUES ($1, $2, $3, $4) \
-             ON CONFLICT (tenant_id) DO UPDATE SET \
-             archive_after_seconds = EXCLUDED.archive_after_seconds, \
-             purge_after_seconds = EXCLUDED.purge_after_seconds, \
-             updated_at_ms = EXCLUDED.updated_at_ms",
-            &[
-                &tenant_id.as_str(),
-                &(policy.archive_after_seconds as i64),
-                &(policy.purge_after_seconds.map(|v| v as i64)),
-                &now_ms,
-            ],
-        ))
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO tenant_retention_policies \
+                 (tenant_id, archive_after_seconds, purge_after_seconds, updated_at_ms) \
+                 VALUES ($1, $2, $3, $4) \
+                 ON CONFLICT (tenant_id) DO UPDATE SET \
+                 archive_after_seconds = EXCLUDED.archive_after_seconds, \
+                 purge_after_seconds = EXCLUDED.purge_after_seconds, \
+                 updated_at_ms = EXCLUDED.updated_at_ms",
+            )
+            .bind(tenant_id.as_str())
+            .bind(policy.archive_after_seconds as i64)
+            .bind(policy.purge_after_seconds.map(|v| v as i64))
+            .bind(now_ms)
+            .execute(&self.pool),
+        )
         .map_err(|e| {
             if e.to_string().contains("does not exist") {
                 AxonError::Storage(
@@ -1683,14 +1899,18 @@ impl StorageAdapter for PostgresStorageAdapter {
         &self,
         tenant_id: axon_core::auth::TenantId,
     ) -> Result<Vec<TenantDatabase>, AxonError> {
+        use sqlx::Row;
         let rows = self
-            .block(self.client.query(
-                "SELECT tenant_id, database_name, created_at_ms \
-                 FROM tenant_databases \
-                 WHERE tenant_id = $1 \
-                 ORDER BY created_at_ms ASC",
-                &[&tenant_id.as_str()],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT tenant_id, database_name, created_at_ms \
+                     FROM tenant_databases \
+                     WHERE tenant_id = $1 \
+                     ORDER BY created_at_ms ASC",
+                )
+                .bind(tenant_id.as_str())
+                .fetch_all(&self.pool),
+            )
             .or_else(|e| {
                 if e.to_string().contains("does not exist") {
                     Ok(vec![])
@@ -1703,9 +1923,9 @@ impl StorageAdapter for PostgresStorageAdapter {
         let dbs = rows
             .iter()
             .map(|row| TenantDatabase {
-                tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>("tenant_id")),
+                tenant_id: axon_core::auth::TenantId::new(row.get::<String, _>("tenant_id")),
                 name: row.get("database_name"),
-                created_at_ms: row.get::<_, i64>("created_at_ms") as u64,
+                created_at_ms: row.get::<i64, _>("created_at_ms") as u64,
             })
             .collect();
         Ok(dbs)
@@ -1720,13 +1940,18 @@ impl StorageAdapter for PostgresStorageAdapter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        let rows_affected = self
-            .block(self.client.execute(
-                "INSERT INTO tenant_databases (tenant_id, database_name, created_at_ms) \
-                 VALUES ($1, $2, $3) \
-                 ON CONFLICT (tenant_id, database_name) DO NOTHING",
-                &[&tenant_id.as_str(), &name, &now_ms],
-            ))
+        let result = self
+            .block_on(
+                sqlx::query(
+                    "INSERT INTO tenant_databases (tenant_id, database_name, created_at_ms) \
+                     VALUES ($1, $2, $3) \
+                     ON CONFLICT (tenant_id, database_name) DO NOTHING",
+                )
+                .bind(tenant_id.as_str())
+                .bind(name)
+                .bind(now_ms)
+                .execute(&self.pool),
+            )
             .map_err(|e| {
                 if e.to_string().contains("does not exist") {
                     AxonError::Storage(
@@ -1736,14 +1961,18 @@ impl StorageAdapter for PostgresStorageAdapter {
                     AxonError::Storage(e.to_string())
                 }
             })?;
-        if rows_affected == 0 {
+        if result.rows_affected() == 0 {
             return Err(AxonError::AlreadyExists(format!(
                 "database '{}' already exists in tenant '{}'",
                 name,
                 tenant_id.as_str()
             )));
         }
-        Ok(TenantDatabase { tenant_id, name: name.to_string(), created_at_ms: now_ms as u64 })
+        Ok(TenantDatabase {
+            tenant_id,
+            name: name.to_string(),
+            created_at_ms: now_ms as u64,
+        })
     }
 
     fn delete_tenant_database(
@@ -1751,13 +1980,17 @@ impl StorageAdapter for PostgresStorageAdapter {
         tenant_id: axon_core::auth::TenantId,
         name: &str,
     ) -> Result<bool, AxonError> {
-        let rows_affected = self
-            .block(self.client.execute(
-                "DELETE FROM tenant_databases WHERE tenant_id = $1 AND database_name = $2",
-                &[&tenant_id.as_str(), &name],
-            ))
+        let result = self
+            .block_on(
+                sqlx::query(
+                    "DELETE FROM tenant_databases WHERE tenant_id = $1 AND database_name = $2",
+                )
+                .bind(tenant_id.as_str())
+                .bind(name)
+                .execute(&self.pool),
+            )
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        Ok(rows_affected > 0)
+        Ok(result.rows_affected() > 0)
     }
 
     fn track_credential_issuance(
@@ -1770,19 +2003,20 @@ impl StorageAdapter for PostgresStorageAdapter {
         grants_json: &str,
     ) -> Result<(), AxonError> {
         let jti_str = jti.to_string();
-        self.block(self.client.execute(
-            "INSERT INTO credential_issuances \
-             (jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json) \
-             VALUES ($1, $2, $3, $4, $5, $6)",
-            &[
-                &jti_str,
-                &user_id.as_str(),
-                &tenant_id.as_str(),
-                &issued_at_ms,
-                &expires_at_ms,
-                &grants_json,
-            ],
-        ))
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO credential_issuances \
+                 (jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json) \
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(&jti_str)
+            .bind(user_id.as_str())
+            .bind(tenant_id.as_str())
+            .bind(issued_at_ms)
+            .bind(expires_at_ms)
+            .bind(grants_json)
+            .execute(&self.pool),
+        )
         .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
     }
@@ -1792,17 +2026,21 @@ impl StorageAdapter for PostgresStorageAdapter {
         tenant_id: axon_core::auth::TenantId,
         user_filter: Option<axon_core::auth::UserId>,
     ) -> Result<Vec<axon_core::auth::CredentialMetadata>, AxonError> {
+        use sqlx::Row;
         let rows = self
-            .block(self.client.query(
-                "SELECT ci.jti, ci.user_id, ci.tenant_id, ci.issued_at_ms, ci.expires_at_ms, \
-                 ci.grants_json, \
-                 CASE WHEN cr.jti IS NOT NULL THEN TRUE ELSE FALSE END AS revoked \
-                 FROM credential_issuances ci \
-                 LEFT JOIN credential_revocations cr ON ci.jti = cr.jti \
-                 WHERE ci.tenant_id = $1 \
-                 ORDER BY ci.issued_at_ms ASC",
-                &[&tenant_id.as_str()],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT ci.jti, ci.user_id, ci.tenant_id, ci.issued_at_ms, ci.expires_at_ms, \
+                     ci.grants_json, \
+                     CASE WHEN cr.jti IS NOT NULL THEN TRUE ELSE FALSE END AS revoked \
+                     FROM credential_issuances ci \
+                     LEFT JOIN credential_revocations cr ON ci.jti = cr.jti \
+                     WHERE ci.tenant_id = $1 \
+                     ORDER BY ci.issued_at_ms ASC",
+                )
+                .bind(tenant_id.as_str())
+                .fetch_all(&self.pool),
+            )
             .or_else(|e| {
                 if e.to_string().contains("does not exist") {
                     Ok(vec![])
@@ -1815,13 +2053,13 @@ impl StorageAdapter for PostgresStorageAdapter {
         let mut creds = Vec::new();
         for row in rows {
             let meta = axon_core::auth::CredentialMetadata {
-                jti: row.get::<_, String>("jti"),
-                user_id: axon_core::auth::UserId::new(row.get::<_, String>("user_id")),
-                tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>("tenant_id")),
-                issued_at_ms: row.get::<_, i64>("issued_at_ms"),
-                expires_at_ms: row.get::<_, i64>("expires_at_ms"),
-                grants_json: row.get::<_, String>("grants_json"),
-                revoked: row.get::<_, bool>("revoked"),
+                jti: row.get::<String, _>("jti"),
+                user_id: axon_core::auth::UserId::new(row.get::<String, _>("user_id")),
+                tenant_id: axon_core::auth::TenantId::new(row.get::<String, _>("tenant_id")),
+                issued_at_ms: row.get::<i64, _>("issued_at_ms"),
+                expires_at_ms: row.get::<i64, _>("expires_at_ms"),
+                grants_json: row.get::<String, _>("grants_json"),
+                revoked: row.get::<bool, _>("revoked"),
             };
             if let Some(ref uid) = user_filter {
                 if &meta.user_id != uid {
@@ -1843,12 +2081,17 @@ impl StorageAdapter for PostgresStorageAdapter {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        self.block(self.client.execute(
-            "INSERT INTO credential_revocations (jti, revoked_at_ms, revoked_by) \
-             VALUES ($1, $2, $3) \
-             ON CONFLICT (jti) DO NOTHING",
-            &[&jti_str, &now_ms, &revoked_by.as_str()],
-        ))
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO credential_revocations (jti, revoked_at_ms, revoked_by) \
+                 VALUES ($1, $2, $3) \
+                 ON CONFLICT (jti) DO NOTHING",
+            )
+            .bind(&jti_str)
+            .bind(now_ms)
+            .bind(revoked_by.as_str())
+            .execute(&self.pool),
+        )
         .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
     }
@@ -1887,7 +2130,7 @@ fn validate_pg_db_name(name: &str) -> Result<(), AxonError> {
 /// The superadmin DSN uses the `postgres` maintenance database.  We produce a
 /// new DSN that targets `axon_{name}`.
 ///
-/// Both libpq keyword–value format (`host=... dbname=...`) and URL format
+/// Both libpq keyword-value format (`host=... dbname=...`) and URL format
 /// (`postgres://...`) are supported.
 pub fn tenant_dsn(superadmin_dsn: &str, tenant_db_name: &str) -> String {
     let target = format!("axon_{tenant_db_name}");
@@ -1913,7 +2156,7 @@ pub fn tenant_dsn(superadmin_dsn: &str, tenant_db_name: &str) -> String {
         }
         format!("{superadmin_dsn}/{target}")
     } else {
-        // Keyword–value format.  Replace existing dbname= or append it.
+        // Keyword-value format.  Replace existing dbname= or append it.
         let mut parts: Vec<String> = superadmin_dsn
             .split_whitespace()
             .filter(|part| !part.starts_with("dbname="))
@@ -1946,17 +2189,13 @@ pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(
         .build()
         .map_err(|e| AxonError::Storage(e.to_string()))?;
     rt.block_on(async {
-        let (client, connection) = tokio_postgres::connect(superadmin_dsn, NoTls)
+        use sqlx::Row;
+        let pool = sqlx::PgPool::connect(superadmin_dsn)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        let row = client
-            .query_one(
-                "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
-                &[&full_name.as_str()],
-            )
+        let row = sqlx::query("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+            .bind(&full_name)
+            .fetch_one(&pool)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let exists: bool = row.get(0);
@@ -1965,10 +2204,10 @@ pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(
                 "PostgreSQL database '{full_name}'"
             )));
         }
-        // CREATE DATABASE cannot run inside a transaction; use simple_query to
+        // CREATE DATABASE cannot run inside a transaction; use raw_sql to
         // avoid the implicit transaction that execute() would open.
-        client
-            .simple_query(&format!("CREATE DATABASE \"{full_name}\""))
+        sqlx::raw_sql(&format!("CREATE DATABASE \"{full_name}\""))
+            .execute(&pool)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -1993,17 +2232,13 @@ pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result
         .build()
         .map_err(|e| AxonError::Storage(e.to_string()))?;
     rt.block_on(async {
-        let (client, connection) = tokio_postgres::connect(superadmin_dsn, NoTls)
+        use sqlx::Row;
+        let pool = sqlx::PgPool::connect(superadmin_dsn)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        let row = client
-            .query_one(
-                "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
-                &[&full_name.as_str()],
-            )
+        let row = sqlx::query("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
+            .bind(&full_name)
+            .fetch_one(&pool)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let exists: bool = row.get(0);
@@ -2012,8 +2247,8 @@ pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result
                 "PostgreSQL database '{full_name}'"
             )));
         }
-        client
-            .simple_query(&format!("DROP DATABASE \"{full_name}\""))
+        sqlx::raw_sql(&format!("DROP DATABASE \"{full_name}\""))
+            .execute(&pool)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         Ok(())
@@ -2078,9 +2313,7 @@ mod tests {
             })?;
 
             Ok(Self {
-                url: format!(
-                    "host={host} port={port} user=postgres password=postgres dbname=axon_test"
-                ),
+                url: format!("postgres://postgres:postgres@{host}:{port}/axon_test"),
                 _container: Some(container),
             })
         }
@@ -2140,9 +2373,12 @@ mod tests {
             PostgresStorageAdapter::connect(database.url()).map_err(TestSetupError::Fail)?;
         // Clean tables for a fresh test.
         adapter
-            .block(adapter.client.batch_execute(
-                "TRUNCATE entities, schemas, collection_views, collections, namespaces, databases, audit_log RESTART IDENTITY CASCADE",
-            ))
+            .block_on(
+                sqlx::raw_sql(
+                    "TRUNCATE entities, schemas, collection_views, collections, namespaces, databases, audit_log RESTART IDENTITY CASCADE",
+                )
+                .execute(&adapter.pool),
+            )
             .map_err(TestSetupError::Fail)?;
         adapter
             .ensure_default_namespace()
@@ -2186,21 +2422,6 @@ mod tests {
         (namespace, bare_collection)
     }
 
-    #[cfg(test)]
-    fn connect_raw_for_test(url: &str) -> (tokio_postgres::Client, tokio::runtime::Runtime) {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
-        let (client, connection) = rt
-            .block_on(tokio_postgres::connect(url, NoTls))
-            .expect("test connection");
-        rt.spawn(async move {
-            let _ = connection.await;
-        });
-        (client, rt)
-    }
-
     #[test]
     fn postgres_roundtrip_when_available() {
         let _guard = postgres_test_guard();
@@ -2232,37 +2453,43 @@ mod tests {
             return;
         };
 
-        let (legacy_client, legacy_rt) = connect_raw_for_test(database.url());
-        legacy_rt
-            .block_on(async {
-                legacy_client
-                    .batch_execute(
-                        "DROP TABLE IF EXISTS collection_views;
-                         DROP TABLE IF EXISTS collections;
-                         DROP TABLE IF EXISTS namespaces;
-                         DROP TABLE IF EXISTS databases;
-                         DROP TABLE IF EXISTS entities;
-                         DROP TABLE IF EXISTS schemas;
-                         DROP TABLE IF EXISTS audit_log;",
-                    )
-                    .await?;
-                legacy_client
-                    .batch_execute(
-                        "CREATE TABLE collections (
-                            name TEXT NOT NULL PRIMARY KEY
-                        );
-                        CREATE TABLE collection_views (
-                            collection    TEXT NOT NULL PRIMARY KEY,
-                            version       INTEGER NOT NULL,
-                            view_json     JSONB NOT NULL,
-                            updated_at_ns BIGINT NOT NULL,
-                            updated_by    TEXT
-                        );",
-                    )
-                    .await?;
-                Ok::<_, tokio_postgres::Error>(())
-            })
+        // Set up legacy schema using a raw sqlx pool.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        let pool = rt
+            .block_on(sqlx::PgPool::connect(database.url()))
+            .expect("test connection");
+        rt.block_on(async {
+            sqlx::raw_sql(
+                "DROP TABLE IF EXISTS collection_views;
+                 DROP TABLE IF EXISTS collections;
+                 DROP TABLE IF EXISTS namespaces;
+                 DROP TABLE IF EXISTS databases;
+                 DROP TABLE IF EXISTS entities;
+                 DROP TABLE IF EXISTS schemas;
+                 DROP TABLE IF EXISTS audit_log;",
+            )
+            .execute(&pool)
+            .await
+            .expect("drop tables should succeed");
+            sqlx::raw_sql(
+                "CREATE TABLE collections (
+                    name TEXT NOT NULL PRIMARY KEY
+                );
+                CREATE TABLE collection_views (
+                    collection    TEXT NOT NULL PRIMARY KEY,
+                    version       INTEGER NOT NULL,
+                    view_json     JSONB NOT NULL,
+                    updated_at_ns BIGINT NOT NULL,
+                    updated_by    TEXT
+                );",
+            )
+            .execute(&pool)
+            .await
             .expect("legacy schema should be created");
+        });
 
         let collection = CollectionId::new("ephemeral");
         let legacy_view = CollectionView {
@@ -2276,32 +2503,27 @@ mod tests {
         let legacy_view_json =
             serde_json::to_value(&legacy_view).expect("legacy collection view should serialize");
 
-        legacy_rt
-            .block_on(async {
-                legacy_client
-                    .execute(
-                        "INSERT INTO collections (name) VALUES ($1)",
-                        &[&collection.as_str()],
-                    )
-                    .await?;
-                legacy_client
-                    .execute(
-                        "INSERT INTO collection_views (collection, version, view_json, updated_at_ns, updated_by)
-                         VALUES ($1, $2, $3, $4, $5)",
-                        &[
-                            &collection.as_str(),
-                            &1_i32,
-                            &legacy_view_json,
-                            &42_i64,
-                            &Some("legacy"),
-                        ],
-                    )
-                    .await?;
-                Ok::<_, tokio_postgres::Error>(())
-            })
+        rt.block_on(async {
+            sqlx::query("INSERT INTO collections (name) VALUES ($1)")
+                .bind(collection.as_str())
+                .execute(&pool)
+                .await
+                .expect("collection insert should succeed");
+            sqlx::query(
+                "INSERT INTO collection_views (collection, version, view_json, updated_at_ns, updated_by)
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(collection.as_str())
+            .bind(1_i32)
+            .bind(&legacy_view_json)
+            .bind(42_i64)
+            .bind(Some("legacy"))
+            .execute(&pool)
+            .await
             .expect("legacy data should insert");
-        drop(legacy_client);
-        drop(legacy_rt);
+        });
+        drop(pool);
+        drop(rt);
 
         let mut adapter = PostgresStorageAdapter::connect(database.url())
             .expect("adapter should connect after upgrade");
@@ -2326,12 +2548,12 @@ mod tests {
         );
 
         let remaining_views: i64 = adapter
-            .block(adapter.client.query_one(
-                "SELECT COUNT(*) FROM collection_views WHERE collection = $1",
-                &[&collection.as_str()],
-            ))
-            .expect("count query should succeed")
-            .get(0);
+            .block_on(
+                sqlx::query_scalar("SELECT COUNT(*) FROM collection_views WHERE collection = $1")
+                    .bind(collection.as_str())
+                    .fetch_one(&adapter.pool),
+            )
+            .expect("count query should succeed");
         assert_eq!(
             remaining_views, 0,
             "stale collection view rows must be deleted"
@@ -2968,13 +3190,18 @@ mod tests {
         s.put_schema(&v1).expect("schema v1 put should succeed");
         s.put_schema(&v2).expect("schema v2 put should succeed");
 
+        use sqlx::Row;
         let stored_collections: Vec<String> = s
-            .block(s.client.query(
-                "SELECT collection FROM schemas
-                 WHERE database_name = $1 AND schema_name = $2
-                 ORDER BY version ASC",
-                &[&billing.database, &billing.schema],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT collection FROM schemas
+                     WHERE database_name = $1 AND schema_name = $2
+                     ORDER BY version ASC",
+                )
+                .bind(billing.database.as_str())
+                .bind(billing.schema.as_str())
+                .fetch_all(&s.pool),
+            )
             .expect("schema version query should succeed")
             .into_iter()
             .map(|row| row.get("collection"))
@@ -3026,12 +3253,17 @@ mod tests {
         assert_eq!(stored.collection, invoices);
         assert_eq!(stored.version, 1);
 
+        use sqlx::Row;
         let stored_collection: String = s
-            .block(s.client.query_one(
-                "SELECT collection FROM collection_views
-                 WHERE database_name = $1 AND schema_name = $2",
-                &[&billing.database, &billing.schema],
-            ))
+            .block_on(
+                sqlx::query(
+                    "SELECT collection FROM collection_views
+                     WHERE database_name = $1 AND schema_name = $2",
+                )
+                .bind(billing.database.as_str())
+                .bind(billing.schema.as_str())
+                .fetch_one(&s.pool),
+            )
             .expect("stored collection view lookup should succeed")
             .get("collection");
         assert_eq!(stored_collection, "invoices");
@@ -3077,17 +3309,23 @@ mod tests {
         s.unregister_collection(&qualified)
             .expect("qualified unregister should succeed");
 
+        use sqlx::Row;
         let row_counts = s
-            .block(s.client.query_one(
-                "SELECT
+            .block_on(
+                sqlx::query(
+                    "SELECT
                     (SELECT COUNT(*) FROM collections
                      WHERE name = $1 AND database_name = $2 AND schema_name = $3) AS collections_count,
                     (SELECT COUNT(*) FROM schemas
                      WHERE collection = $1 AND database_name = $2 AND schema_name = $3) AS schemas_count,
                     (SELECT COUNT(*) FROM collection_views
                      WHERE collection = $1 AND database_name = $2 AND schema_name = $3) AS views_count",
-                &[&invoices.as_str(), &billing.database, &billing.schema],
-            ))
+                )
+                .bind(invoices.as_str())
+                .bind(billing.database.as_str())
+                .bind(billing.schema.as_str())
+                .fetch_one(&s.pool),
+            )
             .expect("metadata row count query should succeed");
 
         let collections_count: i64 = row_counts.get("collections_count");
@@ -3134,45 +3372,54 @@ mod tests {
             serde_json::to_value(&schema).expect("legacy schema should serialize");
         let legacy_view_json =
             serde_json::to_value(&view).expect("legacy collection view should serialize");
-        s.block(s.client.execute(
-            "INSERT INTO collections (name, database_name, schema_name)
+        s.block_on(
+            sqlx::query(
+                "INSERT INTO collections (name, database_name, schema_name)
                  VALUES ($1, $2, $3)",
-            &[&qualified.as_str(), &DEFAULT_DATABASE, &DEFAULT_SCHEMA],
-        ))
+            )
+            .bind(qualified.as_str())
+            .bind(DEFAULT_DATABASE)
+            .bind(DEFAULT_SCHEMA)
+            .execute(&s.pool),
+        )
         .expect("legacy collection row should insert");
-        s.block(s.client.execute(
-            "INSERT INTO schemas
+        s.block_on(
+            sqlx::query(
+                "INSERT INTO schemas
                     (collection, database_name, schema_name, version, schema_json, created_at_ns)
                  VALUES ($1, $2, $3, $4, $5, $6)",
-            &[
-                &qualified.as_str(),
-                &DEFAULT_DATABASE,
-                &DEFAULT_SCHEMA,
-                &99_i32,
-                &legacy_schema_json,
-                &42_i64,
-            ],
-        ))
+            )
+            .bind(qualified.as_str())
+            .bind(DEFAULT_DATABASE)
+            .bind(DEFAULT_SCHEMA)
+            .bind(99_i32)
+            .bind(&legacy_schema_json)
+            .bind(42_i64)
+            .execute(&s.pool),
+        )
         .expect("legacy schema row should insert");
-        s.block(s.client.execute(
-            "INSERT INTO collection_views
+        s.block_on(
+            sqlx::query(
+                "INSERT INTO collection_views
                     (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
                  VALUES ($1, $2, $3, $4, $5, $6, $7)",
-            &[
-                &qualified.as_str(),
-                &DEFAULT_DATABASE,
-                &DEFAULT_SCHEMA,
-                &99_i32,
-                &legacy_view_json,
-                &42_i64,
-                &Some("legacy"),
-            ],
-        ))
+            )
+            .bind(qualified.as_str())
+            .bind(DEFAULT_DATABASE)
+            .bind(DEFAULT_SCHEMA)
+            .bind(99_i32)
+            .bind(&legacy_view_json)
+            .bind(42_i64)
+            .bind(Some("legacy"))
+            .execute(&s.pool),
+        )
         .expect("legacy collection view row should insert");
 
+        use sqlx::Row;
         let before_unregister: i64 = s
-            .block(s.client.query_one(
-                "SELECT
+            .block_on(
+                sqlx::query(
+                    "SELECT
                     (SELECT COUNT(*) FROM collections
                      WHERE (name = $1 AND database_name = $2 AND schema_name = $3)
                         OR (name = $4 AND database_name = $5 AND schema_name = $6)) +
@@ -3182,15 +3429,15 @@ mod tests {
                     (SELECT COUNT(*) FROM collection_views
                      WHERE (collection = $1 AND database_name = $2 AND schema_name = $3)
                         OR (collection = $4 AND database_name = $5 AND schema_name = $6))",
-                &[
-                    &invoices.as_str(),
-                    &billing.database,
-                    &billing.schema,
-                    &qualified.as_str(),
-                    &DEFAULT_DATABASE,
-                    &DEFAULT_SCHEMA,
-                ],
-            ))
+                )
+                .bind(invoices.as_str())
+                .bind(billing.database.as_str())
+                .bind(billing.schema.as_str())
+                .bind(qualified.as_str())
+                .bind(DEFAULT_DATABASE)
+                .bind(DEFAULT_SCHEMA)
+                .fetch_one(&s.pool),
+            )
             .expect("metadata row count before unregister should succeed")
             .get(0);
         assert_eq!(
@@ -3202,8 +3449,9 @@ mod tests {
             .expect("qualified unregister should succeed");
 
         let remaining_metadata_rows: i64 = s
-            .block(s.client.query_one(
-                "SELECT
+            .block_on(
+                sqlx::query(
+                    "SELECT
                     (SELECT COUNT(*) FROM collections
                      WHERE (name = $1 AND database_name = $2 AND schema_name = $3)
                         OR (name = $4 AND database_name = $5 AND schema_name = $6)) +
@@ -3213,15 +3461,15 @@ mod tests {
                     (SELECT COUNT(*) FROM collection_views
                      WHERE (collection = $1 AND database_name = $2 AND schema_name = $3)
                         OR (collection = $4 AND database_name = $5 AND schema_name = $6))",
-                &[
-                    &invoices.as_str(),
-                    &billing.database,
-                    &billing.schema,
-                    &qualified.as_str(),
-                    &DEFAULT_DATABASE,
-                    &DEFAULT_SCHEMA,
-                ],
-            ))
+                )
+                .bind(invoices.as_str())
+                .bind(billing.database.as_str())
+                .bind(billing.schema.as_str())
+                .bind(qualified.as_str())
+                .bind(DEFAULT_DATABASE)
+                .bind(DEFAULT_SCHEMA)
+                .fetch_one(&s.pool),
+            )
             .expect("metadata row count after unregister should succeed")
             .get(0);
         assert_eq!(

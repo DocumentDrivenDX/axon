@@ -86,6 +86,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Storage
 rusqlite = { version = "0.32", features = ["bundled"] }
 tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "json"] }
 
 # Schema validation
 jsonschema = "0.28"

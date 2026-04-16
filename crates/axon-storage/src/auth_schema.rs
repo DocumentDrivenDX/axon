@@ -116,123 +116,123 @@ pub fn apply_auth_migrations_sqlite(conn: &rusqlite::Connection) -> Result<(), S
     Ok(())
 }
 
-/// Apply auth/tenancy migrations to a PostgreSQL connection.
+/// Apply auth/tenancy migrations to a PostgreSQL connection pool.
 ///
 /// This is idempotent — running it multiple times on the same database
 /// produces the same result without errors or duplicate rows.
-pub async fn apply_auth_migrations_postgres(client: &tokio_postgres::Client) -> Result<(), String> {
+pub async fn apply_auth_migrations_postgres(pool: &sqlx::PgPool) -> Result<(), String> {
     // Create tenants table.
     // UNIQUE(name) enforced by the UNIQUE constraint on the name column.
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS tenants (
-                id                 TEXT PRIMARY KEY,
-                name               TEXT NOT NULL UNIQUE,
-                display_name       TEXT NOT NULL,
-                created_at_ms      BIGINT NOT NULL,
-                updated_at_ms      BIGINT NOT NULL
-            )",
-        )
-        .await
-        .map_err(|e| format!("tenants table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS tenants (
+            id                 TEXT PRIMARY KEY,
+            name               TEXT NOT NULL UNIQUE,
+            display_name       TEXT NOT NULL,
+            created_at_ms      BIGINT NOT NULL,
+            updated_at_ms      BIGINT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("tenants table: {e}"))?;
 
     // Create users table.
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS users (
-                id                 TEXT PRIMARY KEY,
-                display_name       TEXT NOT NULL,
-                email              TEXT,
-                created_at_ms      BIGINT NOT NULL,
-                suspended_at_ms    BIGINT
-            )",
-        )
-        .await
-        .map_err(|e| format!("users table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS users (
+            id                 TEXT PRIMARY KEY,
+            display_name       TEXT NOT NULL,
+            email              TEXT,
+            created_at_ms      BIGINT NOT NULL,
+            suspended_at_ms    BIGINT
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("users table: {e}"))?;
 
     // Create user_identities table.
     // PRIMARY KEY (provider, external_id) enforces UNIQUE(provider, external_id).
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS user_identities (
-                provider       TEXT NOT NULL,
-                external_id    TEXT NOT NULL,
-                user_id        TEXT NOT NULL REFERENCES users(id),
-                created_at_ms  BIGINT NOT NULL,
-                PRIMARY KEY (provider, external_id)
-            )",
-        )
-        .await
-        .map_err(|e| format!("user_identities table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS user_identities (
+            provider       TEXT NOT NULL,
+            external_id    TEXT NOT NULL,
+            user_id        TEXT NOT NULL REFERENCES users(id),
+            created_at_ms  BIGINT NOT NULL,
+            PRIMARY KEY (provider, external_id)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("user_identities table: {e}"))?;
 
     // Create tenant_users table.
     // PRIMARY KEY (tenant_id, user_id) is the composite PK required by ADR-018.
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS tenant_users (
-                tenant_id    TEXT NOT NULL REFERENCES tenants(id),
-                user_id      TEXT NOT NULL REFERENCES users(id),
-                role         TEXT NOT NULL,
-                added_at_ms  BIGINT NOT NULL,
-                PRIMARY KEY (tenant_id, user_id)
-            )",
-        )
-        .await
-        .map_err(|e| format!("tenant_users table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS tenant_users (
+            tenant_id    TEXT NOT NULL REFERENCES tenants(id),
+            user_id      TEXT NOT NULL REFERENCES users(id),
+            role         TEXT NOT NULL,
+            added_at_ms  BIGINT NOT NULL,
+            PRIMARY KEY (tenant_id, user_id)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("tenant_users table: {e}"))?;
 
     // Create tenant_databases table.
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS tenant_databases (
-                tenant_id      TEXT NOT NULL REFERENCES tenants(id),
-                database_name  TEXT NOT NULL,
-                created_at_ms  BIGINT NOT NULL,
-                PRIMARY KEY (tenant_id, database_name)
-            )",
-        )
-        .await
-        .map_err(|e| format!("tenant_databases table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS tenant_databases (
+            tenant_id      TEXT NOT NULL REFERENCES tenants(id),
+            database_name  TEXT NOT NULL,
+            created_at_ms  BIGINT NOT NULL,
+            PRIMARY KEY (tenant_id, database_name)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("tenant_databases table: {e}"))?;
 
     // Create credential_revocations table.
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS credential_revocations (
-                jti            TEXT PRIMARY KEY,
-                revoked_at_ms  BIGINT NOT NULL,
-                revoked_by     TEXT
-            )",
-        )
-        .await
-        .map_err(|e| format!("credential_revocations table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS credential_revocations (
+            jti            TEXT PRIMARY KEY,
+            revoked_at_ms  BIGINT NOT NULL,
+            revoked_by     TEXT
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("credential_revocations table: {e}"))?;
 
     // Create tenant_retention_policies table (axon-c6908e78).
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS tenant_retention_policies (
-                tenant_id                TEXT NOT NULL,
-                archive_after_seconds    BIGINT NOT NULL,
-                purge_after_seconds      BIGINT,
-                updated_at_ms            BIGINT NOT NULL,
-                PRIMARY KEY (tenant_id)
-            )",
-        )
-        .await
-        .map_err(|e| format!("tenant_retention_policies table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS tenant_retention_policies (
+            tenant_id                TEXT NOT NULL,
+            archive_after_seconds    BIGINT NOT NULL,
+            purge_after_seconds      BIGINT,
+            updated_at_ms            BIGINT NOT NULL,
+            PRIMARY KEY (tenant_id)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("tenant_retention_policies table: {e}"))?;
 
     // Create credential_issuances table (axon-906b527a).
-    client
-        .batch_execute(
-            "CREATE TABLE IF NOT EXISTS credential_issuances (
-                jti            TEXT PRIMARY KEY,
-                user_id        TEXT NOT NULL,
-                tenant_id      TEXT NOT NULL,
-                issued_at_ms   BIGINT NOT NULL,
-                expires_at_ms  BIGINT NOT NULL,
-                grants_json    TEXT NOT NULL
-            )",
-        )
-        .await
-        .map_err(|e| format!("credential_issuances table: {e}"))?;
+    sqlx::raw_sql(
+        "CREATE TABLE IF NOT EXISTS credential_issuances (
+            jti            TEXT PRIMARY KEY,
+            user_id        TEXT NOT NULL,
+            tenant_id      TEXT NOT NULL,
+            issued_at_ms   BIGINT NOT NULL,
+            expires_at_ms  BIGINT NOT NULL,
+            grants_json    TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| format!("credential_issuances table: {e}"))?;
 
     Ok(())
 }
@@ -280,7 +280,10 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("query should succeed");
-        assert_eq!(count, 0, "audit_retention_policies must NOT be created here (F1 territory)");
+        assert_eq!(
+            count, 0,
+            "audit_retention_policies must NOT be created here (F1 territory)"
+        );
     }
 
     #[test]
@@ -327,7 +330,15 @@ mod tests {
                 "SELECT id, name, display_name, created_at_ms, updated_at_ms
                  FROM tenants WHERE id = ?1",
                 rusqlite::params!["t-001"],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .expect("SELECT should succeed");
 
@@ -345,7 +356,13 @@ mod tests {
         conn.execute(
             "INSERT INTO users (id, display_name, email, created_at_ms, suspended_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["u-001", "Alice", "alice@example.com", 2_000_000i64, rusqlite::types::Null],
+            rusqlite::params![
+                "u-001",
+                "Alice",
+                "alice@example.com",
+                2_000_000i64,
+                rusqlite::types::Null
+            ],
         )
         .expect("insert should succeed");
 
@@ -360,7 +377,15 @@ mod tests {
                 "SELECT id, display_name, email, created_at_ms, suspended_at_ms
                  FROM users WHERE id = ?1",
                 rusqlite::params!["u-001"],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )
             .expect("SELECT should succeed");
 
@@ -508,7 +533,13 @@ mod tests {
         conn.execute(
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["t-001", "tenant-1", "Tenant One", 1_000_000i64, 1_000_000i64],
+            rusqlite::params![
+                "t-001",
+                "tenant-1",
+                "Tenant One",
+                1_000_000i64,
+                1_000_000i64
+            ],
         )
         .expect("first tenant insert should succeed");
 
@@ -561,7 +592,13 @@ mod tests {
         conn.execute(
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["t-001", "tenant-1", "Tenant One", 1_000_000i64, 1_000_000i64],
+            rusqlite::params![
+                "t-001",
+                "tenant-1",
+                "Tenant One",
+                1_000_000i64,
+                1_000_000i64
+            ],
         )
         .unwrap();
         conn.execute(
