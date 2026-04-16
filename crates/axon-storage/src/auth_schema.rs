@@ -11,14 +11,22 @@
 //! Note: `audit_retention_policies` is intentionally NOT included here — it
 //! belongs to F1 audit-attribution (a separate bead / feature).
 
-/// Apply auth/tenancy migrations to a SQLite connection.
+/// Apply auth/tenancy migrations to a SQLite pool (via sqlx).
 ///
 /// This is idempotent — running it multiple times on the same database
 /// produces the same result without errors or duplicate rows.
-pub fn apply_auth_migrations_sqlite(conn: &rusqlite::Connection) -> Result<(), String> {
+pub fn apply_auth_migrations_sqlite(
+    pool: &sqlx::SqlitePool,
+    rt: &tokio::runtime::Runtime,
+) -> Result<(), String> {
+    let run = |sql: &str, label: &str| -> Result<(), String> {
+        rt.block_on(sqlx::query(sql).execute(pool))
+            .map_err(|e| format!("{label}: {e}"))?;
+        Ok(())
+    };
+
     // Create tenants table.
-    // UNIQUE(name) enforced by the UNIQUE constraint on the name column.
-    conn.execute_batch(
+    run(
         "CREATE TABLE IF NOT EXISTS tenants (
             id                 TEXT PRIMARY KEY,
             name               TEXT NOT NULL UNIQUE,
@@ -26,11 +34,11 @@ pub fn apply_auth_migrations_sqlite(conn: &rusqlite::Connection) -> Result<(), S
             created_at_ms      INTEGER NOT NULL,
             updated_at_ms      INTEGER NOT NULL
         )",
-    )
-    .map_err(|e| format!("tenants table: {e}"))?;
+        "tenants table",
+    )?;
 
     // Create users table.
-    conn.execute_batch(
+    run(
         "CREATE TABLE IF NOT EXISTS users (
             id                 TEXT PRIMARY KEY,
             display_name       TEXT NOT NULL,
@@ -38,12 +46,11 @@ pub fn apply_auth_migrations_sqlite(conn: &rusqlite::Connection) -> Result<(), S
             created_at_ms      INTEGER NOT NULL,
             suspended_at_ms    INTEGER
         )",
-    )
-    .map_err(|e| format!("users table: {e}"))?;
+        "users table",
+    )?;
 
     // Create user_identities table.
-    // PRIMARY KEY (provider, external_id) enforces UNIQUE(provider, external_id).
-    conn.execute_batch(
+    run(
         "CREATE TABLE IF NOT EXISTS user_identities (
             provider       TEXT NOT NULL,
             external_id    TEXT NOT NULL,
@@ -51,12 +58,11 @@ pub fn apply_auth_migrations_sqlite(conn: &rusqlite::Connection) -> Result<(), S
             created_at_ms  INTEGER NOT NULL,
             PRIMARY KEY (provider, external_id)
         )",
-    )
-    .map_err(|e| format!("user_identities table: {e}"))?;
+        "user_identities table",
+    )?;
 
     // Create tenant_users table.
-    // PRIMARY KEY (tenant_id, user_id) is the composite PK required by ADR-018.
-    conn.execute_batch(
+    run(
         "CREATE TABLE IF NOT EXISTS tenant_users (
             tenant_id    TEXT NOT NULL REFERENCES tenants(id),
             user_id      TEXT NOT NULL REFERENCES users(id),
@@ -64,32 +70,32 @@ pub fn apply_auth_migrations_sqlite(conn: &rusqlite::Connection) -> Result<(), S
             added_at_ms  INTEGER NOT NULL,
             PRIMARY KEY (tenant_id, user_id)
         )",
-    )
-    .map_err(|e| format!("tenant_users table: {e}"))?;
+        "tenant_users table",
+    )?;
 
     // Create tenant_databases table.
-    conn.execute_batch(
+    run(
         "CREATE TABLE IF NOT EXISTS tenant_databases (
             tenant_id      TEXT NOT NULL REFERENCES tenants(id),
             database_name  TEXT NOT NULL,
             created_at_ms  INTEGER NOT NULL,
             PRIMARY KEY (tenant_id, database_name)
         )",
-    )
-    .map_err(|e| format!("tenant_databases table: {e}"))?;
+        "tenant_databases table",
+    )?;
 
     // Create credential_revocations table.
-    conn.execute_batch(
+    run(
         "CREATE TABLE IF NOT EXISTS credential_revocations (
             jti            TEXT PRIMARY KEY,
             revoked_at_ms  INTEGER NOT NULL,
             revoked_by     TEXT
         )",
-    )
-    .map_err(|e| format!("credential_revocations table: {e}"))?;
+        "credential_revocations table",
+    )?;
 
     // Create tenant_retention_policies table (axon-c6908e78).
-    conn.execute_batch(
+    run(
         "CREATE TABLE IF NOT EXISTS tenant_retention_policies (
             tenant_id                TEXT NOT NULL,
             archive_after_seconds    INTEGER NOT NULL,
@@ -97,11 +103,11 @@ pub fn apply_auth_migrations_sqlite(conn: &rusqlite::Connection) -> Result<(), S
             updated_at_ms            INTEGER NOT NULL,
             PRIMARY KEY (tenant_id)
         )",
-    )
-    .map_err(|e| format!("tenant_retention_policies table: {e}"))?;
+        "tenant_retention_policies table",
+    )?;
 
     // Create credential_issuances table (axon-906b527a).
-    conn.execute_batch(
+    run(
         "CREATE TABLE IF NOT EXISTS credential_issuances (
             jti            TEXT PRIMARY KEY,
             user_id        TEXT NOT NULL,
@@ -110,8 +116,8 @@ pub fn apply_auth_migrations_sqlite(conn: &rusqlite::Connection) -> Result<(), S
             expires_at_ms  INTEGER NOT NULL,
             grants_json    TEXT NOT NULL
         )",
-    )
-    .map_err(|e| format!("credential_issuances table: {e}"))?;
+        "credential_issuances table",
+    )?;
 
     Ok(())
 }
@@ -240,66 +246,130 @@ pub async fn apply_auth_migrations_postgres(client: &tokio_postgres::Client) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use sqlx::Row;
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    fn open_and_migrate() -> Connection {
-        let conn = Connection::open_in_memory().expect("in-memory DB should open");
-        apply_auth_migrations_sqlite(&conn).expect("migrations should succeed");
-        conn
+    fn open_and_migrate() -> (sqlx::SqlitePool, tokio::runtime::Runtime) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime should build");
+        let pool = rt
+            .block_on(
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect("sqlite::memory:"),
+            )
+            .expect("in-memory DB should open");
+        apply_auth_migrations_sqlite(&pool, &rt).expect("migrations should succeed");
+        (pool, rt)
+    }
+
+    fn query_i64(pool: &sqlx::SqlitePool, rt: &tokio::runtime::Runtime, sql: &str) -> i64 {
+        rt.block_on(sqlx::query_scalar::<_, i64>(sql).fetch_one(pool))
+            .expect("query should succeed")
+    }
+
+    fn exec(pool: &sqlx::SqlitePool, rt: &tokio::runtime::Runtime, sql: &str, binds: &[BindVal]) {
+        let mut q = sqlx::query(sql);
+        for b in binds {
+            match b {
+                BindVal::Str(s) => q = q.bind(s.as_str()),
+                BindVal::I64(n) => q = q.bind(*n),
+                BindVal::Null => q = q.bind(Option::<String>::None),
+            }
+        }
+        rt.block_on(q.execute(pool)).expect("exec should succeed");
+    }
+
+    fn exec_result(
+        pool: &sqlx::SqlitePool,
+        rt: &tokio::runtime::Runtime,
+        sql: &str,
+        binds: &[BindVal],
+    ) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
+        let mut q = sqlx::query(sql);
+        for b in binds {
+            match b {
+                BindVal::Str(s) => q = q.bind(s.as_str()),
+                BindVal::I64(n) => q = q.bind(*n),
+                BindVal::Null => q = q.bind(Option::<String>::None),
+            }
+        }
+        rt.block_on(q.execute(pool))
+    }
+
+    enum BindVal {
+        Str(String),
+        I64(i64),
+        Null,
+    }
+
+    fn s(val: &str) -> BindVal {
+        BindVal::Str(val.to_string())
+    }
+    fn i(val: i64) -> BindVal {
+        BindVal::I64(val)
     }
 
     // ── Schema existence ──────────────────────────────────────────────────────
 
     #[test]
     fn apply_sqlite_migrations_creates_all_tables() {
-        let conn = open_and_migrate();
+        let (pool, rt) = open_and_migrate();
 
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
-                    'tenants', 'users', 'user_identities', 'tenant_users',
-                    'tenant_databases', 'credential_revocations',
-                    'tenant_retention_policies', 'credential_issuances'
-                )",
-                [],
-                |row| row.get(0),
-            )
-            .expect("query should succeed");
+        let count = query_i64(
+            &pool,
+            &rt,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
+                'tenants', 'users', 'user_identities', 'tenant_users',
+                'tenant_databases', 'credential_revocations',
+                'tenant_retention_policies', 'credential_issuances'
+            )",
+        );
         assert_eq!(count, 8, "all 8 auth tables should be created");
     }
 
     #[test]
     fn audit_retention_policies_table_absent() {
-        let conn = open_and_migrate();
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='audit_retention_policies'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("query should succeed");
-        assert_eq!(count, 0, "audit_retention_policies must NOT be created here (F1 territory)");
+        let (pool, rt) = open_and_migrate();
+        let count = query_i64(
+            &pool,
+            &rt,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='audit_retention_policies'",
+        );
+        assert_eq!(
+            count, 0,
+            "audit_retention_policies must NOT be created here (F1 territory)"
+        );
     }
 
     #[test]
     fn apply_sqlite_migrations_is_idempotent() {
-        let conn = Connection::open_in_memory().expect("in-memory DB should open");
-        apply_auth_migrations_sqlite(&conn).expect("first migration should succeed");
-        apply_auth_migrations_sqlite(&conn).expect("second migration should be idempotent");
-
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
-                    'tenants', 'users', 'user_identities', 'tenant_users',
-                    'tenant_databases', 'credential_revocations',
-                    'tenant_retention_policies', 'credential_issuances'
-                )",
-                [],
-                |row| row.get(0),
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime should build");
+        let pool = rt
+            .block_on(
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect("sqlite::memory:"),
             )
-            .expect("query should succeed");
+            .expect("in-memory DB should open");
+        apply_auth_migrations_sqlite(&pool, &rt).expect("first migration should succeed");
+        apply_auth_migrations_sqlite(&pool, &rt).expect("second migration should be idempotent");
+
+        let count = query_i64(
+            &pool,
+            &rt,
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
+                'tenants', 'users', 'user_identities', 'tenant_users',
+                'tenant_databases', 'credential_revocations',
+                'tenant_retention_policies', 'credential_issuances'
+            )",
+        );
         assert_eq!(count, 8, "still exactly 8 tables after re-run");
     }
 
@@ -307,220 +377,272 @@ mod tests {
 
     #[test]
     fn round_trip_tenants() {
-        let conn = open_and_migrate();
+        let (pool, rt) = open_and_migrate();
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["t-001", "acme", "Acme Corp", 1_000_000i64, 1_000_001i64],
-        )
-        .expect("insert should succeed");
+            &[
+                s("t-001"),
+                s("acme"),
+                s("Acme Corp"),
+                i(1_000_000),
+                i(1_000_001),
+            ],
+        );
 
-        let (id, name, display_name, created_at_ms, updated_at_ms): (
-            String,
-            String,
-            String,
-            i64,
-            i64,
-        ) = conn
-            .query_row(
-                "SELECT id, name, display_name, created_at_ms, updated_at_ms
-                 FROM tenants WHERE id = ?1",
-                rusqlite::params!["t-001"],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        let row = rt
+            .block_on(
+                sqlx::query(
+                    "SELECT id, name, display_name, created_at_ms, updated_at_ms
+                     FROM tenants WHERE id = ?1",
+                )
+                .bind("t-001")
+                .fetch_one(&pool),
             )
             .expect("SELECT should succeed");
 
-        assert_eq!(id, "t-001");
-        assert_eq!(name, "acme");
-        assert_eq!(display_name, "Acme Corp");
-        assert_eq!(created_at_ms, 1_000_000);
-        assert_eq!(updated_at_ms, 1_000_001);
+        assert_eq!(row.get::<String, _>("id"), "t-001");
+        assert_eq!(row.get::<String, _>("name"), "acme");
+        assert_eq!(row.get::<String, _>("display_name"), "Acme Corp");
+        assert_eq!(row.get::<i64, _>("created_at_ms"), 1_000_000);
+        assert_eq!(row.get::<i64, _>("updated_at_ms"), 1_000_001);
     }
 
     #[test]
     fn round_trip_users() {
-        let conn = open_and_migrate();
+        let (pool, rt) = open_and_migrate();
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO users (id, display_name, email, created_at_ms, suspended_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["u-001", "Alice", "alice@example.com", 2_000_000i64, rusqlite::types::Null],
-        )
-        .expect("insert should succeed");
+            &[
+                s("u-001"),
+                s("Alice"),
+                s("alice@example.com"),
+                i(2_000_000),
+                BindVal::Null,
+            ],
+        );
 
-        let (id, display_name, email, created_at_ms, suspended_at_ms): (
-            String,
-            String,
-            Option<String>,
-            i64,
-            Option<i64>,
-        ) = conn
-            .query_row(
-                "SELECT id, display_name, email, created_at_ms, suspended_at_ms
-                 FROM users WHERE id = ?1",
-                rusqlite::params!["u-001"],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        let row = rt
+            .block_on(
+                sqlx::query(
+                    "SELECT id, display_name, email, created_at_ms, suspended_at_ms
+                     FROM users WHERE id = ?1",
+                )
+                .bind("u-001")
+                .fetch_one(&pool),
             )
             .expect("SELECT should succeed");
 
-        assert_eq!(id, "u-001");
-        assert_eq!(display_name, "Alice");
-        assert_eq!(email.as_deref(), Some("alice@example.com"));
-        assert_eq!(created_at_ms, 2_000_000);
-        assert!(suspended_at_ms.is_none());
+        assert_eq!(row.get::<String, _>("id"), "u-001");
+        assert_eq!(row.get::<String, _>("display_name"), "Alice");
+        assert_eq!(
+            row.get::<Option<String>, _>("email").as_deref(),
+            Some("alice@example.com")
+        );
+        assert_eq!(row.get::<i64, _>("created_at_ms"), 2_000_000);
+        assert!(row.get::<Option<i64>, _>("suspended_at_ms").is_none());
     }
 
     #[test]
     fn round_trip_user_identities() {
-        let conn = open_and_migrate();
+        let (pool, rt) = open_and_migrate();
 
         // Need a parent user first.
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO users (id, display_name, created_at_ms) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["u-001", "Alice", 1_000_000i64],
-        )
-        .unwrap();
+            &[s("u-001"), s("Alice"), i(1_000_000)],
+        );
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["tailscale", "alice@tailnet", "u-001", 3_000_000i64],
-        )
-        .expect("insert should succeed");
+            &[s("tailscale"), s("alice@tailnet"), s("u-001"), i(3_000_000)],
+        );
 
-        let (provider, external_id, user_id, created_at_ms): (String, String, String, i64) = conn
-            .query_row(
-                "SELECT provider, external_id, user_id, created_at_ms
-                 FROM user_identities WHERE provider = ?1 AND external_id = ?2",
-                rusqlite::params!["tailscale", "alice@tailnet"],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        let row = rt
+            .block_on(
+                sqlx::query(
+                    "SELECT provider, external_id, user_id, created_at_ms
+                     FROM user_identities WHERE provider = ?1 AND external_id = ?2",
+                )
+                .bind("tailscale")
+                .bind("alice@tailnet")
+                .fetch_one(&pool),
             )
             .expect("SELECT should succeed");
 
-        assert_eq!(provider, "tailscale");
-        assert_eq!(external_id, "alice@tailnet");
-        assert_eq!(user_id, "u-001");
-        assert_eq!(created_at_ms, 3_000_000);
+        assert_eq!(row.get::<String, _>("provider"), "tailscale");
+        assert_eq!(row.get::<String, _>("external_id"), "alice@tailnet");
+        assert_eq!(row.get::<String, _>("user_id"), "u-001");
+        assert_eq!(row.get::<i64, _>("created_at_ms"), 3_000_000);
     }
 
     #[test]
     fn round_trip_tenant_users() {
-        let conn = open_and_migrate();
+        let (pool, rt) = open_and_migrate();
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["t-001", "acme", "Acme Corp", 1_000_000i64, 1_000_000i64],
-        )
-        .unwrap();
-        conn.execute(
+            &[
+                s("t-001"),
+                s("acme"),
+                s("Acme Corp"),
+                i(1_000_000),
+                i(1_000_000),
+            ],
+        );
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO users (id, display_name, created_at_ms) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["u-001", "Alice", 1_000_000i64],
-        )
-        .unwrap();
+            &[s("u-001"), s("Alice"), i(1_000_000)],
+        );
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["t-001", "u-001", "admin", 4_000_000i64],
-        )
-        .expect("insert should succeed");
+            &[s("t-001"), s("u-001"), s("admin"), i(4_000_000)],
+        );
 
-        let (tenant_id, user_id, role, added_at_ms): (String, String, String, i64) = conn
-            .query_row(
-                "SELECT tenant_id, user_id, role, added_at_ms
-                 FROM tenant_users WHERE tenant_id = ?1 AND user_id = ?2",
-                rusqlite::params!["t-001", "u-001"],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        let row = rt
+            .block_on(
+                sqlx::query(
+                    "SELECT tenant_id, user_id, role, added_at_ms
+                     FROM tenant_users WHERE tenant_id = ?1 AND user_id = ?2",
+                )
+                .bind("t-001")
+                .bind("u-001")
+                .fetch_one(&pool),
             )
             .expect("SELECT should succeed");
 
-        assert_eq!(tenant_id, "t-001");
-        assert_eq!(user_id, "u-001");
-        assert_eq!(role, "admin");
-        assert_eq!(added_at_ms, 4_000_000);
+        assert_eq!(row.get::<String, _>("tenant_id"), "t-001");
+        assert_eq!(row.get::<String, _>("user_id"), "u-001");
+        assert_eq!(row.get::<String, _>("role"), "admin");
+        assert_eq!(row.get::<i64, _>("added_at_ms"), 4_000_000);
     }
 
     #[test]
     fn round_trip_tenant_databases() {
-        let conn = open_and_migrate();
+        let (pool, rt) = open_and_migrate();
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["t-001", "acme", "Acme Corp", 1_000_000i64, 1_000_000i64],
-        )
-        .unwrap();
+            &[
+                s("t-001"),
+                s("acme"),
+                s("Acme Corp"),
+                i(1_000_000),
+                i(1_000_000),
+            ],
+        );
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO tenant_databases (tenant_id, database_name, created_at_ms)
              VALUES (?1, ?2, ?3)",
-            rusqlite::params!["t-001", "orders", 5_000_000i64],
-        )
-        .expect("insert should succeed");
+            &[s("t-001"), s("orders"), i(5_000_000)],
+        );
 
-        let (tenant_id, database_name, created_at_ms): (String, String, i64) = conn
-            .query_row(
-                "SELECT tenant_id, database_name, created_at_ms
-                 FROM tenant_databases WHERE tenant_id = ?1 AND database_name = ?2",
-                rusqlite::params!["t-001", "orders"],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        let row = rt
+            .block_on(
+                sqlx::query(
+                    "SELECT tenant_id, database_name, created_at_ms
+                     FROM tenant_databases WHERE tenant_id = ?1 AND database_name = ?2",
+                )
+                .bind("t-001")
+                .bind("orders")
+                .fetch_one(&pool),
             )
             .expect("SELECT should succeed");
 
-        assert_eq!(tenant_id, "t-001");
-        assert_eq!(database_name, "orders");
-        assert_eq!(created_at_ms, 5_000_000);
+        assert_eq!(row.get::<String, _>("tenant_id"), "t-001");
+        assert_eq!(row.get::<String, _>("database_name"), "orders");
+        assert_eq!(row.get::<i64, _>("created_at_ms"), 5_000_000);
     }
 
     #[test]
     fn round_trip_credential_revocations() {
-        let conn = open_and_migrate();
+        let (pool, rt) = open_and_migrate();
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO credential_revocations (jti, revoked_at_ms, revoked_by)
              VALUES (?1, ?2, ?3)",
-            rusqlite::params!["jti-abc123", 6_000_000i64, "u-001"],
-        )
-        .expect("insert should succeed");
+            &[s("jti-abc123"), i(6_000_000), s("u-001")],
+        );
 
-        let (jti, revoked_at_ms, revoked_by): (String, i64, Option<String>) = conn
-            .query_row(
-                "SELECT jti, revoked_at_ms, revoked_by
-                 FROM credential_revocations WHERE jti = ?1",
-                rusqlite::params!["jti-abc123"],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        let row = rt
+            .block_on(
+                sqlx::query(
+                    "SELECT jti, revoked_at_ms, revoked_by
+                     FROM credential_revocations WHERE jti = ?1",
+                )
+                .bind("jti-abc123")
+                .fetch_one(&pool),
             )
             .expect("SELECT should succeed");
 
-        assert_eq!(jti, "jti-abc123");
-        assert_eq!(revoked_at_ms, 6_000_000);
-        assert_eq!(revoked_by.as_deref(), Some("u-001"));
+        assert_eq!(row.get::<String, _>("jti"), "jti-abc123");
+        assert_eq!(row.get::<i64, _>("revoked_at_ms"), 6_000_000);
+        assert_eq!(
+            row.get::<Option<String>, _>("revoked_by").as_deref(),
+            Some("u-001")
+        );
     }
 
     // ── Constraint tests ──────────────────────────────────────────────────────
 
     #[test]
     fn unique_tenant_name_rejected_on_duplicate() {
-        let conn = open_and_migrate();
+        let (pool, rt) = open_and_migrate();
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["t-001", "tenant-1", "Tenant One", 1_000_000i64, 1_000_000i64],
-        )
-        .expect("first tenant insert should succeed");
+            &[
+                s("t-001"),
+                s("tenant-1"),
+                s("Tenant One"),
+                i(1_000_000),
+                i(1_000_000),
+            ],
+        );
 
-        let result = conn.execute(
+        let result = exec_result(
+            &pool,
+            &rt,
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params![
-                "t-002",
-                "tenant-1",
-                "Tenant One Duplicate",
-                2_000_000i64,
-                2_000_000i64
+            &[
+                s("t-002"),
+                s("tenant-1"),
+                s("Tenant One Duplicate"),
+                i(2_000_000),
+                i(2_000_000),
             ],
         );
         assert!(result.is_err(), "duplicate tenant name should be rejected");
@@ -528,25 +650,29 @@ mod tests {
 
     #[test]
     fn unique_user_identity_rejected_on_duplicate() {
-        let conn = open_and_migrate();
+        let (pool, rt) = open_and_migrate();
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO users (id, display_name, created_at_ms) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["u-001", "User One", 1_000_000i64],
-        )
-        .unwrap();
+            &[s("u-001"), s("User One"), i(1_000_000)],
+        );
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["tailscale", "alice@tailnet", "u-001", 1_000_000i64],
-        )
-        .expect("first identity insert should succeed");
+            &[s("tailscale"), s("alice@tailnet"), s("u-001"), i(1_000_000)],
+        );
 
-        let result = conn.execute(
+        let result = exec_result(
+            &pool,
+            &rt,
             "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["tailscale", "alice@tailnet", "u-001", 2_000_000i64],
+            &[s("tailscale"), s("alice@tailnet"), s("u-001"), i(2_000_000)],
         );
         assert!(
             result.is_err(),
@@ -556,31 +682,42 @@ mod tests {
 
     #[test]
     fn tenant_user_composite_pk_rejected_on_duplicate() {
-        let conn = open_and_migrate();
+        let (pool, rt) = open_and_migrate();
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            rusqlite::params!["t-001", "tenant-1", "Tenant One", 1_000_000i64, 1_000_000i64],
-        )
-        .unwrap();
-        conn.execute(
+            &[
+                s("t-001"),
+                s("tenant-1"),
+                s("Tenant One"),
+                i(1_000_000),
+                i(1_000_000),
+            ],
+        );
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO users (id, display_name, created_at_ms) VALUES (?1, ?2, ?3)",
-            rusqlite::params!["u-001", "User One", 1_000_000i64],
-        )
-        .unwrap();
+            &[s("u-001"), s("User One"), i(1_000_000)],
+        );
 
-        conn.execute(
+        exec(
+            &pool,
+            &rt,
             "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["t-001", "u-001", "admin", 1_000_000i64],
-        )
-        .expect("first membership insert should succeed");
+            &[s("t-001"), s("u-001"), s("admin"), i(1_000_000)],
+        );
 
-        let result = conn.execute(
+        let result = exec_result(
+            &pool,
+            &rt,
             "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params!["t-001", "u-001", "write", 2_000_000i64],
+            &[s("t-001"), s("u-001"), s("write"), i(2_000_000)],
         );
         assert!(
             result.is_err(),

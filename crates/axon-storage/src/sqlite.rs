@@ -1,7 +1,4 @@
-use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use rusqlite::{params, Connection};
 
 use axon_audit::entry::AuditEntry;
 use axon_core::auth::{CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, UserId};
@@ -16,8 +13,9 @@ use crate::adapter::StorageAdapter;
 
 /// SQLite-backed storage adapter using an embedded database.
 ///
-/// The `Connection` is wrapped in a `Mutex` to provide the `Send + Sync`
-/// bounds required by `StorageAdapter`.
+/// Uses `sqlx::SqlitePool` with a single connection for serialised access.
+/// A dedicated `tokio::runtime::Runtime` bridges async sqlx calls into the
+/// synchronous `StorageAdapter` trait.
 ///
 /// Schema:
 /// ```sql
@@ -35,7 +33,8 @@ use crate::adapter::StorageAdapter;
 /// the TOCTOU window that exists when a read and write are issued as separate
 /// statements.
 pub struct SqliteStorageAdapter {
-    conn: Mutex<Connection>,
+    pool: sqlx::SqlitePool,
+    rt: tokio::runtime::Runtime,
     /// `true` while a `BEGIN` has been issued but not yet committed or rolled back.
     in_tx: bool,
 }
@@ -43,9 +42,20 @@ pub struct SqliteStorageAdapter {
 impl SqliteStorageAdapter {
     /// Opens (or creates) a SQLite database at the given path.
     pub fn open(path: &str) -> Result<Self, AxonError> {
-        let conn = Connection::open(path).map_err(|e| AxonError::Storage(e.to_string()))?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let pool = rt
+            .block_on(
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect(&format!("sqlite:{}?mode=rwc", path)),
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
         let adapter = Self {
-            conn: Mutex::new(conn),
+            pool,
+            rt,
             in_tx: false,
         };
         adapter.init_schema()?;
@@ -54,9 +64,20 @@ impl SqliteStorageAdapter {
 
     /// Opens an in-memory SQLite database (useful for testing).
     pub fn open_in_memory() -> Result<Self, AxonError> {
-        let conn = Connection::open_in_memory().map_err(|e| AxonError::Storage(e.to_string()))?;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let pool = rt
+            .block_on(
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect("sqlite::memory:"),
+            )
+            .map_err(|e| AxonError::Storage(e.to_string()))?;
         let adapter = Self {
-            conn: Mutex::new(conn),
+            pool,
+            rt,
             in_tx: false,
         };
         adapter.init_schema()?;
@@ -71,8 +92,7 @@ impl SqliteStorageAdapter {
     /// auth-related adapter methods (`upsert_user_identity`, `is_jti_revoked`,
     /// `get_user`, `get_tenant_member`).
     pub fn apply_auth_migrations(&self) -> Result<(), AxonError> {
-        let conn = self.conn()?;
-        crate::auth_schema::apply_auth_migrations_sqlite(&conn)
+        crate::auth_schema::apply_auth_migrations_sqlite(&self.pool, &self.rt)
             .map_err(AxonError::Storage)
     }
 
@@ -80,11 +100,12 @@ impl SqliteStorageAdapter {
     ///
     /// Returns `0` when the auth schema has not been applied.
     pub fn query_user_count(&self) -> Result<i64, AxonError> {
-        let conn = self.conn()?;
-        match conn.query_row("SELECT COUNT(*) FROM users", [], |row| row.get(0)) {
+        match self.block_on(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users").fetch_one(&self.pool),
+        ) {
             Ok(n) => Ok(n),
             Err(e) if e.to_string().contains("no such table") => Ok(0),
-            Err(e) => Err(AxonError::Storage(e.to_string())),
+            Err(e) => Err(e),
         }
     }
 
@@ -92,11 +113,13 @@ impl SqliteStorageAdapter {
     ///
     /// Returns `0` when the auth schema has not been applied.
     pub fn query_identity_count(&self) -> Result<i64, AxonError> {
-        let conn = self.conn()?;
-        match conn.query_row("SELECT COUNT(*) FROM user_identities", [], |row| row.get(0)) {
+        match self.block_on(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM user_identities")
+                .fetch_one(&self.pool),
+        ) {
             Ok(n) => Ok(n),
             Err(e) if e.to_string().contains("no such table") => Ok(0),
-            Err(e) => Err(AxonError::Storage(e.to_string())),
+            Err(e) => Err(e),
         }
     }
 
@@ -111,21 +134,30 @@ impl SqliteStorageAdapter {
         tenant_id: &str,
         user_id: &str,
     ) -> Result<(), AxonError> {
-        let conn = self.conn()?;
         let now = 1_000_000i64;
-        conn.execute(
-            "INSERT OR IGNORE INTO tenants \
-             (id, name, display_name, created_at_ms, updated_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![tenant_id, tenant_id, tenant_id, now, now],
-        )
-        .map_err(|e| AxonError::Storage(e.to_string()))?;
-        conn.execute(
-            "INSERT OR IGNORE INTO users (id, display_name, created_at_ms) \
-             VALUES (?1, ?2, ?3)",
-            params![user_id, user_id, now],
-        )
-        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query(
+                "INSERT OR IGNORE INTO tenants \
+                 (id, name, display_name, created_at_ms, updated_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .bind(tenant_id)
+            .bind(tenant_id)
+            .bind(tenant_id)
+            .bind(now)
+            .bind(now)
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "INSERT OR IGNORE INTO users (id, display_name, created_at_ms) \
+                 VALUES (?1, ?2, ?3)",
+            )
+            .bind(user_id)
+            .bind(user_id)
+            .bind(now)
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -135,14 +167,17 @@ impl SqliteStorageAdapter {
     /// integration tests that need a valid FK reference in `users` before
     /// calling `ensure_default_tenant`.
     pub fn test_insert_user(&self, user_id: &str) -> Result<(), AxonError> {
-        let conn = self.conn()?;
         let now = 1_000_000i64;
-        conn.execute(
-            "INSERT OR IGNORE INTO users (id, display_name, created_at_ms) \
-             VALUES (?1, ?2, ?3)",
-            params![user_id, user_id, now],
-        )
-        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query(
+                "INSERT OR IGNORE INTO users (id, display_name, created_at_ms) \
+                 VALUES (?1, ?2, ?3)",
+            )
+            .bind(user_id)
+            .bind(user_id)
+            .bind(now)
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -152,38 +187,61 @@ impl SqliteStorageAdapter {
         tenant_id: &str,
         user_id: &str,
     ) -> Result<i64, AxonError> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT COUNT(*) FROM tenant_users \
-             WHERE tenant_id = ?1 AND user_id = ?2",
-            params![tenant_id, user_id],
-            |row| row.get(0),
-        )
-        .map_err(|e| AxonError::Storage(e.to_string()))
+        let count: i64 = self.block_on(
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM tenant_users \
+                 WHERE tenant_id = ?1 AND user_id = ?2",
+            )
+            .bind(tenant_id)
+            .bind(user_id)
+            .fetch_one(&self.pool),
+        )?;
+        Ok(count)
     }
 
-    /// Acquire the inner `Connection` lock, converting a poisoned-mutex error into
-    /// an `AxonError::Storage`.
-    fn conn(&self) -> Result<MutexGuard<'_, Connection>, AxonError> {
-        self.conn
-            .lock()
-            .map_err(|e| AxonError::Storage(format!("mutex poisoned: {e}")))
+    /// Bridge async sqlx futures into synchronous results.
+    ///
+    /// When called from outside any tokio runtime, uses the adapter's own
+    /// runtime directly.  When called from within an existing tokio runtime
+    /// (e.g. during server request handling), delegates to
+    /// `tokio::task::block_in_place` on the adapter's multi-thread handle
+    /// so the caller's runtime is not blocked.
+    fn block_on<T>(
+        &self,
+        fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
+    ) -> Result<T, AxonError> {
+        self.rt
+            .block_on(fut)
+            .map_err(|e| AxonError::Storage(e.to_string()))
     }
 
     fn init_schema(&self) -> Result<(), AxonError> {
-        self.conn()?
-            .execute_batch(
-                "PRAGMA foreign_keys = ON;
-                CREATE TABLE IF NOT EXISTS databases (
+        // sqlx doesn't have execute_batch, so we execute each statement separately.
+        // However, we can combine them with semicolons in a single raw query for
+        // CREATE TABLE IF NOT EXISTS statements.
+        self.block_on(sqlx::query("PRAGMA foreign_keys = ON").execute(&self.pool))?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS databases (
                     name TEXT NOT NULL PRIMARY KEY
-                );
-                CREATE TABLE IF NOT EXISTS namespaces (
+                )",
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS namespaces (
                     database_name TEXT NOT NULL,
                     name          TEXT NOT NULL,
                     PRIMARY KEY (database_name, name),
                     FOREIGN KEY (database_name) REFERENCES databases(name) ON DELETE CASCADE
-                );
-                CREATE TABLE IF NOT EXISTS entities (
+                )",
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS entities (
                     collection    TEXT NOT NULL,
                     database_name TEXT NOT NULL DEFAULT 'default',
                     schema_name   TEXT NOT NULL DEFAULT 'default',
@@ -191,8 +249,13 @@ impl SqliteStorageAdapter {
                     version       INTEGER NOT NULL,
                     data          TEXT NOT NULL,
                     PRIMARY KEY (database_name, schema_name, collection, id)
-                );
-                CREATE TABLE IF NOT EXISTS schema_versions (
+                )",
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS schema_versions (
                     collection    TEXT NOT NULL,
                     database_name TEXT NOT NULL DEFAULT 'default',
                     schema_name   TEXT NOT NULL DEFAULT 'default',
@@ -200,14 +263,24 @@ impl SqliteStorageAdapter {
                     schema_json   TEXT NOT NULL,
                     created_at    INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (database_name, schema_name, collection, version)
-                );
-                CREATE TABLE IF NOT EXISTS collections (
+                )",
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS collections (
                     name          TEXT NOT NULL,
                     database_name TEXT NOT NULL DEFAULT 'default',
                     schema_name   TEXT NOT NULL DEFAULT 'default',
                     PRIMARY KEY (database_name, schema_name, name)
-                );
-                CREATE TABLE IF NOT EXISTS collection_views (
+                )",
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS collection_views (
                     collection        TEXT NOT NULL,
                     database_name     TEXT NOT NULL DEFAULT 'default',
                     schema_name       TEXT NOT NULL DEFAULT 'default',
@@ -219,8 +292,13 @@ impl SqliteStorageAdapter {
                     FOREIGN KEY (database_name, schema_name, collection)
                         REFERENCES collections(database_name, schema_name, name)
                         ON DELETE CASCADE
-                );
-                CREATE TABLE IF NOT EXISTS audit_log (
+                )",
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS audit_log (
                     id             INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp_ns   INTEGER NOT NULL,
                     collection     TEXT NOT NULL,
@@ -230,9 +308,10 @@ impl SqliteStorageAdapter {
                     actor          TEXT NOT NULL,
                     transaction_id TEXT,
                     entry_json     TEXT NOT NULL
-                );",
+                )",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .execute(&self.pool),
+        )?;
         self.ensure_namespace_catalog_tables()?;
         self.ensure_default_namespace()
     }
@@ -242,64 +321,56 @@ impl SqliteStorageAdapter {
         collection: &CollectionId,
         namespace: &Namespace,
     ) -> Result<bool, AxonError> {
-        let exists: i64 = self
-            .conn()?
-            .query_row(
+        let exists: i64 = self.block_on(
+            sqlx::query_scalar(
                 "SELECT EXISTS(
                     SELECT 1 FROM collections
                     WHERE name = ?1 AND database_name = ?2 AND schema_name = ?3
                 )",
-                params![
-                    collection.as_str(),
-                    namespace.database.as_str(),
-                    namespace.schema.as_str()
-                ],
-                |row| row.get(0),
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(collection.as_str())
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .fetch_one(&self.pool),
+        )?;
         Ok(exists != 0)
     }
 
     fn database_exists(&self, database: &str) -> Result<bool, AxonError> {
-        let exists: i64 = self
-            .conn()?
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM databases WHERE name = ?1)",
-                params![database],
-                |row| row.get(0),
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let exists: i64 = self.block_on(
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM databases WHERE name = ?1)")
+                .bind(database)
+                .fetch_one(&self.pool),
+        )?;
         Ok(exists != 0)
     }
 
     fn namespace_exists(&self, namespace: &Namespace) -> Result<bool, AxonError> {
-        let exists: i64 = self
-            .conn()?
-            .query_row(
+        let exists: i64 = self.block_on(
+            sqlx::query_scalar(
                 "SELECT EXISTS(
                     SELECT 1 FROM namespaces
                     WHERE database_name = ?1 AND name = ?2
                 )",
-                params![namespace.database.as_str(), namespace.schema.as_str()],
-                |row| row.get(0),
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .fetch_one(&self.pool),
+        )?;
         Ok(exists != 0)
     }
 
     fn table_info(&self, table: &str) -> Result<Vec<(String, i64)>, AxonError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(&format!("PRAGMA table_info({table})"))
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
-            })
-            .map_err(|e| AxonError::Storage(e.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        Ok(rows)
+        use sqlx::Row;
+        let rows = self
+            .block_on(sqlx::query(&format!("PRAGMA table_info({table})")).fetch_all(&self.pool))?;
+        let mut result = Vec::new();
+        for row in rows {
+            let name: String = row.get(1);
+            let pk: i64 = row.get(5);
+            result.push((name, pk));
+        }
+        Ok(result)
     }
 
     fn table_columns(&self, table: &str) -> Result<Vec<String>, AxonError> {
@@ -319,17 +390,20 @@ impl SqliteStorageAdapter {
         has_database_name: bool,
         has_schema_name: bool,
     ) -> Result<(), AxonError> {
-        self.conn()?
-            .execute_batch(
-                "ALTER TABLE collections RENAME TO collections_legacy;
-                 CREATE TABLE collections (
+        self.block_on(
+            sqlx::query("ALTER TABLE collections RENAME TO collections_legacy").execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE collections (
                      name          TEXT NOT NULL,
                      database_name TEXT NOT NULL DEFAULT 'default',
                      schema_name   TEXT NOT NULL DEFAULT 'default',
                      PRIMARY KEY (database_name, schema_name, name)
-                 );",
+                 )",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .execute(&self.pool),
+        )?;
 
         let select_sql = match (has_database_name, has_schema_name) {
             (true, true) => {
@@ -350,17 +424,13 @@ impl SqliteStorageAdapter {
             }
         };
 
-        self.conn()?
-            .execute(
-                &format!(
-                    "INSERT OR IGNORE INTO collections (name, database_name, schema_name) {select_sql}"
-                ),
-                [],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute("DROP TABLE collections_legacy", [])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query(&format!(
+                "INSERT OR IGNORE INTO collections (name, database_name, schema_name) {select_sql}"
+            ))
+            .execute(&self.pool),
+        )?;
+        self.block_on(sqlx::query("DROP TABLE collections_legacy").execute(&self.pool))?;
         Ok(())
     }
 
@@ -369,10 +439,12 @@ impl SqliteStorageAdapter {
         has_database_name: bool,
         has_schema_name: bool,
     ) -> Result<(), AxonError> {
-        self.conn()?
-            .execute_batch(
-                "ALTER TABLE entities RENAME TO entities_legacy;
-                 CREATE TABLE entities (
+        self.block_on(
+            sqlx::query("ALTER TABLE entities RENAME TO entities_legacy").execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE entities (
                      collection    TEXT NOT NULL,
                      database_name TEXT NOT NULL DEFAULT 'default',
                      schema_name   TEXT NOT NULL DEFAULT 'default',
@@ -380,9 +452,10 @@ impl SqliteStorageAdapter {
                      version       INTEGER NOT NULL,
                      data          TEXT NOT NULL,
                      PRIMARY KEY (database_name, schema_name, collection, id)
-                 );",
+                 )",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .execute(&self.pool),
+        )?;
 
         let select_sql = match (has_database_name, has_schema_name) {
             (true, true) => {
@@ -403,17 +476,13 @@ impl SqliteStorageAdapter {
             }
         };
 
-        self.conn()?
-            .execute(
-                &format!(
-                    "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data) {select_sql}"
-                ),
-                [],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute("DROP TABLE entities_legacy", [])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query(&format!(
+                "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data) {select_sql}"
+            ))
+            .execute(&self.pool),
+        )?;
+        self.block_on(sqlx::query("DROP TABLE entities_legacy").execute(&self.pool))?;
         Ok(())
     }
 
@@ -422,10 +491,13 @@ impl SqliteStorageAdapter {
         has_database_name: bool,
         has_schema_name: bool,
     ) -> Result<(), AxonError> {
-        self.conn()?
-            .execute_batch(
-                "ALTER TABLE schema_versions RENAME TO schema_versions_legacy;
-                 CREATE TABLE schema_versions (
+        self.block_on(
+            sqlx::query("ALTER TABLE schema_versions RENAME TO schema_versions_legacy")
+                .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE schema_versions (
                      collection    TEXT NOT NULL,
                      database_name TEXT NOT NULL DEFAULT 'default',
                      schema_name   TEXT NOT NULL DEFAULT 'default',
@@ -433,9 +505,10 @@ impl SqliteStorageAdapter {
                      schema_json   TEXT NOT NULL,
                      created_at    INTEGER NOT NULL DEFAULT 0,
                      PRIMARY KEY (database_name, schema_name, collection, version)
-                 );",
+                 )",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .execute(&self.pool),
+        )?;
 
         let select_sql = match (has_database_name, has_schema_name) {
             (true, true) => {
@@ -471,19 +544,15 @@ impl SqliteStorageAdapter {
             }
         };
 
-        self.conn()?
-            .execute(
-                &format!(
-                    "INSERT INTO schema_versions
-                        (collection, database_name, schema_name, version, schema_json, created_at)
-                     {select_sql}"
-                ),
-                [],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute("DROP TABLE schema_versions_legacy", [])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query(&format!(
+                "INSERT INTO schema_versions
+                    (collection, database_name, schema_name, version, schema_json, created_at)
+                 {select_sql}"
+            ))
+            .execute(&self.pool),
+        )?;
+        self.block_on(sqlx::query("DROP TABLE schema_versions_legacy").execute(&self.pool))?;
         Ok(())
     }
 
@@ -492,10 +561,13 @@ impl SqliteStorageAdapter {
         has_database_name: bool,
         has_schema_name: bool,
     ) -> Result<(), AxonError> {
-        self.conn()?
-            .execute_batch(
-                "ALTER TABLE collection_views RENAME TO collection_views_legacy;
-                 CREATE TABLE collection_views (
+        self.block_on(
+            sqlx::query("ALTER TABLE collection_views RENAME TO collection_views_legacy")
+                .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE collection_views (
                      collection        TEXT NOT NULL,
                      database_name     TEXT NOT NULL DEFAULT 'default',
                      schema_name       TEXT NOT NULL DEFAULT 'default',
@@ -507,9 +579,10 @@ impl SqliteStorageAdapter {
                      FOREIGN KEY (database_name, schema_name, collection)
                          REFERENCES collections(database_name, schema_name, name)
                          ON DELETE CASCADE
-                 );",
+                 )",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .execute(&self.pool),
+        )?;
 
         let select_sql = match (has_database_name, has_schema_name) {
             (true, true) => {
@@ -535,19 +608,15 @@ impl SqliteStorageAdapter {
             }
         };
 
-        self.conn()?
-            .execute(
-                &format!(
-                    "INSERT OR REPLACE INTO collection_views
-                        (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
-                     {select_sql}"
-                ),
-                [],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute("DROP TABLE collection_views_legacy", [])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query(&format!(
+                "INSERT OR REPLACE INTO collection_views
+                    (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
+                 {select_sql}"
+            ))
+            .execute(&self.pool),
+        )?;
+        self.block_on(sqlx::query("DROP TABLE collection_views_legacy").execute(&self.pool))?;
         Ok(())
     }
 
@@ -572,19 +641,17 @@ impl SqliteStorageAdapter {
         let rebuild_views = !views_ok;
 
         if !(rebuild_entities || rebuild_collections || rebuild_schema || rebuild_views) {
-            self.conn()?
-                .execute(
+            self.block_on(
+                sqlx::query(
                     "CREATE INDEX IF NOT EXISTS idx_collections_namespace
                      ON collections (database_name, schema_name, name)",
-                    [],
                 )
-                .map_err(|e| AxonError::Storage(e.to_string()))?;
+                .execute(&self.pool),
+            )?;
             return Ok(());
         }
 
-        self.conn()?
-            .execute_batch("PRAGMA foreign_keys = OFF")
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(sqlx::query("PRAGMA foreign_keys = OFF").execute(&self.pool))?;
 
         if rebuild_entities {
             self.rebuild_entities_table(
@@ -619,16 +686,14 @@ impl SqliteStorageAdapter {
             )?;
         }
 
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "CREATE INDEX IF NOT EXISTS idx_collections_namespace
                  ON collections (database_name, schema_name, name)",
-                [],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute_batch("PRAGMA foreign_keys = ON")
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .execute(&self.pool),
+        )?;
+        self.block_on(sqlx::query("PRAGMA foreign_keys = ON").execute(&self.pool))?;
         Ok(())
     }
 
@@ -636,9 +701,9 @@ impl SqliteStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Vec<Namespace>, AxonError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
+        use sqlx::Row;
+        let rows = self.block_on(
+            sqlx::query(
                 "SELECT database_name, schema_name FROM collections
                  WHERE name = ?1
                  ORDER BY CASE
@@ -648,17 +713,17 @@ impl SqliteStorageAdapter {
                  database_name,
                  schema_name",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let namespaces = stmt
-            .query_map(params![collection.as_str()], |row| {
-                Ok(Namespace::new(
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                ))
+            .bind(collection.as_str())
+            .fetch_all(&self.pool),
+        )?;
+        let namespaces = rows
+            .iter()
+            .map(|row| {
+                let db: String = row.get("database_name");
+                let schema: String = row.get("schema_name");
+                Namespace::new(db, schema)
             })
-            .map_err(|e| AxonError::Storage(e.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .collect();
         Ok(namespaces)
     }
 
@@ -702,67 +767,65 @@ impl SqliteStorageAdapter {
         &self,
         namespace: &Namespace,
     ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
+        use sqlx::Row;
+        let rows = self.block_on(
+            sqlx::query(
                 "SELECT name FROM collections
                  WHERE database_name = ?1 AND schema_name = ?2
                  ORDER BY name ASC",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let rows = stmt
-            .query_map(
-                params![namespace.database.as_str(), namespace.schema.as_str()],
-                |row| {
-                    row.get::<_, String>(0).map(|name| {
-                        QualifiedCollectionId::from_parts(namespace, &CollectionId::new(name))
-                    })
-                },
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AxonError::Storage(e.to_string()))
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .fetch_all(&self.pool),
+        )?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let name: String = row.get("name");
+                QualifiedCollectionId::from_parts(namespace, &CollectionId::new(name))
+            })
+            .collect())
     }
 
     fn database_collection_keys(
         &self,
         database: &str,
     ) -> Result<Vec<QualifiedCollectionId>, AxonError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
+        use sqlx::Row;
+        let rows = self.block_on(
+            sqlx::query(
                 "SELECT schema_name, name FROM collections
                  WHERE database_name = ?1
                  ORDER BY schema_name ASC, name ASC",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let rows = stmt
-            .query_map(params![database], |row| {
-                let schema: String = row.get(0)?;
-                let collection: String = row.get(1)?;
-                Ok(QualifiedCollectionId::from_parts(
+            .bind(database)
+            .fetch_all(&self.pool),
+        )?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let schema: String = row.get("schema_name");
+                let collection: String = row.get("name");
+                QualifiedCollectionId::from_parts(
                     &Namespace::new(database, schema),
                     &CollectionId::new(collection),
-                ))
+                )
             })
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AxonError::Storage(e.to_string()))
+            .collect())
     }
 
     fn ensure_default_namespace(&self) -> Result<(), AxonError> {
-        self.conn()?
-            .execute(
-                "INSERT OR IGNORE INTO databases (name) VALUES (?1)",
-                params![DEFAULT_DATABASE],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
-                "INSERT OR IGNORE INTO namespaces (database_name, name) VALUES (?1, ?2)",
-                params![DEFAULT_DATABASE, DEFAULT_SCHEMA],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query("INSERT OR IGNORE INTO databases (name) VALUES (?1)")
+                .bind(DEFAULT_DATABASE)
+                .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query("INSERT OR IGNORE INTO namespaces (database_name, name) VALUES (?1, ?2)")
+                .bind(DEFAULT_DATABASE)
+                .bind(DEFAULT_SCHEMA)
+                .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -786,6 +849,12 @@ impl SqliteStorageAdapter {
             gate_results: Default::default(),
         })
     }
+
+    /// Run a raw SQL query and return the count (as i64).
+    /// Used in tests that need to verify row counts directly.
+    pub fn query_scalar_i64(&self, sql: &str) -> Result<i64, AxonError> {
+        self.block_on(sqlx::query_scalar::<_, i64>(sql).fetch_one(&self.pool))
+    }
 }
 
 impl StorageAdapter for SqliteStorageAdapter {
@@ -797,90 +866,80 @@ impl StorageAdapter for SqliteStorageAdapter {
     }
 
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(collection)?;
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare_cached(
+        let row = self.block_on(
+            sqlx::query(
                 "SELECT collection, id, version, data FROM entities
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND id = ?4",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(id.as_str())
+            .fetch_optional(&self.pool),
+        )?;
 
-        let mut rows = stmt
-            .query(params![
-                key.collection.as_str(),
-                key.namespace.database.as_str(),
-                key.namespace.schema.as_str(),
-                id.as_str()
-            ])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-        if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
-            let entity = Self::row_to_entity(
-                row.get(0).map_err(|e| AxonError::Storage(e.to_string()))?,
-                row.get(1).map_err(|e| AxonError::Storage(e.to_string()))?,
-                row.get::<_, i64>(2)
-                    .map_err(|e| AxonError::Storage(e.to_string()))? as u64,
-                row.get(3).map_err(|e| AxonError::Storage(e.to_string()))?,
-            )?;
-            Ok(Some(entity))
-        } else {
-            Ok(None)
+        match row {
+            Some(row) => {
+                let collection_str: String = row.get("collection");
+                let id_str: String = row.get("id");
+                let version: i64 = row.get("version");
+                let data_str: String = row.get("data");
+                let entity = Self::row_to_entity(collection_str, id_str, version as u64, data_str)?;
+                Ok(Some(entity))
+            }
+            None => Ok(None),
         }
     }
 
     fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_string(&entity.data)?;
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "INSERT OR REPLACE INTO entities (collection, database_name, schema_name, id, version, data)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str(),
-                    entity.id.as_str(),
-                    entity.version as i64,
-                    data_json,
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(entity.id.as_str())
+            .bind(entity.version as i64)
+            .bind(&data_json)
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM entities
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND id = ?4",
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str(),
-                    id.as_str()
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(id.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        let n: i64 = self
-            .conn()?
-            .query_row(
+        let n: i64 = self.block_on(
+            sqlx::query_scalar(
                 "SELECT COUNT(*) FROM entities
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str()
-                ],
-                |row| row.get(0),
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_one(&self.pool),
+        )?;
         Ok(n as usize)
     }
 
@@ -891,9 +950,8 @@ impl StorageAdapter for SqliteStorageAdapter {
         end: Option<&EntityId>,
         limit: Option<usize>,
     ) -> Result<Vec<Entity>, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(collection)?;
-        // Build a query with optional start/end bounds. SQLite does not support
-        // binding NULL in place of a comparison, so we use conditional predicates.
         let start_str = start.map(|s| s.as_str().to_owned());
         let end_str = end.map(|e| e.as_str().to_owned());
         let limit_val = limit.map(|l| l as i64).unwrap_or(i64::MAX);
@@ -907,36 +965,23 @@ impl StorageAdapter for SqliteStorageAdapter {
                    ORDER BY id ASC
                    LIMIT ?6";
 
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare_cached(sql)
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-        let rows = stmt
-            .query_map(
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str(),
-                    start_str,
-                    end_str,
-                    limit_val
-                ],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, i64>(2)?,
-                        row.get::<_, String>(3)?,
-                    ))
-                },
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let rows = self.block_on(
+            sqlx::query(sql)
+                .bind(key.collection.as_str())
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .bind(&start_str)
+                .bind(&end_str)
+                .bind(limit_val)
+                .fetch_all(&self.pool),
+        )?;
 
         let mut entities = Vec::new();
-        for row in rows {
-            let (col, id, version, data_json) =
-                row.map_err(|e| AxonError::Storage(e.to_string()))?;
+        for row in &rows {
+            let col: String = row.get("collection");
+            let id: String = row.get("id");
+            let version: i64 = row.get("version");
+            let data_json: String = row.get("data");
             entities.push(Self::row_to_entity(col, id, version as u64, data_json)?);
         }
         Ok(entities)
@@ -963,24 +1008,22 @@ impl StorageAdapter for SqliteStorageAdapter {
         let new_version = expected_version + 1;
         let data_json = serde_json::to_string(&entity.data)?;
 
-        let changed = self
-            .conn()?
-            .execute(
+        let result = self.block_on(
+            sqlx::query(
                 "UPDATE entities SET version = ?1, data = ?2
                  WHERE collection = ?3 AND database_name = ?4 AND schema_name = ?5 AND id = ?6 AND version = ?7",
-                params![
-                    new_version as i64,
-                    data_json,
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str(),
-                    entity.id.as_str(),
-                    expected_version as i64,
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(new_version as i64)
+            .bind(&data_json)
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(entity.id.as_str())
+            .bind(expected_version as i64)
+            .execute(&self.pool),
+        )?;
 
-        if changed == 0 {
+        if result.rows_affected() == 0 {
             // A concurrent writer changed the version between our read and write.
             let current_after_race = self.get(&entity.collection, &entity.id)?;
             let actual = current_after_race.as_ref().map(|e| e.version).unwrap_or(0);
@@ -1005,24 +1048,22 @@ impl StorageAdapter for SqliteStorageAdapter {
     ) -> Result<Entity, AxonError> {
         let key = self.resolve_catalog_key(&entity.collection)?;
         let data_json = serde_json::to_string(&entity.data)?;
-        let changed = self
-            .conn()?
-            .execute(
+        let result = self.block_on(
+            sqlx::query(
                 "INSERT INTO entities (collection, database_name, schema_name, id, version, data)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(database_name, schema_name, collection, id) DO NOTHING",
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str(),
-                    entity.id.as_str(),
-                    entity.version as i64,
-                    data_json,
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(entity.id.as_str())
+            .bind(entity.version as i64)
+            .bind(&data_json)
+            .execute(&self.pool),
+        )?;
 
-        if changed == 0 {
+        if result.rows_affected() == 0 {
             let current = self.get(&entity.collection, &entity.id)?;
             let actual = current
                 .as_ref()
@@ -1045,9 +1086,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         if self.in_tx {
             return Err(AxonError::Storage("transaction already active".into()));
         }
-        self.conn()?
-            .execute_batch("BEGIN IMMEDIATE")
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(sqlx::query("BEGIN IMMEDIATE").execute(&self.pool))?;
         self.in_tx = true;
         Ok(())
     }
@@ -1056,9 +1095,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         if !self.in_tx {
             return Err(AxonError::Storage("no active transaction".into()));
         }
-        self.conn()?
-            .execute_batch("COMMIT")
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(sqlx::query("COMMIT").execute(&self.pool))?;
         self.in_tx = false;
         Ok(())
     }
@@ -1067,9 +1104,7 @@ impl StorageAdapter for SqliteStorageAdapter {
         if !self.in_tx {
             return Ok(());
         }
-        self.conn()?
-            .execute_batch("ROLLBACK")
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(sqlx::query("ROLLBACK").execute(&self.pool))?;
         self.in_tx = false;
         Ok(())
     }
@@ -1079,28 +1114,25 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::AlreadyExists(format!("database '{name}'")));
         }
 
-        self.conn()?
-            .execute("INSERT INTO databases (name) VALUES (?1)", params![name])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
-                "INSERT INTO namespaces (database_name, name) VALUES (?1, ?2)",
-                params![name, DEFAULT_SCHEMA],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query("INSERT INTO databases (name) VALUES (?1)")
+                .bind(name)
+                .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query("INSERT INTO namespaces (database_name, name) VALUES (?1, ?2)")
+                .bind(name)
+                .bind(DEFAULT_SCHEMA)
+                .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn list_databases(&self) -> Result<Vec<String>, AxonError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare("SELECT name FROM databases ORDER BY name ASC")
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let databases = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| AxonError::Storage(e.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        let databases: Vec<String> = self.block_on(
+            sqlx::query_scalar("SELECT name FROM databases ORDER BY name ASC")
+                .fetch_all(&self.pool),
+        )?;
         Ok(databases)
     }
 
@@ -1111,33 +1143,31 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         let doomed = self.database_collection_keys(name)?;
         self.purge_links_for_collections(&doomed)?;
-        self.conn()?
-            .execute(
-                "DELETE FROM entities WHERE database_name = ?1",
-                params![name],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
-                "DELETE FROM collection_views WHERE database_name = ?1",
-                params![name],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
-                "DELETE FROM schema_versions WHERE database_name = ?1",
-                params![name],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
-                "DELETE FROM collections WHERE database_name = ?1",
-                params![name],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute("DELETE FROM databases WHERE name = ?1", params![name])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query("DELETE FROM entities WHERE database_name = ?1")
+                .bind(name)
+                .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query("DELETE FROM collection_views WHERE database_name = ?1")
+                .bind(name)
+                .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query("DELETE FROM schema_versions WHERE database_name = ?1")
+                .bind(name)
+                .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query("DELETE FROM collections WHERE database_name = ?1")
+                .bind(name)
+                .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query("DELETE FROM databases WHERE name = ?1")
+                .bind(name)
+                .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -1152,12 +1182,12 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::AlreadyExists(format!("namespace '{namespace}'")));
         }
 
-        self.conn()?
-            .execute(
-                "INSERT INTO namespaces (database_name, name) VALUES (?1, ?2)",
-                params![namespace.database.as_str(), namespace.schema.as_str()],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query("INSERT INTO namespaces (database_name, name) VALUES (?1, ?2)")
+                .bind(namespace.database.as_str())
+                .bind(namespace.schema.as_str())
+                .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -1166,19 +1196,15 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::NotFound(format!("database '{database}'")));
         }
 
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
+        let namespaces: Vec<String> = self.block_on(
+            sqlx::query_scalar(
                 "SELECT name FROM namespaces
                  WHERE database_name = ?1
                  ORDER BY name ASC",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let namespaces = stmt
-            .query_map(params![database], |row| row.get::<_, String>(0))
-            .map_err(|e| AxonError::Storage(e.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(database)
+            .fetch_all(&self.pool),
+        )?;
         Ok(namespaces)
     }
 
@@ -1189,41 +1215,51 @@ impl StorageAdapter for SqliteStorageAdapter {
 
         let doomed = self.namespace_collection_keys(namespace)?;
         self.purge_links_for_collections(&doomed)?;
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM entities
                  WHERE database_name = ?1 AND schema_name = ?2",
-                params![namespace.database.as_str(), namespace.schema.as_str()],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM collection_views
                  WHERE database_name = ?1 AND schema_name = ?2",
-                params![namespace.database.as_str(), namespace.schema.as_str()],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM schema_versions
                  WHERE database_name = ?1 AND schema_name = ?2",
-                params![namespace.database.as_str(), namespace.schema.as_str()],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM collections
                  WHERE database_name = ?1 AND schema_name = ?2",
-                params![namespace.database.as_str(), namespace.schema.as_str()],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM namespaces
                  WHERE database_name = ?1 AND name = ?2",
-                params![namespace.database.as_str(), namespace.schema.as_str()],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -1235,26 +1271,22 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
+        let names: Vec<String> = self.block_on(
+            sqlx::query_scalar(
                 "SELECT name FROM collections
                  WHERE database_name = ?1 AND schema_name = ?2
                  ORDER BY name ASC",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let collections = stmt
-            .query_map(
-                params![namespace.database.as_str(), namespace.schema.as_str()],
-                |row| row.get::<_, String>(0).map(CollectionId::new),
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        Ok(collections)
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .fetch_all(&self.pool),
+        )?;
+        Ok(names.into_iter().map(CollectionId::new).collect())
     }
 
     fn append_audit_entry(&mut self, mut entry: AuditEntry) -> Result<AuditEntry, AxonError> {
+        use sqlx::Row;
+
         // Assign timestamp if the caller left it at the zero sentinel.
         if entry.timestamp_ns == 0 {
             entry.timestamp_ns = SystemTime::now()
@@ -1263,52 +1295,46 @@ impl StorageAdapter for SqliteStorageAdapter {
                 .unwrap_or(0);
         }
 
-        // Serialize the full entry. The `id` field will be 0 here; the
-        // canonical `id` is the SQLite AUTOINCREMENT rowid stored in the `id`
-        // column. Readers reconstruct the entry from `entry_json` and override
-        // `id` with the column value.
         let entry_json =
             serde_json::to_string(&entry).map_err(|e| AxonError::Storage(e.to_string()))?;
 
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "INSERT INTO audit_log
                      (timestamp_ns, collection, entity_id, version, mutation, actor,
                       transaction_id, entry_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![
-                    entry.timestamp_ns as i64,
-                    entry.collection.as_str(),
-                    entry.entity_id.as_str(),
-                    entry.version as i64,
-                    entry.mutation.to_string(),
-                    entry.actor,
-                    entry.transaction_id,
-                    entry_json,
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(entry.timestamp_ns as i64)
+            .bind(entry.collection.as_str())
+            .bind(entry.entity_id.as_str())
+            .bind(entry.version as i64)
+            .bind(entry.mutation.to_string())
+            .bind(&entry.actor)
+            .bind(&entry.transaction_id)
+            .bind(&entry_json)
+            .execute(&self.pool),
+        )?;
 
-        entry.id = self.conn()?.last_insert_rowid() as u64;
+        // Retrieve the last inserted rowid
+        let row = self.block_on(sqlx::query("SELECT last_insert_rowid()").fetch_one(&self.pool))?;
+        entry.id = row.get::<i64, _>(0) as u64;
         Ok(entry)
     }
 
     fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(&schema.collection)?;
         // Auto-increment: find current max version for this collection.
-        let max_version: i64 = self
-            .conn()?
-            .query_row(
+        let max_version: i64 = self.block_on(
+            sqlx::query_scalar(
                 "SELECT COALESCE(MAX(version), 0) FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str()
-                ],
-                |row| row.get(0),
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_one(&self.pool),
+        )?;
         let next_version = max_version + 1;
 
         let mut versioned = schema.clone();
@@ -1321,49 +1347,45 @@ impl StorageAdapter for SqliteStorageAdapter {
             .unwrap_or_default()
             .as_nanos() as i64;
 
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "INSERT INTO schema_versions
                     (collection, database_name, schema_name, version, schema_json, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str(),
-                    next_version,
-                    schema_json,
-                    now_ns,
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(next_version)
+            .bind(&schema_json)
+            .bind(now_ns)
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn get_schema(&self, collection: &CollectionId) -> Result<Option<CollectionSchema>, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(collection)?;
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare_cached(
+        let row = self.block_on(
+            sqlx::query(
                 "SELECT schema_json FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3
                  ORDER BY version DESC LIMIT 1",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_optional(&self.pool),
+        )?;
 
-        let mut rows = stmt
-            .query(params![
-                key.collection.as_str(),
-                key.namespace.database.as_str(),
-                key.namespace.schema.as_str()
-            ])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-        if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
-            let json: String = row.get(0).map_err(|e| AxonError::Storage(e.to_string()))?;
-            let schema: CollectionSchema = serde_json::from_str(&json)?;
-            Ok(Some(schema))
-        } else {
-            Ok(None)
+        match row {
+            Some(row) => {
+                let json: String = row.get("schema_json");
+                let schema: CollectionSchema = serde_json::from_str(&json)?;
+                Ok(Some(schema))
+            }
+            None => Ok(None),
         }
     }
 
@@ -1372,30 +1394,27 @@ impl StorageAdapter for SqliteStorageAdapter {
         collection: &CollectionId,
         version: u32,
     ) -> Result<Option<CollectionSchema>, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(collection)?;
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare_cached(
+        let row = self.block_on(
+            sqlx::query(
                 "SELECT schema_json FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3 AND version = ?4",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(version as i64)
+            .fetch_optional(&self.pool),
+        )?;
 
-        let mut rows = stmt
-            .query(params![
-                key.collection.as_str(),
-                key.namespace.database.as_str(),
-                key.namespace.schema.as_str(),
-                version as i64
-            ])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-        if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
-            let json: String = row.get(0).map_err(|e| AxonError::Storage(e.to_string()))?;
-            let schema: CollectionSchema = serde_json::from_str(&json)?;
-            Ok(Some(schema))
-        } else {
-            Ok(None)
+        match row {
+            Some(row) => {
+                let json: String = row.get("schema_json");
+                let schema: CollectionSchema = serde_json::from_str(&json)?;
+                Ok(Some(schema))
+            }
+            None => Ok(None),
         }
     }
 
@@ -1403,47 +1422,41 @@ impl StorageAdapter for SqliteStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Vec<(u32, u64)>, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(collection)?;
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare_cached(
+        let rows = self.block_on(
+            sqlx::query(
                 "SELECT version, created_at FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3
                  ORDER BY version ASC",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-        let rows = stmt
-            .query_map(
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str()
-                ],
-                |row| Ok((row.get::<_, i64>(0)? as u32, row.get::<_, i64>(1)? as u64)),
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_all(&self.pool),
+        )?;
 
         let mut result = vec![];
-        for row in rows {
-            result.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
+        for row in &rows {
+            let version: i64 = row.get("version");
+            let created_at: i64 = row.get("created_at");
+            result.push((version as u32, created_at as u64));
         }
         Ok(result)
     }
 
     fn delete_schema(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str()
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -1457,19 +1470,17 @@ impl StorageAdapter for SqliteStorageAdapter {
         }
 
         let current_version: i64 = self
-            .conn()?
-            .query_row(
-                "SELECT COALESCE(version, 0) FROM collection_views
-                 WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str()
-                ],
-                |row| row.get(0),
+            .block_on(
+                sqlx::query_scalar(
+                    "SELECT COALESCE(version, 0) FROM collection_views
+                     WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
+                )
+                .bind(key.collection.as_str())
+                .bind(key.namespace.database.as_str())
+                .bind(key.namespace.schema.as_str())
+                .fetch_one(&self.pool),
             )
-            .or_else(|_| Ok(0))
-            .map_err(|e: rusqlite::Error| AxonError::Storage(e.to_string()))?;
+            .unwrap_or_default();
         let next_version = current_version + 1;
 
         let updated_at_ns = SystemTime::now()
@@ -1483,8 +1494,8 @@ impl StorageAdapter for SqliteStorageAdapter {
         versioned.updated_at_ns = Some(updated_at_ns as u64);
         let view_json = serde_json::to_string(&versioned)?;
 
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "INSERT INTO collection_views
                     (collection, database_name, schema_name, version, view_json, updated_at_ns, updated_by)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -1493,17 +1504,16 @@ impl StorageAdapter for SqliteStorageAdapter {
                      view_json = excluded.view_json,
                      updated_at_ns = excluded.updated_at_ns,
                      updated_by = excluded.updated_by",
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str(),
-                    next_version,
-                    view_json,
-                    updated_at_ns,
-                    versioned.updated_by.as_deref(),
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .bind(next_version)
+            .bind(&view_json)
+            .bind(updated_at_ns)
+            .bind(versioned.updated_by.as_deref())
+            .execute(&self.pool),
+        )?;
         Ok(versioned)
     }
 
@@ -1511,45 +1521,41 @@ impl StorageAdapter for SqliteStorageAdapter {
         &self,
         collection: &CollectionId,
     ) -> Result<Option<CollectionView>, AxonError> {
+        use sqlx::Row;
         let key = self.resolve_catalog_key(collection)?;
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare_cached(
+        let row = self.block_on(
+            sqlx::query(
                 "SELECT view_json FROM collection_views
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .fetch_optional(&self.pool),
+        )?;
 
-        let mut rows = stmt
-            .query(params![
-                key.collection.as_str(),
-                key.namespace.database.as_str(),
-                key.namespace.schema.as_str()
-            ])
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-        if let Some(row) = rows.next().map_err(|e| AxonError::Storage(e.to_string()))? {
-            let json: String = row.get(0).map_err(|e| AxonError::Storage(e.to_string()))?;
-            let view: CollectionView = serde_json::from_str(&json)?;
-            Ok(Some(view))
-        } else {
-            Ok(None)
+        match row {
+            Some(row) => {
+                let json: String = row.get("view_json");
+                let view: CollectionView = serde_json::from_str(&json)?;
+                Ok(Some(view))
+            }
+            None => Ok(None),
         }
     }
 
     fn delete_collection_view(&mut self, collection: &CollectionId) -> Result<(), AxonError> {
         let key = self.resolve_catalog_key(collection)?;
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM collection_views
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
-                params![
-                    key.collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str()
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(key.collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -1562,17 +1568,16 @@ impl StorageAdapter for SqliteStorageAdapter {
             return Err(AxonError::NotFound(format!("namespace '{namespace}'")));
         }
 
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "INSERT OR IGNORE INTO collections (name, database_name, schema_name)
                  VALUES (?1, ?2, ?3)",
-                params![
-                    collection.as_str(),
-                    namespace.database.as_str(),
-                    namespace.schema.as_str()
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(collection.as_str())
+            .bind(namespace.database.as_str())
+            .bind(namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -1581,62 +1586,48 @@ impl StorageAdapter for SqliteStorageAdapter {
         // Older SQLite databases may have `collection_views` without the
         // `ON DELETE CASCADE` foreign key. Delete the dependent row explicitly
         // so upgraded databases do not retain stale collection views.
-        self.conn()?
-            .execute(
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM collection_views
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
-                params![
-                    collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str()
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
+            .bind(collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM schema_versions
                  WHERE collection = ?1 AND database_name = ?2 AND schema_name = ?3",
-                params![
-                    collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str()
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        self.conn()?
-            .execute(
+            .bind(collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
                 "DELETE FROM collections
                  WHERE name = ?1 AND database_name = ?2 AND schema_name = ?3",
-                params![
-                    collection.as_str(),
-                    key.namespace.database.as_str(),
-                    key.namespace.schema.as_str()
-                ],
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(collection.as_str())
+            .bind(key.namespace.database.as_str())
+            .bind(key.namespace.schema.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
     fn list_collections(&self) -> Result<Vec<CollectionId>, AxonError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare_cached(
+        let names: Vec<String> = self.block_on(
+            sqlx::query_scalar(
                 "SELECT name FROM collections
                  ORDER BY database_name ASC, schema_name ASC, name ASC",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-        let mut names = Vec::new();
-        for row in rows {
-            names.push(CollectionId::new(
-                row.map_err(|e| AxonError::Storage(e.to_string()))?,
-            ));
-        }
-        Ok(names)
+            .fetch_all(&self.pool),
+        )?;
+        Ok(names.into_iter().map(CollectionId::new).collect())
     }
 
     fn collection_registered_in_namespace(
@@ -1650,20 +1641,19 @@ impl StorageAdapter for SqliteStorageAdapter {
     // ── Auth / tenancy (ADR-018) ─────────────────────────────────────────────
 
     fn is_jti_revoked(&self, jti: uuid::Uuid) -> Result<bool, axon_core::error::AxonError> {
-        let conn = self.conn()?;
-        match conn.query_row(
-            "SELECT 1 FROM credential_revocations WHERE jti = ?1",
-            [jti.to_string()],
-            |_| Ok(()),
+        match self.block_on(
+            sqlx::query("SELECT 1 FROM credential_revocations WHERE jti = ?1")
+                .bind(jti.to_string())
+                .fetch_optional(&self.pool),
         ) {
-            Ok(()) => Ok(true),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Ok(false),
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("no such table") {
                     Ok(false)
                 } else {
-                    Err(AxonError::Storage(msg))
+                    Err(e)
                 }
             }
         }
@@ -1673,29 +1663,34 @@ impl StorageAdapter for SqliteStorageAdapter {
         &self,
         user_id: axon_core::auth::UserId,
     ) -> Result<Option<axon_core::auth::User>, axon_core::error::AxonError> {
-        let conn = self.conn()?;
-        match conn.query_row(
-            "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
-             FROM users WHERE id = ?1",
-            [user_id.as_str()],
-            |row| {
-                Ok(axon_core::auth::User {
-                    id: axon_core::auth::UserId::new(row.get::<_, String>(0)?),
-                    display_name: row.get(1)?,
-                    email: row.get(2)?,
-                    created_at_ms: row.get::<_, i64>(3)? as u64,
-                    suspended_at_ms: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                })
-            },
+        use sqlx::Row;
+        match self.block_on(
+            sqlx::query(
+                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                 FROM users WHERE id = ?1",
+            )
+            .bind(user_id.as_str())
+            .fetch_optional(&self.pool),
         ) {
-            Ok(user) => Ok(Some(user)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Ok(Some(row)) => {
+                let user = axon_core::auth::User {
+                    id: axon_core::auth::UserId::new(row.get::<String, _>("id")),
+                    display_name: row.get("display_name"),
+                    email: row.get("email"),
+                    created_at_ms: row.get::<i64, _>("created_at_ms") as u64,
+                    suspended_at_ms: row
+                        .get::<Option<i64>, _>("suspended_at_ms")
+                        .map(|v| v as u64),
+                };
+                Ok(Some(user))
+            }
+            Ok(None) => Ok(None),
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("no such table") {
                     Ok(None)
                 } else {
-                    Err(AxonError::Storage(msg))
+                    Err(e)
                 }
             }
         }
@@ -1706,33 +1701,36 @@ impl StorageAdapter for SqliteStorageAdapter {
         tenant_id: axon_core::auth::TenantId,
         user_id: axon_core::auth::UserId,
     ) -> Result<Option<axon_core::auth::TenantMember>, axon_core::error::AxonError> {
-        let conn = self.conn()?;
-        match conn.query_row(
-            "SELECT tenant_id, user_id, role FROM tenant_users \
-             WHERE tenant_id = ?1 AND user_id = ?2",
-            [tenant_id.as_str(), user_id.as_str()],
-            |row| {
-                let role_str: String = row.get(2)?;
+        use sqlx::Row;
+        match self.block_on(
+            sqlx::query(
+                "SELECT tenant_id, user_id, role FROM tenant_users \
+                 WHERE tenant_id = ?1 AND user_id = ?2",
+            )
+            .bind(tenant_id.as_str())
+            .bind(user_id.as_str())
+            .fetch_optional(&self.pool),
+        ) {
+            Ok(Some(row)) => {
+                let role_str: String = row.get("role");
                 let role = match role_str.as_str() {
                     "admin" => axon_core::auth::TenantRole::Admin,
                     "write" => axon_core::auth::TenantRole::Write,
                     _ => axon_core::auth::TenantRole::Read,
                 };
-                Ok(axon_core::auth::TenantMember {
-                    tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>(0)?),
-                    user_id: axon_core::auth::UserId::new(row.get::<_, String>(1)?),
+                Ok(Some(axon_core::auth::TenantMember {
+                    tenant_id: axon_core::auth::TenantId::new(row.get::<String, _>("tenant_id")),
+                    user_id: axon_core::auth::UserId::new(row.get::<String, _>("user_id")),
                     role,
-                })
-            },
-        ) {
-            Ok(member) => Ok(Some(member)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+                }))
+            }
+            Ok(None) => Ok(None),
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("no such table") {
                     Ok(None)
                 } else {
-                    Err(AxonError::Storage(msg))
+                    Err(e)
                 }
             }
         }
@@ -1745,23 +1743,18 @@ impl StorageAdapter for SqliteStorageAdapter {
         display_name: &str,
         email: Option<&str>,
     ) -> Result<axon_core::auth::User, AxonError> {
-        // The `Mutex<Connection>` serialises all callers at the OS level, so
-        // holding the lock for the entire check-then-insert sequence is
-        // equivalent to wrapping the three statements in a serialisable
-        // transaction: no other thread can interleave between the SELECT and
-        // the INSERT.  This gives the same 'exactly-one-row' guarantee as the
-        // ADR-018 §6 ON CONFLICT pattern for PostgreSQL, without orphaned
-        // user rows.
-        let conn = self.conn()?;
+        use sqlx::Row;
 
         // Check whether this identity already exists.
-        let existing_user_id: Option<String> = match conn.query_row(
-            "SELECT user_id FROM user_identities WHERE provider = ?1 AND external_id = ?2",
-            params![provider, external_id],
-            |row| row.get::<_, String>(0),
+        let existing_user_id: Option<String> = match self.block_on(
+            sqlx::query_scalar(
+                "SELECT user_id FROM user_identities WHERE provider = ?1 AND external_id = ?2",
+            )
+            .bind(provider)
+            .bind(external_id)
+            .fetch_optional(&self.pool),
         ) {
-            Ok(id) => Some(id),
-            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Ok(id) => id,
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("no such table") {
@@ -1769,7 +1762,7 @@ impl StorageAdapter for SqliteStorageAdapter {
                         "auth schema not applied; call apply_auth_migrations first".into(),
                     ));
                 }
-                return Err(AxonError::Storage(msg));
+                return Err(e);
             }
         };
 
@@ -1781,36 +1774,48 @@ impl StorageAdapter for SqliteStorageAdapter {
                 .unwrap_or_default()
                 .as_millis() as i64;
             let new_id = axon_core::auth::UserId::generate();
-            conn.execute(
-                "INSERT INTO users (id, display_name, email, created_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![new_id.as_str(), display_name, email, now_ms],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-            conn.execute(
-                "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms) \
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![provider, external_id, new_id.as_str(), now_ms],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            self.block_on(
+                sqlx::query(
+                    "INSERT INTO users (id, display_name, email, created_at_ms) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .bind(new_id.as_str())
+                .bind(display_name)
+                .bind(email)
+                .bind(now_ms)
+                .execute(&self.pool),
+            )?;
+            self.block_on(
+                sqlx::query(
+                    "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms) \
+                     VALUES (?1, ?2, ?3, ?4)",
+                )
+                .bind(provider)
+                .bind(external_id)
+                .bind(new_id.as_str())
+                .bind(now_ms)
+                .execute(&self.pool),
+            )?;
             new_id.0
         };
 
-        conn.query_row(
-            "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
-             FROM users WHERE id = ?1",
-            params![user_id_str],
-            |row| {
-                Ok(axon_core::auth::User {
-                    id: axon_core::auth::UserId::new(row.get::<_, String>(0)?),
-                    display_name: row.get(1)?,
-                    email: row.get(2)?,
-                    created_at_ms: row.get::<_, i64>(3)? as u64,
-                    suspended_at_ms: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                })
-            },
-        )
-        .map_err(|e| AxonError::Storage(e.to_string()))
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                 FROM users WHERE id = ?1",
+            )
+            .bind(&user_id_str)
+            .fetch_one(&self.pool),
+        )?;
+        Ok(axon_core::auth::User {
+            id: axon_core::auth::UserId::new(row.get::<String, _>("id")),
+            display_name: row.get("display_name"),
+            email: row.get("email"),
+            created_at_ms: row.get::<i64, _>("created_at_ms") as u64,
+            suspended_at_ms: row
+                .get::<Option<i64>, _>("suspended_at_ms")
+                .map(|v| v as u64),
+        })
     }
 
     fn create_user(
@@ -1819,100 +1824,111 @@ impl StorageAdapter for SqliteStorageAdapter {
         display_name: &str,
         email: Option<&str>,
     ) -> Result<axon_core::auth::User, AxonError> {
-        let conn = self.conn()?;
+        use sqlx::Row;
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        let rows_affected = conn
-            .execute(
+        let result = self.block_on(
+            sqlx::query(
                 "INSERT INTO users (id, display_name, email, created_at_ms) \
                  VALUES (?1, ?2, ?3, ?4)",
-                params![id.as_str(), display_name, email, now_ms],
             )
-            .map_err(|e| {
+            .bind(id.as_str())
+            .bind(display_name)
+            .bind(email)
+            .bind(now_ms)
+            .execute(&self.pool),
+        );
+        match result {
+            Ok(r) => {
+                if r.rows_affected() == 0 {
+                    return Err(AxonError::AlreadyExists(format!(
+                        "user '{}' already exists",
+                        id.as_str()
+                    )));
+                }
+            }
+            Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("UNIQUE constraint failed") {
-                    AxonError::AlreadyExists(format!("user '{}' already exists", id.as_str()))
+                    return Err(AxonError::AlreadyExists(format!(
+                        "user '{}' already exists",
+                        id.as_str()
+                    )));
                 } else if msg.contains("no such table") {
-                    AxonError::Storage(
+                    return Err(AxonError::Storage(
                         "auth schema not applied; call apply_auth_migrations first".into(),
-                    )
-                } else {
-                    AxonError::Storage(msg)
+                    ));
                 }
-            })?;
-        if rows_affected == 0 {
-            return Err(AxonError::AlreadyExists(format!(
-                "user '{}' already exists",
-                id.as_str()
-            )));
+                return Err(e);
+            }
         }
-        conn.query_row(
-            "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
-             FROM users WHERE id = ?1",
-            params![id.as_str()],
-            |row| {
-                Ok(axon_core::auth::User {
-                    id: axon_core::auth::UserId::new(row.get::<_, String>(0)?),
-                    display_name: row.get(1)?,
-                    email: row.get(2)?,
-                    created_at_ms: row.get::<_, i64>(3)? as u64,
-                    suspended_at_ms: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                })
-            },
-        )
-        .map_err(|e| AxonError::Storage(e.to_string()))
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
+                 FROM users WHERE id = ?1",
+            )
+            .bind(id.as_str())
+            .fetch_one(&self.pool),
+        )?;
+        Ok(axon_core::auth::User {
+            id: axon_core::auth::UserId::new(row.get::<String, _>("id")),
+            display_name: row.get("display_name"),
+            email: row.get("email"),
+            created_at_ms: row.get::<i64, _>("created_at_ms") as u64,
+            suspended_at_ms: row
+                .get::<Option<i64>, _>("suspended_at_ms")
+                .map(|v| v as u64),
+        })
     }
 
     fn list_users(&self) -> Result<Vec<axon_core::auth::User>, AxonError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
+        use sqlx::Row;
+        let rows = match self.block_on(
+            sqlx::query(
                 "SELECT id, display_name, email, created_at_ms, suspended_at_ms \
                  FROM users ORDER BY created_at_ms DESC",
             )
-            .map_err(|e| {
+            .fetch_all(&self.pool),
+        ) {
+            Ok(rows) => rows,
+            Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("no such table") {
-                    AxonError::Storage("auth schema not applied".into())
-                } else {
-                    AxonError::Storage(msg)
+                    return Err(AxonError::Storage("auth schema not applied".into()));
                 }
-            })?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(axon_core::auth::User {
-                    id: axon_core::auth::UserId::new(row.get::<_, String>(0)?),
-                    display_name: row.get(1)?,
-                    email: row.get(2)?,
-                    created_at_ms: row.get::<_, i64>(3)? as u64,
-                    suspended_at_ms: row.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                })
-            })
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+                return Err(e);
+            }
+        };
 
         let mut users = Vec::new();
-        for row in rows {
-            users.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
+        for row in &rows {
+            users.push(axon_core::auth::User {
+                id: axon_core::auth::UserId::new(row.get::<String, _>("id")),
+                display_name: row.get("display_name"),
+                email: row.get("email"),
+                created_at_ms: row.get::<i64, _>("created_at_ms") as u64,
+                suspended_at_ms: row
+                    .get::<Option<i64>, _>("suspended_at_ms")
+                    .map(|v| v as u64),
+            });
         }
         Ok(users)
     }
 
     fn suspend_user(&self, id: &axon_core::auth::UserId) -> Result<bool, AxonError> {
-        let conn = self.conn()?;
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        let rows_affected = conn
-            .execute(
-                "UPDATE users SET suspended_at_ms = ?1 WHERE id = ?2",
-                params![now_ms, id.as_str()],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        Ok(rows_affected > 0)
+        let result = self.block_on(
+            sqlx::query("UPDATE users SET suspended_at_ms = ?1 WHERE id = ?2")
+                .bind(now_ms)
+                .bind(id.as_str())
+                .execute(&self.pool),
+        )?;
+        Ok(result.rows_affected() > 0)
     }
 
     fn upsert_tenant_member(
@@ -1921,7 +1937,6 @@ impl StorageAdapter for SqliteStorageAdapter {
         user_id: axon_core::auth::UserId,
         role: axon_core::auth::TenantRole,
     ) -> Result<axon_core::auth::TenantMember, AxonError> {
-        let conn = self.conn()?;
         let role_str = match role {
             axon_core::auth::TenantRole::Admin => "admin",
             axon_core::auth::TenantRole::Write => "write",
@@ -1931,22 +1946,30 @@ impl StorageAdapter for SqliteStorageAdapter {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        conn.execute(
-            "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms) \
-             VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = excluded.role",
-            params![tenant_id.as_str(), user_id.as_str(), role_str, now_ms],
-        )
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("no such table") {
-                AxonError::Storage(
-                    "auth schema not applied; call apply_auth_migrations first".into(),
-                )
-            } else {
-                AxonError::Storage(msg)
+        let result = self.block_on(
+            sqlx::query(
+                "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = excluded.role",
+            )
+            .bind(tenant_id.as_str())
+            .bind(user_id.as_str())
+            .bind(role_str)
+            .bind(now_ms)
+            .execute(&self.pool),
+        );
+        match result {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    return Err(AxonError::Storage(
+                        "auth schema not applied; call apply_auth_migrations first".into(),
+                    ));
+                }
+                return Err(e);
             }
-        })?;
+        }
         Ok(axon_core::auth::TenantMember {
             tenant_id,
             user_id,
@@ -1959,129 +1982,134 @@ impl StorageAdapter for SqliteStorageAdapter {
         tenant_id: axon_core::auth::TenantId,
         user_id: axon_core::auth::UserId,
     ) -> Result<bool, AxonError> {
-        let conn = self.conn()?;
-        let rows_affected = conn
-            .execute(
-                "DELETE FROM tenant_users WHERE tenant_id = ?1 AND user_id = ?2",
-                params![tenant_id.as_str(), user_id.as_str()],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        Ok(rows_affected > 0)
+        let result = self.block_on(
+            sqlx::query("DELETE FROM tenant_users WHERE tenant_id = ?1 AND user_id = ?2")
+                .bind(tenant_id.as_str())
+                .bind(user_id.as_str())
+                .execute(&self.pool),
+        )?;
+        Ok(result.rows_affected() > 0)
     }
 
     fn list_tenant_members(
         &self,
         tenant_id: axon_core::auth::TenantId,
     ) -> Result<Vec<axon_core::auth::TenantMember>, AxonError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
+        use sqlx::Row;
+        let rows = match self.block_on(
+            sqlx::query(
                 "SELECT tenant_id, user_id, role, added_at_ms \
                  FROM tenant_users \
                  WHERE tenant_id = ?1 \
                  ORDER BY added_at_ms ASC",
             )
-            .map_err(|e| {
+            .bind(tenant_id.as_str())
+            .fetch_all(&self.pool),
+        ) {
+            Ok(rows) => rows,
+            Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("no such table") {
-                    AxonError::Storage("auth schema not applied".into())
-                } else {
-                    AxonError::Storage(msg)
+                    return Err(AxonError::Storage("auth schema not applied".into()));
                 }
-            })?;
-
-        let rows = stmt
-            .query_map(params![tenant_id.as_str()], |row| {
-                let role_str: String = row.get(2)?;
-                let role = match role_str.as_str() {
-                    "admin" => axon_core::auth::TenantRole::Admin,
-                    "write" => axon_core::auth::TenantRole::Write,
-                    _ => axon_core::auth::TenantRole::Read,
-                };
-                Ok(axon_core::auth::TenantMember {
-                    tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>(0)?),
-                    user_id: axon_core::auth::UserId::new(row.get::<_, String>(1)?),
-                    role,
-                })
-            })
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+                return Err(e);
+            }
+        };
 
         let mut members = Vec::new();
-        for row in rows {
-            members.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
+        for row in &rows {
+            let role_str: String = row.get("role");
+            let role = match role_str.as_str() {
+                "admin" => axon_core::auth::TenantRole::Admin,
+                "write" => axon_core::auth::TenantRole::Write,
+                _ => axon_core::auth::TenantRole::Read,
+            };
+            members.push(axon_core::auth::TenantMember {
+                tenant_id: axon_core::auth::TenantId::new(row.get::<String, _>("tenant_id")),
+                user_id: axon_core::auth::UserId::new(row.get::<String, _>("user_id")),
+                role,
+            });
         }
         Ok(members)
     }
 
     fn count_tenants(&self) -> Result<usize, AxonError> {
-        let conn = self.conn()?;
-        match conn.query_row("SELECT COUNT(*) FROM tenants", [], |row| row.get::<_, i64>(0)) {
+        match self.block_on(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM tenants").fetch_one(&self.pool),
+        ) {
             Ok(n) => Ok(n as usize),
             Err(e) if e.to_string().contains("no such table") => Ok(0),
-            Err(e) => Err(AxonError::Storage(e.to_string())),
+            Err(e) => Err(e),
         }
     }
 
     fn upsert_default_tenant(&self, name: &str) -> Result<axon_core::auth::TenantId, AxonError> {
-        // The Mutex<Connection> serialises all callers, so INSERT + SELECT is
-        // effectively a transaction: no other thread can interleave between
-        // the two statements.  The ON CONFLICT DO NOTHING ensures the first
-        // caller's UUID wins; every caller then reads the same winning row.
-        let conn = self.conn()?;
+        use sqlx::Row;
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
         let new_id = axon_core::auth::TenantId::generate();
-        conn.execute(
-            "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (name) DO NOTHING",
-            params![new_id.as_str(), name, name, now_ms, now_ms],
-        )
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("no such table") {
-                AxonError::Storage(
-                    "auth schema not applied; call apply_auth_migrations first".into(),
-                )
-            } else {
-                AxonError::Storage(msg)
+        let result = self.block_on(
+            sqlx::query(
+                "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (name) DO NOTHING",
+            )
+            .bind(new_id.as_str())
+            .bind(name)
+            .bind(name)
+            .bind(now_ms)
+            .bind(now_ms)
+            .execute(&self.pool),
+        );
+        match result {
+            Ok(_) => {}
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    return Err(AxonError::Storage(
+                        "auth schema not applied; call apply_auth_migrations first".into(),
+                    ));
+                }
+                return Err(e);
             }
-        })?;
-        conn.query_row(
-            "SELECT id FROM tenants WHERE name = ?1",
-            params![name],
-            |row| row.get::<_, String>(0),
-        )
-        .map(axon_core::auth::TenantId::new)
-        .map_err(|e| AxonError::Storage(e.to_string()))
+        }
+        let row = self.block_on(
+            sqlx::query("SELECT id FROM tenants WHERE name = ?1")
+                .bind(name)
+                .fetch_one(&self.pool),
+        )?;
+        let id_str: String = row.get("id");
+        Ok(axon_core::auth::TenantId::new(id_str))
     }
 
     fn get_retention_policy(
         &self,
         tenant_id: axon_core::auth::TenantId,
     ) -> Result<Option<RetentionPolicy>, AxonError> {
-        let conn = self.conn()?;
-        match conn.query_row(
-            "SELECT archive_after_seconds, purge_after_seconds \
-             FROM tenant_retention_policies \
-             WHERE tenant_id = ?1",
-            params![tenant_id.as_str()],
-            |row| {
-                Ok(RetentionPolicy {
-                    archive_after_seconds: row.get::<_, i64>(0)? as u64,
-                    purge_after_seconds: row.get::<_, Option<i64>>(1)?.map(|v| v as u64),
-                })
-            },
+        use sqlx::Row;
+        match self.block_on(
+            sqlx::query(
+                "SELECT archive_after_seconds, purge_after_seconds \
+                 FROM tenant_retention_policies \
+                 WHERE tenant_id = ?1",
+            )
+            .bind(tenant_id.as_str())
+            .fetch_optional(&self.pool),
         ) {
-            Ok(policy) => Ok(Some(policy)),
-            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Ok(Some(row)) => Ok(Some(RetentionPolicy {
+                archive_after_seconds: row.get::<i64, _>("archive_after_seconds") as u64,
+                purge_after_seconds: row
+                    .get::<Option<i64>, _>("purge_after_seconds")
+                    .map(|v| v as u64),
+            })),
+            Ok(None) => Ok(None),
             Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("no such table") {
                     Ok(None)
                 } else {
-                    Err(AxonError::Storage(msg))
+                    Err(e)
                 }
             }
         }
@@ -2092,71 +2120,73 @@ impl StorageAdapter for SqliteStorageAdapter {
         tenant_id: axon_core::auth::TenantId,
         policy: &RetentionPolicy,
     ) -> Result<(), AxonError> {
-        let conn = self.conn()?;
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        conn.execute(
-            "INSERT INTO tenant_retention_policies \
-             (tenant_id, archive_after_seconds, purge_after_seconds, updated_at_ms) \
-             VALUES (?1, ?2, ?3, ?4) \
-             ON CONFLICT (tenant_id) DO UPDATE SET \
-             archive_after_seconds = excluded.archive_after_seconds, \
-             purge_after_seconds = excluded.purge_after_seconds, \
-             updated_at_ms = excluded.updated_at_ms",
-            params![
-                tenant_id.as_str(),
-                policy.archive_after_seconds as i64,
-                policy.purge_after_seconds.map(|v| v as i64),
-                now_ms,
-            ],
-        )
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("no such table") {
-                AxonError::Storage("auth schema not applied; call apply_auth_migrations first".into())
-            } else {
-                AxonError::Storage(msg)
+        let result = self.block_on(
+            sqlx::query(
+                "INSERT INTO tenant_retention_policies \
+                 (tenant_id, archive_after_seconds, purge_after_seconds, updated_at_ms) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (tenant_id) DO UPDATE SET \
+                 archive_after_seconds = excluded.archive_after_seconds, \
+                 purge_after_seconds = excluded.purge_after_seconds, \
+                 updated_at_ms = excluded.updated_at_ms",
+            )
+            .bind(tenant_id.as_str())
+            .bind(policy.archive_after_seconds as i64)
+            .bind(policy.purge_after_seconds.map(|v| v as i64))
+            .bind(now_ms)
+            .execute(&self.pool),
+        );
+        match result {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("no such table") {
+                    Err(AxonError::Storage(
+                        "auth schema not applied; call apply_auth_migrations first".into(),
+                    ))
+                } else {
+                    Err(e)
+                }
             }
-        })?;
-        Ok(())
+        }
     }
 
     fn list_tenant_databases(
         &self,
         tenant_id: axon_core::auth::TenantId,
     ) -> Result<Vec<TenantDatabase>, AxonError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
+        use sqlx::Row;
+        let rows = match self.block_on(
+            sqlx::query(
                 "SELECT tenant_id, database_name, created_at_ms \
                  FROM tenant_databases \
                  WHERE tenant_id = ?1 \
                  ORDER BY created_at_ms ASC",
             )
-            .map_err(|e| {
+            .bind(tenant_id.as_str())
+            .fetch_all(&self.pool),
+        ) {
+            Ok(rows) => rows,
+            Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("no such table") {
-                    AxonError::Storage("auth schema not applied".into())
-                } else {
-                    AxonError::Storage(msg)
+                    return Err(AxonError::Storage("auth schema not applied".into()));
                 }
-            })?;
-
-        let rows = stmt
-            .query_map(params![tenant_id.as_str()], |row| {
-                Ok(TenantDatabase {
-                    tenant_id: axon_core::auth::TenantId::new(row.get::<_, String>(0)?),
-                    name: row.get(1)?,
-                    created_at_ms: row.get::<_, i64>(2)? as u64,
-                })
-            })
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+                return Err(e);
+            }
+        };
 
         let mut dbs = Vec::new();
-        for row in rows {
-            dbs.push(row.map_err(|e| AxonError::Storage(e.to_string()))?);
+        for row in &rows {
+            dbs.push(TenantDatabase {
+                tenant_id: axon_core::auth::TenantId::new(row.get::<String, _>("tenant_id")),
+                name: row.get("database_name"),
+                created_at_ms: row.get::<i64, _>("created_at_ms") as u64,
+            });
         }
         Ok(dbs)
     }
@@ -2166,36 +2196,46 @@ impl StorageAdapter for SqliteStorageAdapter {
         tenant_id: axon_core::auth::TenantId,
         name: &str,
     ) -> Result<TenantDatabase, AxonError> {
-        let conn = self.conn()?;
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        let rows_affected = conn
-            .execute(
+        let result = self.block_on(
+            sqlx::query(
                 "INSERT INTO tenant_databases (tenant_id, database_name, created_at_ms) \
                  VALUES (?1, ?2, ?3) \
                  ON CONFLICT (tenant_id, database_name) DO NOTHING",
-                params![tenant_id.as_str(), name, now_ms],
             )
-            .map_err(|e| {
+            .bind(tenant_id.as_str())
+            .bind(name)
+            .bind(now_ms)
+            .execute(&self.pool),
+        );
+        match result {
+            Ok(r) => {
+                if r.rows_affected() == 0 {
+                    return Err(AxonError::AlreadyExists(format!(
+                        "database '{}' already exists in tenant '{}'",
+                        name,
+                        tenant_id.as_str()
+                    )));
+                }
+            }
+            Err(e) => {
                 let msg = e.to_string();
                 if msg.contains("no such table") {
-                    AxonError::Storage(
+                    return Err(AxonError::Storage(
                         "auth schema not applied; call apply_auth_migrations first".into(),
-                    )
-                } else {
-                    AxonError::Storage(msg)
+                    ));
                 }
-            })?;
-        if rows_affected == 0 {
-            return Err(AxonError::AlreadyExists(format!(
-                "database '{}' already exists in tenant '{}'",
-                name,
-                tenant_id.as_str()
-            )));
+                return Err(e);
+            }
         }
-        Ok(TenantDatabase { tenant_id, name: name.to_string(), created_at_ms: now_ms as u64 })
+        Ok(TenantDatabase {
+            tenant_id,
+            name: name.to_string(),
+            created_at_ms: now_ms as u64,
+        })
     }
 
     fn delete_tenant_database(
@@ -2203,14 +2243,13 @@ impl StorageAdapter for SqliteStorageAdapter {
         tenant_id: axon_core::auth::TenantId,
         name: &str,
     ) -> Result<bool, AxonError> {
-        let conn = self.conn()?;
-        let rows_affected = conn
-            .execute(
-                "DELETE FROM tenant_databases WHERE tenant_id = ?1 AND database_name = ?2",
-                params![tenant_id.as_str(), name],
-            )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        Ok(rows_affected > 0)
+        let result = self.block_on(
+            sqlx::query("DELETE FROM tenant_databases WHERE tenant_id = ?1 AND database_name = ?2")
+                .bind(tenant_id.as_str())
+                .bind(name)
+                .execute(&self.pool),
+        )?;
+        Ok(result.rows_affected() > 0)
     }
 
     fn track_credential_issuance(
@@ -2222,21 +2261,20 @@ impl StorageAdapter for SqliteStorageAdapter {
         expires_at_ms: i64,
         grants_json: &str,
     ) -> Result<(), AxonError> {
-        let conn = self.conn()?;
-        conn.execute(
-            "INSERT INTO credential_issuances \
-             (jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                jti.to_string(),
-                user_id.as_str(),
-                tenant_id.as_str(),
-                issued_at_ms,
-                expires_at_ms,
-                grants_json,
-            ],
-        )
-        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO credential_issuances \
+                 (jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .bind(jti.to_string())
+            .bind(user_id.as_str())
+            .bind(tenant_id.as_str())
+            .bind(issued_at_ms)
+            .bind(expires_at_ms)
+            .bind(grants_json)
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -2245,9 +2283,9 @@ impl StorageAdapter for SqliteStorageAdapter {
         tenant_id: TenantId,
         user_filter: Option<UserId>,
     ) -> Result<Vec<CredentialMetadata>, AxonError> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
+        use sqlx::Row;
+        let rows = self.block_on(
+            sqlx::query(
                 "SELECT ci.jti, ci.user_id, ci.tenant_id, ci.issued_at_ms, ci.expires_at_ms, \
                  ci.grants_json, \
                  CASE WHEN cr.jti IS NOT NULL THEN 1 ELSE 0 END AS revoked \
@@ -2256,25 +2294,21 @@ impl StorageAdapter for SqliteStorageAdapter {
                  WHERE ci.tenant_id = ?1 \
                  ORDER BY ci.issued_at_ms ASC",
             )
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-
-        let rows = stmt
-            .query_map(params![tenant_id.as_str()], |row| {
-                Ok(CredentialMetadata {
-                    jti: row.get::<_, String>(0)?,
-                    user_id: UserId::new(row.get::<_, String>(1)?),
-                    tenant_id: TenantId::new(row.get::<_, String>(2)?),
-                    issued_at_ms: row.get::<_, i64>(3)?,
-                    expires_at_ms: row.get::<_, i64>(4)?,
-                    grants_json: row.get::<_, String>(5)?,
-                    revoked: row.get::<_, i64>(6)? != 0,
-                })
-            })
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
+            .bind(tenant_id.as_str())
+            .fetch_all(&self.pool),
+        )?;
 
         let mut creds = Vec::new();
-        for row in rows {
-            let meta = row.map_err(|e| AxonError::Storage(e.to_string()))?;
+        for row in &rows {
+            let meta = CredentialMetadata {
+                jti: row.get::<String, _>("jti"),
+                user_id: UserId::new(row.get::<String, _>("user_id")),
+                tenant_id: TenantId::new(row.get::<String, _>("tenant_id")),
+                issued_at_ms: row.get::<i64, _>("issued_at_ms"),
+                expires_at_ms: row.get::<i64, _>("expires_at_ms"),
+                grants_json: row.get::<String, _>("grants_json"),
+                revoked: row.get::<i64, _>("revoked") != 0,
+            };
             if let Some(ref uid) = user_filter {
                 if &meta.user_id != uid {
                     continue;
@@ -2285,23 +2319,22 @@ impl StorageAdapter for SqliteStorageAdapter {
         Ok(creds)
     }
 
-    fn revoke_credential(
-        &self,
-        jti: uuid::Uuid,
-        revoked_by: UserId,
-    ) -> Result<(), AxonError> {
-        let conn = self.conn()?;
+    fn revoke_credential(&self, jti: uuid::Uuid, revoked_by: UserId) -> Result<(), AxonError> {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as i64;
-        conn.execute(
-            "INSERT INTO credential_revocations (jti, revoked_at_ms, revoked_by) \
-             VALUES (?1, ?2, ?3) \
-             ON CONFLICT (jti) DO NOTHING",
-            params![jti.to_string(), now_ms, revoked_by.as_str()],
-        )
-        .map_err(|e| AxonError::Storage(e.to_string()))?;
+        self.block_on(
+            sqlx::query(
+                "INSERT INTO credential_revocations (jti, revoked_at_ms, revoked_by) \
+                 VALUES (?1, ?2, ?3) \
+                 ON CONFLICT (jti) DO NOTHING",
+            )
+            .bind(jti.to_string())
+            .bind(now_ms)
+            .bind(revoked_by.as_str())
+            .execute(&self.pool),
+        )?;
         Ok(())
     }
 }
@@ -2346,35 +2379,67 @@ mod tests {
     }
 
     fn legacy_collection_views_db(collection: &CollectionId, template: &str) -> NamedTempFile {
+        // Use sqlx to create a legacy database for migration testing.
         let file = NamedTempFile::new().expect("test temp db should be created");
-        let conn = Connection::open(file.path()).expect("test temp db connection should be opened");
-        conn.execute_batch(
-            "PRAGMA foreign_keys = ON;
-            CREATE TABLE collections (
-                name TEXT NOT NULL PRIMARY KEY
-            );
-            CREATE TABLE collection_views (
-                collection        TEXT NOT NULL PRIMARY KEY,
-                version           INTEGER NOT NULL,
-                view_json         TEXT NOT NULL,
-                updated_at_ns     INTEGER NOT NULL,
-                updated_by        TEXT
-            );",
+        let path = file.path().to_string_lossy().into_owned();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+        let pool = rt
+            .block_on(
+                sqlx::sqlite::SqlitePoolOptions::new()
+                    .max_connections(1)
+                    .connect(&format!("sqlite:{}?mode=rwc", path)),
+            )
+            .expect("test temp db connection should be opened");
+        rt.block_on(sqlx::query("PRAGMA foreign_keys = ON").execute(&pool))
+            .expect("pragma should succeed");
+        rt.block_on(
+            sqlx::query(
+                "CREATE TABLE collections (
+                    name TEXT NOT NULL PRIMARY KEY
+                )",
+            )
+            .execute(&pool),
         )
-        .expect("legacy schema should be created");
+        .expect("legacy collections table should be created");
+        rt.block_on(
+            sqlx::query(
+                "CREATE TABLE collection_views (
+                    collection        TEXT NOT NULL PRIMARY KEY,
+                    version           INTEGER NOT NULL,
+                    view_json         TEXT NOT NULL,
+                    updated_at_ns     INTEGER NOT NULL,
+                    updated_by        TEXT
+                )",
+            )
+            .execute(&pool),
+        )
+        .expect("legacy collection_views table should be created");
         let view_json = serde_json::to_string(&CollectionView::new(collection.clone(), template))
             .expect("legacy collection view should serialize");
-        conn.execute(
-            "INSERT INTO collections (name) VALUES (?1)",
-            params![collection.as_str()],
+        rt.block_on(
+            sqlx::query("INSERT INTO collections (name) VALUES (?1)")
+                .bind(collection.as_str())
+                .execute(&pool),
         )
         .expect("legacy collection should be inserted");
-        conn.execute(
-            "INSERT INTO collection_views (collection, version, view_json, updated_at_ns, updated_by)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![collection.as_str(), 1_i64, view_json, 0_i64, Option::<&str>::None],
+        rt.block_on(
+            sqlx::query(
+                "INSERT INTO collection_views (collection, version, view_json, updated_at_ns, updated_by)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .bind(collection.as_str())
+            .bind(1_i64)
+            .bind(&view_json)
+            .bind(0_i64)
+            .bind(Option::<&str>::None)
+            .execute(&pool),
         )
         .expect("legacy collection view should be inserted");
+        // Close pool before returning so the file can be reopened.
+        rt.block_on(pool.close());
         file
     }
 
@@ -2603,7 +2668,7 @@ mod tests {
             .expect("default collection register should succeed");
         s.register_collection(&archive)
             .expect("archive collection register should succeed");
-        for entity in [
+        for e in [
             Entity::new(
                 invoices.clone(),
                 EntityId::new("inv-001"),
@@ -2625,7 +2690,7 @@ mod tests {
                 json!({"title": "archive"}),
             ),
         ] {
-            s.put(entity).expect("entity put should succeed");
+            s.put(e).expect("entity put should succeed");
         }
 
         for link in [
@@ -2757,7 +2822,7 @@ mod tests {
             .expect("default collection register should succeed");
         s.register_collection(&archive)
             .expect("archive collection register should succeed");
-        for entity in [
+        for e in [
             Entity::new(
                 orders.clone(),
                 EntityId::new("ord-001"),
@@ -2779,7 +2844,7 @@ mod tests {
                 json!({"title": "archive"}),
             ),
         ] {
-            s.put(entity).expect("entity put should succeed");
+            s.put(e).expect("entity put should succeed");
         }
 
         for link in [
@@ -3194,6 +3259,7 @@ mod tests {
 
     #[test]
     fn qualified_schema_write_is_readable_via_bare_unique_collection() {
+        use sqlx::Row;
         let mut s = store();
         let qualified = CollectionId::new("prod.billing.invoices");
         let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
@@ -3231,21 +3297,21 @@ mod tests {
         s.put_schema(&v2).expect("schema v2 put should succeed");
 
         let stored_collections: Vec<String> = {
-            let conn = s.conn.lock().expect("lock");
-            let mut stmt = conn
-                .prepare(
-                    "SELECT collection FROM schema_versions
-                     WHERE database_name = ?1 AND schema_name = ?2
-                     ORDER BY version ASC",
+            let rows = s
+                .block_on(
+                    sqlx::query(
+                        "SELECT collection FROM schema_versions
+                         WHERE database_name = ?1 AND schema_name = ?2
+                         ORDER BY version ASC",
+                    )
+                    .bind(billing.database.as_str())
+                    .bind(billing.schema.as_str())
+                    .fetch_all(&s.pool),
                 )
-                .expect("schema version query should prepare");
-            stmt.query_map(
-                params![billing.database.as_str(), billing.schema.as_str()],
-                |row| row.get::<_, String>(0),
-            )
-            .expect("schema version query should succeed")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("schema version rows should decode")
+                .expect("schema version query should succeed");
+            rows.iter()
+                .map(|row| row.get::<String, _>("collection"))
+                .collect()
         };
         assert_eq!(
             stored_collections,
@@ -3279,6 +3345,7 @@ mod tests {
 
     #[test]
     fn qualified_collection_view_write_is_readable_via_bare_unique_collection() {
+        use sqlx::Row;
         let mut s = store();
         let qualified = CollectionId::new("prod.billing.invoices");
         let (billing, invoices) = register_unique_namespaced_collection(&mut s, &qualified);
@@ -3289,17 +3356,18 @@ mod tests {
         assert_eq!(stored.collection, invoices);
         assert_eq!(stored.version, 1);
 
-        let stored_collection: String = s
-            .conn
-            .lock()
-            .expect("lock")
-            .query_row(
-                "SELECT collection FROM collection_views
-                 WHERE database_name = ?1 AND schema_name = ?2",
-                params![billing.database.as_str(), billing.schema.as_str()],
-                |row| row.get(0),
+        let row = s
+            .block_on(
+                sqlx::query(
+                    "SELECT collection FROM collection_views
+                     WHERE database_name = ?1 AND schema_name = ?2",
+                )
+                .bind(billing.database.as_str())
+                .bind(billing.schema.as_str())
+                .fetch_one(&s.pool),
             )
             .expect("stored collection view lookup should succeed");
+        let stored_collection: String = row.get("collection");
         assert_eq!(stored_collection, "invoices");
 
         let retrieved = s
@@ -3371,11 +3439,8 @@ mod tests {
             .is_none());
 
         // Audit entry must also be absent (rolled back with the transaction).
-        let count: i64 = s
-            .conn
-            .lock()
-            .expect("lock")
-            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+        let count = s
+            .query_scalar_i64("SELECT COUNT(*) FROM audit_log")
             .expect("test operation should succeed");
         assert_eq!(count, 0, "audit entry must be rolled back with the entity");
     }
@@ -3411,11 +3476,8 @@ mod tests {
             .is_some());
 
         // Audit entry must also be present.
-        let count: i64 = s
-            .conn
-            .lock()
-            .expect("lock")
-            .query_row("SELECT COUNT(*) FROM audit_log", [], |r| r.get(0))
+        let count = s
+            .query_scalar_i64("SELECT COUNT(*) FROM audit_log")
             .expect("test operation should succeed");
         assert_eq!(
             count, 1,
