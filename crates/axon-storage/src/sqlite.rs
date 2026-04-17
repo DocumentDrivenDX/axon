@@ -40,15 +40,19 @@ pub struct SqliteStorageAdapter {
 }
 
 impl SqliteStorageAdapter {
-    /// Helper: run an async future on the given runtime handle, handling the
-    /// case where we may already be inside a tokio context.
+    /// Run an async future, handling both async and non-async caller contexts.
+    ///
+    /// When already inside a tokio runtime (gateway handlers, `#[tokio::test]`),
+    /// reuses the **caller's** runtime via `block_in_place` to avoid nested-
+    /// runtime shutdown panics.  Otherwise uses the provided handle (the
+    /// adapter's own runtime).
     fn run_blocking<T>(
-        handle: &tokio::runtime::Handle,
+        own_handle: &tokio::runtime::Handle,
         fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
     ) -> Result<T, AxonError> {
         match tokio::runtime::Handle::try_current() {
-            Ok(_) => tokio::task::block_in_place(|| handle.block_on(fut)),
-            Err(_) => handle.block_on(fut),
+            Ok(outer) => tokio::task::block_in_place(|| outer.block_on(fut)),
+            Err(_) => own_handle.block_on(fut),
         }
         .map_err(|e| AxonError::Storage(e.to_string()))
     }
