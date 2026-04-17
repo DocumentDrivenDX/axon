@@ -57,6 +57,7 @@ impl ControlPlaneDb {
     }
 
     /// Helper: run an async sqlx future.
+    #[allow(clippy::unused_self)]
     fn block_on<T>(
         &self,
         fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
