@@ -104,6 +104,7 @@ export type TenantDatabase = {
 	tenant_id: string;
 	name: string;
 	created_at_ms: number;
+	entity_count?: number;
 };
 
 /** Tenant + database routing scope for ADR-018 path-based URLs. */
@@ -420,13 +421,10 @@ export async function createTenantDatabase(
 	tenantId: string,
 	name: string,
 ): Promise<TenantDatabase> {
-	return request<TenantDatabase>(
-		`/control/tenants/${encodeURIComponent(tenantId)}/databases`,
-		{
-			method: 'POST',
-			body: JSON.stringify({ name }),
-		},
-	);
+	return request<TenantDatabase>(`/control/tenants/${encodeURIComponent(tenantId)}/databases`, {
+		method: 'POST',
+		body: JSON.stringify({ name }),
+	});
 }
 
 export async function deleteTenantDatabase(tenantId: string, name: string): Promise<void> {
@@ -675,9 +673,7 @@ export async function traverseLinks(
 	options: { linkType?: string } = {},
 	scope?: Scope,
 ): Promise<TraverseResult> {
-	const qs = options.linkType
-		? `?link_type=${encodeURIComponent(options.linkType)}`
-		: '';
+	const qs = options.linkType ? `?link_type=${encodeURIComponent(options.linkType)}` : '';
 	return request<TraverseResult>(
 		`/traverse/${encodeURIComponent(collection)}/${encodeURIComponent(id)}${qs}`,
 		undefined,
@@ -697,10 +693,7 @@ export async function createLink(body: Link, scope?: Scope): Promise<Link> {
 	return response.link;
 }
 
-export async function deleteLink(
-	body: Omit<Link, 'metadata'>,
-	scope?: Scope,
-): Promise<void> {
+export async function deleteLink(body: Omit<Link, 'metadata'>, scope?: Scope): Promise<void> {
 	await request<void>(
 		'/links',
 		{
@@ -747,10 +740,7 @@ export async function putCollectionTemplate(
 	);
 }
 
-export async function deleteCollectionTemplate(
-	collection: string,
-	scope?: Scope,
-): Promise<void> {
+export async function deleteCollectionTemplate(collection: string, scope?: Scope): Promise<void> {
 	await request<void>(
 		`/collections/${encodeURIComponent(collection)}/template`,
 		{ method: 'DELETE', body: JSON.stringify({}) },
@@ -767,10 +757,9 @@ export async function fetchRenderedEntity(
 	id: string,
 	scope?: Scope,
 ): Promise<string> {
-	const base =
-		scope && { tenant: scope.tenant, database: scope.database }
-			? `/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}`
-			: '';
+	const base = scope && { tenant: scope.tenant, database: scope.database }
+		? `/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}`
+		: '';
 	const url = `${base}/collections/${encodeURIComponent(collection)}/entities/${encodeURIComponent(id)}?format=markdown`;
 	const response = await fetch(url, { headers: { Accept: 'text/markdown' } });
 	if (!response.ok) {
