@@ -1815,10 +1815,6 @@ fn provision_tenant_database(path: &std::path::Path) -> Result<(), axon_core::er
                 parent.display()
             )))?;
     }
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| axon_core::error::AxonError::Storage(e.to_string()))?;
     let url = format!("sqlite:{}?mode=rwc", path.display());
     let run = async {
         let pool = sqlx::SqlitePool::connect(&url).await
@@ -1834,8 +1830,14 @@ fn provision_tenant_database(path: &std::path::Path) -> Result<(), axon_core::er
         Ok(())
     };
     match tokio::runtime::Handle::try_current() {
-        Ok(_) => tokio::task::block_in_place(|| rt.handle().block_on(run)),
-        Err(_) => rt.handle().block_on(run),
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(run)),
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| axon_core::error::AxonError::Storage(e.to_string()))?;
+            rt.block_on(run)
+        }
     }
 }
 
