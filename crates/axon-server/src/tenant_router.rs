@@ -378,7 +378,7 @@ mod tests {
         TenantRouter::new(tmp.to_path_buf(), default_handler)
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_or_create_default_returns_default_handler() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let router = make_router(tmp.path());
@@ -389,7 +389,7 @@ mod tests {
         assert!(Arc::ptr_eq(&handler, default));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_or_create_creates_new_sqlite_file() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let router = make_router(tmp.path());
@@ -405,7 +405,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn get_or_create_returns_cached_handler() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let router = make_router(tmp.path());
@@ -419,7 +419,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn drop_database_removes_from_cache_and_disk() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let router = make_router(tmp.path());
@@ -439,7 +439,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn drop_default_is_rejected() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let router = make_router(tmp.path());
@@ -452,7 +452,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn list_databases_returns_expected_names() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let router = make_router(tmp.path());
@@ -471,7 +471,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn single_constructor_works() {
         let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
             SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
@@ -486,7 +486,7 @@ mod tests {
         assert_eq!(names, vec!["default"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn tenant_db_path_format() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let router = make_router(tmp.path());
@@ -496,7 +496,7 @@ mod tests {
         assert_eq!(path, expected);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn drop_nonexistent_is_ok() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let router = make_router(tmp.path());

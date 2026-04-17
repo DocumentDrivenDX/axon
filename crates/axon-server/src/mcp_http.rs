@@ -774,7 +774,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_mcp_initializes_with_resources_and_prompts() {
         let server = test_server();
         let response = server
@@ -797,7 +797,7 @@ mod tests {
         assert!(body["result"]["capabilities"]["prompts"]["listChanged"].is_boolean());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_mcp_lists_and_reads_resources() {
         let server = test_server();
         server
@@ -847,7 +847,7 @@ mod tests {
         assert!(text.contains("hello"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_mcp_lists_templates_and_prompts_and_reports_read_errors() {
         let server = test_server();
         server
@@ -933,7 +933,7 @@ mod tests {
         assert_eq!(bad_read_body["error"]["code"], -32602);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_mcp_exposes_sse_endpoint() {
         let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
         let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
@@ -954,7 +954,7 @@ mod tests {
         assert!(response.headers().contains_key(header::SET_COOKIE));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_mcp_subscriptions_persist_across_post_requests() {
         let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
         let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
@@ -1001,7 +1001,7 @@ mod tests {
         assert_eq!(sessions.subscription_count(&session_key), Some(1));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_mcp_session_delivers_resource_updates_to_sse_listeners() {
         let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
         let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
@@ -1047,7 +1047,7 @@ mod tests {
         assert_eq!(payload["params"]["uri"], "axon://tasks/t-001");
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_mcp_issued_sessions_isolate_subscriptions_for_same_actor() {
         let storage = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
         let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
@@ -1133,7 +1133,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn http_mcp_overlapping_reconnect_preserves_subscriptions_until_old_listener_closes() {
         let sessions = McpHttpSessions::default();
         let session_id = "transport-reconnect";

@@ -34,44 +34,60 @@ use crate::adapter::StorageAdapter;
 /// statements.
 pub struct SqliteStorageAdapter {
     pool: sqlx::SqlitePool,
-    rt: tokio::runtime::Runtime,
+    /// Owned runtime — only used when no outer tokio context exists (CLI,
+    /// embedded mode).  When constructed inside a gateway handler or
+    /// `#[tokio::test]`, this is `None` and the caller's runtime is reused.
+    _rt: Option<tokio::runtime::Runtime>,
     /// `true` while a `BEGIN` has been issued but not yet committed or rolled back.
     in_tx: bool,
 }
 
 impl SqliteStorageAdapter {
     /// Run an async future, handling both async and non-async caller contexts.
-    ///
-    /// When already inside a tokio runtime (gateway handlers, `#[tokio::test]`),
-    /// reuses the **caller's** runtime via `block_in_place` to avoid nested-
-    /// runtime shutdown panics.  Otherwise uses the provided handle (the
-    /// adapter's own runtime).
-    fn run_blocking<T>(
-        own_handle: &tokio::runtime::Handle,
-        fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
-    ) -> Result<T, AxonError> {
+    fn run_on<T>(
+        owned_rt: &Option<tokio::runtime::Runtime>,
+        fut: impl std::future::Future<Output = T>,
+    ) -> T {
         match tokio::runtime::Handle::try_current() {
-            Ok(outer) => tokio::task::block_in_place(|| outer.block_on(fut)),
-            Err(_) => own_handle.block_on(fut),
+            // Inside an async context: yield via block_in_place, drive on the
+            // caller's runtime (avoids nested-runtime shutdown panics).
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+            // Outside async: use the adapter's owned runtime.
+            Err(_) => owned_rt
+                .as_ref()
+                .expect("SqliteStorageAdapter: no tokio runtime available")
+                .block_on(fut),
         }
-        .map_err(|e| AxonError::Storage(e.to_string()))
     }
 
     /// Opens (or creates) a SQLite database at the given path.
     pub fn open(path: &str) -> Result<Self, AxonError> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let pool = Self::run_blocking(
-            rt.handle(),
+        let connect = || async {
             sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(1)
-                .connect(&format!("sqlite:{}?mode=rwc", path)),
-        )?;
+                .connect(&format!("sqlite:{}?mode=rwc", path))
+                .await
+        };
+        let (rt, pool) = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let pool = tokio::task::block_in_place(|| handle.block_on(connect()))
+                    .map_err(|e| AxonError::Storage(e.to_string()))?;
+                (None, pool)
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| AxonError::Storage(e.to_string()))?;
+                let pool = rt
+                    .block_on(connect())
+                    .map_err(|e| AxonError::Storage(e.to_string()))?;
+                (Some(rt), pool)
+            }
+        };
         let adapter = Self {
             pool,
-            rt,
+            _rt: rt,
             in_tx: false,
         };
         adapter.init_schema()?;
@@ -80,19 +96,32 @@ impl SqliteStorageAdapter {
 
     /// Opens an in-memory SQLite database (useful for testing).
     pub fn open_in_memory() -> Result<Self, AxonError> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let pool = Self::run_blocking(
-            rt.handle(),
+        let connect = || async {
             sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(1)
-                .connect("sqlite::memory:"),
-        )?;
+                .connect("sqlite::memory:")
+                .await
+        };
+        let (rt, pool) = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let pool = tokio::task::block_in_place(|| handle.block_on(connect()))
+                    .map_err(|e| AxonError::Storage(e.to_string()))?;
+                (None, pool)
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| AxonError::Storage(e.to_string()))?;
+                let pool = rt
+                    .block_on(connect())
+                    .map_err(|e| AxonError::Storage(e.to_string()))?;
+                (Some(rt), pool)
+            }
+        };
         let adapter = Self {
             pool,
-            rt,
+            _rt: rt,
             in_tx: false,
         };
         adapter.init_schema()?;
@@ -107,7 +136,7 @@ impl SqliteStorageAdapter {
     /// auth-related adapter methods (`upsert_user_identity`, `is_jti_revoked`,
     /// `get_user`, `get_tenant_member`).
     pub fn apply_auth_migrations(&self) -> Result<(), AxonError> {
-        crate::auth_schema::apply_auth_migrations_sqlite(&self.pool, &self.rt)
+        crate::auth_schema::apply_auth_migrations_sqlite(&self.pool, &self._rt)
             .map_err(AxonError::Storage)
     }
 
@@ -217,15 +246,12 @@ impl SqliteStorageAdapter {
     /// Bridge async sqlx futures into synchronous results.
     ///
     /// When called from outside any tokio runtime, uses the adapter's own
-    /// runtime directly.  When called from within an existing tokio runtime
-    /// (e.g. during server request handling), delegates to
-    /// `tokio::task::block_in_place` on the adapter's multi-thread handle
-    /// so the caller's runtime is not blocked.
+    /// Run an async sqlx future, bridging into the sync StorageAdapter trait.
     fn block_on<T>(
         &self,
         fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
     ) -> Result<T, AxonError> {
-        Self::run_blocking(self.rt.handle(), fut)
+        Self::run_on(&self._rt, fut).map_err(|e| AxonError::Storage(e.to_string()))
     }
 
     fn init_schema(&self) -> Result<(), AxonError> {

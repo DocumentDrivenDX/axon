@@ -200,7 +200,7 @@ mod tests {
             .expect("open in-memory pool")
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn db_round_trip() {
         let pool = test_pool().await;
         migrate_cors_origins(&pool).await.unwrap();
@@ -212,7 +212,7 @@ mod tests {
         assert!(origins.contains(&"https://sindri:5173".to_string()));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn db_add_is_idempotent() {
         let pool = test_pool().await;
         migrate_cors_origins(&pool).await.unwrap();
@@ -221,7 +221,7 @@ mod tests {
         assert_eq!(db_list(&pool).await.unwrap().len(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn db_remove_returns_true_on_deletion() {
         let pool = test_pool().await;
         migrate_cors_origins(&pool).await.unwrap();
@@ -230,7 +230,7 @@ mod tests {
         assert!(db_list(&pool).await.unwrap().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn db_remove_returns_false_when_absent() {
         let pool = test_pool().await;
         migrate_cors_origins(&pool).await.unwrap();

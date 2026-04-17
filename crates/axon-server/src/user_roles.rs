@@ -294,7 +294,7 @@ mod tests {
             .expect("open in-memory pool")
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn db_round_trip() {
         let pool = test_pool().await;
         migrate_user_roles(&pool).await.unwrap();
@@ -307,7 +307,7 @@ mod tests {
         assert!(matches!(entries[1].role, Role::Admin));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn db_upsert_updates_existing() {
         let pool = test_pool().await;
         migrate_user_roles(&pool).await.unwrap();
@@ -318,7 +318,7 @@ mod tests {
         assert!(matches!(entries[0].role, Role::Admin));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn db_remove_returns_true_on_deletion() {
         let pool = test_pool().await;
         migrate_user_roles(&pool).await.unwrap();
@@ -327,7 +327,7 @@ mod tests {
         assert!(db_list(&pool).await.unwrap().is_empty());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn db_remove_returns_false_when_absent() {
         let pool = test_pool().await;
         migrate_user_roles(&pool).await.unwrap();

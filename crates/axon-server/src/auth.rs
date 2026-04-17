@@ -696,7 +696,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn no_auth_returns_anonymous_admin() {
         let context = AuthContext::no_auth();
         let identity = context.resolve_peer(None).await.expect("no auth succeeds");
@@ -704,7 +704,7 @@ mod tests {
         assert_eq!(identity.role, Role::Admin);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn guest_mode_returns_guest_identity() {
         let context = AuthContext::guest(Role::Read);
         let identity = context
@@ -715,7 +715,7 @@ mod tests {
         assert_eq!(identity.role, Role::Read);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn guest_mode_with_write_role() {
         let context = AuthContext::guest(Role::Write);
         let identity = context
@@ -864,7 +864,7 @@ mod tests {
         assert_eq!(parsed.tags, vec!["tag:write"]);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn tailscale_mode_resolves_and_caches_identity() {
         let address = SocketAddr::from(([100, 101, 102, 103], 443));
         let provider = Arc::new(FakeWhoisProvider::with_result(
@@ -898,7 +898,7 @@ mod tests {
         assert_eq!(provider.calls(), 1);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn reject_non_tailnet_connection() {
         let address = SocketAddr::from(([127, 0, 0, 1], 3000));
         let provider = Arc::new(FakeWhoisProvider::with_result(
@@ -925,7 +925,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn verify_surfaces_provider_unavailability() {
         let provider = FakeWhoisProvider::new();
         {
@@ -1017,7 +1017,7 @@ mod tests {
 
     // ── User-role registry tests (US-048) ─────────────────────────────────────
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn user_role_registry_overrides_tag_based_role() {
         use crate::user_roles::{UserRoleEntry, UserRoleStore};
 
@@ -1054,7 +1054,7 @@ mod tests {
         assert_eq!(identity.role, Role::Write);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn user_role_registry_overrides_acl_tag_role() {
         use crate::user_roles::{UserRoleEntry, UserRoleStore};
 

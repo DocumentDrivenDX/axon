@@ -17,11 +17,18 @@
 /// produces the same result without errors or duplicate rows.
 pub fn apply_auth_migrations_sqlite(
     pool: &sqlx::SqlitePool,
-    rt: &tokio::runtime::Runtime,
+    owned_rt: &Option<tokio::runtime::Runtime>,
 ) -> Result<(), String> {
     let run = |sql: &str, label: &str| -> Result<(), String> {
-        rt.block_on(sqlx::query(sql).execute(pool))
-            .map_err(|e| format!("{label}: {e}"))?;
+        let fut = sqlx::query(sql).execute(pool);
+        let result = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+            Err(_) => owned_rt
+                .as_ref()
+                .expect("no tokio runtime available")
+                .block_on(fut),
+        };
+        result.map_err(|e| format!("{label}: {e}"))?;
         Ok(())
     };
 
@@ -247,7 +254,7 @@ mod tests {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    fn open_and_migrate() -> (sqlx::SqlitePool, tokio::runtime::Runtime) {
+    fn open_and_migrate() -> (sqlx::SqlitePool, Option<tokio::runtime::Runtime>) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -259,12 +266,15 @@ mod tests {
                     .connect("sqlite::memory:"),
             )
             .expect("in-memory DB should open");
+        let rt = Some(rt);
         apply_auth_migrations_sqlite(&pool, &rt).expect("migrations should succeed");
         (pool, rt)
     }
 
-    fn query_i64(pool: &sqlx::SqlitePool, rt: &tokio::runtime::Runtime, sql: &str) -> i64 {
-        rt.block_on(sqlx::query_scalar::<_, i64>(sql).fetch_one(pool))
+    fn query_i64(pool: &sqlx::SqlitePool, rt: &Option<tokio::runtime::Runtime>, sql: &str) -> i64 {
+        rt.as_ref()
+            .expect("runtime required")
+            .block_on(sqlx::query_scalar::<_, i64>(sql).fetch_one(pool))
             .expect("query should succeed")
     }
 
@@ -355,6 +365,7 @@ mod tests {
                     .connect("sqlite::memory:"),
             )
             .expect("in-memory DB should open");
+        let rt = Some(rt);
         apply_auth_migrations_sqlite(&pool, &rt).expect("first migration should succeed");
         apply_auth_migrations_sqlite(&pool, &rt).expect("second migration should be idempotent");
 
