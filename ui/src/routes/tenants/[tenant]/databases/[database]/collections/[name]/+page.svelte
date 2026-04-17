@@ -362,8 +362,8 @@ async function saveTemplate() {
 			collection: result.collection,
 			template: result.template,
 			version: result.version,
-			updated_at_ns: result.updated_at_ns,
-			updated_by: result.updated_by,
+			updated_at_ns: result.updated_at_ns ?? null,
+			updated_by: result.updated_by ?? null,
 		};
 		templateDraft = result.template;
 		templateEditMode = false;

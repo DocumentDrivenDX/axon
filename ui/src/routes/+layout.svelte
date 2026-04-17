@@ -2,7 +2,10 @@
 import '../app.css';
 
 import { base } from '$app/paths';
+import { page } from '$app/state';
 import { type AuthState, type HealthStatus, fetchAuthMe, fetchHealth } from '$lib/api';
+// biome-ignore lint/correctness/noUnusedImports: Used in template as TenantPicker component.
+import TenantPicker from '$lib/components/TenantPicker.svelte';
 import type { Snippet } from 'svelte';
 import { onMount } from 'svelte';
 
@@ -15,6 +18,30 @@ let authState: AuthState = $state({ status: 'loading' } as AuthState);
 const homeHref = `${base}/`;
 const tenantsHref = `${base}/tenants`;
 const usersHref = `${base}/users`;
+
+// Derive current tenant and database from the URL path.
+// Paths like /tenants/{tenant}/databases/{database}/... → extract both.
+const urlSegments = $derived(() => page.url.pathname.split('/').filter(Boolean));
+let currentTenantDbName: string | null = $state(null);
+let currentDatabaseName: string | null = $state(null);
+
+$effect(() => {
+	const segs = urlSegments();
+	const tenantIdx = segs.indexOf('tenants');
+	if (tenantIdx >= 0 && tenantIdx + 1 < segs.length) {
+		currentTenantDbName = segs[tenantIdx + 1] ?? null;
+	}
+	if (currentTenantDbName) {
+		const dbIdx = segs.indexOf('databases');
+		if (dbIdx >= 0 && dbIdx + 1 < segs.length) {
+			currentDatabaseName = segs[dbIdx + 1] ?? null;
+		} else {
+			currentDatabaseName = null;
+		}
+	} else {
+		currentDatabaseName = null;
+	}
+});
 
 const isGuest = $derived(
 	authState.status === 'authenticated' && authState.identity.actor === 'guest',
@@ -60,6 +87,10 @@ onMount(() => {
 				<a class="nav-link" href={tenantsHref}>Tenants</a>
 				<a class="nav-link" href={usersHref}>Users</a>
 			</nav>
+			<TenantPicker
+				currentTenantDbName={currentTenantDbName}
+				currentDatabaseName={currentDatabaseName}
+			/>
 		</div>
 
 		<div class="topnav-right">
