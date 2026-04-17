@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260417T185623-9ae1eb18",
+  "bead_id": "axon-dc6488bf",
+  "base_rev": "026f58e045a7cb0e806d49dddc2bc843626a87a6",
+  "created_at": "2026-04-17T18:56:23.957879317Z",
+  "requested": {
+    "harness": "agent",
+    "model": "qwen/qwen3.6-35b-a3b",
+    "provider": "bragi",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-dc6488bf",
+    "title": "feat(ui): enrich tenant home page with metadata and quick actions",
+    "description": "The tenant home page at /ui/tenants/{tenant} only shows a bare database list. It should show:\n- Tenant name, ID, created date\n- Member count with link to members page\n- Credential count with link to credentials page  \n- Database list with entity counts per database\n- Quick action buttons (create database, manage members, issue credential)\n\nThis gives operators context when they land on a tenant.",
+    "labels": [
+      "helix",
+      "phase:build",
+      "area:ui",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-17T18:56:13Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3967977",
+      "execute-loop-heartbeat-at": "2026-04-17T18:56:13.744211034Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260417T185623-9ae1eb18",
+    "prompt": ".ddx/executions/20260417T185623-9ae1eb18/prompt.md",
+    "manifest": ".ddx/executions/20260417T185623-9ae1eb18/manifest.json",
+    "result": ".ddx/executions/20260417T185623-9ae1eb18/result.json",
+    "checks": ".ddx/executions/20260417T185623-9ae1eb18/checks.json",
+    "usage": ".ddx/executions/20260417T185623-9ae1eb18/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-dc6488bf-20260417T185623-9ae1eb18"
+  }
+}
