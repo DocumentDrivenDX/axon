@@ -17,14 +17,13 @@
 /// produces the same result without errors or duplicate rows.
 pub fn apply_auth_migrations_sqlite(
     pool: &sqlx::SqlitePool,
-    owned_rt: &Option<tokio::runtime::Runtime>,
+    owned_rt: Option<&tokio::runtime::Runtime>,
 ) -> Result<(), String> {
     let run = |sql: &str, label: &str| -> Result<(), String> {
         let fut = sqlx::query(sql).execute(pool);
         let result = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
             Err(_) => owned_rt
-                .as_ref()
                 .expect("no tokio runtime available")
                 .block_on(fut),
         };
@@ -267,18 +266,18 @@ mod tests {
             )
             .expect("in-memory DB should open");
         let rt = Some(rt);
-        apply_auth_migrations_sqlite(&pool, &rt).expect("migrations should succeed");
+        apply_auth_migrations_sqlite(&pool, rt.as_ref()).expect("migrations should succeed");
         (pool, rt)
     }
 
-    fn query_i64(pool: &sqlx::SqlitePool, rt: &Option<tokio::runtime::Runtime>, sql: &str) -> i64 {
+    fn query_i64(pool: &sqlx::SqlitePool, rt: Option<&tokio::runtime::Runtime>, sql: &str) -> i64 {
         rt.as_ref()
             .expect("runtime required")
             .block_on(sqlx::query_scalar::<_, i64>(sql).fetch_one(pool))
             .expect("query should succeed")
     }
 
-    fn exec(pool: &sqlx::SqlitePool, rt: &tokio::runtime::Runtime, sql: &str, binds: &[BindVal]) {
+    fn exec(pool: &sqlx::SqlitePool, rt: Option<&tokio::runtime::Runtime>, sql: &str, binds: &[BindVal]) {
         let mut q = sqlx::query(sql);
         for b in binds {
             match b {
@@ -287,12 +286,12 @@ mod tests {
                 BindVal::Null => q = q.bind(Option::<String>::None),
             }
         }
-        rt.block_on(q.execute(pool)).expect("exec should succeed");
+        rt.as_ref().expect("runtime required").block_on(q.execute(pool)).expect("exec should succeed");
     }
 
     fn exec_result(
         pool: &sqlx::SqlitePool,
-        rt: &tokio::runtime::Runtime,
+        rt: Option<&tokio::runtime::Runtime>,
         sql: &str,
         binds: &[BindVal],
     ) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
@@ -304,7 +303,7 @@ mod tests {
                 BindVal::Null => q = q.bind(Option::<String>::None),
             }
         }
-        rt.block_on(q.execute(pool))
+        rt.as_ref().expect("runtime required").block_on(q.execute(pool))
     }
 
     enum BindVal {
@@ -328,7 +327,7 @@ mod tests {
 
         let count = query_i64(
             &pool,
-            &rt,
+            rt.as_ref(),
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
                 'tenants', 'users', 'user_identities', 'tenant_users',
                 'tenant_databases', 'credential_revocations',
@@ -343,7 +342,7 @@ mod tests {
         let (pool, rt) = open_and_migrate();
         let count = query_i64(
             &pool,
-            &rt,
+            rt.as_ref(),
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='audit_retention_policies'",
         );
         assert_eq!(
@@ -366,12 +365,12 @@ mod tests {
             )
             .expect("in-memory DB should open");
         let rt = Some(rt);
-        apply_auth_migrations_sqlite(&pool, &rt).expect("first migration should succeed");
-        apply_auth_migrations_sqlite(&pool, &rt).expect("second migration should be idempotent");
+        apply_auth_migrations_sqlite(&pool, rt.as_ref()).expect("first migration should succeed");
+        apply_auth_migrations_sqlite(&pool, rt.as_ref()).expect("second migration should be idempotent");
 
         let count = query_i64(
             &pool,
-            &rt,
+            rt.as_ref(),
             "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN (
                 'tenants', 'users', 'user_identities', 'tenant_users',
                 'tenant_databases', 'credential_revocations',
@@ -389,7 +388,7 @@ mod tests {
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             &[
@@ -401,7 +400,7 @@ mod tests {
             ],
         );
 
-        let row = rt
+        let row = rt.as_ref().expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT id, name, display_name, created_at_ms, updated_at_ms
@@ -425,7 +424,7 @@ mod tests {
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO users (id, display_name, email, created_at_ms, suspended_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             &[
@@ -437,7 +436,7 @@ mod tests {
             ],
         );
 
-        let row = rt
+        let row = rt.as_ref().expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT id, display_name, email, created_at_ms, suspended_at_ms
@@ -465,20 +464,20 @@ mod tests {
         // Need a parent user first.
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO users (id, display_name, created_at_ms) VALUES (?1, ?2, ?3)",
             &[s("u-001"), s("Alice"), i(1_000_000)],
         );
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
             &[s("tailscale"), s("alice@tailnet"), s("u-001"), i(3_000_000)],
         );
 
-        let row = rt
+        let row = rt.as_ref().expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT provider, external_id, user_id, created_at_ms
@@ -502,7 +501,7 @@ mod tests {
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             &[
@@ -515,20 +514,20 @@ mod tests {
         );
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO users (id, display_name, created_at_ms) VALUES (?1, ?2, ?3)",
             &[s("u-001"), s("Alice"), i(1_000_000)],
         );
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
             &[s("t-001"), s("u-001"), s("admin"), i(4_000_000)],
         );
 
-        let row = rt
+        let row = rt.as_ref().expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT tenant_id, user_id, role, added_at_ms
@@ -552,7 +551,7 @@ mod tests {
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             &[
@@ -566,13 +565,13 @@ mod tests {
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO tenant_databases (tenant_id, database_name, created_at_ms)
              VALUES (?1, ?2, ?3)",
             &[s("t-001"), s("orders"), i(5_000_000)],
         );
 
-        let row = rt
+        let row = rt.as_ref().expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT tenant_id, database_name, created_at_ms
@@ -595,13 +594,13 @@ mod tests {
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO credential_revocations (jti, revoked_at_ms, revoked_by)
              VALUES (?1, ?2, ?3)",
             &[s("jti-abc123"), i(6_000_000), s("u-001")],
         );
 
-        let row = rt
+        let row = rt.as_ref().expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT jti, revoked_at_ms, revoked_by
@@ -628,7 +627,7 @@ mod tests {
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             &[
@@ -642,7 +641,7 @@ mod tests {
 
         let result = exec_result(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             &[
@@ -662,14 +661,14 @@ mod tests {
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO users (id, display_name, created_at_ms) VALUES (?1, ?2, ?3)",
             &[s("u-001"), s("User One"), i(1_000_000)],
         );
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
             &[s("tailscale"), s("alice@tailnet"), s("u-001"), i(1_000_000)],
@@ -677,7 +676,7 @@ mod tests {
 
         let result = exec_result(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO user_identities (provider, external_id, user_id, created_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
             &[s("tailscale"), s("alice@tailnet"), s("u-001"), i(2_000_000)],
@@ -694,7 +693,7 @@ mod tests {
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO tenants (id, name, display_name, created_at_ms, updated_at_ms)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             &[
@@ -707,14 +706,14 @@ mod tests {
         );
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO users (id, display_name, created_at_ms) VALUES (?1, ?2, ?3)",
             &[s("u-001"), s("User One"), i(1_000_000)],
         );
 
         exec(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
             &[s("t-001"), s("u-001"), s("admin"), i(1_000_000)],
@@ -722,7 +721,7 @@ mod tests {
 
         let result = exec_result(
             &pool,
-            &rt,
+            rt.as_ref(),
             "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
              VALUES (?1, ?2, ?3, ?4)",
             &[s("t-001"), s("u-001"), s("write"), i(2_000_000)],

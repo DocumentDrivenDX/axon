@@ -37,7 +37,7 @@ pub struct SqliteStorageAdapter {
     /// Owned runtime — only used when no outer tokio context exists (CLI,
     /// embedded mode).  When constructed inside a gateway handler or
     /// `#[tokio::test]`, this is `None` and the caller's runtime is reused.
-    _rt: Option<tokio::runtime::Runtime>,
+    rt: Option<tokio::runtime::Runtime>,
     /// `true` while a `BEGIN` has been issued but not yet committed or rolled back.
     in_tx: bool,
 }
@@ -45,16 +45,12 @@ pub struct SqliteStorageAdapter {
 impl SqliteStorageAdapter {
     /// Run an async future, handling both async and non-async caller contexts.
     fn run_on<T>(
-        owned_rt: &Option<tokio::runtime::Runtime>,
+        owned_rt: Option<&tokio::runtime::Runtime>,
         fut: impl std::future::Future<Output = T>,
     ) -> T {
         match tokio::runtime::Handle::try_current() {
-            // Inside an async context: yield via block_in_place, drive on the
-            // caller's runtime (avoids nested-runtime shutdown panics).
             Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
-            // Outside async: use the adapter's owned runtime.
             Err(_) => owned_rt
-                .as_ref()
                 .expect("SqliteStorageAdapter: no tokio runtime available")
                 .block_on(fut),
         }
@@ -87,7 +83,7 @@ impl SqliteStorageAdapter {
         };
         let adapter = Self {
             pool,
-            _rt: rt,
+            rt,
             in_tx: false,
         };
         adapter.init_schema()?;
@@ -121,7 +117,7 @@ impl SqliteStorageAdapter {
         };
         let adapter = Self {
             pool,
-            _rt: rt,
+            rt,
             in_tx: false,
         };
         adapter.init_schema()?;
@@ -136,7 +132,7 @@ impl SqliteStorageAdapter {
     /// auth-related adapter methods (`upsert_user_identity`, `is_jti_revoked`,
     /// `get_user`, `get_tenant_member`).
     pub fn apply_auth_migrations(&self) -> Result<(), AxonError> {
-        crate::auth_schema::apply_auth_migrations_sqlite(&self.pool, &self._rt)
+        crate::auth_schema::apply_auth_migrations_sqlite(&self.pool, self.rt.as_ref())
             .map_err(AxonError::Storage)
     }
 
@@ -251,7 +247,7 @@ impl SqliteStorageAdapter {
         &self,
         fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
     ) -> Result<T, AxonError> {
-        Self::run_on(&self._rt, fut).map_err(|e| AxonError::Storage(e.to_string()))
+        Self::run_on(self.rt.as_ref(), fut).map_err(|e| AxonError::Storage(e.to_string()))
     }
 
     fn init_schema(&self) -> Result<(), AxonError> {

@@ -23,24 +23,52 @@ use crate::adapter::StorageAdapter;
 /// exist.
 pub struct PostgresStorageAdapter {
     pool: sqlx::PgPool,
-    rt: tokio::runtime::Runtime,
+    /// Owned runtime — only used when no outer tokio context exists.
+    /// When constructed inside a gateway handler or `#[tokio::test]`,
+    /// this is `None` and the caller's runtime is reused.
+    rt: Option<tokio::runtime::Runtime>,
     in_tx: bool,
 }
 
 impl PostgresStorageAdapter {
+    /// Run an async future, handling both async and non-async caller contexts.
+    fn run_on<T>(
+        owned_rt: Option<&tokio::runtime::Runtime>,
+        fut: impl std::future::Future<Output = T>,
+    ) -> T {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+            Err(_) => owned_rt
+                .expect("PostgresStorageAdapter: no tokio runtime available")
+                .block_on(fut),
+        }
+    }
+
     /// Connect to a PostgreSQL database using a connection string.
     ///
     /// Example: `"host=localhost user=axon dbname=axon"` or
     /// `"postgres://axon@localhost/axon"`
     pub fn connect(params: &str) -> Result<Self, AxonError> {
-        let rt = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .map_err(|e| AxonError::Storage(e.to_string()))?;
-        let pool = rt
-            .block_on(sqlx::PgPool::connect(params))
-            .map_err(|e| AxonError::Storage(format!("connection failed: {e}")))?;
+        let (rt, pool) = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                let pool = tokio::task::block_in_place(|| {
+                    handle.block_on(sqlx::PgPool::connect(params))
+                })
+                .map_err(|e| AxonError::Storage(format!("connection failed: {e}")))?;
+                (None, pool)
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .build()
+                    .map_err(|e| AxonError::Storage(e.to_string()))?;
+                let pool = rt
+                    .block_on(sqlx::PgPool::connect(params))
+                    .map_err(|e| AxonError::Storage(format!("connection failed: {e}")))?;
+                (Some(rt), pool)
+            }
+        };
         let mut adapter = Self {
             pool,
             rt,
@@ -52,19 +80,11 @@ impl PostgresStorageAdapter {
 
     /// Block the current thread on an sqlx future, converting any error into
     /// `AxonError::Storage`.
-    ///
-    /// When called from within a Tokio async task, uses
-    /// [`tokio::task::block_in_place`] to temporarily yield the async context
-    /// before blocking on the adapter's dedicated runtime.
     fn block_on<T>(
         &self,
         fut: impl Future<Output = Result<T, sqlx::Error>>,
     ) -> Result<T, AxonError> {
-        match tokio::runtime::Handle::try_current() {
-            Ok(_) => tokio::task::block_in_place(|| self.rt.handle().block_on(fut)),
-            Err(_) => self.rt.handle().block_on(fut),
-        }
-        .map_err(|e| AxonError::Storage(e.to_string()))
+        Self::run_on(self.rt.as_ref(), fut).map_err(|e| AxonError::Storage(e.to_string()))
     }
 
     /// Apply auth/tenancy schema migrations to this adapter's PostgreSQL connection.

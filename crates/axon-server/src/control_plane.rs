@@ -35,7 +35,7 @@ pub struct Tenant {
 pub struct ControlPlaneDb {
     pool: SqlitePool,
     /// Owned runtime — only used when no outer tokio context exists.
-    _rt: Option<tokio::runtime::Runtime>,
+    rt: Option<tokio::runtime::Runtime>,
 }
 
 impl ControlPlaneDb {
@@ -44,13 +44,12 @@ impl ControlPlaneDb {
     /// When inside a tokio context, uses the caller's runtime via
     /// `block_in_place`.  Otherwise uses the owned runtime.
     fn run_on<T>(
-        owned_rt: &Option<tokio::runtime::Runtime>,
+        owned_rt: Option<&tokio::runtime::Runtime>,
         fut: impl std::future::Future<Output = T>,
     ) -> T {
         match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
             Err(_) => owned_rt
-                .as_ref()
                 .expect("ControlPlaneDb: no tokio runtime available")
                 .block_on(fut),
         }
@@ -61,7 +60,7 @@ impl ControlPlaneDb {
         &self,
         fut: impl std::future::Future<Output = Result<T, sqlx::Error>>,
     ) -> Result<T, String> {
-        Self::run_on(&self._rt, fut).map_err(|e| e.to_string())
+        Self::run_on(self.rt.as_ref(), fut).map_err(|e| e.to_string())
     }
 
     /// Open (or create) a control-plane database at the given file path.
@@ -86,7 +85,7 @@ impl ControlPlaneDb {
                 (Some(rt), pool)
             }
         };
-        let db = Self { pool, _rt: rt };
+        let db = Self { pool, rt };
         db.migrate()?;
         Ok(db)
     }
@@ -112,7 +111,7 @@ impl ControlPlaneDb {
                 (Some(rt), pool)
             }
         };
-        let db = Self { pool, _rt: rt };
+        let db = Self { pool, rt };
         db.migrate()?;
         Ok(db)
     }
@@ -154,8 +153,8 @@ impl ControlPlaneDb {
         self.block_on(sqlx::query("DROP TABLE IF EXISTS nodes").execute(&self.pool))
             .map_err(AxonError::Storage)?;
 
-        Self::run_on(&self._rt, crate::user_roles::migrate_user_roles(&self.pool))?;
-        Self::run_on(&self._rt, crate::cors_config::migrate_cors_origins(&self.pool))?;
+        Self::run_on(self.rt.as_ref(), crate::user_roles::migrate_user_roles(&self.pool))?;
+        Self::run_on(self.rt.as_ref(), crate::cors_config::migrate_cors_origins(&self.pool))?;
         Ok(())
     }
 
@@ -163,24 +162,24 @@ impl ControlPlaneDb {
 
     /// List all configured CORS allowed origins.
     pub fn list_cors_origins(&self) -> Result<Vec<String>, AxonError> {
-        Self::run_on(&self._rt, crate::cors_config::db_list(&self.pool))
+        Self::run_on(self.rt.as_ref(), crate::cors_config::db_list(&self.pool))
     }
 
     /// Add (or no-op if already present) a CORS allowed origin.
     pub fn add_cors_origin(&self, origin: &str) -> Result<(), AxonError> {
-        Self::run_on(&self._rt, crate::cors_config::db_add(&self.pool, origin))
+        Self::run_on(self.rt.as_ref(), crate::cors_config::db_add(&self.pool, origin))
     }
 
     /// Remove a CORS allowed origin.  Returns `true` if a row was deleted.
     pub fn remove_cors_origin(&self, origin: &str) -> Result<bool, AxonError> {
-        Self::run_on(&self._rt, crate::cors_config::db_remove(&self.pool, origin))
+        Self::run_on(self.rt.as_ref(), crate::cors_config::db_remove(&self.pool, origin))
     }
 
     // -- user_roles ------------------------------------------------------------
 
     /// List all user-role assignments.
     pub fn list_user_roles(&self) -> Result<Vec<crate::user_roles::UserRoleEntry>, AxonError> {
-        Self::run_on(&self._rt, crate::user_roles::db_list(&self.pool))
+        Self::run_on(self.rt.as_ref(), crate::user_roles::db_list(&self.pool))
     }
 
     /// Upsert a user-role assignment.
@@ -189,12 +188,12 @@ impl ControlPlaneDb {
         login: &str,
         role: &crate::auth::Role,
     ) -> Result<(), AxonError> {
-        Self::run_on(&self._rt, crate::user_roles::db_set(&self.pool, login, role))
+        Self::run_on(self.rt.as_ref(), crate::user_roles::db_set(&self.pool, login, role))
     }
 
     /// Remove a user-role assignment.  Returns `true` if a row was deleted.
     pub fn remove_user_role(&self, login: &str) -> Result<bool, AxonError> {
-        Self::run_on(&self._rt, crate::user_roles::db_remove(&self.pool, login))
+        Self::run_on(self.rt.as_ref(), crate::user_roles::db_remove(&self.pool, login))
     }
 
     // -- tenants ---------------------------------------------------------------
