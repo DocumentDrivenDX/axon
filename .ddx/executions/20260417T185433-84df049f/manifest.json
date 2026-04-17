@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260417T185433-84df049f",
+  "bead_id": "axon-56e54602",
+  "base_rev": "de36619ffc0db803c76e1314a931d075555f981a",
+  "created_at": "2026-04-17T18:54:33.814392354Z",
+  "requested": {
+    "harness": "agent",
+    "model": "qwen/qwen3.6-35b-a3b",
+    "provider": "bragi",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-56e54602",
+    "title": "test(e2e): add multi-tenant isolation Playwright tests",
+    "description": "No Playwright test creates 2+ tenants and verifies collections differ when switching. Add a spec that:\n1. Creates tenant-A with database-A and collection coll-A\n2. Creates tenant-B with database-B and collection coll-B\n3. Navigates to tenant-A/database-A/collections → sees coll-A, not coll-B\n4. Navigates to tenant-B/database-B/collections → sees coll-B, not coll-A\n5. Uses breadcrumb to navigate back to tenant list\n6. Verifies both tenants appear in the list\n\nThis is the fundamental proof that the ADR-018 tenant hierarchy works end-to-end through the UI.",
+    "labels": [
+      "helix",
+      "phase:test",
+      "area:ui",
+      "kind:test"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-17T18:54:23Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3967977",
+      "execute-loop-heartbeat-at": "2026-04-17T18:54:23.105340251Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260417T185433-84df049f",
+    "prompt": ".ddx/executions/20260417T185433-84df049f/prompt.md",
+    "manifest": ".ddx/executions/20260417T185433-84df049f/manifest.json",
+    "result": ".ddx/executions/20260417T185433-84df049f/result.json",
+    "checks": ".ddx/executions/20260417T185433-84df049f/checks.json",
+    "usage": ".ddx/executions/20260417T185433-84df049f/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-56e54602-20260417T185433-84df049f"
+  }
+}
