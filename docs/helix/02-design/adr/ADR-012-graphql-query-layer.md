@@ -566,6 +566,7 @@ Multi-entity atomic operations use a generic transaction mutation:
 
 ```graphql
 input CommitTransactionInput {
+  idempotencyKey: String
   operations: [TransactionOp!]!
   actor: String
 }
@@ -639,6 +640,12 @@ type TransactionOpResult {
 Transaction operations use `JSON` scalars for data because they can
 span multiple collections with different schemas. All operations commit
 atomically — if any fails, none are applied.
+
+`idempotencyKey` is the canonical retry key for transaction mutations. It is a
+field on the mutation input, not an HTTP header. REST transaction compatibility
+endpoints use the same body field as `idempotency_key`. Empty transaction
+inputs follow FEAT-008: `operations: []` commits as a no-op and writes no audit
+entry.
 
 #### Collection Management Mutations
 
@@ -843,6 +850,7 @@ An atomic transaction across collections:
 ```graphql
 mutation {
   commitTransaction(input: {
+    idempotencyKey: "billing-agent-transfer-2026-04-19T20:45Z"
     actor: "billing-agent"
     operations: [
       { updateEntity: {

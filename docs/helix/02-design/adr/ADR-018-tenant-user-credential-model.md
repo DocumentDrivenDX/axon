@@ -504,7 +504,7 @@ are a subset of what the admin's `tenant_users.role` permits. An admin can
 issue a `read`-only credential; a `write` member cannot issue an `admin`
 credential.
 
-### 5. REST and GraphQL division of labor
+### 5. GraphQL-first interface policy
 
 Both surfaces nest under the same `/tenants/{t}/databases/{d}/` path prefix
 so they share the same routing, authentication, and `(user_id, tenant_id,
@@ -512,34 +512,42 @@ grants)` extension. A single middleware layer handles tenant/database
 extraction; the REST handlers and the GraphQL resolver context both read
 from the request extension.
 
+GraphQL is the primary documented interface for developer and end-user
+workflows. REST remains for operations where HTTP resource semantics,
+streaming/file transfer, or operational break-glass behavior is demonstrably
+better than GraphQL.
+
 | Operation class | Surface |
 |-----------------|---------|
-| Single-entity CRUD addressable by canonical URL | REST |
+| Single-entity CRUD | GraphQL primary; REST compatibility URLs may remain |
 | Multi-entity queries, filters, joins, traversal | GraphQL |
 | Subscriptions (live change feeds per-collection) | GraphQL |
-| Batch transactions | REST `POST /transactions` AND GraphQL `commitTransaction` mutation |
-| Schema management (`PUT /schema`) | REST — it's a declarative config operation |
-| Audit query — point lookup | REST |
+| Batch transactions | GraphQL `commitTransaction`; REST compatibility endpoint may remain |
+| Schema and collection management | GraphQL primary; REST compatibility/break-glass endpoints may remain |
+| Audit query — point lookup | GraphQL primary; REST compatibility endpoint may remain |
 | Audit query — filtered/paginated | GraphQL |
-| Admin / control plane | REST only — self-documenting, HTTP verb semantics |
+| Tenant/user/member/credential/database control plane | GraphQL primary for UI/SDK; REST compatibility/break-glass endpoints may remain |
+| Entity-level rollback | GraphQL primary |
+| Transaction and point-in-time rollback | REST break-glass until GraphQL recovery semantics are hardened |
 | Health, metrics | REST only |
 
 Rationale:
 
-- **REST is unbeatable for resource identity.** A canonical URL that is
-  simultaneously the routing key, the cache key, and the identifier you
-  put in audit logs and webhooks is too valuable to give up.
-- **GraphQL is unbeatable for queries.** Batching, field selection,
-  relationship resolution, typed schemas, subscriptions — these are
-  GraphQL's core strengths and trying to replicate them in REST is
-  exactly what spawned GraphQL in the first place.
-- **Neither is strictly worse.** This is the same division GitHub, Stripe,
-  and Shopify converged on. It is not a transitional compromise; it is
-  the intended long-term surface.
+- **GraphQL is the best developer surface.** Introspection, generated
+  schemas, typed inputs, field selection, batching, subscriptions, and
+  self-documenting mutations are exactly the interface properties Axon wants
+  application developers and the native UI to consume.
+- **REST is still useful, but exceptional.** Health checks, metrics, static
+  assets, streaming/file-oriented transports, compatibility URLs, and
+  break-glass recovery operations retain REST where GraphQL is not the right
+  shape.
+- **The native Axon UI is the canary.** UI routes should exercise GraphQL for
+  control-plane and data-plane workflows unless this ADR or the API contract
+  names a specific REST-only exception.
 
-This section amends ADR-012 (GraphQL Query Layer) to clarify that GraphQL
-is not expected to subsume REST. It supersedes any prior statement
-suggesting one would replace the other.
+This section amends prior ADR-018 language that made single-entity CRUD,
+schema management, and the control plane REST-only. It also strengthens
+ADR-012 by making GraphQL the primary write surface, not only the query layer.
 
 ### 6. Default tenant bootstrap
 

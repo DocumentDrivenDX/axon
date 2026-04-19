@@ -3,9 +3,62 @@
 This document pins the HTTP and GraphQL surface a static browser bundle can call
 directly over Tailscale.
 
+## Interface Policy
+
+GraphQL is Axon's primary documented interface for end-user and developer
+workflows. That includes single-entity CRUD, filtered lists, metadata
+discovery, relationships, aggregations, audit reads, schema and collection
+management, control-plane administration, atomic transactions, and the native
+Axon UI. REST remains available only where it is demonstrably better than
+GraphQL: health and metrics, static asset serving, streaming/file-oriented
+transports, compatibility endpoints, and break-glass administrative recovery
+operations.
+
+The native Axon UI is the canary consumer for this policy. UI routes should use
+GraphQL for tenant, user, database, collection, entity, audit, relationship,
+lifecycle, schema, and credential workflows unless the API contract names a
+specific REST-only exception.
+
+REST-only exceptions for V1 are:
+
+- `GET /health`, metrics, and static UI assets.
+- Streaming or file-oriented endpoints where GraphQL request/response semantics
+  are a poor fit.
+- Transaction-level and point-in-time rollback break-glass operations until the
+  GraphQL recovery surface is hardened.
+
+Entity-level rollback is part of the GraphQL data-plane surface because it is a
+normal application recovery workflow for the entity detail UI.
+
+## CORS
+
+Browser clients may call Axon cross-origin when the origin is allowed by
+deployment policy. Production deployments use an explicit allowlist. Development
+and `--no-auth` deployments may opt into a wildcard origin for local iteration.
+
+Preflight responses allow:
+
+- Methods: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`
+- Request headers: `authorization`, `content-type`, `x-axon-schema-hash`
+- Credentials: allowed only when the deployment's origin policy enables them
+- Max age: deployment-configurable, with `600` seconds as the recommended
+  default
+
+Browser-readable response headers include:
+
+- `x-axon-schema-hash`
+- `x-idempotent-cache`
+- `x-request-id`
+- `x-axon-query-cost` when query-cost reporting is enabled
+
+Tailscale does not bypass browser same-origin enforcement. A Tailscale-hosted
+SPA talking to a differently named Axon host still needs this CORS policy.
+
 ## Current User
 
-Use `GET /auth/me` before choosing a tenant/database route.
+Use the GraphQL current-user query before choosing a tenant/database route once
+the control-plane GraphQL surface is available. During the compatibility
+window, `GET /auth/me` returns the same identity envelope.
 
 ```http
 GET /auth/me
@@ -28,9 +81,11 @@ for those fields because those modes do not require a users-collection lookup.
 
 ## Schema Handshake
 
-Use `GET /tenants/{tenant}/databases/{database}/schema` on app load. The
-response includes the current schema hash, full collection schemas, and the
-header name clients can use to assert compatibility.
+Use the GraphQL metadata/schema query on app load once the comprehensive
+GraphQL surface is available. During the compatibility window, the REST
+handshake `GET /tenants/{tenant}/databases/{database}/schema` returns the same
+schema hash, full collection schemas, and the header name clients can use to
+assert compatibility.
 
 ```http
 GET /tenants/default/databases/default/schema
@@ -77,8 +132,9 @@ Clients may send `x-axon-schema-hash` or `?expected_hash=`. A mismatch returns
 
 ## Filtering
 
-REST collection queries use `POST /collections/{collection}/query` with the
-existing `FilterNode` JSON body:
+GraphQL list fields are canonical for filtering. REST collection queries remain
+available as compatibility endpoints using `POST /collections/{collection}/query`
+with the existing `FilterNode` JSON body:
 
 ```http
 POST /tenants/default/databases/default/collections/time_entries/query
@@ -100,8 +156,7 @@ POST /tenants/default/databases/default/collections/time_entries/query
 }
 ```
 
-GraphQL list fields expose the same behavior with `filter`, `sort`, `limit`,
-and `afterId`:
+GraphQL list fields expose `filter`, `sort`, `limit`, and `afterId`:
 
 ```graphql
 {
@@ -130,7 +185,11 @@ composition.
 
 ## Link Traversal
 
-Simple traversal remains available as `GET`:
+GraphQL relationship fields, `neighbors`, and `linkCandidates` are canonical
+for application link traversal and discovery. REST traversal remains available
+as a compatibility endpoint.
+
+Simple REST traversal:
 
 ```http
 GET /tenants/default/databases/default/traverse/engagements/eng-1?link_type=has_phase&max_depth=2&direction=forward
@@ -190,18 +249,40 @@ conflicts return `409` with the live version and entity:
 }
 ```
 
-Use `POST /transactions` for atomic multi-entity writes. Safe network retries
-use the `idempotency-key` header; successful transaction responses are cached
-for five minutes per database and return `x-idempotent-cache: hit` on replay.
-Conflicts and validation failures are not cached.
+Use GraphQL `commitTransaction` for atomic multi-entity writes. The REST
+`POST /transactions` endpoint remains a compatibility endpoint with the same
+request body.
+
+Safe network retries use `idempotency_key` in the transaction input/body. Axon
+does not define an idempotency HTTP header as part of the canonical contract.
+Successful transaction responses are cached for five minutes per tenant/database
+and return `x-idempotent-cache: hit` on replay. Conflicts and validation
+failures are not cached.
+
+`idempotency_key` rules:
+
+- Field name: `idempotency_key`
+- Type: string
+- Length: `1..128` characters
+- Character set: ASCII `[A-Za-z0-9_.:-]`
+- Scope: tenant plus database
+- Case-sensitive
+- Optional; absent means non-idempotent
+
+If the same key is reused with a different payload after a successful commit,
+the replay returns the original cached success until the TTL expires. Clients
+must generate a fresh key per logical transaction.
+
+Empty transactions follow FEAT-008: `operations: []` commits as a no-op, writes
+no audit entry, and returns a successful empty result.
 
 ```http
 POST /tenants/default/databases/default/transactions
-idempotency-key: browser-retry-2026-04-19T15:00Z
 ```
 
 ```json
 {
+  "idempotency_key": "browser-retry-2026-04-19T15:00Z",
   "operations": [
     {
       "op": "update",
@@ -211,6 +292,27 @@ idempotency-key: browser-retry-2026-04-19T15:00Z
       "data": {"status": "approved"}
     }
   ]
+}
+```
+
+The GraphQL form uses the same field:
+
+```graphql
+mutation {
+  commitTransaction(input: {
+    idempotencyKey: "browser-retry-2026-04-19T15:00Z"
+    operations: [
+      { updateEntity: {
+          collection: "time_entries"
+          id: "time-1"
+          expectedVersion: 4
+          data: { status: "approved" }
+      }}
+    ]
+  }) {
+    transactionId
+    results { index success entity }
+  }
 }
 ```
 
