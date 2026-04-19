@@ -15,6 +15,7 @@ axon-core = { path = "../axon-core" }
 axon-schema = { path = "../axon-schema" }
 axon-api = { path = "../axon-api" }
 axon-storage = { path = "../axon-storage" }
+axon-audit = { path = "../axon-audit" }
 
 async-graphql = { workspace = true }
 serde = { workspace = true }

@@ -96,6 +96,17 @@ async fn gql(server: &axum_test::TestServer, query: &str) -> Value {
         .json::<Value>()
 }
 
+async fn create_item(server: &axum_test::TestServer, id: &str, data: Value) -> Value {
+    gql(
+        server,
+        &format!(
+            r#"mutation {{ createItem(id: "{id}", input: "{}") {{ id version }} }}"#,
+            data.to_string().replace('"', "\\\"")
+        ),
+    )
+    .await
+}
+
 // ── Playground ────────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
@@ -115,8 +126,6 @@ async fn graphql_playground_returns_html() {
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_introspection_root_types() {
     let server = test_server();
-    // At least one collection is required — async-graphql rejects a Query with no fields.
-    seed_collection(&server, "item").await;
     let body = gql(
         &server,
         r"{ __schema { queryType { name } mutationType { name } subscriptionType { name } } }",
@@ -129,6 +138,79 @@ async fn graphql_introspection_root_types() {
     assert!(
         body["data"]["__schema"]["subscriptionType"].is_null(),
         "subscriptionType should be null without a broker: {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_root_contract_types_and_fields_are_introspectable() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let body = gql(
+        &server,
+        r#"{
+            __schema { types { name } }
+            __type(name: "Query") { fields { name } }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    let type_names: Vec<&str> = body["data"]["__schema"]["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    for expected in [
+        "Entity",
+        "EntityConnection",
+        "EntityEdge",
+        "PageInfo",
+        "CollectionMeta",
+        "AuditEntry",
+        "AuditConnection",
+    ] {
+        assert!(
+            type_names.contains(&expected),
+            "missing root GraphQL type {expected}: {body}"
+        );
+    }
+
+    let query_fields: Vec<&str> = body["data"]["__type"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["name"].as_str())
+        .collect();
+    for expected in [
+        "entity",
+        "entities",
+        "collections",
+        "collection",
+        "auditLog",
+    ] {
+        assert!(
+            query_fields.contains(&expected),
+            "missing root GraphQL field {expected}: {body}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_empty_database_exposes_root_schema_and_empty_collections() {
+    let server = test_server();
+
+    let body = gql(&server, r"{ collections { name entityCount } }").await;
+
+    assert!(
+        body["errors"].is_null(),
+        "empty DB should still have a valid root schema: {body}"
+    );
+    assert_eq!(
+        body["data"]["collections"].as_array().unwrap().len(),
+        0,
+        "empty DB should return no collection metadata"
     );
 }
 
@@ -180,6 +262,28 @@ async fn graphql_list_field_exposes_filter_and_sort_arguments() {
 
     assert!(arg_names.contains(&"filter"), "items should accept filter");
     assert!(arg_names.contains(&"sort"), "items should accept sort");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_typed_list_connection_alias_is_registered() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let body = gql(
+        &server,
+        r#"{
+            __type(name: "Query") {
+                fields { name type { kind name ofType { kind name } } }
+            }
+        }"#,
+    )
+    .await;
+
+    let fields = body["data"]["__type"]["fields"].as_array().unwrap();
+    assert!(
+        fields.iter().any(|field| field["name"] == "itemsConnection"),
+        "itemsConnection should expose Relay-style list access while items remains compatible: {body}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -257,6 +361,35 @@ async fn graphql_list_empty_before_any_entities() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_root_collection_metadata_and_missing_collection() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let body = gql(
+        &server,
+        r#"{
+            collections { name entityCount schemaVersion schema }
+            collection(name: "item") { name entityCount schemaVersion schema }
+            missing: collection(name: "missing") { name }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    let collections = body["data"]["collections"].as_array().unwrap();
+    assert_eq!(collections.len(), 1);
+    assert_eq!(collections[0]["name"], "item");
+    assert_eq!(collections[0]["entityCount"], 0);
+    assert_eq!(collections[0]["schemaVersion"], 1);
+    assert_eq!(body["data"]["collection"]["name"], "item");
+    assert_eq!(body["data"]["collection"]["schema"]["collection"], "item");
+    assert!(
+        body["data"]["missing"].is_null(),
+        "missing collection should resolve to null: {body}"
+    );
+}
+
 // ── Mutations: create ─────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
@@ -296,6 +429,38 @@ async fn graphql_get_entity_after_create() {
     assert_eq!(entity["label"], "world");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_root_entity_after_create() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let create = create_item(&server, "root-e1", json!({"label": "root"})).await;
+    assert!(
+        create["errors"].is_null(),
+        "unexpected create error: {create}"
+    );
+
+    let body = gql(
+        &server,
+        r#"{
+            entity(collection: "item", id: "root-e1") {
+                id
+                collection
+                version
+                data
+            }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    let entity = &body["data"]["entity"];
+    assert_eq!(entity["id"], "root-e1");
+    assert_eq!(entity["collection"], "item");
+    assert_eq!(entity["version"], 1);
+    assert_eq!(entity["data"]["label"], "root");
+}
+
 // ── Queries: list + pagination ────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
@@ -316,6 +481,42 @@ async fn graphql_list_entities_after_creates() {
     let body = gql(&server, r"{ items { id } }").await;
     let list = body["data"]["items"].as_array().unwrap();
     assert_eq!(list.len(), 3, "should list all 3 created entities");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_root_entities_connection_one_page() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    for i in 1..=3_u32 {
+        let body = create_item(
+            &server,
+            &format!("rc-{i:02}"),
+            json!({"label": format!("R{i}")}),
+        )
+        .await;
+        assert!(body["errors"].is_null(), "unexpected create error: {body}");
+    }
+
+    let body = gql(
+        &server,
+        r#"{
+            entities(collection: "item", limit: 10) {
+                totalCount
+                edges { cursor node { id collection data } }
+                pageInfo { hasNextPage hasPreviousPage startCursor endCursor }
+            }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    let connection = &body["data"]["entities"];
+    assert_eq!(connection["totalCount"], 3);
+    assert_eq!(connection["edges"].as_array().unwrap().len(), 3);
+    assert_eq!(connection["pageInfo"]["hasNextPage"], false);
+    assert_eq!(connection["pageInfo"]["hasPreviousPage"], false);
+    assert_eq!(connection["edges"][0]["node"]["collection"], "item");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -380,6 +581,83 @@ async fn graphql_list_pagination_via_after_id() {
             "item {id} appeared in both pages"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_root_entities_connection_multi_page_and_invalid_cursor() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    for i in 1..=4_u32 {
+        let body = create_item(
+            &server,
+            &format!("gc-{i:02}"),
+            json!({"label": format!("G{i}")}),
+        )
+        .await;
+        assert!(body["errors"].is_null(), "unexpected create error: {body}");
+    }
+
+    let page1 = gql(
+        &server,
+        r#"{
+            entities(collection: "item", limit: 2) {
+                edges { cursor node { id } }
+                pageInfo { hasNextPage endCursor }
+                totalCount
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        page1["errors"].is_null(),
+        "unexpected page1 errors: {page1}"
+    );
+    assert_eq!(page1["data"]["entities"]["totalCount"], 4);
+    assert_eq!(
+        page1["data"]["entities"]["edges"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(page1["data"]["entities"]["pageInfo"]["hasNextPage"], true);
+    let cursor = page1["data"]["entities"]["pageInfo"]["endCursor"]
+        .as_str()
+        .unwrap();
+
+    let page2 = gql(
+        &server,
+        &format!(
+            r#"{{
+                entities(collection: "item", limit: 2, after: "{cursor}") {{
+                    edges {{ node {{ id }} }}
+                    pageInfo {{ hasNextPage hasPreviousPage }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert!(
+        page2["errors"].is_null(),
+        "unexpected page2 errors: {page2}"
+    );
+    assert_eq!(
+        page2["data"]["entities"]["edges"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        page2["data"]["entities"]["pageInfo"]["hasPreviousPage"],
+        true
+    );
+
+    let invalid = gql(
+        &server,
+        r#"{ entities(collection: "item", after: "does-not-exist") { totalCount } }"#,
+    )
+    .await;
+    let errors = invalid["errors"].as_array().unwrap();
+    assert!(
+        errors[0]["message"].as_str().unwrap().contains("cursor"),
+        "invalid cursor should return a structured GraphQL error: {invalid}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -451,6 +729,81 @@ async fn graphql_list_filters_and_sorts_entities() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn graphql_root_entities_filters_and_sorts_connection() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    for (id, data) in [
+        (
+            "grf-1",
+            json!({"label": "Alpha", "status": "approved", "hours": 3.0}),
+        ),
+        (
+            "grf-2",
+            json!({"label": "Beta", "status": "approved", "hours": 7.0}),
+        ),
+        (
+            "grf-3",
+            json!({"label": "Gamma", "status": "draft", "hours": 9.0}),
+        ),
+    ] {
+        let body = create_item(&server, id, data).await;
+        assert!(body["errors"].is_null(), "unexpected create error: {body}");
+    }
+
+    let body = gql(
+        &server,
+        r#"{
+            entities(
+                collection: "item"
+                filter: { field: "status", op: "eq", value: "approved" }
+                sort: [{ field: "hours", direction: "desc" }]
+            ) {
+                totalCount
+                edges { node { id data } }
+            }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    let edges = body["data"]["entities"]["edges"].as_array().unwrap();
+    assert_eq!(body["data"]["entities"]["totalCount"], 2);
+    assert_eq!(edges[0]["node"]["id"], "grf-2");
+    assert_eq!(edges[1]["node"]["id"], "grf-1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_typed_connection_returns_typed_nodes() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+    let create = create_item(&server, "tc-1", json!({"label": "typed"})).await;
+    assert!(
+        create["errors"].is_null(),
+        "unexpected create error: {create}"
+    );
+
+    let body = gql(
+        &server,
+        r#"{
+            itemsConnection {
+                totalCount
+                edges { cursor node { id version label } }
+                pageInfo { hasNextPage }
+            }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    assert_eq!(body["data"]["itemsConnection"]["totalCount"], 1);
+    assert_eq!(
+        body["data"]["itemsConnection"]["edges"][0]["node"]["label"],
+        "typed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_list_supports_in_or_and_null_filters() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -509,6 +862,78 @@ async fn graphql_list_supports_in_or_and_null_filters() {
         .map(|item| item["id"].as_str().unwrap())
         .collect();
     assert_eq!(ids, vec!["nf-1", "nf-2"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_audit_log_connection_filters_entity_creates() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+    let create1 = create_item(&server, "aud-1", json!({"label": "audit"})).await;
+    assert!(
+        create1["errors"].is_null(),
+        "unexpected create error: {create1}"
+    );
+    let create2 = create_item(&server, "aud-2", json!({"label": "other"})).await;
+    assert!(
+        create2["errors"].is_null(),
+        "unexpected create error: {create2}"
+    );
+
+    let body = gql(
+        &server,
+        r#"{
+            auditLog(collection: "item", entityId: "aud-1", operation: "entity.create") {
+                totalCount
+                edges {
+                    cursor
+                    node { id collection entityId mutation actor dataAfter }
+                }
+                pageInfo { hasNextPage hasPreviousPage }
+            }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    let edges = body["data"]["auditLog"]["edges"].as_array().unwrap();
+    assert_eq!(edges.len(), 1);
+    assert_eq!(body["data"]["auditLog"]["totalCount"], 1);
+    assert_eq!(edges[0]["node"]["collection"], "item");
+    assert_eq!(edges[0]["node"]["entityId"], "aud-1");
+    assert_eq!(edges[0]["node"]["mutation"], "entity.create");
+    assert_eq!(edges[0]["node"]["dataAfter"]["label"], "audit");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_rejects_excessive_depth_and_complexity() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let mut deep_query = String::from("{ __schema { types { fields { type ");
+    for _ in 0..24 {
+        deep_query.push_str("{ ofType ");
+    }
+    deep_query.push_str("{ name }");
+    for _ in 0..24 {
+        deep_query.push_str(" }");
+    }
+    deep_query.push_str(" } } } }");
+    let deep = gql(&server, &deep_query).await;
+    assert!(
+        deep["errors"].is_array(),
+        "depth-limited query should be rejected: {deep}"
+    );
+
+    let mut complex_query = String::from("{");
+    for i in 0..300 {
+        complex_query.push_str(&format!(" c{i}: collections {{ name }}"));
+    }
+    complex_query.push('}');
+    let complex = gql(&server, &complex_query).await;
+    assert!(
+        complex["errors"].is_array(),
+        "complexity-limited query should be rejected: {complex}"
+    );
 }
 
 // ── Mutations: update ─────────────────────────────────────────────────────────

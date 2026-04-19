@@ -156,7 +156,59 @@ POST /tenants/default/databases/default/collections/time_entries/query
 }
 ```
 
-GraphQL list fields expose `filter`, `sort`, `limit`, and `afterId`:
+Generic GraphQL root queries are the preferred browser contract:
+
+```graphql
+{
+  collections {
+    name
+    entityCount
+    schemaVersion
+    schema
+  }
+
+  collection(name: "time_entries") {
+    name
+    entityCount
+    createdAt
+    updatedAt
+  }
+
+  entity(collection: "time_entries", id: "time-123") {
+    id
+    collection
+    version
+    data
+    createdAt
+    updatedAt
+  }
+
+  entities(
+    collection: "time_entries"
+    filter: {
+      and: [
+        { field: "status", op: "eq", value: "approved" }
+        { field: "week", op: "eq", value: "2026-W16" }
+        { field: "hours", op: "gte", value: 4.0 }
+      ]
+    }
+    sort: [{ field: "hours", direction: "desc" }]
+    limit: 50
+    after: "time-123"
+  ) {
+    totalCount
+    edges {
+      cursor
+      node { id collection version data }
+    }
+    pageInfo { hasNextPage hasPreviousPage startCursor endCursor }
+  }
+}
+```
+
+Generated typed fields remain available for ergonomic collection-specific
+queries. Compatibility list fields return arrays; the Relay-style aliases append
+`Connection`:
 
 ```graphql
 {
@@ -176,12 +228,78 @@ GraphQL list fields expose `filter`, `sort`, `limit`, and `afterId`:
     status
     hours
   }
+
+  itemsConnection(limit: 50) {
+    totalCount
+    edges { cursor node { id version status hours } }
+    pageInfo { hasNextPage endCursor }
+  }
 }
 ```
 
 Supported GraphQL operators are `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`,
 `contains`, `is_null`, and `is_not_null`. Use `and` and `or` for boolean
 composition.
+
+Collection-to-GraphQL naming is deterministic:
+
+- Generic root fields always take the stored collection name as a string and
+  are authoritative for unusual names.
+- Typed object names are PascalCase from ASCII alphanumeric words:
+  `time_entries` and `time-entries` both map to `TimeEntries`.
+- Typed singular fields are lower camelCase: `time_entries` maps to
+  `timeEntries`.
+- For simple singular names, typed list fields append `s`: `item` maps to
+  `items`.
+- Names already ending in `s`, names with separators, irregular plurals, and
+  normalized names use `List`: `tasks` maps to `tasksList`,
+  `time_entries` maps to `timeEntriesList`.
+- Relay aliases append `Connection`: `itemsConnection`,
+  `tasksListConnection`.
+- Root field name collisions such as `entity`, `entities`, `collection`,
+  `collections`, and `auditLog` append `Collection` for typed fields.
+- Type name collisions with root and scalar types append `Record`.
+
+All GraphQL requests are validated with server-configured depth and complexity
+limits before resolver execution. Defaults are depth `10` and complexity `256`.
+Operators may override them with `AXON_GRAPHQL_MAX_DEPTH` and
+`AXON_GRAPHQL_MAX_COMPLEXITY`. Limit failures return a GraphQL `errors`
+response.
+
+## Audit Log
+
+Use `auditLog` for application audit browsing. It supports collection, entity,
+actor, operation, time range, cursor, and limit filters and returns the same
+connection envelope as entity lists.
+
+```graphql
+{
+  auditLog(
+    collection: "time_entries"
+    entityId: "time-123"
+    operation: "entity.update"
+    after: "42"
+    limit: 50
+  ) {
+    totalCount
+    edges {
+      cursor
+      node {
+        id
+        timestampNs
+        collection
+        entityId
+        mutation
+        actor
+        dataBefore
+        dataAfter
+        metadata
+      }
+    }
+    pageInfo { hasNextPage hasPreviousPage endCursor }
+  }
+}
+```
 
 ## Link Traversal
 

@@ -11,8 +11,8 @@
 use std::sync::Arc;
 
 use async_graphql::dynamic::{
-    Field, FieldFuture, FieldValue, InputObject, InputValue, Object, Scalar, Schema, Subscription,
-    SubscriptionField, SubscriptionFieldFuture, TypeRef,
+    Field, FieldFuture, FieldValue, InputObject, InputValue, Object, Scalar, Schema, SchemaBuilder,
+    Subscription, SubscriptionField, SubscriptionFieldFuture, TypeRef,
 };
 use async_graphql::futures_util::StreamExt;
 use async_graphql::{Error as GqlError, ErrorExtensions, Value as GqlValue};
@@ -23,8 +23,9 @@ use crate::subscriptions::BroadcastBroker;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest, FieldFilter,
-    FilterNode, FilterOp, GateFilter, GetEntityRequest, PatchEntityRequest, QueryEntitiesRequest,
+    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
+    DescribeCollectionRequest, FieldFilter, FilterNode, FilterOp, GateFilter, GetEntityRequest,
+    ListCollectionsRequest, PatchEntityRequest, QueryAuditRequest, QueryEntitiesRequest,
     SortDirection, SortField, TransitionLifecycleRequest, UpdateEntityRequest,
 };
 use axon_core::auth::CallerIdentity;
@@ -46,12 +47,28 @@ pub struct AxonSchema {
 
 const FILTER_INPUT: &str = "AxonFilterInput";
 const SORT_INPUT: &str = "AxonSortInput";
+const ENTITY_TYPE: &str = "Entity";
+const ENTITY_EDGE_TYPE: &str = "EntityEdge";
+const ENTITY_CONNECTION_TYPE: &str = "EntityConnection";
+const PAGE_INFO_TYPE: &str = "PageInfo";
+const COLLECTION_META_TYPE: &str = "CollectionMeta";
+const AUDIT_ENTRY_TYPE: &str = "AuditEntry";
+const AUDIT_EDGE_TYPE: &str = "AuditEdge";
+const AUDIT_CONNECTION_TYPE: &str = "AuditConnection";
+const DEFAULT_MAX_GRAPHQL_DEPTH: usize = 10;
+const DEFAULT_MAX_GRAPHQL_COMPLEXITY: usize = 256;
+const MAX_DEPTH_ENV: &str = "AXON_GRAPHQL_MAX_DEPTH";
+const MAX_COMPLEXITY_ENV: &str = "AXON_GRAPHQL_MAX_COMPLEXITY";
 
 // ── Entity → GraphQL FieldValue conversion ──────────────────────────────────
 
 /// Convert an `Entity` into an `async-graphql` `FieldValue` that the dynamic
 /// object type can resolve field-by-field.
 fn entity_to_field_value(entity: &Entity) -> FieldValue<'static> {
+    json_to_field_value(entity_to_typed_json(entity))
+}
+
+fn entity_to_typed_json(entity: &Entity) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("id".into(), Value::String(entity.id.to_string()));
     map.insert("version".into(), json!(entity.version));
@@ -68,7 +85,47 @@ fn entity_to_field_value(entity: &Entity) -> FieldValue<'static> {
         }
     }
 
-    FieldValue::from(GqlValue::from_json(Value::Object(map)).unwrap_or(GqlValue::Null))
+    Value::Object(map)
+}
+
+fn entity_to_generic_json(entity: &Entity) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert("id".into(), Value::String(entity.id.to_string()));
+    map.insert(
+        "collection".into(),
+        Value::String(entity.collection.to_string()),
+    );
+    map.insert("version".into(), json!(entity.version));
+    map.insert("data".into(), entity.data.clone());
+    if let Some(ns) = entity.created_at_ns {
+        map.insert("createdAt".into(), Value::String(format_ns(ns)));
+    }
+    if let Some(ns) = entity.updated_at_ns {
+        map.insert("updatedAt".into(), Value::String(format_ns(ns)));
+    }
+    Value::Object(map)
+}
+
+fn json_to_field_value(value: Value) -> FieldValue<'static> {
+    FieldValue::from(GqlValue::from_json(value).unwrap_or(GqlValue::Null))
+}
+
+fn parent_json_field(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    name: &str,
+) -> Option<FieldValue<'static>> {
+    match ctx.parent_value.try_to_value() {
+        Ok(GqlValue::Object(map)) => map
+            .get(&async_graphql::Name::new(name))
+            .map(|value| FieldValue::from(value.clone())),
+        _ => Some(FieldValue::NULL),
+    }
+}
+
+fn json_object_field(name: &'static str, ty: TypeRef) -> Field {
+    Field::new(name, ty, move |ctx| {
+        FieldFuture::new(async move { Ok(parent_json_field(ctx, name)) })
+    })
 }
 
 fn filter_input_object() -> InputObject {
@@ -205,6 +262,650 @@ fn parse_graphql_sort_arg(value: &GqlValue) -> Result<Vec<SortField>, GqlError> 
             Ok(SortField { field, direction })
         })
         .collect()
+}
+
+fn graphql_limit_from_env(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn max_graphql_depth() -> usize {
+    graphql_limit_from_env(MAX_DEPTH_ENV, DEFAULT_MAX_GRAPHQL_DEPTH)
+}
+
+fn max_graphql_complexity() -> usize {
+    graphql_limit_from_env(MAX_COMPLEXITY_ENV, DEFAULT_MAX_GRAPHQL_COMPLEXITY)
+}
+
+fn parse_optional_u64_arg(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+    name: &str,
+) -> Result<Option<u64>, GqlError> {
+    match ctx.args.try_get(name) {
+        Ok(value) => value
+            .string()
+            .map_err(|_| GqlError::new(format!("{name} must be a stringified unsigned integer")))?
+            .parse::<u64>()
+            .map(Some)
+            .map_err(|e| GqlError::new(format!("invalid {name}: {e}"))),
+        Err(_) => Ok(None),
+    }
+}
+
+fn page_info_json(
+    start_cursor: Option<String>,
+    end_cursor: Option<String>,
+    has_next_page: bool,
+    has_previous_page: bool,
+) -> Value {
+    json!({
+        "hasNextPage": has_next_page,
+        "hasPreviousPage": has_previous_page,
+        "startCursor": start_cursor,
+        "endCursor": end_cursor,
+    })
+}
+
+fn entity_connection_value(
+    entities: &[Entity],
+    total_count: usize,
+    next_cursor: Option<String>,
+    has_previous_page: bool,
+    generic_node: bool,
+) -> FieldValue<'static> {
+    let edges: Vec<Value> = entities
+        .iter()
+        .map(|entity| {
+            json!({
+                "cursor": entity.id.to_string(),
+                "node": if generic_node {
+                    entity_to_generic_json(entity)
+                } else {
+                    entity_to_typed_json(entity)
+                },
+            })
+        })
+        .collect();
+    let start_cursor = entities.first().map(|entity| entity.id.to_string());
+    let end_cursor = entities.last().map(|entity| entity.id.to_string());
+
+    json_to_field_value(json!({
+        "edges": edges,
+        "pageInfo": page_info_json(
+            start_cursor,
+            end_cursor,
+            next_cursor.is_some(),
+            has_previous_page,
+        ),
+        "totalCount": total_count,
+    }))
+}
+
+fn collection_meta_json(
+    meta: &axon_api::response::CollectionMetadata,
+    schema: Option<CollectionSchema>,
+) -> Value {
+    json!({
+        "name": meta.name,
+        "entityCount": meta.entity_count,
+        "schemaVersion": meta.schema_version,
+        "createdAt": meta.created_at_ns.map(format_ns),
+        "updatedAt": meta.updated_at_ns.map(format_ns),
+        "schema": schema,
+    })
+}
+
+fn described_collection_json(
+    description: &axon_api::response::DescribeCollectionResponse,
+) -> Value {
+    json!({
+        "name": description.name,
+        "entityCount": description.entity_count,
+        "schemaVersion": description.schema.as_ref().map(|schema| schema.version),
+        "createdAt": description.created_at_ns.map(format_ns),
+        "updatedAt": description.updated_at_ns.map(format_ns),
+        "schema": description.schema,
+    })
+}
+
+fn audit_entry_json(entry: &axon_audit::AuditEntry) -> Value {
+    json!({
+        "id": entry.id.to_string(),
+        "timestampNs": entry.timestamp_ns.to_string(),
+        "collection": entry.collection.to_string(),
+        "entityId": entry.entity_id.to_string(),
+        "version": entry.version,
+        "mutation": entry.mutation.to_string(),
+        "dataBefore": entry.data_before,
+        "dataAfter": entry.data_after,
+        "actor": entry.actor,
+        "metadata": entry.metadata,
+        "transactionId": entry.transaction_id,
+    })
+}
+
+fn audit_connection_value(
+    entries: &[axon_audit::AuditEntry],
+    next_cursor: Option<u64>,
+    has_previous_page: bool,
+) -> FieldValue<'static> {
+    let edges: Vec<Value> = entries
+        .iter()
+        .map(|entry| {
+            json!({
+                "cursor": entry.id.to_string(),
+                "node": audit_entry_json(entry),
+            })
+        })
+        .collect();
+    let start_cursor = entries.first().map(|entry| entry.id.to_string());
+    let end_cursor = entries.last().map(|entry| entry.id.to_string());
+
+    json_to_field_value(json!({
+        "edges": edges,
+        "pageInfo": page_info_json(
+            start_cursor,
+            end_cursor,
+            next_cursor.is_some(),
+            has_previous_page,
+        ),
+        "totalCount": entries.len(),
+    }))
+}
+
+fn page_info_object() -> Object {
+    Object::new(PAGE_INFO_TYPE)
+        .field(json_object_field(
+            "hasNextPage",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "hasPreviousPage",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "startCursor",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "endCursor",
+            TypeRef::named(TypeRef::STRING),
+        ))
+}
+
+fn generic_entity_object() -> Object {
+    Object::new(ENTITY_TYPE)
+        .field(json_object_field("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(json_object_field(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "version",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field("data", TypeRef::named("JSON")))
+        .field(json_object_field(
+            "createdAt",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "updatedAt",
+            TypeRef::named(TypeRef::STRING),
+        ))
+}
+
+fn entity_edge_object() -> Object {
+    Object::new(ENTITY_EDGE_TYPE)
+        .field(json_object_field(
+            "cursor",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("node", TypeRef::named_nn(ENTITY_TYPE)))
+}
+
+fn entity_connection_object() -> Object {
+    Object::new(ENTITY_CONNECTION_TYPE)
+        .field(json_object_field(
+            "edges",
+            TypeRef::named_nn_list_nn(ENTITY_EDGE_TYPE),
+        ))
+        .field(json_object_field(
+            "pageInfo",
+            TypeRef::named_nn(PAGE_INFO_TYPE),
+        ))
+        .field(json_object_field(
+            "totalCount",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+}
+
+fn typed_edge_object(edge_type: &str, node_type: &str) -> Object {
+    Object::new(edge_type)
+        .field(json_object_field(
+            "cursor",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("node", TypeRef::named_nn(node_type)))
+}
+
+fn typed_connection_object(connection_type: &str, edge_type: &str) -> Object {
+    Object::new(connection_type)
+        .field(json_object_field(
+            "edges",
+            TypeRef::named_nn_list_nn(edge_type),
+        ))
+        .field(json_object_field(
+            "pageInfo",
+            TypeRef::named_nn(PAGE_INFO_TYPE),
+        ))
+        .field(json_object_field(
+            "totalCount",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+}
+
+fn collection_meta_object() -> Object {
+    Object::new(COLLECTION_META_TYPE)
+        .field(json_object_field(
+            "name",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "entityCount",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "schemaVersion",
+            TypeRef::named(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "createdAt",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "updatedAt",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field("schema", TypeRef::named("JSON")))
+}
+
+fn audit_entry_object() -> Object {
+    Object::new(AUDIT_ENTRY_TYPE)
+        .field(json_object_field("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(json_object_field(
+            "timestampNs",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "entityId",
+            TypeRef::named_nn(TypeRef::ID),
+        ))
+        .field(json_object_field(
+            "version",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "mutation",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("dataBefore", TypeRef::named("JSON")))
+        .field(json_object_field("dataAfter", TypeRef::named("JSON")))
+        .field(json_object_field(
+            "actor",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("metadata", TypeRef::named("JSON")))
+        .field(json_object_field(
+            "transactionId",
+            TypeRef::named(TypeRef::STRING),
+        ))
+}
+
+fn audit_edge_object() -> Object {
+    Object::new(AUDIT_EDGE_TYPE)
+        .field(json_object_field(
+            "cursor",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "node",
+            TypeRef::named_nn(AUDIT_ENTRY_TYPE),
+        ))
+}
+
+fn audit_connection_object() -> Object {
+    Object::new(AUDIT_CONNECTION_TYPE)
+        .field(json_object_field(
+            "edges",
+            TypeRef::named_nn_list_nn(AUDIT_EDGE_TYPE),
+        ))
+        .field(json_object_field(
+            "pageInfo",
+            TypeRef::named_nn(PAGE_INFO_TYPE),
+        ))
+        .field(json_object_field(
+            "totalCount",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+}
+
+fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
+    schema_builder = schema_builder
+        .register(page_info_object())
+        .register(generic_entity_object())
+        .register(entity_edge_object())
+        .register(entity_connection_object())
+        .register(collection_meta_object())
+        .register(audit_entry_object())
+        .register(audit_edge_object())
+        .register(audit_connection_object());
+    schema_builder
+}
+
+fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
+    mut query: Object,
+    handler: SharedHandler<S>,
+) -> Object {
+    let handler_get = Arc::clone(&handler);
+    query = query.field(
+        Field::new("entity", TypeRef::named(ENTITY_TYPE), move |ctx| {
+            let handler = Arc::clone(&handler_get);
+            FieldFuture::new(async move {
+                let collection = ctx.args.try_get("collection")?.string()?.to_owned();
+                let id = ctx.args.try_get("id")?.string()?.to_owned();
+                let guard = handler.lock().await;
+                match guard.get_entity(GetEntityRequest {
+                    collection: CollectionId::new(collection),
+                    id: EntityId::new(id),
+                }) {
+                    Ok(resp) => Ok(Some(json_to_field_value(entity_to_generic_json(
+                        &resp.entity,
+                    )))),
+                    Err(AxonError::NotFound(_)) => Ok(None),
+                    Err(e) => Err(axon_error_to_gql(e)),
+                }
+            })
+        })
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID))),
+    );
+
+    let handler_entities = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "entities",
+            TypeRef::named_nn(ENTITY_CONNECTION_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_entities);
+                FieldFuture::new(async move {
+                    let collection = ctx.args.try_get("collection")?.string()?.to_owned();
+                    let limit = ctx
+                        .args
+                        .try_get("limit")
+                        .ok()
+                        .and_then(|v| v.i64().ok())
+                        .map(|v| v as usize);
+                    let after_id = ctx
+                        .args
+                        .try_get("after")
+                        .ok()
+                        .and_then(|v| v.string().ok())
+                        .map(EntityId::new);
+                    let filter = ctx
+                        .args
+                        .try_get("filter")
+                        .ok()
+                        .map(|v| parse_graphql_filter_arg(v.as_value()))
+                        .transpose()?;
+                    let sort = ctx
+                        .args
+                        .try_get("sort")
+                        .ok()
+                        .map(|v| parse_graphql_sort_arg(v.as_value()))
+                        .transpose()?
+                        .unwrap_or_default();
+                    let has_previous_page = after_id.is_some();
+
+                    let guard = handler.lock().await;
+                    match guard.query_entities(QueryEntitiesRequest {
+                        collection: CollectionId::new(collection),
+                        filter,
+                        sort,
+                        limit,
+                        after_id,
+                        count_only: false,
+                    }) {
+                        Ok(resp) => Ok(Some(entity_connection_value(
+                            &resp.entities,
+                            resp.total_count,
+                            resp.next_cursor,
+                            has_previous_page,
+                            true,
+                        ))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
+        .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT)))
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new("after", TypeRef::named(TypeRef::ID))),
+    );
+
+    let handler_collections = Arc::clone(&handler);
+    query = query.field(Field::new(
+        "collections",
+        TypeRef::named_nn_list_nn(COLLECTION_META_TYPE),
+        move |_ctx| {
+            let handler = Arc::clone(&handler_collections);
+            FieldFuture::new(async move {
+                let guard = handler.lock().await;
+                match guard.list_collections(ListCollectionsRequest {}) {
+                    Ok(resp) => {
+                        let values: Vec<FieldValue> = resp
+                            .collections
+                            .iter()
+                            .map(|meta| json_to_field_value(collection_meta_json(meta, None)))
+                            .collect();
+                        Ok(Some(FieldValue::list(values)))
+                    }
+                    Err(e) => Err(axon_error_to_gql(e)),
+                }
+            })
+        },
+    ));
+
+    let handler_collection = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "collection",
+            TypeRef::named(COLLECTION_META_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_collection);
+                FieldFuture::new(async move {
+                    let name = ctx.args.try_get("name")?.string()?.to_owned();
+                    let guard = handler.lock().await;
+                    match guard.describe_collection(DescribeCollectionRequest {
+                        name: CollectionId::new(name),
+                    }) {
+                        Ok(resp) => Ok(Some(json_to_field_value(described_collection_json(&resp)))),
+                        Err(AxonError::NotFound(_)) => Ok(None),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new("name", TypeRef::named_nn(TypeRef::STRING))),
+    );
+
+    let handler_audit = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "auditLog",
+            TypeRef::named_nn(AUDIT_CONNECTION_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_audit);
+                FieldFuture::new(async move {
+                    let collection = ctx
+                        .args
+                        .try_get("collection")
+                        .ok()
+                        .and_then(|v| v.string().ok())
+                        .map(CollectionId::new);
+                    let entity_id = ctx
+                        .args
+                        .try_get("entityId")
+                        .ok()
+                        .and_then(|v| v.string().ok())
+                        .map(EntityId::new);
+                    let actor = ctx
+                        .args
+                        .try_get("actor")
+                        .ok()
+                        .and_then(|v| v.string().ok())
+                        .map(ToOwned::to_owned);
+                    let operation = ctx
+                        .args
+                        .try_get("operation")
+                        .ok()
+                        .and_then(|v| v.string().ok())
+                        .map(ToOwned::to_owned);
+                    let since_ns = parse_optional_u64_arg(&ctx, "sinceNs")?;
+                    let until_ns = parse_optional_u64_arg(&ctx, "untilNs")?;
+                    let after_id = parse_optional_u64_arg(&ctx, "after")?;
+                    let limit = ctx
+                        .args
+                        .try_get("limit")
+                        .ok()
+                        .and_then(|v| v.i64().ok())
+                        .map(|v| v as usize);
+                    let has_previous_page = after_id.is_some();
+
+                    let guard = handler.lock().await;
+                    match guard.query_audit(QueryAuditRequest {
+                        database: None,
+                        collection,
+                        collection_ids: Vec::new(),
+                        entity_id,
+                        actor,
+                        operation,
+                        since_ns,
+                        until_ns,
+                        after_id,
+                        limit,
+                    }) {
+                        Ok(resp) => Ok(Some(audit_connection_value(
+                            &resp.entries,
+                            resp.next_cursor,
+                            has_previous_page,
+                        ))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("entityId", TypeRef::named(TypeRef::ID)))
+        .argument(InputValue::new("actor", TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new(
+            "operation",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("sinceNs", TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new("untilNs", TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT))),
+    );
+
+    query
+}
+
+fn add_stub_root_query_fields(mut query: Object) -> Object {
+    query = query.field(
+        Field::new("entity", TypeRef::named(ENTITY_TYPE), |_ctx| {
+            FieldFuture::new(async move { Ok(None::<FieldValue>) })
+        })
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID))),
+    );
+    query = query.field(
+        Field::new(
+            "entities",
+            TypeRef::named_nn(ENTITY_CONNECTION_TYPE),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Ok(Some(entity_connection_value(&[], 0, None, false, true)))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
+        .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT)))
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new("after", TypeRef::named(TypeRef::ID))),
+    );
+    query = query.field(Field::new(
+        "collections",
+        TypeRef::named_nn_list_nn(COLLECTION_META_TYPE),
+        |_ctx| {
+            FieldFuture::new(async move { Ok(Some(FieldValue::list(Vec::<FieldValue>::new()))) })
+        },
+    ));
+    query = query.field(
+        Field::new("collection", TypeRef::named(COLLECTION_META_TYPE), |_ctx| {
+            FieldFuture::new(async move { Ok(None::<FieldValue>) })
+        })
+        .argument(InputValue::new("name", TypeRef::named_nn(TypeRef::STRING))),
+    );
+    query = query.field(
+        Field::new(
+            "auditLog",
+            TypeRef::named_nn(AUDIT_CONNECTION_TYPE),
+            |_ctx| {
+                FieldFuture::new(async move { Ok(Some(audit_connection_value(&[], None, false))) })
+            },
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("entityId", TypeRef::named(TypeRef::ID)))
+        .argument(InputValue::new("actor", TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new(
+            "operation",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("sinceNs", TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new("untilNs", TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT))),
+    );
+    query
 }
 
 /// Format nanosecond timestamp as ISO-8601 string.
@@ -392,9 +1093,15 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
     let mut mutation = Object::new("Mutation");
     let mut type_objects = Vec::new();
 
+    query = add_handler_root_query_fields(query, Arc::clone(&handler));
+
     for schema in collections {
         let collection_name = schema.collection.as_str();
         let type_name = pascal_case(collection_name);
+        let edge_type_name = format!("{type_name}Edge");
+        let connection_type_name = format!("{type_name}Connection");
+        let get_field_name = collection_field_name(collection_name);
+        let list_field_name = collection_list_field_name(collection_name);
         let fields = extract_fields(schema);
 
         // ── Build the GraphQL object type ────────────────────────────────
@@ -416,12 +1123,17 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             }));
         }
         type_objects.push(obj);
+        type_objects.push(typed_edge_object(&edge_type_name, &type_name));
+        type_objects.push(typed_connection_object(
+            &connection_type_name,
+            &edge_type_name,
+        ));
 
         // ── Query: get by ID ─────────────────────────────────────────────
         let col_id = CollectionId::new(collection_name);
         let handler_get = Arc::clone(&handler);
         let col_for_get = col_id.clone();
-        let get_field = Field::new(collection_name, TypeRef::named(&type_name), move |ctx| {
+        let get_field = Field::new(&get_field_name, TypeRef::named(&type_name), move |ctx| {
             let handler = Arc::clone(&handler_get);
             let col = col_for_get.clone();
             FieldFuture::new(async move {
@@ -442,7 +1154,6 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         query = query.field(get_field);
 
         // ── Query: list ──────────────────────────────────────────────────
-        let list_field_name = format!("{collection_name}s");
         let handler_list = Arc::clone(&handler);
         let col_for_list = col_id.clone();
         let type_name_list = type_name.clone();
@@ -509,6 +1220,74 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
         .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT)));
         query = query.field(list_field);
+
+        let list_connection_field_name = format!("{list_field_name}Connection");
+        let handler_list_connection = Arc::clone(&handler);
+        let col_for_list_connection = col_id.clone();
+        let connection_type_name_ref = connection_type_name.clone();
+        let list_connection_field = Field::new(
+            &list_connection_field_name,
+            TypeRef::named_nn(&connection_type_name_ref),
+            move |ctx| {
+                let handler = Arc::clone(&handler_list_connection);
+                let col = col_for_list_connection.clone();
+                FieldFuture::new(async move {
+                    let limit = ctx
+                        .args
+                        .try_get("limit")
+                        .ok()
+                        .and_then(|v| v.i64().ok())
+                        .map(|v| v as usize);
+
+                    let after_id = ctx
+                        .args
+                        .try_get("afterId")
+                        .ok()
+                        .and_then(|v| v.string().ok())
+                        .map(EntityId::new);
+
+                    let filter = ctx
+                        .args
+                        .try_get("filter")
+                        .ok()
+                        .map(|v| parse_graphql_filter_arg(v.as_value()))
+                        .transpose()?;
+
+                    let sort = ctx
+                        .args
+                        .try_get("sort")
+                        .ok()
+                        .map(|v| parse_graphql_sort_arg(v.as_value()))
+                        .transpose()?
+                        .unwrap_or_default();
+                    let has_previous_page = after_id.is_some();
+
+                    let guard = handler.lock().await;
+                    match guard.query_entities(QueryEntitiesRequest {
+                        collection: col.clone(),
+                        filter,
+                        sort,
+                        limit,
+                        after_id,
+                        count_only: false,
+                    }) {
+                        Ok(resp) => Ok(Some(entity_connection_value(
+                            &resp.entities,
+                            resp.total_count,
+                            resp.next_cursor,
+                            has_previous_page,
+                            false,
+                        ))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new("afterId", TypeRef::named(TypeRef::ID)))
+        .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
+        .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT)));
+        query = query.field(list_connection_field);
 
         // ── Mutation: create ─────────────────────────────────────────────
         let create_field_name = format!("create{type_name}");
@@ -868,11 +1647,15 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         Some(mutation.type_name()),
         subscription_name.as_deref(),
     )
+    .limit_depth(max_graphql_depth())
+    .limit_complexity(max_graphql_complexity())
     .register(Scalar::new("JSON"))
     .register(filter_input_object())
     .register(sort_input_object())
     .register(query)
     .register(mutation);
+
+    schema_builder = register_root_objects(schema_builder);
 
     if let Some(sub) = subscription {
         schema_builder = schema_builder.register(sub);
@@ -901,9 +1684,15 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
     let mut mutation = Object::new("Mutation");
     let mut type_objects = Vec::new();
 
+    query = add_stub_root_query_fields(query);
+
     for schema in collections {
         let collection_name = schema.collection.as_str();
         let type_name = pascal_case(collection_name);
+        let edge_type_name = format!("{type_name}Edge");
+        let connection_type_name = format!("{type_name}Connection");
+        let get_field_name = collection_field_name(collection_name);
+        let list_field_name = collection_list_field_name(collection_name);
         let fields = extract_fields(schema);
 
         // Build the GraphQL object type for this collection.
@@ -915,9 +1704,13 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
             }));
         }
         type_objects.push(obj);
+        type_objects.push(typed_edge_object(&edge_type_name, &type_name));
+        type_objects.push(typed_connection_object(
+            &connection_type_name,
+            &edge_type_name,
+        ));
 
         // Query: get by ID.
-        let get_field_name = collection_name.to_string();
         let type_name_ref = type_name.clone();
         query = query.field(Field::new(
             &get_field_name,
@@ -926,7 +1719,6 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         ));
 
         // Query: list.
-        let list_field_name = format!("{collection_name}s");
         let type_name_list = type_name.clone();
         query = query.field(
             Field::new(
@@ -936,6 +1728,24 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
                     FieldFuture::new(
                         async move { Ok(Some(FieldValue::list(Vec::<FieldValue>::new()))) },
                     )
+                },
+            )
+            .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+            .argument(InputValue::new("afterId", TypeRef::named(TypeRef::ID)))
+            .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
+            .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT))),
+        );
+
+        let list_connection_field_name = format!("{list_field_name}Connection");
+        let connection_type_name_ref = connection_type_name.clone();
+        query = query.field(
+            Field::new(
+                &list_connection_field_name,
+                TypeRef::named_nn(&connection_type_name_ref),
+                |_ctx| {
+                    FieldFuture::new(async move {
+                        Ok(Some(entity_connection_value(&[], 0, None, false, false)))
+                    })
                 },
             )
             .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
@@ -973,12 +1783,25 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         ));
     }
 
-    let mut schema_builder = Schema::build(query.type_name(), Some(mutation.type_name()), None)
+    let mutation_type = if collections.is_empty() {
+        None
+    } else {
+        Some(mutation.type_name())
+    };
+
+    let mut schema_builder = Schema::build(query.type_name(), mutation_type, None)
+        .limit_depth(max_graphql_depth())
+        .limit_complexity(max_graphql_complexity())
         .register(Scalar::new("JSON"))
         .register(filter_input_object())
         .register(sort_input_object())
-        .register(query)
-        .register(mutation);
+        .register(query);
+
+    if !collections.is_empty() {
+        schema_builder = schema_builder.register(mutation);
+    }
+
+    schema_builder = register_root_objects(schema_builder);
 
     for obj in type_objects {
         schema_builder = schema_builder.register(obj);
@@ -1169,15 +1992,116 @@ fn build_entity_changed_subscription(broker: BroadcastBroker) -> Subscription {
 
 /// Convert a snake_case collection name to PascalCase for the GraphQL type.
 fn pascal_case(s: &str) -> String {
-    s.split('_')
+    let mut name: String = graphql_name_words(s)
+        .into_iter()
         .flat_map(|word| {
             let mut chars = word.chars();
             match chars.next() {
-                Some(c) => c.to_uppercase().chain(chars).collect::<Vec<_>>(),
+                Some(c) => c
+                    .to_uppercase()
+                    .chain(chars.flat_map(char::to_lowercase))
+                    .collect::<Vec<_>>(),
                 None => Vec::new(),
             }
         })
-        .collect()
+        .collect();
+
+    if name
+        .chars()
+        .next()
+        .map_or(true, |first| !first.is_ascii_alphabetic() && first != '_')
+    {
+        name = format!("Collection{name}");
+    }
+    if is_reserved_graphql_type_name(&name) {
+        name.push_str("Record");
+    }
+    name
+}
+
+fn collection_field_name(collection: &str) -> String {
+    let mut words = graphql_name_words(collection);
+    let first = words
+        .first_mut()
+        .map(|word| word.to_ascii_lowercase())
+        .unwrap_or_else(|| String::from("collection"));
+    let mut name = first;
+    for word in words.iter().skip(1) {
+        let mut chars = word.chars();
+        if let Some(c) = chars.next() {
+            name.extend(c.to_uppercase());
+            name.push_str(&chars.as_str().to_ascii_lowercase());
+        }
+    }
+    if name
+        .chars()
+        .next()
+        .map_or(true, |first| !first.is_ascii_alphabetic() && first != '_')
+    {
+        name = format!("collection{name}");
+    }
+    if is_reserved_query_field_name(&name) {
+        name.push_str("Collection");
+    }
+    name
+}
+
+fn collection_list_field_name(collection: &str) -> String {
+    let field_name = collection_field_name(collection);
+    if is_simple_graphql_name(collection) && !field_name.ends_with('s') {
+        format!("{field_name}s")
+    } else {
+        format!("{field_name}List")
+    }
+}
+
+fn graphql_name_words(s: &str) -> Vec<String> {
+    let words: Vec<String> = s
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if words.is_empty() {
+        vec![String::from("collection")]
+    } else {
+        words
+    }
+}
+
+fn is_simple_graphql_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn is_reserved_query_field_name(name: &str) -> bool {
+    matches!(
+        name,
+        "entity" | "entities" | "collections" | "collection" | "auditLog"
+    )
+}
+
+fn is_reserved_graphql_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Query"
+            | "Mutation"
+            | "Subscription"
+            | "Entity"
+            | "EntityEdge"
+            | "EntityConnection"
+            | "PageInfo"
+            | "CollectionMeta"
+            | "AuditEntry"
+            | "AuditEdge"
+            | "AuditConnection"
+            | "String"
+            | "Int"
+            | "Float"
+            | "Boolean"
+            | "ID"
+            | "JSON"
+    )
 }
 
 /// Parse a simplified GraphQL type reference string.
@@ -1192,90 +2116,9 @@ fn parse_type_ref(type_str: &str) -> TypeRef {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_graphql::{
-        EmptyMutation, EmptySubscription, Json, Schema as StaticSchema, SimpleObject, ID,
-    };
     use axon_core::id::CollectionId;
     use axon_storage::MemoryStorageAdapter;
     use serde_json::json;
-
-    #[derive(SimpleObject, Clone)]
-    #[graphql(name = "CollectionMeta", rename_fields = "camelCase")]
-    struct Feat015CollectionMeta {
-        name: String,
-        entity_count: i32,
-    }
-
-    #[derive(SimpleObject, Clone)]
-    #[graphql(name = "PageInfo", rename_fields = "camelCase")]
-    struct Feat015PageInfo {
-        has_next_page: bool,
-        end_cursor: Option<String>,
-    }
-
-    #[derive(SimpleObject, Clone)]
-    #[graphql(name = "EntityEdge", rename_fields = "camelCase")]
-    struct Feat015EntityEdge {
-        node: Json<Value>,
-        cursor: String,
-    }
-
-    #[derive(SimpleObject, Clone)]
-    #[graphql(name = "EntityConnection", rename_fields = "camelCase")]
-    struct Feat015EntityConnection {
-        edges: Vec<Feat015EntityEdge>,
-        page_info: Feat015PageInfo,
-    }
-
-    struct Feat015Query;
-
-    #[async_graphql::Object(rename_fields = "camelCase")]
-    impl Feat015Query {
-        async fn collections(&self) -> Vec<Feat015CollectionMeta> {
-            vec![Feat015CollectionMeta {
-                name: String::from("tasks"),
-                entity_count: 1,
-            }]
-        }
-
-        async fn entity(&self, collection: String, id: ID) -> Json<Value> {
-            let _ = (collection, id);
-            Json(json!({
-                "id": "task-1",
-                "version": 2,
-                "data": { "title": "Ship it" },
-                "createdAt": "2026-04-08T00:00:00Z",
-                "updatedAt": "2026-04-08T00:00:00Z"
-            }))
-        }
-
-        async fn entities(
-            &self,
-            collection: String,
-            limit: Option<i32>,
-            after: Option<String>,
-        ) -> Feat015EntityConnection {
-            let _ = (collection, limit, after);
-            Feat015EntityConnection {
-                edges: vec![Feat015EntityEdge {
-                    node: Json(json!({
-                        "id": "task-1",
-                        "version": 2,
-                        "data": { "title": "Ship it" }
-                    })),
-                    cursor: String::from("cursor-1"),
-                }],
-                page_info: Feat015PageInfo {
-                    has_next_page: false,
-                    end_cursor: None,
-                },
-            }
-        }
-    }
-
-    fn feat_015_schema() -> StaticSchema<Feat015Query, EmptyMutation, EmptySubscription> {
-        StaticSchema::build(Feat015Query, EmptyMutation, EmptySubscription).finish()
-    }
 
     fn test_schema() -> CollectionSchema {
         CollectionSchema {
@@ -1321,6 +2164,22 @@ mod tests {
         assert_eq!(pascal_case("tasks"), "Tasks");
         assert_eq!(pascal_case("line_items"), "LineItems");
         assert_eq!(pascal_case("a_b_c"), "ABC");
+        assert_eq!(pascal_case("time-entries"), "TimeEntries");
+        assert_eq!(pascal_case("123 imports"), "Collection123Imports");
+        assert_eq!(pascal_case("entity"), "EntityRecord");
+    }
+
+    #[test]
+    fn collection_field_name_conversion() {
+        assert_eq!(collection_field_name("item"), "item");
+        assert_eq!(collection_list_field_name("item"), "items");
+        assert_eq!(collection_field_name("time_entries"), "timeEntries");
+        assert_eq!(
+            collection_list_field_name("time_entries"),
+            "timeEntriesList"
+        );
+        assert_eq!(collection_list_field_name("tasks"), "tasksList");
+        assert_eq!(collection_field_name("entity"), "entityCollection");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1412,7 +2271,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn ui_helper_queries_do_not_match_current_dynamic_schema() {
+    async fn ui_helper_queries_match_current_dynamic_schema() {
         let schema = build_schema(&[test_schema()]).expect("schema should build");
         let helper_queries = [
             ("fetchCollections", "{ collections { name entityCount } }"),
@@ -1442,61 +2301,25 @@ mod tests {
         for (name, query) in helper_queries {
             let result = schema.schema.execute(query).await;
             assert!(
-                !result.errors.is_empty(),
-                "{name} unexpectedly matched the current schema",
+                result.errors.is_empty(),
+                "{name} should match the dynamic schema: {:?}",
+                result.errors,
             );
         }
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn ui_helper_queries_fail_fast_against_feat_015_generic_contract() {
-        let schema = feat_015_schema();
-
-        let collections_result = schema.execute("{ collections { name entityCount } }").await;
+    async fn empty_collections_builds_valid_schema() {
+        let schema = build_schema(&[]).expect("empty schema should build");
+        let result = schema
+            .schema
+            .execute("{ collections { name } entities(collection: \"missing\") { totalCount } }")
+            .await;
         assert!(
-            collections_result.errors.is_empty(),
-            "collections helper query should match FEAT-015: {:?}",
-            collections_result.errors
+            result.errors.is_empty(),
+            "empty root schema should be queryable: {:?}",
+            result.errors
         );
-
-        let helper_queries = [
-            (
-                "fetchEntities",
-                r#"{
-                    entities(collection: "tasks", limit: 50) {
-                        edges { node { id version data } }
-                        pageInfo { hasNextPage endCursor }
-                    }
-                }"#,
-            ),
-            (
-                "fetchEntity",
-                r#"{
-                    entity(collection: "tasks", id: "task-1") {
-                        id
-                        version
-                        data
-                        createdAt
-                        updatedAt
-                    }
-                }"#,
-            ),
-        ];
-
-        for (name, query) in helper_queries {
-            let result = schema.execute(query).await;
-            assert!(
-                !result.errors.is_empty(),
-                "{name} unexpectedly matched the FEAT-015 generic contract",
-            );
-        }
-    }
-
-    #[test]
-    fn empty_collections_builds_valid_schema() {
-        // Empty schema should still be valid (query/mutation with no fields won't work
-        // but the schema should build).
-        // async-graphql requires at least one field, so we skip this for now.
     }
 
     // ── Live handler integration tests ──────────────────────────────────────
@@ -1563,12 +2386,12 @@ mod tests {
 
         let result = schema
             .schema
-            .execute("{ taskss(limit: 2) { id title } }")
+            .execute("{ tasksList(limit: 2) { id title } }")
             .await;
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 
         let data = result.data.into_json().expect("json");
-        let tasks = data["taskss"].as_array().expect("should be array");
+        let tasks = data["tasksList"].as_array().expect("should be array");
         assert_eq!(tasks.len(), 2);
     }
 
