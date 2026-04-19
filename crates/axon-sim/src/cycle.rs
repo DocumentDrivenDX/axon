@@ -107,7 +107,7 @@ pub fn run_cycle_test(config: &CycleConfig) -> CycleResult {
                 data: json!({ "index": i, "visits": 0 }),
                 actor: Some("sim".into()),
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .expect("node creation should not fail during setup");
     }
@@ -308,7 +308,7 @@ pub fn setup_cycle_handler(ring_size: usize) -> AxonHandler<MemoryStorageAdapter
                 data: json!({ "index": i }),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .expect("cycle setup should create each node");
     }

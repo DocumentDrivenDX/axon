@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use axon_core::auth::UserId;
 use axon_core::error::AxonError;
-use axon_server::bootstrap::{DefaultTenantHandle, ensure_default_tenant};
+use axon_server::bootstrap::{ensure_default_tenant, DefaultTenantHandle};
 use axon_storage::{MemoryStorageAdapter, SqliteStorageAdapter, StorageAdapter};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -26,8 +26,7 @@ fn memory_adapter() -> MemoryStorageAdapter {
 
 /// Build an in-memory SQLite adapter with auth migrations applied.
 fn sqlite_adapter() -> SqliteStorageAdapter {
-    let adapter = SqliteStorageAdapter::open_in_memory()
-        .expect("in-memory SQLite should open");
+    let adapter = SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open");
     adapter
         .apply_auth_migrations()
         .expect("auth migrations should apply");
@@ -43,8 +42,8 @@ fn bootstrap_first_call_creates_everything() {
         let storage = memory_adapter();
         let user_id = UserId::generate();
 
-        let handle = ensure_default_tenant(&storage, user_id.clone())
-            .expect("first call should succeed");
+        let handle =
+            ensure_default_tenant(&storage, user_id.clone()).expect("first call should succeed");
 
         assert_eq!(handle.database_name, "default");
 
@@ -61,7 +60,9 @@ fn bootstrap_first_call_creates_everything() {
         assert_eq!(dbs[0].name, "default");
 
         assert_eq!(
-            storage.count_tenants().expect("count_tenants should succeed"),
+            storage
+                .count_tenants()
+                .expect("count_tenants should succeed"),
             1,
             "should have exactly 1 tenant"
         );
@@ -76,8 +77,8 @@ fn bootstrap_first_call_creates_everything() {
             .test_insert_user(user_id.as_str())
             .expect("test_insert_user should succeed");
 
-        let handle = ensure_default_tenant(&storage, user_id.clone())
-            .expect("first call should succeed");
+        let handle =
+            ensure_default_tenant(&storage, user_id.clone()).expect("first call should succeed");
 
         assert_eq!(handle.database_name, "default");
 
@@ -94,7 +95,9 @@ fn bootstrap_first_call_creates_everything() {
         assert_eq!(dbs[0].name, "default");
 
         assert_eq!(
-            storage.count_tenants().expect("count_tenants should succeed"),
+            storage
+                .count_tenants()
+                .expect("count_tenants should succeed"),
             1,
             "should have exactly 1 tenant"
         );
@@ -111,10 +114,10 @@ fn bootstrap_second_call_returns_same_handle() {
         let user1 = UserId::generate();
         let user2 = UserId::generate();
 
-        let handle1 = ensure_default_tenant(&storage, user1.clone())
-            .expect("first call should succeed");
-        let handle2 = ensure_default_tenant(&storage, user2.clone())
-            .expect("second call should succeed");
+        let handle1 =
+            ensure_default_tenant(&storage, user1.clone()).expect("first call should succeed");
+        let handle2 =
+            ensure_default_tenant(&storage, user2.clone()).expect("second call should succeed");
 
         assert_eq!(
             handle1.tenant_id, handle2.tenant_id,
@@ -142,13 +145,17 @@ fn bootstrap_second_call_returns_same_handle() {
         let user1 = UserId::generate();
         let user2 = UserId::generate();
 
-        storage.test_insert_user(user1.as_str()).expect("insert user1");
-        storage.test_insert_user(user2.as_str()).expect("insert user2");
+        storage
+            .test_insert_user(user1.as_str())
+            .expect("insert user1");
+        storage
+            .test_insert_user(user2.as_str())
+            .expect("insert user2");
 
-        let handle1 = ensure_default_tenant(&storage, user1.clone())
-            .expect("first call should succeed");
-        let handle2 = ensure_default_tenant(&storage, user2.clone())
-            .expect("second call should succeed");
+        let handle1 =
+            ensure_default_tenant(&storage, user1.clone()).expect("first call should succeed");
+        let handle2 =
+            ensure_default_tenant(&storage, user2.clone()).expect("second call should succeed");
 
         assert_eq!(
             handle1.tenant_id, handle2.tenant_id,
@@ -234,13 +241,20 @@ fn concurrent_bootstrap_converges() {
 
         let results: Vec<DefaultTenantHandle> = handles
             .into_iter()
-            .map(|h| h.join().expect("thread should not panic").expect("ensure_default_tenant should succeed"))
+            .map(|h| {
+                h.join()
+                    .expect("thread should not panic")
+                    .expect("ensure_default_tenant should succeed")
+            })
             .collect();
 
         // All callers must get the same tenant_id
         let first_tid = results[0].tenant_id.clone();
         for r in &results {
-            assert_eq!(r.tenant_id, first_tid, "all callers must converge on the same tenant_id");
+            assert_eq!(
+                r.tenant_id, first_tid,
+                "all callers must converge on the same tenant_id"
+            );
             assert_eq!(r.database_name, "default");
         }
 
@@ -286,12 +300,19 @@ fn concurrent_bootstrap_converges() {
 
         let results: Vec<DefaultTenantHandle> = handles
             .into_iter()
-            .map(|h| h.join().expect("thread should not panic").expect("ensure_default_tenant should succeed"))
+            .map(|h| {
+                h.join()
+                    .expect("thread should not panic")
+                    .expect("ensure_default_tenant should succeed")
+            })
             .collect();
 
         let first_tid = results[0].tenant_id.clone();
         for r in &results {
-            assert_eq!(r.tenant_id, first_tid, "sqlite: all callers must converge on the same tenant_id");
+            assert_eq!(
+                r.tenant_id, first_tid,
+                "sqlite: all callers must converge on the same tenant_id"
+            );
             assert_eq!(r.database_name, "default");
         }
 

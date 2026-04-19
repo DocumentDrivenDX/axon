@@ -79,10 +79,7 @@ async fn middleware_installs_identity() {
     }
 
     let app = Router::new()
-        .route(
-            "/tenants/{tenant}/databases/{database}/ping",
-            get(handler),
-        )
+        .route("/tenants/{tenant}/databases/{database}/ping", get(handler))
         .layer(middleware::from_fn(axon_server::no_auth::no_auth_layer))
         .layer(middleware::from_fn(path_router_layer));
 
@@ -108,9 +105,7 @@ async fn middleware_installs_identity() {
 async fn middleware_skips_when_path_not_data_plane() {
     // Handler that returns 200 when no ResolvedIdentity is present,
     // 500 when one is unexpectedly injected.
-    async fn health_handler(
-        identity: Option<Extension<ResolvedIdentity>>,
-    ) -> impl IntoResponse {
+    async fn health_handler(identity: Option<Extension<ResolvedIdentity>>) -> impl IntoResponse {
         if identity.is_some() {
             StatusCode::INTERNAL_SERVER_ERROR
         } else {

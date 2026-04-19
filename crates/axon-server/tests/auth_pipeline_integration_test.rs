@@ -24,7 +24,9 @@ use uuid::Uuid;
 use axon_core::auth::{
     GrantedDatabase, Grants, JwtClaims, Op, TenantId, TenantMember, TenantRole, User, UserId,
 };
-use axon_server::auth_pipeline::{AuthPipelineState, InMemoryRevocationCache, JwtIssuer, jwt_verify_layer};
+use axon_server::auth_pipeline::{
+    jwt_verify_layer, AuthPipelineState, InMemoryRevocationCache, JwtIssuer,
+};
 use axon_storage::MemoryStorageAdapter;
 
 const ISSUER: &str = "integration-issuer";

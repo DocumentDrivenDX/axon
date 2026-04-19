@@ -145,16 +145,20 @@ impl ControlPlaneDb {
         );
 
         // Step 3: drop obsolete junction tables introduced in earlier schema revisions.
-        self.block_on(
-            sqlx::query("DROP TABLE IF EXISTS tenant_databases").execute(&self.pool),
-        )
-        .map_err(AxonError::Storage)?;
+        self.block_on(sqlx::query("DROP TABLE IF EXISTS tenant_databases").execute(&self.pool))
+            .map_err(AxonError::Storage)?;
 
         self.block_on(sqlx::query("DROP TABLE IF EXISTS nodes").execute(&self.pool))
             .map_err(AxonError::Storage)?;
 
-        Self::run_on(self.rt.as_ref(), crate::user_roles::migrate_user_roles(&self.pool))?;
-        Self::run_on(self.rt.as_ref(), crate::cors_config::migrate_cors_origins(&self.pool))?;
+        Self::run_on(
+            self.rt.as_ref(),
+            crate::user_roles::migrate_user_roles(&self.pool),
+        )?;
+        Self::run_on(
+            self.rt.as_ref(),
+            crate::cors_config::migrate_cors_origins(&self.pool),
+        )?;
         Ok(())
     }
 
@@ -167,12 +171,18 @@ impl ControlPlaneDb {
 
     /// Add (or no-op if already present) a CORS allowed origin.
     pub fn add_cors_origin(&self, origin: &str) -> Result<(), AxonError> {
-        Self::run_on(self.rt.as_ref(), crate::cors_config::db_add(&self.pool, origin))
+        Self::run_on(
+            self.rt.as_ref(),
+            crate::cors_config::db_add(&self.pool, origin),
+        )
     }
 
     /// Remove a CORS allowed origin.  Returns `true` if a row was deleted.
     pub fn remove_cors_origin(&self, origin: &str) -> Result<bool, AxonError> {
-        Self::run_on(self.rt.as_ref(), crate::cors_config::db_remove(&self.pool, origin))
+        Self::run_on(
+            self.rt.as_ref(),
+            crate::cors_config::db_remove(&self.pool, origin),
+        )
     }
 
     // -- user_roles ------------------------------------------------------------
@@ -183,17 +193,19 @@ impl ControlPlaneDb {
     }
 
     /// Upsert a user-role assignment.
-    pub fn set_user_role(
-        &self,
-        login: &str,
-        role: &crate::auth::Role,
-    ) -> Result<(), AxonError> {
-        Self::run_on(self.rt.as_ref(), crate::user_roles::db_set(&self.pool, login, role))
+    pub fn set_user_role(&self, login: &str, role: &crate::auth::Role) -> Result<(), AxonError> {
+        Self::run_on(
+            self.rt.as_ref(),
+            crate::user_roles::db_set(&self.pool, login, role),
+        )
     }
 
     /// Remove a user-role assignment.  Returns `true` if a row was deleted.
     pub fn remove_user_role(&self, login: &str) -> Result<bool, AxonError> {
-        Self::run_on(self.rt.as_ref(), crate::user_roles::db_remove(&self.pool, login))
+        Self::run_on(
+            self.rt.as_ref(),
+            crate::user_roles::db_remove(&self.pool, login),
+        )
     }
 
     // -- tenants ---------------------------------------------------------------
@@ -207,14 +219,12 @@ impl ControlPlaneDb {
         created_at: &str,
     ) -> Result<(), AxonError> {
         self.block_on(
-            sqlx::query(
-                "INSERT INTO tenants (id, name, db_name, created_at) VALUES (?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(name)
-            .bind(db_name)
-            .bind(created_at)
-            .execute(&self.pool),
+            sqlx::query("INSERT INTO tenants (id, name, db_name, created_at) VALUES (?, ?, ?, ?)")
+                .bind(id)
+                .bind(name)
+                .bind(db_name)
+                .bind(created_at)
+                .execute(&self.pool),
         )
         .map_err(AxonError::Storage)?;
         Ok(())

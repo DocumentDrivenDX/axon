@@ -161,9 +161,7 @@ mod tests {
         config.add_actor("locked-out", vec![]);
         let guard = ActorScopeGuard::new(config);
 
-        assert!(guard
-            .check("locked-out", "anything", &Role::Write)
-            .is_err());
+        assert!(guard.check("locked-out", "anything", &Role::Write).is_err());
     }
 
     #[test]

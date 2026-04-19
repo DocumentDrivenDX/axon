@@ -8,7 +8,7 @@
 //! - Middleware integration (axum layer)
 //! - PROP-010 proptest: determinism + validity correlation
 
-use axon_server::path_router::{ResolvedPath, extract_tenant_database, path_router_layer};
+use axon_server::path_router::{extract_tenant_database, path_router_layer, ResolvedPath};
 use axum::body::Body;
 use axum::extract::Extension;
 use axum::http::{Request, StatusCode};
@@ -174,10 +174,7 @@ fn invalid_dot_in_database() {
 
 #[test]
 fn invalid_empty_tenant() {
-    assert_eq!(
-        extract_tenant_database("/tenants//databases/orders"),
-        None
-    );
+    assert_eq!(extract_tenant_database("/tenants//databases/orders"), None);
 }
 
 #[test]
@@ -204,14 +201,15 @@ fn invalid_leading_digit_database() {
 async fn middleware_installs_resolved_path_extension() {
     // Build a minimal router with the path_router_layer installed.
     // The handler reads ResolvedPath from extensions and returns 200 if present.
-    async fn ping_handler(
-        Extension(resolved): Extension<ResolvedPath>,
-    ) -> String {
+    async fn ping_handler(Extension(resolved): Extension<ResolvedPath>) -> String {
         format!("{}:{}", resolved.tenant, resolved.database)
     }
 
     let app = Router::new()
-        .route("/tenants/{tenant}/databases/{database}/ping", get(ping_handler))
+        .route(
+            "/tenants/{tenant}/databases/{database}/ping",
+            get(ping_handler),
+        )
         .layer(middleware::from_fn(path_router_layer));
 
     let request = Request::builder()
@@ -279,7 +277,10 @@ fn valid_rest_char() -> impl Strategy<Value = char> {
 /// Strategy that generates identifiers valid by the naming rule:
 ///   1–63 chars, ASCII [a-zA-Z0-9_-], not starting with a digit.
 fn valid_identifier() -> impl Strategy<Value = String> {
-    (valid_first_char(), prop::collection::vec(valid_rest_char(), 0..62))
+    (
+        valid_first_char(),
+        prop::collection::vec(valid_rest_char(), 0..62),
+    )
         .prop_map(|(f, r)| {
             let mut s = String::with_capacity(1 + r.len());
             s.push(f);
@@ -295,7 +296,10 @@ fn invalid_identifier() -> impl Strategy<Value = String> {
         // Empty string — always invalid
         Just(String::new()),
         // Starts with a digit — always invalid by the leading-digit rule
-        ((b'0'..=b'9').prop_map(|b| b as char), prop::collection::vec(valid_rest_char(), 0..20))
+        (
+            (b'0'..=b'9').prop_map(|b| b as char),
+            prop::collection::vec(valid_rest_char(), 0..20)
+        )
             .prop_map(|(d, rest): (char, Vec<char>)| {
                 let mut s = String::new();
                 s.push(d);
@@ -303,7 +307,10 @@ fn invalid_identifier() -> impl Strategy<Value = String> {
                 s
             }),
         // Contains a dot — always invalid (dot is not in [a-zA-Z0-9_-])
-        (valid_first_char(), prop::collection::vec(valid_rest_char(), 0..20))
+        (
+            valid_first_char(),
+            prop::collection::vec(valid_rest_char(), 0..20)
+        )
             .prop_map(|(f, rest): (char, Vec<char>)| {
                 let mut s = String::new();
                 s.push(f);
@@ -312,7 +319,10 @@ fn invalid_identifier() -> impl Strategy<Value = String> {
                 s
             }),
         // Contains a space — always invalid
-        (valid_first_char(), prop::collection::vec(valid_rest_char(), 0..20))
+        (
+            valid_first_char(),
+            prop::collection::vec(valid_rest_char(), 0..20)
+        )
             .prop_map(|(f, rest): (char, Vec<char>)| {
                 let mut s = String::new();
                 s.push(f);
@@ -321,7 +331,10 @@ fn invalid_identifier() -> impl Strategy<Value = String> {
                 s
             }),
         // Exceeds 63 characters — always invalid by the length rule
-        (valid_first_char(), prop::collection::vec(valid_rest_char(), 63..78))
+        (
+            valid_first_char(),
+            prop::collection::vec(valid_rest_char(), 63..78)
+        )
             .prop_map(|(f, rest): (char, Vec<char>)| {
                 let mut s = String::with_capacity(1 + rest.len());
                 s.push(f);

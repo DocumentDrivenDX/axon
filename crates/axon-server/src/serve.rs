@@ -248,7 +248,9 @@ fn random_secret_32() -> Vec<u8> {
         .map(|d| d.as_nanos())
         .unwrap_or(0x9E37_79B9_7F4A_7C15);
     for chunk in buf.chunks_mut(8) {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let bytes = seed.to_le_bytes();
         for (i, b) in chunk.iter_mut().enumerate() {
             *b = bytes[i];
@@ -328,7 +330,13 @@ pub fn init_control_plane(
     .with_storage(adapter_arc)
     .with_jwt_issuer(jwt_issuer);
 
-    Ok(ControlPlaneReady { db, state, cors_store, auth, data_dir })
+    Ok(ControlPlaneReady {
+        db,
+        state,
+        cors_store,
+        auth,
+        data_dir,
+    })
 }
 
 /// Entry point that replaces the former binary `main`.
@@ -407,7 +415,7 @@ pub async fn run_with_sqlite_storage(
 
     let handler: crate::tenant_router::TenantHandler =
         Arc::new(tokio::sync::Mutex::new(AxonHandler::new(
-            Box::new(storage) as Box<dyn axon_storage::adapter::StorageAdapter + Send + Sync>,
+            Box::new(storage) as Box<dyn axon_storage::adapter::StorageAdapter + Send + Sync>
         )));
     let tenant_router = Arc::new(crate::tenant_router::TenantRouter::new(
         data_dir,
@@ -602,15 +610,19 @@ fn load_tls_config(
     cert_path: &PathBuf,
     key_path: &PathBuf,
 ) -> Result<tokio_rustls::rustls::ServerConfig, String> {
-    use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+    use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 
     let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(cert_path)
         .map_err(|e| format!("failed to open TLS cert {}: {e}", cert_path.display()))?
         .collect::<Result<_, _>>()
         .map_err(|e| format!("failed to read TLS certificates: {e}"))?;
 
-    let key = PrivateKeyDer::from_pem_file(key_path)
-        .map_err(|e| format!("failed to read TLS private key from {}: {e}", key_path.display()))?;
+    let key = PrivateKeyDer::from_pem_file(key_path).map_err(|e| {
+        format!(
+            "failed to read TLS private key from {}: {e}",
+            key_path.display()
+        )
+    })?;
 
     tokio_rustls::rustls::ServerConfig::builder()
         .with_no_client_auth()
@@ -627,8 +639,7 @@ struct HyperAxumBridge<S: Clone> {
     remote_addr: SocketAddr,
 }
 
-impl<S, ResBody> tower::Service<axum::http::Request<hyper::body::Incoming>>
-    for HyperAxumBridge<S>
+impl<S, ResBody> tower::Service<axum::http::Request<hyper::body::Incoming>> for HyperAxumBridge<S>
 where
     S: Clone
         + tower::Service<
@@ -671,8 +682,7 @@ async fn bind_https(
     use hyper_util::service::TowerToHyperService;
 
     let tls_config = load_tls_config(&cert_path, &key_path)?;
-    let tls_acceptor =
-        tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
+    let tls_acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls_config));
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -705,7 +715,10 @@ async fn bind_https(
                 }
             };
             let io = TokioIo::new(tls_stream);
-            let bridge = HyperAxumBridge { inner: inner_svc, remote_addr };
+            let bridge = HyperAxumBridge {
+                inner: inner_svc,
+                remote_addr,
+            };
             if let Err(e) = auto::Builder::new(TokioExecutor::new())
                 .serve_connection_with_upgrades(io, TowerToHyperService::new(bridge))
                 .await

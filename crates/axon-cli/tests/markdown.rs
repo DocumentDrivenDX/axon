@@ -109,7 +109,14 @@ fn collection_template_commands_round_trip() {
 
     let get_output = run_ok(
         &db_path,
-        &["--output", "json", "collections", "template", "get", "tasks"],
+        &[
+            "--output",
+            "json",
+            "collections",
+            "template",
+            "get",
+            "tasks",
+        ],
     );
     assert!(get_output.contains(r#""collection": "tasks""#));
     assert!(get_output.contains(r##""template": "# {{title}}""##));
@@ -118,7 +125,14 @@ fn collection_template_commands_round_trip() {
 
     let err_output = run_err(
         &db_path,
-        &["--output", "json", "collections", "template", "get", "tasks"],
+        &[
+            "--output",
+            "json",
+            "collections",
+            "template",
+            "get",
+            "tasks",
+        ],
     );
     assert!(err_output.contains("has no markdown template defined"));
 }

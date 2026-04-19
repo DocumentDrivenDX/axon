@@ -122,10 +122,7 @@ async fn list_tenants(State(svc): State<ControlPlaneService>) -> Response {
     }
 }
 
-async fn get_tenant(
-    State(svc): State<ControlPlaneService>,
-    Path(id): Path<String>,
-) -> Response {
+async fn get_tenant(State(svc): State<ControlPlaneService>, Path(id): Path<String>) -> Response {
     match svc.get_tenant(&TenantId::new(id)) {
         Ok(tenant) => Json(tenant).into_response(),
         Err(e) => error_response(e),
@@ -303,7 +300,10 @@ mod tests {
     #[tokio::test]
     async fn provision_and_list_tenants() {
         let server = test_server();
-        let resp = server.post("/tenants").json(&hosted_spec_body("prod")).await;
+        let resp = server
+            .post("/tenants")
+            .json(&hosted_spec_body("prod"))
+            .await;
         resp.assert_status(StatusCode::CREATED);
         let body: Value = resp.json();
         assert_eq!(body["status"], "provisioning");

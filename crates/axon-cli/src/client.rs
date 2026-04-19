@@ -68,10 +68,7 @@ impl HttpClient {
         }
         let resp = self
             .client
-            .post(format!(
-                "{}/entities/{}/{}",
-                self.base_url, collection, id
-            ))
+            .post(format!("{}/entities/{}/{}", self.base_url, collection, id))
             .json(&body)
             .send()
             .context("failed to send create entity request")?;
@@ -82,10 +79,7 @@ impl HttpClient {
     pub fn get_entity(&self, collection: &str, id: &str) -> Result<Value> {
         let resp = self
             .client
-            .get(format!(
-                "{}/entities/{}/{}",
-                self.base_url, collection, id
-            ))
+            .get(format!("{}/entities/{}/{}", self.base_url, collection, id))
             .send()
             .context("failed to send get entity request")?;
         Self::parse_response(resp)
@@ -146,10 +140,7 @@ impl HttpClient {
         }
         let resp = self
             .client
-            .put(format!(
-                "{}/entities/{}/{}",
-                self.base_url, collection, id
-            ))
+            .put(format!("{}/entities/{}/{}", self.base_url, collection, id))
             .json(&body)
             .send()
             .context("failed to send update entity request")?;
@@ -157,16 +148,10 @@ impl HttpClient {
     }
 
     /// `DELETE /entities/{collection}/{id}`
-    pub fn delete_entity(
-        &self,
-        collection: &str,
-        id: &str,
-        actor: Option<&str>,
-    ) -> Result<Value> {
-        let mut req = self.client.delete(format!(
-            "{}/entities/{}/{}",
-            self.base_url, collection, id
-        ));
+    pub fn delete_entity(&self, collection: &str, id: &str, actor: Option<&str>) -> Result<Value> {
+        let mut req = self
+            .client
+            .delete(format!("{}/entities/{}/{}", self.base_url, collection, id));
         if let Some(a) = actor {
             req = req.json(&serde_json::json!({ "actor": a }));
         }
@@ -185,8 +170,7 @@ impl HttpClient {
     ) -> Result<Value> {
         let schema_body = match schema {
             Some(s) => {
-                let v: Value =
-                    serde_json::from_str(s).context("schema must be valid JSON")?;
+                let v: Value = serde_json::from_str(s).context("schema must be valid JSON")?;
                 serde_json::json!({
                     "version": 1,
                     "entity_schema": v,
@@ -428,11 +412,7 @@ impl HttpClient {
             // Try to extract a structured error message from the body.
             if let Ok(err_json) = serde_json::from_str::<Value>(&body) {
                 if let Some(detail) = err_json.get("detail") {
-                    anyhow::bail!(
-                        "server error ({}): {}",
-                        status,
-                        detail
-                    );
+                    anyhow::bail!("server error ({}): {}", status, detail);
                 }
             }
             anyhow::bail!("server error ({}): {}", status, body)

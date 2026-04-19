@@ -103,7 +103,7 @@ pub fn run_transaction_atomicity_workload(
                 data: json!({ "balance": INITIAL_BALANCE }),
                 actor: Some("sim".into()),
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .expect("account creation must not fail during setup");
     }

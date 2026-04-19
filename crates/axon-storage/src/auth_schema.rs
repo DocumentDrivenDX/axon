@@ -23,9 +23,7 @@ pub fn apply_auth_migrations_sqlite(
         let fut = sqlx::query(sql).execute(pool);
         let result = match tokio::runtime::Handle::try_current() {
             Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
-            Err(_) => owned_rt
-                .expect("no tokio runtime available")
-                .block_on(fut),
+            Err(_) => owned_rt.expect("no tokio runtime available").block_on(fut),
         };
         result.map_err(|e| format!("{label}: {e}"))?;
         Ok(())
@@ -277,7 +275,12 @@ mod tests {
             .expect("query should succeed")
     }
 
-    fn exec(pool: &sqlx::SqlitePool, rt: Option<&tokio::runtime::Runtime>, sql: &str, binds: &[BindVal]) {
+    fn exec(
+        pool: &sqlx::SqlitePool,
+        rt: Option<&tokio::runtime::Runtime>,
+        sql: &str,
+        binds: &[BindVal],
+    ) {
         let mut q = sqlx::query(sql);
         for b in binds {
             match b {
@@ -286,7 +289,10 @@ mod tests {
                 BindVal::Null => q = q.bind(Option::<String>::None),
             }
         }
-        rt.as_ref().expect("runtime required").block_on(q.execute(pool)).expect("exec should succeed");
+        rt.as_ref()
+            .expect("runtime required")
+            .block_on(q.execute(pool))
+            .expect("exec should succeed");
     }
 
     fn exec_result(
@@ -303,7 +309,9 @@ mod tests {
                 BindVal::Null => q = q.bind(Option::<String>::None),
             }
         }
-        rt.as_ref().expect("runtime required").block_on(q.execute(pool))
+        rt.as_ref()
+            .expect("runtime required")
+            .block_on(q.execute(pool))
     }
 
     enum BindVal {
@@ -366,7 +374,8 @@ mod tests {
             .expect("in-memory DB should open");
         let rt = Some(rt);
         apply_auth_migrations_sqlite(&pool, rt.as_ref()).expect("first migration should succeed");
-        apply_auth_migrations_sqlite(&pool, rt.as_ref()).expect("second migration should be idempotent");
+        apply_auth_migrations_sqlite(&pool, rt.as_ref())
+            .expect("second migration should be idempotent");
 
         let count = query_i64(
             &pool,
@@ -400,7 +409,9 @@ mod tests {
             ],
         );
 
-        let row = rt.as_ref().expect("runtime required")
+        let row = rt
+            .as_ref()
+            .expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT id, name, display_name, created_at_ms, updated_at_ms
@@ -436,7 +447,9 @@ mod tests {
             ],
         );
 
-        let row = rt.as_ref().expect("runtime required")
+        let row = rt
+            .as_ref()
+            .expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT id, display_name, email, created_at_ms, suspended_at_ms
@@ -477,7 +490,9 @@ mod tests {
             &[s("tailscale"), s("alice@tailnet"), s("u-001"), i(3_000_000)],
         );
 
-        let row = rt.as_ref().expect("runtime required")
+        let row = rt
+            .as_ref()
+            .expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT provider, external_id, user_id, created_at_ms
@@ -527,7 +542,9 @@ mod tests {
             &[s("t-001"), s("u-001"), s("admin"), i(4_000_000)],
         );
 
-        let row = rt.as_ref().expect("runtime required")
+        let row = rt
+            .as_ref()
+            .expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT tenant_id, user_id, role, added_at_ms
@@ -571,7 +588,9 @@ mod tests {
             &[s("t-001"), s("orders"), i(5_000_000)],
         );
 
-        let row = rt.as_ref().expect("runtime required")
+        let row = rt
+            .as_ref()
+            .expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT tenant_id, database_name, created_at_ms
@@ -600,7 +619,9 @@ mod tests {
             &[s("jti-abc123"), i(6_000_000), s("u-001")],
         );
 
-        let row = rt.as_ref().expect("runtime required")
+        let row = rt
+            .as_ref()
+            .expect("runtime required")
             .block_on(
                 sqlx::query(
                     "SELECT jti, revoked_at_ms, revoked_by

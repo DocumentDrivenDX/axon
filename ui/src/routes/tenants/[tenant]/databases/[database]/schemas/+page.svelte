@@ -23,9 +23,11 @@ let validationError = $state<string | null>(null);
 let statusMessage = $state<string | null>(null);
 let error = $state<string | null>(null);
 let createCollectionName = $state('');
+// biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
 let viewMode = $state<'structured' | 'raw'>('structured');
 let preview = $state<SchemaPreviewResult | null>(null);
 let previewLoading = $state(false);
+// biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
 let createSchemaJson = $state(`{
   "type": "object",
   "properties": {}

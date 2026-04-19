@@ -277,7 +277,10 @@ mod tests {
             ("erik@example.com", Role::Admin),
         ]);
         let logins: Vec<_> = store.list().iter().map(|e| e.login.clone()).collect();
-        assert_eq!(logins, ["alice@example.com", "erik@example.com", "zara@example.com"]);
+        assert_eq!(
+            logins,
+            ["alice@example.com", "erik@example.com", "zara@example.com"]
+        );
     }
 
     #[test]
@@ -298,8 +301,12 @@ mod tests {
     async fn db_round_trip() {
         let pool = test_pool().await;
         migrate_user_roles(&pool).await.unwrap();
-        db_set(&pool, "erik@example.com", &Role::Admin).await.unwrap();
-        db_set(&pool, "alice@example.com", &Role::Write).await.unwrap();
+        db_set(&pool, "erik@example.com", &Role::Admin)
+            .await
+            .unwrap();
+        db_set(&pool, "alice@example.com", &Role::Write)
+            .await
+            .unwrap();
         let entries = db_list(&pool).await.unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].login, "alice@example.com");
@@ -311,8 +318,12 @@ mod tests {
     async fn db_upsert_updates_existing() {
         let pool = test_pool().await;
         migrate_user_roles(&pool).await.unwrap();
-        db_set(&pool, "erik@example.com", &Role::Read).await.unwrap();
-        db_set(&pool, "erik@example.com", &Role::Admin).await.unwrap();
+        db_set(&pool, "erik@example.com", &Role::Read)
+            .await
+            .unwrap();
+        db_set(&pool, "erik@example.com", &Role::Admin)
+            .await
+            .unwrap();
         let entries = db_list(&pool).await.unwrap();
         assert_eq!(entries.len(), 1);
         assert!(matches!(entries[0].role, Role::Admin));
@@ -322,7 +333,9 @@ mod tests {
     async fn db_remove_returns_true_on_deletion() {
         let pool = test_pool().await;
         migrate_user_roles(&pool).await.unwrap();
-        db_set(&pool, "erik@example.com", &Role::Admin).await.unwrap();
+        db_set(&pool, "erik@example.com", &Role::Admin)
+            .await
+            .unwrap();
         assert!(db_remove(&pool, "erik@example.com").await.unwrap());
         assert!(db_list(&pool).await.unwrap().is_empty());
     }

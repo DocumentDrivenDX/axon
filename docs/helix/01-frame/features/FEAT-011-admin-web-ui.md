@@ -15,14 +15,15 @@ dun:
 **Priority**: P1
 **Owner**: Core Team
 **Created**: 2026-04-05
-**Updated**: 2026-04-11
+**Updated**: 2026-04-19
 
 ## Overview
 
 The admin web UI is a browser-based console for managing and inspecting an
-Axon server. It provides a visual interface for the operations currently
-available via CLI and API: browsing collections, inspecting entities,
-viewing and editing schemas, and reading the audit log.
+Axon server. It represents the ADR-018 control-plane hierarchy explicitly:
+global users, tenants, tenant members, tenant credentials, tenant databases,
+and database-scoped collections, entities, schemas, audit history, GraphQL,
+links, lifecycle transitions, rollback, and markdown templates.
 
 The UI is a SvelteKit application built with Bun, served as static files
 by the axon-server HTTP gateway (see ADR-006). The cross-cutting concern
@@ -40,6 +41,18 @@ history.
 ## Requirements
 
 ### Functional Requirements
+
+#### Tenants, Users, and Databases
+
+- **List tenants**: Display all tenants and route into tenant-specific
+  databases, members, and credentials
+- **Create/delete tenants**: Create tenants from the tenant list and remove
+  tenants with confirmation
+- **Manage databases**: Create and delete named databases under a tenant
+- **Manage users**: Provision users and maintain deployment-wide user ACL rows
+- **Manage tenant members**: Add, update, and remove tenant role assignments
+- **Manage tenant credentials**: Issue one-time JWT credentials, list
+  credential metadata, and revoke active credentials
 
 #### Collections
 
@@ -82,7 +95,11 @@ history.
 
 #### Navigation and Chrome
 
-- **Sidebar navigation**: Collections, Schemas, Audit Log sections
+- **Tenant-scoped navigation**: `/ui/tenants/:tenant` is the root for tenant
+  management; `/ui/tenants/:tenant/databases/:database` is the root for
+  database-scoped tools
+- **Database sub-navigation**: Collections, Schemas, Audit Log, and GraphQL
+  sections are available only within an explicit tenant/database scope
 - **Health indicator**: Live server health status (version, uptime) via
   `/health` endpoint, polled every 15 seconds
 - **Dark theme**: Default dark color scheme suitable for developer tooling
@@ -101,66 +118,106 @@ history.
 
 ## User Stories
 
-### Story US-040: Browse Axon Data Visually [FEAT-011]
+### Story US-040: Navigate the Tenant and Database Model [FEAT-011]
+
+**As an** operator managing Axon
+**I want** the UI to make tenant and database scope explicit
+**So that** data operations cannot accidentally cross tenant boundaries
+
+**Acceptance Criteria:**
+- [x] `/ui/` redirects to `/ui/tenants`, and top navigation exposes only tenant and user control-plane roots. E2E: `smoke-restructure.spec.ts`
+- [x] Creating a tenant routes to `/ui/tenants/:tenant`, and tenant sub-navigation exposes Databases, Members, and Credentials. E2E: `smoke-restructure.spec.ts`
+- [x] Creating a database routes to `/ui/tenants/:tenant/databases/:database`, and database sub-navigation exposes Collections, Schemas, Audit Log, and GraphQL. E2E: `smoke-restructure.spec.ts`
+- [x] Unknown tenant routes render the not-found state instead of a misleading empty console. E2E: `smoke-restructure.spec.ts`
+- [x] Two tenants can contain the same database, collection, and entity IDs while remaining isolated in the UI. E2E: `tenant-isolation.spec.ts`
+
+### Story US-041: Administer Users, Members, and Credentials [FEAT-011]
+
+**As an** operator
+**I want** user and tenant access controls in the UI
+**So that** I can administer access without direct API calls
+
+**Acceptance Criteria:**
+- [x] The Users route supports adding, changing, and removing deployment-wide ACL rows. E2E: `tenant-admin.spec.ts`
+- [x] The Users route supports provisioning and suspending user records. E2E: `tenant-admin.spec.ts`
+- [x] The tenant Members route supports adding a provisioned user, changing the tenant role, and removing the member. E2E: `tenant-admin.spec.ts`
+- [x] The tenant Credentials route issues a one-time JWT for a tenant member and shows the JWT exactly in the issue flow. E2E: `tenant-admin.spec.ts`
+- [x] Issued credential metadata appears in the credentials table and can be revoked. E2E: `tenant-admin.spec.ts`
+
+### Story US-042: Manage Collections and Entities [FEAT-011]
 
 **As a** developer using Axon
-**I want** a web UI to browse collections and entities
-**So that** I can quickly inspect data without writing queries
+**I want** tenant-scoped collection and entity CRUD
+**So that** I can inspect and repair data without writing curl commands
 
 **Acceptance Criteria:**
-- [x] Opening `http://localhost:4170/ui` shows the collections list
-- [x] Clicking a collection shows its entities in a table
-- [x] Clicking an entity shows its full JSON data
-- [x] Empty collections show an empty state with a "Create Entity" action
-- [x] Entity table paginates at 50 rows per page with next/previous navigation
-- [x] "Create Entity" opens a form with entity ID and JSON data inputs
-- [x] Editing an existing entity opens the JSON editor inline; Cancel restores read-only view
-- [x] Dropping a collection shows a confirmation prompt; confirming removes it from the list
-- [x] Deleting an entity shows a confirmation prompt; confirming removes it from the table
+- [x] The database Collections route lists registered collections and links to each collection detail route. E2E: `tenant-isolation.spec.ts`
+- [x] A collection can be created through the schema workspace, appears in the collections route, and can be dropped with confirmation. E2E: `schema-editing.spec.ts`
+- [x] The collection detail route supports entity create, read, update, and delete from the UI. E2E: `entity-crud.spec.ts`
+- [x] The entity detail route shows version, collection, schema version, and JSON data. E2E: `entity-crud.spec.ts`, `wave1-capabilities.spec.ts`
+- [x] The entity History tab shows audit versions for the selected entity. E2E: `wave1-capabilities.spec.ts`
 
-### Story US-041: Manage Schemas Visually [FEAT-011]
+### Story US-043: Manage Schemas Visually [FEAT-011]
 
 **As a** developer defining Axon schemas
-**I want** a web UI to view and edit collection schemas
-**So that** I can iterate on schema definitions without CLI round-trips
+**I want** a database-scoped schema workspace
+**So that** I can iterate on collection definitions without CLI round-trips
 
 **Acceptance Criteria:**
-- [x] Schemas page lists all collections with schema status
-- [x] Clicking a collection shows its schema as formatted JSON
-- [x] Edit mode opens a textarea pre-filled with the current schema JSON
-- [x] Saving a schema change shows a preview/diff before commit
-- [x] Saving invalid schema JSON shows an inline error with details
-- [x] Cancelling an edit restores the read-only schema view
-- [x] Creating a collection via the schema workspace includes a schema textarea input
+- [x] The Schemas route lists registered collections and opens a structured schema view. E2E: `schema-editing.spec.ts`
+- [x] The raw JSON view displays the full collection schema payload. E2E: `schema-editing.spec.ts`
+- [x] Creating a collection accepts entity schema JSON and registers the collection in the current tenant/database scope. E2E: `schema-editing.spec.ts`
+- [x] Editing a schema requires previewing the change before saving. E2E: `schema-editing.spec.ts`
 
-### Story US-042: Inspect Audit Log Visually [FEAT-011]
+### Story US-044: Inspect Audit and Recover Entity State [FEAT-011]
 
 **As an** operator debugging agent behavior
-**I want** a web UI to browse and filter the audit log
-**So that** I can trace what happened to specific entities
+**I want** audit history and rollback tools in the entity UI
+**So that** I can trace and recover unintended changes
 
 **Acceptance Criteria:**
-- [x] Audit page shows recent entries in a table
-- [x] Entries show operation type, collection, entity ID, version, and actor
-- [x] Filtering by collection narrows the results
-- [x] Filtering by actor narrows the results
-- [x] Clearing filters restores all entries
-- [x] Clicking an entry shows the full entry detail
-- [ ] Audit log supports date range filtering (since/until) — deferred to V2
+- [x] The database Audit Log route is reachable from the tenant/database sub-navigation. E2E: `smoke-restructure.spec.ts`
+- [x] The database Audit Log route filters by collection and opens entry detail. E2E: `audit-route.spec.ts`
+- [x] Reverting an audit update entry restores the entity's prior data. E2E: `audit-route.spec.ts`
+- [x] The selected entity History tab shows operation, version, actor, timestamp, and data preview. E2E: `wave1-capabilities.spec.ts`
+- [x] The entity Rollback tab lists prior versions from audit history. E2E: `wave2-rollback.spec.ts`
+- [x] Rollback preview performs a dry-run diff before mutation. E2E: `wave2-rollback.spec.ts`
+- [x] Applying rollback mutates the entity to the selected prior version. E2E: `wave2-rollback.spec.ts`
 
-### Story US-043: Manage Multi-Tenant Databases [FEAT-011]
+### Story US-045: Use Advanced Database Tools [FEAT-011]
 
-**As an** operator managing multiple Axon tenants
-**I want** a Databases admin page
-**So that** I can create tenants and assign databases without using the API directly
+**As a** developer or operator
+**I want** GraphQL, links, lifecycle transitions, and markdown templates exposed in context
+**So that** I can exercise higher-level Axon features from the same database workspace
 
 **Acceptance Criteria:**
-- [x] Databases page is accessible from the sidebar
-- [x] Page shows a form to create a new tenant
-- [x] Created tenant appears in the tenant list with its own panel
-- [x] Each tenant panel has a form to assign a named database
-- [x] Assigned database appears in the tenant's database table
-- [x] Each database row has a Remove button with a confirmation step
+- [x] The GraphQL route loads a query editor and response pane. E2E: `wave1-capabilities.spec.ts`
+- [x] GraphQL introspection returns a schema, and invalid queries render errors. E2E: `wave1-capabilities.spec.ts`
+- [x] The entity Links tab creates and removes outbound links. E2E: `wave1-capabilities.spec.ts`
+- [x] The entity Lifecycle tab shows current state and performs an allowed transition. E2E: `wave1-capabilities.spec.ts`
+- [x] The collection Markdown Template section creates, previews through an entity tab, and deletes a template. E2E: `wave1-capabilities.spec.ts`
+
+### Reverse Route Coverage
+
+| Route or tab | Expected workflows | E2E coverage |
+| --- | --- | --- |
+| `/ui/` | Redirect to tenant root | `smoke-restructure.spec.ts` |
+| `/ui/tenants` | List, create, open tenant; top nav shape | `smoke-restructure.spec.ts`, `tenant-isolation.spec.ts` |
+| `/ui/tenants/:tenant` | Read tenant, create/delete database | `smoke-restructure.spec.ts`, `tenant-admin.spec.ts` |
+| `/ui/tenants/:tenant/members` | Create, read, update, delete tenant member | `tenant-admin.spec.ts` |
+| `/ui/tenants/:tenant/credentials` | Issue, read, revoke credential | `tenant-admin.spec.ts` |
+| `/ui/users` | Provision/suspend user; create, read, update, delete ACL user row | `tenant-admin.spec.ts` |
+| `/ui/tenants/:tenant/databases/:database` | Read database overview and section links | `tenant-isolation.spec.ts` |
+| `/collections` | Read collections, route to detail, drop collection | `schema-editing.spec.ts`, `tenant-isolation.spec.ts` |
+| `/collections/:name` Data tab | Create, read, update, delete entity | `entity-crud.spec.ts` |
+| `/collections/:name` History tab | Read entity audit history | `wave1-capabilities.spec.ts` |
+| `/collections/:name` Links tab | Create and delete outbound links | `wave1-capabilities.spec.ts` |
+| `/collections/:name` Lifecycle tab | Read state and update by transition | `wave1-capabilities.spec.ts` |
+| `/collections/:name` Markdown tab | Render saved collection template for entity data | `wave1-capabilities.spec.ts` |
+| `/collections/:name` Rollback tab | Read history, preview rollback, apply rollback | `wave2-rollback.spec.ts` |
+| `/schemas` | Create collection, read structured/raw schema, preview and update schema | `schema-editing.spec.ts` |
+| `/audit` | Route reachability, collection filter, entry detail, revert update entry | `smoke-restructure.spec.ts`, `audit-route.spec.ts` |
+| `/graphql` | Read console, execute introspection, handle invalid query | `wave1-capabilities.spec.ts` |
 
 ## Technical Design
 
@@ -241,11 +298,10 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 
 ## Out of Scope
 
-- Link management (create/delete/traverse links — V2)
 - Graph visualization (force-directed layout of entity-link graph — V2)
 - Bead lifecycle management (bead-specific UI — V2)
 - Real-time updates (WebSocket/SSE push — V2)
-- Schema diff / migration preview (V2, depends on schema evolution)
+- Audit actor/date filter E2E and transaction-level rollback UI coverage (V2 hardening)
 - Mobile-responsive layout (admin console is desktop-only)
 - Theming / light mode (dark theme only in V1)
 
@@ -253,11 +309,13 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 
 ### Related Artifacts
 - **Parent PRD Section**: Requirements Overview > P1 #8 (Admin web UI)
-- **User Stories**: US-040, US-041, US-042
+- **User Stories**: US-040, US-041, US-042, US-043, US-044, US-045
 - **Architecture**: ADR-006 (SvelteKit + Bun + Vite)
 - **Cross-cutting concern**: `typescript-bun` in `concerns.md`, scoped to
   `area:ui` beads with ADR-006 overrides
 - **Implementation**: `ui/` at project root
+- **E2E coverage**: `ui/tests/e2e/*.spec.ts`, run with
+  `AXON_E2E_PORT=4171 bun run test:e2e:real`
 
 ### Feature Dependencies
 - **Depends On**: FEAT-001, FEAT-002, FEAT-004, FEAT-005
@@ -265,20 +323,20 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 
 ### Playwright E2E Test Coverage
 
-All 78 tests pass against a live `axon-server --no-auth --storage memory --ui-dir ui/build --http-port 4170`.
+The UI E2E suite runs against a live `axon-server --no-auth --storage
+memory --ui-dir ui/build` using
+`AXON_E2E_PORT=4171 bun run test:e2e:real`.
 
 | Test file | Description | Stories covered |
 |-----------|-------------|-----------------|
-| `tests/e2e/health.spec.ts` | Root redirect, health panel, sidebar nav links | US-040 |
-| `tests/e2e/collections.spec.ts` | Create collection via UI, verify in schemas list and collections table | US-040 |
-| `tests/e2e/entities.spec.ts` | Full entity CRUD: create, browse, detail, edit/cancel, pagination, empty state | US-040 |
-| `tests/e2e/schemas.spec.ts` | Schema detail, edit, invalid JSON error, preview before save, create collection form | US-041 |
-| `tests/e2e/audit.spec.ts` | Audit table, filter by collection/actor, clear filters, entry detail | US-042 |
-| `tests/e2e/drop-delete.spec.ts` | Drop collection confirm/cancel, delete entity confirm/cancel | US-040 |
-| `tests/e2e/databases.spec.ts` | Databases page, create tenant, assign/remove database | US-043 |
-| `tests/collections.spec.ts` | Collections browser with mocked API: table, headers, pagination | US-040 |
-| `tests/schemas.spec.ts` | Schemas page with mocked API: list, detail, edit textarea | US-041 |
-| `tests/navigation.spec.ts` | Sidebar nav, routing, health panel visibility | US-040 |
+| `ui/tests/e2e/smoke-restructure.spec.ts` | Tenant root redirect, tenant/database navigation, unknown tenant state, database tool routes | US-040, US-044 |
+| `ui/tests/e2e/tenant-isolation.spec.ts` | Cross-tenant UI isolation for same database, collection, and entity ids | US-040, US-042 |
+| `ui/tests/e2e/tenant-admin.spec.ts` | Users, tenant members, credentials, credential revocation | US-041 |
+| `ui/tests/e2e/schema-editing.spec.ts` | Schema route, create/drop collection, raw schema, preview-before-save | US-042, US-043 |
+| `ui/tests/e2e/entity-crud.spec.ts` | Entity create, read, update, delete through collection detail | US-042 |
+| `ui/tests/e2e/audit-route.spec.ts` | Database audit filtering, audit entry detail, revert update entry | US-044 |
+| `ui/tests/e2e/wave1-capabilities.spec.ts` | GraphQL console, links tab, lifecycle tab, history tab, markdown template tab | US-042, US-044, US-045 |
+| `ui/tests/e2e/wave2-rollback.spec.ts` | Entity rollback history, dry-run preview, apply rollback | US-044 |
 
 **Key implementation notes captured in tests:**
 - `fullyParallel: true` is set globally; inter-dependent tests use `test.describe.configure({ mode: 'serial' })`.

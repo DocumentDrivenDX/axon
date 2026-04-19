@@ -43,7 +43,7 @@ fn create(h: &mut AxonHandler<MemoryStorageAdapter>, collection: &str, id: &str,
         data,
         actor: None,
         audit_metadata: None,
-    attribution: None,
+        attribution: None,
     })
     .unwrap();
 }
@@ -71,7 +71,7 @@ fn update(
         expected_version: version,
         actor: None,
         audit_metadata: None,
-    attribution: None,
+        attribution: None,
     })
     .unwrap()
     .entity
@@ -94,7 +94,7 @@ fn link(
         link_type: link_type.into(),
         metadata,
         actor: None,
-    attribution: None,
+        attribution: None,
     })
     .unwrap();
 }
@@ -912,7 +912,9 @@ fn scn_007_bead_lifecycle_concurrent_agents() {
             None,
         )
         .unwrap();
-    let err = dup_tx.commit(&mut storage, &mut audit, None, None).unwrap_err();
+    let err = dup_tx
+        .commit(&mut storage, &mut audit, None, None)
+        .unwrap_err();
     assert!(
         matches!(err, AxonError::ConflictingVersion { .. }),
         "double-claim should fail with version conflict"

@@ -28,14 +28,14 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use axon_core::auth::{
-    Grants, JwtClaims, TenantId, TenantMember, TenantRole, User, UserId,
-};
+use axon_core::auth::{Grants, JwtClaims, TenantId, TenantMember, TenantRole, User, UserId};
 use axon_server::auth::AuthContext;
-use axon_server::auth_pipeline::{AuthPipelineState, InMemoryRevocationCache, JwtIssuer, jwt_verify_layer};
+use axon_server::auth_pipeline::{
+    jwt_verify_layer, AuthPipelineState, InMemoryRevocationCache, JwtIssuer,
+};
 use axon_server::control_plane::ControlPlaneDb;
 use axon_server::control_plane_routes::{
-    ControlPlaneState, control_plane_routes, optional_jwt_middleware,
+    control_plane_routes, optional_jwt_middleware, ControlPlaneState,
 };
 use axon_server::cors_config::CorsStore;
 use axon_server::user_roles::UserRoleStore;
@@ -135,7 +135,15 @@ fn build_test_env(
         .layer(MockConnectInfo(peer));
 
     let server = TestServer::new(app);
-    (server, issuer, admin_user_id, write_user_id, other_user_id, storage, user_roles)
+    (
+        server,
+        issuer,
+        admin_user_id,
+        write_user_id,
+        other_user_id,
+        storage,
+        user_roles,
+    )
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -172,7 +180,10 @@ async fn issue_with_deployment_admin() {
     let body: Value = resp.json();
     assert!(body["jwt"].is_string(), "response should have jwt field");
     assert!(body["jti"].is_string(), "response should have jti field");
-    assert!(body["expires_at"].is_u64(), "response should have expires_at field");
+    assert!(
+        body["expires_at"].is_u64(),
+        "response should have expires_at field"
+    );
 
     let jti = body["jti"].as_str().unwrap().to_string();
 
@@ -183,7 +194,9 @@ async fn issue_with_deployment_admin() {
         .await;
     list_resp.assert_status(StatusCode::OK);
     let list_body: Value = list_resp.json();
-    let creds = list_body["credentials"].as_array().expect("credentials array");
+    let creds = list_body["credentials"]
+        .as_array()
+        .expect("credentials array");
     assert_eq!(creds.len(), 1, "one credential should be listed");
     assert_eq!(creds[0]["jti"].as_str().unwrap(), jti, "jti should match");
 
@@ -308,8 +321,15 @@ async fn list_credentials_admin() {
         .await;
     list_resp.assert_status(StatusCode::OK);
     let list_body: Value = list_resp.json();
-    let creds = list_body["credentials"].as_array().expect("credentials array");
-    assert_eq!(creds.len(), 2, "admin should see all 2 credentials, got: {}", creds.len());
+    let creds = list_body["credentials"]
+        .as_array()
+        .expect("credentials array");
+    assert_eq!(
+        creds.len(),
+        2,
+        "admin should see all 2 credentials, got: {}",
+        creds.len()
+    );
 
     let _ = storage;
 }
@@ -358,8 +378,14 @@ async fn list_credentials_self() {
         .await;
     list_resp.assert_status(StatusCode::OK);
     let list_body: Value = list_resp.json();
-    let creds = list_body["credentials"].as_array().expect("credentials array");
-    assert_eq!(creds.len(), 1, "user_a should see only their own credential");
+    let creds = list_body["credentials"]
+        .as_array()
+        .expect("credentials array");
+    assert_eq!(
+        creds.len(),
+        1,
+        "user_a should see only their own credential"
+    );
     assert_eq!(
         creds[0]["user_id"].as_str().unwrap(),
         user_a,
@@ -440,7 +466,10 @@ async fn revoke_by_admin() {
         }))
         .await;
     issue_resp.assert_status(StatusCode::CREATED);
-    let jti = issue_resp.json::<Value>()["jti"].as_str().unwrap().to_string();
+    let jti = issue_resp.json::<Value>()["jti"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Admin revokes the credential.
     let revoke_resp = server
@@ -492,7 +521,10 @@ async fn revoke_by_owner() {
         }))
         .await;
     issue_resp.assert_status(StatusCode::CREATED);
-    let jti = issue_resp.json::<Value>()["jti"].as_str().unwrap().to_string();
+    let jti = issue_resp.json::<Value>()["jti"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // Owner revokes their own credential.
     let owner_jwt = make_control_jwt(&issuer, &write_uid);
@@ -539,7 +571,10 @@ async fn revoke_by_unrelated_user_returns_403() {
         }))
         .await;
     issue_resp.assert_status(StatusCode::CREATED);
-    let jti = issue_resp.json::<Value>()["jti"].as_str().unwrap().to_string();
+    let jti = issue_resp.json::<Value>()["jti"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // other_uid tries to revoke owner_uid's credential — should be 403.
     let other_jwt = make_control_jwt(&issuer, &other_uid);

@@ -14,15 +14,15 @@ pub mod topology;
 pub mod types;
 
 pub use auth::{
-    AuthError, CallerIdentity, DatabaseGrant, EntityFilter, GrantRegistry, GrantedDatabase,
-    Grants, JwtClaims, Op, ResolvedIdentity, Tenant, TenantId, TenantMember, TenantRole, User,
-    UserId, UserIdentity, WritePolicy,
+    AuthError, CallerIdentity, DatabaseGrant, EntityFilter, GrantRegistry, GrantedDatabase, Grants,
+    JwtClaims, Op, ResolvedIdentity, Tenant, TenantId, TenantMember, TenantRole, User, UserId,
+    UserIdentity, WritePolicy,
 };
 pub use clock::{Clock, FakeClock, SystemClock};
+pub use error::AxonError;
 pub use guardrails::{
     GuardrailsConfig, GuardrailsLayer, RateLimitConfig, RejectionReason, TokenBucket,
 };
-pub use error::AxonError;
 pub use id::{
     CollectionId, EntityId, LinkId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE,
     DEFAULT_SCHEMA,

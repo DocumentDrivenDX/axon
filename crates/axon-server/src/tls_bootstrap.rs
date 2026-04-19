@@ -155,17 +155,15 @@ mod tests {
 
         // Parseable as PEM cert + PKCS8 key by rustls-pki-types (the same loader
         // serve.rs uses), so the output is wire-compatible with the listener.
-        use rustls_pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
+        use rustls_pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
 
-        let certs: Vec<CertificateDer<'static>> =
-            CertificateDer::pem_file_iter(&cert)
-                .expect("open cert")
-                .collect::<Result<_, _>>()
-                .expect("parse certs");
+        let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(&cert)
+            .expect("open cert")
+            .collect::<Result<_, _>>()
+            .expect("parse certs");
         assert_eq!(certs.len(), 1);
 
-        let _parsed_key = PrivateKeyDer::from_pem_file(&key)
-            .expect("PEM contained a private key");
+        let _parsed_key = PrivateKeyDer::from_pem_file(&key).expect("PEM contained a private key");
     }
 
     #[test]

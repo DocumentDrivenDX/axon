@@ -91,18 +91,69 @@ writes. This should be a first-class operation.
 - FEAT-008 (ACID Transactions) — rollback operations are themselves
   atomic transactions.
 
-## Acceptance Criteria
+## User Stories
 
-- [ ] Point-in-time rollback reverts all mutations after a given
-      timestamp
-- [ ] Entity-level rollback restores a specific entity to a prior version
-- [ ] Entity-level rollback audit entries use `operation: entity.revert`
+### Story US-095: Preview Recovery Before Commit [FEAT-023]
+
+**As an** operator about to undo an agent mistake
+**I want** rollback dry-run output before any mutation occurs
+**So that** I can verify exactly what will change and whether conflicts
+exist
+
+**Acceptance Criteria:**
+- [x] Entity rollback preview shows a diff without mutating the entity.
+  E2E: `ui/tests/e2e/wave2-rollback.spec.ts`
+- [x] The preview identifies the selected target version from audit
+  history. E2E: `ui/tests/e2e/wave2-rollback.spec.ts`
+- [ ] Dry-run API responses include conflict information when the current
+  entity version has changed since the rollback target. Planned E2E:
+  `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] Point-in-time dry-run lists every entity and link that would change
+  without committing. Planned E2E:
+  `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] Transaction rollback dry-run identifies all original transaction
+  mutations and their compensating operations. Planned E2E:
+  `crates/axon-server/tests/rollback_recovery_test.rs`
+
+### Story US-096: Revert One Entity Safely [FEAT-023]
+
+**As a** developer repairing one corrupted entity
+**I want** to restore that entity to a previous version from the audit log
+**So that** recovery is precise, audited, and does not rewrite history
+
+**Acceptance Criteria:**
+- [x] Entity-level rollback restores a specific entity to a prior version.
+  E2E: `ui/tests/e2e/wave2-rollback.spec.ts`,
+  `ui/tests/e2e/audit-route.spec.ts`
+- [x] The rollback is applied as a new mutation rather than by rewriting
+  old versions. E2E: `ui/tests/e2e/wave2-rollback.spec.ts`
+- [ ] Entity-level rollback audit entries use `operation: entity.revert`.
+  Planned E2E: `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] OCC conflicts during entity rollback are reported clearly and leave
+  current state unchanged. Planned E2E:
+  `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] Rollback of a rollback re-applies the later state and creates its
+  own audit entry. Planned E2E:
+  `crates/axon-server/tests/rollback_recovery_test.rs`
+
+### Story US-097: Undo a Bad Transaction or Time Window [FEAT-023]
+
+**As an** operator recovering from a bad automation run
+**I want** transaction-level and point-in-time rollback
+**So that** I can recover a coherent set of related mutations atomically
+
+**Acceptance Criteria:**
 - [ ] Transaction-level rollback reverses all changes from a specific
-      transaction
-- [ ] Point-in-time rollback reserves `operation: collection.rollback`
-      and transaction-level rollback reserves
-      `operation: transaction.rollback`
-- [ ] Dry-run mode shows what would change without committing
-- [ ] All rollback operations are themselves audited
-- [ ] OCC conflicts during rollback are reported clearly
-- [ ] Rollback of a rollback (re-apply) works correctly
+  transaction atomically. Planned E2E:
+  `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] Transaction rollback fails as a unit if any compensating operation
+  conflicts. Planned E2E: `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] Point-in-time rollback reverts all mutations after a given timestamp
+  for the selected collection or database. Planned E2E:
+  `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] Point-in-time rollback reserves `operation: collection.rollback` and
+  transaction-level rollback reserves `operation: transaction.rollback`.
+  Planned E2E: `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] All rollback operations are themselves audited with references to
+  the original audit ids they compensate. Planned E2E:
+  `crates/axon-server/tests/rollback_recovery_test.rs`

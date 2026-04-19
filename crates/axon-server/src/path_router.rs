@@ -105,7 +105,8 @@ pub fn extract_tenant_database(path: &str) -> Option<(String, String)> {
 pub async fn path_router_layer(mut req: Request<Body>, next: Next) -> Response {
     let path = req.uri().path().to_string();
     if let Some((tenant, database)) = extract_tenant_database(&path) {
-        req.extensions_mut().insert(ResolvedPath { tenant, database });
+        req.extensions_mut()
+            .insert(ResolvedPath { tenant, database });
     }
     next.run(req).await
 }

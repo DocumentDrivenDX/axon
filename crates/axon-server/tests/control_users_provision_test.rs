@@ -25,7 +25,7 @@ use axon_server::auth::AuthContext;
 use axon_server::auth_pipeline::JwtIssuer;
 use axon_server::control_plane::ControlPlaneDb;
 use axon_server::control_plane_routes::{
-    ControlPlaneState, control_plane_routes, optional_jwt_middleware,
+    control_plane_routes, optional_jwt_middleware, ControlPlaneState,
 };
 use axon_server::cors_config::CorsStore;
 use axon_server::user_roles::UserRoleStore;
@@ -132,7 +132,10 @@ async fn admin_can_create_user() {
 
     resp.assert_status(StatusCode::CREATED);
     let body: Value = resp.json();
-    assert!(!body["id"].as_str().unwrap_or("").is_empty(), "id must be present");
+    assert!(
+        !body["id"].as_str().unwrap_or("").is_empty(),
+        "id must be present"
+    );
     assert_eq!(body["display_name"].as_str().unwrap(), "Alice");
     assert_eq!(body["email"].as_str().unwrap(), "alice@example.com");
     assert!(body["created_at_ms"].as_u64().unwrap() > 0);
@@ -164,7 +167,9 @@ async fn list_users_returns_created_user() {
     list_resp.assert_status(StatusCode::OK);
     let list_body: Value = list_resp.json();
     let users = list_body["users"].as_array().expect("users array");
-    let found = users.iter().any(|u| u["id"].as_str().unwrap_or("") == created_id);
+    let found = users
+        .iter()
+        .any(|u| u["id"].as_str().unwrap_or("") == created_id);
     assert!(found, "created user should appear in list");
 }
 

@@ -127,14 +127,73 @@ require direct access to each deployment's data plane.
   Clarifies that the BYOC control plane in FEAT-025 is at a different
   layer than the per-deployment tenant model in FEAT-014.
 
-## Acceptance Criteria
+## User Stories
 
-- [ ] New Axon deployment can be provisioned via BYOC control plane API
-- [ ] Deployment health is visible in aggregate dashboard (cross-fleet
-      view)
-- [ ] BYOC control plane never accesses entity data or per-deployment
-      tenant data
-- [ ] BYOC deployment: customer-hosted Axon instance registers with
-      control plane and receives a registration credential
-- [ ] Deployment deprovisioning respects data retention policies
-- [ ] Control plane scales to 100+ managed deployments
+### Story US-101: Provision and Register a BYOC Deployment [FEAT-025]
+
+**As an** Axon operator onboarding a customer
+**I want** to provision a managed deployment slot and let the customer's
+Axon instance register itself
+**So that** BYOC deployments enter the fleet inventory without exposing
+customer data
+
+**Acceptance Criteria:**
+- [x] New Axon deployment can be provisioned via BYOC control plane API.
+  E2E: `crates/axon-control-plane/tests/byoc_flow.rs`
+- [x] A customer-hosted Axon instance can register its endpoint and move
+  the managed deployment to active status. E2E:
+  `crates/axon-control-plane/tests/byoc_flow.rs`
+- [ ] Registration returns a short-lived credential or token exchange
+  reference for the observation path. Planned E2E:
+  `crates/axon-control-plane/tests/byoc_flow.rs`
+- [ ] Registering a hosted, terminated, or unknown deployment is rejected
+  with a structured error. E2E:
+  `crates/axon-control-plane/src/service.rs` unit tests; Planned HTTP E2E:
+  `crates/axon-control-plane/tests/byoc_flow.rs`
+- [ ] Registration events are stored in the control-plane audit trail.
+  Planned E2E: `crates/axon-control-plane/tests/byoc_flow.rs`
+
+### Story US-102: Observe a Fleet Without Reading Tenant Data [FEAT-025]
+
+**As an** operator responsible for fleet health
+**I want** health, capacity, version, and error-rate visibility across
+managed deployments
+**So that** I can operate the fleet without reading customer entity data
+or internal tenant/user/credential tables
+
+**Acceptance Criteria:**
+- [x] Deployment health is visible in an aggregate dashboard. E2E:
+  `crates/axon-control-plane/tests/byoc_flow.rs`
+- [x] Control-plane routes do not expose Axon entity, link, collection,
+  or audit data endpoints. E2E:
+  `crates/axon-control-plane/tests/byoc_flow.rs`
+- [ ] Dashboard rows expose aggregate tenant counts only, never
+  per-deployment tenant names, users, credentials, or entity data.
+  Planned E2E: `crates/axon-control-plane/tests/byoc_flow.rs`
+- [ ] Health reports include version, storage bytes, open connections,
+  p99 latency, and error rate. E2E:
+  `crates/axon-control-plane/tests/byoc_flow.rs`
+- [ ] The dashboard can list 100+ managed deployments within the latency
+  target. Planned E2E: `crates/axon-control-plane/tests/byoc_flow.rs`
+
+### Story US-103: Deprovision with Retention Guarantees [FEAT-025]
+
+**As an** operator ending a customer contract
+**I want** deprovisioning and termination to respect retention policy
+**So that** data handling is explicit, auditable, and irreversible only
+when allowed
+
+**Acceptance Criteria:**
+- [x] Deployment deprovisioning transitions the deployment out of active
+  service. E2E: `crates/axon-control-plane/tests/byoc_flow.rs`
+- [x] Terminated deployments reject later health reports. E2E:
+  `crates/axon-control-plane/tests/byoc_flow.rs`
+- [ ] Retain, delete-after, and legal-hold retention policies are
+  enforced before termination. Planned E2E:
+  `crates/axon-control-plane/tests/byoc_flow.rs`
+- [ ] Deprovision and terminate operations are audited with actor,
+  timestamp, previous status, new status, and retention policy. Planned
+  E2E: `crates/axon-control-plane/tests/byoc_flow.rs`
+- [ ] Re-provisioning a terminated deployment id is rejected; operators
+  must create a new deployment. Planned E2E:
+  `crates/axon-control-plane/tests/byoc_flow.rs`

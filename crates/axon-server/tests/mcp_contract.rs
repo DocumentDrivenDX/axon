@@ -37,7 +37,9 @@ fn test_server() -> axum_test::TestServer {
 /// Create a collection with a simple `label` field via the REST API.
 async fn seed_collection(server: &axum_test::TestServer, name: &str) {
     server
-        .post(&format!("/tenants/default/databases/default/collections/{name}"))
+        .post(&format!(
+            "/tenants/default/databases/default/collections/{name}"
+        ))
         .json(&json!({
             "schema": {
                 "version": 1,
@@ -57,7 +59,9 @@ async fn seed_collection(server: &axum_test::TestServer, name: &str) {
 /// Create an entity via the REST API and return its version.
 async fn rest_create(server: &axum_test::TestServer, collection: &str, id: &str) -> u64 {
     let resp = server
-        .post(&format!("/tenants/default/databases/default/entities/{collection}/{id}"))
+        .post(&format!(
+            "/tenants/default/databases/default/entities/{collection}/{id}"
+        ))
         .json(&json!({"data": {"label": "test"}, "actor": "test"}))
         .await;
     resp.assert_status(StatusCode::CREATED);
@@ -68,11 +72,7 @@ async fn rest_create(server: &axum_test::TestServer, collection: &str, id: &str)
 /// POST a JSON-RPC message to /mcp and return the parsed response body.
 /// Callers receive the full `{"jsonrpc":"2.0","id":...,"result":...}` object.
 async fn mcp(server: &axum_test::TestServer, request: &Value) -> Value {
-    server
-        .post("/mcp")
-        .json(request)
-        .await
-        .json::<Value>()
+    server.post("/mcp").json(request).await.json::<Value>()
 }
 
 // ── Protocol basics ───────────────────────────────────────────────────────────
@@ -108,7 +108,10 @@ async fn mcp_initialize_returns_server_capabilities() {
     let result = &body["result"];
     assert_eq!(result["protocolVersion"], "2024-11-05");
     assert_eq!(result["serverInfo"]["name"], "axon-mcp");
-    assert!(!result["serverInfo"]["version"].as_str().unwrap_or("").is_empty());
+    assert!(!result["serverInfo"]["version"]
+        .as_str()
+        .unwrap_or("")
+        .is_empty());
     assert_eq!(result["capabilities"]["tools"]["listChanged"], true);
     assert_eq!(result["capabilities"]["resources"]["subscribe"], true);
     assert_eq!(result["capabilities"]["prompts"]["listChanged"], false);
@@ -176,7 +179,10 @@ async fn mcp_tools_list_always_includes_axon_query() {
     assert!(body["error"].is_null(), "unexpected error: {body}");
     let tools = body["result"]["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-    assert!(names.contains(&"axon.query"), "axon.query always present: {names:?}");
+    assert!(
+        names.contains(&"axon.query"),
+        "axon.query always present: {names:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -195,7 +201,10 @@ async fn mcp_tools_list_includes_crud_after_collection_created() {
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
 
     for expected in &["item.create", "item.get", "item.patch", "item.delete"] {
-        assert!(names.contains(expected), "expected {expected} in tools list: {names:?}");
+        assert!(
+            names.contains(expected),
+            "expected {expected} in tools list: {names:?}"
+        );
     }
 }
 
@@ -376,7 +385,10 @@ async fn mcp_unknown_tool_is_error() {
     .await;
 
     // Unknown tool → result with isError: true (not a JSON-RPC protocol error).
-    assert!(body["error"].is_null(), "should be tool-level error: {body}");
+    assert!(
+        body["error"].is_null(),
+        "should be tool-level error: {body}"
+    );
     assert_eq!(
         body["result"]["isError"], true,
         "unknown tool should return isError: {body}"
@@ -428,8 +440,14 @@ async fn mcp_resources_list_always_has_meta_resources() {
     assert!(body["error"].is_null(), "unexpected error: {body}");
     let resources = body["result"]["resources"].as_array().unwrap();
     let uris: Vec<&str> = resources.iter().filter_map(|r| r["uri"].as_str()).collect();
-    assert!(uris.contains(&"axon://_collections"), "missing _collections: {uris:?}");
-    assert!(uris.contains(&"axon://_schemas"), "missing _schemas: {uris:?}");
+    assert!(
+        uris.contains(&"axon://_collections"),
+        "missing _collections: {uris:?}"
+    );
+    assert!(
+        uris.contains(&"axon://_schemas"),
+        "missing _schemas: {uris:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -571,7 +589,10 @@ async fn mcp_resources_read_missing_entity_is_error() {
     .await;
 
     // Missing entity → JSON-RPC error (not a tool-level error).
-    assert!(!body["error"].is_null(), "expected error for missing entity: {body}");
+    assert!(
+        !body["error"].is_null(),
+        "expected error for missing entity: {body}"
+    );
     assert_eq!(body["error"]["code"], -32602_i64);
 }
 
@@ -637,10 +658,22 @@ async fn mcp_prompts_list_returns_known_prompts() {
     assert!(body["error"].is_null(), "unexpected error: {body}");
     let prompts = body["result"]["prompts"].as_array().unwrap();
     let names: Vec<&str> = prompts.iter().filter_map(|p| p["name"].as_str()).collect();
-    assert!(names.contains(&"axon.explore_collection"), "missing explore_collection: {names:?}");
-    assert!(names.contains(&"axon.schema_review"), "missing schema_review: {names:?}");
-    assert!(names.contains(&"axon.audit_review"), "missing audit_review: {names:?}");
-    assert!(names.contains(&"axon.dependency_analysis"), "missing dependency_analysis: {names:?}");
+    assert!(
+        names.contains(&"axon.explore_collection"),
+        "missing explore_collection: {names:?}"
+    );
+    assert!(
+        names.contains(&"axon.schema_review"),
+        "missing schema_review: {names:?}"
+    );
+    assert!(
+        names.contains(&"axon.audit_review"),
+        "missing audit_review: {names:?}"
+    );
+    assert!(
+        names.contains(&"axon.dependency_analysis"),
+        "missing dependency_analysis: {names:?}"
+    );
 }
 
 // ── prompts/get ───────────────────────────────────────────────────────────────
@@ -665,7 +698,10 @@ async fn mcp_prompts_get_schema_review_returns_messages() {
 
     assert!(body["error"].is_null(), "unexpected error: {body}");
     let messages = body["result"]["messages"].as_array().unwrap();
-    assert!(!messages.is_empty(), "prompt should produce at least one message");
+    assert!(
+        !messages.is_empty(),
+        "prompt should produce at least one message"
+    );
     let role = messages[0]["role"].as_str().unwrap();
     assert_eq!(role, "user");
     let content_type = messages[0]["content"]["type"].as_str().unwrap();
@@ -686,7 +722,10 @@ async fn mcp_prompts_get_unknown_prompt_is_error() {
     )
     .await;
 
-    assert!(!body["error"].is_null(), "expected error for unknown prompt: {body}");
+    assert!(
+        !body["error"].is_null(),
+        "expected error for unknown prompt: {body}"
+    );
     assert_eq!(body["error"]["code"], -32602_i64);
 }
 
@@ -705,9 +744,7 @@ async fn mcp_sse_endpoint_delivers_ready_event() {
     let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
     let tenant_router = Arc::new(TenantRouter::single(handler));
     let app = build_router(tenant_router, "memory", None);
-    let server = axum_test::TestServer::builder()
-        .http_transport()
-        .build(app);
+    let server = axum_test::TestServer::builder().http_transport().build(app);
 
     let url = server
         .server_url("/mcp/sse")

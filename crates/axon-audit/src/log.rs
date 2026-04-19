@@ -107,10 +107,7 @@ pub trait AuditLog: Send + Sync {
     fn find_by_id(&self, id: u64) -> Result<Option<AuditEntry>, AxonError>;
 
     /// Returns all entries that share the given `transaction_id`, in append order.
-    fn query_by_transaction_id(
-        &self,
-        transaction_id: &str,
-    ) -> Result<Vec<AuditEntry>, AxonError>;
+    fn query_by_transaction_id(&self, transaction_id: &str) -> Result<Vec<AuditEntry>, AxonError>;
 
     /// Executes a multi-field filtered, paginated query.
     ///
@@ -256,10 +253,7 @@ impl AuditLog for MemoryAuditLog {
         Ok(self.entries.iter().find(|e| e.id == id).cloned())
     }
 
-    fn query_by_transaction_id(
-        &self,
-        transaction_id: &str,
-    ) -> Result<Vec<AuditEntry>, AxonError> {
+    fn query_by_transaction_id(&self, transaction_id: &str) -> Result<Vec<AuditEntry>, AxonError> {
         Ok(self
             .entries
             .iter()

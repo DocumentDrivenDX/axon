@@ -769,8 +769,13 @@ pub fn run(cli: Cli) -> Result<()> {
         ),
         // Already handled above; unreachable
         #[cfg(feature = "serve")]
-        Command::User(_) | Command::Cors(_) | Command::Serve(_) | Command::Mcp { .. } => unreachable!(),
-        Command::Doctor | Command::Init { .. } | Command::Server(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
+        Command::User(_) | Command::Cors(_) | Command::Serve(_) | Command::Mcp { .. } => {
+            unreachable!()
+        }
+        Command::Doctor
+        | Command::Init { .. }
+        | Command::Server(_)
+        | Command::Config(ConfigCmd::Path) => unreachable!(),
     }
 }
 
@@ -893,7 +898,10 @@ fn run_cors_embedded(cmd: CorsCmd, format: &OutputFormat) -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("failed to add CORS origin: {e}"))?;
             match format {
                 OutputFormat::Json | OutputFormat::Yaml => {
-                    print_serialized(&serde_json::json!({ "origin": origin, "added": true }), format);
+                    print_serialized(
+                        &serde_json::json!({ "origin": origin, "added": true }),
+                        format,
+                    );
                 }
                 OutputFormat::Table => println!("Added CORS origin: {origin}"),
             }
@@ -1327,7 +1335,7 @@ fn run_entity(
                     data,
                     actor,
                     audit_metadata: None,
-                attribution: None,
+                    attribution: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_entity(entity_to_json(&resp.entity), format);
@@ -1408,14 +1416,16 @@ fn run_entity(
             // Auto-fetch current version when --expected-version is omitted.
             let version = match expected_version {
                 Some(v) => v,
-                None => handler
-                    .get_entity(GetEntityRequest {
-                        collection: CollectionId::new(&collection),
-                        id: EntityId::new(&id),
-                    })
-                    .map_err(|e| anyhow::anyhow!("{e}"))?
-                    .entity
-                    .version,
+                None => {
+                    handler
+                        .get_entity(GetEntityRequest {
+                            collection: CollectionId::new(&collection),
+                            id: EntityId::new(&id),
+                        })
+                        .map_err(|e| anyhow::anyhow!("{e}"))?
+                        .entity
+                        .version
+                }
             };
             let resp = handler
                 .update_entity(UpdateEntityRequest {
@@ -1425,7 +1435,7 @@ fn run_entity(
                     expected_version: version,
                     actor,
                     audit_metadata: None,
-                attribution: None,
+                    attribution: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             print_entity(entity_to_json(&resp.entity), format);
@@ -1442,7 +1452,7 @@ fn run_entity(
                     actor,
                     audit_metadata: None,
                     force: false,
-                attribution: None,
+                    attribution: None,
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             match format {
@@ -1551,7 +1561,11 @@ fn print_links(links: &[axon_core::types::Link], format: &OutputFormat) {
                 for l in links {
                     println!(
                         "{}/{} --[{}]--> {}/{}",
-                        l.source_collection, l.source_id, l.link_type, l.target_collection, l.target_id,
+                        l.source_collection,
+                        l.source_id,
+                        l.link_type,
+                        l.target_collection,
+                        l.target_id,
                     );
                 }
             }
@@ -1740,16 +1754,16 @@ fn run_schema(
         SchemaCmd::Revalidate { collection } => {
             let col_id = CollectionId::new(&collection);
             let resp = handler
-                .revalidate(RevalidateRequest {
-                    collection: col_id,
-                })
+                .revalidate(RevalidateRequest { collection: col_id })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 
             match format {
                 OutputFormat::Table => {
                     println!(
                         "Revalidation complete: {} scanned, {} valid, {} invalid",
-                        resp.total_scanned, resp.valid_count, resp.invalid.len()
+                        resp.total_scanned,
+                        resp.valid_count,
+                        resp.invalid.len()
                     );
                     for inv in &resp.invalid {
                         println!("  FAIL {} (v{})", inv.id, inv.version);
@@ -1794,8 +1808,9 @@ fn run_schema(
         } => {
             // Load the entity_schema JSON from --schema or --file.
             let entity_schema_json: Value = match (schema, file) {
-                (Some(s), None) => serde_json::from_str(&s)
-                    .with_context(|| "schema must be valid JSON")?,
+                (Some(s), None) => {
+                    serde_json::from_str(&s).with_context(|| "schema must be valid JSON")?
+                }
                 (None, Some(path)) => {
                     let content = std::fs::read_to_string(&path)
                         .with_context(|| format!("failed to read schema file: {path}"))?;
@@ -2238,7 +2253,9 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
                 print_serialized(&resp, &cli.output);
             }
             CollectionCmd::Template(_) => {
-                anyhow::bail!("collection template subcommands are not yet available in client mode");
+                anyhow::bail!(
+                    "collection template subcommands are not yet available in client mode"
+                );
             }
         },
         Command::Entities(cmd) => match cmd {
@@ -2317,12 +2334,7 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
                         Some(serde_json::json!({ "type": "and", "filters": nodes }))
                     }
                 };
-                let resp = client.query_entities(
-                    &collection,
-                    limit,
-                    filter_json,
-                    count_only,
-                )?;
+                let resp = client.query_entities(&collection, limit, filter_json, count_only)?;
                 print_serialized(&resp, &cli.output);
             }
         },
@@ -2425,8 +2437,9 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
             } => {
                 // Resolve entity_schema JSON from --schema or --file.
                 let entity_schema_json: Value = match (schema, file) {
-                    (Some(s), None) => serde_json::from_str(&s)
-                        .with_context(|| "schema must be valid JSON")?,
+                    (Some(s), None) => {
+                        serde_json::from_str(&s).with_context(|| "schema must be valid JSON")?
+                    }
                     (None, Some(path)) => {
                         let content = std::fs::read_to_string(&path)
                             .with_context(|| format!("failed to read schema file: {path}"))?;
@@ -2444,15 +2457,17 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
                 let existing_outer = client.get_schema(&collection).ok();
                 let schema_body = existing_outer
                     .and_then(|v| v.get("schema").cloned())
-                    .unwrap_or_else(|| serde_json::json!({
-                        "collection": collection,
-                        "version": 0,
-                        "link_types": {},
-                        "gates": [],
-                        "validation_rules": [],
-                        "indexes": [],
-                        "compound_indexes": []
-                    }));
+                    .unwrap_or_else(|| {
+                        serde_json::json!({
+                            "collection": collection,
+                            "version": 0,
+                            "link_types": {},
+                            "gates": [],
+                            "validation_rules": [],
+                            "indexes": [],
+                            "compound_indexes": []
+                        })
+                    });
                 // Bump version and replace entity_schema.
                 let cur_version = schema_body["version"].as_u64().unwrap_or(0);
                 let new_version = cur_version + 1;
@@ -2479,9 +2494,13 @@ fn run_client_mode(cli: Cli, client: client::HttpClient) -> Result<()> {
         }
         // These are handled before mode detection; unreachable in client mode
         #[cfg(feature = "serve")]
-        Command::User(_) | Command::Cors(_) | Command::Serve(_) | Command::Mcp { .. } => unreachable!(),
-        Command::Doctor | Command::Init { .. }
-        | Command::Server(_) | Command::Config(ConfigCmd::Path) => unreachable!(),
+        Command::User(_) | Command::Cors(_) | Command::Serve(_) | Command::Mcp { .. } => {
+            unreachable!()
+        }
+        Command::Doctor
+        | Command::Init { .. }
+        | Command::Server(_)
+        | Command::Config(ConfigCmd::Path) => unreachable!(),
     }
     Ok(())
 }
@@ -2546,7 +2565,11 @@ mod tests {
         run(make_cli(&db, &["--output", "json", "collections", "list"])).unwrap();
 
         // Drop one.
-        run(make_cli(&db, &["collections", "drop", "users", "--confirm"])).unwrap();
+        run(make_cli(
+            &db,
+            &["collections", "drop", "users", "--confirm"],
+        ))
+        .unwrap();
     }
 
     #[test]
@@ -2556,7 +2579,15 @@ mod tests {
 
         let cli = make_cli(
             &db,
-            &["entities", "create", "tasks", "--id", "t-001", "--data", r#"{"title":"hello"}"#],
+            &[
+                "entities",
+                "create",
+                "tasks",
+                "--id",
+                "t-001",
+                "--data",
+                r#"{"title":"hello"}"#,
+            ],
         );
         run(cli).unwrap();
 
@@ -2570,12 +2601,28 @@ mod tests {
         run(make_cli(&db, &["collections", "create", "tasks"])).unwrap();
         run(make_cli(
             &db,
-            &["entities", "create", "tasks", "--id", "t-001", "--data", r#"{"title":"a"}"#],
+            &[
+                "entities",
+                "create",
+                "tasks",
+                "--id",
+                "t-001",
+                "--data",
+                r#"{"title":"a"}"#,
+            ],
         ))
         .unwrap();
         run(make_cli(
             &db,
-            &["entities", "create", "tasks", "--id", "t-002", "--data", r#"{"title":"b"}"#],
+            &[
+                "entities",
+                "create",
+                "tasks",
+                "--id",
+                "t-002",
+                "--data",
+                r#"{"title":"b"}"#,
+            ],
         ))
         .unwrap();
 
@@ -2630,11 +2677,11 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
-                gates: Default::default(),
-                validation_rules: Default::default(),
-                indexes: Default::default(),
-                compound_indexes: Default::default(),
-                lifecycles: Default::default(),
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
                 },
                 actor: None,
             })
@@ -2647,7 +2694,7 @@ mod tests {
                 data: serde_json::json!({"title": "hi"}),
                 actor: Some("agent-1".into()),
                 audit_metadata: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -2675,11 +2722,11 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
-                gates: Default::default(),
-                validation_rules: Default::default(),
-                indexes: Default::default(),
-                compound_indexes: Default::default(),
-                lifecycles: Default::default(),
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
                 },
                 actor: None,
             })
@@ -2692,7 +2739,7 @@ mod tests {
                 data: serde_json::json!({"title": "hi"}),
                 actor: Some("agent-1".into()),
                 audit_metadata: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -2785,11 +2832,11 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
-                gates: Default::default(),
-                validation_rules: Default::default(),
-                indexes: Default::default(),
-                compound_indexes: Default::default(),
-                lifecycles: Default::default(),
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
                 },
                 actor: None,
             })
@@ -2802,7 +2849,7 @@ mod tests {
                 data: serde_json::json!({"title": "hi"}),
                 actor: None,
                 audit_metadata: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
 

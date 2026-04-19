@@ -27,10 +27,10 @@ use axon_server::auth::AuthContext;
 use axon_server::auth_pipeline::JwtIssuer;
 use axon_server::control_plane::ControlPlaneDb;
 use axon_server::control_plane_routes::{
-    ControlPlaneState, control_plane_routes, optional_jwt_middleware,
+    control_plane_routes, optional_jwt_middleware, ControlPlaneState,
 };
-use axon_server::user_roles::UserRoleStore;
 use axon_server::cors_config::CorsStore;
+use axon_server::user_roles::UserRoleStore;
 use axon_storage::MemoryStorageAdapter;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -119,7 +119,14 @@ fn build_test_env() -> (
         .layer(MockConnectInfo(peer));
 
     let server = TestServer::new(app);
-    (server, issuer, admin_user_id, non_admin_user_id, storage, user_roles)
+    (
+        server,
+        issuer,
+        admin_user_id,
+        non_admin_user_id,
+        storage,
+        user_roles,
+    )
 }
 
 /// Helper: insert a tenant into the in-memory storage's tenant_members.
@@ -173,7 +180,9 @@ async fn non_admin_cannot_upsert_member() {
 
     let jwt = make_jwt(&issuer, &non_admin_uid);
     let resp = server
-        .put(&format!("/control/tenants/{tenant_id}/members/{target_user}"))
+        .put(&format!(
+            "/control/tenants/{tenant_id}/members/{target_user}"
+        ))
         .add_header(
             http::header::AUTHORIZATION,
             format!("Bearer {jwt}").parse::<HeaderValue>().unwrap(),
@@ -196,7 +205,9 @@ async fn admin_upsert_creates_row() {
 
     // PUT to upsert the member.
     let resp = server
-        .put(&format!("/control/tenants/{tenant_id}/members/{target_user}"))
+        .put(&format!(
+            "/control/tenants/{tenant_id}/members/{target_user}"
+        ))
         .add_header(
             http::header::AUTHORIZATION,
             format!("Bearer {jwt}").parse::<HeaderValue>().unwrap(),

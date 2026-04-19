@@ -110,8 +110,7 @@ pub use proto::{
     ListNamespacesResponse as ProtoListNamespacesResp, PutSchemaRequest as ProtoPutSchemaReq,
     PutSchemaResponse as ProtoPutSchemaResp, QueryAuditByEntityRequest, QueryAuditByEntityResponse,
     QueryEntitiesRequest as ProtoQueryEntitiesReq, QueryEntitiesResponse as ProtoQueryEntitiesResp,
-    TransactionOp as ProtoTxOp,
-    TransitionLifecycleRequest as ProtoTransitionLifecycleReq,
+    TransactionOp as ProtoTxOp, TransitionLifecycleRequest as ProtoTransitionLifecycleReq,
     TransitionLifecycleResponse as ProtoTransitionLifecycleResp,
     TraverseRequest as ProtoTraverseReq, TraverseResponse as ProtoTraverseResp,
     UpdateEntityRequest as ProtoUpdateEntityReq, UpdateEntityResponse as ProtoUpdateEntityResp,
@@ -314,10 +313,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     data,
                     actor: None,
                     audit_metadata: None,
-                attribution: None,
+                    attribution: None,
                 },
                 &caller,
-                        None,
+                None,
             )
             .map_err(axon_to_status)?;
 
@@ -372,10 +371,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     expected_version: req.expected_version,
                     actor: None,
                     audit_metadata: None,
-                attribution: None,
+                    attribution: None,
                 },
                 &caller,
-                        None,
+                None,
             )
             .map_err(axon_to_status)?;
 
@@ -405,10 +404,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     actor: None,
                     audit_metadata: None,
                     force: false,
-                attribution: None,
+                    attribution: None,
                 },
                 &caller,
-                        None,
+                None,
             )
             .map_err(axon_to_status)?;
 
@@ -1072,10 +1071,10 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                     expected_version: req.expected_version,
                     actor: None,
                     audit_metadata: None,
-                attribution: None,
+                    attribution: None,
                 },
                 &caller,
-                        None,
+                None,
             )
             .map_err(axon_to_status)?;
 

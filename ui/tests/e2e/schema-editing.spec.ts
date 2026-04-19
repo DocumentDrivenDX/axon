@@ -3,6 +3,7 @@ import {
 	createTestCollection,
 	createTestDatabase,
 	createTestTenant,
+	dbCollectionsUrl,
 	type TestDatabase,
 	type TestTenant,
 } from './helpers';
@@ -51,5 +52,54 @@ test.describe('Schema workspace', () => {
 		// The raw pane should contain the collection name and a field definition.
 		await expect(page.locator('pre').first()).toContainText('"collection"');
 		await expect(page.locator('pre').first()).toContainText('"title"');
+	});
+
+	test('creates, edits, and drops a collection through the schema and collection routes', async ({
+		page,
+	}) => {
+		const url = `/ui/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/schemas`;
+		const collectionName = `books-${Date.now().toString(36)}`;
+		await page.goto(url);
+
+		await page.getByLabel('Name').fill(collectionName);
+		await page.getByLabel('Entity Schema JSON').fill(`{
+  "type": "object",
+  "properties": {
+    "title": { "type": "string" }
+  },
+  "required": ["title"]
+}`);
+		await page.getByRole('button', { name: 'Create Collection' }).click();
+		await expect(page.getByText('Collection created.')).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByRole('button', { name: new RegExp(collectionName) })).toBeVisible();
+
+		await page.getByRole('button', { name: new RegExp(collectionName) }).click();
+		await page.getByRole('button', { name: 'Edit' }).click();
+		await page.locator('textarea').nth(1).fill(`{
+  "collection": "${collectionName}",
+  "description": "Edited through E2E",
+  "version": 1,
+  "entity_schema": {
+    "type": "object",
+    "properties": {
+      "title": { "type": "string" },
+      "author": { "type": "string" }
+    },
+    "required": ["title"]
+  },
+  "link_types": {}
+}`);
+		await page.getByRole('button', { name: 'Preview Changes' }).click();
+		await expect(page.getByText('Schema Change Preview')).toBeVisible({ timeout: 10_000 });
+		await page.getByRole('button', { name: 'Save Schema' }).click();
+		await expect(page.getByText('Edited through E2E')).toBeVisible({ timeout: 5_000 });
+		await expect(page.getByText('author').first()).toBeVisible();
+
+		await page.goto(dbCollectionsUrl(db));
+		const row = page.locator('tr', { hasText: collectionName });
+		await expect(row).toBeVisible({ timeout: 5_000 });
+		await row.getByRole('button', { name: 'Drop' }).click();
+		await row.getByRole('button', { name: 'Confirm' }).click();
+		await expect(page.locator('tr', { hasText: collectionName })).toHaveCount(0);
 	});
 });

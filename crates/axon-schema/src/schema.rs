@@ -386,18 +386,23 @@ entity_schema:
     #[test]
     fn esf_parses_lifecycles_from_beads_fixture() {
         let esf = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("fixtures/beads.esf.yaml"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/beads.esf.yaml"),
         )
         .expect("beads.esf.yaml fixture missing");
         let doc = EsfDocument::parse(&esf).unwrap();
         let schema = doc.into_collection_schema().unwrap();
 
-        let lc = schema.lifecycles.get("status").expect("status lifecycle missing");
+        let lc = schema
+            .lifecycles
+            .get("status")
+            .expect("status lifecycle missing");
         assert_eq!(lc.field, "status");
         assert_eq!(lc.initial, "draft");
 
-        let from_draft = lc.transitions.get("draft").expect("draft transitions missing");
+        let from_draft = lc
+            .transitions
+            .get("draft")
+            .expect("draft transitions missing");
         assert!(from_draft.contains(&"pending".to_string()));
         assert!(from_draft.contains(&"cancelled".to_string()));
     }

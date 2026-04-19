@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Bound;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axon_core::auth::{CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User, UserId};
+use axon_core::auth::{
+    CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User,
+    UserId,
+};
 use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
@@ -228,11 +231,7 @@ impl MemoryStorageAdapter {
     }
 
     /// Count tenant_users entries matching (tenant_id, user_id) for test assertions.
-    pub fn test_count_tenant_members(
-        &self,
-        tenant_id: &str,
-        user_id: &str,
-    ) -> usize {
+    pub fn test_count_tenant_members(&self, tenant_id: &str, user_id: &str) -> usize {
         let map = self
             .tenant_members
             .lock()
@@ -1281,10 +1280,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         Ok(removed)
     }
 
-    fn list_tenant_members(
-        &self,
-        tenant_id: TenantId,
-    ) -> Result<Vec<TenantMember>, AxonError> {
+    fn list_tenant_members(&self, tenant_id: TenantId) -> Result<Vec<TenantMember>, AxonError> {
         let map = self
             .tenant_members
             .lock()
@@ -1345,10 +1341,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         Ok(())
     }
 
-    fn list_tenant_databases(
-        &self,
-        tenant_id: TenantId,
-    ) -> Result<Vec<TenantDatabase>, AxonError> {
+    fn list_tenant_databases(&self, tenant_id: TenantId) -> Result<Vec<TenantDatabase>, AxonError> {
         let map = self
             .tenant_databases
             .lock()
@@ -1358,7 +1351,11 @@ impl StorageAdapter for MemoryStorageAdapter {
             .filter(|((tid, _), _)| *tid == tenant_id)
             .map(|(_, db)| db.clone())
             .collect();
-        dbs.sort_by(|a, b| a.created_at_ms.cmp(&b.created_at_ms).then(a.name.cmp(&b.name)));
+        dbs.sort_by(|a, b| {
+            a.created_at_ms
+                .cmp(&b.created_at_ms)
+                .then(a.name.cmp(&b.name))
+        });
         Ok(dbs)
     }
 
@@ -1383,16 +1380,16 @@ impl StorageAdapter for MemoryStorageAdapter {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        let db = TenantDatabase { tenant_id, name: name.to_string(), created_at_ms: now_ms };
+        let db = TenantDatabase {
+            tenant_id,
+            name: name.to_string(),
+            created_at_ms: now_ms,
+        };
         map.insert(key, db.clone());
         Ok(db)
     }
 
-    fn delete_tenant_database(
-        &self,
-        tenant_id: TenantId,
-        name: &str,
-    ) -> Result<bool, AxonError> {
+    fn delete_tenant_database(&self, tenant_id: TenantId, name: &str) -> Result<bool, AxonError> {
         let key = (tenant_id, name.to_string());
         let removed = self
             .tenant_databases
@@ -1491,11 +1488,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         Ok(creds)
     }
 
-    fn revoke_credential(
-        &self,
-        jti: Uuid,
-        _revoked_by: UserId,
-    ) -> Result<(), AxonError> {
+    fn revoke_credential(&self, jti: Uuid, _revoked_by: UserId) -> Result<(), AxonError> {
         // Insert into the in-memory revocation set.
         // Note: MemoryStorageAdapter.revoked_jtis is not behind a Mutex (it's
         // owned by &mut self in the trait's default), but here we need &self.

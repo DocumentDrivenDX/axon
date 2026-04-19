@@ -509,7 +509,7 @@ fn execute_create<S: StorageAdapter>(
             data,
             actor: Some("mcp".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .map_err(to_tool_error)?;
     text_tool_response(&response.entity)
@@ -553,7 +553,7 @@ fn execute_patch<S: StorageAdapter>(
             expected_version,
             actor: Some("mcp".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .map_err(to_tool_error)?;
     text_tool_response(&response.entity)
@@ -572,7 +572,7 @@ fn execute_delete<S: StorageAdapter>(
             actor: Some("mcp".into()),
             audit_metadata: None,
             force: false,
-        attribution: None,
+            attribution: None,
         })
         .map_err(to_tool_error)?;
     text_tool_response(&serde_json::json!({
@@ -886,7 +886,7 @@ pub fn build_transition_lifecycle_tool<S: StorageAdapter + 'static>(
                     expected_version,
                     actor: Some("mcp".into()),
                     audit_metadata: None,
-                                attribution: None,
+                    attribution: None,
                 })
                 .map_err(to_tool_error)?;
 
@@ -1334,7 +1334,7 @@ mod tests {
                     }),
                     actor: None,
                     audit_metadata: None,
-                                attribution: None,
+                    attribution: None,
                 })
                 .expect("graph fixture entities should be created");
         }
@@ -1346,7 +1346,7 @@ mod tests {
                 data: json!({ "title": "Owner" }),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .expect("users entity fixture should be created");
 
@@ -1364,7 +1364,7 @@ mod tests {
                     link_type: link_type.into(),
                     metadata: Value::Null,
                     actor: None,
-                attribution: None,
+                    attribution: None,
                 })
                 .expect("graph fixture links should be created");
         }

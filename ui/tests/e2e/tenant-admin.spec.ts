@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
+	addTestTenantMember,
 	createTestDatabase,
 	createTestTenant,
 	createTestUser,
@@ -22,6 +23,7 @@ test.describe('Credentials — issue and display JWT', () => {
 		tenant = await createTestTenant(request, 'cred');
 		await createTestDatabase(request, tenant);
 		testUser = await createTestUser(request, 'cred-test-user');
+		await addTestTenantMember(request, tenant, testUser, 'read');
 	});
 
 	test('Issue Credential modal mints a JWT and shows it once', async ({ page }) => {
@@ -44,6 +46,9 @@ test.describe('Credentials — issue and display JWT', () => {
 		await expect(page.getByRole('heading', { name: 'Credential Issued' })).toBeVisible({
 			timeout: 5_000,
 		});
+		const issuedJti = (await page.locator('.modal-body code').textContent())?.trim();
+		expect(issuedJti).toBeTruthy();
+		const issuedJtiPrefix = issuedJti?.slice(0, 12) ?? '';
 		const jwtField = page.locator('textarea.jwt-display');
 		await expect(jwtField).toBeVisible();
 		const jwt = await jwtField.inputValue();
@@ -54,8 +59,15 @@ test.describe('Credentials — issue and display JWT', () => {
 		// Close the JWT dialog and verify the credential appears in the list.
 		await page.getByRole('button', { name: 'Close' }).click();
 		await expect(page.getByRole('heading', { name: 'Credentials' }).first()).toBeVisible();
-		// Expect at least one row with 'active' status.
-		await expect(page.locator('table').getByText('active').first()).toBeVisible();
+		await expect(page.getByText('Loading credentials…')).toHaveCount(0, { timeout: 15_000 });
+
+		const row = page.locator('tr', { hasText: issuedJtiPrefix }).first();
+		await expect(row.getByText('active')).toBeVisible({ timeout: 10_000 });
+		await row.getByRole('button', { name: 'Revoke' }).click();
+		await row.getByRole('button', { name: 'Confirm' }).click();
+		await expect(page.locator('table').getByText('revoked').first()).toBeVisible({
+			timeout: 5_000,
+		});
 	});
 });
 
@@ -100,9 +112,22 @@ test.describe('Tenant members — add, change role, remove', () => {
 
 test.describe('Global users ACL — add, change, remove', () => {
 	const login = `test-user-${Date.now().toString(36)}`;
+	const displayName = `Provisioned ${Date.now().toString(36)}`;
+	const email = `${login}@example.test`;
 
 	test('add a user, change role, remove', async ({ page }) => {
 		await page.goto('/ui/users');
+
+		await page.getByPlaceholder('Display name (required)').fill(displayName);
+		await page.getByPlaceholder('Email (optional)').fill(email);
+		await page.getByRole('button', { name: 'Create User' }).click();
+
+		const provisionedRow = page.locator('tr', { hasText: displayName });
+		await expect(provisionedRow).toBeVisible({ timeout: 5_000 });
+		await expect(provisionedRow.getByText('Active')).toBeVisible();
+		await provisionedRow.getByRole('button', { name: 'Suspend' }).click();
+		await provisionedRow.getByRole('button', { name: 'Confirm' }).click();
+		await expect(provisionedRow.getByText('Suspended')).toBeVisible({ timeout: 5_000 });
 
 		// Add as "read".
 		await page.getByPlaceholder('Login (principal)').fill(login);
@@ -119,7 +144,9 @@ test.describe('Global users ACL — add, change, remove', () => {
 		// Remove.
 		await page.locator('tr', { hasText: login }).getByRole('button', { name: 'Remove' }).click();
 		await page.getByRole('button', { name: 'Confirm' }).click();
-		await expect(page.locator('table').getByText(login)).toHaveCount(0);
+		await expect(
+			page.locator('section', { hasText: 'ACL Entries' }).locator('tr', { hasText: login }),
+		).toHaveCount(0);
 	});
 });
 

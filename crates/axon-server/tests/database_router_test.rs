@@ -11,8 +11,8 @@ use axon_core::auth::TenantId;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Entity;
-use axon_storage::{MemoryStorageAdapter, StorageAdapter};
 use axon_server::database_router::{DatabaseAdapterFactory, DatabaseRouter, MemoryAdapterFactory};
+use axon_storage::{MemoryStorageAdapter, StorageAdapter};
 use serde_json::json;
 
 // ── Test 1: resolve_same_pair_returns_same_arc ───────────────────────────────
@@ -89,11 +89,7 @@ impl LockableAdapter {
 }
 
 impl StorageAdapter for LockableAdapter {
-    fn get(
-        &self,
-        collection: &CollectionId,
-        id: &EntityId,
-    ) -> Result<Option<Entity>, AxonError> {
+    fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError> {
         self.0.lock().unwrap().get(collection, id)
     }
 
@@ -101,11 +97,7 @@ impl StorageAdapter for LockableAdapter {
         self.0.lock().unwrap().put(entity)
     }
 
-    fn delete(
-        &mut self,
-        collection: &CollectionId,
-        id: &EntityId,
-    ) -> Result<(), AxonError> {
+    fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
         self.0.lock().unwrap().delete(collection, id)
     }
 
@@ -120,7 +112,10 @@ impl StorageAdapter for LockableAdapter {
         end: Option<&EntityId>,
         limit: Option<usize>,
     ) -> Result<Vec<Entity>, AxonError> {
-        self.0.lock().unwrap().range_scan(collection, start, end, limit)
+        self.0
+            .lock()
+            .unwrap()
+            .range_scan(collection, start, end, limit)
     }
 
     fn compare_and_swap(
@@ -128,7 +123,10 @@ impl StorageAdapter for LockableAdapter {
         entity: Entity,
         expected_version: u64,
     ) -> Result<Entity, AxonError> {
-        self.0.lock().unwrap().compare_and_swap(entity, expected_version)
+        self.0
+            .lock()
+            .unwrap()
+            .compare_and_swap(entity, expected_version)
     }
 
     fn create_if_absent(
@@ -136,7 +134,10 @@ impl StorageAdapter for LockableAdapter {
         entity: Entity,
         expected_absent_version: u64,
     ) -> Result<Entity, AxonError> {
-        self.0.lock().unwrap().create_if_absent(entity, expected_absent_version)
+        self.0
+            .lock()
+            .unwrap()
+            .create_if_absent(entity, expected_absent_version)
     }
 }
 
@@ -238,7 +239,10 @@ fn factory_error_propagates() {
     let router = DatabaseRouter::new(factory);
 
     let result = router.resolve(TenantId::new("t-fail"), "db");
-    assert!(result.is_err(), "factory error should propagate through resolve");
+    assert!(
+        result.is_err(),
+        "factory error should propagate through resolve"
+    );
     // unwrap_err() requires T: Debug; use .err().unwrap() instead since
     // Arc<dyn StorageAdapter + Send + Sync> is not Debug.
     match result.err().unwrap() {

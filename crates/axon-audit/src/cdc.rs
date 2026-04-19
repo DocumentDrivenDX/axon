@@ -436,8 +436,8 @@ impl CdcSink for KafkaCdcSink {
 
         let topic = self.config.topic_for(&envelope.source.collection);
         let key = KafkaConfig::partition_key(&envelope.source.entity_id);
-        let payload = serde_json::to_string(envelope)
-            .map_err(|e| format!("CDC serialization error: {e}"))?;
+        let payload =
+            serde_json::to_string(envelope).map_err(|e| format!("CDC serialization error: {e}"))?;
 
         self.producer
             .send(&topic, &key, &payload)
@@ -987,8 +987,14 @@ mod tests {
             sink.emit(&e2).unwrap();
 
             let msgs = sent.lock().unwrap();
-            assert_eq!(msgs[0].1, "t-001", "key should be entity_id for first event");
-            assert_eq!(msgs[1].1, "t-002", "key should be entity_id for second event");
+            assert_eq!(
+                msgs[0].1, "t-001",
+                "key should be entity_id for first event"
+            );
+            assert_eq!(
+                msgs[1].1, "t-002",
+                "key should be entity_id for second event"
+            );
         }
 
         #[test]
@@ -1001,7 +1007,10 @@ mod tests {
             let (_, _, json) = &msgs[0];
             let v: serde_json::Value = serde_json::from_str(json).unwrap();
             assert!(v.get("op").is_some(), "envelope must have 'op' field");
-            assert!(v.get("source").is_some(), "envelope must have 'source' field");
+            assert!(
+                v.get("source").is_some(),
+                "envelope must have 'source' field"
+            );
             assert!(v.get("ts_ms").is_some(), "envelope must have 'ts_ms' field");
             assert_eq!(v["op"], "c");
             assert_eq!(v["source"]["name"], "axon");

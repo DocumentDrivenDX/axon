@@ -112,9 +112,7 @@ pub enum AxonError {
     /// `retry_after_ms` is the number of milliseconds the caller should wait
     /// before retrying. The HTTP layer maps this to `429 Too Many Requests`
     /// with a `Retry-After` header; the gRPC layer uses `RESOURCE_EXHAUSTED`.
-    #[error(
-        "rate limit exceeded for actor `{actor}`: retry after {retry_after_ms}ms"
-    )]
+    #[error("rate limit exceeded for actor `{actor}`: retry after {retry_after_ms}ms")]
     RateLimitExceeded {
         /// The actor whose bucket was exhausted.
         actor: String,

@@ -25,8 +25,8 @@ use serde_json::json;
 use tokio::sync::Mutex;
 
 use axon_core::auth::{
-    AuthError, Grants, JwtClaims, ResolvedIdentity, RetentionPolicy,
-    TenantDatabase, TenantId, TenantRole, UserId,
+    AuthError, Grants, JwtClaims, ResolvedIdentity, RetentionPolicy, TenantDatabase, TenantId,
+    TenantRole, UserId,
 };
 use axon_storage::StorageAdapter;
 
@@ -83,7 +83,14 @@ impl ControlPlaneState {
         user_roles: UserRoleStore,
         cors_store: CorsStore,
     ) -> Self {
-        Self { db, data_dir, user_roles, cors_store, storage: None, jwt_issuer: None }
+        Self {
+            db,
+            data_dir,
+            user_roles,
+            cors_store,
+            storage: None,
+            jwt_issuer: None,
+        }
     }
 
     /// Attach a storage adapter for ADR-018 membership and retention tables.
@@ -106,9 +113,7 @@ impl ControlPlaneState {
     ///
     /// Uses `{data_dir}/tenants/{db_name}.db` layout, matching [`crate::tenant_router::TenantRouter`].
     pub fn tenant_db_path(&self, db_name: &str) -> PathBuf {
-        self.data_dir
-            .join("tenants")
-            .join(format!("{db_name}.db"))
+        self.data_dir.join("tenants").join(format!("{db_name}.db"))
     }
 }
 
@@ -164,7 +169,13 @@ fn is_unique_violation(msg: &str) -> bool {
 fn name_to_db_slug(name: &str, id: &str) -> String {
     let slug: String = name
         .chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     let slug: String = slug
         .split('-')
@@ -207,18 +218,27 @@ pub fn control_plane_routes() -> Router<ControlPlaneState> {
         // Tenant membership (ADR-018, axon-c6908e78)
         .route("/tenants/{id}/members", get(list_tenant_members))
         .route("/tenants/{id}/members/{user_id}", put(upsert_tenant_member))
-        .route("/tenants/{id}/members/{user_id}", delete(remove_tenant_member_handler))
+        .route(
+            "/tenants/{id}/members/{user_id}",
+            delete(remove_tenant_member_handler),
+        )
         // Tenant retention policy (axon-c6908e78)
         .route("/tenants/{id}/retention", get(get_retention_policy_handler))
         .route("/tenants/{id}/retention", put(set_retention_policy_handler))
         // Tenant database management (axon-df98e262)
         .route("/tenants/{id}/databases", get(list_tenant_databases))
         .route("/tenants/{id}/databases", post(create_tenant_database))
-        .route("/tenants/{id}/databases/{name}", delete(delete_tenant_database))
+        .route(
+            "/tenants/{id}/databases/{name}",
+            delete(delete_tenant_database),
+        )
         // Credential issuance (axon-906b527a)
         .route("/tenants/{id}/credentials", post(issue_credential))
         .route("/tenants/{id}/credentials", get(list_credentials_handler))
-        .route("/tenants/{id}/credentials/{jti}", delete(revoke_credential_handler))
+        .route(
+            "/tenants/{id}/credentials/{jti}",
+            delete(revoke_credential_handler),
+        )
 }
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
@@ -423,7 +443,9 @@ async fn set_user_role(
     let db = state.db.lock().await;
     match db.set_user_role(&login, &body.role) {
         Ok(()) => {
-            state.user_roles.set_cached(login.clone(), body.role.clone());
+            state
+                .user_roles
+                .set_cached(login.clone(), body.role.clone());
             (
                 StatusCode::OK,
                 Json(json!({ "login": login, "role": body.role })),
@@ -535,7 +557,10 @@ async fn remove_cors_origin_handler(
     match db.remove_cors_origin(&body.origin) {
         Ok(true) => {
             state.cors_store.remove_cached(&body.origin);
-            (StatusCode::OK, Json(json!({ "origin": body.origin, "deleted": true })))
+            (
+                StatusCode::OK,
+                Json(json!({ "origin": body.origin, "deleted": true })),
+            )
                 .into_response()
         }
         Ok(false) => (
@@ -558,11 +583,7 @@ async fn remove_cors_origin_handler(
 
 /// Return a 403 Forbidden response for authz failures.
 fn forbidden_response(msg: &str) -> Response {
-    (
-        StatusCode::FORBIDDEN,
-        Json(ApiError::new("forbidden", msg)),
-    )
-        .into_response()
+    (StatusCode::FORBIDDEN, Json(ApiError::new("forbidden", msg))).into_response()
 }
 
 /// Return a 503 Service Unavailable response when storage is not configured.
@@ -613,7 +634,10 @@ pub async fn optional_jwt_middleware(
         Err(_) => {
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(ApiError::new("unauthenticated", "malformed Authorization header")),
+                Json(ApiError::new(
+                    "unauthenticated",
+                    "malformed Authorization header",
+                )),
             )
                 .into_response();
         }
@@ -648,7 +672,10 @@ pub async fn optional_jwt_middleware(
             if claims.nbf > now.saturating_add(SKEW) {
                 return (
                     StatusCode::UNAUTHORIZED,
-                    Json(ApiError::new("credential_not_yet_valid", "JWT not yet valid")),
+                    Json(ApiError::new(
+                        "credential_not_yet_valid",
+                        "JWT not yet valid",
+                    )),
                 )
                     .into_response();
             }
@@ -794,7 +821,10 @@ async fn upsert_tenant_member(
     let Some(role) = tenant_role_from_str(&body.role) else {
         return (
             StatusCode::BAD_REQUEST,
-            Json(ApiError::new("invalid_role", format!("unknown role '{}'", body.role))),
+            Json(ApiError::new(
+                "invalid_role",
+                format!("unknown role '{}'", body.role),
+            )),
         )
             .into_response();
     };
@@ -877,7 +907,10 @@ async fn remove_tenant_member_handler(
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => (
             StatusCode::NOT_FOUND,
-            Json(ApiError::new("not_found", format!("member {uid} not found in tenant {id}"))),
+            Json(ApiError::new(
+                "not_found",
+                format!("member {uid} not found in tenant {id}"),
+            )),
         )
             .into_response(),
         Err(e) => (
@@ -1090,8 +1123,7 @@ async fn list_tenant_databases(
 
     match result {
         Ok(dbs) => {
-            let payload: Vec<serde_json::Value> =
-                dbs.iter().map(tenant_database_to_json).collect();
+            let payload: Vec<serde_json::Value> = dbs.iter().map(tenant_database_to_json).collect();
             Json(json!({ "databases": payload })).into_response()
         }
         Err(e) => (
@@ -1166,10 +1198,7 @@ async fn create_tenant_database(
             StatusCode::CONFLICT,
             Json(ApiError::new(
                 "already_exists",
-                format!(
-                    "database '{}' already exists in tenant '{}'",
-                    body.name, id
-                ),
+                format!("database '{}' already exists in tenant '{}'", body.name, id),
             )),
         )
             .into_response(),
@@ -1260,8 +1289,7 @@ struct IssueCredentialResponse {
 /// Convert an `AuthError` into a 403 response with the canonical error code.
 fn auth_error_to_response(err: AuthError) -> Response {
     (
-        axum::http::StatusCode::from_u16(err.status_code())
-            .unwrap_or(StatusCode::FORBIDDEN),
+        axum::http::StatusCode::from_u16(err.status_code()).unwrap_or(StatusCode::FORBIDDEN),
         Json(ApiError::new(err.error_code(), err.to_string())),
     )
         .into_response()
@@ -1317,7 +1345,9 @@ async fn issue_credential(
 
     // Look up target user's membership and role.
     let target_member = {
-        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
         match s {
             Ok(s) => s.get_tenant_member(tenant_id.clone(), target_user_id.clone()),
             Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
@@ -1331,7 +1361,10 @@ async fn issue_credential(
                 StatusCode::NOT_FOUND,
                 Json(ApiError::new(
                     "not_a_tenant_member",
-                    format!("user '{}' is not a member of tenant '{}'", body.target_user, id),
+                    format!(
+                        "user '{}' is not a member of tenant '{}'",
+                        body.target_user, id
+                    ),
                 )),
             )
                 .into_response();
@@ -1357,7 +1390,9 @@ async fn issue_credential(
         if caller_id == &target_user_id {
             // Self-issue: enforce caller's own ceiling.
             let caller_member = {
-                let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+                let s = storage
+                    .lock()
+                    .map_err(|_| "storage mutex poisoned".to_string());
                 match s {
                     Ok(s) => s.get_tenant_member(tenant_id.clone(), caller_id.clone()),
                     Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
@@ -1427,7 +1462,9 @@ async fn issue_credential(
     };
 
     let track_result = {
-        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
         match s {
             Ok(s) => s.track_credential_issuance(
                 jti_uuid,
@@ -1475,14 +1512,14 @@ async fn list_credentials_handler(
     // Determine user_filter: admins see all, regular users see their own.
     let user_filter: Option<UserId> = match &resolved {
         Some(Extension(r)) => {
-            let is_admin =
-                control_plane_authz::require_deployment_admin(r, &state.user_roles).is_ok()
-                    || control_plane_authz::require_tenant_admin(
-                        r,
-                        tenant_id.clone(),
-                        &state.user_roles,
-                    )
-                    .is_ok();
+            let is_admin = control_plane_authz::require_deployment_admin(r, &state.user_roles)
+                .is_ok()
+                || control_plane_authz::require_tenant_admin(
+                    r,
+                    tenant_id.clone(),
+                    &state.user_roles,
+                )
+                .is_ok();
             if is_admin {
                 None // Admin sees all
             } else {
@@ -1503,7 +1540,9 @@ async fn list_credentials_handler(
     };
 
     let result = {
-        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
         match s {
             Ok(s) => s.list_credentials(tenant_id, user_filter),
             Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
@@ -1515,6 +1554,8 @@ async fn list_credentials_handler(
             let payload: Vec<serde_json::Value> = creds
                 .into_iter()
                 .map(|m| {
+                    let grants = serde_json::from_str::<serde_json::Value>(&m.grants_json)
+                        .unwrap_or_else(|_| serde_json::json!({ "databases": [] }));
                     serde_json::json!({
                         "jti": m.jti,
                         "user_id": m.user_id.as_str(),
@@ -1522,7 +1563,7 @@ async fn list_credentials_handler(
                         "issued_at_ms": m.issued_at_ms,
                         "expires_at_ms": m.expires_at_ms,
                         "revoked": m.revoked,
-                        "grants": m.grants_json,
+                        "grants": grants,
                     })
                 })
                 .collect();
@@ -1566,7 +1607,9 @@ async fn revoke_credential_handler(
 
     // Look up the credential to find its owner and validate it belongs to this tenant.
     let cred_opt = {
-        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
         match s {
             Ok(s) => s.list_credentials(tenant_id.clone(), None),
             Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
@@ -1588,7 +1631,10 @@ async fn revoke_credential_handler(
     let Some(cred) = cred else {
         return (
             StatusCode::NOT_FOUND,
-            Json(ApiError::new("not_found", format!("credential '{jti_str}' not found"))),
+            Json(ApiError::new(
+                "not_found",
+                format!("credential '{jti_str}' not found"),
+            )),
         )
             .into_response();
     };
@@ -1596,14 +1642,14 @@ async fn revoke_credential_handler(
     // Authorization check.
     let revoked_by: UserId = match &resolved {
         Some(Extension(r)) => {
-            let is_admin =
-                control_plane_authz::require_deployment_admin(r, &state.user_roles).is_ok()
-                    || control_plane_authz::require_tenant_admin(
-                        r,
-                        tenant_id.clone(),
-                        &state.user_roles,
-                    )
-                    .is_ok();
+            let is_admin = control_plane_authz::require_deployment_admin(r, &state.user_roles)
+                .is_ok()
+                || control_plane_authz::require_tenant_admin(
+                    r,
+                    tenant_id.clone(),
+                    &state.user_roles,
+                )
+                .is_ok();
             let is_owner = r.user_id == cred.user_id;
             if !is_admin && !is_owner {
                 return forbidden_response("tenant admin or credential owner required");
@@ -1620,7 +1666,9 @@ async fn revoke_credential_handler(
 
     // Revoke the credential.
     let result = {
-        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
         match s {
             Ok(s) => s.revoke_credential(jti_uuid, revoked_by),
             Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
@@ -1675,7 +1723,9 @@ async fn create_user_handler(
 
     let new_id = axon_core::auth::UserId::generate();
     let result = {
-        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
         match s {
             Ok(s) => s.create_user(&new_id, &body.display_name, body.email.as_deref()),
             Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
@@ -1727,7 +1777,9 @@ async fn list_users_handler(
     };
 
     let result = {
-        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
         match s {
             Ok(s) => s.list_users(),
             Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
@@ -1787,7 +1839,9 @@ async fn suspend_user_handler(
 
     let user_id = UserId::new(&id);
     let result = {
-        let s = storage.lock().map_err(|_| "storage mutex poisoned".to_string());
+        let s = storage
+            .lock()
+            .map_err(|_| "storage mutex poisoned".to_string());
         match s {
             Ok(s) => s.suspend_user(&user_id),
             Err(msg) => Err(axon_core::error::AxonError::Storage(msg)),
@@ -1809,24 +1863,30 @@ async fn suspend_user_handler(
 /// Create and initialize a new tenant SQLite database at the given path.
 fn provision_tenant_database(path: &std::path::Path) -> Result<(), axon_core::error::AxonError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| axon_core::error::AxonError::Storage(format!(
+        std::fs::create_dir_all(parent).map_err(|e| {
+            axon_core::error::AxonError::Storage(format!(
                 "failed to create data directory {}: {e}",
                 parent.display()
-            )))?;
+            ))
+        })?;
     }
     let url = format!("sqlite:{}?mode=rwc", path.display());
     let run = async {
-        let pool = sqlx::SqlitePool::connect(&url).await
-            .map_err(|e| axon_core::error::AxonError::Storage(format!(
+        let pool = sqlx::SqlitePool::connect(&url).await.map_err(|e| {
+            axon_core::error::AxonError::Storage(format!(
                 "failed to create tenant database at {}: {e}",
                 path.display()
-            )))?;
-        sqlx::query("PRAGMA journal_mode=WAL").execute(&pool).await
-            .map_err(|e| axon_core::error::AxonError::Storage(format!(
-                "failed to initialize tenant database at {}: {e}",
-                path.display()
-            )))?;
+            ))
+        })?;
+        sqlx::query("PRAGMA journal_mode=WAL")
+            .execute(&pool)
+            .await
+            .map_err(|e| {
+                axon_core::error::AxonError::Storage(format!(
+                    "failed to initialize tenant database at {}: {e}",
+                    path.display()
+                ))
+            })?;
         Ok(())
     };
     match tokio::runtime::Handle::try_current() {
@@ -1978,7 +2038,10 @@ mod tests {
         let body: Value = resp.json();
         let tenants = body["tenants"].as_array().unwrap();
         assert_eq!(tenants.len(), 1);
-        assert!(tenants[0]["db_name"].as_str().unwrap().starts_with("alpha-"));
+        assert!(tenants[0]["db_name"]
+            .as_str()
+            .unwrap()
+            .starts_with("alpha-"));
     }
 
     // -- GET /control/tenants/{id} --------------------------------------------

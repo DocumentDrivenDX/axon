@@ -80,31 +80,36 @@ fn make_auth_storage() -> MemoryStorageAdapter {
 
 /// Build a `ControlPlaneState` with jwt_issuer + auth storage so the optional
 /// JWT verification layer is enabled in the HTTP router.
-fn make_control_plane(issuer: Arc<JwtIssuer>, auth_storage: MemoryStorageAdapter) -> ControlPlaneState {
+fn make_control_plane(
+    issuer: Arc<JwtIssuer>,
+    auth_storage: MemoryStorageAdapter,
+) -> ControlPlaneState {
     let db = ControlPlaneDb::open_in_memory().expect("in-memory control-plane db should open");
     let db = Arc::new(TokioMutex::new(db));
     let boxed: Box<dyn StorageAdapter + Send + Sync> = Box::new(auth_storage);
     let storage_arc: Arc<Mutex<Box<dyn StorageAdapter + Send + Sync>>> =
         Arc::new(Mutex::new(boxed));
-    ControlPlaneState::new(db, PathBuf::from("."), UserRoleStore::default(), CorsStore::default())
-        .with_jwt_issuer(issuer)
-        .with_storage(storage_arc)
+    ControlPlaneState::new(
+        db,
+        PathBuf::from("."),
+        UserRoleStore::default(),
+        CorsStore::default(),
+    )
+    .with_jwt_issuer(issuer)
+    .with_storage(storage_arc)
 }
 
 /// Build an `axum_test::TestServer` backed by an in-memory data-plane handler.
 ///
 /// Returns the test server and the data-plane handler so tests can inspect the
 /// audit log directly.
-fn make_server(
-    issuer: Arc<JwtIssuer>,
-) -> (axum_test::TestServer, TenantHandler) {
+fn make_server(issuer: Arc<JwtIssuer>) -> (axum_test::TestServer, TenantHandler) {
     let auth_storage = make_auth_storage();
     let control_plane = make_control_plane(issuer, auth_storage);
 
     let data_storage: Box<dyn StorageAdapter + Send + Sync> =
         Box::new(MemoryStorageAdapter::default());
-    let handler: TenantHandler =
-        Arc::new(TokioMutex::new(AxonHandler::new(data_storage)));
+    let handler: TenantHandler = Arc::new(TokioMutex::new(AxonHandler::new(data_storage)));
     let tenant_router = Arc::new(TenantRouter::single(handler.clone()));
 
     let app = build_router_with_auth(
@@ -155,7 +160,9 @@ fn make_token(issuer: &JwtIssuer, grants: Grants) -> String {
         exp: now + 3600,
         grants,
     };
-    issuer.issue(&claims).expect("token issuance should succeed")
+    issuer
+        .issue(&claims)
+        .expect("token issuance should succeed")
 }
 
 fn entity_path(id: &str) -> String {
@@ -199,7 +206,10 @@ async fn cutover_valid_jwt_write_grant_creates_entity_201() {
         .await;
     resp.assert_status(axum::http::StatusCode::CREATED);
     let body: Value = resp.json();
-    assert_eq!(body["entity"]["id"].as_str().unwrap_or(""), "e-jwt-write-01");
+    assert_eq!(
+        body["entity"]["id"].as_str().unwrap_or(""),
+        "e-jwt-write-01"
+    );
 }
 
 // ── Test 3: JWT with read-only grant blocks POST → 403 ───────────────────────
@@ -281,7 +291,10 @@ async fn cutover_audit_entry_has_attribution_after_jwt_write() {
         .expect("attribution must be set on JWT-authenticated write");
 
     assert_eq!(attribution.user_id, USER_ID, "user_id must match JWT sub");
-    assert_eq!(attribution.tenant_id, TENANT, "tenant_id must match JWT aud");
+    assert_eq!(
+        attribution.tenant_id, TENANT,
+        "tenant_id must match JWT aud"
+    );
     assert_eq!(attribution.auth_method, "jwt", "auth_method must be 'jwt'");
 }
 
@@ -295,8 +308,8 @@ async fn cutover_grpc_composite_header_roundtrip() {
     // This test verifies that a gRPC call using the new composite header format
     // succeeds in reaching the right database.  We do this by starting a
     // minimal gRPC service and issuing a create_entity call with the header.
-    use axon_server::service::{AxonServiceImpl, AxonServiceServer};
     use axon_server::service::proto;
+    use axon_server::service::{AxonServiceImpl, AxonServiceServer};
     use proto::axon_service_client::AxonServiceClient;
     use tonic::metadata::MetadataValue;
 
@@ -330,7 +343,10 @@ async fn cutover_grpc_composite_header_roundtrip() {
         MetadataValue::try_from("acme:orders").unwrap(),
     );
 
-    let resp = client.create_entity(req).await.expect("grpc create should succeed");
+    let resp = client
+        .create_entity(req)
+        .await
+        .expect("grpc create should succeed");
     let entity = resp.into_inner().entity.unwrap();
     assert_eq!(entity.id, "grpc-e-01");
 }

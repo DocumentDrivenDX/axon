@@ -5,6 +5,7 @@ import {
 	type CollectionDetail,
 	type CollectionView,
 	type EntityRecord,
+	// biome-ignore lint/correctness/noUnusedImports: Used in template type cast.
 	type FieldDiff,
 	type LifecycleDef,
 	type Link,
@@ -13,11 +14,9 @@ import {
 	applyEntityRollback,
 	createEntity,
 	createLink,
-	// biome-ignore lint/correctness/noUnusedImports: Used in template onclick handler.
 	deleteCollectionTemplate,
 	// biome-ignore lint/correctness/noUnusedImports: Used in template onclick handler.
 	deleteEntity,
-	// biome-ignore lint/correctness/noUnusedImports: Used in template onclick handler.
 	deleteLink,
 	fetchCollection,
 	fetchCollectionTemplate,
@@ -25,10 +24,10 @@ import {
 	fetchEntity,
 	fetchEntityAudit,
 	fetchRenderedEntity,
-	revertAuditEntry,
 	lifecyclesFromSchema,
 	previewEntityRollback,
 	putCollectionTemplate,
+	revertAuditEntry,
 	transitionLifecycle,
 	traverseLinks,
 	updateEntity,
@@ -78,6 +77,7 @@ let deleteMessage = $state<string | null>(null);
 // ── Entity detail tab state ────────────────────────────────────────────────
 
 type EntityTab = 'data' | 'audit' | 'links' | 'lifecycle' | 'markdown' | 'rollback';
+// biome-ignore lint/style/useConst: Svelte event handlers reassign this state.
 let activeTab = $state<EntityTab>('data');
 
 // Audit
@@ -98,6 +98,7 @@ let rollbackPreviewError = $state<string | null>(null);
 let rollbackApplying = $state(false);
 let rollbackApplyError = $state<string | null>(null);
 let rollbackApplyMessage = $state<string | null>(null);
+let loadedTabKey = '';
 
 // Links
 let links = $state<Link[]>([]);
@@ -226,7 +227,12 @@ async function doPreviewRollback(toVersion: number) {
 	rollbackApplyError = null;
 	rollbackApplyMessage = null;
 	try {
-		rollbackPreview = await previewEntityRollback(collectionName, selectedEntity.id, toVersion, scope);
+		rollbackPreview = await previewEntityRollback(
+			collectionName,
+			selectedEntity.id,
+			toVersion,
+			scope,
+		);
 	} catch (e: unknown) {
 		rollbackPreviewError = e instanceof Error ? e.message : 'Failed to preview rollback';
 	} finally {
@@ -367,9 +373,10 @@ async function saveTemplate() {
 		};
 		templateDraft = result.template;
 		templateEditMode = false;
-		templateStatus = (result.warnings?.length ?? 0) > 0
-			? `Saved with warnings: ${(result.warnings ?? []).join(', ')}`
-			: 'Template saved.';
+		templateStatus =
+			(result.warnings?.length ?? 0) > 0
+				? `Saved with warnings: ${(result.warnings ?? []).join(', ')}`
+				: 'Template saved.';
 	} catch (e: unknown) {
 		templateError = e instanceof Error ? e.message : 'Failed to save template';
 	} finally {
@@ -393,6 +400,9 @@ async function deleteTemplate() {
 // Load tab content lazily when the user switches tabs or when selection changes.
 $effect(() => {
 	if (!selectedEntity) return;
+	const tabKey = `${collectionName ?? ''}:${selectedEntity.id}:${activeTab}`;
+	if (tabKey === loadedTabKey) return;
+	loadedTabKey = tabKey;
 	// Reset tab caches so old data doesn't flash.
 	auditEntries = [];
 	links = [];
@@ -406,7 +416,7 @@ $effect(() => {
 	if (activeTab === 'audit') void loadAuditTab();
 	else if (activeTab === 'links') void loadLinksTab();
 	else if (activeTab === 'markdown') void loadMarkdownTab();
-	else if (activeTab === 'rollback') void ensureAuditLoaded();
+	else if (activeTab === 'rollback') void loadAuditTab();
 });
 
 async function loadCollection(targetCollection: string, afterId: string | null) {

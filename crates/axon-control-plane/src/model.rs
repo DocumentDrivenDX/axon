@@ -258,9 +258,7 @@ impl HealthReport {
     pub fn validate(&self) -> Result<(), String> {
         if let Some(rate) = self.error_rate {
             if !(0.0..=1.0).contains(&rate) || rate.is_nan() {
-                return Err(format!(
-                    "error_rate must be within [0.0, 1.0]; got {rate}"
-                ));
+                return Err(format!("error_rate must be within [0.0, 1.0]; got {rate}"));
             }
         }
         Ok(())
@@ -294,7 +292,11 @@ mod tests {
 
     #[test]
     fn backing_store_sqlite_requires_path() {
-        assert!(BackingStore::Sqlite { path: String::new() }.validate().is_err());
+        assert!(BackingStore::Sqlite {
+            path: String::new()
+        }
+        .validate()
+        .is_err());
         BackingStore::Sqlite {
             path: "/tmp/x.db".into(),
         }

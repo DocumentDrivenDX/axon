@@ -1,4 +1,6 @@
 <script lang="ts">
+// biome-ignore lint/correctness/noUnusedImports: Used in template as Svelte component.
+import UserPicker from '$lib/UserPicker.svelte';
 import {
 	type TenantMember,
 	type TenantMemberRole,
@@ -6,7 +8,6 @@ import {
 	removeTenantMember,
 	upsertTenantMember,
 } from '$lib/api';
-import UserPicker from '$lib/UserPicker.svelte';
 import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();

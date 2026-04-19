@@ -32,11 +32,11 @@ fn make_schema(name: &str) -> CollectionSchema {
         version: 1,
         entity_schema: None,
         link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-    lifecycles: Default::default(),
+        gates: Default::default(),
+        validation_rules: Default::default(),
+        indexes: Default::default(),
+        compound_indexes: Default::default(),
+        lifecycles: Default::default(),
     }
 }
 
@@ -58,7 +58,7 @@ fn test_entity_crud<S: StorageAdapter>(mut h: AxonHandler<S>) {
             data: json!({"title": "hello"}),
             actor: Some("alice".into()),
             audit_metadata: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
     assert_eq!(resp.entity.version, 1);
@@ -81,7 +81,7 @@ fn test_entity_crud<S: StorageAdapter>(mut h: AxonHandler<S>) {
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
     assert_eq!(resp.entity.version, 2);
@@ -96,7 +96,7 @@ fn test_entity_crud<S: StorageAdapter>(mut h: AxonHandler<S>) {
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap_err();
     assert!(matches!(err, AxonError::ConflictingVersion { .. }));
@@ -108,7 +108,7 @@ fn test_entity_crud<S: StorageAdapter>(mut h: AxonHandler<S>) {
         actor: None,
         audit_metadata: None,
         force: false,
-    attribution: None,
+        attribution: None,
     })
     .unwrap();
 
@@ -164,7 +164,7 @@ fn test_links_and_traversal<S: StorageAdapter>(mut h: AxonHandler<S>) {
             data: json!({"name": name}),
             actor: None,
             audit_metadata: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
     }
@@ -178,7 +178,7 @@ fn test_links_and_traversal<S: StorageAdapter>(mut h: AxonHandler<S>) {
             link_type: "next".into(),
             metadata: json!(null),
             actor: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
     }
@@ -240,7 +240,7 @@ fn test_query_entities<S: StorageAdapter>(mut h: AxonHandler<S>) {
             data: json!({"status": status}),
             actor: None,
             audit_metadata: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
     }
@@ -273,11 +273,11 @@ fn test_schema_enforcement<S: StorageAdapter>(mut h: AxonHandler<S>) {
             }
         })),
         link_types: Default::default(),
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-    lifecycles: Default::default(),
+        gates: Default::default(),
+        validation_rules: Default::default(),
+        indexes: Default::default(),
+        compound_indexes: Default::default(),
+        lifecycles: Default::default(),
     };
 
     h.create_collection(CreateCollectionRequest {
@@ -294,7 +294,7 @@ fn test_schema_enforcement<S: StorageAdapter>(mut h: AxonHandler<S>) {
         data: json!({"amount": 42}),
         actor: None,
         audit_metadata: None,
-    attribution: None,
+        attribution: None,
     })
     .unwrap();
 
@@ -306,7 +306,7 @@ fn test_schema_enforcement<S: StorageAdapter>(mut h: AxonHandler<S>) {
             data: json!({"name": "missing amount"}),
             actor: None,
             audit_metadata: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap_err();
     assert!(matches!(err, AxonError::SchemaValidation(_)));
@@ -326,7 +326,7 @@ fn test_audit_log<S: StorageAdapter>(mut h: AxonHandler<S>) {
         data: json!({"title": "v1"}),
         actor: Some("alice".into()),
         audit_metadata: None,
-    attribution: None,
+        attribution: None,
     })
     .unwrap();
 
@@ -337,7 +337,7 @@ fn test_audit_log<S: StorageAdapter>(mut h: AxonHandler<S>) {
         expected_version: 1,
         actor: Some("bob".into()),
         audit_metadata: None,
-    attribution: None,
+        attribution: None,
     })
     .unwrap();
 

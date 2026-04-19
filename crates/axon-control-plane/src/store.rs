@@ -40,11 +40,7 @@ pub trait ControlPlaneStore: Send + Sync {
     /// Record a health report against a tenant. The default implementation
     /// fetches, mutates, and replaces the record — backing stores that can
     /// do this in one round-trip should override it.
-    fn record_health(
-        &self,
-        id: &TenantId,
-        report: HealthReport,
-    ) -> Result<(), ControlPlaneError> {
+    fn record_health(&self, id: &TenantId, report: HealthReport) -> Result<(), ControlPlaneError> {
         let mut tenant = self.get(id)?;
         tenant.last_health = Some(report);
         self.update(tenant)

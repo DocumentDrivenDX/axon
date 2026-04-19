@@ -2,7 +2,10 @@ use std::collections::BTreeSet;
 use std::ops::Bound;
 
 use axon_audit::entry::AuditEntry;
-use axon_core::auth::{CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User, UserId};
+use axon_core::auth::{
+    CredentialMetadata, RetentionPolicy, TenantDatabase, TenantId, TenantMember, TenantRole, User,
+    UserId,
+};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId};
 use axon_core::types::{Entity, Link};
@@ -938,10 +941,7 @@ pub trait StorageAdapter: Send + Sync {
     ///
     /// Returns an empty `Vec` when the tenant has no members or when the auth
     /// schema has not been applied.
-    fn list_tenant_members(
-        &self,
-        tenant_id: TenantId,
-    ) -> Result<Vec<TenantMember>, AxonError> {
+    fn list_tenant_members(&self, tenant_id: TenantId) -> Result<Vec<TenantMember>, AxonError> {
         let _ = tenant_id;
         Ok(vec![])
     }
@@ -1009,10 +1009,7 @@ pub trait StorageAdapter: Send + Sync {
     ///
     /// Returns an empty `Vec` when the tenant has no registered databases or
     /// when the auth schema has not been applied.
-    fn list_tenant_databases(
-        &self,
-        tenant_id: TenantId,
-    ) -> Result<Vec<TenantDatabase>, AxonError> {
+    fn list_tenant_databases(&self, tenant_id: TenantId) -> Result<Vec<TenantDatabase>, AxonError> {
         let _ = tenant_id;
         Ok(vec![])
     }
@@ -1039,11 +1036,7 @@ pub trait StorageAdapter: Send + Sync {
     ///
     /// Returns `Ok(true)` if a row was deleted, `Ok(false)` if no such
     /// registration existed.
-    fn delete_tenant_database(
-        &self,
-        tenant_id: TenantId,
-        name: &str,
-    ) -> Result<bool, AxonError> {
+    fn delete_tenant_database(&self, tenant_id: TenantId, name: &str) -> Result<bool, AxonError> {
         let _ = (tenant_id, name);
         Ok(false)
     }
@@ -1066,7 +1059,14 @@ pub trait StorageAdapter: Send + Sync {
         expires_at_ms: i64,
         grants_json: &str,
     ) -> Result<(), AxonError> {
-        let _ = (jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json);
+        let _ = (
+            jti,
+            user_id,
+            tenant_id,
+            issued_at_ms,
+            expires_at_ms,
+            grants_json,
+        );
         Err(AxonError::InvalidOperation(
             "track_credential_issuance not supported by this adapter".into(),
         ))
@@ -1091,11 +1091,7 @@ pub trait StorageAdapter: Send + Sync {
     /// Returns `Ok(())` whether or not the jti was already revoked (idempotent).
     /// The default implementation returns [`AxonError::InvalidOperation`] so
     /// that unmigrated adapters are explicit about the gap.
-    fn revoke_credential(
-        &self,
-        jti: Uuid,
-        revoked_by: UserId,
-    ) -> Result<(), AxonError> {
+    fn revoke_credential(&self, jti: Uuid, revoked_by: UserId) -> Result<(), AxonError> {
         let _ = (jti, revoked_by);
         Err(AxonError::InvalidOperation(
             "revoke_credential not supported by this adapter".into(),
@@ -1456,10 +1452,7 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         (**self).remove_tenant_member(tenant_id, user_id)
     }
 
-    fn list_tenant_members(
-        &self,
-        tenant_id: TenantId,
-    ) -> Result<Vec<TenantMember>, AxonError> {
+    fn list_tenant_members(&self, tenant_id: TenantId) -> Result<Vec<TenantMember>, AxonError> {
         (**self).list_tenant_members(tenant_id)
     }
 
@@ -1486,10 +1479,7 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         (**self).set_retention_policy(tenant_id, policy)
     }
 
-    fn list_tenant_databases(
-        &self,
-        tenant_id: TenantId,
-    ) -> Result<Vec<TenantDatabase>, AxonError> {
+    fn list_tenant_databases(&self, tenant_id: TenantId) -> Result<Vec<TenantDatabase>, AxonError> {
         (**self).list_tenant_databases(tenant_id)
     }
 
@@ -1501,11 +1491,7 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         (**self).create_tenant_database(tenant_id, name)
     }
 
-    fn delete_tenant_database(
-        &self,
-        tenant_id: TenantId,
-        name: &str,
-    ) -> Result<bool, AxonError> {
+    fn delete_tenant_database(&self, tenant_id: TenantId, name: &str) -> Result<bool, AxonError> {
         (**self).delete_tenant_database(tenant_id, name)
     }
 
@@ -1518,7 +1504,14 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         expires_at_ms: i64,
         grants_json: &str,
     ) -> Result<(), AxonError> {
-        (**self).track_credential_issuance(jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json)
+        (**self).track_credential_issuance(
+            jti,
+            user_id,
+            tenant_id,
+            issued_at_ms,
+            expires_at_ms,
+            grants_json,
+        )
     }
 
     fn list_credentials(
@@ -1529,11 +1522,7 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         (**self).list_credentials(tenant_id, user_filter)
     }
 
-    fn revoke_credential(
-        &self,
-        jti: Uuid,
-        revoked_by: UserId,
-    ) -> Result<(), AxonError> {
+    fn revoke_credential(&self, jti: Uuid, revoked_by: UserId) -> Result<(), AxonError> {
         (**self).revoke_credential(jti, revoked_by)
     }
 }

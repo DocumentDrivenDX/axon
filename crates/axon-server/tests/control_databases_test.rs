@@ -27,7 +27,7 @@ use axon_server::auth::AuthContext;
 use axon_server::auth_pipeline::JwtIssuer;
 use axon_server::control_plane::ControlPlaneDb;
 use axon_server::control_plane_routes::{
-    ControlPlaneState, control_plane_routes, optional_jwt_middleware,
+    control_plane_routes, optional_jwt_middleware, ControlPlaneState,
 };
 use axon_server::cors_config::CorsStore;
 use axon_server::user_roles::UserRoleStore;
@@ -238,7 +238,11 @@ async fn delete_removes_row() {
         .await;
     resp3.assert_status(StatusCode::OK);
     let body: Value = resp3.json();
-    assert_eq!(body["databases"].as_array().unwrap().len(), 0, "database should be removed");
+    assert_eq!(
+        body["databases"].as_array().unwrap().len(),
+        0,
+        "database should be removed"
+    );
 }
 
 /// delete_missing_returns_404 — delete a never-created database returns 404.
@@ -251,7 +255,9 @@ async fn delete_missing_returns_404() {
     let (hname, hval) = auth_header(&jwt);
 
     let resp = server
-        .delete(&format!("/control/tenants/{tenant_id}/databases/nonexistent"))
+        .delete(&format!(
+            "/control/tenants/{tenant_id}/databases/nonexistent"
+        ))
         .add_header(hname, hval)
         .await;
     resp.assert_status(StatusCode::NOT_FOUND);
@@ -321,10 +327,10 @@ async fn invalid_database_name_rejected() {
 
     let too_long = "a".repeat(64);
     let invalid_names: &[&str] = &[
-        "1starts-with-digit",  // starts with digit
-        "has space",           // space not allowed
-        "has@symbol",          // @ not allowed
-        &too_long,             // 64 chars — too long
+        "1starts-with-digit", // starts with digit
+        "has space",          // space not allowed
+        "has@symbol",         // @ not allowed
+        &too_long,            // 64 chars — too long
     ];
 
     for bad_name in invalid_names {

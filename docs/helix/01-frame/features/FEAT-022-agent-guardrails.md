@@ -76,11 +76,81 @@ rate limiting are proven in production.
 - FEAT-019 (Validation Rules) — semantic hooks extend the validation
   pipeline.
 
-## Acceptance Criteria
+## User Stories
 
-- [ ] Agent with scoped credentials cannot modify entities outside scope
-- [ ] Rate-limited agent receives retryable error when exceeding limits
-- [ ] ~~Semantic validation hook can reject a mutation~~ (deferred)
-- [ ] Guardrails are configurable per agent identity, not just globally
-- [ ] All guardrail rejections appear in the audit log with rejection
-      reason
+### Story US-092: Keep Agent Writes Inside Assigned Scope [FEAT-022]
+
+**As an** operator delegating work to autonomous agents
+**I want** each agent constrained to its assigned tenant, database,
+collection, and optional entity filter
+**So that** a confused or compromised agent cannot mutate unrelated
+business state
+
+**Acceptance Criteria:**
+- [ ] A scoped credential can create, update, and delete entities inside
+  its allowed tenant/database/collection scope. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] The same credential receives 403 with a structured guardrail error
+  when it writes outside the allowed collection. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] The same credential receives 403 when it writes to a different
+  database or tenant, even if collection names match. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] Entity-filter scope is enforced on update and delete, not just
+  create. Planned E2E: `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] Scope rejection responses identify the violated scope boundary and
+  include a stable error code. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] Scope rejections are written to the audit log with the rejected
+  operation, actor, tenant, database, and reason. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+
+### Story US-093: Throttle Agent Mutation Bursts [FEAT-022]
+
+**As an** operator running many agents
+**I want** per-agent rate limits and affected-entity caps
+**So that** an agent cannot accidentally perform a runaway bulk mutation
+
+**Acceptance Criteria:**
+- [ ] Per-agent sustained and burst mutation limits are enforced
+  independently. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] A rate-limited mutation returns a retryable error with
+  `retry_after_ms`. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] Rate-limit counters are scoped by agent identity and tenant/database
+  so one tenant cannot starve another. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] A transaction exceeding the configured affected-entity cap is
+  rejected before commit. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] Rate-limit rejections appear in the audit log with the applied
+  policy id and retry hint. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+
+### Story US-094: Configure Guardrails Per Agent Identity [FEAT-022]
+
+**As an** operator
+**I want** to create, inspect, update, disable, and delete guardrail
+policies per agent identity
+**So that** different automations can receive appropriately narrow
+permissions and limits
+
+**Acceptance Criteria:**
+- [ ] Guardrail policy CRUD is available through the control API and is
+  restricted to tenant admins. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] Reading an agent's effective policy shows global defaults merged
+  with identity-specific overrides. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] Updating a policy takes effect for subsequent requests without
+  server restart. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] Invalid guardrail configuration is rejected with structured
+  validation errors. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] Guardrail policy changes are audited. Planned E2E:
+  `crates/axon-server/tests/agent_guardrails_test.rs`
+- [ ] Semantic validation hooks remain deferred; no acceptance criterion
+  may be marked implemented until the hook interface is specified and
+  covered by executable tests.

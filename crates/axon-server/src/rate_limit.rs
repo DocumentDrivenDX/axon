@@ -157,11 +157,10 @@ mod tests {
         let now = Instant::now();
 
         assert!(rl.check_at("alice", now).await.is_ok());
-        assert!(
-            rl.check_at("alice", now + Duration::from_secs(10))
-                .await
-                .is_ok()
-        );
+        assert!(rl
+            .check_at("alice", now + Duration::from_secs(10))
+            .await
+            .is_ok());
 
         // Third write should fail. The oldest entry is at `now`, so it expires
         // at `now + 60s`. If we're at `now + 15s`, retry-after should be ~45s.
@@ -179,11 +178,10 @@ mod tests {
 
         // Two writes at t=0 and t=5.
         assert!(rl.check_at("alice", now).await.is_ok());
-        assert!(
-            rl.check_at("alice", now + Duration::from_secs(5))
-                .await
-                .is_ok()
-        );
+        assert!(rl
+            .check_at("alice", now + Duration::from_secs(5))
+            .await
+            .is_ok());
 
         // At t=11, the first entry (t=0) has expired but the second (t=5) is
         // still within the window. One more write should be allowed.

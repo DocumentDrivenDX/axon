@@ -44,7 +44,11 @@ fn upsert_fresh_creates_user_and_identity_memory() {
         .expect("first upsert should succeed");
     assert_eq!(user.display_name, "Alice");
     assert_eq!(user.email.as_deref(), Some("alice@tailnet"));
-    assert_eq!(adapter.upsert_identity_count(), 1, "user_identities should have 1 row");
+    assert_eq!(
+        adapter.upsert_identity_count(),
+        1,
+        "user_identities should have 1 row"
+    );
     assert_eq!(adapter.upserted_user_count(), 1, "users should have 1 row");
 }
 
@@ -79,8 +83,16 @@ fn upsert_same_identity_is_idempotent_memory() {
         .upsert_user_identity("tailscale", "alice@tailnet", "Alice", None)
         .expect("second upsert should succeed");
     assert_eq!(u1.id, u2.id, "both calls must return the same user_id");
-    assert_eq!(adapter.upsert_identity_count(), 1, "user_identities should still have 1 row");
-    assert_eq!(adapter.upserted_user_count(), 1, "users should still have 1 row");
+    assert_eq!(
+        adapter.upsert_identity_count(),
+        1,
+        "user_identities should still have 1 row"
+    );
+    assert_eq!(
+        adapter.upserted_user_count(),
+        1,
+        "users should still have 1 row"
+    );
 }
 
 #[test]
@@ -121,8 +133,16 @@ fn concurrent_upsert_converges_memory() {
         results.iter().all(|u| u.id == first_id),
         "all 64 callers must get the same user_id"
     );
-    assert_eq!(adapter.upsert_identity_count(), 1, "user_identities must have exactly 1 row");
-    assert_eq!(adapter.upserted_user_count(), 1, "users must have exactly 1 row");
+    assert_eq!(
+        adapter.upsert_identity_count(),
+        1,
+        "user_identities must have exactly 1 row"
+    );
+    assert_eq!(
+        adapter.upserted_user_count(),
+        1,
+        "users must have exactly 1 row"
+    );
 }
 
 #[test]
@@ -147,8 +167,16 @@ fn concurrent_upsert_converges_sqlite() {
         results.iter().all(|u| u.id == first_id),
         "all 64 callers must get the same user_id"
     );
-    assert_eq!(adapter.query_identity_count().unwrap(), 1, "user_identities must have 1 row");
-    assert_eq!(adapter.query_user_count().unwrap(), 1, "users must have 1 row");
+    assert_eq!(
+        adapter.query_identity_count().unwrap(),
+        1,
+        "user_identities must have 1 row"
+    );
+    assert_eq!(
+        adapter.query_user_count().unwrap(),
+        1,
+        "users must have 1 row"
+    );
 }
 
 // ── d) second_provider_produces_distinct_users ────────────────────────────────
@@ -170,8 +198,15 @@ fn second_provider_produces_distinct_users_memory() {
     let ub = adapter
         .upsert_user_identity("oidc", "alice@corp.example", "Alice", None)
         .expect("oidc upsert should succeed");
-    assert_ne!(ua.id, ub.id, "distinct providers must produce distinct users");
-    assert_eq!(adapter.upsert_identity_count(), 2, "user_identities should have 2 rows");
+    assert_ne!(
+        ua.id, ub.id,
+        "distinct providers must produce distinct users"
+    );
+    assert_eq!(
+        adapter.upsert_identity_count(),
+        2,
+        "user_identities should have 2 rows"
+    );
     assert_eq!(adapter.upserted_user_count(), 2, "users should have 2 rows");
 }
 
@@ -185,7 +220,10 @@ fn second_provider_produces_distinct_users_sqlite() {
     let ub = adapter
         .upsert_user_identity("oidc", "alice@corp.example", "Alice", None)
         .expect("oidc upsert should succeed");
-    assert_ne!(ua.id, ub.id, "distinct providers must produce distinct users");
+    assert_ne!(
+        ua.id, ub.id,
+        "distinct providers must produce distinct users"
+    );
     assert_eq!(adapter.query_identity_count().unwrap(), 2);
     assert_eq!(adapter.query_user_count().unwrap(), 2);
 }
@@ -202,8 +240,8 @@ fn federation_module_wraps_storage_upsert_memory() {
     };
 
     // First call: provisions a new user.
-    let user = resolve_tailscale_identity(&whois, &adapter)
-        .expect("federation resolve should succeed");
+    let user =
+        resolve_tailscale_identity(&whois, &adapter).expect("federation resolve should succeed");
     // external_id is derived from user_login (non-empty), which becomes display_name.
     assert_eq!(user.display_name, "alice@tailnet");
     assert_eq!(user.email.as_deref(), Some("alice@tailnet"));
@@ -213,7 +251,11 @@ fn federation_module_wraps_storage_upsert_memory() {
     let user2 = resolve_tailscale_identity(&whois, &adapter)
         .expect("second federation resolve should succeed");
     assert_eq!(user.id, user2.id, "resolve must be idempotent");
-    assert_eq!(adapter.upsert_identity_count(), 1, "still exactly 1 identity row");
+    assert_eq!(
+        adapter.upsert_identity_count(),
+        1,
+        "still exactly 1 identity row"
+    );
 }
 
 #[test]

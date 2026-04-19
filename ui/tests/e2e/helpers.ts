@@ -6,7 +6,7 @@
  * these to provision tenants/databases/collections/entities instead of
  * going through the UI — keeps the UI tests focused on UI behavior.
  */
-import type { APIRequestContext, Page } from '@playwright/test';
+import type { APIRequestContext, APIResponse, Page } from '@playwright/test';
 import { expect } from '@playwright/test';
 
 export type TestTenant = {
@@ -20,16 +20,28 @@ export type TestDatabase = {
 	name: string;
 };
 
+async function expectOkResponse(response: APIResponse, label: string) {
+	if (response.ok()) return;
+	let body = '';
+	try {
+		body = await response.text();
+	} catch {
+		body = '<unreadable response body>';
+	}
+	expect(response.ok(), `${label}: ${response.status()} ${body}`).toBe(true);
+}
+
 /** Create a tenant with a unique name. */
 export async function createTestTenant(
 	request: APIRequestContext,
 	prefix: string,
 ): Promise<TestTenant> {
-	const name = `${prefix}${Date.now().toString(36)}`;
+	const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+	const name = `${prefix}${suffix}`;
 	const response = await request.post('/control/tenants', {
 		data: { name },
 	});
-	expect(response.ok(), `create tenant ${name}`).toBe(true);
+	await expectOkResponse(response, `create tenant ${name}`);
 	return (await response.json()) as TestTenant;
 }
 
@@ -43,7 +55,7 @@ export async function createTestDatabase(
 		`/control/tenants/${encodeURIComponent(tenant.id)}/databases`,
 		{ data: { name: dbName } },
 	);
-	expect(response.ok(), `create database ${dbName}`).toBe(true);
+	await expectOkResponse(response, `create database ${dbName}`);
 	return { tenant, name: dbName };
 }
 
@@ -71,7 +83,7 @@ export async function createTestCollection(
 			actor: 'e2e',
 		},
 	});
-	expect(response.ok(), `create collection ${collection}`).toBe(true);
+	await expectOkResponse(response, `create collection ${collection}`);
 }
 
 /** Create an entity in a collection. */
@@ -86,7 +98,7 @@ export async function createTestEntity(
 	const response = await request.post(url, {
 		data: { data, actor: 'e2e' },
 	});
-	expect(response.ok(), `create entity ${id}`).toBe(true);
+	await expectOkResponse(response, `create entity ${id}`);
 }
 
 /** Update an entity in a collection (PATCH/PUT). */
@@ -102,7 +114,7 @@ export async function updateTestEntity(
 	const response = await request.put(url, {
 		data: { data, expected_version: expectedVersion, actor: 'e2e' },
 	});
-	expect(response.ok(), `update entity ${id}`).toBe(true);
+	await expectOkResponse(response, `update entity ${id}`);
 }
 
 /** Build a UI URL for the database collections page. */
@@ -114,8 +126,16 @@ export function dbCollectionUrl(db: TestDatabase, collection: string): string {
 	return `${dbCollectionsUrl(db)}/${encodeURIComponent(collection)}`;
 }
 
+export function dbOverviewUrl(db: TestDatabase): string {
+	return `/ui/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}`;
+}
+
 export function dbGraphqlUrl(db: TestDatabase): string {
 	return `/ui/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/graphql`;
+}
+
+export function dbAuditUrl(db: TestDatabase): string {
+	return `/ui/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/audit`;
 }
 
 export function tenantUrl(tenant: TestTenant, section: 'members' | 'credentials' | '' = ''): string {
@@ -147,6 +167,19 @@ export async function createTestUser(
 	const response = await request.post('/control/users/provision', {
 		data: { display_name: name, email: email ?? null },
 	});
-	expect(response.ok(), `create user ${name}`).toBe(true);
+	await expectOkResponse(response, `create user ${name}`);
 	return (await response.json()) as TestUser;
+}
+
+export async function addTestTenantMember(
+	request: APIRequestContext,
+	tenant: TestTenant,
+	user: TestUser,
+	role: 'admin' | 'write' | 'read' = 'read',
+): Promise<void> {
+	const response = await request.put(
+		`/control/tenants/${encodeURIComponent(tenant.id)}/members/${encodeURIComponent(user.id)}`,
+		{ data: { role } },
+	);
+	await expectOkResponse(response, `add member ${user.id} to ${tenant.id}`);
 }

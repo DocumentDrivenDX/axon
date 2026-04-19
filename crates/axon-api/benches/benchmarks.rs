@@ -419,8 +419,13 @@ fn bm_008_concurrent_writers(c: &mut Criterion) {
                     current.version,
                     Some(current.data),
                 );
-                tx.commit(&mut storage, &mut audit, Some(format!("agent-{round}")), None)
-                    .unwrap();
+                tx.commit(
+                    &mut storage,
+                    &mut audit,
+                    Some(format!("agent-{round}")),
+                    None,
+                )
+                .unwrap();
             }
             round += 1;
         })

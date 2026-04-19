@@ -1,5 +1,5 @@
 <script lang="ts">
-import { executeGraphql, type GraphQLResponse } from '$lib/api';
+import { type GraphQLResponse, executeGraphql } from '$lib/api';
 import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();
@@ -28,7 +28,9 @@ const DEFAULT_QUERY = `# Try a query against this database.
 }
 `;
 
+// biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
 let query = $state(DEFAULT_QUERY);
+// biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
 let variables = $state('{}');
 let result = $state<GraphQLResponse | null>(null);
 let running = $state(false);

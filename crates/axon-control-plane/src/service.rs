@@ -7,9 +7,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::ControlPlaneError;
-use crate::model::{
-    DeploymentMode, HealthReport, Tenant, TenantId, TenantSpec, TenantStatus,
-};
+use crate::model::{DeploymentMode, HealthReport, Tenant, TenantId, TenantSpec, TenantStatus};
 use crate::store::ControlPlaneStore;
 
 /// Clock abstraction so tests can inject deterministic timestamps.
@@ -66,7 +64,8 @@ impl ControlPlaneService {
     /// expected to call [`Self::mark_active`] once the backing store is
     /// actually usable.
     pub fn provision_tenant(&self, spec: TenantSpec) -> Result<Tenant, ControlPlaneError> {
-        spec.validate().map_err(ControlPlaneError::InvalidArgument)?;
+        spec.validate()
+            .map_err(ControlPlaneError::InvalidArgument)?;
         let now = self.clock.now_ms();
         let tenant = Tenant {
             id: TenantId::generate(),

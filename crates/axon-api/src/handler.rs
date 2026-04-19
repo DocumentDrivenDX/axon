@@ -2255,8 +2255,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                             schema_version: schema.as_ref().map(|s| s.version),
                             gate_results: Default::default(),
                         };
-                        let stored =
-                            self.storage.compare_and_swap(restored, existing.version)?;
+                        let stored = self.storage.compare_and_swap(restored, existing.version)?;
                         let mut audit_entry = AuditEntry::new(
                             collection.clone(),
                             entity_id.clone(),
@@ -2269,20 +2268,16 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         audit_entry
                             .metadata
                             .insert("transaction_rollback".into(), "true".into());
-                        audit_entry.metadata.insert(
-                            "rolled_back_transaction_id".into(),
-                            transaction_id.into(),
-                        );
+                        audit_entry
+                            .metadata
+                            .insert("rolled_back_transaction_id".into(), transaction_id.into());
                         self.audit.append(audit_entry)?;
                     }
                     None => {
                         // Entity was deleted after the transaction (or is otherwise
                         // absent) — recreate it from the pre-transaction snapshot.
-                        let mut entity = Entity::new(
-                            collection.clone(),
-                            entity_id.clone(),
-                            target_data.clone(),
-                        );
+                        let mut entity =
+                            Entity::new(collection.clone(), entity_id.clone(), target_data.clone());
                         entity.schema_version = schema.as_ref().map(|s| s.version);
                         entity.updated_by = actor.map(String::from);
                         self.storage.put(entity.clone())?;
@@ -2298,10 +2293,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         audit_entry
                             .metadata
                             .insert("transaction_rollback".into(), "true".into());
-                        audit_entry.metadata.insert(
-                            "rolled_back_transaction_id".into(),
-                            transaction_id.into(),
-                        );
+                        audit_entry
+                            .metadata
+                            .insert("rolled_back_transaction_id".into(), transaction_id.into());
                         self.audit.append(audit_entry)?;
                     }
                 }
@@ -4366,7 +4360,7 @@ mod tests {
                 data: json!({"title": title}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating entity for markdown cache test",
         );
@@ -4395,7 +4389,7 @@ mod tests {
                 data: json!({"title": "hello"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         assert_eq!(created.entity.version, 1);
@@ -4440,7 +4434,7 @@ mod tests {
                 data: json!({"title": "hello", "status": "open"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating entity for markdown render test",
         );
@@ -4490,7 +4484,7 @@ mod tests {
                 data: json!({"title": "hello", "status": "open"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating entity for template cache test",
         );
@@ -4603,7 +4597,7 @@ mod tests {
                 data: json!({"title": "hello"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating entity for missing template test",
         );
@@ -4740,7 +4734,7 @@ mod tests {
                 data: json!({"title": "hello"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating entity for template delete test",
         );
@@ -4968,7 +4962,7 @@ mod tests {
             data: json!({"title": "Qualified", "notes": "Scoped"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .expect("qualified entity create should succeed");
 
@@ -5038,7 +5032,7 @@ mod tests {
                 data: json!({"title": "hello"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating entity for render failure test",
         );
@@ -5077,7 +5071,7 @@ mod tests {
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5089,7 +5083,7 @@ mod tests {
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -5109,7 +5103,7 @@ mod tests {
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5121,7 +5115,7 @@ mod tests {
                 expected_version: 99, // wrong version
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -5155,7 +5149,7 @@ mod tests {
             data: json!({"title": "to-delete"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5165,7 +5159,7 @@ mod tests {
             actor: None,
             audit_metadata: None,
             force: false,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5188,7 +5182,7 @@ mod tests {
             data: json!({"title": "v1"}),
             actor: Some("agent-1".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5199,7 +5193,7 @@ mod tests {
             expected_version: 1,
             actor: Some("agent-1".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5209,7 +5203,7 @@ mod tests {
             actor: None,
             audit_metadata: None,
             force: false,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5252,7 +5246,7 @@ entity_schema:
                 data: json!({"done": false}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -5277,7 +5271,7 @@ entity_schema:
             data: json!({"title": "My task", "done": false}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         });
 
         assert!(result.is_ok(), "valid entity should be accepted");
@@ -5292,7 +5286,7 @@ entity_schema:
             data: json!({"name": id}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
     }
@@ -5312,7 +5306,7 @@ entity_schema:
                 link_type: "assigned-to".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -5333,7 +5327,7 @@ entity_schema:
                 link_type: "assigned-to".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -5357,7 +5351,7 @@ entity_schema:
             link_type: "assigned-to".into(),
             metadata: json!(null),
             actor: Some("agent-1".into()),
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5401,7 +5395,7 @@ entity_schema:
             link_type: "assigned-to".into(),
             metadata: json!(null),
             actor: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5414,7 +5408,7 @@ entity_schema:
             target_id: EntityId::new("t-001"),
             link_type: "assigned-to".into(),
             actor: Some("agent-2".into()),
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5460,7 +5454,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -5498,7 +5492,7 @@ entity_schema:
                 link_type: "edge".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -5535,7 +5529,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -5573,7 +5567,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -5626,7 +5620,7 @@ entity_schema:
             data: json!({"status": "inactive"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -5635,7 +5629,7 @@ entity_schema:
             data: json!({"status": "active"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5648,7 +5642,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -5691,7 +5685,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -5727,7 +5721,7 @@ entity_schema:
             link_type: "next".into(),
             metadata: json!(null),
             actor: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5783,7 +5777,7 @@ entity_schema:
                 link_type: "next".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -5819,7 +5813,7 @@ entity_schema:
             data: json!({"title": "v1", "done": false}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5830,7 +5824,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5862,7 +5856,7 @@ entity_schema:
             data: json!({"title": "by alice"}),
             actor: Some("alice".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5872,7 +5866,7 @@ entity_schema:
             data: json!({"title": "by bob"}),
             actor: Some("bob".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5906,7 +5900,7 @@ entity_schema:
             data: json!({"scope": "default"}),
             actor: Some("default-agent".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -5915,7 +5909,7 @@ entity_schema:
             data: json!({"scope": "prod"}),
             actor: Some("prod-agent".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -5942,7 +5936,7 @@ entity_schema:
                 data: json!({"title": format!("task {i}")}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -5990,7 +5984,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6001,7 +5995,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6017,7 +6011,7 @@ entity_schema:
                 audit_entry_id: update_entry.id,
                 actor: Some("admin".into()),
                 force: false,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -6048,7 +6042,7 @@ entity_schema:
                 audit_entry_id: 9999,
                 actor: None,
                 force: false,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::NotFound(_)));
@@ -6066,7 +6060,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6078,7 +6072,7 @@ entity_schema:
                 audit_entry_id: create_entry.id,
                 actor: None,
                 force: false,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::InvalidOperation(_)));
@@ -6096,7 +6090,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6107,7 +6101,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6118,7 +6112,7 @@ entity_schema:
             expected_version: 2,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6165,7 +6159,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6176,7 +6170,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6231,7 +6225,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6261,7 +6255,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: Some("alice".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6272,7 +6266,7 @@ entity_schema:
             expected_version: 1,
             actor: Some("alice".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6282,7 +6276,7 @@ entity_schema:
             actor: Some("alice".into()),
             force: false,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6342,7 +6336,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: Some("alice".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6353,7 +6347,7 @@ entity_schema:
             expected_version: 1,
             actor: Some("alice".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6363,7 +6357,7 @@ entity_schema:
             actor: Some("alice".into()),
             force: false,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6426,7 +6420,7 @@ entity_schema:
             data: json!({"title": "v1", "status": "draft"}),
             actor: Some("alice".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6437,7 +6431,7 @@ entity_schema:
             expected_version: 1,
             actor: Some("alice".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6447,7 +6441,7 @@ entity_schema:
             actor: Some("alice".into()),
             force: false,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6509,7 +6503,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6520,7 +6514,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6564,7 +6558,7 @@ entity_schema:
             data: json!({"title": "draft"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6587,7 +6581,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6620,7 +6614,7 @@ entity_schema:
             data: json!({"title": "original"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6636,7 +6630,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6647,7 +6641,7 @@ entity_schema:
             data: json!({"title": "new entity"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6696,7 +6690,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6710,7 +6704,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6748,7 +6742,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6778,7 +6772,7 @@ entity_schema:
             data: json!({"title": "alive"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6792,7 +6786,7 @@ entity_schema:
             actor: None,
             force: false,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6829,7 +6823,7 @@ entity_schema:
             data: json!({"title": "v1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6843,7 +6837,7 @@ entity_schema:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -6886,7 +6880,7 @@ entity_schema:
             data: json!({"balance": 100}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -6895,14 +6889,22 @@ entity_schema:
             data: json!({"balance": 50}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
         // Commit a transaction that updates both.
         use crate::transaction::Transaction;
-        let a_before = h.storage_ref().get(&col, &EntityId::new("a")).unwrap().unwrap();
-        let b_before = h.storage_ref().get(&col, &EntityId::new("b")).unwrap().unwrap();
+        let a_before = h
+            .storage_ref()
+            .get(&col, &EntityId::new("a"))
+            .unwrap()
+            .unwrap();
+        let b_before = h
+            .storage_ref()
+            .get(&col, &EntityId::new("b"))
+            .unwrap()
+            .unwrap();
 
         let mut tx = Transaction::new();
         let tx_id = tx.id.clone();
@@ -6919,12 +6921,23 @@ entity_schema:
         )
         .unwrap();
 
-        h.commit_transaction(tx, Some("system".into()), None).unwrap();
+        h.commit_transaction(tx, Some("system".into()), None)
+            .unwrap();
 
         // Verify the transaction was applied.
-        let a = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("a") }).unwrap();
+        let a = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("a"),
+            })
+            .unwrap();
         assert_eq!(a.entity.data["balance"], 70);
-        let b = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("b") }).unwrap();
+        let b = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("b"),
+            })
+            .unwrap();
         assert_eq!(b.entity.data["balance"], 80);
 
         // Roll back the transaction.
@@ -6943,9 +6956,19 @@ entity_schema:
         assert!(!resp.dry_run);
 
         // Both entities should be back to their pre-transaction state.
-        let a = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("a") }).unwrap();
+        let a = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("a"),
+            })
+            .unwrap();
         assert_eq!(a.entity.data["balance"], 100);
-        let b = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("b") }).unwrap();
+        let b = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("b"),
+            })
+            .unwrap();
         assert_eq!(b.entity.data["balance"], 50);
     }
 
@@ -6958,16 +6981,35 @@ entity_schema:
         use crate::transaction::Transaction;
         let mut tx = Transaction::new();
         let tx_id = tx.id.clone();
-        tx.create(Entity::new(col.clone(), EntityId::new("x"), json!({"balance": 200})))
-            .unwrap();
-        tx.create(Entity::new(col.clone(), EntityId::new("y"), json!({"balance": 300})))
-            .unwrap();
+        tx.create(Entity::new(
+            col.clone(),
+            EntityId::new("x"),
+            json!({"balance": 200}),
+        ))
+        .unwrap();
+        tx.create(Entity::new(
+            col.clone(),
+            EntityId::new("y"),
+            json!({"balance": 300}),
+        ))
+        .unwrap();
 
-        h.commit_transaction(tx, Some("system".into()), None).unwrap();
+        h.commit_transaction(tx, Some("system".into()), None)
+            .unwrap();
 
         // Both entities should exist.
-        assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("x") }).is_ok());
-        assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("y") }).is_ok());
+        assert!(h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("x")
+            })
+            .is_ok());
+        assert!(h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("y")
+            })
+            .is_ok());
 
         // Roll back the transaction.
         let resp = h
@@ -6983,8 +7025,18 @@ entity_schema:
         assert_eq!(resp.errors, 0);
 
         // Both entities should no longer exist.
-        assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("x") }).is_err());
-        assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("y") }).is_err());
+        assert!(h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("x")
+            })
+            .is_err());
+        assert!(h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("y")
+            })
+            .is_err());
     }
 
     #[test]
@@ -6999,22 +7051,37 @@ entity_schema:
             data: json!({"balance": 999}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
-        let z_before = h.storage_ref().get(&col, &EntityId::new("z")).unwrap().unwrap();
+        let z_before = h
+            .storage_ref()
+            .get(&col, &EntityId::new("z"))
+            .unwrap()
+            .unwrap();
 
         use crate::transaction::Transaction;
         let mut tx = Transaction::new();
         let tx_id = tx.id.clone();
-        tx.delete(col.clone(), EntityId::new("z"), z_before.version, Some(z_before.data.clone()))
+        tx.delete(
+            col.clone(),
+            EntityId::new("z"),
+            z_before.version,
+            Some(z_before.data.clone()),
+        )
+        .unwrap();
+
+        h.commit_transaction(tx, Some("system".into()), None)
             .unwrap();
 
-        h.commit_transaction(tx, Some("system".into()), None).unwrap();
-
         // Entity should be gone.
-        assert!(h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("z") }).is_err());
+        assert!(h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("z")
+            })
+            .is_err());
 
         // Roll back the transaction — entity should be restored.
         let resp = h
@@ -7029,7 +7096,12 @@ entity_schema:
         assert_eq!(resp.entities_rolled_back, 1);
         assert_eq!(resp.errors, 0);
 
-        let z = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("z") }).unwrap();
+        let z = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("z"),
+            })
+            .unwrap();
         assert_eq!(z.entity.data["balance"], 999);
     }
 
@@ -7044,12 +7116,16 @@ entity_schema:
             data: json!({"balance": 100}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
         use crate::transaction::Transaction;
-        let a_before = h.storage_ref().get(&col, &EntityId::new("a")).unwrap().unwrap();
+        let a_before = h
+            .storage_ref()
+            .get(&col, &EntityId::new("a"))
+            .unwrap()
+            .unwrap();
 
         let mut tx = Transaction::new();
         let tx_id = tx.id.clone();
@@ -7060,7 +7136,8 @@ entity_schema:
         )
         .unwrap();
 
-        h.commit_transaction(tx, Some("system".into()), None).unwrap();
+        h.commit_transaction(tx, Some("system".into()), None)
+            .unwrap();
 
         // Dry-run rollback.
         let resp = h
@@ -7076,7 +7153,12 @@ entity_schema:
         assert!(resp.dry_run);
 
         // Data should remain unchanged (balance = 70, not reverted to 100).
-        let a = h.get_entity(GetEntityRequest { collection: col.clone(), id: EntityId::new("a") }).unwrap();
+        let a = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("a"),
+            })
+            .unwrap();
         assert_eq!(a.entity.data["balance"], 70);
     }
 
@@ -7104,12 +7186,16 @@ entity_schema:
             data: json!({"balance": 100}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
         use crate::transaction::Transaction;
-        let a_before = h.storage_ref().get(&col, &EntityId::new("a")).unwrap().unwrap();
+        let a_before = h
+            .storage_ref()
+            .get(&col, &EntityId::new("a"))
+            .unwrap()
+            .unwrap();
 
         let mut tx = Transaction::new();
         let tx_id = tx.id.clone();
@@ -7120,7 +7206,8 @@ entity_schema:
         )
         .unwrap();
 
-        h.commit_transaction(tx, Some("system".into()), None).unwrap();
+        h.commit_transaction(tx, Some("system".into()), None)
+            .unwrap();
 
         h.rollback_transaction(RollbackTransactionRequest {
             transaction_id: tx_id.clone(),
@@ -7135,11 +7222,15 @@ entity_schema:
         let last = entries.last().unwrap();
         assert_eq!(last.mutation, MutationType::EntityRevert);
         assert_eq!(
-            last.metadata.get("transaction_rollback").map(String::as_str),
+            last.metadata
+                .get("transaction_rollback")
+                .map(String::as_str),
             Some("true")
         );
         assert_eq!(
-            last.metadata.get("rolled_back_transaction_id").map(String::as_str),
+            last.metadata
+                .get("rolled_back_transaction_id")
+                .map(String::as_str),
             Some(tx_id.as_str())
         );
     }
@@ -7165,7 +7256,7 @@ entity_schema:
                 data: json!({"name": format!("widget {i}")}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -7245,7 +7336,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -7357,7 +7448,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         let err = h
@@ -7411,7 +7502,7 @@ entity_schema:
                 data: json!({"name": format!("b-{i}")}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -7449,7 +7540,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         })
         .unwrap();
 
@@ -7479,7 +7570,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -7488,7 +7579,7 @@ entity_schema:
             data: json!({}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -7611,7 +7702,7 @@ entity_schema:
             link_type: "assigned-to".into(),
             metadata: json!(null),
             actor: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -7624,7 +7715,7 @@ entity_schema:
                 target_id: EntityId::new("t-001"),
                 link_type: "assigned-to".into(),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -7650,7 +7741,7 @@ entity_schema:
             actor: None,
             audit_metadata: None,
             force: false,
-        attribution: None,
+            attribution: None,
         })
         .expect("delete_entity must succeed after reverse-index entry is removed");
     }
@@ -7669,7 +7760,7 @@ entity_schema:
                 target_id: EntityId::new("t-001"),
                 link_type: "assigned-to".into(),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -7733,7 +7824,7 @@ link_types:
                 link_type: "undeclared-type".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -7760,7 +7851,7 @@ link_types:
                 link_type: "assigned-to".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -7787,7 +7878,7 @@ link_types:
                 link_type: "mentor".into(),
                 metadata: json!({}), // missing required "since"
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -7813,7 +7904,7 @@ link_types:
                 link_type: "mentor".into(),
                 metadata: json!({"since": "2026-01-01"}),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -7835,7 +7926,7 @@ link_types:
             link_type: "assigned-to".into(),
             metadata: json!(null),
             actor: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -7849,7 +7940,7 @@ link_types:
                 link_type: "assigned-to".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -7875,7 +7966,7 @@ link_types:
                 link_type: "anything".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -7898,7 +7989,7 @@ link_types:
             data: json!({"title": "Task 1"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -7907,7 +7998,7 @@ link_types:
             data: json!({"title": "Task 2"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -7920,7 +8011,7 @@ link_types:
                 link_type: "depends-on".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -7946,7 +8037,7 @@ link_types:
             link_type: "mentor".into(),
             metadata: json!({"since": "2026-01-01"}),
             actor: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -7960,7 +8051,7 @@ link_types:
                 link_type: "mentor".into(),
                 metadata: json!({"since": "2026-02-01"}),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -7987,7 +8078,7 @@ link_types:
             link_type: "manager".into(),
             metadata: json!(null),
             actor: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -8001,7 +8092,7 @@ link_types:
                 link_type: "manager".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
         assert!(
@@ -8019,7 +8110,7 @@ link_types:
                 link_type: "manager".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap_err();
         assert!(
@@ -8047,7 +8138,7 @@ link_types:
                 link_type: "assigned-to".into(),
                 metadata: json!(null),
                 actor: None,
-            attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -8067,7 +8158,7 @@ link_types:
             data,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
     }
@@ -8633,7 +8724,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         h.put_schema(schema.clone()).unwrap();
@@ -8682,7 +8773,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -8722,7 +8813,7 @@ link_types:
                 data: json!({"done": false}), // missing required "title"
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::SchemaValidation(_)));
@@ -8734,7 +8825,7 @@ link_types:
             data: json!({"title": "ok", "done": false}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
     }
@@ -8753,7 +8844,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         let err = h.put_schema(schema).unwrap_err();
@@ -8777,7 +8868,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         let err = h
@@ -8810,7 +8901,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         h.handle_put_schema(PutSchemaRequest {
@@ -8843,7 +8934,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -8872,7 +8963,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         let err = h
             .handle_put_schema(PutSchemaRequest {
@@ -8906,7 +8997,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -8934,7 +9025,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -8969,7 +9060,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -8997,7 +9088,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -9036,7 +9127,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v1,
@@ -9064,7 +9155,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         let resp = h
             .handle_put_schema(PutSchemaRequest {
@@ -9273,7 +9364,7 @@ link_types:
             ],
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         h.put_schema(schema).unwrap();
         h
@@ -9289,7 +9380,7 @@ link_types:
             data: json!({"title": "Test"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         });
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
@@ -9308,7 +9399,7 @@ link_types:
                 data: json!({"bead_type": "task"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -9337,7 +9428,7 @@ link_types:
                 data: json!({"bead_type": "task"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -9361,7 +9452,7 @@ link_types:
                 }),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -9384,7 +9475,7 @@ link_types:
                 data: json!({"bead_type": "task"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -9396,7 +9487,7 @@ link_types:
             expected_version: resp.entity.version,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("save gate failed"));
@@ -9412,7 +9503,7 @@ link_types:
                 data: json!({"bead_type": "bug"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -9428,7 +9519,7 @@ link_types:
                 expected_version: create_resp.entity.version,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -9450,7 +9541,7 @@ link_types:
                 data: json!({"bead_type": "task"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -9495,7 +9586,7 @@ link_types:
                 data: json!({"bead_type": "bug"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         assert!(!create_resp.gates.get("complete").unwrap().pass);
@@ -9526,7 +9617,7 @@ link_types:
             expected_version: stored.version,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -9576,7 +9667,7 @@ link_types:
                 data,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -10174,7 +10265,7 @@ link_types:
                 data: json!({ "title": id }),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -10188,8 +10279,8 @@ link_types:
                 link_type: "relates-to".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-                            attribution: None,
-},
+                attribution: None,
+            },
             CreateLinkRequest {
                 source_collection: keep.clone(),
                 source_id: EntityId::new("keep-001"),
@@ -10198,8 +10289,8 @@ link_types:
                 link_type: "references".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-                            attribution: None,
-},
+                attribution: None,
+            },
             CreateLinkRequest {
                 source_collection: keep.clone(),
                 source_id: EntityId::new("keep-001"),
@@ -10208,8 +10299,8 @@ link_types:
                 link_type: "references".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-                            attribution: None,
-},
+                attribution: None,
+            },
         ] {
             h.create_link(request).unwrap();
         }
@@ -10277,7 +10368,7 @@ link_types:
             data: json!({"title": "old", "status": "open"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         let initial_view = h
@@ -10308,7 +10399,7 @@ link_types:
             data: json!({"title": "new", "status": "closed"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         let recreated_view = h
@@ -10358,7 +10449,7 @@ link_types:
             data: json!({"title": "old", "status": "open"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         let initial_view = h
@@ -10382,7 +10473,7 @@ link_types:
             data: json!({"title": "new", "status": "closed"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         let sibling_view = h
@@ -10442,7 +10533,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -10457,7 +10548,7 @@ link_types:
             data: json!({"title": "valid"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -10489,7 +10580,7 @@ link_types:
             data: json!({"title": "valid"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -10498,7 +10589,7 @@ link_types:
             data: json!({"no_title": true}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -10520,7 +10611,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                lifecycles: Default::default(),
             },
             actor: None,
             force: true,
@@ -10554,7 +10645,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                lifecycles: Default::default(),
             },
             actor: None,
         })
@@ -10587,7 +10678,7 @@ link_types:
             }),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -10596,7 +10687,7 @@ link_types:
             data: json!({"bead_type": "task"}), // missing description
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -10636,7 +10727,7 @@ link_types:
             }),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -10645,7 +10736,7 @@ link_types:
             data: json!({"bead_type": "task"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -10686,7 +10777,7 @@ link_types:
             }),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -10701,7 +10792,7 @@ link_types:
             }),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -10710,7 +10801,7 @@ link_types:
             data: json!({"bead_type": "task"}), // fails complete
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -10758,7 +10849,7 @@ link_types:
             data: json!({"title": "test"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -10804,7 +10895,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
             name: col.clone(),
@@ -10830,7 +10921,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
             schema: v2_schema,
@@ -10904,7 +10995,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                lifecycles: Default::default(),
             },
             actor: None,
         })
@@ -10928,7 +11019,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                lifecycles: Default::default(),
             },
             actor: None,
             force: false,
@@ -10955,7 +11046,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                lifecycles: Default::default(),
             },
             actor: None,
             force: false,
@@ -11006,7 +11097,7 @@ link_types:
                 data,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -11165,7 +11256,7 @@ link_types:
                 },
             ],
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         h.create_collection(CreateCollectionRequest {
@@ -11189,7 +11280,7 @@ link_types:
                 data: json!({"status": status, "priority": priority}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -11313,7 +11404,7 @@ link_types:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11379,7 +11470,7 @@ link_types:
                 data: json!({ "status": "pending" }),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -11392,7 +11483,7 @@ link_types:
                 expected_version: 1,
                 actor: Some("agent-1".into()),
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -11444,7 +11535,7 @@ link_types:
             actor: None,
             audit_metadata: None,
             force: false,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11487,7 +11578,7 @@ link_types:
                 unique: false,
             }],
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         let err = h.put_schema(schema).unwrap_err();
@@ -11524,7 +11615,7 @@ link_types:
                 unique: true,
             }],
             compound_indexes: Default::default(),
-        lifecycles: Default::default(),
+            lifecycles: Default::default(),
         };
 
         h.create_collection(CreateCollectionRequest {
@@ -11547,7 +11638,7 @@ link_types:
             data: json!({"email": "alice@example.com", "name": "Alice"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11558,7 +11649,7 @@ link_types:
                 data: json!({"email": "alice@example.com", "name": "Bob"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -11581,7 +11672,7 @@ link_types:
             data: json!({"email": "alice@example.com"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11591,7 +11682,7 @@ link_types:
             data: json!({"email": "bob@example.com"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
     }
@@ -11606,7 +11697,7 @@ link_types:
             data: json!({"email": "alice@example.com", "name": "Alice"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11618,7 +11709,7 @@ link_types:
             expected_version: 1,
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
     }
@@ -11633,7 +11724,7 @@ link_types:
             data: json!({"email": "alice@example.com"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11643,7 +11734,7 @@ link_types:
             data: json!({"email": "bob@example.com"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11656,7 +11747,7 @@ link_types:
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap_err();
 
@@ -11676,7 +11767,7 @@ link_types:
             data: json!({"email": "alice@example.com"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11686,7 +11777,7 @@ link_types:
             actor: None,
             audit_metadata: None,
             force: false,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11697,7 +11788,7 @@ link_types:
             data: json!({"email": "alice@example.com"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
     }
@@ -11730,7 +11821,7 @@ link_types:
                 data: json!({"title": id}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -11745,7 +11836,7 @@ link_types:
             link_type: "depends-on".into(),
             metadata: serde_json::Value::Null,
             actor: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11757,7 +11848,7 @@ link_types:
             link_type: "depends-on".into(),
             metadata: serde_json::Value::Null,
             actor: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -11769,7 +11860,7 @@ link_types:
             link_type: "assigned-to".into(),
             metadata: serde_json::Value::Null,
             actor: None,
-        attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -12296,7 +12387,7 @@ link_types:
                 data: json!({ "title": id }),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -12310,8 +12401,8 @@ link_types:
                 link_type: "references".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-                            attribution: None,
-},
+                attribution: None,
+            },
             CreateLinkRequest {
                 source_collection: rollups.clone(),
                 source_id: EntityId::new("sum-001"),
@@ -12320,8 +12411,8 @@ link_types:
                 link_type: "feeds".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-                            attribution: None,
-},
+                attribution: None,
+            },
             CreateLinkRequest {
                 source_collection: keep.clone(),
                 source_id: EntityId::new("keep-001"),
@@ -12330,8 +12421,8 @@ link_types:
                 link_type: "references".into(),
                 metadata: serde_json::Value::Null,
                 actor: None,
-                            attribution: None,
-},
+                attribution: None,
+            },
         ] {
             h.create_link(request).unwrap();
         }
@@ -12401,7 +12492,7 @@ link_types:
             data: json!({"title": "old", "status": "draft"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         let initial_view = h
@@ -12435,7 +12526,7 @@ link_types:
             data: json!({"title": "new", "status": "published"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         let recreated_view = h
@@ -12484,7 +12575,7 @@ link_types:
             data: json!({"title": "old", "status": "draft"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         let initial_view = h
@@ -12512,7 +12603,7 @@ link_types:
             data: json!({"title": "new", "status": "published"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         let sibling_view = h
@@ -12549,8 +12640,8 @@ link_types:
             data: json!({"title": "hello"}),
             actor: Some("agent-1".into()),
             audit_metadata: Some(meta),
-                    attribution: None,
-})
+            attribution: None,
+        })
         .unwrap();
 
         let audit = h
@@ -12574,7 +12665,7 @@ link_types:
             data: json!({"title": "hello"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -12587,8 +12678,8 @@ link_types:
             expected_version: 1,
             actor: None,
             audit_metadata: Some(meta),
-                    attribution: None,
-})
+            attribution: None,
+        })
         .unwrap();
 
         let audit = h
@@ -12612,7 +12703,7 @@ link_types:
             data: json!({"title": "hello"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -12624,8 +12715,8 @@ link_types:
             actor: None,
             force: false,
             audit_metadata: Some(meta),
-                    attribution: None,
-})
+            attribution: None,
+        })
         .unwrap();
 
         let audit = h
@@ -12647,7 +12738,7 @@ link_types:
             data: json!({"title": "hello"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -12679,7 +12770,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                lifecycles: Default::default(),
             },
             actor: None,
         })
@@ -12724,7 +12815,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
-            lifecycles: Default::default(),
+                lifecycles: Default::default(),
             },
             actor: None,
         })
@@ -12737,7 +12828,7 @@ link_types:
                 data: json!({"name": format!("widget-{i}")}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -12772,7 +12863,7 @@ link_types:
             data: json!({"title": "hello", "status": "draft", "priority": 3}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -12784,7 +12875,7 @@ link_types:
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -12805,7 +12896,7 @@ link_types:
             data: json!({"title": "hello", "notes": "some notes"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -12817,7 +12908,7 @@ link_types:
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -12835,7 +12926,7 @@ link_types:
             data: json!({"title": "hello"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -12847,7 +12938,7 @@ link_types:
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -12865,7 +12956,7 @@ link_types:
             data: json!({"title": "hello"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -12877,7 +12968,7 @@ link_types:
                 expected_version: 99,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::ConflictingVersion { .. }));
@@ -12894,7 +12985,7 @@ link_types:
                 expected_version: 1,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap_err();
         assert!(matches!(err, AxonError::NotFound(_)));
@@ -12910,7 +13001,7 @@ link_types:
             data: json!({"title": "hello", "status": "draft"}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -12921,7 +13012,7 @@ link_types:
             expected_version: 1,
             actor: Some("agent-1".into()),
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -13006,7 +13097,7 @@ link_types:
             data: json!({ "bead_type": "invoice" }),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
         h.create_entity(CreateEntityRequest {
@@ -13015,7 +13106,7 @@ link_types:
             data: json!({ "bead_type": "invoice" }),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -13027,7 +13118,7 @@ link_types:
                 expected_version: 1,
                 actor: Some("agent-1".into()),
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
 
@@ -13104,7 +13195,7 @@ link_types:
                 data: json!({"n": i}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -13115,7 +13206,7 @@ link_types:
                 data: json!({"n": i}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             })
             .unwrap();
         }
@@ -13174,7 +13265,7 @@ link_types:
             data: json!({"n": 99}),
             actor: None,
             audit_metadata: None,
-                attribution: None,
+            attribution: None,
         })
         .unwrap();
 
@@ -13331,7 +13422,7 @@ link_types:
                 data: json!({"title": "design the thing"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating entity without explicit status",
         );
@@ -13352,7 +13443,7 @@ link_types:
                 data: json!({"title": "design", "status": "draft"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating entity with explicit draft state",
         );
@@ -13372,7 +13463,7 @@ link_types:
                 data: json!({"title": "design", "status": "invalid"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating entity with unknown status",
         );
@@ -13398,7 +13489,7 @@ link_types:
                 data: json!({"title": "design", "status": 42}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating entity with non-string status",
         );
@@ -13425,7 +13516,7 @@ link_types:
                 data: json!({"title": "design"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "seeding entity",
         );
@@ -13440,7 +13531,7 @@ link_types:
                 expected_version: created.entity.version,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "updating entity without status",
         );
@@ -13465,7 +13556,7 @@ link_types:
                 data: json!({"title": "design"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "seeding entity",
         );
@@ -13478,7 +13569,7 @@ link_types:
                 expected_version: created.entity.version,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "updating entity with unknown status",
         );
@@ -13516,7 +13607,7 @@ link_types:
                 data: json!({"body": "hello", "status": "whatever"}),
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "creating note",
         );
@@ -13530,7 +13621,7 @@ link_types:
                 expected_version: created.entity.version,
                 actor: None,
                 audit_metadata: None,
-                        attribution: None,
+                attribution: None,
             }),
             "updating note",
         );

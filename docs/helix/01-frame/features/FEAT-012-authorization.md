@@ -373,10 +373,17 @@ attributes of the **user**, the **resource** (entity/collection), and the
 **So that** my operations are attributed to me in the audit log
 
 **Acceptance Criteria:**
-- [x] Agent connects via Tailscale IP; Axon resolves its identity via whois
-- [x] Audit entries show the agent's Tailscale node name as actor
-- [x] Connections from outside the tailnet are rejected with 401
-- [x] Agent with no recognized Tailscale tags receives the configured `default_role` (default: `read`)
+- [x] Agent connects via Tailscale IP; Axon resolves its identity via
+  whois. Test: `crates/axon-server/tests/federation_test.rs`
+- [x] Audit entries show the resolved identity as actor. Test:
+  `crates/axon-server/tests/api_contract.rs`,
+  `crates/axon-server/tests/cutover_jwt_test.rs`
+- [x] Connections without valid authentication are rejected with 401.
+  Test: `crates/axon-server/tests/auth_pipeline_test.rs`,
+  `crates/axon-server/tests/auth_pipeline_integration_test.rs`
+- [x] Agent with no recognized Tailscale tags is still resolved to a
+  stable user identity for later role assignment. Test:
+  `crates/axon-server/tests/federation_test.rs`
 
 ### Story US-044: Role-Based Access Control [FEAT-012]
 
@@ -385,11 +392,22 @@ attributes of the **user**, the **resource** (entity/collection), and the
 **So that** agents can't accidentally drop collections or modify schemas
 
 **Acceptance Criteria:**
-- [x] An agent with `tag:axon-write` can create/update/delete entities
-- [x] An agent with `tag:axon-write` cannot drop collections or change schemas
-- [x] An agent with `tag:axon-read` gets 403 on any write operation
-- [x] An admin with `tag:axon-admin` can perform all operations
-- [x] When a node has multiple role-granting tags, the highest-privilege role wins (admin > write > read)
+- [x] A JWT credential with write grants can create/update/delete
+  entities. Test: `crates/axon-server/tests/cutover_jwt_test.rs`,
+  `crates/axon-server/tests/control_credentials_test.rs`
+- [x] A write-level principal cannot perform admin-only operations such
+  as credential escalation. Test:
+  `crates/axon-server/tests/control_credentials_test.rs`
+- [x] A read-only credential gets 403 on write operations. Test:
+  `crates/axon-server/tests/cutover_jwt_test.rs`,
+  `crates/axon-server/tests/auth_pipeline_test.rs`
+- [x] An admin principal can perform tenant control-plane operations.
+  Test: `crates/axon-server/tests/control_tenants_test.rs`,
+  `crates/axon-server/tests/control_databases_test.rs`,
+  `crates/axon-server/tests/control_users_provision_test.rs`
+- [x] Grant validation enforces the highest allowed privilege ceiling for
+  a tenant member and rejects grants above that ceiling. Test:
+  `crates/axon-server/tests/control_credentials_test.rs`
 
 ### Story US-045: Development Without Auth [FEAT-012]
 
@@ -398,9 +416,14 @@ attributes of the **user**, the **resource** (entity/collection), and the
 **So that** I don't need a Tailscale connection during development
 
 **Acceptance Criteria:**
-- [x] `axon-server --no-auth` starts without requiring tailscaled
-- [x] All requests succeed as admin in no-auth mode
-- [x] Audit entries show actor as `"anonymous"` in no-auth mode
+- [x] `axon-server --no-auth` starts without requiring tailscaled. Test:
+  `crates/axon-server/tests/no_auth_test.rs`,
+  `crates/axon-server/tests/cutover_jwt_test.rs`
+- [x] Requests receive a synthetic admin identity in no-auth mode. Test:
+  `crates/axon-server/tests/no_auth_test.rs`,
+  `crates/axon-server/tests/control_tenants_test.rs`
+- [x] Audit entries show actor as `"anonymous"` in no-auth mode. Test:
+  `crates/axon-server/tests/api_contract.rs`
 
 ## Technical Design
 

@@ -13,7 +13,9 @@
 #![allow(clippy::unwrap_used)]
 
 use axon_core::auth::{TenantId, TenantRole, UserId};
-use axon_storage::{MemoryStorageAdapter, PostgresStorageAdapter, SqliteStorageAdapter, StorageAdapter};
+use axon_storage::{
+    MemoryStorageAdapter, PostgresStorageAdapter, SqliteStorageAdapter, StorageAdapter,
+};
 use testcontainers_modules::{
     postgres,
     testcontainers::{runners::SyncRunner, Container},
@@ -90,7 +92,11 @@ fn scenario_upsert_fresh_creates_membership(
     assert_eq!(member.tenant_id, tid);
     assert_eq!(member.user_id, uid);
     assert_eq!(member.role, TenantRole::Write);
-    assert_eq!(count_rows("t-fresh", "u-fresh"), 1, "should have exactly 1 row");
+    assert_eq!(
+        count_rows("t-fresh", "u-fresh"),
+        1,
+        "should have exactly 1 row"
+    );
 }
 
 /// b) upserting the same (tenant_id, user_id) pair with a different role
@@ -111,7 +117,11 @@ fn scenario_upsert_same_pair_updates_role(
         .expect("second upsert should succeed");
 
     assert_eq!(member.role, TenantRole::Admin, "role should be updated");
-    assert_eq!(count_rows("t-update", "u-update"), 1, "still exactly 1 row after update");
+    assert_eq!(
+        count_rows("t-update", "u-update"),
+        1,
+        "still exactly 1 row after update"
+    );
 
     // Confirm via the read path.
     let fetched = adapter
@@ -147,7 +157,10 @@ fn scenario_remove_missing_returns_false(adapter: &dyn StorageAdapter) {
         .remove_tenant_member(TenantId::new("t-ghost"), UserId::new("u-ghost"))
         .expect("remove should not error on missing row");
 
-    assert!(!removed, "remove should return false for a non-existent row");
+    assert!(
+        !removed,
+        "remove should return false for a non-existent row"
+    );
 }
 
 /// e) get_tenant_member finds the row created by upsert_tenant_member.
@@ -222,8 +235,7 @@ fn memory_get_tenant_member_after_upsert() {
 /// Build a SQLite adapter with auth schema applied and the given
 /// (tenant_id, user_id) pairs pre-inserted for FK compliance.
 fn sqlite_adapter_with_pairs(pairs: &[(&str, &str)]) -> SqliteStorageAdapter {
-    let adapter =
-        SqliteStorageAdapter::open_in_memory().expect("sqlite in-memory should open");
+    let adapter = SqliteStorageAdapter::open_in_memory().expect("sqlite in-memory should open");
     adapter
         .apply_auth_migrations()
         .expect("auth migrations should apply");
@@ -285,8 +297,8 @@ fn postgres_upsert_fresh_creates_membership() {
         return;
     };
 
-    let adapter = PostgresStorageAdapter::connect(&cluster.dsn)
-        .expect("postgres connect should succeed");
+    let adapter =
+        PostgresStorageAdapter::connect(&cluster.dsn).expect("postgres connect should succeed");
     adapter
         .apply_auth_migrations()
         .expect("auth migrations should apply");
@@ -307,8 +319,8 @@ fn postgres_upsert_same_pair_updates_role() {
         return;
     };
 
-    let adapter = PostgresStorageAdapter::connect(&cluster.dsn)
-        .expect("postgres connect should succeed");
+    let adapter =
+        PostgresStorageAdapter::connect(&cluster.dsn).expect("postgres connect should succeed");
     adapter
         .apply_auth_migrations()
         .expect("auth migrations should apply");
@@ -329,8 +341,8 @@ fn postgres_remove_existing_returns_true() {
         return;
     };
 
-    let adapter = PostgresStorageAdapter::connect(&cluster.dsn)
-        .expect("postgres connect should succeed");
+    let adapter =
+        PostgresStorageAdapter::connect(&cluster.dsn).expect("postgres connect should succeed");
     adapter
         .apply_auth_migrations()
         .expect("auth migrations should apply");
@@ -351,8 +363,8 @@ fn postgres_remove_missing_returns_false() {
         return;
     };
 
-    let adapter = PostgresStorageAdapter::connect(&cluster.dsn)
-        .expect("postgres connect should succeed");
+    let adapter =
+        PostgresStorageAdapter::connect(&cluster.dsn).expect("postgres connect should succeed");
     adapter
         .apply_auth_migrations()
         .expect("auth migrations should apply");
@@ -366,8 +378,8 @@ fn postgres_get_tenant_member_after_upsert() {
         return;
     };
 
-    let adapter = PostgresStorageAdapter::connect(&cluster.dsn)
-        .expect("postgres connect should succeed");
+    let adapter =
+        PostgresStorageAdapter::connect(&cluster.dsn).expect("postgres connect should succeed");
     adapter
         .apply_auth_migrations()
         .expect("auth migrations should apply");

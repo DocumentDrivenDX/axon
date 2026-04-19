@@ -82,14 +82,76 @@ schema validation, audit, and APIs — but there is no streamlined path from
 - FEAT-011 (Admin Web UI) — admin UI generation extends the base UI.
 - FEAT-015 (GraphQL) — generated client can use GraphQL as transport.
 
-## Acceptance Criteria
+## User Stories
 
-- [ ] TypeScript client generated from ESF schema compiles and provides
-      typed entity operations
+### Story US-098: Generate a Typed Client from Schema [FEAT-024]
+
+**As a** developer starting an Axon-backed application
+**I want** a TypeScript client generated from my ESF schemas
+**So that** application code gets typed entity operations and local
+validation without hand-written API wrappers
+
+**Acceptance Criteria:**
+- [ ] TypeScript client generation accepts one or more ESF schemas and
+  emits compilable TypeScript. Planned E2E:
+  `crates/axon-codegen/tests/application_substrate_test.rs`
+- [ ] Generated types include entity create, read, update, delete, query,
+  and link operations for each collection. Planned E2E:
+  `crates/axon-codegen/tests/application_substrate_test.rs`
 - [ ] Client-side validation matches server-side validation for all
-      supported constraint types
-- [ ] Admin UI generated from schema provides entity browser, editor,
-      and audit viewer
-- [ ] Deployment template produces a running Axon instance with one
-      command
-- [ ] Schema changes trigger client and UI regeneration
+  supported constraint types. Planned E2E:
+  `crates/axon-codegen/tests/application_substrate_test.rs`,
+  `sdk/typescript/test/generated-client.test.ts`
+- [ ] Regenerating after a schema change updates affected client types and
+  leaves unaffected collections stable. Planned E2E:
+  `crates/axon-codegen/tests/application_substrate_test.rs`
+- [ ] The generated package can be imported by a minimal Vite/TypeScript
+  app without bundler-specific hacks. Planned E2E:
+  `sdk/typescript/test/generated-client.test.ts`
+
+### Story US-099: Generate a Schema-Driven Admin App [FEAT-024]
+
+**As a** workflow builder
+**I want** a usable admin application generated from schema metadata
+**So that** I can browse, edit, validate, and audit domain data without
+building forms by hand
+
+**Acceptance Criteria:**
+- [ ] Generated admin UI includes collection navigation, entity browser,
+  entity editor, link viewer, and audit viewer. Planned E2E:
+  `ui/tests/e2e/generated-app.spec.ts`
+- [ ] Required fields, optional fields, enums, arrays, and nested objects
+  render as editable controls derived from schema. Planned E2E:
+  `ui/tests/e2e/generated-app.spec.ts`
+- [ ] Invalid form submissions are blocked client-side and rejected
+  server-side with matching validation messages. Planned E2E:
+  `ui/tests/e2e/generated-app.spec.ts`
+- [ ] The generated UI preserves tenant/database scope in every route and
+  API call. Planned E2E: `ui/tests/e2e/generated-app.spec.ts`
+- [ ] Schema changes trigger UI regeneration and update visible form
+  fields. Planned E2E: `ui/tests/e2e/generated-app.spec.ts`
+
+### Story US-100: Deploy a Schema-Backed App with One Command [FEAT-024]
+
+**As an** application developer
+**I want** a template that packages Axon, generated client code, generated
+UI, and deployment config
+**So that** I can move from schema to running app without bespoke
+infrastructure work
+
+**Acceptance Criteria:**
+- [ ] The deployment template builds a container containing `axon-server`,
+  generated UI assets, and generated client artifacts. Planned E2E:
+  `crates/axon-codegen/tests/application_substrate_test.rs`
+- [ ] One command produces a running local instance with health check,
+  default tenant/database, and generated UI. Planned E2E:
+  `crates/axon-codegen/tests/application_substrate_test.rs`
+- [ ] Cloud Run configuration includes health checks and persistent
+  storage configuration. Planned E2E:
+  `crates/axon-codegen/tests/application_substrate_test.rs`
+- [ ] Re-running generation after a schema change updates client and UI
+  artifacts without deleting operator-owned config. Planned E2E:
+  `crates/axon-codegen/tests/application_substrate_test.rs`
+- [ ] The template documents which files are generated and which are safe
+  for application-specific edits. Planned E2E:
+  `crates/axon-codegen/tests/application_substrate_test.rs`

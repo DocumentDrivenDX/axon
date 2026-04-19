@@ -1,6 +1,6 @@
 <script lang="ts">
-import { base } from '$app/paths';
 import { goto } from '$app/navigation';
+import { base } from '$app/paths';
 import { type Tenant, createTenant, deleteTenant, fetchTenants } from '$lib/api';
 
 let tenants = $state<Tenant[]>([]);

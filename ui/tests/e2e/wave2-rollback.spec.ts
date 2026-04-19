@@ -68,9 +68,18 @@ test.describe('entity rollback', () => {
 		await expect(page.getByTestId('rollback-apply-button')).toBeVisible();
 	});
 
-	// TODO: test full apply flow once backend is available in CI
-	test.skip('applying rollback updates entity to target version', async () => {
-		// Placeholder: navigate to entity, click Rollback tab, preview v2,
-		// click Apply, verify success message and updated entity version.
+	test('applying rollback updates entity to target version', async ({ page }) => {
+		await page.goto(dbCollectionUrl(db, 'docs'));
+		await expect(page.getByText('Version 3').first()).toBeVisible({ timeout: 10_000 });
+
+		await page.getByTestId('entity-tab-rollback').click();
+		await expect(page.getByTestId('entity-rollback-table')).toBeVisible({ timeout: 5_000 });
+		await page.getByTestId('rollback-preview-v2').click();
+		await expect(page.getByTestId('entity-rollback-preview')).toBeVisible({ timeout: 10_000 });
+
+		await page.getByTestId('rollback-apply-button').click();
+		await expect(page.getByText(/Rolled back to v2/)).toBeVisible({ timeout: 10_000 });
+		await page.getByTestId('entity-tab-data').click();
+		await expect(page.getByText('Version 2').first()).toBeVisible({ timeout: 5_000 });
 	});
 });

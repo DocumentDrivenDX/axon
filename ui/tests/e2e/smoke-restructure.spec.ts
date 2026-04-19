@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { createTestTenant, tenantUrl } from './helpers';
 
 /**
  * End-to-end smoke test for the post-restructure admin UI.
@@ -89,18 +90,17 @@ test.describe('UI restructure smoke', () => {
 		await expect(page.getByRole('heading', { name: 'Audit Log', level: 1 })).toBeVisible();
 	});
 
-	test('tenant Members page loads', async ({ page }) => {
-		await page.goto('/ui/tenants');
-		// Click the first tenant's "Open" link.
-		await page.getByRole('link', { name: 'Open' }).first().click();
+	test('tenant Members page loads', async ({ page, request }) => {
+		const tenant = await createTestTenant(request, 'smoke-members');
+		await page.goto(tenantUrl(tenant));
 		await page.locator('.tenant-header .subnav').getByRole('link', { name: 'Members' }).click();
 		await expect(page).toHaveURL(/\/members$/);
 		await expect(page.getByRole('heading', { name: 'Members', level: 1 })).toBeVisible();
 	});
 
-	test('tenant Credentials page loads', async ({ page }) => {
-		await page.goto('/ui/tenants');
-		await page.getByRole('link', { name: 'Open' }).first().click();
+	test('tenant Credentials page loads', async ({ page, request }) => {
+		const tenant = await createTestTenant(request, 'smoke-creds');
+		await page.goto(tenantUrl(tenant));
 		await page
 			.locator('.tenant-header .subnav')
 			.getByRole('link', { name: 'Credentials' })

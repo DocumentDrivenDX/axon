@@ -28,7 +28,7 @@ use axon_core::auth::{
     TenantRole, User, UserId,
 };
 use axon_server::auth_pipeline::{
-    AuthPipelineState, InMemoryRevocationCache, JwtIssuer, jwt_verify_layer,
+    jwt_verify_layer, AuthPipelineState, InMemoryRevocationCache, JwtIssuer,
 };
 use axon_storage::MemoryStorageAdapter;
 
@@ -86,8 +86,7 @@ fn make_storage() -> MemoryStorageAdapter {
 
 fn make_state() -> Arc<AuthPipelineState> {
     let issuer = JwtIssuer::new(SECRET.to_vec(), ISSUER_ID.to_string());
-    let storage: Box<dyn axon_storage::StorageAdapter + Send + Sync> =
-        Box::new(make_storage());
+    let storage: Box<dyn axon_storage::StorageAdapter + Send + Sync> = Box::new(make_storage());
     Arc::new(AuthPipelineState {
         issuer: Arc::new(issuer),
         revocation_cache: Arc::new(InMemoryRevocationCache::new()),
@@ -440,9 +439,7 @@ async fn error_op_not_granted() {
 
 // ── valid_jwt_populates_request_extension ─────────────────────────────────────
 
-async fn identity_handler(
-    Extension(identity): Extension<ResolvedIdentity>,
-) -> impl IntoResponse {
+async fn identity_handler(Extension(identity): Extension<ResolvedIdentity>) -> impl IntoResponse {
     axum::Json(serde_json::json!({"user_id": identity.user_id.as_str()}))
 }
 
@@ -453,12 +450,9 @@ async fn valid_jwt_populates_request_extension() {
     let token = issuer.issue(&claims).unwrap();
 
     let state = make_state();
-    let app = Router::new()
-        .route(TEST_PATH, get(identity_handler))
-        .layer(axum::middleware::from_fn_with_state(
-            state,
-            jwt_verify_layer,
-        ));
+    let app = Router::new().route(TEST_PATH, get(identity_handler)).layer(
+        axum::middleware::from_fn_with_state(state, jwt_verify_layer),
+    );
 
     let req = bearer_req(TEST_PATH, &token);
     let (status, json) = send(app, req).await;
@@ -557,19 +551,67 @@ async fn ops_matrix() {
     }
     let cases = vec![
         // GET (Read) against various grant sets
-        Case { method: Method::GET, ops: vec![Op::Read], expected_status: 200 },
-        Case { method: Method::GET, ops: vec![Op::Write], expected_status: 403 },
-        Case { method: Method::GET, ops: vec![Op::Read, Op::Write], expected_status: 200 },
+        Case {
+            method: Method::GET,
+            ops: vec![Op::Read],
+            expected_status: 200,
+        },
+        Case {
+            method: Method::GET,
+            ops: vec![Op::Write],
+            expected_status: 403,
+        },
+        Case {
+            method: Method::GET,
+            ops: vec![Op::Read, Op::Write],
+            expected_status: 200,
+        },
         // Write methods (POST/PUT/PATCH/DELETE) against various grant sets
-        Case { method: Method::POST, ops: vec![Op::Write], expected_status: 200 },
-        Case { method: Method::POST, ops: vec![Op::Read], expected_status: 403 },
-        Case { method: Method::POST, ops: vec![Op::Read, Op::Write], expected_status: 200 },
-        Case { method: Method::PUT, ops: vec![Op::Write], expected_status: 200 },
-        Case { method: Method::PUT, ops: vec![Op::Read], expected_status: 403 },
-        Case { method: Method::PATCH, ops: vec![Op::Write], expected_status: 200 },
-        Case { method: Method::PATCH, ops: vec![Op::Read], expected_status: 403 },
-        Case { method: Method::DELETE, ops: vec![Op::Write], expected_status: 200 },
-        Case { method: Method::DELETE, ops: vec![Op::Read], expected_status: 403 },
+        Case {
+            method: Method::POST,
+            ops: vec![Op::Write],
+            expected_status: 200,
+        },
+        Case {
+            method: Method::POST,
+            ops: vec![Op::Read],
+            expected_status: 403,
+        },
+        Case {
+            method: Method::POST,
+            ops: vec![Op::Read, Op::Write],
+            expected_status: 200,
+        },
+        Case {
+            method: Method::PUT,
+            ops: vec![Op::Write],
+            expected_status: 200,
+        },
+        Case {
+            method: Method::PUT,
+            ops: vec![Op::Read],
+            expected_status: 403,
+        },
+        Case {
+            method: Method::PATCH,
+            ops: vec![Op::Write],
+            expected_status: 200,
+        },
+        Case {
+            method: Method::PATCH,
+            ops: vec![Op::Read],
+            expected_status: 403,
+        },
+        Case {
+            method: Method::DELETE,
+            ops: vec![Op::Write],
+            expected_status: 200,
+        },
+        Case {
+            method: Method::DELETE,
+            ops: vec![Op::Read],
+            expected_status: 403,
+        },
     ];
 
     // Use a route that accepts all HTTP methods.
@@ -589,10 +631,7 @@ async fn ops_matrix() {
         let state = make_state();
         // Router that handles any method on TEST_PATH.
         let app = Router::new()
-            .route(
-                TEST_PATH,
-                axum::routing::any(handler),
-            )
+            .route(TEST_PATH, axum::routing::any(handler))
             .layer(axum::middleware::from_fn_with_state(
                 state,
                 jwt_verify_layer,
@@ -625,15 +664,31 @@ fn auth_error_status_and_code_coverage() {
         (AuthError::CredentialMalformed, 401, "credential_malformed"),
         (AuthError::CredentialInvalid, 401, "credential_invalid"),
         (AuthError::CredentialExpired, 401, "credential_expired"),
-        (AuthError::CredentialNotYetValid, 401, "credential_not_yet_valid"),
+        (
+            AuthError::CredentialNotYetValid,
+            401,
+            "credential_not_yet_valid",
+        ),
         (AuthError::CredentialRevoked, 401, "credential_revoked"),
-        (AuthError::CredentialForeignIssuer, 401, "credential_foreign_issuer"),
-        (AuthError::CredentialWrongTenant, 403, "credential_wrong_tenant"),
+        (
+            AuthError::CredentialForeignIssuer,
+            401,
+            "credential_foreign_issuer",
+        ),
+        (
+            AuthError::CredentialWrongTenant,
+            403,
+            "credential_wrong_tenant",
+        ),
         (AuthError::UserSuspended, 401, "user_suspended"),
         (AuthError::NotATenantMember, 403, "not_a_tenant_member"),
         (AuthError::DatabaseNotGranted, 403, "database_not_granted"),
         (AuthError::OpNotGranted, 403, "op_not_granted"),
-        (AuthError::GrantsExceedIssuerRole, 401, "grants_exceed_issuer_role"),
+        (
+            AuthError::GrantsExceedIssuerRole,
+            401,
+            "grants_exceed_issuer_role",
+        ),
         (AuthError::GrantsMalformed, 401, "grants_malformed"),
     ];
     for (err, expected_status, expected_code) in cases {

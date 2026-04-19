@@ -182,11 +182,9 @@ mod tests {
 
         let result = run_init(project.to_str().unwrap());
         assert!(result.is_err());
-        assert!(
-            result
-                .expect_err("init of existing dir should fail")
-                .to_string()
-                .contains("already exists")
-        );
+        assert!(result
+            .expect_err("init of existing dir should fail")
+            .to_string()
+            .contains("already exists"));
     }
 }

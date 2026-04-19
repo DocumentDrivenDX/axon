@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 
-import { fetchAudit, fetchCollections, issueCredential, listCredentials, revokeCredential } from './api';
+import {
+	fetchAudit,
+	fetchCollections,
+	issueCredential,
+	listCredentials,
+	revokeCredential,
+} from './api';
 
 const originalFetch = globalThis.fetch;
 

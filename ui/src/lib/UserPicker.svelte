@@ -1,5 +1,5 @@
 <script lang="ts">
-import { listUsers, type User } from '$lib/api';
+import { type User, listUsers } from '$lib/api';
 
 interface Props {
 	value: string | null;
@@ -19,20 +19,18 @@ let pasteValue = $state('');
 let loading = $state(true);
 
 // Label for the currently selected user
-let selectedLabel = $derived(() => {
+const selectedLabel = $derived(() => {
 	if (!value) return '';
 	const u = users.find((u) => u.id === value);
 	if (u) return `${u.display_name} — ${u.id.slice(0, 8)}`;
 	return value.slice(0, 8);
 });
 
-let filtered = $derived(() => {
+const filtered = $derived(() => {
 	if (!filter.trim()) return users;
 	const q = filter.toLowerCase();
 	return users.filter(
-		(u) =>
-			u.display_name.toLowerCase().includes(q) ||
-			(u.email ?? '').toLowerCase().includes(q),
+		(u) => u.display_name.toLowerCase().includes(q) || (u.email ?? '').toLowerCase().includes(q),
 	);
 });
 

@@ -741,8 +741,8 @@ impl TenantId {
     pub fn from_name(name: &str) -> Self {
         // Fixed 128-bit namespace UUID unique to Axon tenant name mapping.
         const AXON_TENANT_NS: Uuid = Uuid::from_bytes([
-            0x7a, 0x78, 0x6f, 0x6e, 0x2d, 0x74, 0x65, 0x6e,
-            0x61, 0x6e, 0x74, 0x2d, 0x6e, 0x61, 0x6d, 0x65,
+            0x7a, 0x78, 0x6f, 0x6e, 0x2d, 0x74, 0x65, 0x6e, 0x61, 0x6e, 0x74, 0x2d, 0x6e, 0x61,
+            0x6d, 0x65,
         ]);
         Self(Uuid::new_v5(&AXON_TENANT_NS, name.as_bytes()).to_string())
     }
@@ -1351,12 +1351,10 @@ mod auth_core_tests {
     #[test]
     fn grants_validation_passes_for_valid_grants() {
         let grants = Grants {
-            databases: vec![
-                GrantedDatabase {
-                    name: "orders".into(),
-                    ops: vec![Op::Read, Op::Write],
-                },
-            ],
+            databases: vec![GrantedDatabase {
+                name: "orders".into(),
+                ops: vec![Op::Read, Op::Write],
+            }],
         };
         assert!(grants.validate().is_ok());
     }
@@ -1369,10 +1367,7 @@ mod auth_core_tests {
                 ops: vec![Op::Read],
             }],
         };
-        assert!(matches!(
-            grants.validate(),
-            Err(AuthError::GrantsMalformed)
-        ));
+        assert!(matches!(grants.validate(), Err(AuthError::GrantsMalformed)));
     }
 
     #[test]
@@ -1383,10 +1378,7 @@ mod auth_core_tests {
                 ops: vec![],
             }],
         };
-        assert!(matches!(
-            grants.validate(),
-            Err(AuthError::GrantsMalformed)
-        ));
+        assert!(matches!(grants.validate(), Err(AuthError::GrantsMalformed)));
     }
 
     #[test]
@@ -1397,10 +1389,7 @@ mod auth_core_tests {
                 ops: vec![Op::Read, Op::Read],
             }],
         };
-        assert!(matches!(
-            grants.validate(),
-            Err(AuthError::GrantsMalformed)
-        ));
+        assert!(matches!(grants.validate(), Err(AuthError::GrantsMalformed)));
     }
 
     #[test]
@@ -1494,13 +1483,19 @@ mod auth_core_tests {
             (AuthError::CredentialExpired, "credential expired"),
             (AuthError::CredentialNotYetValid, "credential not yet valid"),
             (AuthError::CredentialRevoked, "credential revoked"),
-            (AuthError::CredentialForeignIssuer, "credential foreign issuer"),
+            (
+                AuthError::CredentialForeignIssuer,
+                "credential foreign issuer",
+            ),
             (AuthError::CredentialWrongTenant, "credential wrong tenant"),
             (AuthError::UserSuspended, "user suspended"),
             (AuthError::NotATenantMember, "not a tenant member"),
             (AuthError::DatabaseNotGranted, "database not granted"),
             (AuthError::OpNotGranted, "op not granted"),
-            (AuthError::GrantsExceedIssuerRole, "grants exceed issuer role"),
+            (
+                AuthError::GrantsExceedIssuerRole,
+                "grants exceed issuer role",
+            ),
             (AuthError::GrantsExceedRole, "grants exceed role"),
             (AuthError::GrantsMalformed, "grants malformed"),
         ];
@@ -1576,7 +1571,10 @@ mod auth_core_tests {
         assert_eq!(ops.len(), 2);
         assert!(ops.contains(&Op::Read));
         assert!(ops.contains(&Op::Write));
-        assert!(!ops.contains(&Op::Admin), "Write must not be able to delegate Admin");
+        assert!(
+            !ops.contains(&Op::Admin),
+            "Write must not be able to delegate Admin"
+        );
     }
 
     #[test]

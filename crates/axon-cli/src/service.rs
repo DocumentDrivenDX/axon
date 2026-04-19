@@ -139,17 +139,19 @@ fn create_axon_system_user() -> Result<()> {
     }
 
     // Ensure the data directory exists and is owned by axon.
-    std::fs::create_dir_all("/var/lib/axon")
-        .context("failed to create /var/lib/axon")?;
-    run_cmd("chown", &["axon:axon", "/var/lib/axon"])
-        .context("failed to chown /var/lib/axon")?;
+    std::fs::create_dir_all("/var/lib/axon").context("failed to create /var/lib/axon")?;
+    run_cmd("chown", &["axon:axon", "/var/lib/axon"]).context("failed to chown /var/lib/axon")?;
     println!("data directory: /var/lib/axon");
     Ok(())
 }
 
 fn install_systemd(bin: &std::path::Path, global: bool) -> Result<()> {
     let unit_path = systemd_unit_path(global)?;
-    let template = if global { SYSTEMD_GLOBAL_UNIT } else { SYSTEMD_USER_UNIT };
+    let template = if global {
+        SYSTEMD_GLOBAL_UNIT
+    } else {
+        SYSTEMD_USER_UNIT
+    };
     let unit_content = template.replace("{binary_path}", &bin.display().to_string());
 
     if let Some(parent) = unit_path.parent() {
@@ -260,7 +262,10 @@ fn install_launchd(bin: &std::path::Path, global: bool) -> Result<()> {
     // `launchctl load` is deprecated; use `bootstrap` on macOS 10.15+.
     // For user agents: bootstrap gui/<uid>; for system daemons: bootstrap system.
     if global {
-        run_cmd("launchctl", &["bootstrap", "system", &plist_path.display().to_string()])?;
+        run_cmd(
+            "launchctl",
+            &["bootstrap", "system", &plist_path.display().to_string()],
+        )?;
     } else {
         let domain = launchd_user_domain()?;
         run_cmd(
@@ -285,7 +290,10 @@ fn uninstall_launchd() -> Result<()> {
     };
 
     // `launchctl unload` is deprecated; use `bootout`.
-    let _ = run_cmd("launchctl", &["bootout", &domain, &plist_path.display().to_string()]);
+    let _ = run_cmd(
+        "launchctl",
+        &["bootout", &domain, &plist_path.display().to_string()],
+    );
     std::fs::remove_file(&plist_path)
         .with_context(|| format!("failed to remove {}", plist_path.display()))?;
     println!("removed {}", plist_path.display());

@@ -24,7 +24,7 @@ use axum::extract::State;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use http::{HeaderMap, Method, StatusCode};
-use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde_json::json;
 use uuid::Uuid;
 
@@ -99,10 +99,7 @@ impl InMemoryRevocationCache {
 
     /// Returns `true` if `jti` is in the cache.
     pub fn contains(&self, jti: &Uuid) -> bool {
-        self.inner
-            .read()
-            .map(|g| g.contains(jti))
-            .unwrap_or(false)
+        self.inner.read().map(|g| g.contains(jti)).unwrap_or(false)
     }
 
     /// Add `jti` to the cache.
@@ -412,8 +409,7 @@ fn record_auth_rejection(err: &AuthError, ctx: &AuthRejectionContext) {
         "{}",
         err.error_code()
     );
-    metrics::counter!("axon_auth_rejections_total", "error_code" => err.error_code())
-        .increment(1);
+    metrics::counter!("axon_auth_rejections_total", "error_code" => err.error_code()).increment(1);
 }
 
 // ── AuthError → axum Response ─────────────────────────────────────────────────
@@ -424,8 +420,8 @@ pub struct AuthErrorResponse(pub AuthError);
 
 impl IntoResponse for AuthErrorResponse {
     fn into_response(self) -> Response {
-        let status = StatusCode::from_u16(self.0.status_code())
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        let status =
+            StatusCode::from_u16(self.0.status_code()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         let body = json!({
             "error": {
                 "code": self.0.error_code(),

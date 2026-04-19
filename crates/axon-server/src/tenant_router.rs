@@ -371,9 +371,8 @@ mod tests {
 
     /// Create a `TenantRouter` backed by a temporary directory.
     fn make_router(tmp: &Path) -> TenantRouter {
-        let default_storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
-            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
-        );
+        let default_storage: Box<dyn StorageAdapter + Send + Sync> =
+            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
         let default_handler = Arc::new(Mutex::new(AxonHandler::new(default_storage)));
         TenantRouter::new(tmp.to_path_buf(), default_handler)
     }
@@ -447,7 +446,9 @@ mod tests {
         let result = router.drop_database("default").await;
         assert!(result.is_err(), "dropping 'default' should fail");
         assert!(
-            result.expect_err("dropping 'default' should fail").contains("cannot drop the default"),
+            result
+                .expect_err("dropping 'default' should fail")
+                .contains("cannot drop the default"),
             "error message should mention 'default'"
         );
     }
@@ -473,9 +474,8 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn single_constructor_works() {
-        let storage: Box<dyn StorageAdapter + Send + Sync> = Box::new(
-            SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"),
-        );
+        let storage: Box<dyn StorageAdapter + Send + Sync> =
+            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
         let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
         let router = TenantRouter::single(Arc::clone(&handler));
 

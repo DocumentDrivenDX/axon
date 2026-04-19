@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::str::FromStr;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axon_audit::entry::AuditEntry;
@@ -9,8 +10,39 @@ use axon_core::id::{
 };
 use axon_core::types::Entity;
 use axon_schema::schema::{CollectionSchema, CollectionView};
+use sqlx::postgres::PgConnectOptions;
 
 use crate::adapter::StorageAdapter;
+
+fn pg_connect_options(params: &str) -> Result<PgConnectOptions, AxonError> {
+    if params.starts_with("postgres://") || params.starts_with("postgresql://") {
+        return PgConnectOptions::from_str(params)
+            .map_err(|e| AxonError::Storage(format!("invalid PostgreSQL DSN: {e}")));
+    }
+
+    let mut options = PgConnectOptions::new();
+    for part in params.split_whitespace() {
+        let Some((key, value)) = part.split_once('=') else {
+            return Err(AxonError::InvalidArgument(format!(
+                "invalid PostgreSQL keyword-value DSN part '{part}'"
+            )));
+        };
+        options = match key {
+            "host" => options.host(value),
+            "port" => {
+                let port = value.parse::<u16>().map_err(|e| {
+                    AxonError::InvalidArgument(format!("invalid PostgreSQL port '{value}': {e}"))
+                })?;
+                options.port(port)
+            }
+            "user" | "username" => options.username(value),
+            "password" => options.password(value),
+            "dbname" | "database" => options.database(value),
+            _ => options,
+        };
+    }
+    Ok(options)
+}
 
 /// PostgreSQL-backed storage adapter.
 ///
@@ -49,10 +81,11 @@ impl PostgresStorageAdapter {
     /// Example: `"host=localhost user=axon dbname=axon"` or
     /// `"postgres://axon@localhost/axon"`
     pub fn connect(params: &str) -> Result<Self, AxonError> {
+        let options = pg_connect_options(params)?;
         let (rt, pool) = match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 let pool = tokio::task::block_in_place(|| {
-                    handle.block_on(sqlx::PgPool::connect(params))
+                    handle.block_on(sqlx::PgPool::connect_with(options))
                 })
                 .map_err(|e| AxonError::Storage(format!("connection failed: {e}")))?;
                 (None, pool)
@@ -64,7 +97,7 @@ impl PostgresStorageAdapter {
                     .build()
                     .map_err(|e| AxonError::Storage(e.to_string()))?;
                 let pool = rt
-                    .block_on(sqlx::PgPool::connect(params))
+                    .block_on(sqlx::PgPool::connect_with(options))
                     .map_err(|e| AxonError::Storage(format!("connection failed: {e}")))?;
                 (Some(rt), pool)
             }
@@ -2204,13 +2237,14 @@ pub fn tenant_dsn(superadmin_dsn: &str, tenant_db_name: &str) -> String {
 pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(), AxonError> {
     validate_pg_db_name(name)?;
     let full_name = format!("axon_{name}");
+    let options = pg_connect_options(superadmin_dsn)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| AxonError::Storage(e.to_string()))?;
     rt.block_on(async {
         use sqlx::Row;
-        let pool = sqlx::PgPool::connect(superadmin_dsn)
+        let pool = sqlx::PgPool::connect_with(options)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let row = sqlx::query("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
@@ -2247,13 +2281,14 @@ pub fn provision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(
 pub fn deprovision_postgres_database(superadmin_dsn: &str, name: &str) -> Result<(), AxonError> {
     validate_pg_db_name(name)?;
     let full_name = format!("axon_{name}");
+    let options = pg_connect_options(superadmin_dsn)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| AxonError::Storage(e.to_string()))?;
     rt.block_on(async {
         use sqlx::Row;
-        let pool = sqlx::PgPool::connect(superadmin_dsn)
+        let pool = sqlx::PgPool::connect_with(options)
             .await
             .map_err(|e| AxonError::Storage(e.to_string()))?;
         let row = sqlx::query("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)")
