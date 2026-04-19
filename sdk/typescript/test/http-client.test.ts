@@ -130,6 +130,85 @@ describe("auth_token_sets_authorization_header", () => {
   });
 });
 
+describe("current_identity", () => {
+  it("GETs /auth/me outside tenant/database scope", async () => {
+    const { mock, calls } = mockFetch(200, '{"actor":"anonymous","role":"admin"}');
+    const client = new HttpAxonClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+
+    await client.me();
+
+    const [url, init] = calls[0];
+    expect(url).toBe("http://localhost:4170/auth/me");
+    expect((init as { method: string }).method).toBe("GET");
+  });
+});
+
+describe("schema_manifest_handshake", () => {
+  it("sends x-axon-schema-hash when provided", async () => {
+    const { mock, calls } = mockFetch(200, '{"schema_hash":"fnv64:abc"}');
+    const client = new HttpAxonClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+
+    await client.tenant("acme").database("orders").schemaManifest("fnv64:abc");
+
+    const [url, init] = calls[0];
+    expect(url).toBe("http://localhost:4170/tenants/acme/databases/orders/schema");
+    const headers = (init as { headers: Record<string, string> }).headers;
+    expect(headers["x-axon-schema-hash"]).toBe("fnv64:abc");
+  });
+});
+
+describe("traverse_and_transactions", () => {
+  it("POSTs traversal filters as JSON body", async () => {
+    const { mock, calls } = mockFetch(200, '{"entities":[],"paths":[]}');
+    const client = new HttpAxonClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+
+    await client.tenant("acme").database("orders").traverse("engagements", "eng-1", {
+      link_type: "has_phase",
+      max_depth: 2,
+      hop_filter: { type: "field", field: "status", op: "eq", value: "approved" },
+    });
+
+    const [url, init] = calls[0];
+    expect(url).toBe(
+      "http://localhost:4170/tenants/acme/databases/orders/traverse/engagements/eng-1",
+    );
+    expect(JSON.parse((init as { body: string }).body)).toEqual({
+      link_type: "has_phase",
+      max_depth: 2,
+      hop_filter: { type: "field", field: "status", op: "eq", value: "approved" },
+    });
+  });
+
+  it("passes idempotency keys on transaction commits", async () => {
+    const { mock, calls } = mockFetch(200, '{"results":[]}');
+    const client = new HttpAxonClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+
+    await client
+      .tenant("acme")
+      .database("orders")
+      .commitTransaction([{ op: "create", collection: "items", id: "i1", data: {} }], {
+        idempotencyKey: "retry-1",
+      });
+
+    const [url, init] = calls[0];
+    expect(url).toBe("http://localhost:4170/tenants/acme/databases/orders/transactions");
+    const headers = (init as { headers: Record<string, string> }).headers;
+    expect(headers["idempotency-key"]).toBe("retry-1");
+  });
+});
+
 describe("base_url_trailing_slash_handled", () => {
   it("produces identical URLs regardless of trailing slash on baseUrl", async () => {
     const withSlash = new HttpAxonClient({

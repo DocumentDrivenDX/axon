@@ -38,6 +38,20 @@ export interface HttpAxonClientOptions {
 export class HttpAxonClient {
   constructor(private readonly options: HttpAxonClientOptions) {}
 
+  rootUrlFor(path: string): string {
+    const base = this.options.baseUrl.replace(/\/$/, "");
+    return `${base}${path}`;
+  }
+
+  private async request<T>(method: string, path: string): Promise<T> {
+    return requestJson<T>(this.options, this.rootUrlFor(path), method);
+  }
+
+  /** Resolve the current authenticated Axon identity. */
+  async me(): Promise<unknown> {
+    return this.request("GET", "/auth/me");
+  }
+
   /** Scope into a tenant. Returns a TenantClient. */
   tenant(name: string): TenantClient {
     return new TenantClient(this.options, name);
@@ -72,35 +86,9 @@ export class DatabaseClient {
     method: string,
     path: string,
     body?: unknown,
+    headers?: Record<string, string>,
   ): Promise<T> {
-    // Node 18+ and modern browsers both provide a global fetch.
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const fetchImpl: FetchLike = this.options.fetchImpl ?? (globalThis as any).fetch;
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-    };
-    if (this.options.authToken) {
-      headers.authorization = `Bearer ${this.options.authToken}`;
-    }
-    const res = await fetchImpl(this.urlFor(path), {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    if (!res.ok) {
-      const errText = await res.text();
-      let errCode = "unknown";
-      try {
-        const parsed = JSON.parse(errText);
-        errCode = parsed.code ?? parsed.error?.code ?? "unknown";
-      } catch (_) {
-        /* ignore */
-      }
-      throw new AxonHttpError(res.status, errCode, errText);
-    }
-    const text = await res.text();
-    if (!text) return undefined as unknown as T;
-    return JSON.parse(text) as T;
+    return requestJson<T>(this.options, this.urlFor(path), method, body, headers);
   }
 
   // ── Entity CRUD ─────────────────────────────────────────────────────
@@ -142,12 +130,49 @@ export class DatabaseClient {
     return this.request("POST", `/collections/${name}`);
   }
 
+  async schemaManifest(expectedHash?: string): Promise<unknown> {
+    const headers =
+      expectedHash === undefined ? undefined : { "x-axon-schema-hash": expectedHash };
+    return this.request("GET", "/schema", undefined, headers);
+  }
+
   // ── Query / snapshot ────────────────────────────────────────────────
   async query(
     collection: string,
     filter: Record<string, unknown>,
   ): Promise<unknown> {
     return this.request("POST", `/collections/${collection}/query`, filter);
+  }
+
+  async traverse(
+    collection: string,
+    id: string,
+    body: {
+      link_type?: string;
+      max_depth?: number;
+      direction?: "forward" | "reverse";
+      hop_filter?: Record<string, unknown>;
+    } = {},
+  ): Promise<unknown> {
+    return this.request("POST", `/traverse/${collection}/${id}`, body);
+  }
+
+  async graphql<T = unknown>(
+    query: string,
+    variables?: Record<string, unknown>,
+  ): Promise<T> {
+    return this.request("POST", "/graphql", { query, variables });
+  }
+
+  async commitTransaction(
+    operations: unknown[],
+    options: { idempotencyKey?: string } = {},
+  ): Promise<unknown> {
+    const headers =
+      options.idempotencyKey === undefined
+        ? undefined
+        : { "idempotency-key": options.idempotencyKey };
+    return this.request("POST", "/transactions", { operations }, headers);
   }
 
   async snapshot(collection: string): Promise<unknown> {
@@ -162,6 +187,44 @@ export class DatabaseClient {
     }
     return this.request("GET", `/audit/query?${qs.toString()}`);
   }
+}
+
+async function requestJson<T>(
+  options: HttpAxonClientOptions,
+  url: string,
+  method: string,
+  body?: unknown,
+  extraHeaders?: Record<string, string>,
+): Promise<T> {
+  // Node 18+ and modern browsers both provide a global fetch.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fetchImpl: FetchLike = options.fetchImpl ?? (globalThis as any).fetch;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    ...extraHeaders,
+  };
+  if (options.authToken) {
+    headers.authorization = `Bearer ${options.authToken}`;
+  }
+  const res = await fetchImpl(url, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    let errCode = "unknown";
+    try {
+      const parsed = JSON.parse(errText);
+      errCode = parsed.code ?? parsed.error?.code ?? "unknown";
+    } catch (_) {
+      /* ignore */
+    }
+    throw new AxonHttpError(res.status, errCode, errText);
+  }
+  const text = await res.text();
+  if (!text) return undefined as unknown as T;
+  return JSON.parse(text) as T;
 }
 
 export class AxonHttpError extends Error {

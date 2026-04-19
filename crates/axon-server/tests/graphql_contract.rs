@@ -39,14 +39,20 @@ fn test_server() -> axum_test::TestServer {
 /// shows up in the per-request GraphQL schema.
 async fn seed_collection(server: &axum_test::TestServer, name: &str) {
     server
-        .post(&format!("/tenants/default/databases/default/collections/{name}"))
+        .post(&format!(
+            "/tenants/default/databases/default/collections/{name}"
+        ))
         .json(&json!({
             "schema": {
                 "version": 1,
                 "entity_schema": {
                     "type": "object",
                     "properties": {
-                        "label": { "type": "string" }
+                        "label": { "type": "string" },
+                        "status": { "type": "string" },
+                        "week": { "type": ["string", "null"] },
+                        "hours": { "type": "number" },
+                        "billable": { "type": "boolean" }
                     }
                 }
             },
@@ -60,7 +66,9 @@ async fn seed_collection(server: &axum_test::TestServer, name: &str) {
 /// `title` — used by schema validation error tests.
 async fn seed_constrained_collection(server: &axum_test::TestServer, name: &str) {
     server
-        .post(&format!("/tenants/default/databases/default/collections/{name}"))
+        .post(&format!(
+            "/tenants/default/databases/default/collections/{name}"
+        ))
         .json(&json!({
             "schema": {
                 "version": 1,
@@ -129,11 +137,7 @@ async fn graphql_collection_type_visible_after_creation() {
     let server = test_server();
     seed_collection(&server, "item").await;
 
-    let body = gql(
-        &server,
-        r"{ __schema { queryType { fields { name } } } }",
-    )
-    .await;
+    let body = gql(&server, r"{ __schema { queryType { fields { name } } } }").await;
 
     let fields = body["data"]["__schema"]["queryType"]["fields"]
         .as_array()
@@ -142,6 +146,40 @@ async fn graphql_collection_type_visible_after_creation() {
 
     assert!(names.contains(&"item"), "should have singular query 'item'");
     assert!(names.contains(&"items"), "should have plural query 'items'");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_list_field_exposes_filter_and_sort_arguments() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let body = gql(
+        &server,
+        r#"{
+            __type(name: "Query") {
+                fields {
+                    name
+                    args { name type { kind name ofType { kind name } } }
+                }
+            }
+        }"#,
+    )
+    .await;
+
+    let fields = body["data"]["__type"]["fields"].as_array().unwrap();
+    let items = fields
+        .iter()
+        .find(|field| field["name"] == "items")
+        .expect("items query field exists");
+    let arg_names: Vec<&str> = items["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|arg| arg["name"].as_str())
+        .collect();
+
+    assert!(arg_names.contains(&"filter"), "items should accept filter");
+    assert!(arg_names.contains(&"sort"), "items should accept sort");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -172,11 +210,7 @@ async fn graphql_multiple_collections_in_schema() {
     seed_collection(&server, "item").await;
     seed_collection(&server, "note").await;
 
-    let body = gql(
-        &server,
-        r"{ __schema { queryType { fields { name } } } }",
-    )
-    .await;
+    let body = gql(&server, r"{ __schema { queryType { fields { name } } } }").await;
 
     let fields = body["data"]["__schema"]["queryType"]["fields"]
         .as_array()
@@ -217,7 +251,10 @@ async fn graphql_list_empty_before_any_entities() {
     let body = gql(&server, r"{ items { id } }").await;
 
     let list = body["data"]["items"].as_array().unwrap();
-    assert!(list.is_empty(), "no entities created yet — list should be empty");
+    assert!(
+        list.is_empty(),
+        "no entities created yet — list should be empty"
+    );
 }
 
 // ── Mutations: create ─────────────────────────────────────────────────────────
@@ -343,6 +380,135 @@ async fn graphql_list_pagination_via_after_id() {
             "item {id} appeared in both pages"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_list_filters_and_sorts_entities() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let cases = [
+        (
+            "te-1",
+            json!({"label": "Alpha", "status": "approved", "week": "2026-W16", "hours": 3.0, "billable": true}),
+        ),
+        (
+            "te-2",
+            json!({"label": "Beta", "status": "approved", "week": "2026-W16", "hours": 6.0, "billable": true}),
+        ),
+        (
+            "te-3",
+            json!({"label": "Gamma", "status": "draft", "week": "2026-W16", "hours": 8.0, "billable": true}),
+        ),
+        (
+            "te-4",
+            json!({"label": "Delta", "status": "approved", "week": "2026-W17", "hours": 9.0, "billable": true}),
+        ),
+    ];
+
+    for (id, data) in cases {
+        let body = gql(
+            &server,
+            &format!(
+                r#"mutation {{ createItem(id: "{id}", input: "{}") {{ id }} }}"#,
+                data.to_string().replace('"', "\\\"")
+            ),
+        )
+        .await;
+        assert!(body["errors"].is_null(), "unexpected create error: {body}");
+    }
+
+    let body = gql(
+        &server,
+        r#"{
+            items(
+                filter: {
+                    and: [
+                        { field: "status", op: "eq", value: "approved" },
+                        { field: "week", op: "eq", value: "2026-W16" },
+                        { field: "hours", op: "gte", value: 4.0 }
+                    ]
+                },
+                sort: [{ field: "hours", direction: "desc" }]
+            ) {
+                id
+                label
+                hours
+            }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    let list = body["data"]["items"].as_array().unwrap();
+    assert_eq!(
+        list.len(),
+        1,
+        "only approved W16 items with hours >= 4 match"
+    );
+    assert_eq!(list[0]["id"], "te-2");
+    assert_eq!(list[0]["label"], "Beta");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_list_supports_in_or_and_null_filters() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let cases = [
+        (
+            "nf-1",
+            json!({"label": "Alpha", "status": "approved", "week": Value::Null}),
+        ),
+        (
+            "nf-2",
+            json!({"label": "Beta", "status": "submitted", "week": "2026-W16"}),
+        ),
+        (
+            "nf-3",
+            json!({"label": "Gamma", "status": "draft", "week": "2026-W16"}),
+        ),
+    ];
+
+    for (id, data) in cases {
+        let body = gql(
+            &server,
+            &format!(
+                r#"mutation {{ createItem(id: "{id}", input: "{}") {{ id }} }}"#,
+                data.to_string().replace('"', "\\\"")
+            ),
+        )
+        .await;
+        assert!(body["errors"].is_null(), "unexpected create error: {body}");
+    }
+
+    let body = gql(
+        &server,
+        r#"{
+            items(
+                filter: {
+                    or: [
+                        { field: "status", op: "in", value: ["approved", "submitted"] },
+                        { field: "week", op: "is_null" }
+                    ]
+                },
+                sort: [{ field: "label" }]
+            ) {
+                id
+                label
+            }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    let ids: Vec<&str> = body["data"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, vec!["nf-1", "nf-2"]);
 }
 
 // ── Mutations: update ─────────────────────────────────────────────────────────
@@ -512,7 +678,10 @@ async fn graphql_schema_validation_error() {
     .await;
 
     let errors = body["errors"].as_array().unwrap();
-    assert!(!errors.is_empty(), "expected SCHEMA_VALIDATION error: {body}");
+    assert!(
+        !errors.is_empty(),
+        "expected SCHEMA_VALIDATION error: {body}"
+    );
     assert_eq!(
         errors[0]["extensions"]["code"].as_str().unwrap(),
         "SCHEMA_VALIDATION",
@@ -533,7 +702,10 @@ async fn graphql_invalid_json_input_returns_error() {
     .await;
 
     let errors = body["errors"].as_array().unwrap();
-    assert!(!errors.is_empty(), "expected a parse error for invalid JSON input");
+    assert!(
+        !errors.is_empty(),
+        "expected a parse error for invalid JSON input"
+    );
     let msg = errors[0]["message"].as_str().unwrap();
     assert!(
         msg.to_lowercase().contains("json"),

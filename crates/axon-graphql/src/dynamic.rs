@@ -11,8 +11,8 @@
 use std::sync::Arc;
 
 use async_graphql::dynamic::{
-    Field, FieldFuture, FieldValue, InputValue, Object, Schema, Subscription, SubscriptionField,
-    SubscriptionFieldFuture, TypeRef,
+    Field, FieldFuture, FieldValue, InputObject, InputValue, Object, Scalar, Schema, Subscription,
+    SubscriptionField, SubscriptionFieldFuture, TypeRef,
 };
 use async_graphql::futures_util::StreamExt;
 use async_graphql::{Error as GqlError, ErrorExtensions, Value as GqlValue};
@@ -23,9 +23,9 @@ use crate::subscriptions::BroadcastBroker;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
-    GetEntityRequest, PatchEntityRequest, QueryEntitiesRequest, TransitionLifecycleRequest,
-    UpdateEntityRequest,
+    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest, FieldFilter,
+    FilterNode, FilterOp, GateFilter, GetEntityRequest, PatchEntityRequest, QueryEntitiesRequest,
+    SortDirection, SortField, TransitionLifecycleRequest, UpdateEntityRequest,
 };
 use axon_core::auth::CallerIdentity;
 use axon_core::error::AxonError;
@@ -43,6 +43,9 @@ pub type SharedHandler<S> = Arc<Mutex<AxonHandler<S>>>;
 pub struct AxonSchema {
     pub schema: Schema,
 }
+
+const FILTER_INPUT: &str = "AxonFilterInput";
+const SORT_INPUT: &str = "AxonSortInput";
 
 // ── Entity → GraphQL FieldValue conversion ──────────────────────────────────
 
@@ -66,6 +69,142 @@ fn entity_to_field_value(entity: &Entity) -> FieldValue<'static> {
     }
 
     FieldValue::from(GqlValue::from_json(Value::Object(map)).unwrap_or(GqlValue::Null))
+}
+
+fn filter_input_object() -> InputObject {
+    InputObject::new(FILTER_INPUT)
+        .description(
+            "Composable Axon entity filter. Use field/op/value for field predicates, gate/pass for gate predicates, or and/or for nested boolean filters.",
+        )
+        .field(InputValue::new("field", TypeRef::named(TypeRef::STRING)))
+        .field(InputValue::new("op", TypeRef::named(TypeRef::STRING)))
+        .field(InputValue::new("value", TypeRef::named("JSON")))
+        .field(InputValue::new("gate", TypeRef::named(TypeRef::STRING)))
+        .field(InputValue::new("pass", TypeRef::named(TypeRef::BOOLEAN)))
+        .field(InputValue::new("and", TypeRef::named_nn_list(FILTER_INPUT)))
+        .field(InputValue::new("or", TypeRef::named_nn_list(FILTER_INPUT)))
+}
+
+fn sort_input_object() -> InputObject {
+    InputObject::new(SORT_INPUT)
+        .description("Axon entity sort field. Direction defaults to asc.")
+        .field(InputValue::new("field", TypeRef::named_nn(TypeRef::STRING)))
+        .field(InputValue::new(
+            "direction",
+            TypeRef::named(TypeRef::STRING),
+        ))
+}
+
+fn gql_input_to_json(value: &GqlValue) -> Result<Value, GqlError> {
+    value
+        .clone()
+        .into_json()
+        .map_err(|e| GqlError::new(format!("invalid GraphQL input value: {e}")))
+}
+
+fn parse_graphql_filter_arg(value: &GqlValue) -> Result<FilterNode, GqlError> {
+    parse_graphql_filter_json(&gql_input_to_json(value)?)
+}
+
+fn parse_graphql_filter_json(value: &Value) -> Result<FilterNode, GqlError> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| GqlError::new("filter must be an object"))?;
+
+    if let Some(filters) = obj.get("and") {
+        return Ok(FilterNode::And {
+            filters: parse_graphql_filter_list(filters, "and")?,
+        });
+    }
+
+    if let Some(filters) = obj.get("or") {
+        return Ok(FilterNode::Or {
+            filters: parse_graphql_filter_list(filters, "or")?,
+        });
+    }
+
+    if let Some(gate) = obj.get("gate") {
+        let gate = gate
+            .as_str()
+            .ok_or_else(|| GqlError::new("filter.gate must be a string"))?
+            .to_owned();
+        let pass = obj.get("pass").and_then(Value::as_bool).unwrap_or(true);
+        return Ok(FilterNode::Gate(GateFilter { gate, pass }));
+    }
+
+    let field = obj
+        .get("field")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GqlError::new("field filters require a string field"))?
+        .to_owned();
+    let op = obj
+        .get("op")
+        .and_then(Value::as_str)
+        .unwrap_or("eq")
+        .to_ascii_lowercase();
+    let value = obj.get("value").cloned().unwrap_or(Value::Null);
+
+    let (op, value) = match op.as_str() {
+        "eq" => (FilterOp::Eq, value),
+        "ne" | "neq" | "not_eq" => (FilterOp::Ne, value),
+        "gt" => (FilterOp::Gt, value),
+        "gte" => (FilterOp::Gte, value),
+        "lt" => (FilterOp::Lt, value),
+        "lte" => (FilterOp::Lte, value),
+        "in" => (FilterOp::In, value),
+        "contains" => (FilterOp::Contains, value),
+        "is_null" => (FilterOp::Eq, Value::Null),
+        "is_not_null" => (FilterOp::Ne, Value::Null),
+        _ => {
+            return Err(GqlError::new(format!("unsupported filter operator '{op}'")));
+        }
+    };
+
+    Ok(FilterNode::Field(FieldFilter { field, op, value }))
+}
+
+fn parse_graphql_filter_list(value: &Value, name: &str) -> Result<Vec<FilterNode>, GqlError> {
+    let items = value
+        .as_array()
+        .ok_or_else(|| GqlError::new(format!("filter.{name} must be a list")))?;
+    items.iter().map(parse_graphql_filter_json).collect()
+}
+
+fn parse_graphql_sort_arg(value: &GqlValue) -> Result<Vec<SortField>, GqlError> {
+    let json = gql_input_to_json(value)?;
+    let items = json
+        .as_array()
+        .ok_or_else(|| GqlError::new("sort must be a list"))?;
+
+    items
+        .iter()
+        .map(|item| {
+            let obj = item
+                .as_object()
+                .ok_or_else(|| GqlError::new("sort entries must be objects"))?;
+            let field = obj
+                .get("field")
+                .and_then(Value::as_str)
+                .ok_or_else(|| GqlError::new("sort entries require a string field"))?
+                .to_owned();
+            let direction = match obj
+                .get("direction")
+                .and_then(Value::as_str)
+                .unwrap_or("asc")
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "asc" => SortDirection::Asc,
+                "desc" => SortDirection::Desc,
+                other => {
+                    return Err(GqlError::new(format!(
+                        "unsupported sort direction '{other}'"
+                    )));
+                }
+            };
+            Ok(SortField { field, direction })
+        })
+        .collect()
 }
 
 /// Format nanosecond timestamp as ISO-8601 string.
@@ -328,11 +467,26 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         .and_then(|v| v.string().ok())
                         .map(EntityId::new);
 
+                    let filter = ctx
+                        .args
+                        .try_get("filter")
+                        .ok()
+                        .map(|v| parse_graphql_filter_arg(v.as_value()))
+                        .transpose()?;
+
+                    let sort = ctx
+                        .args
+                        .try_get("sort")
+                        .ok()
+                        .map(|v| parse_graphql_sort_arg(v.as_value()))
+                        .transpose()?
+                        .unwrap_or_default();
+
                     let guard = handler.lock().await;
                     match guard.query_entities(QueryEntitiesRequest {
                         collection: col.clone(),
-                        filter: None,
-                        sort: Vec::new(),
+                        filter,
+                        sort,
                         limit,
                         after_id,
                         count_only: false,
@@ -351,7 +505,9 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             },
         )
         .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
-        .argument(InputValue::new("afterId", TypeRef::named(TypeRef::ID)));
+        .argument(InputValue::new("afterId", TypeRef::named(TypeRef::ID)))
+        .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
+        .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT)));
         query = query.field(list_field);
 
         // ── Mutation: create ─────────────────────────────────────────────
@@ -382,10 +538,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             data,
                             actor: None,
                             audit_metadata: None,
-                                                attribution: None,
+                            attribution: None,
                         },
                         &caller,
-                                        None,
+                        None,
                     ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -427,10 +583,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             expected_version: version,
                             actor: None,
                             audit_metadata: None,
-                                                attribution: None,
+                            attribution: None,
                         },
                         &caller,
-                                        None,
+                        None,
                     ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -473,10 +629,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             expected_version: version,
                             actor: None,
                             audit_metadata: None,
-                                                attribution: None,
+                            attribution: None,
                         },
                         &caller,
-                                        None,
+                        None,
                     ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -511,10 +667,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             actor: None,
                             force: false,
                             audit_metadata: None,
-                                                attribution: None,
+                            attribution: None,
                         },
                         &caller,
-                                        None,
+                        None,
                     ) {
                         Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -553,10 +709,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             expected_version,
                             actor: None,
                             audit_metadata: None,
-                                                attribution: None,
+                            attribution: None,
                         },
                         &caller,
-                                        None,
+                        None,
                     ) {
                         Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -622,10 +778,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             link_type,
                             metadata,
                             actor: None,
-                        attribution: None,
+                            attribution: None,
                         },
                         &caller,
-                                        None,
+                        None,
                     ) {
                         Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -675,10 +831,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             target_id: EntityId::new(target_id),
                             link_type,
                             actor: None,
-                        attribution: None,
+                            attribution: None,
                         },
                         &caller,
-                                        None,
+                        None,
                     ) {
                         Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
                         Err(e) => Err(axon_error_to_gql(e)),
@@ -712,6 +868,9 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         Some(mutation.type_name()),
         subscription_name.as_deref(),
     )
+    .register(Scalar::new("JSON"))
+    .register(filter_input_object())
+    .register(sort_input_object())
     .register(query)
     .register(mutation);
 
@@ -769,15 +928,21 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         // Query: list.
         let list_field_name = format!("{collection_name}s");
         let type_name_list = type_name.clone();
-        query = query.field(Field::new(
-            &list_field_name,
-            TypeRef::named_list(&type_name_list),
-            |_ctx| {
-                FieldFuture::new(
-                    async move { Ok(Some(FieldValue::list(Vec::<FieldValue>::new()))) },
-                )
-            },
-        ));
+        query = query.field(
+            Field::new(
+                &list_field_name,
+                TypeRef::named_list(&type_name_list),
+                |_ctx| {
+                    FieldFuture::new(
+                        async move { Ok(Some(FieldValue::list(Vec::<FieldValue>::new()))) },
+                    )
+                },
+            )
+            .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+            .argument(InputValue::new("afterId", TypeRef::named(TypeRef::ID)))
+            .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
+            .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT))),
+        );
 
         // Mutation: create.
         let create_field_name = format!("create{type_name}");
@@ -809,6 +974,9 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
     }
 
     let mut schema_builder = Schema::build(query.type_name(), Some(mutation.type_name()), None)
+        .register(Scalar::new("JSON"))
+        .register(filter_input_object())
+        .register(sort_input_object())
         .register(query)
         .register(mutation);
 
@@ -1347,7 +1515,7 @@ mod tests {
                     data: json!({"title": "Hello", "status": "open"}),
                     actor: None,
                     audit_metadata: None,
-                                attribution: None,
+                    attribution: None,
                 })
                 .expect("create should succeed");
         }
@@ -1384,7 +1552,7 @@ mod tests {
                         data: json!({"title": format!("Task {i}")}),
                         actor: None,
                         audit_metadata: None,
-                                        attribution: None,
+                        attribution: None,
                     })
                     .expect("create should succeed");
             }
@@ -1440,7 +1608,7 @@ mod tests {
                     data: json!({"title": "Old"}),
                     actor: None,
                     audit_metadata: None,
-                                attribution: None,
+                    attribution: None,
                 })
                 .expect("create should succeed");
         }
@@ -1475,7 +1643,7 @@ mod tests {
                     data: json!({"title": "V1"}),
                     actor: None,
                     audit_metadata: None,
-                                attribution: None,
+                    attribution: None,
                 })
                 .expect("create should succeed");
             guard
@@ -1486,7 +1654,7 @@ mod tests {
                     expected_version: 1,
                     actor: None,
                     audit_metadata: None,
-                                attribution: None,
+                    attribution: None,
                 })
                 .expect("update should succeed");
         }
@@ -1536,7 +1704,7 @@ mod tests {
                     data: json!({"title": "To delete"}),
                     actor: None,
                     audit_metadata: None,
-                                attribution: None,
+                    attribution: None,
                 })
                 .expect("create should succeed");
         }
@@ -1574,7 +1742,7 @@ mod tests {
                     data: json!({"title": "Original", "status": "open"}),
                     actor: None,
                     audit_metadata: None,
-                                attribution: None,
+                    attribution: None,
                 })
                 .expect("create should succeed");
         }

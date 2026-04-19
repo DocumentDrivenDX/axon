@@ -389,7 +389,9 @@ async fn parity_create_get_entity() {
     http_create.assert_status(axum::http::StatusCode::CREATED);
     let http_body: Value = http_create.json();
 
-    let http_get = http.get("/tenants/default/databases/default/entities/tasks/t-001").await;
+    let http_get = http
+        .get("/tenants/default/databases/default/entities/tasks/t-001")
+        .await;
     http_get.assert_status_ok();
     let http_get_body: Value = http_get.json();
 
@@ -516,7 +518,9 @@ async fn parity_link_traverse() {
         }))
         .await;
 
-    let http_traverse = http.get("/tenants/default/databases/default/traverse/users/u-001?link_type=owns").await;
+    let http_traverse = http
+        .get("/tenants/default/databases/default/traverse/users/u-001?link_type=owns")
+        .await;
     http_traverse.assert_status_ok();
     let http_body: Value = http_traverse.json();
 
@@ -995,7 +999,11 @@ async fn http_traverse_direction_reverse() {
     fwd.assert_status_ok();
     let fwd_body: Value = fwd.json();
     let fwd_entities = fwd_body["entities"].as_array().unwrap();
-    assert_eq!(fwd_entities.len(), 1, "forward from A should return 1 entity");
+    assert_eq!(
+        fwd_entities.len(),
+        1,
+        "forward from A should return 1 entity"
+    );
     assert_eq!(fwd_entities[0]["id"], "b", "forward from A should return B");
 
     // Reverse traversal from B should return A (A links TO B).
@@ -1005,8 +1013,128 @@ async fn http_traverse_direction_reverse() {
     rev.assert_status_ok();
     let rev_body: Value = rev.json();
     let rev_entities = rev_body["entities"].as_array().unwrap();
-    assert_eq!(rev_entities.len(), 1, "reverse from B should return 1 entity");
+    assert_eq!(
+        rev_entities.len(),
+        1,
+        "reverse from B should return 1 entity"
+    );
     assert_eq!(rev_entities[0]["id"], "a", "reverse from B should return A");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_traverse_post_accepts_hop_filter_and_returns_link_metadata() {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    for (id, status) in [("a", "root"), ("b", "active"), ("c", "archived")] {
+        http.post(&format!(
+            "/tenants/default/databases/default/entities/nodes/{id}"
+        ))
+        .json(&json!({"data": {"name": id, "status": status}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+    }
+
+    for (target, weight) in [("b", 1), ("c", 2)] {
+        http.post("/tenants/default/databases/default/links")
+            .json(&json!({
+                "source_collection": "nodes",
+                "source_id": "a",
+                "target_collection": "nodes",
+                "target_id": target,
+                "link_type": "owns",
+                "metadata": {"weight": weight}
+            }))
+            .await
+            .assert_status(axum::http::StatusCode::CREATED);
+    }
+
+    let resp = http
+        .post("/tenants/default/databases/default/traverse/nodes/a")
+        .json(&json!({
+            "link_type": "owns",
+            "max_depth": 1,
+            "hop_filter": {
+                "type": "field",
+                "field": "status",
+                "op": "eq",
+                "value": "active"
+            }
+        }))
+        .await;
+    resp.assert_status_ok();
+    let body: Value = resp.json();
+
+    let entities = body["entities"].as_array().unwrap();
+    assert_eq!(entities.len(), 1, "hop filter should exclude archived node");
+    assert_eq!(entities[0]["id"], "b");
+
+    let paths = body["paths"].as_array().unwrap();
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0]["target_id"], "b");
+    assert_eq!(paths[0]["metadata"]["weight"], 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_schema_manifest_supports_static_client_handshake() {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    http.post("/tenants/default/databases/default/collections/time_entries")
+        .json(&json!({
+            "schema": {
+                "version": 7,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string"},
+                        "hours": {"type": "number"}
+                    }
+                }
+            },
+            "actor": "test"
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let ok = http.get("/tenants/default/databases/default/schema").await;
+    ok.assert_status_ok();
+    let body: Value = ok.json();
+    let schema_hash = body["schema_hash"]
+        .as_str()
+        .expect("schema manifest exposes schema_hash");
+    assert!(
+        schema_hash.starts_with("fnv64:"),
+        "schema_hash should be stable and named: {schema_hash}"
+    );
+    assert_eq!(body["database"], "default");
+    assert_eq!(body["expected_header"], "x-axon-schema-hash");
+    assert_eq!(body["collections"][0]["name"], "time_entries");
+    assert_eq!(body["collections"][0]["version"], 1);
+
+    let matched = http
+        .get("/tenants/default/databases/default/schema")
+        .add_header("x-axon-schema-hash", schema_hash)
+        .await;
+    matched.assert_status_ok();
+
+    let mismatch = http
+        .get("/tenants/default/databases/default/schema")
+        .add_header("x-axon-schema-hash", "fnv64:stale")
+        .await;
+    mismatch.assert_status(axum::http::StatusCode::CONFLICT);
+    let mismatch_body: Value = mismatch.json();
+    assert_eq!(mismatch_body["code"], "schema_mismatch");
+    assert_eq!(mismatch_body["detail"]["expected"], "fnv64:stale");
+    assert_eq!(mismatch_body["detail"]["actual"], schema_hash);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1062,9 +1190,8 @@ fn lifecycle_schema_json(collection: &str) -> String {
 /// Provision the `tasks` collection (with the `status` lifecycle) and seed
 /// entity `t-001` in `status: "draft"` on a fresh gRPC server. Returns the
 /// connected client.
-async fn setup_lifecycle_client() -> proto::axon_service_client::AxonServiceClient<
-    tonic::transport::Channel,
-> {
+async fn setup_lifecycle_client(
+) -> proto::axon_service_client::AxonServiceClient<tonic::transport::Channel> {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
 
@@ -1219,7 +1346,9 @@ async fn http_caller_identity_from_header_recorded_in_audit() {
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
-    let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-001").await;
+    let resp = server
+        .get("/tenants/default/databases/default/audit/entity/tasks/t-001")
+        .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     let entries = body["entries"].as_array().unwrap();
@@ -1240,7 +1369,9 @@ async fn http_missing_caller_identity_records_anonymous_in_audit() {
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
-    let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-002").await;
+    let resp = server
+        .get("/tenants/default/databases/default/audit/entity/tasks/t-002")
+        .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     let entries = body["entries"].as_array().unwrap();
@@ -1263,7 +1394,9 @@ async fn http_caller_identity_body_actor_is_ignored() {
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
-    let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-003").await;
+    let resp = server
+        .get("/tenants/default/databases/default/audit/entity/tasks/t-003")
+        .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     let entries = body["entries"].as_array().unwrap();
@@ -1287,7 +1420,9 @@ async fn http_caller_identity_empty_header_falls_back_to_anonymous() {
         .await
         .assert_status(axum::http::StatusCode::CREATED);
 
-    let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-006").await;
+    let resp = server
+        .get("/tenants/default/databases/default/audit/entity/tasks/t-006")
+        .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     let entries = body["entries"].as_array().unwrap();
@@ -1319,7 +1454,9 @@ async fn http_caller_identity_per_operation_type() {
         .await
         .assert_status_ok();
 
-    let resp = server.get("/tenants/default/databases/default/audit/entity/tasks/t-005").await;
+    let resp = server
+        .get("/tenants/default/databases/default/audit/entity/tasks/t-005")
+        .await;
     resp.assert_status_ok();
     let body: Value = resp.json();
     let entries = body["entries"].as_array().unwrap();
@@ -1390,7 +1527,9 @@ async fn http_transactions_idempotent_key_caches_success() {
     assert_eq!(body1, body2, "second response must be byte-identical");
 
     // Entity version must still be 2 (not re-applied to version 3).
-    let get_resp = http.get("/tenants/default/databases/default/entities/idem/e-1").await;
+    let get_resp = http
+        .get("/tenants/default/databases/default/entities/idem/e-1")
+        .await;
     get_resp.assert_status_ok();
     let get_body: Value = get_resp.json();
     assert_eq!(
