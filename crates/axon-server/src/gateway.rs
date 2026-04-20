@@ -12,7 +12,7 @@ use std::time::Instant;
 use axum::body::Bytes;
 use axum::extract::connect_info::MockConnectInfo;
 use axum::extract::{Path, Query, State, WebSocketUpgrade};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, get_service, post, put};
@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
+use uuid::Uuid;
 
 use async_graphql::http::{playground_source, GraphQLPlaygroundConfig};
 use axon_graphql::{BroadcastBroker, GraphqlIdempotencyScope};
@@ -78,6 +79,15 @@ const IDEMPOTENCY_CACHE_HEADER: &str = "x-idempotent-cache";
 /// Header a static browser bundle can send to assert the schema hash it was
 /// generated against during app-load compatibility checks.
 const SCHEMA_HASH_HEADER: &str = "x-axon-schema-hash";
+
+/// Request/response correlation header emitted on every HTTP response.
+const REQUEST_ID_HEADER: &str = "x-request-id";
+
+const CORS_ALLOW_METHODS: &str = "GET, POST, PUT, PATCH, DELETE, OPTIONS";
+const CORS_ALLOW_HEADERS: &str = "Content-Type, Authorization, X-Axon-Schema-Hash, X-Axon-Actor";
+const CORS_EXPOSE_HEADERS: &str =
+    "X-Idempotent-Cache, X-Axon-Schema-Hash, X-Request-Id, X-Axon-Query-Cost";
+const CORS_MAX_AGE_SECONDS: &str = "86400";
 
 /// Header carrying the caller-declared actor identity (FEAT-012).
 ///
@@ -577,15 +587,10 @@ pub(crate) async fn cors_middleware(
                 };
                 builder = builder
                     .header("Access-Control-Allow-Origin", acao)
-                    .header(
-                        "Access-Control-Allow-Methods",
-                        "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-                    )
-                    .header(
-                        "Access-Control-Allow-Headers",
-                        "Content-Type, Authorization",
-                    )
-                    .header("Access-Control-Max-Age", "86400");
+                    .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
+                    .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+                    .header("Access-Control-Max-Age", CORS_MAX_AGE_SECONDS)
+                    .header("Vary", "Origin");
             }
         }
         return builder
@@ -609,11 +614,37 @@ pub(crate) async fn cors_middleware(
                     response
                         .headers_mut()
                         .insert("Access-Control-Allow-Origin", v);
+                    response.headers_mut().insert(
+                        "Access-Control-Expose-Headers",
+                        HeaderValue::from_static(CORS_EXPOSE_HEADERS),
+                    );
+                    response
+                        .headers_mut()
+                        .insert("Vary", HeaderValue::from_static("Origin"));
                 }
             }
         }
     }
 
+    response
+}
+
+/// Attach a stable request correlation ID to every response. If the caller
+/// supplied a syntactically valid `x-request-id`, echo it; otherwise generate a
+/// fresh UUIDv7 so logs and browser-visible failures can be correlated.
+pub(crate) async fn request_id_middleware(request: axum::extract::Request, next: Next) -> Response {
+    let request_id = request
+        .headers()
+        .get(REQUEST_ID_HEADER)
+        .filter(|value| value.to_str().is_ok())
+        .cloned()
+        .unwrap_or_else(|| {
+            let generated = Uuid::now_v7().to_string();
+            HeaderValue::from_str(&generated).unwrap_or_else(|_| HeaderValue::from_static("0"))
+        });
+
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(REQUEST_ID_HEADER, request_id);
     response
 }
 
@@ -1132,7 +1163,7 @@ async fn schema_manifest(
 
     if let Some(expected) = expected {
         if expected != schema_hash {
-            return (
+            let mut response = (
                 StatusCode::CONFLICT,
                 Json(ApiError::new(
                     "schema_mismatch",
@@ -1144,10 +1175,18 @@ async fn schema_manifest(
                 )),
             )
                 .into_response();
+            if let Ok(value) = HeaderValue::from_str(&schema_hash) {
+                response.headers_mut().insert(SCHEMA_HASH_HEADER, value);
+            }
+            return response;
         }
     }
 
-    Json(manifest).into_response()
+    let mut response = Json(manifest).into_response();
+    if let Ok(value) = HeaderValue::from_str(&schema_hash) {
+        response.headers_mut().insert(SCHEMA_HASH_HEADER, value);
+    }
+    response
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3427,6 +3466,7 @@ fn build_router_full(
             authenticate_http_request,
         ))
         .layer(middleware::from_fn_with_state(cors, cors_middleware))
+        .layer(middleware::from_fn(request_id_middleware))
 }
 
 #[cfg(test)]
@@ -6350,6 +6390,42 @@ mod tests {
         axum_test::TestServer::new(app)
     }
 
+    fn cors_server_with_auth(
+        peer: SocketAddr,
+        auth: AuthContext,
+        cors: CorsStore,
+    ) -> axum_test::TestServer {
+        let storage: Box<dyn StorageAdapter + Send + Sync> =
+            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
+        let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let tenant_router = Arc::new(TenantRouter::single(handler));
+        let app = build_router_with_auth(
+            tenant_router,
+            "memory",
+            None,
+            auth,
+            crate::rate_limit::RateLimitConfig::default(),
+            ActorScopeGuard::default(),
+            None,
+            cors,
+        )
+        .layer(MockConnectInfo(peer));
+        axum_test::TestServer::new(app)
+    }
+
+    fn header_list_contains(headers: &HeaderMap, name: &str, expected: &str) -> bool {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .any(|part| part.eq_ignore_ascii_case(expected))
+            })
+            .unwrap_or(false)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn cors_options_preflight_allowed_origin_returns_200_with_headers() {
         let cors = CorsStore::default();
@@ -6379,6 +6455,40 @@ mod tests {
             Some("https://sindri:5173")
         );
         assert!(resp.headers().contains_key("access-control-allow-methods"));
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-allow-headers",
+            "content-type"
+        ));
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-allow-headers",
+            "authorization"
+        ));
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-allow-headers",
+            "x-axon-schema-hash"
+        ));
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-allow-headers",
+            "x-axon-actor"
+        ));
+        assert!(
+            !header_list_contains(
+                resp.headers(),
+                "access-control-allow-headers",
+                "idempotency-key"
+            ),
+            "idempotency-key is a compatibility header, not canonical browser CORS contract"
+        );
+        assert_eq!(
+            resp.headers()
+                .get("access-control-max-age")
+                .map(|v| v.to_str().unwrap()),
+            Some(CORS_MAX_AGE_SECONDS)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -6455,6 +6565,30 @@ mod tests {
                 .map(|v| v.to_str().unwrap()),
             Some("https://sindri:5173")
         );
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-expose-headers",
+            "x-idempotent-cache"
+        ));
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-expose-headers",
+            "x-axon-schema-hash"
+        ));
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-expose-headers",
+            "x-request-id"
+        ));
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-expose-headers",
+            "x-axon-query-cost"
+        ));
+        assert!(
+            resp.headers().contains_key("x-request-id"),
+            "every actual response should include a request id"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -6473,6 +6607,166 @@ mod tests {
         assert!(
             resp.headers().get("access-control-allow-origin").is_none(),
             "empty CORS store must not add any CORS headers"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cors_graphql_actual_response_exposes_diagnostic_headers() {
+        let cors = CorsStore::default();
+        cors.add_cached("https://nexiq.test");
+        let server = cors_server(cors);
+
+        let resp = server
+            .post("/tenants/default/databases/default/graphql")
+            .add_header(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_static("https://nexiq.test"),
+            )
+            .json(&serde_json::json!({"query": "{ __typename }"}))
+            .await;
+
+        resp.assert_status_ok();
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .map(|v| v.to_str().unwrap()),
+            Some("https://nexiq.test")
+        );
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-expose-headers",
+            "x-request-id"
+        ));
+        assert!(resp.headers().contains_key("x-request-id"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cors_schema_manifest_exposes_schema_hash_header() {
+        let cors = CorsStore::default();
+        cors.add_cached("https://nexiq.test");
+        let server = cors_server(cors);
+
+        let resp = server
+            .get("/tenants/default/databases/default/schema")
+            .add_header(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_static("https://nexiq.test"),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        let schema_hash_header = resp
+            .headers()
+            .get("x-axon-schema-hash")
+            .and_then(|value| value.to_str().ok())
+            .expect("schema manifest should emit x-axon-schema-hash")
+            .to_string();
+        let body: Value = resp.json();
+        assert_eq!(body["schema_hash"], schema_hash_header);
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-expose-headers",
+            "x-axon-schema-hash"
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cors_idempotent_transaction_replay_header_is_browser_readable() {
+        let cors = CorsStore::default();
+        cors.add_cached("https://nexiq.test");
+        let server = cors_server(cors);
+
+        server
+            .post("/tenants/default/databases/default/entities/idem/e-1")
+            .json(&serde_json::json!({"data": {"v": 0}, "actor": "test"}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let body = serde_json::json!({
+            "idempotency_key": "browser-retry-1",
+            "operations": [{
+                "op": "update",
+                "collection": "idem",
+                "id": "e-1",
+                "data": {"v": 1},
+                "expected_version": 1
+            }]
+        });
+
+        server
+            .post("/tenants/default/databases/default/transactions")
+            .add_header(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_static("https://nexiq.test"),
+            )
+            .json(&body)
+            .await
+            .assert_status_ok();
+
+        let replay = server
+            .post("/tenants/default/databases/default/transactions")
+            .add_header(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_static("https://nexiq.test"),
+            )
+            .json(&body)
+            .await;
+
+        replay.assert_status_ok();
+        assert_eq!(
+            replay
+                .headers()
+                .get("x-idempotent-cache")
+                .map(|value| value.to_str().unwrap()),
+            Some("hit")
+        );
+        assert!(header_list_contains(
+            replay.headers(),
+            "access-control-expose-headers",
+            "x-idempotent-cache"
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cors_options_preflight_bypasses_auth_layer() {
+        let cors = CorsStore::default();
+        cors.add_cached("https://nexiq.test");
+        let peer = SocketAddr::from(([127, 0, 0, 1], 3000));
+        let auth = AuthContext::with_provider(
+            AuthMode::Tailscale {
+                default_role: Role::Read,
+            },
+            Arc::new(FakeWhoisProvider::with_result(
+                peer,
+                Err(AuthError::Unauthorized(
+                    "peer is not a recognized tailnet address".into(),
+                )),
+            )),
+            Duration::from_secs(60),
+        );
+        let server = cors_server_with_auth(peer, auth, cors);
+
+        let resp = server
+            .method(
+                axum::http::Method::OPTIONS,
+                "/tenants/default/databases/default/graphql",
+            )
+            .add_header(
+                axum::http::header::ORIGIN,
+                axum::http::HeaderValue::from_static("https://nexiq.test"),
+            )
+            .add_header(
+                axum::http::header::HeaderName::from_static("access-control-request-method"),
+                axum::http::HeaderValue::from_static("POST"),
+            )
+            .await;
+
+        resp.assert_status_ok();
+        assert_eq!(
+            resp.headers()
+                .get("access-control-allow-origin")
+                .map(|v| v.to_str().unwrap()),
+            Some("https://nexiq.test")
         );
     }
 }

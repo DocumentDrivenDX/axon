@@ -35,14 +35,17 @@ normal application recovery workflow for the entity detail UI.
 Browser clients may call Axon cross-origin when the origin is allowed by
 deployment policy. Production deployments use an explicit allowlist. Development
 and `--no-auth` deployments may opt into a wildcard origin for local iteration.
+An empty allowlist disables CORS response headers.
 
 Preflight responses allow:
 
 - Methods: `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`
-- Request headers: `authorization`, `content-type`, `x-axon-schema-hash`
-- Credentials: allowed only when the deployment's origin policy enables them
-- Max age: deployment-configurable, with `600` seconds as the recommended
-  default
+- Request headers: `authorization`, `content-type`, `x-axon-schema-hash`,
+  `x-axon-actor`
+- Credentials mode: browser clients use `credentials: "omit"` and send bearer
+  credentials with `Authorization`; Axon does not require cookies for the
+  browser API contract
+- Max age: `86400` seconds
 
 Browser-readable response headers include:
 
@@ -51,8 +54,44 @@ Browser-readable response headers include:
 - `x-request-id`
 - `x-axon-query-cost` when query-cost reporting is enabled
 
+`idempotency-key` is not part of the canonical browser CORS request-header
+contract. Use the transaction input/body `idempotency_key` field instead. The
+legacy HTTP header may remain accepted for non-browser compatibility, but a
+browser preflight must not depend on it being allowed.
+
 Tailscale does not bypass browser same-origin enforcement. A Tailscale-hosted
 SPA talking to a differently named Axon host still needs this CORS policy.
+
+Example preflight from a static SPA:
+
+```http
+OPTIONS /tenants/acme/databases/default/graphql HTTP/1.1
+Origin: https://nexiq.tailnet.example
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: content-type, authorization, x-axon-schema-hash
+```
+
+Allowed-origin response:
+
+```http
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: https://nexiq.tailnet.example
+Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS
+Access-Control-Allow-Headers: Content-Type, Authorization, X-Axon-Schema-Hash, X-Axon-Actor
+Access-Control-Max-Age: 86400
+Vary: Origin
+```
+
+Actual browser responses for allowed origins include:
+
+```http
+Access-Control-Allow-Origin: https://nexiq.tailnet.example
+Access-Control-Expose-Headers: X-Idempotent-Cache, X-Axon-Schema-Hash, X-Request-Id, X-Axon-Query-Cost
+X-Request-Id: 018f4f9c-7cb2-7b38-a9f1-77b16d6a2e2a
+```
+
+Schema-manifest responses also emit `x-axon-schema-hash`. Transaction replays
+served from the idempotency cache emit `x-idempotent-cache: hit`.
 
 ## Current User
 
