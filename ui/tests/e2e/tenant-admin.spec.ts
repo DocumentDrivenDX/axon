@@ -27,6 +27,14 @@ test.describe('Credentials — issue and display JWT', () => {
 	});
 
 	test('Issue Credential modal mints a JWT and shows it once', async ({ page }) => {
+		const controlRequests: string[] = [];
+		page.on('request', (request) => {
+			const path = new URL(request.url()).pathname;
+			if (path.startsWith('/control/')) {
+				controlRequests.push(path);
+			}
+		});
+
 		await page.goto(tenantUrl(tenant, 'credentials'));
 		await page.getByRole('button', { name: 'Issue Credential' }).click();
 
@@ -68,6 +76,12 @@ test.describe('Credentials — issue and display JWT', () => {
 		await expect(page.locator('table').getByText('revoked').first()).toBeVisible({
 			timeout: 5_000,
 		});
+
+		expect(controlRequests).toContain('/control/graphql');
+		expect(
+			controlRequests.filter((path) => path !== '/control/graphql'),
+			'Credential UI should use control GraphQL rather than REST control routes',
+		).toEqual([]);
 	});
 });
 
@@ -81,6 +95,14 @@ test.describe('Tenant members — add, change role, remove', () => {
 	});
 
 	test('add a member, change role via dropdown, then remove', async ({ page }) => {
+		const controlRequests: string[] = [];
+		page.on('request', (request) => {
+			const path = new URL(request.url()).pathname;
+			if (path.startsWith('/control/')) {
+				controlRequests.push(path);
+			}
+		});
+
 		await page.goto(tenantUrl(tenant, 'members'));
 
 		// Add via UUID paste mode (the user picker's fallback for direct UUID entry).
@@ -99,14 +121,18 @@ test.describe('Tenant members — add, change role, remove', () => {
 
 		// Reload and verify the role stuck.
 		await page.reload();
-		await expect(
-			page.locator('tr', { hasText: idPrefix }).locator('select'),
-		).toHaveValue('admin');
+		await expect(page.locator('tr', { hasText: idPrefix }).locator('select')).toHaveValue('admin');
 
 		// Remove.
 		await page.locator('tr', { hasText: idPrefix }).getByRole('button', { name: 'Remove' }).click();
 		await page.getByRole('button', { name: 'Confirm' }).click();
 		await expect(page.locator('table').getByText(idPrefix)).toHaveCount(0);
+
+		expect(controlRequests).toContain('/control/graphql');
+		expect(
+			controlRequests.filter((path) => path !== '/control/graphql'),
+			'Member UI should use control GraphQL rather than REST control routes',
+		).toEqual([]);
 	});
 });
 
@@ -116,6 +142,14 @@ test.describe('Global users ACL — add, change, remove', () => {
 	const email = `${login}@example.test`;
 
 	test('add a user, change role, remove', async ({ page }) => {
+		const controlRequests: string[] = [];
+		page.on('request', (request) => {
+			const path = new URL(request.url()).pathname;
+			if (path.startsWith('/control/')) {
+				controlRequests.push(path);
+			}
+		});
+
 		await page.goto('/ui/users');
 
 		await page.getByPlaceholder('Display name (required)').fill(displayName);
@@ -147,6 +181,12 @@ test.describe('Global users ACL — add, change, remove', () => {
 		await expect(
 			page.locator('section', { hasText: 'ACL Entries' }).locator('tr', { hasText: login }),
 		).toHaveCount(0);
+
+		expect(controlRequests).toContain('/control/graphql');
+		expect(
+			controlRequests.filter((path) => path !== '/control/graphql'),
+			'Users UI should use control GraphQL rather than REST control routes',
+		).toEqual([]);
 	});
 });
 
@@ -158,6 +198,14 @@ test.describe('Database create + delete', () => {
 	});
 
 	test('create a database via UI, then delete it', async ({ page }) => {
+		const controlRequests: string[] = [];
+		page.on('request', (request) => {
+			const path = new URL(request.url()).pathname;
+			if (path.startsWith('/control/')) {
+				controlRequests.push(path);
+			}
+		});
+
 		await page.goto(tenantUrl(tenant));
 		await page.getByPlaceholder(/Database name/).fill('scratch');
 		await page.getByRole('button', { name: 'Create', exact: true }).click();
@@ -170,5 +218,11 @@ test.describe('Database create + delete', () => {
 		await row.getByRole('button', { name: 'Delete' }).click();
 		await row.getByRole('button', { name: 'Confirm' }).click();
 		await expect(page.locator('tr', { hasText: 'scratch' })).toHaveCount(0);
+
+		expect(controlRequests).toContain('/control/graphql');
+		expect(
+			controlRequests.filter((path) => path !== '/control/graphql'),
+			'Database UI should use control GraphQL rather than REST control routes',
+		).toEqual([]);
 	});
 });

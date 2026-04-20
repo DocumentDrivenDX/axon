@@ -26,6 +26,18 @@ test.describe('Audit route', () => {
 	});
 
 	test('filters audit entries and reverts an update entry', async ({ page }) => {
+		const dataPlaneRequests: string[] = [];
+		page.on('request', (request) => {
+			const path = new URL(request.url()).pathname;
+			if (
+				path.startsWith(
+					`/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/`,
+				)
+			) {
+				dataPlaneRequests.push(path);
+			}
+		});
+
 		await page.goto(dbAuditUrl(db));
 		await expect(page.getByRole('heading', { name: 'Audit Log', level: 1 })).toBeVisible();
 
@@ -45,5 +57,11 @@ test.describe('Audit route', () => {
 
 		await page.goto(dbCollectionUrl(db, 'notes'));
 		await expect(page.getByText('Original').first()).toBeVisible({ timeout: 10_000 });
+
+		expect(dataPlaneRequests.some((path) => path.endsWith('/graphql'))).toBe(true);
+		expect(
+			dataPlaneRequests.filter((path) => !path.endsWith('/graphql')),
+			'Audit route filter/revert workflow should use tenant-scoped GraphQL for data-plane calls',
+		).toEqual([]);
 	});
 });

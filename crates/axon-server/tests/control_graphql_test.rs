@@ -183,6 +183,68 @@ async fn control_graphql_admin_lifecycle_and_rest_parity() {
     );
     assert_eq!(current_user["data"]["currentUser"]["role"], "admin");
 
+    let role_assignment = gql(
+        &server,
+        &jwt,
+        r#"
+        mutation {
+          setUserRole(login: "operator@example.com", role: "write") {
+            login
+            role
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&role_assignment);
+    assert_eq!(
+        role_assignment["data"]["setUserRole"]["login"],
+        "operator@example.com"
+    );
+    assert_eq!(role_assignment["data"]["setUserRole"]["role"], "write");
+
+    let role_list = gql(
+        &server,
+        &jwt,
+        r#"
+        query {
+          userRoles {
+            login
+            role
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&role_list);
+    assert!(
+        role_list["data"]["userRoles"]
+            .as_array()
+            .expect("userRoles array")
+            .iter()
+            .any(|entry| entry["login"] == "operator@example.com" && entry["role"] == "write"),
+        "expected GraphQL userRoles to include assigned role: {role_list}"
+    );
+
+    let role_removed = gql(
+        &server,
+        &jwt,
+        r#"
+        mutation {
+          removeUserRole(login: "operator@example.com") {
+            login
+            deleted
+          }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&role_removed);
+    assert_eq!(role_removed["data"]["removeUserRole"]["deleted"], true);
+
     let create_tenant = gql(
         &server,
         &jwt,

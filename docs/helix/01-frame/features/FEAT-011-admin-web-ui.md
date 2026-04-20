@@ -111,10 +111,14 @@ history.
   additional Node.js/Bun runtime in production
 - **Fast builds**: `bun install` < 3s, `bun run build` < 10s
 - **Small bundle**: Production build < 200KB gzipped
-- **No auth in V1**: Runs as admin, full access to all collections and
-  operations. Auth deferred per ADR-005
-- **API reuse**: UI calls existing HTTP gateway endpoints only. No new
-  backend routes required for UI functionality
+- **GraphQL-first canary**: The native UI is the canonical Axon GraphQL
+  consumer example. Tenant-scoped data-plane workflows and control-plane
+  tenant/user/member/credential/database workflows use `/graphql` or
+  `/control/graphql` by default.
+- **REST exceptions**: UI REST calls are limited to health/auth discovery,
+  static assets, file/stream-oriented transports, compatibility fallbacks when
+  no tenant/database scope exists, and break-glass recovery operations such as
+  transaction or point-in-time rollback.
 
 ## User Stories
 
@@ -290,7 +294,10 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 - **FEAT-001** (Collections): UI browses and manages collections
 - **FEAT-002** (Schema Engine): UI views and edits schemas
 - **FEAT-004** (Entity Operations): UI CRUDs entities
-- **FEAT-005** (API Surface): UI calls HTTP gateway endpoints
+- **FEAT-005** (API Surface): UI uses the HTTP gateway for health/auth,
+  static assets, and documented break-glass operations
+- **FEAT-015** (GraphQL Query Layer): UI is the canonical GraphQL consumer
+  for tenant data-plane and control-plane workflows
 - **ADR-006**: Technology choices (SvelteKit, Bun, Vite)
 - **Cross-cutting concern**: `typescript-bun` with ADR-006 overrides for
   the admin UI surface

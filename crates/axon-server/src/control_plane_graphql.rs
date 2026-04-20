@@ -98,6 +98,27 @@ struct SuspendUserPayload {
 }
 
 #[derive(SimpleObject)]
+struct UserRoleGql {
+    login: String,
+    role: String,
+}
+
+impl From<crate::user_roles::UserRoleEntry> for UserRoleGql {
+    fn from(entry: crate::user_roles::UserRoleEntry) -> Self {
+        Self {
+            login: entry.login,
+            role: server_role_to_str(&entry.role).to_string(),
+        }
+    }
+}
+
+#[derive(SimpleObject)]
+struct RemoveUserRolePayload {
+    login: String,
+    deleted: bool,
+}
+
+#[derive(SimpleObject)]
 struct TenantMemberGql {
     tenant_id: String,
     user_id: String,
@@ -256,6 +277,16 @@ impl ControlQuery {
             .map_err(axon_error_to_gql)
     }
 
+    async fn user_roles(&self, ctx: &Context<'_>) -> GqlResult<Vec<UserRoleGql>> {
+        let state = state(ctx)?;
+        require_deployment_admin(ctx, &state)?;
+
+        let db = state.db.lock().await;
+        db.list_user_roles()
+            .map(|entries| entries.into_iter().map(UserRoleGql::from).collect())
+            .map_err(axon_error_to_gql)
+    }
+
     async fn tenant_members(
         &self,
         ctx: &Context<'_>,
@@ -401,6 +432,54 @@ impl ControlMutation {
         with_storage(&storage, |s| s.suspend_user(&user_id_value))
             .map(|suspended| SuspendUserPayload { user_id, suspended })
             .map_err(axon_error_to_gql)
+    }
+
+    async fn set_user_role(
+        &self,
+        ctx: &Context<'_>,
+        login: String,
+        role: String,
+    ) -> GqlResult<UserRoleGql> {
+        let state = state(ctx)?;
+        require_deployment_admin(ctx, &state)?;
+        let role_value = server_role_from_str(&role)
+            .ok_or_else(|| gql_error("invalid_role", format!("unknown role '{role}'")))?;
+
+        let db = state.db.lock().await;
+        db.set_user_role(&login, &role_value)
+            .map_err(axon_error_to_gql)?;
+        state
+            .user_roles
+            .set_cached(login.clone(), role_value.clone());
+
+        Ok(UserRoleGql {
+            login,
+            role: server_role_to_str(&role_value).to_string(),
+        })
+    }
+
+    async fn remove_user_role(
+        &self,
+        ctx: &Context<'_>,
+        login: String,
+    ) -> GqlResult<RemoveUserRolePayload> {
+        let state = state(ctx)?;
+        require_deployment_admin(ctx, &state)?;
+
+        let db = state.db.lock().await;
+        let deleted = db.remove_user_role(&login).map_err(axon_error_to_gql)?;
+        if !deleted {
+            return Err(gql_error(
+                "not_found",
+                format!("no explicit role assigned to '{login}'"),
+            ));
+        }
+        state.user_roles.remove_cached(&login);
+
+        Ok(RemoveUserRolePayload {
+            login,
+            deleted: true,
+        })
     }
 
     async fn upsert_tenant_member(
@@ -704,6 +783,15 @@ fn server_role_to_str(role: &crate::auth::Role) -> &'static str {
         crate::auth::Role::Admin => "admin",
         crate::auth::Role::Write => "write",
         crate::auth::Role::Read => "read",
+    }
+}
+
+fn server_role_from_str(role: &str) -> Option<crate::auth::Role> {
+    match role {
+        "admin" => Some(crate::auth::Role::Admin),
+        "write" => Some(crate::auth::Role::Write),
+        "read" => Some(crate::auth::Role::Read),
+        _ => None,
     }
 }
 

@@ -26,17 +26,20 @@ use crate::subscriptions::BroadcastBroker;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
-    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode,
-    FilterOp, FindLinkCandidatesRequest, GateFilter, GetEntityRequest, ListCollectionsRequest,
-    PatchEntityRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest, SortDirection,
-    SortField, TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest,
+    DeleteCollectionTemplateRequest, DeleteEntityRequest, DeleteLinkRequest,
+    DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode, FilterOp,
+    FindLinkCandidatesRequest, GateFilter, GetCollectionTemplateRequest, GetEntityRequest,
+    ListCollectionsRequest, PatchEntityRequest, PutCollectionTemplateRequest, PutSchemaRequest,
+    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, RollbackEntityRequest,
+    RollbackEntityTarget, SortDirection, SortField, TransitionLifecycleRequest, TraverseDirection,
+    TraverseRequest, UpdateEntityRequest,
 };
 use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::{Entity, Link};
-use axon_schema::schema::CollectionSchema;
+use axon_schema::schema::{CollectionSchema, CollectionView};
 use axon_storage::adapter::StorageAdapter;
 
 use crate::types::extract_fields;
@@ -63,6 +66,8 @@ const ENTITY_EDGE_TYPE: &str = "EntityEdge";
 const ENTITY_CONNECTION_TYPE: &str = "EntityConnection";
 const PAGE_INFO_TYPE: &str = "PageInfo";
 const COLLECTION_META_TYPE: &str = "CollectionMeta";
+const COLLECTION_TEMPLATE_TYPE: &str = "CollectionTemplate";
+const RENDERED_ENTITY_TYPE: &str = "RenderedEntity";
 const AUDIT_ENTRY_TYPE: &str = "AuditEntry";
 const AUDIT_EDGE_TYPE: &str = "AuditEdge";
 const AUDIT_CONNECTION_TYPE: &str = "AuditConnection";
@@ -74,8 +79,13 @@ const NEIGHBORS_CONNECTION_TYPE: &str = "NeighborsConnection";
 const CREATE_COLLECTION_INPUT: &str = "CreateCollectionInput";
 const DROP_COLLECTION_INPUT: &str = "DropCollectionInput";
 const PUT_SCHEMA_INPUT: &str = "PutSchemaInput";
+const PUT_COLLECTION_TEMPLATE_INPUT: &str = "PutCollectionTemplateInput";
+const DELETE_COLLECTION_TEMPLATE_PAYLOAD: &str = "DeleteCollectionTemplatePayload";
+const REVERT_AUDIT_ENTRY_PAYLOAD: &str = "RevertAuditEntryPayload";
 const DROP_COLLECTION_PAYLOAD: &str = "DropCollectionPayload";
 const PUT_SCHEMA_PAYLOAD: &str = "PutSchemaPayload";
+const ROLLBACK_ENTITY_INPUT: &str = "RollbackEntityInput";
+const ROLLBACK_ENTITY_PAYLOAD: &str = "RollbackEntityPayload";
 const COMMIT_TRANSACTION_INPUT: &str = "CommitTransactionInput";
 const TRANSACTION_OPERATION_INPUT: &str = "TransactionOperationInput";
 const CREATE_ENTITY_TRANSACTION_INPUT: &str = "CreateEntityTransactionInput";
@@ -497,6 +507,36 @@ fn put_schema_input_object() -> InputObject {
         ))
         .field(InputValue::new("schema", TypeRef::named_nn("JSON")))
         .field(InputValue::new("force", TypeRef::named(TypeRef::BOOLEAN)))
+        .field(InputValue::new("dryRun", TypeRef::named(TypeRef::BOOLEAN)))
+}
+
+fn put_collection_template_input_object() -> InputObject {
+    InputObject::new(PUT_COLLECTION_TEMPLATE_INPUT)
+        .field(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new(
+            "template",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+}
+
+fn rollback_entity_input_object() -> InputObject {
+    InputObject::new(ROLLBACK_ENTITY_INPUT)
+        .field(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new(
+            "toVersion",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(InputValue::new(
+            "expectedVersion",
+            TypeRef::named(TypeRef::INT),
+        ))
         .field(InputValue::new("dryRun", TypeRef::named(TypeRef::BOOLEAN)))
 }
 
@@ -1087,12 +1127,27 @@ fn parse_optional_u64_arg(
     name: &str,
 ) -> Result<Option<u64>, GqlError> {
     match ctx.args.try_get(name) {
+        Ok(value) if value.is_null() => Ok(None),
         Ok(value) => value
             .string()
             .map_err(|_| GqlError::new(format!("{name} must be a stringified unsigned integer")))?
             .parse::<u64>()
             .map(Some)
             .map_err(|e| GqlError::new(format!("invalid {name}: {e}"))),
+        Err(_) => Ok(None),
+    }
+}
+
+fn parse_optional_string_arg(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+    name: &str,
+) -> Result<Option<String>, GqlError> {
+    match ctx.args.try_get(name) {
+        Ok(value) if value.is_null() => Ok(None),
+        Ok(value) => value
+            .string()
+            .map(|value| Some(value.to_owned()))
+            .map_err(|_| GqlError::new(format!("{name} must be a string"))),
         Err(_) => Ok(None),
     }
 }
@@ -1747,6 +1802,54 @@ fn collection_meta_object() -> Object {
         .field(json_object_field("schema", TypeRef::named("JSON")))
 }
 
+fn collection_template_json(view: &CollectionView, warnings: &[String]) -> Value {
+    json!({
+        "collection": view.collection.to_string(),
+        "template": view.markdown_template.clone(),
+        "version": view.version,
+        "updatedAtNs": view.updated_at_ns.map(|value| value.to_string()),
+        "updatedBy": view.updated_by.clone(),
+        "warnings": warnings,
+    })
+}
+
+fn collection_template_object() -> Object {
+    Object::new(COLLECTION_TEMPLATE_TYPE)
+        .field(json_object_field(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "template",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "version",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "updatedAtNs",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "updatedBy",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "warnings",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+}
+
+fn rendered_entity_object() -> Object {
+    Object::new(RENDERED_ENTITY_TYPE)
+        .field(json_object_field("entity", TypeRef::named_nn(ENTITY_TYPE)))
+        .field(json_object_field(
+            "markdown",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+}
+
 fn audit_entry_object() -> Object {
     Object::new(AUDIT_ENTRY_TYPE)
         .field(json_object_field("id", TypeRef::named_nn(TypeRef::ID)))
@@ -1958,6 +2061,27 @@ fn drop_collection_payload_object() -> Object {
         ))
 }
 
+fn delete_collection_template_payload_object() -> Object {
+    Object::new(DELETE_COLLECTION_TEMPLATE_PAYLOAD)
+        .field(json_object_field(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "deleted",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+}
+
+fn revert_audit_entry_payload_object() -> Object {
+    Object::new(REVERT_AUDIT_ENTRY_PAYLOAD)
+        .field(json_object_field("entity", TypeRef::named_nn(ENTITY_TYPE)))
+        .field(json_object_field(
+            "auditEntry",
+            TypeRef::named_nn(AUDIT_ENTRY_TYPE),
+        ))
+}
+
 fn put_schema_payload_object() -> Object {
     Object::new(PUT_SCHEMA_PAYLOAD)
         .field(json_object_field("schema", TypeRef::named_nn("JSON")))
@@ -1969,6 +2093,22 @@ fn put_schema_payload_object() -> Object {
         ))
 }
 
+fn rollback_entity_payload_object() -> Object {
+    Object::new(ROLLBACK_ENTITY_PAYLOAD)
+        .field(json_object_field(
+            "dryRun",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field("current", TypeRef::named(ENTITY_TYPE)))
+        .field(json_object_field("target", TypeRef::named_nn(ENTITY_TYPE)))
+        .field(json_object_field("diff", TypeRef::named_nn("JSON")))
+        .field(json_object_field("entity", TypeRef::named(ENTITY_TYPE)))
+        .field(json_object_field(
+            "auditEntry",
+            TypeRef::named(AUDIT_ENTRY_TYPE),
+        ))
+}
+
 fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
     schema_builder = schema_builder
         .register(page_info_object())
@@ -1976,6 +2116,8 @@ fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
         .register(entity_edge_object())
         .register(entity_connection_object())
         .register(collection_meta_object())
+        .register(collection_template_object())
+        .register(rendered_entity_object())
         .register(audit_entry_object())
         .register(audit_edge_object())
         .register(audit_connection_object())
@@ -1987,7 +2129,10 @@ fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
         .register(transaction_operation_result_object())
         .register(commit_transaction_payload_object())
         .register(drop_collection_payload_object())
-        .register(put_schema_payload_object());
+        .register(delete_collection_template_payload_object())
+        .register(revert_audit_entry_payload_object())
+        .register(put_schema_payload_object())
+        .register(rollback_entity_payload_object());
     schema_builder
 }
 
@@ -2176,17 +2321,10 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                 FieldFuture::new(async move {
                     let collection = ctx.args.try_get("collection")?.string()?.to_owned();
                     let id = ctx.args.try_get("id")?.string()?.to_owned();
-                    let link_type = ctx
-                        .args
-                        .try_get("linkType")
-                        .ok()
-                        .map(|value| value.string().map(ToOwned::to_owned))
-                        .transpose()?;
-                    let direction = ctx
-                        .args
-                        .try_get("direction")
-                        .ok()
-                        .map(|value| parse_neighbor_direction(value.string()?))
+                    let link_type = parse_optional_string_arg(&ctx, "linkType")?;
+                    let direction = parse_optional_string_arg(&ctx, "direction")?
+                        .as_deref()
+                        .map(parse_neighbor_direction)
                         .transpose()?;
                     let limit = parse_relationship_limit(&ctx)?;
                     let after = parse_relationship_after(&ctx)?;
@@ -2316,6 +2454,75 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             },
         )
         .argument(InputValue::new("name", TypeRef::named_nn(TypeRef::STRING))),
+    );
+
+    let handler_collection_template = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "collectionTemplate",
+            TypeRef::named(COLLECTION_TEMPLATE_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_collection_template);
+                FieldFuture::new(async move {
+                    let collection = ctx.args.try_get("collection")?.string()?.to_owned();
+                    let guard = handler.lock().await;
+                    match guard.get_collection_template(GetCollectionTemplateRequest {
+                        collection: CollectionId::new(collection),
+                    }) {
+                        Ok(resp) => Ok(Some(json_to_field_value(collection_template_json(
+                            &resp.view,
+                            &[],
+                        )))),
+                        Err(AxonError::NotFound(_)) => Ok(None),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        )),
+    );
+
+    let handler_rendered_entity = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "renderedEntity",
+            TypeRef::named(RENDERED_ENTITY_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_rendered_entity);
+                FieldFuture::new(async move {
+                    let collection = ctx.args.try_get("collection")?.string()?.to_owned();
+                    let id = ctx.args.try_get("id")?.string()?.to_owned();
+                    let collection_id = CollectionId::new(collection);
+                    let entity_id = EntityId::new(id);
+                    let guard = handler.lock().await;
+                    let schema = guard
+                        .get_schema(&collection_id)
+                        .map_err(axon_error_to_gql)?;
+                    match guard.get_entity_markdown(&collection_id, &entity_id) {
+                        Ok(axon_api::response::GetEntityMarkdownResponse::Rendered {
+                            entity,
+                            rendered_markdown,
+                        }) => Ok(Some(json_to_field_value(json!({
+                            "entity": entity_to_generic_json_with_schema(&entity, schema.as_ref()),
+                            "markdown": rendered_markdown,
+                        })))),
+                        Ok(axon_api::response::GetEntityMarkdownResponse::RenderFailed {
+                            detail,
+                            ..
+                        }) => Err(axon_error_to_gql(AxonError::InvalidOperation(detail))),
+                        Err(e) => Err(axon_error_to_gql(e)),
+                    }
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID))),
     );
 
     let handler_audit = Arc::clone(&handler);
@@ -2472,6 +2679,29 @@ fn add_stub_root_query_fields(mut query: Object) -> Object {
             FieldFuture::new(async move { Ok(None::<FieldValue>) })
         })
         .argument(InputValue::new("name", TypeRef::named_nn(TypeRef::STRING))),
+    );
+    query = query.field(
+        Field::new(
+            "collectionTemplate",
+            TypeRef::named(COLLECTION_TEMPLATE_TYPE),
+            |_ctx| FieldFuture::new(async move { Ok(None::<FieldValue>) }),
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        )),
+    );
+    query = query.field(
+        Field::new(
+            "renderedEntity",
+            TypeRef::named(RENDERED_ENTITY_TYPE),
+            |_ctx| FieldFuture::new(async move { Ok(None::<FieldValue>) }),
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID))),
     );
     query = query.field(
         Field::new(
@@ -2901,6 +3131,83 @@ fn put_schema_payload_value(resp: axon_api::response::PutSchemaResponse) -> Valu
     })
 }
 
+async fn rollback_entity_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    let input = ctx.args.try_get("input")?.as_value();
+    let input_json = gql_input_to_json(input)?;
+    let input_obj = input_json
+        .as_object()
+        .ok_or_else(|| GqlError::new("input must be an object"))?;
+
+    let collection = input_obj
+        .get("collection")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GqlError::new("collection is required"))?;
+    let id = input_obj
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| GqlError::new("id is required"))?;
+    let to_version = input_obj
+        .get("toVersion")
+        .and_then(Value::as_i64)
+        .filter(|value| *value >= 0)
+        .map(|value| value as u64)
+        .ok_or_else(|| GqlError::new("toVersion is required and must be non-negative"))?;
+    let expected_version = input_obj
+        .get("expectedVersion")
+        .and_then(Value::as_i64)
+        .filter(|value| *value >= 0)
+        .map(|value| value as u64);
+    let dry_run = input_obj
+        .get("dryRun")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    let collection_id = CollectionId::new(collection);
+    let mut guard = handler.lock().await;
+    let schema = guard
+        .get_schema(&collection_id)
+        .map_err(axon_error_to_gql)?;
+    match guard.rollback_entity(RollbackEntityRequest {
+        collection: collection_id,
+        id: EntityId::new(id),
+        target: RollbackEntityTarget::Version(to_version),
+        expected_version,
+        actor: Some(caller.actor),
+        dry_run,
+    }) {
+        Ok(axon_api::response::RollbackEntityResponse::DryRun {
+            current,
+            target,
+            diff,
+        }) => Ok(Some(json_to_field_value(json!({
+            "dryRun": true,
+            "current": current
+                .as_ref()
+                .map(|entity| entity_to_generic_json_with_schema(entity, schema.as_ref())),
+            "target": entity_to_generic_json_with_schema(&target, schema.as_ref()),
+            "diff": diff,
+            "entity": Value::Null,
+            "auditEntry": Value::Null,
+        })))),
+        Ok(axon_api::response::RollbackEntityResponse::Applied {
+            entity,
+            audit_entry,
+        }) => Ok(Some(json_to_field_value(json!({
+            "dryRun": false,
+            "current": Value::Null,
+            "target": entity_to_generic_json_with_schema(&entity, schema.as_ref()),
+            "diff": {},
+            "entity": entity_to_generic_json_with_schema(&entity, schema.as_ref()),
+            "auditEntry": audit_entry_json(&audit_entry),
+        })))),
+        Err(e) => Err(axon_error_to_gql(e)),
+    }
+}
+
 fn op_error(err: GqlError, op_index: usize) -> GqlError {
     err.extend_with(move |_err, ext| {
         ext.set("operationIndex", op_index as i32);
@@ -3182,6 +3489,98 @@ async fn drop_collection_resolver<S: StorageAdapter + 'static>(
     Ok(Some(json_to_field_value(json!({
         "name": resp.name,
         "entitiesRemoved": resp.entities_removed,
+    }))))
+}
+
+async fn put_collection_template_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    caller.check(Operation::Admin).map_err(axon_error_to_gql)?;
+    let input_json = gql_input_to_json(ctx.args.try_get("input")?.as_value())?;
+    let input = input_object(&input_json, "input")?;
+    let collection = CollectionId::new(input_string(input, "collection")?);
+    let template = input_string(input, "template")?;
+    let resp = handler
+        .lock()
+        .await
+        .put_collection_template(PutCollectionTemplateRequest {
+            collection,
+            template,
+            actor: Some(caller.actor),
+        })
+        .map_err(axon_error_to_gql)?;
+
+    Ok(Some(json_to_field_value(collection_template_json(
+        &resp.view,
+        &resp.warnings,
+    ))))
+}
+
+async fn delete_collection_template_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    caller.check(Operation::Admin).map_err(axon_error_to_gql)?;
+    let collection = ctx.args.try_get("collection")?.string()?.to_owned();
+    let resp = handler
+        .lock()
+        .await
+        .delete_collection_template(DeleteCollectionTemplateRequest {
+            collection: CollectionId::new(collection),
+            actor: Some(caller.actor),
+        })
+        .map_err(axon_error_to_gql)?;
+
+    Ok(Some(json_to_field_value(json!({
+        "collection": resp.collection,
+        "deleted": true,
+    }))))
+}
+
+async fn revert_audit_entry_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    caller.check(Operation::Write).map_err(axon_error_to_gql)?;
+    let audit_entry_id = ctx
+        .args
+        .try_get("auditEntryId")?
+        .string()?
+        .parse::<u64>()
+        .map_err(|e| {
+            GqlError::new(format!("auditEntryId must be an unsigned integer: {e}")).extend_with(
+                |_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                },
+            )
+        })?;
+    let force = ctx
+        .args
+        .try_get("force")
+        .ok()
+        .and_then(|value| value.boolean().ok())
+        .unwrap_or(false);
+
+    let mut guard = handler.lock().await;
+    let resp = guard
+        .revert_entity_to_audit_entry(RevertEntityRequest {
+            audit_entry_id,
+            actor: Some(caller.actor),
+            force,
+            attribution: None,
+        })
+        .map_err(axon_error_to_gql)?;
+    let schema = guard
+        .get_schema(&resp.entity.collection)
+        .map_err(axon_error_to_gql)?;
+
+    Ok(Some(json_to_field_value(json!({
+        "entity": entity_to_generic_json_with_schema(&resp.entity, schema.as_ref()),
+        "auditEntry": audit_entry_json(&resp.audit_entry),
     }))))
 }
 
@@ -4022,6 +4421,61 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
         ));
         mutation = mutation.field(drop_collection_field);
 
+        let handler_put_collection_template = Arc::clone(&handler);
+        let put_collection_template_field = Field::new(
+            "putCollectionTemplate",
+            TypeRef::named_nn(COLLECTION_TEMPLATE_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_put_collection_template);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(async move {
+                    put_collection_template_resolver(ctx, handler, caller).await
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(PUT_COLLECTION_TEMPLATE_INPUT),
+        ));
+        mutation = mutation.field(put_collection_template_field);
+
+        let handler_delete_collection_template = Arc::clone(&handler);
+        let delete_collection_template_field = Field::new(
+            "deleteCollectionTemplate",
+            TypeRef::named_nn(DELETE_COLLECTION_TEMPLATE_PAYLOAD),
+            move |ctx| {
+                let handler = Arc::clone(&handler_delete_collection_template);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(async move {
+                    delete_collection_template_resolver(ctx, handler, caller).await
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ));
+        mutation = mutation.field(delete_collection_template_field);
+
+        let handler_revert_audit_entry = Arc::clone(&handler);
+        let revert_audit_entry_field = Field::new(
+            "revertAuditEntry",
+            TypeRef::named_nn(REVERT_AUDIT_ENTRY_PAYLOAD),
+            move |ctx| {
+                let handler = Arc::clone(&handler_revert_audit_entry);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(
+                    async move { revert_audit_entry_resolver(ctx, handler, caller).await },
+                )
+            },
+        )
+        .argument(InputValue::new(
+            "auditEntryId",
+            TypeRef::named_nn(TypeRef::ID),
+        ))
+        .argument(InputValue::new("force", TypeRef::named(TypeRef::BOOLEAN)));
+        mutation = mutation.field(revert_audit_entry_field);
+
         let handler_put_schema = Arc::clone(&handler);
         let put_schema_field = Field::new(
             "putSchema",
@@ -4037,6 +4491,24 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
             TypeRef::named_nn(PUT_SCHEMA_INPUT),
         ));
         mutation = mutation.field(put_schema_field);
+
+        let handler_rollback_entity = Arc::clone(&handler);
+        let rollback_entity_field = Field::new(
+            "rollbackEntity",
+            TypeRef::named_nn(ROLLBACK_ENTITY_PAYLOAD),
+            move |ctx| {
+                let handler = Arc::clone(&handler_rollback_entity);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(
+                    async move { rollback_entity_resolver(ctx, handler, caller).await },
+                )
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(ROLLBACK_ENTITY_INPUT),
+        ));
+        mutation = mutation.field(rollback_entity_field);
     }
 
     // ── Global transaction mutation ──────────────────────────────────────────
@@ -4201,6 +4673,8 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
     .register(create_collection_input_object())
     .register(drop_collection_input_object())
     .register(put_schema_input_object())
+    .register(put_collection_template_input_object())
+    .register(rollback_entity_input_object())
     .register(commit_transaction_input_object())
     .register(transaction_operation_input_object())
     .register(create_entity_transaction_input_object())
@@ -4408,6 +4882,115 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
 
     mutation = mutation.field(
         Field::new(
+            "putCollectionTemplate",
+            TypeRef::named_nn(COLLECTION_TEMPLATE_TYPE),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Ok(Some(json_to_field_value(json!({
+                        "collection": "",
+                        "template": "",
+                        "version": 1,
+                        "updatedAtNs": Value::Null,
+                        "updatedBy": Value::Null,
+                        "warnings": [],
+                    }))))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(PUT_COLLECTION_TEMPLATE_INPUT),
+        )),
+    );
+
+    mutation = mutation.field(
+        Field::new(
+            "deleteCollectionTemplate",
+            TypeRef::named_nn(DELETE_COLLECTION_TEMPLATE_PAYLOAD),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Ok(Some(json_to_field_value(json!({
+                        "collection": "",
+                        "deleted": true,
+                    }))))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        )),
+    );
+
+    mutation = mutation.field(
+        Field::new(
+            "revertAuditEntry",
+            TypeRef::named_nn(REVERT_AUDIT_ENTRY_PAYLOAD),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Ok(Some(json_to_field_value(json!({
+                        "entity": {
+                            "id": "",
+                            "collection": "",
+                            "version": 0,
+                            "data": {},
+                            "lifecycles": {},
+                        },
+                        "auditEntry": {
+                            "id": "0",
+                            "timestampNs": "0",
+                            "collection": "",
+                            "entityId": "",
+                            "version": 0,
+                            "mutation": "entity.revert",
+                            "dataBefore": Value::Null,
+                            "dataAfter": {},
+                            "actor": "anonymous",
+                            "metadata": {},
+                            "transactionId": Value::Null,
+                        },
+                    }))))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "auditEntryId",
+            TypeRef::named_nn(TypeRef::ID),
+        ))
+        .argument(InputValue::new("force", TypeRef::named(TypeRef::BOOLEAN))),
+    );
+
+    mutation = mutation.field(
+        Field::new(
+            "rollbackEntity",
+            TypeRef::named_nn(ROLLBACK_ENTITY_PAYLOAD),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Ok(Some(json_to_field_value(json!({
+                        "dryRun": true,
+                        "current": Value::Null,
+                        "target": {
+                            "id": "",
+                            "collection": "",
+                            "version": 0,
+                            "data": {},
+                            "lifecycles": {},
+                        },
+                        "diff": {},
+                        "entity": Value::Null,
+                        "auditEntry": Value::Null,
+                    }))))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(ROLLBACK_ENTITY_INPUT),
+        )),
+    );
+
+    mutation = mutation.field(
+        Field::new(
             "commitTransaction",
             TypeRef::named_nn(COMMIT_TRANSACTION_PAYLOAD),
             |_ctx| {
@@ -4435,6 +5018,8 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         .register(create_collection_input_object())
         .register(drop_collection_input_object())
         .register(put_schema_input_object())
+        .register(put_collection_template_input_object())
+        .register(rollback_entity_input_object())
         .register(commit_transaction_input_object())
         .register(transaction_operation_input_object())
         .register(create_entity_transaction_input_object())

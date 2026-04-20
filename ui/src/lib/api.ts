@@ -120,6 +120,9 @@ type ScopedTenantDatabase = NonNullable<Scope>;
 type GraphQLError = {
 	message: string;
 	path?: Array<string | number>;
+	extensions?: {
+		code?: string;
+	};
 };
 
 type GraphQLResult<T> = {
@@ -195,11 +198,94 @@ type GraphQLAuditConnection = {
 	};
 };
 
+type GraphQLNeighborConnection = {
+	groups: Array<{
+		edges: Array<{
+			node: GraphQLEntity;
+			linkType: string;
+			sourceCollection: string;
+			sourceId: string;
+			targetCollection: string;
+			targetId: string;
+		}>;
+	}>;
+};
+
+type GraphQLRollbackEntityPayload = {
+	dryRun: boolean;
+	current: GraphQLEntity | null;
+	target: GraphQLEntity;
+	diff: Record<string, FieldDiff>;
+	entity: GraphQLEntity | null;
+	auditEntry: GraphQLAuditEntry | null;
+};
+
+type GraphQLCollectionTemplate = {
+	collection: string;
+	template: string;
+	version: number;
+	updatedAtNs?: string | null;
+	updatedBy?: string | null;
+	warnings?: string[];
+};
+
+type GraphQLRenderedEntity = {
+	entity: GraphQLEntity;
+	markdown: string;
+};
+
+type GraphQLRevertAuditEntryPayload = {
+	entity: GraphQLEntity;
+	auditEntry: GraphQLAuditEntry;
+};
+
 type AuditFilters = {
 	collection?: string;
 	actor?: string;
 	sinceNs?: string;
 	untilNs?: string;
+};
+
+type ControlGraphQLTenant = {
+	id: string;
+	name: string;
+	dbName: string;
+	createdAt: string;
+};
+
+type ControlGraphQLTenantDatabase = {
+	tenantId: string;
+	name: string;
+	createdAtMs: number;
+};
+
+type ControlGraphQLUser = {
+	id: string;
+	displayName: string;
+	email: string | null;
+	createdAtMs: number;
+	suspendedAtMs: number | null;
+};
+
+type ControlGraphQLUserAclEntry = {
+	login: string;
+	role: UserRole;
+};
+
+type ControlGraphQLTenantMember = {
+	tenantId: string;
+	userId: string;
+	role: TenantMemberRole;
+};
+
+type ControlGraphQLCredential = {
+	jti: string;
+	userId: string;
+	tenantId: string;
+	issuedAtMs: number;
+	expiresAtMs: number;
+	revoked: boolean;
+	grants: Grants;
 };
 
 function formatError(error: ApiError, status: number): string {
@@ -215,6 +301,14 @@ function formatError(error: ApiError, status: number): string {
 
 function scopedPath(path: string, scope: ScopedTenantDatabase): string {
 	return `/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}${path}`;
+}
+
+function pascalCase(value: string): string {
+	const words = value.split(/[^A-Za-z0-9]+/).filter(Boolean);
+	const name = words
+		.map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+		.join('');
+	return name || 'Collection';
 }
 
 async function request<T>(path: string, init?: RequestInit, scope?: Scope): Promise<T> {
@@ -259,7 +353,48 @@ async function graphqlRequest<T>(
 
 	const result = payload as GraphQLResult<T> | null;
 	if (result?.errors?.length) {
-		throw new Error(result.errors.map((error) => error.message).join(', '));
+		throw new Error(
+			result.errors
+				.map((error) => {
+					const code = error.extensions?.code;
+					return code ? `${code}: ${error.message}` : error.message;
+				})
+				.join(', '),
+		);
+	}
+	if (result?.data === undefined) {
+		throw new Error('GraphQL response missing data');
+	}
+
+	return result.data;
+}
+
+async function controlGraphqlRequest<T>(
+	query: string,
+	variables: Record<string, unknown> = {},
+): Promise<T> {
+	const response = await fetch('/control/graphql', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ query, variables }),
+	});
+	const text = await response.text();
+	const payload = text ? (JSON.parse(text) as GraphQLResult<T> | ApiError) : null;
+
+	if (!response.ok) {
+		throw new Error(formatError((payload as ApiError | null) ?? {}, response.status));
+	}
+
+	const result = payload as GraphQLResult<T> | null;
+	if (result?.errors?.length) {
+		throw new Error(
+			result.errors
+				.map((error) => {
+					const code = error.extensions?.code;
+					return code ? `${code}: ${error.message}` : error.message;
+				})
+				.join(', '),
+		);
 	}
 	if (result?.data === undefined) {
 		throw new Error('GraphQL response missing data');
@@ -341,6 +476,63 @@ function auditResultFromGraphql(connection: GraphQLAuditConnection): AuditQueryR
 	return {
 		entries: connection.edges.map((edge) => auditEntryFromGraphql(edge.node)),
 		next_cursor: connection.pageInfo.hasNextPage ? Number(connection.pageInfo.endCursor) : null,
+	};
+}
+
+function collectionTemplateFromGraphql(template: GraphQLCollectionTemplate): CollectionView {
+	return {
+		collection: template.collection,
+		template: template.template,
+		version: template.version,
+		updated_at_ns: template.updatedAtNs ? Number(template.updatedAtNs) : null,
+		updated_by: template.updatedBy ?? null,
+	};
+}
+
+function tenantFromControlGraphql(tenant: ControlGraphQLTenant): Tenant {
+	return {
+		id: tenant.id,
+		name: tenant.name,
+		db_name: tenant.dbName,
+		created_at: tenant.createdAt,
+	};
+}
+
+function tenantDatabaseFromControlGraphql(database: ControlGraphQLTenantDatabase): TenantDatabase {
+	return {
+		tenant_id: database.tenantId,
+		name: database.name,
+		created_at_ms: database.createdAtMs,
+	};
+}
+
+function userFromControlGraphql(user: ControlGraphQLUser): User {
+	return {
+		id: user.id,
+		display_name: user.displayName,
+		email: user.email,
+		created_at_ms: user.createdAtMs,
+		suspended_at_ms: user.suspendedAtMs,
+	};
+}
+
+function tenantMemberFromControlGraphql(member: ControlGraphQLTenantMember): TenantMember {
+	return {
+		tenant_id: member.tenantId,
+		user_id: member.userId,
+		role: member.role,
+	};
+}
+
+function credentialFromControlGraphql(credential: ControlGraphQLCredential): Credential {
+	return {
+		jti: credential.jti,
+		user_id: credential.userId,
+		tenant_id: credential.tenantId,
+		issued_at_ms: credential.issuedAtMs,
+		expires_at_ms: credential.expiresAtMs,
+		revoked: credential.revoked,
+		grants: credential.grants,
 	};
 }
 
@@ -696,6 +888,11 @@ export async function fetchAudit(
 	scope?: Scope,
 ): Promise<AuditQueryResult> {
 	if (scope) {
+		const variables: Record<string, string> = {};
+		if (filters.collection) variables.collection = filters.collection;
+		if (filters.actor) variables.actor = filters.actor;
+		if (filters.sinceNs) variables.sinceNs = filters.sinceNs;
+		if (filters.untilNs) variables.untilNs = filters.untilNs;
 		const data = await graphqlRequest<{ auditLog: GraphQLAuditConnection }>(
 			scope,
 			`query AxonUiAuditLog(
@@ -730,14 +927,9 @@ export async function fetchAudit(
 						hasNextPage
 						endCursor
 					}
-				}
-			}`,
-			{
-				collection: filters.collection ?? null,
-				actor: filters.actor ?? null,
-				sinceNs: filters.sinceNs ?? null,
-				untilNs: filters.untilNs ?? null,
-			},
+					}
+				}`,
+			variables,
 		);
 		return auditResultFromGraphql(data.auditLog);
 	}
@@ -836,48 +1028,106 @@ export type Tenant = {
 };
 
 export async function fetchTenants(): Promise<Tenant[]> {
-	const response = await request<{ tenants: Tenant[] }>('/control/tenants');
-	return response.tenants;
+	const data = await controlGraphqlRequest<{ tenants: ControlGraphQLTenant[] }>(
+		`query AxonUiControlTenants {
+			tenants {
+				id
+				name
+				dbName
+				createdAt
+			}
+		}`,
+	);
+	return data.tenants.map(tenantFromControlGraphql);
 }
 
 export async function createTenant(name: string): Promise<Tenant> {
-	return request<Tenant>('/control/tenants', {
-		method: 'POST',
-		body: JSON.stringify({ name }),
-	});
+	const data = await controlGraphqlRequest<{ createTenant: ControlGraphQLTenant }>(
+		`mutation AxonUiCreateTenant($name: String!) {
+			createTenant(name: $name) {
+				id
+				name
+				dbName
+				createdAt
+			}
+		}`,
+		{ name },
+	);
+	return tenantFromControlGraphql(data.createTenant);
 }
 
 export async function deleteTenant(tenantId: string): Promise<void> {
-	await request<void>(`/control/tenants/${encodeURIComponent(tenantId)}`, {
-		method: 'DELETE',
-	});
+	await controlGraphqlRequest<{ deleteTenant: { deleted: boolean } }>(
+		`mutation AxonUiDeleteTenant($id: String!) {
+			deleteTenant(id: $id) {
+				deleted
+			}
+		}`,
+		{ id: tenantId },
+	);
 }
 
 export async function fetchTenant(tenantId: string): Promise<Tenant> {
-	return request<Tenant>(`/control/tenants/${encodeURIComponent(tenantId)}`);
+	const data = await controlGraphqlRequest<{ tenant: ControlGraphQLTenant | null }>(
+		`query AxonUiControlTenant($id: String!) {
+			tenant(id: $id) {
+				id
+				name
+				dbName
+				createdAt
+			}
+		}`,
+		{ id: tenantId },
+	);
+	if (!data.tenant) {
+		throw new Error(`Tenant not found: ${tenantId}`);
+	}
+	return tenantFromControlGraphql(data.tenant);
 }
 
 export async function fetchTenantDatabases(tenantId: string): Promise<TenantDatabase[]> {
-	const response = await request<{ databases: TenantDatabase[] }>(
-		`/control/tenants/${encodeURIComponent(tenantId)}/databases`,
+	const data = await controlGraphqlRequest<{
+		tenantDatabases: ControlGraphQLTenantDatabase[];
+	}>(
+		`query AxonUiTenantDatabases($tenantId: String!) {
+			tenantDatabases(tenantId: $tenantId) {
+				tenantId
+				name
+				createdAtMs
+			}
+		}`,
+		{ tenantId },
 	);
-	return response.databases;
+	return data.tenantDatabases.map(tenantDatabaseFromControlGraphql);
 }
 
 export async function createTenantDatabase(
 	tenantId: string,
 	name: string,
 ): Promise<TenantDatabase> {
-	return request<TenantDatabase>(`/control/tenants/${encodeURIComponent(tenantId)}/databases`, {
-		method: 'POST',
-		body: JSON.stringify({ name }),
-	});
+	const data = await controlGraphqlRequest<{
+		createTenantDatabase: ControlGraphQLTenantDatabase;
+	}>(
+		`mutation AxonUiCreateTenantDatabase($tenantId: String!, $name: String!) {
+			createTenantDatabase(tenantId: $tenantId, name: $name) {
+				tenantId
+				name
+				createdAtMs
+			}
+		}`,
+		{ tenantId, name },
+	);
+	return tenantDatabaseFromControlGraphql(data.createTenantDatabase);
 }
 
 export async function deleteTenantDatabase(tenantId: string, name: string): Promise<void> {
-	await request<void>(
-		`/control/tenants/${encodeURIComponent(tenantId)}/databases/${encodeURIComponent(name)}`,
-		{ method: 'DELETE' },
+	await controlGraphqlRequest<{ deleteTenantDatabase: { deleted: boolean } }>(
+		`mutation AxonUiDeleteTenantDatabase($tenantId: String!, $name: String!) {
+			deleteTenantDatabase(tenantId: $tenantId, name: $name) {
+				deleted
+			}
+		}`,
+		{ tenantId, name },
 	);
 }
 
@@ -892,21 +1142,45 @@ export type User = {
 };
 
 export async function createUser(displayName: string, email: string | null): Promise<User> {
-	return request<User>('/control/users/provision', {
-		method: 'POST',
-		body: JSON.stringify({ display_name: displayName, email }),
-	});
+	const data = await controlGraphqlRequest<{ provisionUser: ControlGraphQLUser }>(
+		`mutation AxonUiProvisionUser($displayName: String!, $email: String) {
+			provisionUser(displayName: $displayName, email: $email) {
+				id
+				displayName
+				email
+				createdAtMs
+				suspendedAtMs
+			}
+		}`,
+		{ displayName, email },
+	);
+	return userFromControlGraphql(data.provisionUser);
 }
 
 export async function listUsers(): Promise<User[]> {
-	const response = await request<{ users: User[] }>('/control/users/list');
-	return response.users;
+	const data = await controlGraphqlRequest<{ users: ControlGraphQLUser[] }>(
+		`query AxonUiProvisionedUsers {
+			users {
+				id
+				displayName
+				email
+				createdAtMs
+				suspendedAtMs
+			}
+		}`,
+	);
+	return data.users.map(userFromControlGraphql);
 }
 
 export async function suspendUser(id: string): Promise<void> {
-	await request<void>(`/control/users/suspend/${encodeURIComponent(id)}`, {
-		method: 'DELETE',
-	});
+	await controlGraphqlRequest<{ suspendUser: { suspended: boolean } }>(
+		`mutation AxonUiSuspendUser($userId: String!) {
+			suspendUser(userId: $userId) {
+				suspended
+			}
+		}`,
+		{ userId: id },
+	);
 }
 
 // ── Global user ACL (deployment-wide role assignments) ──────────────────────
@@ -919,21 +1193,39 @@ export type UserAclEntry = {
 };
 
 export async function fetchUsers(): Promise<UserAclEntry[]> {
-	const response = await request<{ users: UserAclEntry[] }>('/control/users');
-	return response.users;
+	const data = await controlGraphqlRequest<{ userRoles: ControlGraphQLUserAclEntry[] }>(
+		`query AxonUiUserRoles {
+			userRoles {
+				login
+				role
+			}
+		}`,
+	);
+	return data.userRoles;
 }
 
 export async function setUserRole(login: string, role: UserRole): Promise<UserAclEntry> {
-	return request<UserAclEntry>(`/control/users/${encodeURIComponent(login)}`, {
-		method: 'PUT',
-		body: JSON.stringify({ role }),
-	});
+	const data = await controlGraphqlRequest<{ setUserRole: ControlGraphQLUserAclEntry }>(
+		`mutation AxonUiSetUserRole($login: String!, $role: String!) {
+			setUserRole(login: $login, role: $role) {
+				login
+				role
+			}
+		}`,
+		{ login, role },
+	);
+	return data.setUserRole;
 }
 
 export async function removeUserRole(login: string): Promise<void> {
-	await request<void>(`/control/users/${encodeURIComponent(login)}`, {
-		method: 'DELETE',
-	});
+	await controlGraphqlRequest<{ removeUserRole: { deleted: boolean } }>(
+		`mutation AxonUiRemoveUserRole($login: String!) {
+			removeUserRole(login: $login) {
+				deleted
+			}
+		}`,
+		{ login },
+	);
 }
 
 // ── Tenant membership ────────────────────────────────────────────────────────
@@ -947,10 +1239,17 @@ export type TenantMember = {
 };
 
 export async function fetchTenantMembers(tenantId: string): Promise<TenantMember[]> {
-	const response = await request<{ members: TenantMember[] }>(
-		`/control/tenants/${encodeURIComponent(tenantId)}/members`,
+	const data = await controlGraphqlRequest<{ tenantMembers: ControlGraphQLTenantMember[] }>(
+		`query AxonUiTenantMembers($tenantId: String!) {
+			tenantMembers(tenantId: $tenantId) {
+				tenantId
+				userId
+				role
+			}
+		}`,
+		{ tenantId },
 	);
-	return response.members;
+	return data.tenantMembers.map(tenantMemberFromControlGraphql);
 }
 
 export async function upsertTenantMember(
@@ -958,19 +1257,33 @@ export async function upsertTenantMember(
 	userId: string,
 	role: TenantMemberRole,
 ): Promise<TenantMember> {
-	return request<TenantMember>(
-		`/control/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
-		{
-			method: 'PUT',
-			body: JSON.stringify({ role }),
-		},
+	const data = await controlGraphqlRequest<{
+		upsertTenantMember: ControlGraphQLTenantMember;
+	}>(
+		`mutation AxonUiUpsertTenantMember(
+			$tenantId: String!
+			$userId: String!
+			$role: String!
+		) {
+			upsertTenantMember(tenantId: $tenantId, userId: $userId, role: $role) {
+				tenantId
+				userId
+				role
+			}
+		}`,
+		{ tenantId, userId, role },
 	);
+	return tenantMemberFromControlGraphql(data.upsertTenantMember);
 }
 
 export async function removeTenantMember(tenantId: string, userId: string): Promise<void> {
-	await request<void>(
-		`/control/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}`,
-		{ method: 'DELETE' },
+	await controlGraphqlRequest<{ removeTenantMember: { deleted: boolean } }>(
+		`mutation AxonUiRemoveTenantMember($tenantId: String!, $userId: String!) {
+			removeTenantMember(tenantId: $tenantId, userId: $userId) {
+				deleted
+			}
+		}`,
+		{ tenantId, userId },
 	);
 }
 
@@ -1008,26 +1321,69 @@ export type IssueCredentialResponse = {
 };
 
 export async function listCredentials(tenantId: string): Promise<Credential[]> {
-	const response = await request<{ credentials: Credential[] }>(
-		`/control/tenants/${encodeURIComponent(tenantId)}/credentials`,
+	const data = await controlGraphqlRequest<{ credentials: ControlGraphQLCredential[] }>(
+		`query AxonUiCredentials($tenantId: String!) {
+			credentials(tenantId: $tenantId) {
+				jti
+				userId
+				tenantId
+				issuedAtMs
+				expiresAtMs
+				revoked
+				grants
+			}
+		}`,
+		{ tenantId },
 	);
-	return response.credentials;
+	return data.credentials.map(credentialFromControlGraphql);
 }
 
 export async function issueCredential(
 	tenantId: string,
 	body: IssueCredentialRequest,
 ): Promise<IssueCredentialResponse> {
-	return request<IssueCredentialResponse>(
-		`/control/tenants/${encodeURIComponent(tenantId)}/credentials`,
-		{ method: 'POST', body: JSON.stringify(body) },
+	const data = await controlGraphqlRequest<{
+		issueCredential: { jwt: string; jti: string; expiresAt: number };
+	}>(
+		`mutation AxonUiIssueCredential(
+			$tenantId: String!
+			$targetUser: String!
+			$ttlSeconds: Int!
+			$grants: JSON!
+		) {
+			issueCredential(
+				tenantId: $tenantId
+				targetUser: $targetUser
+				ttlSeconds: $ttlSeconds
+				grants: $grants
+			) {
+				jwt
+				jti
+				expiresAt
+			}
+		}`,
+		{
+			tenantId,
+			targetUser: body.target_user,
+			ttlSeconds: body.ttl_seconds,
+			grants: body.grants,
+		},
 	);
+	return {
+		jwt: data.issueCredential.jwt,
+		jti: data.issueCredential.jti,
+		expires_at_ms: data.issueCredential.expiresAt * 1000,
+	};
 }
 
 export async function revokeCredential(tenantId: string, jti: string): Promise<void> {
-	await request<void>(
-		`/control/tenants/${encodeURIComponent(tenantId)}/credentials/${encodeURIComponent(jti)}`,
-		{ method: 'DELETE' },
+	await controlGraphqlRequest<{ revokeCredential: { revoked: boolean } }>(
+		`mutation AxonUiRevokeCredential($tenantId: String!, $jti: String!) {
+			revokeCredential(tenantId: $tenantId, jti: $jti) {
+				revoked
+			}
+		}`,
+		{ tenantId, jti },
 	);
 }
 
@@ -1065,6 +1421,40 @@ export type RevertResult = {
 };
 
 export async function revertAuditEntry(auditEntryId: number, scope: Scope): Promise<RevertResult> {
+	if (scope) {
+		const data = await graphqlRequest<{ revertAuditEntry: GraphQLRevertAuditEntryPayload }>(
+			scope,
+			`mutation AxonUiRevertAuditEntry($auditEntryId: ID!) {
+				revertAuditEntry(auditEntryId: $auditEntryId) {
+					entity {
+						collection
+						id
+						version
+						data
+					}
+					auditEntry {
+						id
+						timestampNs
+						collection
+						entityId
+						version
+						mutation
+						dataBefore
+						dataAfter
+						actor
+						transactionId
+						metadata
+					}
+				}
+			}`,
+			{ auditEntryId: String(auditEntryId) },
+		);
+		return {
+			entity: entityFromGraphql(data.revertAuditEntry.entity),
+			audit_entry_id: Number(data.revertAuditEntry.auditEntry.id),
+		};
+	}
+
 	return request<RevertResult>(
 		'/audit/revert',
 		{
@@ -1152,6 +1542,58 @@ export async function traverseLinks(
 	options: { linkType?: string } = {},
 	scope?: Scope,
 ): Promise<TraverseResult> {
+	if (scope) {
+		const data = await graphqlRequest<{ neighbors: GraphQLNeighborConnection }>(
+			scope,
+			`query AxonUiEntityNeighbors(
+				$collection: String!
+				$id: ID!
+				$linkType: String
+				$direction: String
+			) {
+				neighbors(
+					collection: $collection
+					id: $id
+					linkType: $linkType
+					direction: $direction
+				) {
+					groups {
+						edges {
+							node {
+								collection
+								id
+								version
+								data
+							}
+							linkType
+							sourceCollection
+							sourceId
+							targetCollection
+							targetId
+						}
+					}
+				}
+			}`,
+			{
+				collection,
+				id,
+				linkType: options.linkType ?? null,
+				direction: 'outbound',
+			},
+		);
+		const edges = data.neighbors.groups.flatMap((group) => group.edges);
+		return {
+			entities: edges.map((edge) => entityFromGraphql(edge.node)),
+			paths: edges.map((edge) => ({
+				source_collection: edge.sourceCollection,
+				source_id: edge.sourceId,
+				target_collection: edge.targetCollection,
+				target_id: edge.targetId,
+				link_type: edge.linkType,
+			})),
+		};
+	}
+
 	const qs = options.linkType ? `?link_type=${encodeURIComponent(options.linkType)}` : '';
 	return request<TraverseResult>(
 		`/traverse/${encodeURIComponent(collection)}/${encodeURIComponent(id)}${qs}`,
@@ -1258,6 +1700,27 @@ export async function fetchCollectionTemplate(
 	collection: string,
 	scope?: Scope,
 ): Promise<CollectionView> {
+	if (scope) {
+		const data = await graphqlRequest<{ collectionTemplate: GraphQLCollectionTemplate | null }>(
+			scope,
+			`query AxonUiCollectionTemplate($collection: String!) {
+				collectionTemplate(collection: $collection) {
+					collection
+					template
+					version
+					updatedAtNs
+					updatedBy
+					warnings
+				}
+			}`,
+			{ collection },
+		);
+		if (!data.collectionTemplate) {
+			throw new Error(`not found: collection '${collection}' has no markdown template defined`);
+		}
+		return collectionTemplateFromGraphql(data.collectionTemplate);
+	}
+
 	return request<CollectionView>(
 		`/collections/${encodeURIComponent(collection)}/template`,
 		undefined,
@@ -1270,6 +1733,27 @@ export async function putCollectionTemplate(
 	template: string,
 	scope?: Scope,
 ): Promise<CollectionView & { warnings?: string[] }> {
+	if (scope) {
+		const data = await graphqlRequest<{ putCollectionTemplate: GraphQLCollectionTemplate }>(
+			scope,
+			`mutation AxonUiPutCollectionTemplate($collection: String!, $template: String!) {
+				putCollectionTemplate(input: { collection: $collection, template: $template }) {
+					collection
+					template
+					version
+					updatedAtNs
+					updatedBy
+					warnings
+				}
+			}`,
+			{ collection, template },
+		);
+		return {
+			...collectionTemplateFromGraphql(data.putCollectionTemplate),
+			warnings: data.putCollectionTemplate.warnings ?? [],
+		};
+	}
+
 	return request<CollectionView & { warnings?: string[] }>(
 		`/collections/${encodeURIComponent(collection)}/template`,
 		{
@@ -1281,6 +1765,19 @@ export async function putCollectionTemplate(
 }
 
 export async function deleteCollectionTemplate(collection: string, scope?: Scope): Promise<void> {
+	if (scope) {
+		await graphqlRequest<{ deleteCollectionTemplate: { deleted: boolean } }>(
+			scope,
+			`mutation AxonUiDeleteCollectionTemplate($collection: String!) {
+				deleteCollectionTemplate(collection: $collection) {
+					deleted
+				}
+			}`,
+			{ collection },
+		);
+		return;
+	}
+
 	await request<void>(
 		`/collections/${encodeURIComponent(collection)}/template`,
 		{ method: 'DELETE', body: JSON.stringify({}) },
@@ -1297,10 +1794,29 @@ export async function fetchRenderedEntity(
 	id: string,
 	scope?: Scope,
 ): Promise<string> {
-	const base = scope && { tenant: scope.tenant, database: scope.database }
-		? `/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}`
-		: '';
-	const url = `${base}/collections/${encodeURIComponent(collection)}/entities/${encodeURIComponent(id)}?format=markdown`;
+	if (scope) {
+		const data = await graphqlRequest<{ renderedEntity: GraphQLRenderedEntity | null }>(
+			scope,
+			`query AxonUiRenderedEntity($collection: String!, $id: ID!) {
+				renderedEntity(collection: $collection, id: $id) {
+					markdown
+					entity {
+						collection
+						id
+						version
+						data
+					}
+				}
+			}`,
+			{ collection, id },
+		);
+		if (!data.renderedEntity) {
+			throw new Error(`not found: entity '${id}'`);
+		}
+		return data.renderedEntity.markdown;
+	}
+
+	const url = `/collections/${encodeURIComponent(collection)}/entities/${encodeURIComponent(id)}?format=markdown`;
 	const response = await fetch(url, { headers: { Accept: 'text/markdown' } });
 	if (!response.ok) {
 		const text = await response.text();
@@ -1332,6 +1848,42 @@ export async function transitionLifecycle(
 	},
 	scope?: Scope,
 ): Promise<TransitionLifecycleResponse> {
+	if (scope) {
+		const typeName = pascalCase(collection);
+		const data = await graphqlRequest<Record<string, GraphQLEntity>>(
+			scope,
+			`mutation AxonUiTransitionLifecycle(
+				$id: ID!
+				$lifecycleName: String!
+				$targetState: String!
+				$expectedVersion: Int!
+			) {
+				transition${typeName}Lifecycle(
+					id: $id
+					lifecycleName: $lifecycleName
+					targetState: $targetState
+					expectedVersion: $expectedVersion
+				) {
+					id
+					version
+					lifecycles
+				}
+			}`,
+			{
+				id,
+				lifecycleName: body.lifecycle_name,
+				targetState: body.target_state,
+				expectedVersion: body.expected_version,
+			},
+		);
+		const transitioned = data[`transition${typeName}Lifecycle`];
+		if (!transitioned) {
+			throw new Error(`GraphQL transition did not return entity: ${collection}/${id}`);
+		}
+		const entity = await fetchEntity(collection, id, scope);
+		return { entity };
+	}
+
 	return request<TransitionLifecycleResponse>(
 		`/lifecycle/${encodeURIComponent(collection)}/${encodeURIComponent(id)}/transition`,
 		{
@@ -1377,6 +1929,44 @@ export async function previewEntityRollback(
 	toVersion: number,
 	scope?: Scope,
 ): Promise<RollbackPreview> {
+	if (scope) {
+		const data = await graphqlRequest<{ rollbackEntity: GraphQLRollbackEntityPayload }>(
+			scope,
+			`mutation AxonUiPreviewEntityRollback(
+				$collection: String!
+				$id: ID!
+				$toVersion: Int!
+			) {
+				rollbackEntity(input: {
+					collection: $collection
+					id: $id
+					toVersion: $toVersion
+					dryRun: true
+				}) {
+					current {
+						collection
+						id
+						version
+						data
+					}
+					target {
+						collection
+						id
+						version
+						data
+					}
+					diff
+				}
+			}`,
+			{ collection, id, toVersion },
+		);
+		return {
+			current: data.rollbackEntity.current ? entityFromGraphql(data.rollbackEntity.current) : null,
+			target: entityFromGraphql(data.rollbackEntity.target),
+			diff: data.rollbackEntity.diff,
+		};
+	}
+
 	return request<RollbackPreview>(
 		`/collections/${encodeURIComponent(collection)}/entities/${encodeURIComponent(id)}/rollback`,
 		{
@@ -1394,6 +1984,54 @@ export async function applyEntityRollback(
 	expectedVersion: number,
 	scope?: Scope,
 ): Promise<RollbackApplied> {
+	if (scope) {
+		const data = await graphqlRequest<{ rollbackEntity: GraphQLRollbackEntityPayload }>(
+			scope,
+			`mutation AxonUiApplyEntityRollback(
+				$collection: String!
+				$id: ID!
+				$toVersion: Int!
+				$expectedVersion: Int!
+			) {
+				rollbackEntity(input: {
+					collection: $collection
+					id: $id
+					toVersion: $toVersion
+					expectedVersion: $expectedVersion
+					dryRun: false
+				}) {
+					entity {
+						collection
+						id
+						version
+						data
+					}
+					auditEntry {
+						id
+						timestampNs
+						collection
+						entityId
+						version
+						mutation
+						dataBefore
+						dataAfter
+						actor
+						transactionId
+						metadata
+					}
+				}
+			}`,
+			{ collection, id, toVersion, expectedVersion },
+		);
+		if (!data.rollbackEntity.entity || !data.rollbackEntity.auditEntry) {
+			throw new Error(`GraphQL rollback did not return applied entity: ${collection}/${id}`);
+		}
+		return {
+			entity: entityFromGraphql(data.rollbackEntity.entity),
+			audit_entry: auditEntryFromGraphql(data.rollbackEntity.auditEntry),
+		};
+	}
+
 	return request<RollbackApplied>(
 		`/collections/${encodeURIComponent(collection)}/entities/${encodeURIComponent(id)}/rollback`,
 		{

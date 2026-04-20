@@ -207,15 +207,20 @@ resolution, and subscriptions for push-based change notification.
 ### Story US-051: Use GraphQL from the Admin UI [FEAT-015]
 
 **As the** admin web UI
-**I want** a GraphQL endpoint for all read operations
-**So that** I can build efficient, type-safe data views
+**I want** GraphQL endpoints for tenant data-plane and control-plane workflows
+**So that** I can build efficient, type-safe data views and mutations
 
 **Acceptance Criteria:**
-- [ ] The SvelteKit admin UI fetches collection data via GraphQL
-- [ ] Entity detail view uses a single GraphQL query for entity + links +
-  audit history
-- [ ] Collection list view uses the `collections` query
-- [ ] Filtering and pagination work through GraphQL filter inputs
+- [x] The SvelteKit admin UI fetches collection data via GraphQL
+- [x] Collection list view uses the `collections` query
+- [x] Filtering and pagination work through GraphQL filter inputs
+- [x] Entity create/read/update/delete, links, lifecycle transitions, entity
+  rollback, audit revert, markdown template CRUD/rendering, and schema/
+  collection admin flows use tenant-scoped GraphQL in the native UI
+- [x] Tenant, user, tenant member, credential, and database control-plane UI
+  flows use `/control/graphql`
+- [ ] Entity detail view uses one consolidated GraphQL query for entity +
+  links + recent audit where practical
 - [ ] Admin UI entity detail query (entity + links + recent audit) completes in < 200ms p99
 
 ## Edge Cases

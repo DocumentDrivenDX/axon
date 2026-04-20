@@ -144,12 +144,17 @@ async fn graphql_collection_admin_create_list_refresh_and_drop() {
             createCollection(input: {
                 name: "projects"
                 schema: {
+                    description: "Project records for browser schema help text"
                     version: 1
                     entitySchema: {
                         type: "object"
+                        description: "A project entity payload"
                         required: ["title"]
                         properties: {
-                            title: { type: "string" }
+                            title: {
+                                type: "string"
+                                description: "Human-readable project title"
+                            }
                         }
                     }
                 }
@@ -171,9 +176,16 @@ async fn graphql_collection_admin_create_list_refresh_and_drop() {
     let collections = list["data"]["collections"].as_array().unwrap();
     assert!(
         collections.iter().any(|collection| {
-            collection["name"] == "projects" && collection["schema"]["version"] == 1
+            collection["name"] == "projects"
+                && collection["schema"]["version"] == 1
+                && collection["schema"]["description"]
+                    == "Project records for browser schema help text"
+                && collection["schema"]["entity_schema"]["description"]
+                    == "A project entity payload"
+                && collection["schema"]["entity_schema"]["properties"]["title"]["description"]
+                    == "Human-readable project title"
         }),
-        "created collection should be listed with schema: {list}"
+        "created collection should be listed with full schema descriptions: {list}"
     );
 
     let create_entity = gql(
@@ -210,6 +222,110 @@ async fn graphql_collection_admin_create_list_refresh_and_drop() {
     let missing = gql(&server, r#"{ collection(name: "projects") { name } }"#).await;
     assert!(missing["errors"].is_null(), "unexpected errors: {missing}");
     assert!(missing["data"]["collection"].is_null());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_collection_template_round_trips_and_renders_markdown() {
+    let server = test_server();
+    seed_tasks_collection(&server).await;
+
+    let create_entity = gql(
+        &server,
+        r#"mutation {
+            createTasks(id: "t1", input: { title: "GraphQL template", label: "canary" }) {
+                id
+                version
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        create_entity["errors"].is_null(),
+        "unexpected errors: {create_entity}"
+    );
+
+    let missing = gql(
+        &server,
+        r#"{ collectionTemplate(collection: "tasks") { template } }"#,
+    )
+    .await;
+    assert!(missing["errors"].is_null(), "unexpected errors: {missing}");
+    assert!(missing["data"]["collectionTemplate"].is_null());
+
+    let put = gql_as(
+        &server,
+        "template-admin",
+        r##"mutation {
+            putCollectionTemplate(input: {
+                collection: "tasks"
+                template: "# {{title}}\n\nLabel: {{label}}"
+            }) {
+                collection
+                template
+                version
+                updatedAtNs
+                updatedBy
+                warnings
+            }
+        }"##,
+    )
+    .await;
+    assert!(put["errors"].is_null(), "unexpected errors: {put}");
+    assert_eq!(
+        put["data"]["putCollectionTemplate"]["template"],
+        "# {{title}}\n\nLabel: {{label}}"
+    );
+    assert_eq!(
+        put["data"]["putCollectionTemplate"]["updatedBy"],
+        "template-admin"
+    );
+
+    let fetched = gql(
+        &server,
+        r#"{ collectionTemplate(collection: "tasks") { collection template version updatedBy warnings } }"#,
+    )
+    .await;
+    assert!(fetched["errors"].is_null(), "unexpected errors: {fetched}");
+    assert_eq!(fetched["data"]["collectionTemplate"]["collection"], "tasks");
+    assert_eq!(fetched["data"]["collectionTemplate"]["version"], 1);
+
+    let rendered = gql(
+        &server,
+        r#"{ renderedEntity(collection: "tasks", id: "t1") { markdown entity { id data } } }"#,
+    )
+    .await;
+    assert!(
+        rendered["errors"].is_null(),
+        "unexpected errors: {rendered}"
+    );
+    assert_eq!(
+        rendered["data"]["renderedEntity"]["markdown"],
+        "# GraphQL template\n\nLabel: canary"
+    );
+    assert_eq!(rendered["data"]["renderedEntity"]["entity"]["id"], "t1");
+
+    let deleted = gql_as(
+        &server,
+        "template-admin",
+        r#"mutation { deleteCollectionTemplate(collection: "tasks") { collection deleted } }"#,
+    )
+    .await;
+    assert!(deleted["errors"].is_null(), "unexpected errors: {deleted}");
+    assert_eq!(
+        deleted["data"]["deleteCollectionTemplate"],
+        json!({ "collection": "tasks", "deleted": true })
+    );
+
+    let missing_after_delete = gql(
+        &server,
+        r#"{ collectionTemplate(collection: "tasks") { template } }"#,
+    )
+    .await;
+    assert!(
+        missing_after_delete["errors"].is_null(),
+        "unexpected errors: {missing_after_delete}"
+    );
+    assert!(missing_after_delete["data"]["collectionTemplate"].is_null());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -339,6 +455,154 @@ async fn graphql_update_entity_version_conflict_returns_structured_error() {
     );
     assert_eq!(ext["currentEntity"]["id"], "t1");
     assert_eq!(ext["currentEntity"]["data"]["title"], "v1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_rollback_entity_preview_and_apply() {
+    let server = test_server();
+    seed_tasks_collection(&server).await;
+
+    gql(
+        &server,
+        r#"mutation { createTasks(id: "rollback-1", input: { title: "v1" }) { id } }"#,
+    )
+    .await;
+    gql(
+        &server,
+        r#"mutation { updateTasks(id: "rollback-1", version: 1, input: { title: "v2" }) { id version title } }"#,
+    )
+    .await;
+
+    let preview = gql(
+        &server,
+        r#"mutation {
+            rollbackEntity(input: {
+                collection: "tasks"
+                id: "rollback-1"
+                toVersion: 1
+                dryRun: true
+            }) {
+                dryRun
+                current { id version data }
+                target { id version data }
+                diff
+            }
+        }"#,
+    )
+    .await;
+    assert!(preview["errors"].is_null(), "unexpected errors: {preview}");
+    assert_eq!(preview["data"]["rollbackEntity"]["dryRun"], true);
+    assert_eq!(
+        preview["data"]["rollbackEntity"]["current"]["data"]["title"],
+        "v2"
+    );
+    assert_eq!(
+        preview["data"]["rollbackEntity"]["target"]["data"]["title"],
+        "v1"
+    );
+
+    let applied = gql_as(
+        &server,
+        "rollback-tester",
+        r#"mutation {
+            rollbackEntity(input: {
+                collection: "tasks"
+                id: "rollback-1"
+                toVersion: 1
+                expectedVersion: 2
+                dryRun: false
+            }) {
+                dryRun
+                entity { id version data }
+                auditEntry { actor mutation entityId }
+            }
+        }"#,
+    )
+    .await;
+    assert!(applied["errors"].is_null(), "unexpected errors: {applied}");
+    assert_eq!(applied["data"]["rollbackEntity"]["dryRun"], false);
+    assert_eq!(
+        applied["data"]["rollbackEntity"]["entity"]["data"]["title"],
+        "v1"
+    );
+    assert_eq!(applied["data"]["rollbackEntity"]["entity"]["version"], 3);
+    assert_eq!(
+        applied["data"]["rollbackEntity"]["auditEntry"]["actor"],
+        "rollback-tester"
+    );
+    assert_eq!(
+        applied["data"]["rollbackEntity"]["auditEntry"]["entityId"],
+        "rollback-1"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_revert_audit_entry_restores_before_state() {
+    let server = test_server();
+    seed_tasks_collection(&server).await;
+
+    gql(
+        &server,
+        r#"mutation { createTasks(id: "revert-1", input: { title: "v1" }) { id } }"#,
+    )
+    .await;
+    gql(
+        &server,
+        r#"mutation { updateTasks(id: "revert-1", version: 1, input: { title: "v2" }) { id version title } }"#,
+    )
+    .await;
+
+    let audit = gql(
+        &server,
+        r#"{ auditLog(collection: "tasks", entityId: "revert-1") {
+            edges {
+                node { id mutation version dataBefore dataAfter }
+            }
+        } }"#,
+    )
+    .await;
+    assert!(audit["errors"].is_null(), "unexpected errors: {audit}");
+    let update_entry_id = audit["data"]["auditLog"]["edges"]
+        .as_array()
+        .expect("audit edges")
+        .iter()
+        .find(|edge| edge["node"]["mutation"] == "entity.update")
+        .and_then(|edge| edge["node"]["id"].as_str())
+        .expect("update audit entry id");
+
+    let reverted = gql_as(
+        &server,
+        "revert-tester",
+        &format!(
+            r#"mutation {{
+                revertAuditEntry(auditEntryId: "{update_entry_id}") {{
+                    entity {{ id version data }}
+                    auditEntry {{ id actor mutation entityId metadata }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert!(
+        reverted["errors"].is_null(),
+        "unexpected errors: {reverted}"
+    );
+    assert_eq!(
+        reverted["data"]["revertAuditEntry"]["entity"]["data"]["title"],
+        "v1"
+    );
+    assert_eq!(
+        reverted["data"]["revertAuditEntry"]["auditEntry"]["actor"],
+        "revert-tester"
+    );
+    assert_eq!(
+        reverted["data"]["revertAuditEntry"]["auditEntry"]["mutation"],
+        "entity.revert"
+    );
+    assert_eq!(
+        reverted["data"]["revertAuditEntry"]["auditEntry"]["metadata"]["reverted_from_entry_id"],
+        update_entry_id
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

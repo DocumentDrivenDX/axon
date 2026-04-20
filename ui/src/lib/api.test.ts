@@ -1,25 +1,50 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 
 import {
+	applyEntityRollback,
 	createCollection,
 	createEntity,
 	createLink,
+	createTenant,
+	createTenantDatabase,
+	createUser,
+	deleteCollectionTemplate,
 	deleteEntity,
 	deleteLink,
+	deleteTenant,
+	deleteTenantDatabase,
 	dropCollection,
 	fetchAudit,
 	fetchCollection,
+	fetchCollectionTemplate,
 	fetchCollections,
 	fetchEntities,
 	fetchEntity,
 	fetchEntityAudit,
+	fetchRenderedEntity,
 	fetchSchema,
+	fetchTenant,
+	fetchTenantDatabases,
+	fetchTenantMembers,
+	fetchTenants,
+	fetchUsers,
 	issueCredential,
 	listCredentials,
+	listUsers,
+	previewEntityRollback,
 	previewSchemaChange,
+	putCollectionTemplate,
+	removeTenantMember,
+	removeUserRole,
+	revertAuditEntry,
 	revokeCredential,
+	setUserRole,
+	suspendUser,
+	transitionLifecycle,
+	traverseLinks,
 	updateEntity,
 	updateSchema,
+	upsertTenantMember,
 } from './api';
 
 const originalFetch = globalThis.fetch;
@@ -84,30 +109,14 @@ test('request() URL-encodes tenant and database in the path', async () => {
 	expect(lastRequest?.url).toBe('/tenants/my%20tenant/databases/my%2Fdb/graphql');
 });
 
-test('request() does NOT prefix control-plane routes even when scope is provided', async () => {
-	mockFetch({ entries: [], next_cursor: null });
+test('control-plane helpers use the unscoped control GraphQL endpoint', async () => {
+	mockFetch({ data: { tenants: [] } });
 
-	// fetchAudit uses /audit/query which is NOT a /control/ route, so it gets prefixed.
-	// Use a raw fetch mock to test /control/ directly.
-	const controlHandler = async (
-		input: RequestInfo | URL,
-		init?: RequestInit,
-	): Promise<Response> => {
-		lastRequest = { url: String(input), init };
-		return new Response(JSON.stringify({ tenants: [] }), {
-			status: 200,
-			headers: { 'Content-Type': 'application/json' },
-		});
-	};
-	globalThis.fetch = controlHandler as unknown as typeof globalThis.fetch;
-
-	// Import fetchTenants which calls /control/tenants — no scope param.
-	const { fetchTenants } = await import('./api');
 	await fetchTenants();
 
-	expect(lastRequest?.url).toBe('/control/tenants');
-	// Confirm no scope prefix was added despite the /control/ path.
+	expect(lastRequest?.url).toBe('/control/graphql');
 	expect(lastRequest?.url).not.toContain('/tenants/');
+	expect(lastRequest?.init?.method).toBe('POST');
 });
 
 test('request() does not set X-Axon-Database header', async () => {
@@ -208,6 +217,45 @@ test('fetchEntityAudit() uses tenant-scoped GraphQL auditLog entity filter', asy
 	expect(body.query).toContain('entityId');
 	expect(body.variables).toEqual({ collection: 'tasks', entityId: 'task-1' });
 	expect(result).toEqual({ entries: [], next_cursor: null });
+});
+
+test('revertAuditEntry() uses tenant-scoped GraphQL mutation', async () => {
+	mockFetch({
+		data: {
+			revertAuditEntry: {
+				entity: {
+					collection: 'tasks',
+					id: 'task-1',
+					version: 3,
+					data: { title: 'old' },
+				},
+				auditEntry: {
+					id: '9',
+					timestampNs: '123',
+					collection: 'tasks',
+					entityId: 'task-1',
+					version: 3,
+					mutation: 'entity.revert',
+					dataBefore: { title: 'new' },
+					dataAfter: { title: 'old' },
+					actor: 'ui',
+					transactionId: null,
+					metadata: { reverted_from_entry_id: '2' },
+				},
+			},
+		},
+	});
+
+	const result = await revertAuditEntry(2, { tenant: 'acme', database: 'orders' });
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('revertAuditEntry');
+	expect(body.variables).toEqual({ auditEntryId: '2' });
+	expect(result).toEqual({
+		entity: { collection: 'tasks', id: 'task-1', version: 3, data: { title: 'old' } },
+		audit_entry_id: 9,
+	});
 });
 
 test('fetchCollections() maps tenant-scoped GraphQL collection metadata', async () => {
@@ -618,64 +666,547 @@ test('deleteLink() uses tenant-scoped GraphQL deleteLink mutation', async () => 
 	});
 });
 
-// ── Credential API helpers ────────────────────────────────────────────────────
-
-test('listCredentials() calls GET /control/tenants/:id/credentials', async () => {
-	mockFetch({ credentials: [] });
-
-	await listCredentials('tenant-123');
-
-	expect(lastRequest?.url).toBe('/control/tenants/tenant-123/credentials');
-	// GET is the default — no explicit method set
-	expect(lastRequest?.init?.method).toBeUndefined();
-});
-
-test('listCredentials() URL-encodes tenant ID', async () => {
-	mockFetch({ credentials: [] });
-
-	await listCredentials('my tenant');
-
-	expect(lastRequest?.url).toBe('/control/tenants/my%20tenant/credentials');
-});
-
-test('issueCredential() calls POST /control/tenants/:id/credentials', async () => {
-	mockFetch({ jwt: 'eyJ...', jti: 'abc-jti', expires_at_ms: 9999999 });
-
-	await issueCredential('tenant-123', {
-		target_user: 'user-uuid',
-		ttl_seconds: 3600,
-		grants: { databases: [] },
+test('traverseLinks() uses tenant-scoped GraphQL neighbors query', async () => {
+	mockFetch({
+		data: {
+			neighbors: {
+				groups: [
+					{
+						edges: [
+							{
+								node: {
+									collection: 'tasks',
+									id: 't1',
+									version: 1,
+									data: { title: 'one' },
+								},
+								linkType: 'owns',
+								sourceCollection: 'users',
+								sourceId: 'u1',
+								targetCollection: 'tasks',
+								targetId: 't1',
+							},
+						],
+					},
+				],
+			},
+		},
 	});
 
-	expect(lastRequest?.url).toBe('/control/tenants/tenant-123/credentials');
-	expect(lastRequest?.init?.method).toBe('POST');
+	const result = await traverseLinks(
+		'users',
+		'u1',
+		{ linkType: 'owns' },
+		{ tenant: 'acme', database: 'orders' },
+	);
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('neighbors(');
+	expect(body.variables).toEqual({
+		collection: 'users',
+		id: 'u1',
+		linkType: 'owns',
+		direction: 'outbound',
+	});
+	expect(result).toEqual({
+		entities: [{ collection: 'tasks', id: 't1', version: 1, data: { title: 'one' } }],
+		paths: [
+			{
+				source_collection: 'users',
+				source_id: 'u1',
+				target_collection: 'tasks',
+				target_id: 't1',
+				link_type: 'owns',
+			},
+		],
+	});
 });
 
-test('issueCredential() URL-encodes tenant ID', async () => {
-	mockFetch({ jwt: 'eyJ...', jti: 'abc-jti', expires_at_ms: 9999999 });
+test('transitionLifecycle() uses typed GraphQL mutation and refreshes generic entity', async () => {
+	mockFetchSequence([
+		{
+			data: {
+				transitionTasksLifecycle: {
+					id: 't1',
+					version: 2,
+					lifecycles: {},
+				},
+			},
+		},
+		{
+			data: {
+				entity: {
+					collection: 'tasks',
+					id: 't1',
+					version: 2,
+					data: { title: 'submitted', status: 'submitted' },
+				},
+			},
+		},
+	]);
 
-	await issueCredential('my tenant', {
-		target_user: 'user-uuid',
-		ttl_seconds: 3600,
-		grants: { databases: [] },
+	const result = await transitionLifecycle(
+		'tasks',
+		't1',
+		{
+			lifecycle_name: 'status',
+			target_state: 'submitted',
+			expected_version: 1,
+		},
+		{ tenant: 'acme', database: 'orders' },
+	);
+
+	expect(requests).toHaveLength(2);
+	const transitionBody = JSON.parse(String(requests[0]?.init?.body));
+	expect(requests[0]?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(transitionBody.query).toContain('transitionTasksLifecycle');
+	expect(transitionBody.variables).toEqual({
+		id: 't1',
+		lifecycleName: 'status',
+		targetState: 'submitted',
+		expectedVersion: 1,
+	});
+	expect(result.entity).toEqual({
+		collection: 'tasks',
+		id: 't1',
+		version: 2,
+		data: { title: 'submitted', status: 'submitted' },
+	});
+});
+
+test('entity rollback helpers use tenant-scoped GraphQL rollbackEntity mutation', async () => {
+	mockFetchSequence([
+		{
+			data: {
+				rollbackEntity: {
+					current: {
+						collection: 'tasks',
+						id: 't1',
+						version: 2,
+						data: { title: 'v2' },
+					},
+					target: {
+						collection: 'tasks',
+						id: 't1',
+						version: 1,
+						data: { title: 'v1' },
+					},
+					diff: { title: { path: 'title', kind: 'modified', description: 'title changed' } },
+				},
+			},
+		},
+		{
+			data: {
+				rollbackEntity: {
+					entity: {
+						collection: 'tasks',
+						id: 't1',
+						version: 3,
+						data: { title: 'v1' },
+					},
+					auditEntry: {
+						id: '7',
+						timestampNs: '123',
+						collection: 'tasks',
+						entityId: 't1',
+						version: 3,
+						mutation: 'entity.rollback',
+						dataBefore: { title: 'v2' },
+						dataAfter: { title: 'v1' },
+						actor: 'ui',
+						transactionId: null,
+						metadata: null,
+					},
+				},
+			},
+		},
+	]);
+
+	await expect(
+		previewEntityRollback('tasks', 't1', 1, { tenant: 'acme', database: 'orders' }),
+	).resolves.toEqual({
+		current: { collection: 'tasks', id: 't1', version: 2, data: { title: 'v2' } },
+		target: { collection: 'tasks', id: 't1', version: 1, data: { title: 'v1' } },
+		diff: { title: { path: 'title', kind: 'modified', description: 'title changed' } },
+	});
+	await expect(
+		applyEntityRollback('tasks', 't1', 1, 2, { tenant: 'acme', database: 'orders' }),
+	).resolves.toEqual({
+		entity: { collection: 'tasks', id: 't1', version: 3, data: { title: 'v1' } },
+		audit_entry: {
+			id: 7,
+			timestamp_ns: 123,
+			collection: 'tasks',
+			entity_id: 't1',
+			version: 3,
+			mutation: 'entity.rollback',
+			data_before: { title: 'v2' },
+			data_after: { title: 'v1' },
+			actor: 'ui',
+			transaction_id: null,
+			metadata: null,
+		},
 	});
 
-	expect(lastRequest?.url).toBe('/control/tenants/my%20tenant/credentials');
+	expect(JSON.parse(String(requests[0]?.init?.body)).variables).toEqual({
+		collection: 'tasks',
+		id: 't1',
+		toVersion: 1,
+	});
+	expect(JSON.parse(String(requests[1]?.init?.body)).variables).toEqual({
+		collection: 'tasks',
+		id: 't1',
+		toVersion: 1,
+		expectedVersion: 2,
+	});
 });
 
-test('revokeCredential() calls DELETE /control/tenants/:id/credentials/:jti', async () => {
-	mockFetch({});
+test('collection template helpers use tenant-scoped GraphQL', async () => {
+	mockFetchSequence([
+		{
+			data: {
+				collectionTemplate: {
+					collection: 'tasks',
+					template: '# {{title}}',
+					version: 1,
+					updatedAtNs: '123',
+					updatedBy: 'admin',
+					warnings: [],
+				},
+			},
+		},
+		{
+			data: {
+				putCollectionTemplate: {
+					collection: 'tasks',
+					template: '## {{title}}',
+					version: 2,
+					updatedAtNs: '456',
+					updatedBy: 'admin',
+					warnings: ['optional field notes may be absent'],
+				},
+			},
+		},
+		{ data: { deleteCollectionTemplate: { deleted: true } } },
+	]);
 
-	await revokeCredential('tenant-123', 'jti-abc');
+	await expect(
+		fetchCollectionTemplate('tasks', { tenant: 'acme', database: 'orders' }),
+	).resolves.toEqual({
+		collection: 'tasks',
+		template: '# {{title}}',
+		version: 1,
+		updated_at_ns: 123,
+		updated_by: 'admin',
+	});
+	await expect(
+		putCollectionTemplate('tasks', '## {{title}}', { tenant: 'acme', database: 'orders' }),
+	).resolves.toEqual({
+		collection: 'tasks',
+		template: '## {{title}}',
+		version: 2,
+		updated_at_ns: 456,
+		updated_by: 'admin',
+		warnings: ['optional field notes may be absent'],
+	});
+	await deleteCollectionTemplate('tasks', { tenant: 'acme', database: 'orders' });
 
-	expect(lastRequest?.url).toBe('/control/tenants/tenant-123/credentials/jti-abc');
-	expect(lastRequest?.init?.method).toBe('DELETE');
+	expect(requests.map((request) => request.url)).toEqual([
+		'/tenants/acme/databases/orders/graphql',
+		'/tenants/acme/databases/orders/graphql',
+		'/tenants/acme/databases/orders/graphql',
+	]);
+	expect(JSON.parse(String(requests[0]?.init?.body)).query).toContain('collectionTemplate');
+	expect(JSON.parse(String(requests[1]?.init?.body)).query).toContain('putCollectionTemplate');
+	expect(JSON.parse(String(requests[2]?.init?.body)).query).toContain('deleteCollectionTemplate');
+	expect(JSON.parse(String(requests[1]?.init?.body)).variables).toEqual({
+		collection: 'tasks',
+		template: '## {{title}}',
+	});
 });
 
-test('revokeCredential() URL-encodes jti', async () => {
-	mockFetch({});
+test('fetchRenderedEntity() uses tenant-scoped GraphQL renderedEntity query', async () => {
+	mockFetch({
+		data: {
+			renderedEntity: {
+				markdown: '# Hello',
+				entity: {
+					collection: 'tasks',
+					id: 't1',
+					version: 1,
+					data: { title: 'Hello' },
+				},
+			},
+		},
+	});
 
-	await revokeCredential('tenant-123', 'jti/with/slash');
+	await expect(
+		fetchRenderedEntity('tasks', 't1', { tenant: 'acme', database: 'orders' }),
+	).resolves.toBe('# Hello');
 
-	expect(lastRequest?.url).toBe('/control/tenants/tenant-123/credentials/jti%2Fwith%2Fslash');
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('renderedEntity');
+	expect(body.variables).toEqual({ collection: 'tasks', id: 't1' });
+});
+
+// ── Control-plane GraphQL helpers ────────────────────────────────────────────
+
+test('fetchTenants() maps control GraphQL tenant fields', async () => {
+	mockFetch({
+		data: {
+			tenants: [{ id: 't1', name: 'Acme', dbName: 'acme-a1', createdAt: '2026-04-20T00:00:00Z' }],
+		},
+	});
+
+	const result = await fetchTenants();
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/control/graphql');
+	expect(body.query).toContain('tenants');
+	expect(result).toEqual([
+		{ id: 't1', name: 'Acme', db_name: 'acme-a1', created_at: '2026-04-20T00:00:00Z' },
+	]);
+});
+
+test('createTenant(), fetchTenant(), and deleteTenant() use control GraphQL', async () => {
+	mockFetchSequence([
+		{
+			data: {
+				createTenant: {
+					id: 't1',
+					name: 'Acme',
+					dbName: 'acme-a1',
+					createdAt: '2026-04-20T00:00:00Z',
+				},
+			},
+		},
+		{
+			data: {
+				tenant: {
+					id: 't1',
+					name: 'Acme',
+					dbName: 'acme-a1',
+					createdAt: '2026-04-20T00:00:00Z',
+				},
+			},
+		},
+		{ data: { deleteTenant: { deleted: true } } },
+	]);
+
+	await expect(createTenant('Acme')).resolves.toEqual({
+		id: 't1',
+		name: 'Acme',
+		db_name: 'acme-a1',
+		created_at: '2026-04-20T00:00:00Z',
+	});
+	await expect(fetchTenant('t1')).resolves.toEqual({
+		id: 't1',
+		name: 'Acme',
+		db_name: 'acme-a1',
+		created_at: '2026-04-20T00:00:00Z',
+	});
+	await deleteTenant('t1');
+
+	expect(requests.map((request) => request.url)).toEqual([
+		'/control/graphql',
+		'/control/graphql',
+		'/control/graphql',
+	]);
+	expect(JSON.parse(String(requests[0]?.init?.body)).variables).toEqual({ name: 'Acme' });
+	expect(JSON.parse(String(requests[1]?.init?.body)).variables).toEqual({ id: 't1' });
+	expect(JSON.parse(String(requests[2]?.init?.body)).variables).toEqual({ id: 't1' });
+});
+
+test('tenant database helpers use control GraphQL variables without path encoding', async () => {
+	mockFetchSequence([
+		{
+			data: {
+				tenantDatabases: [{ tenantId: 'tenant/one', name: 'orders', createdAtMs: 1000 }],
+			},
+		},
+		{ data: { createTenantDatabase: { tenantId: 'tenant/one', name: 'ops', createdAtMs: 2000 } } },
+		{ data: { deleteTenantDatabase: { deleted: true } } },
+	]);
+
+	await expect(fetchTenantDatabases('tenant/one')).resolves.toEqual([
+		{ tenant_id: 'tenant/one', name: 'orders', created_at_ms: 1000 },
+	]);
+	await expect(createTenantDatabase('tenant/one', 'ops')).resolves.toEqual({
+		tenant_id: 'tenant/one',
+		name: 'ops',
+		created_at_ms: 2000,
+	});
+	await deleteTenantDatabase('tenant/one', 'ops');
+
+	expect(JSON.parse(String(requests[0]?.init?.body)).variables).toEqual({ tenantId: 'tenant/one' });
+	expect(JSON.parse(String(requests[1]?.init?.body)).variables).toEqual({
+		tenantId: 'tenant/one',
+		name: 'ops',
+	});
+	expect(JSON.parse(String(requests[2]?.init?.body)).variables).toEqual({
+		tenantId: 'tenant/one',
+		name: 'ops',
+	});
+});
+
+test('provisioned user helpers use control GraphQL and map field names', async () => {
+	mockFetchSequence([
+		{
+			data: {
+				provisionUser: {
+					id: 'u1',
+					displayName: 'Ada',
+					email: 'ada@example.com',
+					createdAtMs: 123,
+					suspendedAtMs: null,
+				},
+			},
+		},
+		{
+			data: {
+				users: [
+					{
+						id: 'u1',
+						displayName: 'Ada',
+						email: 'ada@example.com',
+						createdAtMs: 123,
+						suspendedAtMs: 456,
+					},
+				],
+			},
+		},
+		{ data: { suspendUser: { suspended: true } } },
+	]);
+
+	await expect(createUser('Ada', 'ada@example.com')).resolves.toEqual({
+		id: 'u1',
+		display_name: 'Ada',
+		email: 'ada@example.com',
+		created_at_ms: 123,
+		suspended_at_ms: null,
+	});
+	await expect(listUsers()).resolves.toEqual([
+		{
+			id: 'u1',
+			display_name: 'Ada',
+			email: 'ada@example.com',
+			created_at_ms: 123,
+			suspended_at_ms: 456,
+		},
+	]);
+	await suspendUser('u1');
+
+	expect(requests.map((request) => request.url)).toEqual([
+		'/control/graphql',
+		'/control/graphql',
+		'/control/graphql',
+	]);
+});
+
+test('deployment role helpers use control GraphQL', async () => {
+	mockFetchSequence([
+		{ data: { userRoles: [{ login: 'admin@example.com', role: 'admin' }] } },
+		{ data: { setUserRole: { login: 'writer@example.com', role: 'write' } } },
+		{ data: { removeUserRole: { deleted: true } } },
+	]);
+
+	await expect(fetchUsers()).resolves.toEqual([{ login: 'admin@example.com', role: 'admin' }]);
+	await expect(setUserRole('writer@example.com', 'write')).resolves.toEqual({
+		login: 'writer@example.com',
+		role: 'write',
+	});
+	await removeUserRole('writer@example.com');
+
+	expect(JSON.parse(String(requests[1]?.init?.body)).variables).toEqual({
+		login: 'writer@example.com',
+		role: 'write',
+	});
+	expect(JSON.parse(String(requests[2]?.init?.body)).variables).toEqual({
+		login: 'writer@example.com',
+	});
+});
+
+test('tenant member helpers use control GraphQL and map field names', async () => {
+	mockFetchSequence([
+		{ data: { tenantMembers: [{ tenantId: 't1', userId: 'u1', role: 'read' }] } },
+		{ data: { upsertTenantMember: { tenantId: 't1', userId: 'u2', role: 'write' } } },
+		{ data: { removeTenantMember: { deleted: true } } },
+	]);
+
+	await expect(fetchTenantMembers('t1')).resolves.toEqual([
+		{ tenant_id: 't1', user_id: 'u1', role: 'read' },
+	]);
+	await expect(upsertTenantMember('t1', 'u2', 'write')).resolves.toEqual({
+		tenant_id: 't1',
+		user_id: 'u2',
+		role: 'write',
+	});
+	await removeTenantMember('t1', 'u2');
+
+	expect(JSON.parse(String(requests[0]?.init?.body)).variables).toEqual({ tenantId: 't1' });
+	expect(JSON.parse(String(requests[1]?.init?.body)).variables).toEqual({
+		tenantId: 't1',
+		userId: 'u2',
+		role: 'write',
+	});
+	expect(JSON.parse(String(requests[2]?.init?.body)).variables).toEqual({
+		tenantId: 't1',
+		userId: 'u2',
+	});
+});
+
+test('credential helpers use control GraphQL without exposing JWT in list', async () => {
+	mockFetchSequence([
+		{
+			data: {
+				credentials: [
+					{
+						jti: 'jti-1',
+						userId: 'u1',
+						tenantId: 't1',
+						issuedAtMs: 100,
+						expiresAtMs: 200,
+						revoked: false,
+						grants: { databases: [{ name: 'orders', ops: ['read'] }] },
+					},
+				],
+			},
+		},
+		{ data: { issueCredential: { jwt: 'eyJ...', jti: 'jti-2', expiresAt: 300 } } },
+		{ data: { revokeCredential: { revoked: true } } },
+	]);
+
+	await expect(listCredentials('t1')).resolves.toEqual([
+		{
+			jti: 'jti-1',
+			user_id: 'u1',
+			tenant_id: 't1',
+			issued_at_ms: 100,
+			expires_at_ms: 200,
+			revoked: false,
+			grants: { databases: [{ name: 'orders', ops: ['read'] }] },
+		},
+	]);
+	await expect(
+		issueCredential('t1', {
+			target_user: 'u1',
+			ttl_seconds: 3600,
+			grants: { databases: [{ name: 'orders', ops: ['read'] }] },
+		}),
+	).resolves.toEqual({ jwt: 'eyJ...', jti: 'jti-2', expires_at_ms: 300000 });
+	await revokeCredential('t1', 'jti-2');
+
+	expect(JSON.parse(String(requests[0]?.init?.body)).query).not.toContain('jwt');
+	expect(JSON.parse(String(requests[1]?.init?.body)).variables).toEqual({
+		tenantId: 't1',
+		targetUser: 'u1',
+		ttlSeconds: 3600,
+		grants: { databases: [{ name: 'orders', ops: ['read'] }] },
+	});
+	expect(JSON.parse(String(requests[2]?.init?.body)).variables).toEqual({
+		tenantId: 't1',
+		jti: 'jti-2',
+	});
 });

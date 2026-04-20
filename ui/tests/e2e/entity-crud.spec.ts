@@ -21,6 +21,18 @@ test.describe('Entity CRUD', () => {
 	test('creates, reads, updates, and deletes an entity from the collection detail route', async ({
 		page,
 	}) => {
+		const dataPlaneRequests: string[] = [];
+		page.on('request', (request) => {
+			const path = new URL(request.url()).pathname;
+			if (
+				path.startsWith(
+					`/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/`,
+				)
+			) {
+				dataPlaneRequests.push(path);
+			}
+		});
+
 		await page.goto(dbCollectionUrl(db, 'notes'));
 
 		await page.getByLabel('Entity ID').fill('note-001');
@@ -34,7 +46,10 @@ test.describe('Entity CRUD', () => {
 		await expect(page.getByText('Draft').first()).toBeVisible();
 
 		await page.getByRole('button', { name: 'Edit' }).click();
-		await page.locator('.tree-row', { hasText: 'title' }).locator('input.leaf-input').fill('Published');
+		await page
+			.locator('.tree-row', { hasText: 'title' })
+			.locator('input.leaf-input')
+			.fill('Published');
 		await page.getByRole('button', { name: 'Save' }).click();
 		await expect(page.getByText('Saved v2.')).toBeVisible({ timeout: 10_000 });
 		await expect(page.getByText('Published').first()).toBeVisible();
@@ -43,5 +58,11 @@ test.describe('Entity CRUD', () => {
 		await page.getByRole('button', { name: 'Confirm' }).click();
 		await expect(page.getByText('Deleted note-001.')).toBeVisible({ timeout: 10_000 });
 		await expect(page.locator('tr', { hasText: 'note-001' })).toHaveCount(0);
+
+		expect(dataPlaneRequests.some((path) => path.endsWith('/graphql'))).toBe(true);
+		expect(
+			dataPlaneRequests.filter((path) => !path.endsWith('/graphql')),
+			'Entity CRUD UI should use tenant-scoped GraphQL for data-plane calls',
+		).toEqual([]);
 	});
 });
