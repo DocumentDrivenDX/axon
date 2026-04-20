@@ -599,6 +599,52 @@ Link discovery and autocomplete workflows should use the dedicated
 `linkCandidates`/neighbor-discovery surface rather than overloading
 relationship reads.
 
+Candidate discovery is the browser autocomplete contract for creating links:
+
+```graphql
+query {
+  linkCandidates(
+    sourceCollection: "users"
+    sourceId: "u1"
+    linkType: "assigned-to"
+    search: "invoice"
+    filter: { status: { eq: "open" } }
+    limit: 10
+  ) {
+    targetCollection
+    linkType
+    cardinality
+    existingLinkCount
+    candidates {
+      alreadyLinked
+      entity { id collection data }
+    }
+  }
+}
+```
+
+Graph exploration uses `neighbors`, which returns inbound and outbound one-hop
+neighbors grouped by link type and direction. Edges include link metadata and
+the full source/target coordinates.
+
+```graphql
+query {
+  neighbors(collection: "tasks", id: "task-1", direction: "outbound", limit: 50) {
+    groups {
+      linkType
+      direction
+      edges {
+        cursor
+        metadata
+        node { id collection data }
+      }
+    }
+    pageInfo { hasNextPage endCursor }
+    totalCount
+  }
+}
+```
+
 Simple REST traversal:
 
 ```http

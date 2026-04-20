@@ -28,9 +28,9 @@ use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
     DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode,
-    FilterOp, GateFilter, GetEntityRequest, ListCollectionsRequest, PatchEntityRequest,
-    PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest, SortDirection, SortField,
-    TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
+    FilterOp, FindLinkCandidatesRequest, GateFilter, GetEntityRequest, ListCollectionsRequest,
+    PatchEntityRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest, SortDirection,
+    SortField, TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::AxonError;
@@ -66,6 +66,11 @@ const COLLECTION_META_TYPE: &str = "CollectionMeta";
 const AUDIT_ENTRY_TYPE: &str = "AuditEntry";
 const AUDIT_EDGE_TYPE: &str = "AuditEdge";
 const AUDIT_CONNECTION_TYPE: &str = "AuditConnection";
+const LINK_CANDIDATE_TYPE: &str = "LinkCandidate";
+const LINK_CANDIDATES_PAYLOAD_TYPE: &str = "LinkCandidatesPayload";
+const NEIGHBOR_EDGE_TYPE: &str = "NeighborEdge";
+const NEIGHBOR_GROUP_TYPE: &str = "NeighborGroup";
+const NEIGHBORS_CONNECTION_TYPE: &str = "NeighborsConnection";
 const CREATE_COLLECTION_INPUT: &str = "CreateCollectionInput";
 const DROP_COLLECTION_INPUT: &str = "DropCollectionInput";
 const PUT_SCHEMA_INPUT: &str = "PutSchemaInput";
@@ -1548,6 +1553,160 @@ fn relationship_field<S: StorageAdapter + 'static>(
     ))
 }
 
+fn entity_matches_search(entity: &Entity, search: &str) -> bool {
+    let needle = search.to_ascii_lowercase();
+    if entity.id.as_str().to_ascii_lowercase().contains(&needle) {
+        return true;
+    }
+    serde_json::to_string(&entity.data)
+        .map(|data| data.to_ascii_lowercase().contains(&needle))
+        .unwrap_or(false)
+}
+
+fn link_candidates_value(
+    response: axon_api::response::FindLinkCandidatesResponse,
+    schema: Option<&CollectionSchema>,
+    search: Option<&str>,
+    limit: Option<usize>,
+) -> FieldValue<'static> {
+    let mut candidates = response.candidates;
+    if let Some(search) = search.filter(|search| !search.is_empty()) {
+        candidates.retain(|candidate| entity_matches_search(&candidate.entity, search));
+    }
+    let limit = limit.unwrap_or(50);
+    let candidates: Vec<Value> = candidates
+        .into_iter()
+        .take(limit)
+        .map(|candidate| {
+            json!({
+                "alreadyLinked": candidate.already_linked,
+                "entity": entity_to_generic_json_with_schema(&candidate.entity, schema),
+            })
+        })
+        .collect();
+
+    json_to_field_value(json!({
+        "targetCollection": response.target_collection,
+        "linkType": response.link_type,
+        "cardinality": response.cardinality,
+        "existingLinkCount": response.existing_link_count,
+        "candidates": candidates,
+    }))
+}
+
+#[derive(Clone)]
+struct NeighborEdgePayload {
+    entity: Entity,
+    link: Link,
+    direction: String,
+}
+
+impl NeighborEdgePayload {
+    fn cursor(&self) -> String {
+        format!(
+            "{}:{}:{}/{}/{}/{}",
+            self.direction,
+            self.link.link_type,
+            self.link.source_collection,
+            self.link.source_id,
+            self.link.target_collection,
+            self.link.target_id,
+        )
+    }
+}
+
+fn parse_neighbor_direction(direction: &str) -> Result<TraverseDirection, GqlError> {
+    match direction.to_ascii_lowercase().as_str() {
+        "forward" | "outbound" => Ok(TraverseDirection::Forward),
+        "reverse" | "inbound" => Ok(TraverseDirection::Reverse),
+        other => Err(GqlError::new(format!(
+            "direction must be forward/outbound or reverse/inbound, got '{other}'"
+        ))
+        .extend_with(|_err, ext| {
+            ext.set("code", "INVALID_ARGUMENT");
+        })),
+    }
+}
+
+fn neighbor_connection_value(
+    edges: &[NeighborEdgePayload],
+    schemas: &HashMap<String, Option<CollectionSchema>>,
+    limit: Option<usize>,
+    after: Option<&str>,
+) -> Result<FieldValue<'static>, GqlError> {
+    let start_index = match after {
+        Some(cursor) => edges
+            .iter()
+            .position(|edge| edge.cursor() == cursor)
+            .map(|index| index + 1)
+            .ok_or_else(|| {
+                GqlError::new(format!("neighbor cursor '{cursor}' was not found")).extend_with(
+                    |_err, ext| {
+                        ext.set("code", "INVALID_ARGUMENT");
+                    },
+                )
+            })?,
+        None => 0,
+    };
+    let page_limit = limit.unwrap_or(100);
+    let page: Vec<&NeighborEdgePayload> = edges.iter().skip(start_index).take(page_limit).collect();
+    let mut group_totals: BTreeMap<(String, String), usize> = BTreeMap::new();
+    for edge in edges {
+        *group_totals
+            .entry((edge.link.link_type.clone(), edge.direction.clone()))
+            .or_default() += 1;
+    }
+
+    let mut groups: BTreeMap<(String, String), Vec<Value>> = BTreeMap::new();
+    for edge in &page {
+        let collection = edge.entity.collection.to_string();
+        let schema = schemas.get(&collection).and_then(Option::as_ref);
+        groups
+            .entry((edge.link.link_type.clone(), edge.direction.clone()))
+            .or_default()
+            .push(json!({
+                "cursor": edge.cursor(),
+                "node": entity_to_generic_json_with_schema(&edge.entity, schema),
+                "linkType": edge.link.link_type.clone(),
+                "direction": edge.direction.clone(),
+                "metadata": edge.link.metadata.clone(),
+                "sourceCollection": edge.link.source_collection.to_string(),
+                "sourceId": edge.link.source_id.to_string(),
+                "targetCollection": edge.link.target_collection.to_string(),
+                "targetId": edge.link.target_id.to_string(),
+            }));
+    }
+
+    let groups: Vec<Value> = groups
+        .into_iter()
+        .map(|((link_type, direction), edges)| {
+            let total_count = group_totals
+                .get(&(link_type.clone(), direction.clone()))
+                .copied()
+                .unwrap_or(edges.len());
+            json!({
+                "linkType": link_type,
+                "direction": direction,
+                "edges": edges,
+                "totalCount": total_count,
+            })
+        })
+        .collect();
+
+    let start_cursor = page.first().map(|edge| edge.cursor());
+    let end_cursor = page.last().map(|edge| edge.cursor());
+    Ok(json_to_field_value(json!({
+        "groups": groups,
+        "pageInfo": page_info_json(
+            start_cursor,
+            end_cursor,
+            start_index + page.len() < edges.len(),
+            after.is_some(),
+        ),
+        "totalCount": edges.len(),
+    })))
+}
+
 fn collection_meta_object() -> Object {
     Object::new(COLLECTION_META_TYPE)
         .field(json_object_field(
@@ -1637,6 +1796,109 @@ fn audit_connection_object() -> Object {
         ))
 }
 
+fn link_candidate_object() -> Object {
+    Object::new(LINK_CANDIDATE_TYPE)
+        .field(json_object_field(
+            "alreadyLinked",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field("entity", TypeRef::named_nn(ENTITY_TYPE)))
+}
+
+fn link_candidates_payload_object() -> Object {
+    Object::new(LINK_CANDIDATES_PAYLOAD_TYPE)
+        .field(json_object_field(
+            "targetCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "linkType",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "cardinality",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "existingLinkCount",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "candidates",
+            TypeRef::named_nn_list_nn(LINK_CANDIDATE_TYPE),
+        ))
+}
+
+fn neighbor_edge_object() -> Object {
+    Object::new(NEIGHBOR_EDGE_TYPE)
+        .field(json_object_field(
+            "cursor",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("node", TypeRef::named_nn(ENTITY_TYPE)))
+        .field(json_object_field(
+            "linkType",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "direction",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("metadata", TypeRef::named("JSON")))
+        .field(json_object_field(
+            "sourceCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "sourceId",
+            TypeRef::named_nn(TypeRef::ID),
+        ))
+        .field(json_object_field(
+            "targetCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "targetId",
+            TypeRef::named_nn(TypeRef::ID),
+        ))
+}
+
+fn neighbor_group_object() -> Object {
+    Object::new(NEIGHBOR_GROUP_TYPE)
+        .field(json_object_field(
+            "linkType",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "direction",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "edges",
+            TypeRef::named_nn_list_nn(NEIGHBOR_EDGE_TYPE),
+        ))
+        .field(json_object_field(
+            "totalCount",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+}
+
+fn neighbors_connection_object() -> Object {
+    Object::new(NEIGHBORS_CONNECTION_TYPE)
+        .field(json_object_field(
+            "groups",
+            TypeRef::named_nn_list_nn(NEIGHBOR_GROUP_TYPE),
+        ))
+        .field(json_object_field(
+            "pageInfo",
+            TypeRef::named_nn(PAGE_INFO_TYPE),
+        ))
+        .field(json_object_field(
+            "totalCount",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+}
+
 fn transaction_operation_result_object() -> Object {
     Object::new(TRANSACTION_OPERATION_RESULT)
         .field(json_object_field("index", TypeRef::named_nn(TypeRef::INT)))
@@ -1702,6 +1964,11 @@ fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
         .register(audit_entry_object())
         .register(audit_edge_object())
         .register(audit_connection_object())
+        .register(link_candidate_object())
+        .register(link_candidates_payload_object())
+        .register(neighbor_edge_object())
+        .register(neighbor_group_object())
+        .register(neighbors_connection_object())
         .register(transaction_operation_result_object())
         .register(commit_transaction_payload_object())
         .register(drop_collection_payload_object())
@@ -1814,6 +2081,174 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
         .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT)))
         .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
         .argument(InputValue::new("after", TypeRef::named(TypeRef::ID))),
+    );
+
+    let handler_link_candidates = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "linkCandidates",
+            TypeRef::named_nn(LINK_CANDIDATES_PAYLOAD_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_link_candidates);
+                FieldFuture::new(async move {
+                    let source_collection =
+                        ctx.args.try_get("sourceCollection")?.string()?.to_owned();
+                    let source_id = ctx.args.try_get("sourceId")?.string()?.to_owned();
+                    let link_type = ctx.args.try_get("linkType")?.string()?.to_owned();
+                    let search = ctx
+                        .args
+                        .try_get("search")
+                        .ok()
+                        .map(|value| value.string().map(ToOwned::to_owned))
+                        .transpose()?;
+                    let filter = ctx
+                        .args
+                        .try_get("filter")
+                        .ok()
+                        .map(|value| parse_graphql_filter_arg(value.as_value()))
+                        .transpose()?;
+                    let limit = parse_relationship_limit(&ctx)?;
+                    let request_limit = if search.as_deref().is_some_and(|s| !s.is_empty()) {
+                        Some(usize::MAX)
+                    } else {
+                        limit
+                    };
+
+                    let guard = handler.lock().await;
+                    let response = guard
+                        .find_link_candidates(FindLinkCandidatesRequest {
+                            source_collection: CollectionId::new(source_collection),
+                            source_id: EntityId::new(source_id),
+                            link_type,
+                            filter,
+                            limit: request_limit,
+                        })
+                        .map_err(axon_error_to_gql)?;
+                    let target_collection = CollectionId::new(&response.target_collection);
+                    let schema = guard
+                        .get_schema(&target_collection)
+                        .map_err(axon_error_to_gql)?;
+                    Ok(Some(link_candidates_value(
+                        response,
+                        schema.as_ref(),
+                        search.as_deref(),
+                        limit,
+                    )))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "sourceCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("sourceId", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new(
+            "linkType",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("search", TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT))),
+    );
+
+    let handler_neighbors = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "neighbors",
+            TypeRef::named_nn(NEIGHBORS_CONNECTION_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_neighbors);
+                FieldFuture::new(async move {
+                    let collection = ctx.args.try_get("collection")?.string()?.to_owned();
+                    let id = ctx.args.try_get("id")?.string()?.to_owned();
+                    let link_type = ctx
+                        .args
+                        .try_get("linkType")
+                        .ok()
+                        .map(|value| value.string().map(ToOwned::to_owned))
+                        .transpose()?;
+                    let direction = ctx
+                        .args
+                        .try_get("direction")
+                        .ok()
+                        .map(|value| parse_neighbor_direction(value.string()?))
+                        .transpose()?;
+                    let limit = parse_relationship_limit(&ctx)?;
+                    let after = parse_relationship_after(&ctx)?;
+                    let collection_id = CollectionId::new(&collection);
+                    let entity_id = EntityId::new(&id);
+                    let directions = match direction {
+                        Some(TraverseDirection::Forward) => {
+                            vec![(TraverseDirection::Forward, "outbound")]
+                        }
+                        Some(TraverseDirection::Reverse) => {
+                            vec![(TraverseDirection::Reverse, "inbound")]
+                        }
+                        None => vec![
+                            (TraverseDirection::Forward, "outbound"),
+                            (TraverseDirection::Reverse, "inbound"),
+                        ],
+                    };
+
+                    let guard = handler.lock().await;
+                    guard
+                        .get_entity(GetEntityRequest {
+                            collection: collection_id.clone(),
+                            id: entity_id.clone(),
+                        })
+                        .map_err(axon_error_to_gql)?;
+
+                    let mut edges = Vec::new();
+                    for (direction, label) in directions {
+                        let response = guard
+                            .traverse(TraverseRequest {
+                                collection: collection_id.clone(),
+                                id: entity_id.clone(),
+                                link_type: link_type.clone(),
+                                max_depth: Some(1),
+                                direction,
+                                hop_filter: None,
+                            })
+                            .map_err(axon_error_to_gql)?;
+                        edges.extend(response.entities.into_iter().zip(response.links).map(
+                            |(entity, link)| NeighborEdgePayload {
+                                entity,
+                                link,
+                                direction: label.to_owned(),
+                            },
+                        ));
+                    }
+
+                    let mut schemas = HashMap::new();
+                    for edge in &edges {
+                        let collection = edge.entity.collection.to_string();
+                        if let std::collections::hash_map::Entry::Vacant(entry) =
+                            schemas.entry(collection)
+                        {
+                            let schema = guard
+                                .get_schema(&edge.entity.collection)
+                                .map_err(axon_error_to_gql)?;
+                            entry.insert(schema);
+                        }
+                    }
+
+                    neighbor_connection_value(&edges, &schemas, limit, after.as_deref()).map(Some)
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new("linkType", TypeRef::named(TypeRef::STRING)))
+        .argument(InputValue::new(
+            "direction",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new("after", TypeRef::named(TypeRef::ID)))
+        .argument(InputValue::new("afterId", TypeRef::named(TypeRef::ID))),
     );
 
     let handler_collections = Arc::clone(&handler);

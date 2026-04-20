@@ -728,6 +728,193 @@ async fn graphql_relationship_fields_follow_declared_links() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn graphql_link_discovery_and_neighbors_are_exposed() {
+    let server = test_server();
+    seed_relationship_collections(&server).await;
+
+    let introspection = gql(
+        &server,
+        r#"{
+            query: __type(name: "Query") { fields { name args { name } } }
+            candidates: __type(name: "LinkCandidatesPayload") { fields { name } }
+            neighborEdge: __type(name: "NeighborEdge") { fields { name } }
+        }"#,
+    )
+    .await;
+    assert!(
+        introspection["errors"].is_null(),
+        "unexpected introspection errors: {introspection}"
+    );
+    let query_fields: Vec<&str> = introspection["data"]["query"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(query_fields.contains(&"linkCandidates"));
+    assert!(query_fields.contains(&"neighbors"));
+    let candidate_fields: Vec<&str> = introspection["data"]["candidates"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    for expected in [
+        "targetCollection",
+        "linkType",
+        "cardinality",
+        "existingLinkCount",
+        "candidates",
+    ] {
+        assert!(
+            candidate_fields.contains(&expected),
+            "candidate payload should expose {expected}: {introspection}"
+        );
+    }
+    let neighbor_edge_fields: Vec<&str> = introspection["data"]["neighborEdge"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    for expected in ["cursor", "node", "linkType", "direction", "metadata"] {
+        assert!(
+            neighbor_edge_fields.contains(&expected),
+            "neighbor edge should expose {expected}: {introspection}"
+        );
+    }
+
+    for mutation in [
+        r#"mutation { createUser(id: "u1", input: { name: "Ada", status: "active" }) { id } }"#,
+        r#"mutation { createTask(id: "task-a", input: { title: "Alpha open", status: "open" }) { id } }"#,
+        r#"mutation { createTask(id: "task-b", input: { title: "Beta closed", status: "closed" }) { id } }"#,
+        r#"mutation { createTask(id: "task-c", input: { title: "Gamma open", status: "open" }) { id } }"#,
+        r#"mutation { createLink(sourceCollection: "user", sourceId: "u1", targetCollection: "task", targetId: "task-a", linkType: "assigned-to", metadata: "{\"role\":\"owner\"}") }"#,
+        r#"mutation { createLink(sourceCollection: "task", sourceId: "task-a", targetCollection: "task", targetId: "task-b", linkType: "depends-on", metadata: "{\"kind\":\"hard\"}") }"#,
+    ] {
+        let body = gql(&server, mutation).await;
+        assert!(
+            body["errors"].is_null(),
+            "unexpected mutation errors: {body}"
+        );
+    }
+
+    let candidates = gql(
+        &server,
+        r#"{
+            linked: linkCandidates(
+                sourceCollection: "user"
+                sourceId: "u1"
+                linkType: "assigned-to"
+                filter: { field: "title", op: "contains", value: "Alpha" }
+                limit: 5
+            ) {
+                targetCollection
+                linkType
+                cardinality
+                existingLinkCount
+                candidates {
+                    alreadyLinked
+                    entity { id collection data }
+                }
+            }
+            searched: linkCandidates(
+                sourceCollection: "user"
+                sourceId: "u1"
+                linkType: "assigned-to"
+                search: "Beta"
+                limit: 1
+            ) {
+                candidates {
+                    alreadyLinked
+                    entity { id data }
+                }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        candidates["errors"].is_null(),
+        "unexpected linkCandidates errors: {candidates}"
+    );
+    assert_eq!(candidates["data"]["linked"]["targetCollection"], "task");
+    assert_eq!(candidates["data"]["linked"]["linkType"], "assigned-to");
+    assert_eq!(candidates["data"]["linked"]["cardinality"], "many-to-many");
+    assert_eq!(candidates["data"]["linked"]["existingLinkCount"], 1);
+    assert_eq!(
+        candidates["data"]["linked"]["candidates"][0]["entity"]["id"],
+        "task-a"
+    );
+    assert_eq!(
+        candidates["data"]["linked"]["candidates"][0]["alreadyLinked"],
+        true
+    );
+    assert_eq!(
+        candidates["data"]["searched"]["candidates"][0]["entity"]["id"],
+        "task-b"
+    );
+    assert_eq!(
+        candidates["data"]["searched"]["candidates"][0]["alreadyLinked"],
+        false
+    );
+
+    let neighbors = gql(
+        &server,
+        r#"{
+            neighbors(collection: "task", id: "task-a", limit: 10) {
+                totalCount
+                groups {
+                    linkType
+                    direction
+                    totalCount
+                    edges {
+                        cursor
+                        metadata
+                        sourceCollection
+                        sourceId
+                        targetCollection
+                        targetId
+                        node { id collection data }
+                    }
+                }
+                pageInfo { hasNextPage hasPreviousPage endCursor }
+            }
+            outbound: neighbors(collection: "task", id: "task-a", direction: "outbound", linkType: "depends-on") {
+                totalCount
+                groups { linkType direction edges { node { id } metadata } }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        neighbors["errors"].is_null(),
+        "unexpected neighbors errors: {neighbors}"
+    );
+    assert_eq!(neighbors["data"]["neighbors"]["totalCount"], 2);
+    let groups = neighbors["data"]["neighbors"]["groups"].as_array().unwrap();
+    let inbound = groups
+        .iter()
+        .find(|group| group["direction"] == "inbound")
+        .expect("task-a should have inbound assigned-to neighbor");
+    assert_eq!(inbound["linkType"], "assigned-to");
+    assert_eq!(inbound["edges"][0]["metadata"]["role"], "owner");
+    assert_eq!(inbound["edges"][0]["node"]["id"], "u1");
+
+    let outbound_group = groups
+        .iter()
+        .find(|group| group["direction"] == "outbound")
+        .expect("task-a should have outbound depends-on neighbor");
+    assert_eq!(outbound_group["linkType"], "depends-on");
+    assert_eq!(outbound_group["edges"][0]["metadata"]["kind"], "hard");
+    assert_eq!(outbound_group["edges"][0]["node"]["id"], "task-b");
+    assert_eq!(neighbors["data"]["outbound"]["totalCount"], 1);
+    assert_eq!(
+        neighbors["data"]["outbound"]["groups"][0]["edges"][0]["node"]["id"],
+        "task-b"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_per_collection_aggregate_queries() {
     let server = test_server();
     seed_collection(&server, "item").await;
