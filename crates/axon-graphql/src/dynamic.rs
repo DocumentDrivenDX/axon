@@ -3243,6 +3243,19 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
     handler: SharedHandler<S>,
     broker: Option<BroadcastBroker>,
 ) -> Result<AxonSchema, String> {
+    build_schema_with_handler_and_broker_scoped(collections, handler, broker, None)
+}
+
+/// Build a dynamic GraphQL schema with subscription events restricted to a
+/// tenant/database scope when provided.
+pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
+    collections: &[CollectionSchema],
+    handler: SharedHandler<S>,
+    broker: Option<BroadcastBroker>,
+    subscription_scope: Option<(String, String)>,
+) -> Result<AxonSchema, String> {
+    let subscription_scope =
+        subscription_scope.map(|(tenant, database)| SubscriptionScope { tenant, database });
     let mut query = Object::new("Query");
     let mut mutation = Object::new("Mutation");
     let mut type_objects = Vec::new();
@@ -4171,7 +4184,8 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
     }
 
     // -- Subscription type ---------------------------------------------------
-    let subscription = broker.map(|broker| build_entity_changed_subscription(broker, collections));
+    let subscription = broker
+        .map(|broker| build_entity_changed_subscription(broker, collections, subscription_scope));
 
     let subscription_name = subscription.as_ref().map(|s| s.type_name().to_owned());
     let mut schema_builder = Schema::build(
@@ -4626,11 +4640,25 @@ fn subscription_compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp
     }
 }
 
+#[derive(Clone)]
+struct SubscriptionScope {
+    tenant: String,
+    database: String,
+}
+
 fn subscription_event_matches(
     event: &crate::subscriptions::ChangeEvent,
     collection: Option<&str>,
     filter: Option<&FilterNode>,
+    scope: Option<&SubscriptionScope>,
 ) -> bool {
+    if let Some(scope) = scope {
+        if event.tenant.as_deref() != Some(scope.tenant.as_str())
+            || event.database.as_deref() != Some(scope.database.as_str())
+        {
+            return false;
+        }
+    }
     if let Some(collection) = collection {
         if event.collection != collection {
             return false;
@@ -4646,12 +4674,14 @@ fn build_change_subscription_field(
     field_name: &str,
     broker: BroadcastBroker,
     fixed_collection: Option<String>,
+    scope: Option<SubscriptionScope>,
 ) -> SubscriptionField {
     let has_fixed_collection = fixed_collection.is_some();
     let mut field =
         SubscriptionField::new(field_name, TypeRef::named_nn("ChangeEvent"), move |ctx| {
             let broker = broker.clone();
             let fixed_collection = fixed_collection.clone();
+            let scope = scope.clone();
 
             let collection_filter = match fixed_collection {
                 Some(collection) => Some(collection),
@@ -4676,6 +4706,7 @@ fn build_change_subscription_field(
                     tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |result| {
                         let collection_filter = collection_filter.clone();
                         let filter = filter.clone();
+                        let scope = scope.clone();
                         async move {
                             match result {
                                 Ok(event)
@@ -4683,6 +4714,7 @@ fn build_change_subscription_field(
                                         &event,
                                         collection_filter.as_deref(),
                                         filter.as_ref(),
+                                        scope.as_ref(),
                                     ) =>
                                 {
                                     Some(Ok(change_event_to_field_value(&event)))
@@ -4710,9 +4742,13 @@ fn build_change_subscription_field(
 fn build_entity_changed_subscription(
     broker: BroadcastBroker,
     collections: &[CollectionSchema],
+    scope: Option<SubscriptionScope>,
 ) -> Subscription {
-    let entity_changed = build_change_subscription_field("entityChanged", broker.clone(), None)
-        .description("Subscribe to entity change events. Optionally filter by collection name.");
+    let entity_changed =
+        build_change_subscription_field("entityChanged", broker.clone(), None, scope.clone())
+            .description(
+                "Subscribe to entity change events. Optionally filter by collection name.",
+            );
     let mut subscription = Subscription::new("Subscription").field(entity_changed);
     for schema in collections {
         let field_name = format!(
@@ -4724,6 +4760,7 @@ fn build_entity_changed_subscription(
                 &field_name,
                 broker.clone(),
                 Some(schema.collection.to_string()),
+                scope.clone(),
             )
             .description(format!(
                 "Subscribe to {} entity change events.",
@@ -4991,6 +5028,8 @@ mod tests {
 
     fn subscription_test_event(id: &str, status: &str) -> crate::subscriptions::ChangeEvent {
         crate::subscriptions::ChangeEvent {
+            tenant: None,
+            database: None,
             audit_id: format!("audit-{id}"),
             collection: "tasks".into(),
             entity_id: id.into(),
@@ -5119,6 +5158,8 @@ mod tests {
     #[test]
     fn subscription_filter_matches_filter_node_semantics() {
         let event = crate::subscriptions::ChangeEvent {
+            tenant: None,
+            database: None,
             audit_id: "7".into(),
             collection: "tasks".into(),
             entity_id: "task-1".into(),
@@ -5148,12 +5189,14 @@ mod tests {
         assert!(subscription_event_matches(
             &event,
             Some("tasks"),
-            Some(&filter)
+            Some(&filter),
+            None
         ));
         assert!(!subscription_event_matches(
             &event,
             Some("notes"),
-            Some(&filter)
+            Some(&filter),
+            None
         ));
     }
 

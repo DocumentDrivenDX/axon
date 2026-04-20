@@ -762,6 +762,8 @@ fn broadcast_entity_change(
     operation: &str,
     audit_id: String,
     actor: &str,
+    current_tenant: &CurrentTenant,
+    current_database: &CurrentDatabase,
 ) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -769,6 +771,8 @@ fn broadcast_entity_change(
         .as_millis() as u64;
 
     let event = axon_graphql::ChangeEvent {
+        tenant: Some(current_tenant.as_str().to_string()),
+        database: Some(current_database.as_str().to_string()),
         audit_id,
         collection: entity.collection.to_string(),
         entity_id: entity.id.to_string(),
@@ -797,6 +801,8 @@ fn broadcast_entity_delete(
     entity_id: &str,
     audit_id: String,
     actor: &str,
+    current_tenant: &CurrentTenant,
+    current_database: &CurrentDatabase,
 ) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -804,6 +810,8 @@ fn broadcast_entity_delete(
         .as_millis() as u64;
 
     let event = axon_graphql::ChangeEvent {
+        tenant: Some(current_tenant.as_str().to_string()),
+        database: Some(current_database.as_str().to_string()),
         audit_id,
         collection: collection.to_string(),
         entity_id: entity_id.to_string(),
@@ -830,7 +838,11 @@ fn audit_id_string(audit_id: Option<u64>) -> String {
     }
 }
 
-fn change_event_from_audit_entry(entry: &AuditEntry) -> Option<axon_graphql::ChangeEvent> {
+fn change_event_from_audit_entry(
+    entry: &AuditEntry,
+    current_tenant: &CurrentTenant,
+    current_database: &CurrentDatabase,
+) -> Option<axon_graphql::ChangeEvent> {
     let operation = match entry.mutation {
         MutationType::EntityCreate => "create",
         MutationType::EntityUpdate | MutationType::EntityRevert => "update",
@@ -845,6 +857,8 @@ fn change_event_from_audit_entry(entry: &AuditEntry) -> Option<axon_graphql::Cha
     };
 
     Some(axon_graphql::ChangeEvent {
+        tenant: Some(current_tenant.as_str().to_string()),
+        database: Some(current_database.as_str().to_string()),
         audit_id: entry.id.to_string(),
         collection: entry.collection.to_string(),
         entity_id: entry.entity_id.to_string(),
@@ -858,8 +872,13 @@ fn change_event_from_audit_entry(entry: &AuditEntry) -> Option<axon_graphql::Cha
     })
 }
 
-fn publish_change_event_from_audit_entry(broker: &BroadcastBroker, entry: &AuditEntry) -> bool {
-    match change_event_from_audit_entry(entry) {
+fn publish_change_event_from_audit_entry(
+    broker: &BroadcastBroker,
+    entry: &AuditEntry,
+    current_tenant: &CurrentTenant,
+    current_database: &CurrentDatabase,
+) -> bool {
+    match change_event_from_audit_entry(entry, current_tenant, current_database) {
         Some(event) => {
             let _ = broker.publish(event);
             true
@@ -1251,6 +1270,7 @@ async fn create_entity(
     Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
+    Extension(current_tenant): Extension<CurrentTenant>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(caller): Extension<CoreCallerIdentity>,
@@ -1292,6 +1312,8 @@ async fn create_entity(
                 "create",
                 audit_id_string(resp.audit_id),
                 &caller.actor,
+                &current_tenant,
+                &current_database,
             );
             (
                 StatusCode::CREATED,
@@ -1377,6 +1399,7 @@ async fn update_entity(
     Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
+    Extension(current_tenant): Extension<CurrentTenant>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(caller): Extension<CoreCallerIdentity>,
@@ -1419,6 +1442,8 @@ async fn update_entity(
                 "update",
                 audit_id_string(resp.audit_id),
                 &caller.actor,
+                &current_tenant,
+                &current_database,
             );
             Json(json!({
                 "entity": entity_payload(&resp.entity)
@@ -1434,6 +1459,7 @@ async fn delete_entity(
     Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
+    Extension(current_tenant): Extension<CurrentTenant>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(caller): Extension<CoreCallerIdentity>,
@@ -1475,6 +1501,8 @@ async fn delete_entity(
                 &id,
                 audit_id_string(resp.audit_id),
                 &caller.actor,
+                &current_tenant,
+                &current_database,
             );
             Json(json!({"collection": resp.collection, "id": resp.id})).into_response()
         }
@@ -1586,6 +1614,7 @@ async fn transition_lifecycle_handler(
     Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
+    Extension(current_tenant): Extension<CurrentTenant>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(caller): Extension<CoreCallerIdentity>,
@@ -1634,6 +1663,8 @@ async fn transition_lifecycle_handler(
                 "update",
                 audit_id_string(resp.audit_id),
                 &caller.actor,
+                &current_tenant,
+                &current_database,
             );
             Json(json!({
                 "entity": entity_payload(&resp.entity)
@@ -2000,6 +2031,7 @@ async fn revert_entity(
     Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
+    Extension(current_tenant): Extension<CurrentTenant>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
@@ -2030,6 +2062,8 @@ async fn revert_entity(
                 "update",
                 resp.audit_entry.id.to_string(),
                 &identity.actor,
+                &current_tenant,
+                &current_database,
             );
             Json(json!({
                 "entity": entity_payload(&resp.entity),
@@ -2078,6 +2112,7 @@ async fn rollback_collection_entity(
     Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
+    Extension(current_tenant): Extension<CurrentTenant>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(rate_limiter): Extension<WriteRateLimiter>,
@@ -2119,6 +2154,8 @@ async fn rollback_collection_entity(
                 "update",
                 audit_entry.id.to_string(),
                 &actor,
+                &current_tenant,
+                &current_database,
             );
             Json(json!({
                 "entity": entity_payload(&entity),
@@ -3042,7 +3079,12 @@ async fn commit_transaction(
                         )
                     });
                 if let Some(entry) = entry {
-                    publish_change_event_from_audit_entry(&broker, entry);
+                    publish_change_event_from_audit_entry(
+                        &broker,
+                        entry,
+                        &current_tenant,
+                        &current_database,
+                    );
                 } else if entity.collection != Link::links_collection() {
                     broadcast_entity_change(
                         &broker,
@@ -3050,6 +3092,8 @@ async fn commit_transaction(
                         "update",
                         String::new(),
                         &caller.actor,
+                        &current_tenant,
+                        &current_database,
                     );
                 }
             }
@@ -3153,6 +3197,8 @@ async fn graphql_handler(
 async fn graphql_ws_handler(
     Extension(handler): Extension<TenantHandler>,
     Extension(broker): Extension<BroadcastBroker>,
+    Extension(current_tenant): Extension<CurrentTenant>,
+    Extension(current_database): Extension<CurrentDatabase>,
     protocol: async_graphql_axum::GraphQLProtocol,
     ws: WebSocketUpgrade,
 ) -> Response {
@@ -3176,10 +3222,14 @@ async fn graphql_ws_handler(
     };
 
     // 2. Build the dynamic schema with subscription support.
-    let gql_schema = match axon_graphql::build_schema_with_handler_and_broker(
+    let gql_schema = match axon_graphql::build_schema_with_handler_and_broker_scoped(
         &schemas,
         handler.clone(),
         Some(broker),
+        Some((
+            current_tenant.as_str().to_string(),
+            current_database.as_str().to_string(),
+        )),
     ) {
         Ok(s) => s,
         Err(msg) => {

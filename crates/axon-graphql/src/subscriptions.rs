@@ -15,6 +15,12 @@ use tokio::sync::broadcast;
 /// A change event emitted to subscribers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangeEvent {
+    /// Tenant scope that produced this event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    /// Database scope that produced this event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
     /// The ID of the audit entry that produced this event.
     ///
     /// Clients use this as a resume point for `since_audit_id` on reconnect.
@@ -235,6 +241,8 @@ mod tests {
 
     fn make_event(collection: &str, entity_id: &str, op: &str) -> ChangeEvent {
         ChangeEvent {
+            tenant: None,
+            database: None,
             audit_id: format!("audit-{entity_id}"),
             collection: collection.into(),
             entity_id: entity_id.into(),

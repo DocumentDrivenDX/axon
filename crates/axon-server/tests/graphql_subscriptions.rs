@@ -25,8 +25,14 @@ fn test_server_with_broker() -> (axum_test::TestServer, BroadcastBroker) {
 }
 
 async fn seed_tasks_collection(server: &axum_test::TestServer) {
+    seed_tasks_collection_at(server, "default", "default").await;
+}
+
+async fn seed_tasks_collection_at(server: &axum_test::TestServer, tenant: &str, database: &str) {
     server
-        .post("/tenants/default/databases/default/collections/tasks")
+        .post(&format!(
+            "/tenants/{tenant}/databases/{database}/collections/tasks"
+        ))
         .json(&json!({
             "schema": {
                 "version": 1,
@@ -41,6 +47,19 @@ async fn seed_tasks_collection(server: &axum_test::TestServer) {
         }))
         .await
         .assert_status(axum::http::StatusCode::CREATED);
+}
+
+fn multi_tenant_server_with_broker(
+    tmp: &std::path::Path,
+) -> (axum_test::TestServer, BroadcastBroker) {
+    let default_storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let default_handler = Arc::new(Mutex::new(AxonHandler::new(default_storage)));
+    let tenant_router = Arc::new(TenantRouter::new(tmp.to_path_buf(), default_handler));
+    let broker = BroadcastBroker::default();
+    let app = build_router_with_broker(tenant_router, "memory", None, broker.clone());
+    let server = axum_test::TestServer::builder().http_transport().build(app);
+    (server, broker)
 }
 
 async fn wait_for_receivers(broker: &BroadcastBroker, count: usize) {
@@ -125,6 +144,73 @@ async fn graphql_transport_ws_subscription_receives_entity_change() {
 
     websocket
         .send_json(&json!({"id": "sub-1", "type": "complete"}))
+        .await;
+    websocket.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_ws_subscription_is_scoped_to_tenant_database_path() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let (server, broker) = multi_tenant_server_with_broker(tmp.path());
+    seed_tasks_collection_at(&server, "acme", "default").await;
+    seed_tasks_collection_at(&server, "beta", "default").await;
+
+    let mut websocket = server
+        .get_websocket("/tenants/acme/databases/default/graphql/ws")
+        .add_header("sec-websocket-protocol", "graphql-transport-ws")
+        .await
+        .into_websocket()
+        .await;
+
+    websocket
+        .send_json(&json!({"type": "connection_init"}))
+        .await;
+    let ack = receive_ws_json(&mut websocket).await;
+    assert_eq!(ack["type"], "connection_ack");
+
+    websocket
+        .send_json(&json!({
+            "id": "tenant-sub",
+            "type": "subscribe",
+            "payload": {
+                "query": r#"
+                    subscription {
+                        tasksChanged {
+                            entityId
+                            collection
+                            actor
+                        }
+                    }
+                "#
+            }
+        }))
+        .await;
+
+    wait_for_receivers(&broker, 1).await;
+    server
+        .post("/tenants/beta/databases/default/entities/tasks/beta-task")
+        .add_header("x-axon-actor", "beta-agent")
+        .json(&json!({"data": {"title": "wrong tenant", "status": "open"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    server
+        .post("/tenants/acme/databases/default/entities/tasks/acme-task")
+        .add_header("x-axon-actor", "acme-agent")
+        .json(&json!({"data": {"title": "right tenant", "status": "open"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let next = receive_ws_json(&mut websocket).await;
+    assert_eq!(next["type"], "next");
+    assert_eq!(next["id"], "tenant-sub");
+    let event = &next["payload"]["data"]["tasksChanged"];
+    assert_eq!(event["entityId"], "acme-task");
+    assert_eq!(event["collection"], "tasks");
+    assert_eq!(event["actor"], "acme-agent");
+
+    websocket
+        .send_json(&json!({"id": "tenant-sub", "type": "complete"}))
         .await;
     websocket.close().await;
 }

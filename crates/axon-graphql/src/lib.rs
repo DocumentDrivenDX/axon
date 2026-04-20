@@ -24,7 +24,8 @@ pub mod subscriptions;
 pub mod types;
 
 pub use dynamic::{
-    build_schema, build_schema_with_handler, build_schema_with_handler_and_broker, AxonSchema,
-    GraphqlIdempotencyScope, SharedHandler,
+    build_schema, build_schema_with_handler, build_schema_with_handler_and_broker,
+    build_schema_with_handler_and_broker_scoped, AxonSchema, GraphqlIdempotencyScope,
+    SharedHandler,
 };
 pub use subscriptions::{BroadcastBroker, ChangeEvent, ChangeFeedBroker, SubscriptionFilter};
