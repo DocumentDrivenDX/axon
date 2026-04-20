@@ -401,8 +401,35 @@ aliases append `Connection`:
 
 Supported GraphQL operators are `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`,
 `contains`, `isNull`, and `isNotNull`. Use `and` and `or` for boolean
-composition. String and JSON fields support `contains`; numeric fields support
-ordering operators.
+composition. String fields support `contains`; numeric fields support ordering
+operators.
+
+### Search And `contains`
+
+GraphQL filters and REST `FilterNode` bodies share the same `contains`
+semantics:
+
+- `contains` is case-sensitive.
+- The stored field value and filter value must both be strings. Non-string
+  fields do not match.
+- Axon does not perform locale folding, Unicode normalization, stemming,
+  tokenization, typo tolerance, or ranking.
+- `contains` is a substring check, not full-text search.
+
+FEAT-013 secondary indexes accelerate equality and range predicates on declared
+single-field indexes. For `and` filters, the planner may use one indexed
+equality predicate to narrow candidate IDs and then apply the remaining
+predicates after fetch. `contains`, `ne`, `in`, `or`, and gate predicates are
+not index-backed in the current planner and fall back to scanning the candidate
+collection or candidate set.
+
+For nexiq launch-scale browser search, use indexed filters first
+(`engagement_id`, `status`, owner/assignee fields, date ranges), then apply
+`contains` only on the narrowed result set. If case-insensitive search is
+required, store a normalized lowercase search field and send a lowercase
+`contains` value; this still uses scan semantics, so keep the indexed scope
+small. Ranked multi-field full-text search is deferred; Axon does not expose an
+FTS/tsvector search index in this contract.
 
 Generated mutations expose typed input and payload types for each collection:
 `Create<Type>Input/Payload`, `Update<Type>Input/Payload`,

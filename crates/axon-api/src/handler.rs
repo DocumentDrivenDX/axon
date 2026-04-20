@@ -8332,6 +8332,31 @@ link_types:
     }
 
     #[test]
+    fn query_filter_contains_is_case_sensitive() {
+        let mut h = handler();
+        make_entity_with_data(&mut h, "docs", "d-1", json!({"title": "Hello World"}));
+        make_entity_with_data(&mut h, "docs", "d-2", json!({"title": "hello again"}));
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: CollectionId::new("docs"),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "title".into(),
+                    op: FilterOp::Contains,
+                    value: json!("Hello"),
+                })),
+                sort: vec![],
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].id.as_str(), "d-1");
+    }
+
+    #[test]
     fn query_filter_and_combinator() {
         let mut h = handler();
         make_entity_with_data(
