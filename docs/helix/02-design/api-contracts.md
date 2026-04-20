@@ -563,6 +563,42 @@ GraphQL relationship fields, `neighbors`, and `linkCandidates` are canonical
 for application link traversal and discovery. REST traversal remains available
 as a compatibility endpoint.
 
+Declared `link_types` generate typed relationship fields on entity object
+types. For a `users` link type named `assigned-to` targeting `tasks`, the
+forward field is `assignedTo` on `User`; the reverse field is
+`assignedToInbound` on `Task`. Relationship fields accept `limit`, `after`,
+and typed `filter` arguments and return connection edges with the related node,
+cursor, and link metadata.
+
+```graphql
+query {
+  user(id: "u1") {
+    assignedTo(filter: { status: { eq: "open" } }, limit: 10) {
+      edges {
+        cursor
+        metadata
+        node { id title status }
+      }
+      pageInfo { hasNextPage endCursor }
+      totalCount
+    }
+  }
+
+  task(id: "t1") {
+    assignedToInbound {
+      edges {
+        metadata
+        node { id name }
+      }
+    }
+  }
+}
+```
+
+Link discovery and autocomplete workflows should use the dedicated
+`linkCandidates`/neighbor-discovery surface rather than overloading
+relationship reads.
+
 Simple REST traversal:
 
 ```http

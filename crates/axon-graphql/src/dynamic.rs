@@ -8,7 +8,7 @@
 //! plain [`build_schema`] function builds a stub schema (useful for SDL
 //! inspection and tests).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -30,7 +30,7 @@ use axon_api::request::{
     DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode,
     FilterOp, GateFilter, GetEntityRequest, ListCollectionsRequest, PatchEntityRequest,
     PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest, SortDirection, SortField,
-    TransitionLifecycleRequest, UpdateEntityRequest,
+    TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::AxonError;
@@ -1333,6 +1333,221 @@ fn typed_connection_object(connection_type: &str, edge_type: &str) -> Object {
         ))
 }
 
+fn relationship_edge_object(edge_type: &str, node_type: &str) -> Object {
+    Object::new(edge_type)
+        .field(json_object_field(
+            "cursor",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("node", TypeRef::named_nn(node_type)))
+        .field(json_object_field(
+            "linkType",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("metadata", TypeRef::named("JSON")))
+        .field(json_object_field(
+            "sourceCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "sourceId",
+            TypeRef::named_nn(TypeRef::ID),
+        ))
+        .field(json_object_field(
+            "targetCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "targetId",
+            TypeRef::named_nn(TypeRef::ID),
+        ))
+}
+
+fn relationship_connection_value(
+    entities: &[Entity],
+    links: &[Link],
+    schema: &CollectionSchema,
+    limit: Option<usize>,
+    after: Option<&str>,
+) -> Result<FieldValue<'static>, GqlError> {
+    let pairs: Vec<(&Entity, &Link)> = entities.iter().zip(links.iter()).collect();
+    let start_index = match after {
+        Some(cursor) => pairs
+            .iter()
+            .position(|(entity, _)| entity.id.as_str() == cursor)
+            .map(|index| index + 1)
+            .ok_or_else(|| {
+                GqlError::new(format!("relationship cursor '{cursor}' was not found")).extend_with(
+                    |_err, ext| {
+                        ext.set("code", "INVALID_ARGUMENT");
+                    },
+                )
+            })?,
+        None => 0,
+    };
+    let page_limit = limit.unwrap_or(100);
+    let page: Vec<(&Entity, &Link)> = pairs
+        .iter()
+        .skip(start_index)
+        .take(page_limit)
+        .copied()
+        .collect();
+    let has_next_page = start_index + page.len() < pairs.len();
+    let edges: Vec<Value> = page
+        .iter()
+        .map(|(entity, link)| {
+            json!({
+                "cursor": entity.id.to_string(),
+                "node": entity_to_typed_json_with_schema(entity, Some(schema)),
+                "linkType": link.link_type,
+                "metadata": link.metadata,
+                "sourceCollection": link.source_collection.to_string(),
+                "sourceId": link.source_id.to_string(),
+                "targetCollection": link.target_collection.to_string(),
+                "targetId": link.target_id.to_string(),
+            })
+        })
+        .collect();
+    let start_cursor = page.first().map(|(entity, _)| entity.id.to_string());
+    let end_cursor = page.last().map(|(entity, _)| entity.id.to_string());
+
+    Ok(json_to_field_value(json!({
+        "edges": edges,
+        "pageInfo": page_info_json(
+            start_cursor,
+            end_cursor,
+            has_next_page,
+            after.is_some(),
+        ),
+        "totalCount": pairs.len(),
+    })))
+}
+
+fn parent_id_arg(ctx: &async_graphql::dynamic::ResolverContext<'_>) -> Result<String, GqlError> {
+    match ctx.parent_value.try_to_value() {
+        Ok(GqlValue::Object(map)) => map
+            .get(&async_graphql::Name::new("id"))
+            .and_then(|value| value.clone().into_json().ok())
+            .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            .ok_or_else(|| GqlError::new("parent entity id is missing")),
+        _ => Err(GqlError::new(
+            "relationship parent must be an entity object",
+        )),
+    }
+}
+
+fn parse_relationship_limit(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+) -> Result<Option<usize>, GqlError> {
+    match ctx.args.try_get("limit") {
+        Ok(value) => {
+            let limit = value.i64()?;
+            if limit < 0 {
+                return Err(GqlError::new("limit must be non-negative").extend_with(
+                    |_err, ext| {
+                        ext.set("code", "INVALID_ARGUMENT");
+                    },
+                ));
+            }
+            Ok(Some(limit as usize))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn parse_relationship_after(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+) -> Result<Option<String>, GqlError> {
+    if let Ok(value) = ctx.args.try_get("after") {
+        return Ok(Some(value.string()?.to_owned()));
+    }
+    if let Ok(value) = ctx.args.try_get("afterId") {
+        return Ok(Some(value.string()?.to_owned()));
+    }
+    Ok(None)
+}
+
+#[derive(Clone)]
+struct RelationshipFieldSpec {
+    collection: String,
+    link_type: String,
+    direction: TraverseDirection,
+    expected_source_collection: String,
+    expected_target_collection: String,
+    node_schema: CollectionSchema,
+}
+
+fn relationship_field<S: StorageAdapter + 'static>(
+    field_name: &str,
+    connection_type: &str,
+    filter_input_type: &str,
+    handler: SharedHandler<S>,
+    spec: RelationshipFieldSpec,
+) -> Field {
+    let connection_type_ref = connection_type.to_owned();
+    let filter_input_type_ref = filter_input_type.to_owned();
+    Field::new(
+        field_name,
+        TypeRef::named_nn(&connection_type_ref),
+        move |ctx| {
+            let handler = Arc::clone(&handler);
+            let spec = spec.clone();
+            FieldFuture::new(async move {
+                let parent_id = parent_id_arg(&ctx)?;
+                let limit = parse_relationship_limit(&ctx)?;
+                let after = parse_relationship_after(&ctx)?;
+                let hop_filter = ctx
+                    .args
+                    .try_get("filter")
+                    .ok()
+                    .map(|value| parse_graphql_filter_arg(value.as_value()))
+                    .transpose()?;
+
+                let guard = handler.lock().await;
+                let response = guard.traverse(TraverseRequest {
+                    collection: CollectionId::new(spec.collection.clone()),
+                    id: EntityId::new(parent_id),
+                    link_type: Some(spec.link_type.clone()),
+                    max_depth: Some(1),
+                    direction: spec.direction.clone(),
+                    hop_filter,
+                });
+                drop(guard);
+
+                let response = response.map_err(axon_error_to_gql)?;
+                let pairs: Vec<(Entity, Link)> = response
+                    .entities
+                    .into_iter()
+                    .zip(response.links)
+                    .filter(|(_, link)| {
+                        link.source_collection.as_str() == spec.expected_source_collection
+                            && link.target_collection.as_str() == spec.expected_target_collection
+                    })
+                    .collect();
+                let entities: Vec<Entity> =
+                    pairs.iter().map(|(entity, _)| entity.clone()).collect();
+                let links: Vec<Link> = pairs.iter().map(|(_, link)| link.clone()).collect();
+
+                relationship_connection_value(
+                    &entities,
+                    &links,
+                    &spec.node_schema,
+                    limit,
+                    after.as_deref(),
+                )
+                .map(Some)
+            })
+        },
+    )
+    .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+    .argument(InputValue::new("after", TypeRef::named(TypeRef::ID)))
+    .argument(InputValue::new("afterId", TypeRef::named(TypeRef::ID)))
+    .argument(InputValue::new(
+        "filter",
+        TypeRef::named(&filter_input_type_ref),
+    ))
+}
+
 fn collection_meta_object() -> Object {
     Object::new(COLLECTION_META_TYPE)
         .field(json_object_field(
@@ -2542,6 +2757,28 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
     let mut type_objects = Vec::new();
     let mut input_objects = Vec::new();
     let mut enum_objects = Vec::new();
+    let schemas_by_collection: HashMap<String, CollectionSchema> = collections
+        .iter()
+        .map(|schema| (schema.collection.to_string(), schema.clone()))
+        .collect();
+    let mut incoming_links: HashMap<String, Vec<(String, String)>> = HashMap::new();
+    let mut relationship_type_names = HashSet::new();
+
+    for source_schema in collections {
+        let source_collection = source_schema.collection.to_string();
+        for (link_type, link_def) in &source_schema.link_types {
+            if schemas_by_collection.contains_key(&link_def.target_collection) {
+                incoming_links
+                    .entry(link_def.target_collection.clone())
+                    .or_default()
+                    .push((source_collection.clone(), link_type.clone()));
+            }
+        }
+    }
+    for links in incoming_links.values_mut() {
+        links.sort();
+        links.dedup();
+    }
 
     query = add_handler_root_query_fields(query, Arc::clone(&handler));
 
@@ -2597,7 +2834,9 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
 
         // ── Build the GraphQL object type ────────────────────────────────
         let mut obj = Object::new(&type_name);
+        let mut object_field_names: HashSet<String> = HashSet::new();
         for (field_name, gql_type, _required) in &fields {
+            object_field_names.insert(field_name.clone());
             let type_ref = parse_type_ref(gql_type);
             let fname = field_name.clone();
             obj = obj.field(Field::new(field_name, type_ref, move |ctx| {
@@ -2612,6 +2851,87 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                     }
                 })
             }));
+        }
+        for (link_type, link_def) in &schema.link_types {
+            let Some(target_schema) = schemas_by_collection.get(&link_def.target_collection) else {
+                continue;
+            };
+            let relationship_field_name = collection_field_name(link_type);
+            if !object_field_names.insert(relationship_field_name.clone()) {
+                continue;
+            }
+            let target_type_name = pascal_case(target_schema.collection.as_str());
+            let type_stem = format!("{type_name}{}Relationship", pascal_case(link_type));
+            let relationship_edge_name = format!("{type_stem}Edge");
+            let relationship_connection_name = format!("{type_stem}Connection");
+            if relationship_type_names.insert(relationship_edge_name.clone()) {
+                type_objects.push(relationship_edge_object(
+                    &relationship_edge_name,
+                    &target_type_name,
+                ));
+            }
+            if relationship_type_names.insert(relationship_connection_name.clone()) {
+                type_objects.push(typed_connection_object(
+                    &relationship_connection_name,
+                    &relationship_edge_name,
+                ));
+            }
+            obj = obj.field(relationship_field(
+                &relationship_field_name,
+                &relationship_connection_name,
+                &format!("{target_type_name}Filter"),
+                Arc::clone(&handler),
+                RelationshipFieldSpec {
+                    collection: collection_name.to_owned(),
+                    link_type: link_type.clone(),
+                    direction: TraverseDirection::Forward,
+                    expected_source_collection: collection_name.to_owned(),
+                    expected_target_collection: target_schema.collection.to_string(),
+                    node_schema: target_schema.clone(),
+                },
+            ));
+        }
+        if let Some(links) = incoming_links.get(collection_name) {
+            for (source_collection, link_type) in links {
+                let Some(source_schema) = schemas_by_collection.get(source_collection) else {
+                    continue;
+                };
+                let relationship_field_name =
+                    format!("{}Inbound", collection_field_name(link_type));
+                if !object_field_names.insert(relationship_field_name.clone()) {
+                    continue;
+                }
+                let source_type_name = pascal_case(source_schema.collection.as_str());
+                let type_stem = format!("{type_name}{}InboundRelationship", pascal_case(link_type));
+                let relationship_edge_name = format!("{type_stem}Edge");
+                let relationship_connection_name = format!("{type_stem}Connection");
+                if relationship_type_names.insert(relationship_edge_name.clone()) {
+                    type_objects.push(relationship_edge_object(
+                        &relationship_edge_name,
+                        &source_type_name,
+                    ));
+                }
+                if relationship_type_names.insert(relationship_connection_name.clone()) {
+                    type_objects.push(typed_connection_object(
+                        &relationship_connection_name,
+                        &relationship_edge_name,
+                    ));
+                }
+                obj = obj.field(relationship_field(
+                    &relationship_field_name,
+                    &relationship_connection_name,
+                    &format!("{source_type_name}Filter"),
+                    Arc::clone(&handler),
+                    RelationshipFieldSpec {
+                        collection: collection_name.to_owned(),
+                        link_type: link_type.clone(),
+                        direction: TraverseDirection::Reverse,
+                        expected_source_collection: source_schema.collection.to_string(),
+                        expected_target_collection: collection_name.to_owned(),
+                        node_schema: source_schema.clone(),
+                    },
+                ));
+            }
         }
         obj = add_entity_lifecycle_fields(obj);
         type_objects.push(obj);

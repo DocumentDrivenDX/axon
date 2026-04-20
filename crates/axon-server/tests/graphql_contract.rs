@@ -89,6 +89,63 @@ async fn seed_constrained_collection(server: &axum_test::TestServer, name: &str)
         .assert_status(axum::http::StatusCode::CREATED);
 }
 
+/// Register two collections with declared link types for relationship-field
+/// GraphQL contract tests.
+async fn seed_relationship_collections(server: &axum_test::TestServer) {
+    server
+        .post("/tenants/default/databases/default/collections/user")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" },
+                        "status": { "type": "string" }
+                    }
+                },
+                "link_types": {
+                    "assigned-to": {
+                        "target_collection": "task",
+                        "cardinality": "many-to-many",
+                        "metadata_schema": {
+                            "type": "object",
+                            "properties": {
+                                "role": { "type": "string" },
+                                "weight": { "type": "number" }
+                            }
+                        }
+                    },
+                    "mentors": {
+                        "target_collection": "user",
+                        "cardinality": "many-to-many"
+                    }
+                }
+            },
+            "actor": "test"
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    server
+        .post("/tenants/default/databases/default/collections/task")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "status": { "type": "string" }
+                    }
+                }
+            },
+            "actor": "test"
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+}
+
 /// POST a GraphQL document and return the parsed JSON response body.
 /// GraphQL always returns HTTP 200; errors live in the `errors` field of the body.
 async fn gql(server: &axum_test::TestServer, query: &str) -> Value {
@@ -456,6 +513,218 @@ async fn graphql_generated_typed_inputs_payloads_filters_and_sorts() {
         "unexpected list errors: {listed}"
     );
     assert_eq!(listed["data"]["tasks"][0]["id"], "typed-1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_relationship_fields_follow_declared_links() {
+    let server = test_server();
+    seed_relationship_collections(&server).await;
+
+    let introspection = gql(
+        &server,
+        r#"{
+            userType: __type(name: "User") {
+                fields {
+                    name
+                    args { name }
+                    type { kind name ofType { kind name } }
+                }
+            }
+            taskType: __type(name: "Task") { fields { name args { name } } }
+            edgeType: __type(name: "UserAssignedToRelationshipEdge") {
+                fields { name }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        introspection["errors"].is_null(),
+        "unexpected introspection errors: {introspection}"
+    );
+    let user_fields = introspection["data"]["userType"]["fields"]
+        .as_array()
+        .unwrap();
+    let assigned_to = user_fields
+        .iter()
+        .find(|field| field["name"] == "assignedTo")
+        .expect("User should expose assignedTo relationship field");
+    let assigned_to_args: Vec<&str> = assigned_to["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|arg| arg["name"].as_str())
+        .collect();
+    for expected in ["limit", "after", "afterId", "filter"] {
+        assert!(
+            assigned_to_args.contains(&expected),
+            "relationship field should expose {expected} arg: {introspection}"
+        );
+    }
+    let task_fields: Vec<&str> = introspection["data"]["taskType"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    assert!(
+        task_fields.contains(&"assignedToInbound"),
+        "Task should expose reverse assignedToInbound relationship: {introspection}"
+    );
+    let edge_fields: Vec<&str> = introspection["data"]["edgeType"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    for expected in [
+        "cursor",
+        "node",
+        "linkType",
+        "metadata",
+        "sourceCollection",
+        "sourceId",
+        "targetCollection",
+        "targetId",
+    ] {
+        assert!(
+            edge_fields.contains(&expected),
+            "relationship edge should expose {expected}: {introspection}"
+        );
+    }
+
+    for mutation in [
+        r#"mutation { createUser(id: "u1", input: { name: "Ada", status: "active" }) { id } }"#,
+        r#"mutation { createUser(id: "u2", input: { name: "Bea", status: "active" }) { id } }"#,
+        r#"mutation { createTask(id: "task-a", input: { title: "Open A", status: "open" }) { id } }"#,
+        r#"mutation { createTask(id: "task-b", input: { title: "Closed B", status: "closed" }) { id } }"#,
+        r#"mutation { createTask(id: "task-z", input: { title: "Archived Z", status: "archived" }) { id } }"#,
+        r#"mutation { createLink(sourceCollection: "user", sourceId: "u1", targetCollection: "task", targetId: "task-a", linkType: "assigned-to", metadata: "{\"role\":\"owner\",\"weight\":2}") }"#,
+        r#"mutation { createLink(sourceCollection: "user", sourceId: "u1", targetCollection: "task", targetId: "task-b", linkType: "assigned-to", metadata: "{\"role\":\"reviewer\"}") }"#,
+        r#"mutation { createLink(sourceCollection: "user", sourceId: "u1", targetCollection: "task", targetId: "task-z", linkType: "assigned-to", metadata: "{\"role\":\"stale\"}") }"#,
+        r#"mutation { createLink(sourceCollection: "user", sourceId: "u1", targetCollection: "user", targetId: "u2", linkType: "mentors") }"#,
+        r#"mutation { createLink(sourceCollection: "user", sourceId: "u2", targetCollection: "user", targetId: "u1", linkType: "mentors") }"#,
+    ] {
+        let body = gql(&server, mutation).await;
+        assert!(
+            body["errors"].is_null(),
+            "unexpected mutation errors: {body}"
+        );
+    }
+
+    let related = gql(
+        &server,
+        r#"{
+            user(id: "u1") {
+                id
+                assignedTo(limit: 1) {
+                    totalCount
+                    edges {
+                        cursor
+                        linkType
+                        metadata
+                        sourceCollection
+                        sourceId
+                        targetCollection
+                        targetId
+                        node { id title status }
+                    }
+                    pageInfo { hasNextPage hasPreviousPage startCursor endCursor }
+                }
+                openTasks: assignedTo(filter: { status: { eq: "open" } }) {
+                    totalCount
+                    edges { node { id status } }
+                }
+                mentors {
+                    edges {
+                        node {
+                            id
+                            mentors { edges { node { id } } }
+                        }
+                    }
+                }
+            }
+            task(id: "task-a") {
+                assignedToInbound {
+                    totalCount
+                    edges {
+                        metadata
+                        linkType
+                        node { id name status }
+                    }
+                }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        related["errors"].is_null(),
+        "unexpected relationship query errors: {related}"
+    );
+    let assigned = &related["data"]["user"]["assignedTo"];
+    assert_eq!(
+        assigned["totalCount"], 3,
+        "relationship totalCount should include all matched one-hop targets before pagination"
+    );
+    assert_eq!(assigned["edges"].as_array().unwrap().len(), 1);
+    assert_eq!(assigned["edges"][0]["linkType"], "assigned-to");
+    assert_eq!(assigned["edges"][0]["sourceCollection"], "user");
+    assert_eq!(assigned["edges"][0]["sourceId"], "u1");
+    assert_eq!(assigned["edges"][0]["targetCollection"], "task");
+    assert_eq!(assigned["edges"][0]["metadata"]["role"], "owner");
+    assert_eq!(assigned["edges"][0]["node"]["id"], "task-a");
+    assert_eq!(assigned["pageInfo"]["hasNextPage"], true);
+    assert_eq!(assigned["pageInfo"]["hasPreviousPage"], false);
+
+    assert_eq!(related["data"]["user"]["openTasks"]["totalCount"], 1);
+    assert_eq!(
+        related["data"]["user"]["openTasks"]["edges"][0]["node"]["status"],
+        "open"
+    );
+    assert_eq!(
+        related["data"]["task"]["assignedToInbound"]["edges"][0]["node"]["id"],
+        "u1"
+    );
+    assert_eq!(
+        related["data"]["task"]["assignedToInbound"]["edges"][0]["metadata"]["role"],
+        "owner"
+    );
+    assert_eq!(
+        related["data"]["user"]["mentors"]["edges"][0]["node"]["mentors"]["edges"][0]["node"]["id"],
+        "u1",
+        "cyclic relationships should resolve only as deeply as requested"
+    );
+
+    let after = assigned["pageInfo"]["endCursor"]
+        .as_str()
+        .expect("relationship page should expose an end cursor");
+    let paged = gql(
+        &server,
+        &format!(
+            r#"{{
+                user(id: "u1") {{
+                    assignedTo(after: "{after}", limit: 1) {{
+                        totalCount
+                        edges {{ node {{ id }} }}
+                        pageInfo {{ hasNextPage hasPreviousPage }}
+                    }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert!(
+        paged["errors"].is_null(),
+        "unexpected relationship pagination errors: {paged}"
+    );
+    assert_eq!(paged["data"]["user"]["assignedTo"]["totalCount"], 3);
+    assert_eq!(
+        paged["data"]["user"]["assignedTo"]["edges"][0]["node"]["id"],
+        "task-b"
+    );
+    assert_eq!(
+        paged["data"]["user"]["assignedTo"]["pageInfo"]["hasPreviousPage"],
+        true
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
