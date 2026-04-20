@@ -61,7 +61,7 @@ tempfile.workspace = true
 tokio = { version = "1", features = ["full"] }
 tonic = { version = "0.13", features = ["transport"] }
 tokio-stream.workspace = true
-axum-test = "20"
+axum-test = { version = "20", features = ["ws"] }
 axum = { version = "0.8", features = [] }
 tower = "0.5"
 reqwest.workspace = true
