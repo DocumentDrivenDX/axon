@@ -1875,3 +1875,101 @@ async fn http_create_entity_publishes_change_event_with_audit_id() {
     assert_eq!(entry.collection.as_str(), "tasks");
     assert_eq!(entry.entity_id.as_str(), "t-001");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_transaction_publishes_typed_change_events_with_before_snapshots() {
+    use axon_graphql::subscriptions::{BroadcastBroker, ChangeEvent};
+    use axon_server::gateway::build_router_with_broker;
+
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(handler));
+    let broker = BroadcastBroker::default();
+
+    let http_app = build_router_with_broker(tenant_router, "memory", None, broker.clone());
+    let http = axum_test::TestServer::new(http_app);
+
+    http.post("/tenants/default/databases/default/entities/tasks/tx-update")
+        .json(&json!({"data": {"title": "before-update"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+    http.post("/tenants/default/databases/default/entities/tasks/tx-delete")
+        .json(&json!({"data": {"title": "before-delete"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let mut rx = broker.subscribe();
+    http.post("/tenants/default/databases/default/transactions")
+        .add_header("x-axon-actor", "tx-agent")
+        .json(&json!({
+            "operations": [
+                {
+                    "op": "create",
+                    "collection": "tasks",
+                    "id": "tx-create",
+                    "data": {"title": "created"}
+                },
+                {
+                    "op": "update",
+                    "collection": "tasks",
+                    "id": "tx-update",
+                    "expected_version": 1,
+                    "data": {"title": "after-update"}
+                },
+                {
+                    "op": "delete",
+                    "collection": "tasks",
+                    "id": "tx-delete",
+                    "expected_version": 1
+                }
+            ]
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::OK);
+
+    let mut events: Vec<ChangeEvent> = Vec::new();
+    while events.len() < 3 {
+        events.push(
+            tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+                .await
+                .expect("transaction broadcasts within the timeout")
+                .expect("broker channel delivers the event"),
+        );
+    }
+
+    let created = &events[0];
+    assert_eq!(created.entity_id, "tx-create");
+    assert_eq!(created.operation, "create");
+    assert_eq!(created.data.as_ref().unwrap()["title"], "created");
+    assert!(created.previous_data.is_none());
+    assert_eq!(created.previous_version, None);
+    assert_eq!(created.actor, "tx-agent");
+    assert!(!created.audit_id.is_empty());
+
+    let updated = &events[1];
+    assert_eq!(updated.entity_id, "tx-update");
+    assert_eq!(updated.operation, "update");
+    assert_eq!(updated.data.as_ref().unwrap()["title"], "after-update");
+    assert_eq!(
+        updated.previous_data.as_ref().unwrap()["title"],
+        "before-update"
+    );
+    assert_eq!(updated.version, 2);
+    assert_eq!(updated.previous_version, Some(1));
+    assert_eq!(updated.actor, "tx-agent");
+    assert!(!updated.audit_id.is_empty());
+
+    let deleted = &events[2];
+    assert_eq!(deleted.entity_id, "tx-delete");
+    assert_eq!(deleted.operation, "delete");
+    assert!(deleted.data.is_none());
+    assert_eq!(
+        deleted.previous_data.as_ref().unwrap()["title"],
+        "before-delete"
+    );
+    assert_eq!(deleted.version, 1);
+    assert_eq!(deleted.previous_version, Some(1));
+    assert_eq!(deleted.actor, "tx-agent");
+    assert!(!deleted.audit_id.is_empty());
+}

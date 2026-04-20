@@ -47,7 +47,7 @@ use axon_api::request::{
     TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::response::GetEntityMarkdownResponse;
-use axon_audit::entry::AuditAttribution;
+use axon_audit::entry::{AuditAttribution, AuditEntry, MutationType};
 use axon_audit::AuditLog;
 use axon_core::auth::{CallerIdentity as CoreCallerIdentity, ResolvedIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
@@ -827,6 +827,44 @@ fn audit_id_string(audit_id: Option<u64>) -> String {
     match audit_id {
         Some(id) => id.to_string(),
         None => String::new(),
+    }
+}
+
+fn change_event_from_audit_entry(entry: &AuditEntry) -> Option<axon_graphql::ChangeEvent> {
+    let operation = match entry.mutation {
+        MutationType::EntityCreate => "create",
+        MutationType::EntityUpdate | MutationType::EntityRevert => "update",
+        MutationType::EntityDelete => "delete",
+        _ => return None,
+    };
+    let previous_version = match entry.mutation {
+        MutationType::EntityCreate => None,
+        MutationType::EntityUpdate | MutationType::EntityRevert => entry.version.checked_sub(1),
+        MutationType::EntityDelete => Some(entry.version),
+        _ => None,
+    };
+
+    Some(axon_graphql::ChangeEvent {
+        audit_id: entry.id.to_string(),
+        collection: entry.collection.to_string(),
+        entity_id: entry.entity_id.to_string(),
+        operation: operation.to_string(),
+        data: entry.data_after.clone(),
+        previous_data: entry.data_before.clone(),
+        version: entry.version,
+        previous_version,
+        timestamp_ms: entry.timestamp_ns / 1_000_000,
+        actor: entry.actor.clone(),
+    })
+}
+
+fn publish_change_event_from_audit_entry(broker: &BroadcastBroker, entry: &AuditEntry) -> bool {
+    match change_event_from_audit_entry(entry) {
+        Some(event) => {
+            let _ = broker.publish(event);
+            true
+        }
+        None => false,
     }
 }
 
@@ -2991,16 +3029,29 @@ async fn commit_transaction(
                 notify_entity_change(&mcp_sessions, &current_database, entity);
                 let entity_collection = &entity.collection;
                 let entity_key = &entity.id;
-                let audit_id = tx_entries
+                let entry = tx_entries
                     .iter()
                     .find(|e| &e.collection == entity_collection && &e.entity_id == entity_key)
-                    .map(|e| e.id.to_string())
-                    .unwrap_or_default();
-                let actor = tx_entries
-                    .iter()
-                    .find(|e| &e.collection == entity_collection && &e.entity_id == entity_key)
-                    .map_or(caller.actor.as_str(), |e| e.actor.as_str());
-                broadcast_entity_change(&broker, entity, "update", audit_id, actor);
+                    .filter(|e| {
+                        matches!(
+                            e.mutation,
+                            MutationType::EntityCreate
+                                | MutationType::EntityUpdate
+                                | MutationType::EntityDelete
+                                | MutationType::EntityRevert
+                        )
+                    });
+                if let Some(entry) = entry {
+                    publish_change_event_from_audit_entry(&broker, entry);
+                } else if entity.collection != Link::links_collection() {
+                    broadcast_entity_change(
+                        &broker,
+                        entity,
+                        "update",
+                        String::new(),
+                        &caller.actor,
+                    );
+                }
             }
             let entities: Vec<Value> = written
                 .iter()
