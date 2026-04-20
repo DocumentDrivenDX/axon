@@ -65,7 +65,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={binary_path} serve
+ExecStart={binary_path} serve --no-auth --sqlite-path @SQLITE_PATH@ --control-plane-path @CONTROL_PLANE_PATH@
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -88,7 +88,7 @@ After=network.target
 Type=simple
 User=axon
 Group=axon
-ExecStart={binary_path} serve
+ExecStart={binary_path} serve --no-auth --sqlite-path @SQLITE_PATH@ --control-plane-path @CONTROL_PLANE_PATH@
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -145,6 +145,18 @@ fn create_axon_system_user() -> Result<()> {
     Ok(())
 }
 
+fn service_data_paths(global: bool) -> (PathBuf, PathBuf) {
+    let data_dir = if global {
+        axon_config::paths::global_data_dir()
+    } else {
+        axon_config::paths::data_dir()
+    };
+    (
+        data_dir.join("axon.db"),
+        data_dir.join("axon-control-plane.db"),
+    )
+}
+
 fn install_systemd(bin: &std::path::Path, global: bool) -> Result<()> {
     let unit_path = systemd_unit_path(global)?;
     let template = if global {
@@ -152,7 +164,14 @@ fn install_systemd(bin: &std::path::Path, global: bool) -> Result<()> {
     } else {
         SYSTEMD_USER_UNIT
     };
-    let unit_content = template.replace("{binary_path}", &bin.display().to_string());
+    let (sqlite_path, control_plane_path) = service_data_paths(global);
+    let unit_content = template
+        .replace("{binary_path}", &bin.display().to_string())
+        .replace("@SQLITE_PATH@", &sqlite_path.display().to_string())
+        .replace(
+            "@CONTROL_PLANE_PATH@",
+            &control_plane_path.display().to_string(),
+        );
 
     if let Some(parent) = unit_path.parent() {
         std::fs::create_dir_all(parent)
@@ -212,6 +231,11 @@ const LAUNCHD_PLIST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <array>
         <string>{binary_path}</string>
         <string>serve</string>
+        <string>--no-auth</string>
+        <string>--sqlite-path</string>
+        <string>@SQLITE_PATH@</string>
+        <string>--control-plane-path</string>
+        <string>@CONTROL_PLANE_PATH@</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -249,7 +273,14 @@ fn launchd_plist_path(global: bool) -> Result<PathBuf> {
 
 fn install_launchd(bin: &std::path::Path, global: bool) -> Result<()> {
     let plist_path = launchd_plist_path(global)?;
-    let plist_content = LAUNCHD_PLIST_TEMPLATE.replace("{binary_path}", &bin.display().to_string());
+    let (sqlite_path, control_plane_path) = service_data_paths(global);
+    let plist_content = LAUNCHD_PLIST_TEMPLATE
+        .replace("{binary_path}", &bin.display().to_string())
+        .replace("@SQLITE_PATH@", &sqlite_path.display().to_string())
+        .replace(
+            "@CONTROL_PLANE_PATH@",
+            &control_plane_path.display().to_string(),
+        );
 
     if let Some(parent) = plist_path.parent() {
         std::fs::create_dir_all(parent)

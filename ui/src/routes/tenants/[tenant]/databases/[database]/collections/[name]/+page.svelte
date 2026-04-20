@@ -552,13 +552,13 @@ async function submitCreateEntity() {
 
 	try {
 		const entity = await createEntity(collectionName, createId.trim(), parsedData, scope);
-		createMessage = `Created ${entity.id}.`;
 		createErrors = [];
 		createOpen = false;
 		paginationHistory = [null];
 		pageIndex = 0;
 		await loadCollection(collectionName, null);
 		selectedEntity = entity;
+		createMessage = `Created ${entity.id}.`;
 	} catch (errorValue: unknown) {
 		createErrors = [errorValue instanceof Error ? errorValue.message : 'Failed to create entity'];
 	}

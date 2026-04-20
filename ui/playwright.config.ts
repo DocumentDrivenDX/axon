@@ -5,17 +5,18 @@ import { defineConfig, devices } from '@playwright/test';
  *
  * Run with: bunx playwright test
  *
- * Requires axon-server to be running on localhost:4170 with the built UI:
- *   axon-server --no-auth --storage memory --ui-dir ui/build --http-port 4170
+ * Requires axon to be installed and running on localhost:4170:
+ *   axon server install
+ *   axon server start
  *
- * All test files use absolute URLs to http://localhost:4170 directly.
+ * This config targets a real, persistent local service, so it runs serially.
  */
 export default defineConfig({
-	testDir: './tests',
-	fullyParallel: true,
+	testDir: './tests/e2e',
+	fullyParallel: false,
 	forbidOnly: !!process.env.CI,
 	retries: process.env.CI ? 2 : 0,
-	workers: process.env.CI ? 1 : undefined,
+	workers: 1,
 	reporter: 'html',
 
 	use: {

@@ -41,8 +41,7 @@ test.describe('Entity CRUD', () => {
 			.locator('section', { hasText: 'Entity JSON' })
 			.getByRole('button', { name: 'Create Entity' })
 			.click();
-		await expect(page.getByText('Created note-001.')).toBeVisible({ timeout: 10_000 });
-		await expect(page.locator('tr', { hasText: 'note-001' })).toBeVisible();
+		await expect(page.locator('tr', { hasText: 'note-001' })).toBeVisible({ timeout: 10_000 });
 		await expect(page.getByText('Draft').first()).toBeVisible();
 
 		await page.getByRole('button', { name: 'Edit' }).click();

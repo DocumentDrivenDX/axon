@@ -42,7 +42,17 @@ test.describe('Audit route', () => {
 		await expect(page.getByRole('heading', { name: 'Audit Log', level: 1 })).toBeVisible();
 
 		await page.getByLabel('Collection').fill('notes');
+		const filteredAuditResponse = page.waitForResponse((response) => {
+			const postData = response.request().postData() ?? '';
+			return (
+				response.url().endsWith('/graphql') &&
+				postData.includes('AxonUiAuditLog') &&
+				postData.includes('"collection":"notes"') &&
+				response.ok()
+			);
+		});
 		await page.getByRole('button', { name: 'Apply Filters' }).click();
+		await filteredAuditResponse;
 
 		await expect(page.locator('tr', { hasText: 'notes' }).first()).toBeVisible({
 			timeout: 10_000,

@@ -81,6 +81,7 @@ let adding = $state(false);
 let addError = $state<string | null>(null);
 
 let removingLogin = $state<string | null>(null);
+let savingRoleLogins = $state<Record<string, boolean>>({});
 
 async function loadAclUsers() {
 	aclLoading = true;
@@ -111,11 +112,16 @@ async function handleAdd() {
 }
 
 async function handleRoleChange(login: string, role: UserRole) {
+	savingRoleLogins = { ...savingRoleLogins, [login]: true };
 	try {
 		await setUserRole(login, role);
 		await loadAclUsers();
 	} catch (e: unknown) {
 		aclError = e instanceof Error ? e.message : 'Failed to update role';
+	} finally {
+		const remaining = { ...savingRoleLogins };
+		delete remaining[login];
+		savingRoleLogins = remaining;
 	}
 }
 
@@ -331,6 +337,7 @@ $effect(() => {
 							<td>
 								<select
 									value={user.role}
+									disabled={savingRoleLogins[user.login] === true}
 									onchange={(e) => {
 										const role = (e.target as HTMLSelectElement).value as UserRole;
 										void handleRoleChange(user.login, role);
@@ -340,6 +347,9 @@ $effect(() => {
 										<option value={role}>{role}</option>
 									{/each}
 								</select>
+								{#if savingRoleLogins[user.login] === true}
+									<span class="muted saving-state">Saving...</span>
+								{/if}
 							</td>
 							<td>
 								<div class="actions">

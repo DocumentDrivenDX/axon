@@ -98,8 +98,8 @@ server. This means:
     `/etc/systemd/system/axon.service`
   - macOS: creates `_axon` system user, writes
     `/Library/LaunchDaemons/com.axon.server.plist`
-- Service units run `axon serve` using the installed binary and config
-  file.
+- Service units run `axon serve` using the installed binary, no-auth default,
+  and XDG/global data paths for SQLite and control-plane storage.
 - `axon server start|stop|restart|status` manage the installed service,
   delegating to `systemctl` (Linux) or `launchctl` (macOS).
 - `axon server uninstall` removes the service unit and disables it.

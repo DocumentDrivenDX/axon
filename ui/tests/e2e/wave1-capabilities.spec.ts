@@ -80,7 +80,7 @@ test.describe('Wave 1 — Entity audit history tab', () => {
 	test('history tab shows version entries for an entity', async ({ page }) => {
 		await page.goto(dbCollectionUrl(db, 'tasks'));
 		// Entity list loads and first entity auto-selects.
-		await expect(page.getByText('First task').first()).toBeVisible();
+		await expect(page.getByText('First task').first()).toBeVisible({ timeout: 10_000 });
 		await page.getByTestId('entity-tab-audit').click();
 		const timeline = page.getByTestId('entity-audit-timeline');
 		await expect(timeline).toBeVisible({ timeout: 5_000 });

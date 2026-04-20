@@ -171,7 +171,18 @@ test.describe('Global users ACL — add, change, remove', () => {
 		await expect(row).toBeVisible({ timeout: 5_000 });
 
 		// Change to admin.
+		const roleUpdate = page.waitForResponse((response) => {
+			const postData = response.request().postData() ?? '';
+			return (
+				response.url().endsWith('/control/graphql') &&
+				postData.includes('AxonUiSetUserRole') &&
+				postData.includes(`"login":"${login}"`) &&
+				postData.includes('"role":"admin"') &&
+				response.ok()
+			);
+		});
 		await row.locator('select').selectOption('admin');
+		await roleUpdate;
 		await page.reload();
 		await expect(page.locator('tr', { hasText: login }).locator('select')).toHaveValue('admin');
 

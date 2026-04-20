@@ -45,7 +45,7 @@ SH
         unit="$HOME/.config/systemd/user/axon.service"
         test -f "$unit"
         grep -F "Description=Axon Data Store" "$unit"
-        grep -F "ExecStart=$HOME/.local/bin/axon serve" "$unit"
+        grep -F "ExecStart=$HOME/.local/bin/axon serve --no-auth --sqlite-path $HOME/.local/share/axon/axon.db --control-plane-path $HOME/.local/share/axon/axon-control-plane.db" "$unit"
         grep -F "WantedBy=default.target" "$unit"
         grep -F -- "--user daemon-reload" /tmp/systemctl.log
         grep -F -- "--user enable axon" /tmp/systemctl.log
