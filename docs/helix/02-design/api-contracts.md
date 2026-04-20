@@ -535,14 +535,19 @@ response.
 
 Use `auditLog` for application audit browsing. It supports collection, entity,
 actor, operation, time range, cursor, and limit filters and returns the same
-connection envelope as entity lists.
+connection envelope as entity lists. `collection` is optional; actor and time
+range filters may be used without a collection to troubleshoot activity across
+the whole database.
 
 ```graphql
 {
   auditLog(
     collection: "time_entries"
     entityId: "time-123"
+    actor: "alice@example.com"
     operation: "entity.update"
+    sinceNs: "1776672000000000000"
+    untilNs: "1776758399999999999"
     after: "42"
     limit: 50
   ) {
@@ -565,6 +570,51 @@ connection envelope as entity lists.
   }
 }
 ```
+
+REST compatibility uses `GET /audit/query` with the same supported filter set:
+
+- `collection` or comma-separated `collections`
+- `entity_id`
+- `actor`
+- `operation`
+- `since_ns` / `until_ns`
+- `after_id`
+- `limit`
+
+`metadata.*` and `dataAfter`/`data_after.*` filters are not supported in V1.
+REST returns:
+
+```json
+{
+  "code": "unsupported_audit_filter",
+  "detail": {
+    "filter": "metadata.kind",
+    "supported_filters": ["collection", "collections", "entity_id", "actor", "operation", "since_ns", "until_ns", "after_id", "limit"]
+  }
+}
+```
+
+GraphQL exposes `metadataPath`, `metadataEq`, `dataAfterPath`, and
+`dataAfterEq` only to return a stable unsupported-filter error:
+
+```json
+{
+  "errors": [
+    {
+      "message": "unsupported audit filter: metadataPath",
+      "extensions": {
+        "code": "UNSUPPORTED_AUDIT_FILTER",
+        "filter": "metadataPath"
+      }
+    }
+  ]
+}
+```
+
+Nexiq status-history panels should query `auditLog` by entity, actor, mutation,
+or time range, then filter `metadata.kind` or `dataAfter.status` client-side for
+small result windows. Large metadata/data-field audit search is deferred until
+Axon adds indexed audit payload filters.
 
 ## Collection, Schema, And Lifecycle GraphQL
 

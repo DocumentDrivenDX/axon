@@ -1219,6 +1219,21 @@ fn audit_connection_value(
     }))
 }
 
+fn unsupported_audit_filter_arg(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+) -> Option<&'static str> {
+    ["metadataPath", "metadataEq", "dataAfterPath", "dataAfterEq"]
+        .into_iter()
+        .find(|name| ctx.args.try_get(name).is_ok())
+}
+
+fn unsupported_audit_filter_error(filter: &'static str) -> GqlError {
+    GqlError::new(format!("unsupported audit filter: {filter}")).extend_with(move |_err, ext| {
+        ext.set("code", "UNSUPPORTED_AUDIT_FILTER");
+        ext.set("filter", filter);
+    })
+}
+
 fn page_info_object() -> Object {
     Object::new(PAGE_INFO_TYPE)
         .field(json_object_field(
@@ -2311,6 +2326,10 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_audit);
                 FieldFuture::new(async move {
+                    if let Some(filter) = unsupported_audit_filter_arg(&ctx) {
+                        return Err(unsupported_audit_filter_error(filter));
+                    }
+
                     let collection = ctx
                         .args
                         .try_get("collection")
@@ -2382,7 +2401,23 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
         .argument(InputValue::new("sinceNs", TypeRef::named(TypeRef::STRING)))
         .argument(InputValue::new("untilNs", TypeRef::named(TypeRef::STRING)))
         .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING)))
-        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT))),
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new(
+            "metadataPath",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new(
+            "metadataEq",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new(
+            "dataAfterPath",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new(
+            "dataAfterEq",
+            TypeRef::named(TypeRef::STRING),
+        )),
     );
 
     query
@@ -2459,7 +2494,23 @@ fn add_stub_root_query_fields(mut query: Object) -> Object {
         .argument(InputValue::new("sinceNs", TypeRef::named(TypeRef::STRING)))
         .argument(InputValue::new("untilNs", TypeRef::named(TypeRef::STRING)))
         .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING)))
-        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT))),
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new(
+            "metadataPath",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new(
+            "metadataEq",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new(
+            "dataAfterPath",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .argument(InputValue::new(
+            "dataAfterEq",
+            TypeRef::named(TypeRef::STRING),
+        )),
     );
     query
 }

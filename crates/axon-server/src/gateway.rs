@@ -1847,6 +1847,30 @@ async fn query_audit(
     Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    if let Some(filter) = unsupported_audit_filter_param(&params) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ApiError::new(
+                "unsupported_audit_filter",
+                json!({
+                    "filter": filter,
+                    "supported_filters": [
+                        "collection",
+                        "collections",
+                        "entity_id",
+                        "actor",
+                        "operation",
+                        "since_ns",
+                        "until_ns",
+                        "after_id",
+                        "limit"
+                    ],
+                }),
+            )),
+        )
+            .into_response();
+    }
+
     let req = QueryAuditRequest {
         database: requested_database_scope.database().map(str::to_string),
         collection: params
@@ -1887,6 +1911,22 @@ async fn query_audit(
         }
         Err(e) => axon_error_response(e),
     }
+}
+
+fn unsupported_audit_filter_param(
+    params: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    params.keys().find_map(|key| {
+        let normalized = key.replace('-', "_").to_ascii_lowercase();
+        if normalized.starts_with("metadata")
+            || normalized.starts_with("data_after")
+            || normalized.starts_with("dataafter")
+        {
+            Some(key.clone())
+        } else {
+            None
+        }
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4236,6 +4276,20 @@ mod tests {
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entries"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_query_audit_rejects_unsupported_metadata_filter() {
+        let server = test_server();
+
+        let resp = server
+            .get("/tenants/default/databases/default/audit/query?metadata.kind=status_change")
+            .await;
+
+        resp.assert_status(StatusCode::BAD_REQUEST);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "unsupported_audit_filter");
+        assert_eq!(body["detail"]["filter"], "metadata.kind");
     }
 
     /// Verifies that GET /audit/query honors the multi-collection `collections=` query

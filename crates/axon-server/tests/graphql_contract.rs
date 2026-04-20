@@ -1682,6 +1682,66 @@ async fn graphql_audit_log_connection_filters_entity_creates() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn graphql_audit_log_filters_actor_time_range_without_collection() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+    seed_collection(&server, "note").await;
+
+    for (collection, id, label) in [
+        ("item", "audit-actor-1", "one"),
+        ("note", "audit-actor-2", "two"),
+    ] {
+        server
+            .post(&format!(
+                "/tenants/default/databases/default/entities/{collection}/{id}"
+            ))
+            .add_header("x-axon-actor", "alice")
+            .json(&json!({"data": {"label": label}}))
+            .await
+            .assert_status(axum::http::StatusCode::CREATED);
+    }
+
+    let body = gql(
+        &server,
+        r#"{
+            auditLog(actor: "alice", sinceNs: "0", untilNs: "9999999999999999999") {
+                totalCount
+                edges { node { collection entityId actor } }
+            }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    assert_eq!(body["data"]["auditLog"]["totalCount"], 2);
+    let collections: Vec<&str> = body["data"]["auditLog"]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|edge| edge["node"]["collection"].as_str().unwrap())
+        .collect();
+    assert_eq!(collections, vec!["item", "note"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_audit_log_rejects_unsupported_metadata_filter() {
+    let server = test_server();
+    let body = gql(
+        &server,
+        r#"{
+            auditLog(metadataPath: "kind", metadataEq: "status_change") {
+                totalCount
+            }
+        }"#,
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("expected GraphQL error");
+    assert_eq!(errors[0]["extensions"]["code"], "UNSUPPORTED_AUDIT_FILTER");
+    assert_eq!(errors[0]["extensions"]["filter"], "metadataPath");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_rejects_excessive_depth_and_complexity() {
     let server = test_server();
     seed_collection(&server, "item").await;
