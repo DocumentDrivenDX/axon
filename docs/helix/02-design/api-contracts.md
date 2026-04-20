@@ -54,6 +54,15 @@ Browser-readable response headers include:
 - `x-request-id`
 - `x-axon-query-cost` when query-cost reporting is enabled
 
+`x-request-id` is emitted on every HTTP response. If the request supplied a
+valid `x-request-id`, Axon echoes it; otherwise Axon generates a UUIDv7. Browser
+clients should include this value in issue reports and support logs.
+
+`x-axon-query-cost` is reserved for dev-mode query regression detection and is
+included in `Access-Control-Expose-Headers`. Axon does not emit a query-cost
+header in the V1 browser contract until cost accounting is enabled; clients
+must treat the header as optional.
+
 `idempotency-key` is not part of the canonical browser CORS request-header
 contract. Use the transaction input/body `idempotency_key` field instead. The
 legacy HTTP header may remain accepted for non-browser compatibility, but a
@@ -907,3 +916,62 @@ Common error bodies use `{"code": "...", "detail": ...}`. Browser clients can
 switch on `code`; auth failures use `unauthorized` or `forbidden`, validation
 uses `schema_validation`, missing records use `not_found`, and rate limiting
 uses `rate_limit_exceeded`.
+
+## Browser Error Details
+
+REST schema validation failures use HTTP `422` and a stable lower-case code:
+
+```json
+{
+  "code": "schema_validation",
+  "detail": {
+    "message": "/: Required field 'amount' is missing Fix: Add a 'amount' field",
+    "field_errors": [
+      {
+        "field_path": "/",
+        "message": "Required field 'amount' is missing",
+        "severity": "error",
+        "fix": "Add a 'amount' field"
+      }
+    ]
+  }
+}
+```
+
+`detail.message` is the complete server validation string. `detail.field_errors`
+is an array of JSON-Schema field failures when Axon can reconstruct field
+locations. Each entry contains `field_path`, `message`, and `severity`; `fix`
+may be present. Non-JSON-Schema validation failures, such as template or
+cross-field rule failures, keep `field_errors: []` and remain switchable by the
+top-level `code`.
+
+GraphQL schema validation failures return HTTP `200` with an `errors[]` entry.
+Clients switch on `errors[].extensions.code == "SCHEMA_VALIDATION"`. The raw
+message remains in `extensions.detail` for compatibility, and field-level
+details are exposed as `extensions.fieldErrors`.
+
+Write rate limits use HTTP `429`, `code: "rate_limit_exceeded"`, and
+`Retry-After` in whole seconds:
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 60
+X-Request-Id: 018f4f9c-7cb2-7b38-a9f1-77b16d6a2e2a
+```
+
+```json
+{
+  "code": "rate_limit_exceeded",
+  "detail": {
+    "message": "write rate limit exceeded",
+    "retry_after_seconds": 60,
+    "scope": "actor_write"
+  }
+}
+```
+
+The V1 write limiter is a per-server, per-actor sliding window shared across
+tenant, database, and write route. It is not a separate per-tenant or per-route
+bucket. Each write endpoint call consumes one slot. `POST /transactions` also
+consumes one slot for the whole transaction request, regardless of operation
+count; the existing hard limit of 100 operations per transaction still applies.

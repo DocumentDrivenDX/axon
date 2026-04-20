@@ -206,7 +206,10 @@ fn axon_error_response(err: AxonError) -> Response {
             .into_response(),
         AxonError::SchemaValidation(detail) => (
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ApiError::new("schema_validation", detail)),
+            Json(ApiError::new(
+                "schema_validation",
+                axon_core::error::schema_validation_detail(&detail),
+            )),
         )
             .into_response(),
         AxonError::AlreadyExists(msg) => (
@@ -287,14 +290,21 @@ fn axon_error_response(err: AxonError) -> Response {
         AxonError::RateLimitExceeded {
             actor,
             retry_after_ms,
-        } => (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(ApiError::new(
-                "rate_limit_exceeded",
-                json!({"actor": actor, "retry_after_ms": retry_after_ms}),
-            )),
-        )
-            .into_response(),
+        } => {
+            let retry_after_seconds = retry_after_ms.saturating_add(999) / 1000;
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, retry_after_seconds.to_string())],
+                Json(ApiError::new(
+                    "rate_limit_exceeded",
+                    json!({
+                        "actor": actor,
+                        "retry_after_seconds": retry_after_seconds,
+                    }),
+                )),
+            )
+                .into_response()
+        }
         AxonError::Forbidden(msg) => {
             (StatusCode::FORBIDDEN, Json(ApiError::new("forbidden", msg))).into_response()
         }
@@ -351,11 +361,12 @@ fn rate_limit_response(limited: &RateLimited) -> Response {
         StatusCode::TOO_MANY_REQUESTS,
         [(header::RETRY_AFTER, limited.retry_after_secs.to_string())],
         Json(ApiError::new(
-            "rate_limited",
-            format!(
-                "write rate limit exceeded, retry after {} seconds",
-                limited.retry_after_secs
-            ),
+            "rate_limit_exceeded",
+            json!({
+                "message": "write rate limit exceeded",
+                "retry_after_seconds": limited.retry_after_secs,
+                "scope": "actor_write",
+            }),
         )),
     )
         .into_response()
@@ -1978,7 +1989,10 @@ fn rollback_error_response(err: AxonError) -> Response {
     match err {
         AxonError::SchemaValidation(detail) => (
             StatusCode::CONFLICT,
-            Json(ApiError::new("schema_validation", detail)),
+            Json(ApiError::new(
+                "schema_validation",
+                axon_core::error::schema_validation_detail(&detail),
+            )),
         )
             .into_response(),
         other => axon_error_response(other),
@@ -3606,6 +3620,26 @@ mod tests {
         TestServer::new(app)
     }
 
+    fn test_server_with_rate_limit(
+        rate_limit_config: crate::rate_limit::RateLimitConfig,
+    ) -> TestServer {
+        let storage: Box<dyn StorageAdapter + Send + Sync> =
+            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
+        let handler: TenantHandler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let tenant_router = Arc::new(TenantRouter::single(handler));
+        let app = build_router_with_auth(
+            tenant_router,
+            "memory",
+            None,
+            AuthContext::no_auth(),
+            rate_limit_config,
+            ActorScopeGuard::default(),
+            None,
+            CorsStore::default(),
+        );
+        TestServer::new(app)
+    }
+
     fn ok_or_panic<T, E: Display>(result: Result<T, E>, context: &str) -> T {
         match result {
             Ok(value) => value,
@@ -3989,7 +4023,7 @@ mod tests {
         resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
         let body: Value = resp.json();
         assert_eq!(body["code"], "schema_validation");
-        assert!(body["detail"]
+        assert!(body["detail"]["message"]
             .as_str()
             .unwrap_or_default()
             .contains("template references field 'ghost'"));
@@ -4958,11 +4992,28 @@ mod tests {
         // Entity without "amount" must be rejected.
         let resp = server
             .post("/tenants/default/databases/default/entities/payments/p-001")
+            .add_header(REQUEST_ID_HEADER, HeaderValue::from_static("schema-req-1"))
             .json(&json!({"data": {"note": "oops"}}))
             .await;
         resp.assert_status(StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            resp.headers()
+                .get(REQUEST_ID_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("schema-req-1")
+        );
         let body: Value = resp.json();
         assert_eq!(body["code"], "schema_validation");
+        assert!(body["detail"]["message"].as_str().is_some());
+        assert!(body["detail"]["field_errors"]
+            .as_array()
+            .is_some_and(|errors| !errors.is_empty()));
+        assert_eq!(
+            body["detail"]["field_errors"][0]["field_path"]
+                .as_str()
+                .unwrap_or_default(),
+            "/"
+        );
 
         // Entity with "amount" must succeed.
         let resp = server
@@ -4970,6 +5021,40 @@ mod tests {
             .json(&json!({"data": {"amount": 42.0}}))
             .await;
         resp.assert_status(StatusCode::CREATED);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_write_rate_limit_uses_stable_error_and_retry_after() {
+        let server = test_server_with_rate_limit(crate::rate_limit::RateLimitConfig {
+            max_writes: 1,
+            window: Duration::from_secs(60),
+        });
+
+        server
+            .post("/tenants/default/databases/default/entities/limits/first")
+            .json(&json!({"data": {"ok": true}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let resp = server
+            .post("/tenants/default/databases/default/entities/limits/second")
+            .json(&json!({"data": {"ok": false}}))
+            .await;
+
+        resp.assert_status(StatusCode::TOO_MANY_REQUESTS);
+        let retry_after = resp
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("429 must include Retry-After seconds");
+        assert!(retry_after > 0);
+        let body: Value = resp.json();
+        assert_eq!(body["code"], "rate_limit_exceeded");
+        assert_eq!(
+            body["detail"]["retry_after_seconds"].as_u64(),
+            Some(retry_after)
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -6690,6 +6775,11 @@ mod tests {
             resp.headers(),
             "access-control-expose-headers",
             "x-request-id"
+        ));
+        assert!(header_list_contains(
+            resp.headers(),
+            "access-control-expose-headers",
+            "x-axon-query-cost"
         ));
         assert!(resp.headers().contains_key("x-request-id"));
     }

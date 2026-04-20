@@ -1941,11 +1941,24 @@ async fn graphql_schema_validation_error() {
     seed_constrained_collection(&server, "item").await;
 
     // Submit a title that is too short (2 chars → fails minLength: 3).
-    let body = gql(
-        &server,
-        r#"mutation { createItem(id: "bad-1", input: { title: "ab" }) { id } }"#,
-    )
-    .await;
+    let resp = server
+        .post("/tenants/default/databases/default/graphql")
+        .add_header(
+            axum::http::HeaderName::from_static("x-request-id"),
+            axum::http::HeaderValue::from_static("graphql-schema-req-1"),
+        )
+        .json(&json!({
+            "query": r#"mutation { createItem(id: "bad-1", input: { title: "ab" }) { id } }"#
+        }))
+        .await;
+    resp.assert_status_ok();
+    assert_eq!(
+        resp.headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("graphql-schema-req-1")
+    );
+    let body = resp.json::<Value>();
 
     let errors = body["errors"].as_array().unwrap();
     assert!(
@@ -1957,6 +1970,9 @@ async fn graphql_schema_validation_error() {
         "SCHEMA_VALIDATION",
         "error code should be SCHEMA_VALIDATION: {body}"
     );
+    assert!(errors[0]["extensions"]["fieldErrors"]
+        .as_array()
+        .is_some_and(|field_errors| !field_errors.is_empty()));
 }
 
 #[tokio::test(flavor = "multi_thread")]

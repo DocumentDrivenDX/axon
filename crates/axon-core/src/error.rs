@@ -2,6 +2,50 @@ use thiserror::Error;
 
 use crate::types::Entity;
 
+use serde_json::{json, Value};
+
+/// Browser-facing shape for schema validation failures.
+pub fn schema_validation_detail(detail: &str) -> Value {
+    json!({
+        "message": detail,
+        "field_errors": schema_validation_field_errors(detail),
+    })
+}
+
+/// Best-effort field-level errors reconstructed from Axon's validation detail.
+///
+/// JSON Schema failures are produced as `/<json-pointer>: <message>`.
+/// Other schema validation failures, such as rule or template validation,
+/// remain available through `message` with an empty `field_errors` array.
+pub fn schema_validation_field_errors(detail: &str) -> Vec<Value> {
+    detail
+        .split("; ")
+        .filter_map(|part| {
+            let (field_path, rest) = part.split_once(": ")?;
+            if !field_path.is_empty() && !field_path.starts_with('/') {
+                return None;
+            }
+            let field_path = if field_path.is_empty() {
+                "/"
+            } else {
+                field_path
+            };
+            let (message, fix) = rest
+                .split_once(" Fix: ")
+                .map_or((rest, None), |(message, fix)| (message, Some(fix)));
+            let mut error = json!({
+                "field_path": field_path,
+                "message": message,
+                "severity": "error",
+            });
+            if let Some(fix) = fix {
+                error["fix"] = json!(fix);
+            }
+            Some(error)
+        })
+        .collect()
+}
+
 /// Top-level error type for Axon operations.
 #[derive(Debug, Error)]
 pub enum AxonError {

@@ -2615,6 +2615,11 @@ fn axon_error_to_gql(err: AxonError) -> GqlError {
                 // clients can surface it without string-parsing the message.
                 ext.set("code", "SCHEMA_VALIDATION");
                 ext.set("detail", detail.as_str());
+                if let Ok(field_errors) = GqlValue::from_json(json!(
+                    axon_core::error::schema_validation_field_errors(&detail)
+                )) {
+                    ext.set("fieldErrors", field_errors);
+                }
             })
         }
         AxonError::UniqueViolation { field, value } => GqlError::new(format!(
