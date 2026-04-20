@@ -108,6 +108,17 @@ Use the GraphQL current-user query before choosing a tenant/database route.
 During the compatibility window, `GET /auth/me` returns the same identity
 envelope.
 
+```graphql
+query {
+  currentUser {
+    actor
+    role
+    userId
+    tenantId
+  }
+}
+```
+
 ```http
 GET /auth/me
 ```
@@ -268,8 +279,18 @@ GET /tenants/default/databases/default/schema
       "entity_count": 0,
       "schema": {
         "collection": "time_entries",
+        "description": "Time entry records used by browser clients",
         "version": 1,
-        "entity_schema": {"type": "object"}
+        "entity_schema": {
+          "type": "object",
+          "description": "A time entry payload",
+          "properties": {
+            "status": {
+              "type": "string",
+              "description": "Approval status label"
+            }
+          }
+        }
       }
     }
   ],
@@ -282,6 +303,15 @@ GET /tenants/default/databases/default/schema
   }
 }
 ```
+
+Collection schema payloads preserve JSON Schema metadata verbatim. Top-level
+collection `description` and nested `description` fields inside
+`entity_schema`, `properties`, `items`, and other JSON Schema nodes are returned
+unchanged by the schema handshake, `collections { schema }`,
+`createCollection`, `putSchema`, and `GET /collections/{name}/schema`. Browser
+clients may use these descriptions for labels, help text, placeholders, and
+field documentation without maintaining a parallel UI metadata registry. Axon
+does not translate, strip, synthesize, or normalize description text.
 
 Clients may send `x-axon-schema-hash` or `?expected_hash=`. A mismatch returns
 `409`:
@@ -296,6 +326,210 @@ Clients may send `x-axon-schema-hash` or `?expected_hash=`. A mismatch returns
   }
 }
 ```
+
+## TypeScript SDK Browser Examples
+
+The first-party TypeScript SDK should make GraphQL the paved path. REST helper
+methods remain lower-level compatibility helpers for the exception list above;
+browser application code should start from `AxonGraphQLClient`.
+
+### App Load And Schema Refresh
+
+```ts
+import { AxonGraphQLClient } from "@axon/client";
+
+const axon = new AxonGraphQLClient({
+  baseUrl: "https://axon.tailnet.example",
+  authToken: session.jwt,
+});
+
+const db = axon.tenant("acme").database("default");
+const metadata = await db.refreshSchema(localStorage.getItem("axon:schema_hash") ?? undefined);
+const collections = await db.collections();
+```
+
+### Control-Plane Administration
+
+```ts
+const control = axon.control();
+
+const tenant = await control.createTenant("Acme");
+const user = await control.provisionUser("Ada Lovelace", "ada@example.com");
+await control.upsertTenantMember(tenant.data.createTenant.id, user.data.provisionUser.id, "admin");
+await control.createTenantDatabase(tenant.data.createTenant.id, "default");
+const credential = await control.issueCredential(
+  tenant.data.createTenant.id,
+  user.data.provisionUser.id,
+  { databases: [{ name: "default", ops: ["read", "write"] }] },
+  3600,
+);
+```
+
+`control.credentials(tenantId)` returns credential metadata only (`jti`, user,
+tenant, expiry, revocation state, grants). It must not select or return signed
+JWT secret material; only `issueCredential` returns the newly minted JWT.
+
+### Filtered List
+
+```ts
+const openTasks = await db.listEntities("tasks", {
+  filter: { status: { eq: "open" }, priority: { gte: 3 } },
+  sort: [{ field: "priority", direction: "DESC" }],
+  limit: 50,
+});
+```
+
+### Entity Detail With Relationships And Audit
+
+```ts
+const task = await db.getEntity("tasks", "task-1");
+const graph = await db.neighbors("tasks", "task-1", {
+  direction: "outbound",
+  linkType: "depends-on",
+  limit: 25,
+});
+const history = await db.auditLog({
+  collection: "tasks",
+  entityId: "task-1",
+  limit: 50,
+});
+```
+
+Entity-level recovery uses the GraphQL rollback helper:
+
+```ts
+const preview = await db.rollbackEntity("tasks", "task-1", {
+  toVersion: 2,
+  expectedVersion: task.data.entity.version,
+  dryRun: true,
+});
+```
+
+### Update With OCC
+
+```ts
+await db.updateEntity(
+  "tasks",
+  "task-1",
+  task.data.entity.version,
+  { ...task.data.entity.data, status: "submitted" },
+);
+```
+
+GraphQL version conflicts surface as `AxonGraphQLError` with
+`code === "VERSION_CONFLICT"` and the server-provided extension fields
+(`expected`, `actual`, `currentEntity`) preserved on `error.extensions`.
+
+### Bulk Transaction Retry
+
+```ts
+await db.commitTransaction(
+  [
+    {
+      updateEntity: {
+        collection: "tasks",
+        id: "task-1",
+        expectedVersion: 4,
+        data: { status: "approved" },
+      },
+    },
+    {
+      createEntity: {
+        collection: "activity",
+        id: "activity-018f4f9c",
+        data: { kind: "approval", task_id: "task-1" },
+      },
+    },
+  ],
+  { idempotencyKey: "approve-task-1-018f4f9c" },
+);
+```
+
+### Aggregation Dashboard
+
+```ts
+const dashboard = await db.aggregate("time_entries", {
+  filter: { status: { eq: "approved" } },
+  groupBy: ["project_id"],
+  aggregations: [
+    { function: "COUNT" },
+    { function: "SUM", field: "hours" },
+  ],
+});
+```
+
+### Link Autocomplete
+
+```ts
+const candidates = await db.linkCandidates("users", "u1", "assigned-to", {
+  search: "invoice",
+  filter: { status: { eq: "open" } },
+  limit: 10,
+});
+```
+
+### Subscription Updates
+
+```ts
+const wsUrl = db.subscriptionUrl();
+const query = db.entityChangedSubscription("time_entries");
+```
+
+The SDK intentionally returns the subscription URL and GraphQL document rather
+than hiding the WebSocket transport. Browser apps may use `graphql-ws`,
+`subscriptions-transport-ws`, or a framework-native GraphQL subscription client
+while keeping the Axon document and route contract stable. On reconnect,
+clients should call `auditLog(after: lastSeenAuditId)` before trusting the live
+stream.
+
+## Local Development Reset and Reseed
+
+Static SPAs that need a clean local Axon state should prefer collection-scoped
+reset so the browser contract stays narrow and auditable:
+
+```graphql
+mutation {
+  dropCollection(input: { name: "time_entries", confirm: true }) {
+    name
+    entitiesRemoved
+  }
+}
+```
+
+After the collection is dropped, reseed with `createCollection` followed by
+stable-ID entity creates. `dropCollection` is destructive, requires
+`confirm: true`, removes the collection schema, entities, links, and generated
+GraphQL fields for that collection, and leaves other collections in the same
+database untouched. It is the supported reset path for local browser fixtures
+when a SPA owns only a small set of collections.
+
+For full disposable database resets in local `--no-auth` development or
+operator-controlled scripts, use a non-default database and the break-glass
+REST database endpoint:
+
+```http
+DELETE /databases/dev?force=true
+POST /databases/dev
+```
+
+Dropping a non-empty database without `force=true` is rejected. Dropping the
+implicit `default` database is rejected even with force so zero-config paths
+remain available. A forced non-default database drop removes all namespaces,
+collection schemas, entities, links, collection views, and audit rows scoped to
+that database; it does not remove tenant memberships or credentials from the
+control plane.
+
+Control-plane GraphQL `deleteTenantDatabase` and `createTenantDatabase` manage
+the tenant/database catalog used for credentials and administration. Use them
+when resetting a tenant-admin fixture. They are not a substitute for wiping a
+data-plane database namespace unless the deployment wires each tenant database
+to a disposable backing store.
+
+If destructive reset endpoints are unavailable, seed fixtures with stable IDs
+and use the normal OCC update path as an overwrite-by-ID fallback: read the
+current entity version, update with `expectedVersion`, create missing rows, and
+delete known extra rows explicitly. This fallback is deterministic but does not
+guarantee removal of unknown ad-hoc rows.
 
 ## Filtering
 

@@ -1,10 +1,39 @@
 /**
  * @axon/client — TypeScript SDK for the Axon data store.
  *
- * Generated gRPC client with a typed convenience layer for entity CRUD,
- * links, traversal, and audit queries.
+ * GraphQL-first browser/client SDK, plus generated gRPC and REST
+ * compatibility clients for lower-level integrations.
  */
 
+export {
+  AxonGraphQLClient,
+  GraphQLTenantClient,
+  GraphQLDatabaseClient,
+  ControlGraphQLClient,
+  AxonGraphQLError,
+  AxonGraphQLDocuments,
+  buildAggregateDocument,
+  buildEntityChangedSubscriptionDocument,
+  buildTransitionLifecycleDocument,
+  collectionFieldName,
+  pascalCase,
+  type AggregateOptions,
+  type AggregationSpec,
+  type AuditLogOptions,
+  type AxonGraphQLClientOptions,
+  type CommitTransactionOptions,
+  type GraphQLErrorPayload,
+  type GraphQLFetchLike,
+  type GraphQLFetchResponse,
+  type GraphQLPayload,
+  type GraphQLRequestOptions,
+  type GraphQLVariables,
+  type LinkCandidatesOptions,
+  type ListEntitiesOptions,
+  type NeighborsOptions,
+  type RollbackEntityOptions,
+  type TransactionOperation,
+} from "./graphql-client.js";
 export { AxonClient, type AxonClientOptions } from "./client.js";
 export { AxonError, AxonErrorCode } from "./error.js";
 export {

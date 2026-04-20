@@ -164,6 +164,25 @@ async fn control_graphql_admin_lifecycle_and_rest_parity() {
     let (server, issuer, admin_uid, _, _) = build_test_env();
     let jwt = deployment_admin_jwt(&issuer, &admin_uid);
 
+    let current_user = gql(
+        &server,
+        &jwt,
+        r#"
+        query {
+          currentUser { actor role userId tenantId }
+        }
+        "#,
+        json!({}),
+    )
+    .await;
+    assert_no_errors(&current_user);
+    assert_eq!(current_user["data"]["currentUser"]["userId"], admin_uid);
+    assert_eq!(
+        current_user["data"]["currentUser"]["tenantId"],
+        "deployment"
+    );
+    assert_eq!(current_user["data"]["currentUser"]["role"], "admin");
+
     let create_tenant = gql(
         &server,
         &jwt,

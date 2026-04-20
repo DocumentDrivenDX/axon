@@ -84,6 +84,14 @@ impl From<User> for ControlUser {
 }
 
 #[derive(SimpleObject)]
+struct CurrentUserGql {
+    actor: String,
+    role: String,
+    user_id: Option<String>,
+    tenant_id: Option<String>,
+}
+
+#[derive(SimpleObject)]
 struct SuspendUserPayload {
     user_id: String,
     suspended: bool,
@@ -198,6 +206,22 @@ struct ControlQuery;
 
 #[Object]
 impl ControlQuery {
+    async fn current_user(&self, ctx: &Context<'_>) -> GqlResult<CurrentUserGql> {
+        let legacy = ctx
+            .data::<Identity>()
+            .map_err(|_| gql_error("internal_error", "legacy identity missing"))?;
+        let resolved = resolved_identity(ctx)?;
+
+        Ok(CurrentUserGql {
+            actor: legacy.actor.clone(),
+            role: server_role_to_str(&legacy.role).to_string(),
+            user_id: resolved.as_ref().map(|identity| identity.user_id.0.clone()),
+            tenant_id: resolved
+                .as_ref()
+                .map(|identity| identity.tenant_id.0.clone()),
+        })
+    }
+
     async fn tenants(&self, ctx: &Context<'_>) -> GqlResult<Vec<ControlTenant>> {
         let state = state(ctx)?;
         require_deployment_admin(ctx, &state)?;
@@ -673,6 +697,14 @@ fn resolved_identity(ctx: &Context<'_>) -> GqlResult<Option<ResolvedIdentity>> {
     ctx.data::<MaybeResolvedIdentity>()
         .map(|resolved| resolved.0.clone())
         .map_err(|_| gql_error("internal_error", "resolved identity context missing"))
+}
+
+fn server_role_to_str(role: &crate::auth::Role) -> &'static str {
+    match role {
+        crate::auth::Role::Admin => "admin",
+        crate::auth::Role::Write => "write",
+        crate::auth::Role::Read => "read",
+    }
 }
 
 fn require_legacy_admin(ctx: &Context<'_>) -> GqlResult<()> {

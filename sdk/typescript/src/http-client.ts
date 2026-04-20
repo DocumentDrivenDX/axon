@@ -1,6 +1,9 @@
 /**
- * HTTP-based Axon client that talks to the REST gateway and scopes every
- * call under /tenants/:tenant/databases/:database/ per ADR-018.
+ * Lower-level REST compatibility client.
+ *
+ * New browser and TypeScript integrations should prefer AxonGraphQLClient.
+ * REST remains useful for health/metrics, static assets, stream/file
+ * transports, compatibility paths, and break-glass recovery operations.
  *
  * Usage:
  *
