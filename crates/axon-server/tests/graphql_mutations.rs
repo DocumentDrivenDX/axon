@@ -178,7 +178,7 @@ async fn graphql_collection_admin_create_list_refresh_and_drop() {
 
     let create_entity = gql(
         &server,
-        r#"mutation { createProjects(id: "p1", input: "{\"title\":\"alpha\"}") { id title version } }"#,
+        r#"mutation { createProjects(id: "p1", input: { title: "alpha" }) { id title version } }"#,
     )
     .await;
     assert!(
@@ -278,7 +278,7 @@ async fn graphql_create_entity_mutation_happy_path() {
 
     let create_body = gql(
         &server,
-        r#"mutation { createTasks(id: "t1", input: "{\"title\":\"ship it\"}") { id version title } }"#,
+        r#"mutation { createTasks(id: "t1", input: { title: "ship it" }) { id version title } }"#,
     )
     .await;
     assert!(
@@ -309,7 +309,7 @@ async fn graphql_update_entity_version_conflict_returns_structured_error() {
 
     gql(
         &server,
-        r#"mutation { createTasks(id: "t1", input: "{\"title\":\"v1\"}") { id } }"#,
+        r#"mutation { createTasks(id: "t1", input: { title: "v1" }) { id } }"#,
     )
     .await;
 
@@ -317,7 +317,7 @@ async fn graphql_update_entity_version_conflict_returns_structured_error() {
     // with the structured currentEntity extension.
     let body = gql(
         &server,
-        r#"mutation { updateTasks(id: "t1", version: 99, input: "{\"title\":\"stale\"}") { id } }"#,
+        r#"mutation { updateTasks(id: "t1", version: 99, input: { title: "stale" }) { id } }"#,
     )
     .await;
 
@@ -348,16 +348,20 @@ async fn graphql_delete_entity_mutation() {
 
     gql(
         &server,
-        r#"mutation { createTasks(id: "del-1", input: "{\"title\":\"bye\"}") { id } }"#,
+        r#"mutation { createTasks(id: "del-1", input: { title: "bye" }) { id } }"#,
     )
     .await;
 
-    let del_body = gql(&server, r#"mutation { deleteTasks(id: "del-1") }"#).await;
+    let del_body = gql(
+        &server,
+        r#"mutation { deleteTasks(id: "del-1") { deleted } }"#,
+    )
+    .await;
     assert!(
         del_body["errors"].is_null(),
         "unexpected errors: {del_body}"
     );
-    assert_eq!(del_body["data"]["deleteTasks"], true);
+    assert_eq!(del_body["data"]["deleteTasks"]["deleted"], true);
 
     let get_body = gql(&server, r#"{ tasks(id: "del-1") { id } }"#).await;
     assert!(
@@ -451,12 +455,12 @@ async fn graphql_commit_transaction_rolls_back_on_conflict() {
 
     gql(
         &server,
-        r#"mutation { createTasks(id: "tx-a", input: "{\"title\":\"A\"}") { id } }"#,
+        r#"mutation { createTasks(id: "tx-a", input: { title: "A" }) { id } }"#,
     )
     .await;
     gql(
         &server,
-        r#"mutation { createTasks(id: "tx-b", input: "{\"title\":\"B\"}") { id } }"#,
+        r#"mutation { createTasks(id: "tx-b", input: { title: "B" }) { id } }"#,
     )
     .await;
 
@@ -510,7 +514,7 @@ async fn graphql_transition_lifecycle_mutation() {
     // Create a task. The lifecycle field is auto-populated with "draft".
     let create_body = gql(
         &server,
-        r#"mutation { createTasks(id: "t-100", input: "{\"title\":\"design\"}") { id version status } }"#,
+        r#"mutation { createTasks(id: "t-100", input: { title: "design" }) { id version status } }"#,
     )
     .await;
     assert!(
@@ -606,7 +610,7 @@ async fn graphql_invalid_transition_error_has_valid_transitions_extension() {
 
     gql(
         &server,
-        r#"mutation { createTasks(id: "t-bad", input: "{\"title\":\"x\"}") { id } }"#,
+        r#"mutation { createTasks(id: "t-bad", input: { title: "x" }) { id } }"#,
     )
     .await;
 
@@ -658,7 +662,7 @@ async fn graphql_mutation_respects_caller_identity() {
     let body = gql_as(
         &server,
         "agent-1",
-        r#"mutation { createTasks(id: "aud-1", input: "{\"title\":\"hello\"}") { id } }"#,
+        r#"mutation { createTasks(id: "aud-1", input: { title: "hello" }) { id } }"#,
     )
     .await;
     assert!(body["errors"].is_null(), "unexpected errors: {body}");

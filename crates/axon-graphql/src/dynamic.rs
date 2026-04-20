@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use async_graphql::dynamic::{
-    Field, FieldFuture, FieldValue, InputObject, InputValue, Object, Scalar, Schema, SchemaBuilder,
-    Subscription, SubscriptionField, SubscriptionFieldFuture, TypeRef,
+    Enum, Field, FieldFuture, FieldValue, InputObject, InputValue, Object, Scalar, Schema,
+    SchemaBuilder, Subscription, SubscriptionField, SubscriptionFieldFuture, TypeRef,
 };
 use async_graphql::futures_util::StreamExt;
 use async_graphql::{Error as GqlError, ErrorExtensions, Value as GqlValue};
@@ -51,6 +51,11 @@ pub struct AxonSchema {
 
 const FILTER_INPUT: &str = "AxonFilterInput";
 const SORT_INPUT: &str = "AxonSortInput";
+const STRING_FILTER_INPUT: &str = "AxonStringFilterInput";
+const INT_FILTER_INPUT: &str = "AxonIntFilterInput";
+const FLOAT_FILTER_INPUT: &str = "AxonFloatFilterInput";
+const BOOLEAN_FILTER_INPUT: &str = "AxonBooleanFilterInput";
+const JSON_FILTER_INPUT: &str = "AxonJsonFilterInput";
 const ENTITY_TYPE: &str = "Entity";
 const ENTITY_EDGE_TYPE: &str = "EntityEdge";
 const ENTITY_CONNECTION_TYPE: &str = "EntityConnection";
@@ -217,9 +222,12 @@ fn parent_json_field(
     }
 }
 
-fn json_object_field(name: &'static str, ty: TypeRef) -> Field {
+fn json_object_field(name: impl Into<String>, ty: TypeRef) -> Field {
+    let name = name.into();
+    let lookup_name = name.clone();
     Field::new(name, ty, move |ctx| {
-        FieldFuture::new(async move { Ok(parent_json_field(ctx, name)) })
+        let lookup_name = lookup_name.clone();
+        FieldFuture::new(async move { Ok(parent_json_field(ctx, &lookup_name)) })
     })
 }
 
@@ -245,6 +253,166 @@ fn sort_input_object() -> InputObject {
             "direction",
             TypeRef::named(TypeRef::STRING),
         ))
+}
+
+fn scalar_filter_input_objects() -> Vec<InputObject> {
+    vec![
+        operator_filter_input_object(STRING_FILTER_INPUT, TypeRef::STRING, true),
+        operator_filter_input_object(INT_FILTER_INPUT, TypeRef::INT, false),
+        operator_filter_input_object(FLOAT_FILTER_INPUT, TypeRef::FLOAT, false),
+        operator_filter_input_object(BOOLEAN_FILTER_INPUT, TypeRef::BOOLEAN, false),
+        operator_filter_input_object(JSON_FILTER_INPUT, "JSON", true),
+    ]
+}
+
+fn operator_filter_input_object(name: &str, scalar: &str, contains: bool) -> InputObject {
+    let mut input = InputObject::new(name)
+        .field(InputValue::new("eq", TypeRef::named(scalar)))
+        .field(InputValue::new("ne", TypeRef::named(scalar)))
+        .field(InputValue::new("in", TypeRef::named_nn_list(scalar)))
+        .field(InputValue::new("isNull", TypeRef::named(TypeRef::BOOLEAN)))
+        .field(InputValue::new(
+            "isNotNull",
+            TypeRef::named(TypeRef::BOOLEAN),
+        ));
+    if scalar == TypeRef::INT || scalar == TypeRef::FLOAT {
+        input = input
+            .field(InputValue::new("gt", TypeRef::named(scalar)))
+            .field(InputValue::new("gte", TypeRef::named(scalar)))
+            .field(InputValue::new("lt", TypeRef::named(scalar)))
+            .field(InputValue::new("lte", TypeRef::named(scalar)));
+    }
+    if contains {
+        input = input.field(InputValue::new("contains", TypeRef::named(scalar)));
+    }
+    input
+}
+
+fn typed_filter_input_object(name: &str, fields: &[(String, String, bool)]) -> InputObject {
+    let mut input = InputObject::new(name)
+        .field(InputValue::new("field", TypeRef::named(TypeRef::STRING)))
+        .field(InputValue::new("op", TypeRef::named(TypeRef::STRING)))
+        .field(InputValue::new("value", TypeRef::named("JSON")))
+        .field(InputValue::new("and", TypeRef::named_nn_list(name)))
+        .field(InputValue::new("or", TypeRef::named_nn_list(name)))
+        .field(InputValue::new("gate", TypeRef::named(TypeRef::STRING)))
+        .field(InputValue::new("pass", TypeRef::named(TypeRef::BOOLEAN)));
+
+    for (field_name, gql_type, _) in fields {
+        input = input.field(InputValue::new(
+            field_name,
+            TypeRef::named(filter_input_name_for_type(gql_type)),
+        ));
+    }
+    input
+}
+
+fn typed_sort_field_enum(name: &str, fields: &[(String, String, bool)]) -> Enum {
+    let mut sort_enum = Enum::new(name).item("id").item("version");
+    for (field_name, _, _) in fields {
+        sort_enum = sort_enum.item(field_name);
+    }
+    sort_enum
+}
+
+fn typed_sort_input_object(name: &str, sort_field_enum: &str) -> InputObject {
+    InputObject::new(name)
+        .field(InputValue::new("field", TypeRef::named_nn(sort_field_enum)))
+        .field(InputValue::new(
+            "direction",
+            TypeRef::named(TypeRef::STRING),
+        ))
+}
+
+fn typed_entity_input_object(
+    name: &str,
+    fields: &[(String, String, bool)],
+    required_fields: bool,
+) -> InputObject {
+    let mut input = InputObject::new(name);
+    for (field_name, gql_type, required) in fields {
+        input = input.field(InputValue::new(
+            field_name,
+            input_type_ref_for_field(gql_type, required_fields && *required),
+        ));
+    }
+    input
+}
+
+fn patch_entity_input_object(name: &str) -> InputObject {
+    InputObject::new(name).field(InputValue::new("patch", TypeRef::named_nn("JSON")))
+}
+
+fn delete_entity_input_object(name: &str) -> InputObject {
+    InputObject::new(name)
+        .field(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new("version", TypeRef::named(TypeRef::INT)))
+}
+
+fn typed_entity_payload_object(
+    name: &str,
+    entity_type: &str,
+    fields: &[(String, String, bool)],
+) -> Object {
+    let mut obj = Object::new(name)
+        .field(json_object_field("entity", TypeRef::named(entity_type)))
+        .field(json_object_field("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(json_object_field(
+            "version",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "createdAt",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "updatedAt",
+            TypeRef::named(TypeRef::STRING),
+        ));
+    for (field_name, gql_type, _) in fields {
+        obj = obj.field(json_object_field(field_name, parse_type_ref(gql_type)));
+    }
+    add_entity_lifecycle_fields(obj)
+}
+
+fn delete_entity_payload_object(name: &str, entity_type: &str) -> Object {
+    Object::new(name)
+        .field(json_object_field(
+            "deleted",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(json_object_field("entity", TypeRef::named(entity_type)))
+}
+
+fn typed_entity_payload_value(entity: &Entity, schema: Option<&CollectionSchema>) -> Value {
+    let entity_json = entity_to_typed_json_with_schema(entity, schema);
+    let mut payload = entity_json.as_object().cloned().unwrap_or_default();
+    payload.insert("entity".into(), entity_json);
+    Value::Object(payload)
+}
+
+fn is_system_entity_field(field_name: &str) -> bool {
+    matches!(field_name, "id" | "version" | "createdAt" | "updatedAt")
+}
+
+fn filter_input_name_for_type(gql_type: &str) -> &'static str {
+    match gql_type.trim_end_matches('!') {
+        TypeRef::STRING | TypeRef::ID => STRING_FILTER_INPUT,
+        TypeRef::INT => INT_FILTER_INPUT,
+        TypeRef::FLOAT => FLOAT_FILTER_INPUT,
+        TypeRef::BOOLEAN => BOOLEAN_FILTER_INPUT,
+        _ => JSON_FILTER_INPUT,
+    }
+}
+
+fn input_type_ref_for_field(gql_type: &str, required: bool) -> TypeRef {
+    let base = gql_type.trim_end_matches('!');
+    if required {
+        TypeRef::named_nn(base)
+    } else {
+        TypeRef::named(base)
+    }
 }
 
 fn create_collection_input_object() -> InputObject {
@@ -408,6 +576,35 @@ fn gql_input_to_json(value: &GqlValue) -> Result<Value, GqlError> {
         .map_err(|e| GqlError::new(format!("invalid GraphQL input value: {e}")))
 }
 
+fn gql_json_or_legacy_string_arg(value: &GqlValue, name: &str) -> Result<Value, GqlError> {
+    let json = gql_input_to_json(value)?;
+    match json {
+        Value::String(input) => serde_json::from_str(&input)
+            .map_err(|e| GqlError::new(format!("invalid JSON {name}: {e}"))),
+        other => Ok(other),
+    }
+}
+
+fn mutation_data_arg(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+    input_name: &str,
+    legacy_name: &str,
+) -> Result<Value, GqlError> {
+    if let Ok(input) = ctx.args.try_get(input_name) {
+        return gql_input_to_json(input.as_value());
+    }
+    if let Ok(legacy) = ctx.args.try_get(legacy_name) {
+        return gql_json_or_legacy_string_arg(legacy.as_value(), legacy_name);
+    }
+    Err(
+        GqlError::new(format!("{input_name} or {legacy_name} is required")).extend_with(
+            |_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+            },
+        ),
+    )
+}
+
 fn parse_graphql_filter_arg(value: &GqlValue) -> Result<FilterNode, GqlError> {
     parse_graphql_filter_json(&gql_input_to_json(value)?)
 }
@@ -438,9 +635,11 @@ fn parse_graphql_filter_json(value: &Value) -> Result<FilterNode, GqlError> {
         return Ok(FilterNode::Gate(GateFilter { gate, pass }));
     }
 
-    let field = obj
-        .get("field")
-        .and_then(Value::as_str)
+    let Some(field_value) = obj.get("field") else {
+        return parse_typed_filter_fields(obj);
+    };
+    let field = field_value
+        .as_str()
         .ok_or_else(|| GqlError::new("field filters require a string field"))?
         .to_owned();
     let op = obj
@@ -467,6 +666,57 @@ fn parse_graphql_filter_json(value: &Value) -> Result<FilterNode, GqlError> {
     };
 
     Ok(FilterNode::Field(FieldFilter { field, op, value }))
+}
+
+fn parse_typed_filter_fields(obj: &serde_json::Map<String, Value>) -> Result<FilterNode, GqlError> {
+    let mut filters = Vec::new();
+    for (field, predicate) in obj {
+        if matches!(field.as_str(), "and" | "or" | "gate" | "pass") || predicate.is_null() {
+            continue;
+        }
+        let predicate = predicate
+            .as_object()
+            .ok_or_else(|| GqlError::new(format!("filter.{field} must be an object")))?;
+        for (op, value) in predicate {
+            if value.is_null() {
+                continue;
+            }
+            let filter = typed_filter_op(field, op, value)?;
+            filters.push(filter);
+        }
+    }
+
+    match filters.len() {
+        0 => Err(GqlError::new("filter must contain at least one predicate")),
+        1 => Ok(filters.remove(0)),
+        _ => Ok(FilterNode::And { filters }),
+    }
+}
+
+fn typed_filter_op(field: &str, op: &str, value: &Value) -> Result<FilterNode, GqlError> {
+    let (op, value) = match op {
+        "eq" => (FilterOp::Eq, value.clone()),
+        "ne" => (FilterOp::Ne, value.clone()),
+        "gt" => (FilterOp::Gt, value.clone()),
+        "gte" => (FilterOp::Gte, value.clone()),
+        "lt" => (FilterOp::Lt, value.clone()),
+        "lte" => (FilterOp::Lte, value.clone()),
+        "in" => (FilterOp::In, value.clone()),
+        "contains" => (FilterOp::Contains, value.clone()),
+        "isNull" if value.as_bool().unwrap_or(false) => (FilterOp::Eq, Value::Null),
+        "isNotNull" if value.as_bool().unwrap_or(false) => (FilterOp::Ne, Value::Null),
+        "isNull" | "isNotNull" => {
+            return Err(GqlError::new(format!(
+                "filter.{field}.{op} must be true when present"
+            )))
+        }
+        _ => return Err(GqlError::new(format!("unsupported filter operator '{op}'"))),
+    };
+    Ok(FilterNode::Field(FieldFilter {
+        field: field.to_string(),
+        op,
+        value,
+    }))
 }
 
 fn parse_graphql_filter_list(value: &Value, name: &str) -> Result<Vec<FilterNode>, GqlError> {
@@ -1971,10 +2221,10 @@ async fn put_schema_resolver<S: StorageAdapter + 'static>(
 /// Each collection produces:
 /// - A query field `<collection>(id: ID!): <CollectionType>`
 /// - A query field `<collection>s(limit: Int, afterId: ID): [<CollectionType>]`
-/// - A mutation field `create<Collection>(id: ID!, input: JSON!): <CollectionType>`
-/// - A mutation field `update<Collection>(id: ID!, version: Int!, input: JSON!): <CollectionType>`
-/// - A mutation field `patch<Collection>(id: ID!, version: Int!, patch: JSON!): <CollectionType>`
-/// - A mutation field `delete<Collection>(id: ID!): Boolean!`
+/// - A mutation field `create<Collection>(id: ID!, input: Create<Collection>Input): Create<Collection>Payload!`
+/// - A mutation field `update<Collection>(id: ID!, version: Int!, input: Update<Collection>Input): Update<Collection>Payload!`
+/// - A mutation field `patch<Collection>(id: ID!, version: Int!, patch: JSON): Patch<Collection>Payload!`
+/// - A mutation field `delete<Collection>(id: ID!): Delete<Collection>Payload!`
 pub fn build_schema_with_handler<S: StorageAdapter + 'static>(
     collections: &[CollectionSchema],
     handler: SharedHandler<S>,
@@ -1992,6 +2242,8 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
     let mut query = Object::new("Query");
     let mut mutation = Object::new("Mutation");
     let mut type_objects = Vec::new();
+    let mut input_objects = Vec::new();
+    let mut enum_objects = Vec::new();
 
     query = add_handler_root_query_fields(query, Arc::clone(&handler));
 
@@ -2000,9 +2252,43 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let type_name = pascal_case(collection_name);
         let edge_type_name = format!("{type_name}Edge");
         let connection_type_name = format!("{type_name}Connection");
+        let filter_input_name = format!("{type_name}Filter");
+        let sort_field_enum_name = format!("{type_name}SortField");
+        let sort_input_name = format!("{type_name}Sort");
+        let create_input_name = format!("Create{type_name}Input");
+        let update_input_name = format!("Update{type_name}Input");
+        let patch_input_name = format!("Patch{type_name}Input");
+        let delete_input_name = format!("Delete{type_name}Input");
+        let create_payload_name = format!("Create{type_name}Payload");
+        let update_payload_name = format!("Update{type_name}Payload");
+        let patch_payload_name = format!("Patch{type_name}Payload");
+        let delete_payload_name = format!("Delete{type_name}Payload");
         let get_field_name = collection_field_name(collection_name);
         let list_field_name = collection_list_field_name(collection_name);
         let fields = extract_fields(schema);
+        let data_fields: Vec<(String, String, bool)> = fields
+            .iter()
+            .filter(|(field_name, _, _)| !is_system_entity_field(field_name))
+            .cloned()
+            .collect();
+        input_objects.push(typed_filter_input_object(&filter_input_name, &fields));
+        enum_objects.push(typed_sort_field_enum(&sort_field_enum_name, &data_fields));
+        input_objects.push(typed_sort_input_object(
+            &sort_input_name,
+            &sort_field_enum_name,
+        ));
+        input_objects.push(typed_entity_input_object(
+            &create_input_name,
+            &data_fields,
+            true,
+        ));
+        input_objects.push(typed_entity_input_object(
+            &update_input_name,
+            &data_fields,
+            false,
+        ));
+        input_objects.push(patch_entity_input_object(&patch_input_name));
+        input_objects.push(delete_entity_input_object(&delete_input_name));
 
         // ── Build the GraphQL object type ────────────────────────────────
         let mut obj = Object::new(&type_name);
@@ -2028,6 +2314,25 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         type_objects.push(typed_connection_object(
             &connection_type_name,
             &edge_type_name,
+        ));
+        type_objects.push(typed_entity_payload_object(
+            &create_payload_name,
+            &type_name,
+            &data_fields,
+        ));
+        type_objects.push(typed_entity_payload_object(
+            &update_payload_name,
+            &type_name,
+            &data_fields,
+        ));
+        type_objects.push(typed_entity_payload_object(
+            &patch_payload_name,
+            &type_name,
+            &data_fields,
+        ));
+        type_objects.push(delete_entity_payload_object(
+            &delete_payload_name,
+            &type_name,
         ));
 
         // ── Query: get by ID ─────────────────────────────────────────────
@@ -2125,8 +2430,14 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         )
         .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
         .argument(InputValue::new("afterId", TypeRef::named(TypeRef::ID)))
-        .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
-        .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT)));
+        .argument(InputValue::new(
+            "filter",
+            TypeRef::named(&filter_input_name),
+        ))
+        .argument(InputValue::new(
+            "sort",
+            TypeRef::named_nn_list(&sort_input_name),
+        ));
         query = query.field(list_field);
 
         let list_connection_field_name = format!("{list_field_name}Connection");
@@ -2196,8 +2507,14 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         )
         .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
         .argument(InputValue::new("afterId", TypeRef::named(TypeRef::ID)))
-        .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
-        .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT)));
+        .argument(InputValue::new(
+            "filter",
+            TypeRef::named(&filter_input_name),
+        ))
+        .argument(InputValue::new(
+            "sort",
+            TypeRef::named_nn_list(&sort_input_name),
+        ));
         query = query.field(list_connection_field);
 
         // ── Mutation: create ─────────────────────────────────────────────
@@ -2205,10 +2522,11 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let handler_create = Arc::clone(&handler);
         let col_for_create = col_id.clone();
         let schema_for_create = schema.clone();
-        let type_name_create = type_name.clone();
+        let create_payload_name_ref = create_payload_name.clone();
+        let create_input_name_ref = create_input_name.clone();
         let create_field = Field::new(
             &create_field_name,
-            TypeRef::named(&type_name_create),
+            TypeRef::named_nn(&create_payload_name_ref),
             move |ctx| {
                 let handler = Arc::clone(&handler_create);
                 let col = col_for_create.clone();
@@ -2217,10 +2535,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                 FieldFuture::new(async move {
                     let id_str = ctx.args.try_get("id")?.string()?;
 
-                    let input_str = ctx.args.try_get("input")?.string()?;
-
-                    let data: Value = serde_json::from_str(input_str)
-                        .map_err(|e| GqlError::new(format!("invalid JSON input: {e}")))?;
+                    let data = mutation_data_arg(&ctx, "input", "legacyInput")?;
 
                     let mut guard = handler.lock().await;
                     match guard.create_entity_with_caller(
@@ -2235,17 +2550,21 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         &caller,
                         None,
                     ) {
-                        Ok(resp) => Ok(Some(entity_to_field_value_with_schema(
+                        Ok(resp) => Ok(Some(json_to_field_value(typed_entity_payload_value(
                             &resp.entity,
                             Some(&schema),
-                        ))),
+                        )))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
                 })
             },
         )
         .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
-        .argument(InputValue::new("input", TypeRef::named_nn(TypeRef::STRING)));
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named(&create_input_name_ref),
+        ))
+        .argument(InputValue::new("legacyInput", TypeRef::named("JSON")));
         mutation = mutation.field(create_field);
 
         // ── Mutation: update ─────────────────────────────────────────────
@@ -2253,10 +2572,11 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let handler_update = Arc::clone(&handler);
         let col_for_update = col_id.clone();
         let schema_for_update = schema.clone();
-        let type_name_update = type_name.clone();
+        let update_payload_name_ref = update_payload_name.clone();
+        let update_input_name_ref = update_input_name.clone();
         let update_field = Field::new(
             &update_field_name,
-            TypeRef::named(&type_name_update),
+            TypeRef::named_nn(&update_payload_name_ref),
             move |ctx| {
                 let handler = Arc::clone(&handler_update);
                 let col = col_for_update.clone();
@@ -2266,10 +2586,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                     let id_str = ctx.args.try_get("id")?.string()?;
                     let version = ctx.args.try_get("version")?.i64()? as u64;
 
-                    let input_str = ctx.args.try_get("input")?.string()?;
-
-                    let data: Value = serde_json::from_str(input_str)
-                        .map_err(|e| GqlError::new(format!("invalid JSON input: {e}")))?;
+                    let data = mutation_data_arg(&ctx, "input", "legacyInput")?;
 
                     let mut guard = handler.lock().await;
                     match guard.update_entity_with_caller(
@@ -2285,10 +2602,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         &caller,
                         None,
                     ) {
-                        Ok(resp) => Ok(Some(entity_to_field_value_with_schema(
+                        Ok(resp) => Ok(Some(json_to_field_value(typed_entity_payload_value(
                             &resp.entity,
                             Some(&schema),
-                        ))),
+                        )))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
                 })
@@ -2296,7 +2613,11 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         )
         .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
         .argument(InputValue::new("version", TypeRef::named_nn(TypeRef::INT)))
-        .argument(InputValue::new("input", TypeRef::named_nn(TypeRef::STRING)));
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named(&update_input_name_ref),
+        ))
+        .argument(InputValue::new("legacyInput", TypeRef::named("JSON")));
         mutation = mutation.field(update_field);
 
         // ── Mutation: patch ──────────────────────────────────────────────
@@ -2304,10 +2625,11 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let handler_patch = Arc::clone(&handler);
         let col_for_patch = col_id.clone();
         let schema_for_patch = schema.clone();
-        let type_name_patch = type_name.clone();
+        let patch_payload_name_ref = patch_payload_name.clone();
+        let patch_input_name_ref = patch_input_name.clone();
         let patch_field = Field::new(
             &patch_field_name,
-            TypeRef::named(&type_name_patch),
+            TypeRef::named_nn(&patch_payload_name_ref),
             move |ctx| {
                 let handler = Arc::clone(&handler_patch);
                 let col = col_for_patch.clone();
@@ -2317,10 +2639,18 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                     let id_str = ctx.args.try_get("id")?.string()?;
                     let version = ctx.args.try_get("version")?.i64()? as u64;
 
-                    let patch_str = ctx.args.try_get("patch")?.string()?;
-
-                    let patch: Value = serde_json::from_str(patch_str)
-                        .map_err(|e| GqlError::new(format!("invalid JSON patch: {e}")))?;
+                    let patch = if let Ok(input) = ctx.args.try_get("typedInput") {
+                        let input = gql_input_to_json(input.as_value())?;
+                        input
+                            .get("patch")
+                            .cloned()
+                            .ok_or_else(|| GqlError::new("typedInput.patch is required"))?
+                    } else {
+                        gql_json_or_legacy_string_arg(
+                            ctx.args.try_get("patch")?.as_value(),
+                            "patch",
+                        )?
+                    };
 
                     let mut guard = handler.lock().await;
                     match guard.patch_entity_with_caller(
@@ -2336,10 +2666,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         &caller,
                         None,
                     ) {
-                        Ok(resp) => Ok(Some(entity_to_field_value_with_schema(
+                        Ok(resp) => Ok(Some(json_to_field_value(typed_entity_payload_value(
                             &resp.entity,
                             Some(&schema),
-                        ))),
+                        )))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
                 })
@@ -2347,16 +2677,22 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         )
         .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
         .argument(InputValue::new("version", TypeRef::named_nn(TypeRef::INT)))
-        .argument(InputValue::new("patch", TypeRef::named_nn(TypeRef::STRING)));
+        .argument(InputValue::new("patch", TypeRef::named("JSON")))
+        .argument(InputValue::new(
+            "typedInput",
+            TypeRef::named(&patch_input_name_ref),
+        ));
         mutation = mutation.field(patch_field);
 
         // ── Mutation: delete ─────────────────────────────────────────────
         let delete_field_name = format!("delete{type_name}");
         let handler_delete = Arc::clone(&handler);
         let col_for_delete = col_id.clone();
+        let delete_payload_name_ref = delete_payload_name.clone();
+        let delete_input_name_ref = delete_input_name.clone();
         let delete_field = Field::new(
             &delete_field_name,
-            TypeRef::named_nn(TypeRef::BOOLEAN),
+            TypeRef::named_nn(&delete_payload_name_ref),
             move |ctx| {
                 let handler = Arc::clone(&handler_delete);
                 let col = col_for_delete.clone();
@@ -2377,13 +2713,21 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         &caller,
                         None,
                     ) {
-                        Ok(_) => Ok(Some(FieldValue::from(GqlValue::from(true)))),
+                        Ok(_) => Ok(Some(json_to_field_value(json!({
+                            "deleted": true,
+                            "id": id_str,
+                            "entity": Value::Null,
+                        })))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
                 })
             },
         )
-        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)));
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .argument(InputValue::new(
+            "typedInput",
+            TypeRef::named(&delete_input_name_ref),
+        ));
         mutation = mutation.field(delete_field);
 
         // ── Mutation: transition<Collection>Lifecycle ────────────────────
@@ -2673,6 +3017,9 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
     .register(query)
     .register(mutation);
 
+    for input in scalar_filter_input_objects() {
+        schema_builder = schema_builder.register(input);
+    }
     schema_builder = register_root_objects(schema_builder);
 
     if let Some(sub) = subscription {
@@ -2684,6 +3031,12 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
 
     for obj in type_objects {
         schema_builder = schema_builder.register(obj);
+    }
+    for input in input_objects {
+        schema_builder = schema_builder.register(input);
+    }
+    for enum_obj in enum_objects {
+        schema_builder = schema_builder.register(enum_obj);
     }
 
     let schema = schema_builder
@@ -2895,6 +3248,9 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         .register(query)
         .register(mutation);
 
+    for input in scalar_filter_input_objects() {
+        schema_builder = schema_builder.register(input);
+    }
     schema_builder = register_root_objects(schema_builder);
 
     for obj in type_objects {
@@ -3500,7 +3856,7 @@ mod tests {
         let result = schema
             .schema
             .execute(
-                r#"mutation { createTasks(id: "t1", input: "{\"title\":\"New\"}") { id version title } }"#,
+                r#"mutation { createTasks(id: "t1", input: { title: "New" }) { id version title } }"#,
             )
             .await;
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -3536,7 +3892,7 @@ mod tests {
         let result = schema
             .schema
             .execute(
-                r#"mutation { updateTasks(id: "t1", version: 1, input: "{\"title\":\"Updated\"}") { id version title } }"#,
+                r#"mutation { updateTasks(id: "t1", version: 1, input: { title: "Updated" }) { id version title } }"#,
             )
             .await;
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -3582,7 +3938,7 @@ mod tests {
         let result = schema
             .schema
             .execute(
-                r#"mutation { updateTasks(id: "t1", version: 1, input: "{\"title\":\"Stale\"}") { id version } }"#,
+                r#"mutation { updateTasks(id: "t1", version: 1, input: { title: "Stale" }) { id version } }"#,
             )
             .await;
         assert!(
@@ -3631,12 +3987,12 @@ mod tests {
 
         let result = schema
             .schema
-            .execute(r#"mutation { deleteTasks(id: "t1") }"#)
+            .execute(r#"mutation { deleteTasks(id: "t1") { deleted } }"#)
             .await;
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 
         let data = result.data.into_json().expect("json");
-        assert_eq!(data["deleteTasks"], true);
+        assert_eq!(data["deleteTasks"]["deleted"], true);
 
         // Verify the entity is gone.
         let get_result = schema.schema.execute(r#"{ tasks(id: "t1") { id } }"#).await;

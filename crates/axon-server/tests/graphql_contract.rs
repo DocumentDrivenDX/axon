@@ -96,13 +96,33 @@ async fn gql(server: &axum_test::TestServer, query: &str) -> Value {
         .json::<Value>()
 }
 
+fn graphql_input_literal(value: &Value) -> String {
+    match value {
+        Value::Object(map) => {
+            let fields = map
+                .iter()
+                .map(|(key, value)| format!("{key}: {}", graphql_input_literal(value)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{{ {fields} }}")
+        }
+        Value::Array(items) => {
+            let values = items
+                .iter()
+                .map(graphql_input_literal)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{values}]")
+        }
+        scalar => serde_json::to_string(scalar).expect("scalar JSON should serialize"),
+    }
+}
+
 async fn create_item(server: &axum_test::TestServer, id: &str, data: Value) -> Value {
+    let input = graphql_input_literal(&data);
     gql(
         server,
-        &format!(
-            r#"mutation {{ createItem(id: "{id}", input: "{}") {{ id version }} }}"#,
-            data.to_string().replace('"', "\\\"")
-        ),
+        &format!(r#"mutation {{ createItem(id: "{id}", input: {input}) {{ id version }} }}"#),
     )
     .await
 }
@@ -287,6 +307,155 @@ async fn graphql_typed_list_connection_alias_is_registered() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn graphql_generated_typed_inputs_payloads_filters_and_sorts() {
+    let server = test_server();
+    seed_constrained_collection(&server, "task").await;
+
+    let introspection = gql(
+        &server,
+        r#"{
+            __schema { types { name } }
+            createInput: __type(name: "CreateTaskInput") {
+                inputFields { name type { kind name ofType { kind name } } }
+            }
+            taskFilter: __type(name: "TaskFilter") { inputFields { name } }
+            taskSortField: __type(name: "TaskSortField") { enumValues { name } }
+            createPayload: __type(name: "CreateTaskPayload") { fields { name } }
+            updatePayload: __type(name: "UpdateTaskPayload") { fields { name } }
+            patchPayload: __type(name: "PatchTaskPayload") { fields { name } }
+            deleteInput: __type(name: "DeleteTaskInput") { inputFields { name } }
+            deletePayload: __type(name: "DeleteTaskPayload") { fields { name } }
+        }"#,
+    )
+    .await;
+    assert!(
+        introspection["errors"].is_null(),
+        "unexpected introspection errors: {introspection}"
+    );
+    let type_names: Vec<&str> = introspection["data"]["__schema"]["types"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    for expected in [
+        "TaskFilter",
+        "TaskSortField",
+        "TaskSort",
+        "CreateTaskInput",
+        "UpdateTaskInput",
+        "PatchTaskInput",
+        "DeleteTaskInput",
+        "CreateTaskPayload",
+        "UpdateTaskPayload",
+        "PatchTaskPayload",
+        "DeleteTaskPayload",
+    ] {
+        assert!(
+            type_names.contains(&expected),
+            "missing generated GraphQL type {expected}: {introspection}"
+        );
+    }
+    let create_fields = introspection["data"]["createInput"]["inputFields"]
+        .as_array()
+        .unwrap();
+    let title = create_fields
+        .iter()
+        .find(|field| field["name"] == "title")
+        .expect("title should be present in CreateTaskInput");
+    assert_eq!(
+        title["type"]["kind"], "NON_NULL",
+        "required schema fields should be non-null in create inputs"
+    );
+    assert!(
+        introspection["data"]["taskFilter"]["inputFields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["name"] == "title"),
+        "typed filters should expose schema fields"
+    );
+    assert!(
+        introspection["data"]["taskSortField"]["enumValues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["name"] == "title"),
+        "typed sort enum should expose schema fields"
+    );
+
+    let created = gql(
+        &server,
+        r#"mutation {
+            createTask(id: "typed-1", input: { title: "draft" }) {
+                id
+                title
+                entity { id title }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        created["errors"].is_null(),
+        "unexpected create errors: {created}"
+    );
+    assert_eq!(created["data"]["createTask"]["title"], "draft");
+    assert_eq!(created["data"]["createTask"]["entity"]["id"], "typed-1");
+
+    let updated = gql(
+        &server,
+        r#"mutation {
+            updateTask(id: "typed-1", version: 1, input: { title: "review" }) {
+                id
+                version
+                title
+                entity { title }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        updated["errors"].is_null(),
+        "unexpected update errors: {updated}"
+    );
+    assert_eq!(updated["data"]["updateTask"]["title"], "review");
+    assert_eq!(updated["data"]["updateTask"]["entity"]["title"], "review");
+
+    let patched = gql(
+        &server,
+        r#"mutation {
+            patchTask(id: "typed-1", version: 2, typedInput: { patch: { title: "approved" } }) {
+                id
+                version
+                title
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        patched["errors"].is_null(),
+        "unexpected patch errors: {patched}"
+    );
+    assert_eq!(patched["data"]["patchTask"]["title"], "approved");
+
+    let listed = gql(
+        &server,
+        r#"{
+            tasks(
+                filter: { title: { contains: "approv" } }
+                sort: [{ field: title, direction: "desc" }]
+            ) { id title }
+        }"#,
+    )
+    .await;
+    assert!(
+        listed["errors"].is_null(),
+        "unexpected list errors: {listed}"
+    );
+    assert_eq!(listed["data"]["tasks"][0]["id"], "typed-1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_mutation_fields_registered_per_collection() {
     let server = test_server();
     seed_collection(&server, "item").await;
@@ -399,7 +568,7 @@ async fn graphql_create_entity_returns_system_fields() {
 
     let body = gql(
         &server,
-        r#"mutation { createItem(id: "e1", input: "{\"label\":\"hello\"}") { id version } }"#,
+        r#"mutation { createItem(id: "e1", input: { label: "hello" }) { id version } }"#,
     )
     .await;
 
@@ -416,7 +585,7 @@ async fn graphql_get_entity_after_create() {
 
     gql(
         &server,
-        r#"mutation { createItem(id: "e2", input: "{\"label\":\"world\"}") { id } }"#,
+        r#"mutation { createItem(id: "e2", input: { label: "world" }) { id } }"#,
     )
     .await;
 
@@ -472,7 +641,7 @@ async fn graphql_list_entities_after_creates() {
         gql(
             &server,
             &format!(
-                r#"mutation {{ createItem(id: "li-{i:02}", input: "{{\"label\":\"L{i}\"}}") {{ id }} }}"#
+                r#"mutation {{ createItem(id: "li-{i:02}", input: {{ label: "L{i}" }}) {{ id }} }}"#
             ),
         )
         .await;
@@ -528,7 +697,7 @@ async fn graphql_list_with_limit() {
         gql(
             &server,
             &format!(
-                r#"mutation {{ createItem(id: "pg-{i:02}", input: "{{\"label\":\"P{i}\"}}") {{ id }} }}"#
+                r#"mutation {{ createItem(id: "pg-{i:02}", input: {{ label: "P{i}" }}) {{ id }} }}"#
             ),
         )
         .await;
@@ -548,7 +717,7 @@ async fn graphql_list_pagination_via_after_id() {
         gql(
             &server,
             &format!(
-                r#"mutation {{ createItem(id: "ap-{i:02}", input: "{{\"label\":\"A{i}\"}}") {{ id }} }}"#
+                r#"mutation {{ createItem(id: "ap-{i:02}", input: {{ label: "A{i}" }}) {{ id }} }}"#
             ),
         )
         .await;
@@ -685,12 +854,10 @@ async fn graphql_list_filters_and_sorts_entities() {
     ];
 
     for (id, data) in cases {
+        let input = graphql_input_literal(&data);
         let body = gql(
             &server,
-            &format!(
-                r#"mutation {{ createItem(id: "{id}", input: "{}") {{ id }} }}"#,
-                data.to_string().replace('"', "\\\"")
-            ),
+            &format!(r#"mutation {{ createItem(id: "{id}", input: {input}) {{ id }} }}"#),
         )
         .await;
         assert!(body["errors"].is_null(), "unexpected create error: {body}");
@@ -824,12 +991,10 @@ async fn graphql_list_supports_in_or_and_null_filters() {
     ];
 
     for (id, data) in cases {
+        let input = graphql_input_literal(&data);
         let body = gql(
             &server,
-            &format!(
-                r#"mutation {{ createItem(id: "{id}", input: "{}") {{ id }} }}"#,
-                data.to_string().replace('"', "\\\"")
-            ),
+            &format!(r#"mutation {{ createItem(id: "{id}", input: {input}) {{ id }} }}"#),
         )
         .await;
         assert!(body["errors"].is_null(), "unexpected create error: {body}");
@@ -945,13 +1110,13 @@ async fn graphql_update_entity_success() {
 
     gql(
         &server,
-        r#"mutation { createItem(id: "upd-1", input: "{\"label\":\"v1\"}") { id } }"#,
+        r#"mutation { createItem(id: "upd-1", input: { label: "v1" }) { id } }"#,
     )
     .await;
 
     let body = gql(
         &server,
-        r#"mutation { updateItem(id: "upd-1", version: 1, input: "{\"label\":\"v2\"}") { id version label } }"#,
+        r#"mutation { updateItem(id: "upd-1", version: 1, input: { label: "v2" }) { id version label } }"#,
     )
     .await;
 
@@ -969,14 +1134,14 @@ async fn graphql_update_version_conflict_error_code() {
 
     gql(
         &server,
-        r#"mutation { createItem(id: "occ-1", input: "{\"label\":\"v1\"}") { id } }"#,
+        r#"mutation { createItem(id: "occ-1", input: { label: "v1" }) { id } }"#,
     )
     .await;
 
     // Submit with wrong expected version (99 instead of 1).
     let body = gql(
         &server,
-        r#"mutation { updateItem(id: "occ-1", version: 99, input: "{\"label\":\"v2\"}") { id } }"#,
+        r#"mutation { updateItem(id: "occ-1", version: 99, input: { label: "v2" }) { id } }"#,
     )
     .await;
 
@@ -998,7 +1163,7 @@ async fn graphql_patch_entity_success() {
 
     gql(
         &server,
-        r#"mutation { createItem(id: "pat-1", input: "{\"label\":\"original\"}") { id } }"#,
+        r#"mutation { createItem(id: "pat-1", input: { label: "original" }) { id } }"#,
     )
     .await;
 
@@ -1022,7 +1187,7 @@ async fn graphql_patch_version_conflict_error_code() {
 
     gql(
         &server,
-        r#"mutation { createItem(id: "poc-1", input: "{\"label\":\"v1\"}") { id } }"#,
+        r#"mutation { createItem(id: "poc-1", input: { label: "v1" }) { id } }"#,
     )
     .await;
 
@@ -1050,15 +1215,19 @@ async fn graphql_delete_entity_returns_true() {
 
     gql(
         &server,
-        r#"mutation { createItem(id: "del-1", input: "{\"label\":\"bye\"}") { id } }"#,
+        r#"mutation { createItem(id: "del-1", input: { label: "bye" }) { id } }"#,
     )
     .await;
 
-    let body = gql(&server, r#"mutation { deleteItem(id: "del-1") }"#).await;
+    let body = gql(
+        &server,
+        r#"mutation { deleteItem(id: "del-1") { deleted } }"#,
+    )
+    .await;
 
     assert!(body["errors"].is_null(), "unexpected errors: {body}");
     assert_eq!(
-        body["data"]["deleteItem"], true,
+        body["data"]["deleteItem"]["deleted"], true,
         "delete should return true: {body}"
     );
 }
@@ -1070,10 +1239,14 @@ async fn graphql_get_after_delete_returns_null() {
 
     gql(
         &server,
-        r#"mutation { createItem(id: "del-2", input: "{\"label\":\"gone\"}") { id } }"#,
+        r#"mutation { createItem(id: "del-2", input: { label: "gone" }) { id } }"#,
     )
     .await;
-    gql(&server, r#"mutation { deleteItem(id: "del-2") }"#).await;
+    gql(
+        &server,
+        r#"mutation { deleteItem(id: "del-2") { deleted } }"#,
+    )
+    .await;
 
     let body = gql(&server, r#"{ item(id: "del-2") { id } }"#).await;
 
@@ -1098,7 +1271,7 @@ async fn graphql_schema_validation_error() {
     // Submit a title that is too short (2 chars → fails minLength: 3).
     let body = gql(
         &server,
-        r#"mutation { createItem(id: "bad-1", input: "{\"title\":\"ab\"}") { id } }"#,
+        r#"mutation { createItem(id: "bad-1", input: { title: "ab" }) { id } }"#,
     )
     .await;
 
@@ -1122,7 +1295,7 @@ async fn graphql_invalid_json_input_returns_error() {
     // The `input` argument must be valid JSON — pass a broken string.
     let body = gql(
         &server,
-        r#"mutation { createItem(id: "bad-json", input: "not{{json") { id } }"#,
+        r#"mutation { createItem(id: "bad-json", legacyInput: "not{{json") { id } }"#,
     )
     .await;
 

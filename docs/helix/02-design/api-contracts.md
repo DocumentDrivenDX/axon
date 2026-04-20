@@ -325,21 +325,25 @@ Generic GraphQL root queries are the preferred browser contract:
 }
 ```
 
-Generated typed fields remain available for ergonomic collection-specific
-queries. Compatibility list fields return arrays; the Relay-style aliases append
-`Connection`:
+Generated typed fields are available for ergonomic collection-specific queries.
+Each collection exposes typed filter and sort inputs: `<Type>Filter`,
+`<Type>SortField`, and `<Type>Sort`. Field filters use scalar operator inputs
+such as `AxonStringFilterInput` and `AxonIntFilterInput`; the legacy
+`field/op/value` form remains accepted inside typed filters during the
+compatibility window. Compatibility list fields return arrays; the Relay-style
+aliases append `Connection`:
 
 ```graphql
 {
   items(
     filter: {
       and: [
-        { field: "status", op: "eq", value: "approved" }
-        { field: "week", op: "eq", value: "2026-W16" }
-        { field: "hours", op: "gte", value: 4.0 }
+        { status: { eq: "approved" } }
+        { week: { eq: "2026-W16" } }
+        { hours: { gte: 4.0 } }
       ]
     }
-    sort: [{ field: "hours", direction: "desc" }]
+    sort: [{ field: hours, direction: "desc" }]
     limit: 50
   ) {
     id
@@ -357,8 +361,49 @@ queries. Compatibility list fields return arrays; the Relay-style aliases append
 ```
 
 Supported GraphQL operators are `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `in`,
-`contains`, `is_null`, and `is_not_null`. Use `and` and `or` for boolean
-composition.
+`contains`, `isNull`, and `isNotNull`. Use `and` and `or` for boolean
+composition. String and JSON fields support `contains`; numeric fields support
+ordering operators.
+
+Generated mutations expose typed input and payload types for each collection:
+`Create<Type>Input/Payload`, `Update<Type>Input/Payload`,
+`Patch<Type>Input/Payload`, and `Delete<Type>Input/Payload`. Required JSON
+Schema fields become non-null in `Create<Type>Input` when GraphQL can represent
+the field as a scalar; nested objects and arrays fall back to `JSON`. For
+compatibility, create and update mutations retain an explicit `legacyInput:
+JSON` argument for old JSON-string callers; new callers should use the
+generated `input` object so invalid fields and scalar mismatches are rejected by
+GraphQL validation:
+
+```graphql
+mutation {
+  createTimeEntries(id: "time-123", input: {
+    status: "draft"
+    hours: 2.5
+  }) {
+    id
+    version
+    status
+    entity { id status hours }
+  }
+
+  patchTimeEntries(id: "time-123", version: 1, typedInput: {
+    patch: { status: "submitted" }
+  }) {
+    id
+    version
+    status
+  }
+
+  deleteTimeEntries(id: "time-123") {
+    deleted
+    id
+  }
+}
+```
+
+Patch remains JSON because RFC 7396 null-removal semantics require preserving
+the difference between omitted fields and explicit `null`.
 
 Collection-to-GraphQL naming is deterministic:
 
