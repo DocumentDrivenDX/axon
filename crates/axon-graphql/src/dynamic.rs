@@ -4976,6 +4976,146 @@ mod tests {
         }
     }
 
+    async fn wait_for_receivers(broker: &crate::subscriptions::BroadcastBroker, count: usize) {
+        for _ in 0..50 {
+            if broker.receiver_count() >= count {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!(
+            "expected at least {count} subscription receiver(s), got {}",
+            broker.receiver_count()
+        );
+    }
+
+    fn subscription_test_event(id: &str, status: &str) -> crate::subscriptions::ChangeEvent {
+        crate::subscriptions::ChangeEvent {
+            audit_id: format!("audit-{id}"),
+            collection: "tasks".into(),
+            entity_id: id.into(),
+            operation: "update".into(),
+            data: Some(json!({"title": id, "status": status, "priority": 3})),
+            previous_data: Some(json!({"title": id, "status": "draft", "priority": 2})),
+            version: 2,
+            previous_version: Some(1),
+            timestamp_ms: 1234,
+            actor: "tester".into(),
+        }
+    }
+
+    fn response_data(response: async_graphql::Response) -> Value {
+        assert!(
+            response.errors.is_empty(),
+            "unexpected subscription errors: {:?}",
+            response.errors
+        );
+        response.data.into_json().expect("response data is JSON")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscription_stream_filters_delivery_with_filter_node_semantics() {
+        let ts = test_schema();
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let schema =
+            build_schema_with_handler_and_broker(&[ts], Arc::clone(&handler), Some(broker.clone()))
+                .expect("schema with broker should build");
+
+        let mut stream = schema.schema.execute_stream(async_graphql::Request::new(
+            r#"subscription {
+                tasksChanged(filter: { field: "status", op: "eq", value: "open" }) {
+                    auditId
+                    entityId
+                    operation
+                    mutation
+                    data
+                    previousData
+                    version
+                    previousVersion
+                    timestampMs
+                    actor
+                }
+            }"#,
+        ));
+
+        let publish = async {
+            wait_for_receivers(&broker, 1).await;
+            let _ = broker.publish(subscription_test_event("closed-task", "closed"));
+            let _ = broker.publish(subscription_test_event("open-task", "open"));
+        };
+        let receive = async {
+            tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+                .await
+                .expect("filtered subscription receives a matching event")
+                .expect("subscription stream yields a response")
+        };
+        let (response, _) = tokio::join!(receive, publish);
+        let data = response_data(response);
+        let event = &data["tasksChanged"];
+
+        assert_eq!(event["auditId"], "audit-open-task");
+        assert_eq!(event["entityId"], "open-task");
+        assert_eq!(event["operation"], "update");
+        assert_eq!(event["mutation"], "update");
+        assert_eq!(event["data"]["status"], "open");
+        assert_eq!(event["previousData"]["status"], "draft");
+        assert_eq!(event["version"], 2);
+        assert_eq!(event["previousVersion"], 1);
+        assert_eq!(event["timestampMs"], 1234);
+        assert_eq!(event["actor"], "tester");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscription_stream_delivers_to_generic_and_collection_subscribers() {
+        let ts = test_schema();
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let schema =
+            build_schema_with_handler_and_broker(&[ts], Arc::clone(&handler), Some(broker.clone()))
+                .expect("schema with broker should build");
+
+        let mut generic_stream = schema.schema.execute_stream(async_graphql::Request::new(
+            r#"subscription {
+                entityChanged(collection: "tasks") { entityId collection auditId }
+            }"#,
+        ));
+        let mut collection_stream = schema.schema.execute_stream(async_graphql::Request::new(
+            r#"subscription {
+                tasksChanged { entityId collection auditId }
+            }"#,
+        ));
+
+        let publish = async {
+            wait_for_receivers(&broker, 2).await;
+            let _ = broker.publish(subscription_test_event("fanout-task", "open"));
+        };
+        let receive_generic = async {
+            tokio::time::timeout(std::time::Duration::from_secs(1), generic_stream.next())
+                .await
+                .expect("generic subscriber receives event")
+                .expect("generic stream yields a response")
+        };
+        let receive_collection = async {
+            tokio::time::timeout(std::time::Duration::from_secs(1), collection_stream.next())
+                .await
+                .expect("collection subscriber receives event")
+                .expect("collection stream yields a response")
+        };
+
+        let (generic_response, collection_response, _) =
+            tokio::join!(receive_generic, receive_collection, publish);
+        let generic = response_data(generic_response);
+        let collection = response_data(collection_response);
+
+        assert_eq!(generic["entityChanged"]["entityId"], "fanout-task");
+        assert_eq!(generic["entityChanged"]["collection"], "tasks");
+        assert_eq!(generic["entityChanged"]["auditId"], "audit-fanout-task");
+        assert_eq!(collection["tasksChanged"]["entityId"], "fanout-task");
+        assert_eq!(collection["tasksChanged"]["collection"], "tasks");
+        assert_eq!(collection["tasksChanged"]["auditId"], "audit-fanout-task");
+    }
+
     #[test]
     fn subscription_filter_matches_filter_node_semantics() {
         let event = crate::subscriptions::ChangeEvent {
