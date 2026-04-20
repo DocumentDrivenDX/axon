@@ -1919,6 +1919,7 @@ mod tests {
     use axum_test::TestServer;
     use serde_json::Value;
     use std::net::SocketAddr;
+    use std::path::{Path, PathBuf};
 
     fn test_control_plane_server_with_dir(tmp: &tempfile::TempDir) -> TestServer {
         let cp_db = ControlPlaneDb::open_in_memory().expect("open in-memory control-plane db");
@@ -1929,6 +1930,30 @@ mod tests {
             CorsStore::default(),
         );
         build_test_server(state)
+    }
+
+    fn test_control_plane_server_with_sqlite_control(
+        tmp: &tempfile::TempDir,
+    ) -> (TestServer, PathBuf) {
+        let control_path = tmp.path().join("control-plane.db");
+        let control_path_str = control_path.to_string_lossy().to_string();
+        let cp_db = ControlPlaneDb::open(&control_path_str).expect("open control-plane db");
+        let adapter = axon_storage::SqliteStorageAdapter::open(&control_path_str)
+            .expect("open storage adapter for control-plane db");
+        adapter
+            .apply_auth_migrations()
+            .expect("apply auth migrations");
+        let storage: Arc<std::sync::Mutex<Box<dyn axon_storage::StorageAdapter + Send + Sync>>> =
+            Arc::new(std::sync::Mutex::new(Box::new(adapter)));
+        let state = ControlPlaneState::new(
+            Arc::new(Mutex::new(cp_db)),
+            tmp.path().to_path_buf(),
+            UserRoleStore::default(),
+            CorsStore::default(),
+        )
+        .with_storage(storage);
+
+        (build_test_server(state), control_path)
     }
 
     fn build_test_server(state: ControlPlaneState) -> TestServer {
@@ -1957,6 +1982,122 @@ mod tests {
             body["id"].as_str().unwrap().to_string(),
             body["db_name"].as_str().unwrap().to_string(),
         )
+    }
+
+    async fn insert_tenant_delete_artifacts(control_path: &Path, tenant_id: &str) -> String {
+        let url = format!("sqlite:{}?mode=rwc", control_path.display());
+        let pool = sqlx::SqlitePool::connect(&url)
+            .await
+            .expect("connect control-plane sqlite");
+        let user_id = format!("user-{tenant_id}");
+        let jti = format!("jti-{tenant_id}");
+
+        sqlx::query(
+            "INSERT INTO users (id, display_name, email, created_at_ms, suspended_at_ms)
+             VALUES (?1, ?2, ?3, ?4, NULL)",
+        )
+        .bind(&user_id)
+        .bind("Test User")
+        .bind("test@example.com")
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("insert user");
+
+        sqlx::query(
+            "INSERT INTO tenant_databases (tenant_id, database_name, created_at_ms)
+             VALUES (?1, ?2, ?3)",
+        )
+        .bind(tenant_id)
+        .bind("reports")
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("insert tenant database");
+
+        sqlx::query(
+            "INSERT INTO tenant_users (tenant_id, user_id, role, added_at_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(tenant_id)
+        .bind(&user_id)
+        .bind("admin")
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("insert tenant member");
+
+        sqlx::query(
+            "INSERT INTO tenant_retention_policies
+             (tenant_id, archive_after_seconds, purge_after_seconds, updated_at_ms)
+             VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(tenant_id)
+        .bind(3600_i64)
+        .bind(7200_i64)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("insert tenant retention policy");
+
+        sqlx::query(
+            "INSERT INTO credential_issuances
+             (jti, user_id, tenant_id, issued_at_ms, expires_at_ms, grants_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(&jti)
+        .bind(&user_id)
+        .bind(tenant_id)
+        .bind(1_i64)
+        .bind(7200_i64)
+        .bind(r#"{"databases":[]}"#)
+        .execute(&pool)
+        .await
+        .expect("insert credential issuance");
+
+        sqlx::query(
+            "INSERT INTO credential_revocations (jti, revoked_at_ms, revoked_by)
+             VALUES (?1, ?2, ?3)",
+        )
+        .bind(&jti)
+        .bind(2_i64)
+        .bind("test")
+        .execute(&pool)
+        .await
+        .expect("insert credential revocation");
+
+        jti
+    }
+
+    async fn assert_tenant_delete_artifacts_removed(
+        control_path: &Path,
+        tenant_id: &str,
+        jti: &str,
+    ) {
+        let url = format!("sqlite:{}?mode=rwc", control_path.display());
+        let pool = sqlx::SqlitePool::connect(&url)
+            .await
+            .expect("connect control-plane sqlite");
+
+        for (table, column, value) in [
+            ("tenants", "id", tenant_id),
+            ("tenant_databases", "tenant_id", tenant_id),
+            ("tenant_users", "tenant_id", tenant_id),
+            ("tenant_retention_policies", "tenant_id", tenant_id),
+            ("credential_issuances", "tenant_id", tenant_id),
+            ("credential_revocations", "jti", jti),
+        ] {
+            let sql = format!("SELECT COUNT(*) AS count FROM {table} WHERE {column} = ?1");
+            let count: i64 = sqlx::query_scalar(&sql)
+                .bind(value)
+                .fetch_one(&pool)
+                .await
+                .expect("count rows");
+            assert_eq!(
+                count, 0,
+                "{table} should not retain rows for deleted tenant"
+            );
+        }
     }
 
     // -- name_to_db_slug -------------------------------------------------------
@@ -2107,6 +2248,45 @@ mod tests {
             .assert_status(StatusCode::OK);
 
         assert!(!db_path.exists(), "db file should be removed after delete");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn rest_delete_tenant_removes_control_plane_child_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (server, control_path) = test_control_plane_server_with_sqlite_control(&tmp);
+        let (id, _) = create_test_tenant(&server, "artifacts-rest").await;
+        let jti = insert_tenant_delete_artifacts(&control_path, &id).await;
+
+        let resp = server.delete(&format!("/control/tenants/{id}")).await;
+        resp.assert_status(StatusCode::OK);
+
+        assert_tenant_delete_artifacts_removed(&control_path, &id, &jti).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn graphql_delete_tenant_removes_control_plane_child_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (server, control_path) = test_control_plane_server_with_sqlite_control(&tmp);
+        let (id, _) = create_test_tenant(&server, "artifacts-graphql").await;
+        let jti = insert_tenant_delete_artifacts(&control_path, &id).await;
+
+        let resp = server
+            .post("/control/graphql")
+            .json(&json!({
+                "query": "mutation($id: String!) { deleteTenant(id: $id) { deleted tenantId } }",
+                "variables": { "id": id },
+            }))
+            .await;
+        resp.assert_status(StatusCode::OK);
+        let body: Value = resp.json();
+        assert!(
+            body.get("errors").is_none(),
+            "GraphQL deleteTenant returned errors: {body}"
+        );
+        assert_eq!(body["data"]["deleteTenant"]["deleted"], true);
+        assert_eq!(body["data"]["deleteTenant"]["tenantId"], id);
+
+        assert_tenant_delete_artifacts_removed(&control_path, &id, &jti).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]

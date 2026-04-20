@@ -63,6 +63,22 @@ impl ControlPlaneDb {
         Self::run_on(self.rt.as_ref(), fut).map_err(|e| e.to_string())
     }
 
+    fn table_exists(&self, table_name: &str) -> Result<bool, AxonError> {
+        let row = self
+            .block_on(
+                sqlx::query(
+                    "SELECT 1 FROM sqlite_master
+                     WHERE type = 'table' AND name = ?
+                     LIMIT 1",
+                )
+                .bind(table_name)
+                .fetch_optional(&self.pool),
+            )
+            .map_err(AxonError::Storage)?;
+
+        Ok(row.is_some())
+    }
+
     /// Open (or create) a control-plane database at the given file path.
     pub fn open(path: &str) -> Result<Self, AxonError> {
         // If we're outside an async context, create a runtime to own.
@@ -284,6 +300,57 @@ impl ControlPlaneDb {
     /// tenant does not exist.
     pub fn delete_tenant(&self, tenant_id: &str) -> Result<String, AxonError> {
         let tenant = self.get_tenant(tenant_id)?;
+
+        let has_credential_issuances = self.table_exists("credential_issuances")?;
+        if self.table_exists("credential_revocations")? && has_credential_issuances {
+            self.block_on(
+                sqlx::query(
+                    "DELETE FROM credential_revocations
+                     WHERE jti IN (
+                         SELECT jti FROM credential_issuances WHERE tenant_id = ?
+                     )",
+                )
+                .bind(tenant_id)
+                .execute(&self.pool),
+            )
+            .map_err(AxonError::Storage)?;
+        }
+
+        if has_credential_issuances {
+            self.block_on(
+                sqlx::query("DELETE FROM credential_issuances WHERE tenant_id = ?")
+                    .bind(tenant_id)
+                    .execute(&self.pool),
+            )
+            .map_err(AxonError::Storage)?;
+        }
+
+        if self.table_exists("tenant_retention_policies")? {
+            self.block_on(
+                sqlx::query("DELETE FROM tenant_retention_policies WHERE tenant_id = ?")
+                    .bind(tenant_id)
+                    .execute(&self.pool),
+            )
+            .map_err(AxonError::Storage)?;
+        }
+
+        if self.table_exists("tenant_databases")? {
+            self.block_on(
+                sqlx::query("DELETE FROM tenant_databases WHERE tenant_id = ?")
+                    .bind(tenant_id)
+                    .execute(&self.pool),
+            )
+            .map_err(AxonError::Storage)?;
+        }
+
+        if self.table_exists("tenant_users")? {
+            self.block_on(
+                sqlx::query("DELETE FROM tenant_users WHERE tenant_id = ?")
+                    .bind(tenant_id)
+                    .execute(&self.pool),
+            )
+            .map_err(AxonError::Storage)?;
+        }
 
         self.block_on(
             sqlx::query("DELETE FROM tenants WHERE id = ?")
