@@ -1034,6 +1034,38 @@ export async function traverseLinks(
 }
 
 export async function createLink(body: Link, scope?: Scope): Promise<Link> {
+	if (scope) {
+		await graphqlRequest<{ createLink: boolean }>(
+			scope,
+			`mutation AxonUiCreateLink(
+				$sourceCollection: String!
+				$sourceId: ID!
+				$targetCollection: String!
+				$targetId: ID!
+				$linkType: String!
+				$metadata: String
+			) {
+				createLink(
+					sourceCollection: $sourceCollection
+					sourceId: $sourceId
+					targetCollection: $targetCollection
+					targetId: $targetId
+					linkType: $linkType
+					metadata: $metadata
+				)
+			}`,
+			{
+				sourceCollection: body.source_collection,
+				sourceId: body.source_id,
+				targetCollection: body.target_collection,
+				targetId: body.target_id,
+				linkType: body.link_type,
+				metadata: body.metadata ? JSON.stringify(body.metadata) : null,
+			},
+		);
+		return body;
+	}
+
 	const response = await request<{ link: Link }>(
 		'/links',
 		{
@@ -1046,6 +1078,35 @@ export async function createLink(body: Link, scope?: Scope): Promise<Link> {
 }
 
 export async function deleteLink(body: Omit<Link, 'metadata'>, scope?: Scope): Promise<void> {
+	if (scope) {
+		await graphqlRequest<{ deleteLink: boolean }>(
+			scope,
+			`mutation AxonUiDeleteLink(
+				$sourceCollection: String!
+				$sourceId: ID!
+				$targetCollection: String!
+				$targetId: ID!
+				$linkType: String!
+			) {
+				deleteLink(
+					sourceCollection: $sourceCollection
+					sourceId: $sourceId
+					targetCollection: $targetCollection
+					targetId: $targetId
+					linkType: $linkType
+				)
+			}`,
+			{
+				sourceCollection: body.source_collection,
+				sourceId: body.source_id,
+				targetCollection: body.target_collection,
+				targetId: body.target_id,
+				linkType: body.link_type,
+			},
+		);
+		return;
+	}
+
 	await request<void>(
 		'/links',
 		{

@@ -3,7 +3,9 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import {
 	createCollection,
 	createEntity,
+	createLink,
 	deleteEntity,
+	deleteLink,
 	dropCollection,
 	fetchAudit,
 	fetchCollection,
@@ -484,6 +486,59 @@ test('deleteEntity() reads version then deletes through tenant-scoped GraphQL co
 				},
 			},
 		],
+	});
+});
+
+test('createLink() uses tenant-scoped GraphQL createLink mutation', async () => {
+	mockFetch({ data: { createLink: true } });
+
+	const link = {
+		source_collection: 'users',
+		source_id: 'u1',
+		target_collection: 'tasks',
+		target_id: 't1',
+		link_type: 'assigned-to',
+		metadata: { role: 'owner' },
+	};
+	const result = await createLink(link, { tenant: 'acme', database: 'orders' });
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('createLink');
+	expect(body.variables).toEqual({
+		sourceCollection: 'users',
+		sourceId: 'u1',
+		targetCollection: 'tasks',
+		targetId: 't1',
+		linkType: 'assigned-to',
+		metadata: JSON.stringify({ role: 'owner' }),
+	});
+	expect(result).toEqual(link);
+});
+
+test('deleteLink() uses tenant-scoped GraphQL deleteLink mutation', async () => {
+	mockFetch({ data: { deleteLink: true } });
+
+	await deleteLink(
+		{
+			source_collection: 'users',
+			source_id: 'u1',
+			target_collection: 'tasks',
+			target_id: 't1',
+			link_type: 'assigned-to',
+		},
+		{ tenant: 'acme', database: 'orders' },
+	);
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('deleteLink');
+	expect(body.variables).toEqual({
+		sourceCollection: 'users',
+		sourceId: 'u1',
+		targetCollection: 'tasks',
+		targetId: 't1',
+		linkType: 'assigned-to',
 	});
 });
 
