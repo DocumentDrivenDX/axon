@@ -160,6 +160,16 @@ type GraphQLPutSchemaPayload = {
 	dryRun: boolean;
 };
 
+type GraphQLTransactionPayload = {
+	results: Array<{
+		index: number;
+		success: boolean;
+		collection: string;
+		id: string;
+		entity: GraphQLEntity | null;
+	}>;
+};
+
 type AuditFilters = {
 	collection?: string;
 	actor?: string;
@@ -256,6 +266,34 @@ function entityFromGraphql(entity: GraphQLEntity): EntityRecord {
 		version: entity.version,
 		data: entity.data ?? {},
 	};
+}
+
+async function commitSingleEntityOperation(
+	scope: ScopedTenantDatabase,
+	operation: Record<string, unknown>,
+): Promise<GraphQLEntity | null> {
+	const data = await graphqlRequest<{ commitTransaction: GraphQLTransactionPayload }>(
+		scope,
+		`mutation AxonUiCommitEntityOperation($operations: [TransactionOperationInput!]!) {
+			commitTransaction(input: { operations: $operations }) {
+				results {
+					index
+					success
+					collection
+					id
+					entity {
+						collection
+						id
+						version
+						data
+					}
+				}
+			}
+		}`,
+		{ operations: [operation] },
+	);
+
+	return data.commitTransaction.results[0]?.entity ?? null;
 }
 
 export async function fetchCollections(scope?: Scope): Promise<CollectionSummary[]> {
@@ -395,6 +433,16 @@ export async function createEntity(
 	data: Record<string, unknown>,
 	scope?: Scope,
 ): Promise<EntityRecord> {
+	if (scope) {
+		const entity = await commitSingleEntityOperation(scope, {
+			createEntity: { collection, id, data },
+		});
+		if (!entity) {
+			throw new Error(`GraphQL create did not return entity: ${collection}/${id}`);
+		}
+		return entityFromGraphql(entity);
+	}
+
 	const response = await request<{ entity: EntityRecord }>(
 		`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
 		{
@@ -413,6 +461,21 @@ export async function updateEntity(
 	expectedVersion: number,
 	scope?: Scope,
 ): Promise<EntityRecord> {
+	if (scope) {
+		const entity = await commitSingleEntityOperation(scope, {
+			updateEntity: {
+				collection,
+				id,
+				expectedVersion,
+				data,
+			},
+		});
+		if (!entity) {
+			throw new Error(`GraphQL update did not return entity: ${collection}/${id}`);
+		}
+		return entityFromGraphql(entity);
+	}
+
 	const response = await request<{ entity: EntityRecord }>(
 		`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
 		{
@@ -646,6 +709,18 @@ export async function dropCollection(name: string, scope?: Scope): Promise<void>
 }
 
 export async function deleteEntity(collection: string, id: string, scope?: Scope): Promise<void> {
+	if (scope) {
+		const existing = await fetchEntity(collection, id, scope);
+		await commitSingleEntityOperation(scope, {
+			deleteEntity: {
+				collection,
+				id,
+				expectedVersion: existing.version,
+			},
+		});
+		return;
+	}
+
 	await request<void>(
 		`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
 		{

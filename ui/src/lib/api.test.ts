@@ -2,6 +2,8 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 
 import {
 	createCollection,
+	createEntity,
+	deleteEntity,
 	dropCollection,
 	fetchAudit,
 	fetchCollection,
@@ -13,6 +15,7 @@ import {
 	listCredentials,
 	previewSchemaChange,
 	revokeCredential,
+	updateEntity,
 	updateSchema,
 } from './api';
 
@@ -24,10 +27,12 @@ type CapturedRequest = {
 };
 
 let lastRequest: CapturedRequest | null = null;
+let requests: CapturedRequest[] = [];
 
 function mockFetch(body: unknown, status = 200) {
 	const handler = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 		lastRequest = { url: String(input), init };
+		requests.push(lastRequest);
 		return new Response(JSON.stringify(body), {
 			status,
 			headers: { 'Content-Type': 'application/json' },
@@ -36,8 +41,24 @@ function mockFetch(body: unknown, status = 200) {
 	globalThis.fetch = handler as unknown as typeof globalThis.fetch;
 }
 
+function mockFetchSequence(bodies: unknown[]) {
+	let index = 0;
+	const handler = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+		lastRequest = { url: String(input), init };
+		requests.push(lastRequest);
+		const body = bodies[index] ?? bodies[bodies.length - 1];
+		index += 1;
+		return new Response(JSON.stringify(body), {
+			status: 200,
+			headers: { 'Content-Type': 'application/json' },
+		});
+	};
+	globalThis.fetch = handler as unknown as typeof globalThis.fetch;
+}
+
 beforeEach(() => {
 	lastRequest = null;
+	requests = [];
 });
 
 afterEach(() => {
@@ -327,6 +348,143 @@ test('dropCollection() uses tenant-scoped GraphQL dropCollection mutation', asyn
 	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
 	expect(body.query).toContain('dropCollection');
 	expect(body.variables).toEqual({ name: 'tasks' });
+});
+
+test('createEntity() uses tenant-scoped GraphQL commitTransaction mutation', async () => {
+	mockFetch({
+		data: {
+			commitTransaction: {
+				results: [
+					{
+						index: 0,
+						success: true,
+						collection: 'tasks',
+						id: 'task-1',
+						entity: {
+							collection: 'tasks',
+							id: 'task-1',
+							version: 1,
+							data: { title: 'one' },
+						},
+					},
+				],
+			},
+		},
+	});
+
+	const result = await createEntity(
+		'tasks',
+		'task-1',
+		{ title: 'one' },
+		{ tenant: 'acme', database: 'orders' },
+	);
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('commitTransaction');
+	expect(body.variables).toEqual({
+		operations: [{ createEntity: { collection: 'tasks', id: 'task-1', data: { title: 'one' } } }],
+	});
+	expect(result).toEqual({
+		collection: 'tasks',
+		id: 'task-1',
+		version: 1,
+		data: { title: 'one' },
+	});
+});
+
+test('updateEntity() uses tenant-scoped GraphQL commitTransaction mutation', async () => {
+	mockFetch({
+		data: {
+			commitTransaction: {
+				results: [
+					{
+						index: 0,
+						success: true,
+						collection: 'tasks',
+						id: 'task-1',
+						entity: {
+							collection: 'tasks',
+							id: 'task-1',
+							version: 2,
+							data: { title: 'two' },
+						},
+					},
+				],
+			},
+		},
+	});
+
+	const result = await updateEntity('tasks', 'task-1', { title: 'two' }, 1, {
+		tenant: 'acme',
+		database: 'orders',
+	});
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.variables).toEqual({
+		operations: [
+			{
+				updateEntity: {
+					collection: 'tasks',
+					id: 'task-1',
+					expectedVersion: 1,
+					data: { title: 'two' },
+				},
+			},
+		],
+	});
+	expect(result.version).toBe(2);
+});
+
+test('deleteEntity() reads version then deletes through tenant-scoped GraphQL commitTransaction', async () => {
+	mockFetchSequence([
+		{
+			data: {
+				entity: {
+					collection: 'tasks',
+					id: 'task-1',
+					version: 3,
+					data: { title: 'old' },
+				},
+			},
+		},
+		{
+			data: {
+				commitTransaction: {
+					results: [
+						{
+							index: 0,
+							success: true,
+							collection: 'tasks',
+							id: 'task-1',
+							entity: null,
+						},
+					],
+				},
+			},
+		},
+	]);
+
+	await deleteEntity('tasks', 'task-1', { tenant: 'acme', database: 'orders' });
+
+	expect(requests).toHaveLength(2);
+	const getBody = JSON.parse(String(requests[0]?.init?.body));
+	const deleteBody = JSON.parse(String(requests[1]?.init?.body));
+	expect(requests[0]?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(getBody.query).toContain('entity(collection: $collection');
+	expect(requests[1]?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(deleteBody.variables).toEqual({
+		operations: [
+			{
+				deleteEntity: {
+					collection: 'tasks',
+					id: 'task-1',
+					expectedVersion: 3,
+				},
+			},
+		],
+	});
 });
 
 // ── Credential API helpers ────────────────────────────────────────────────────
