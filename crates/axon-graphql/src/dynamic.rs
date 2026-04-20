@@ -8,7 +8,7 @@
 //! plain [`build_schema`] function builds a stub schema (useful for SDL
 //! inspection and tests).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -56,6 +56,8 @@ const INT_FILTER_INPUT: &str = "AxonIntFilterInput";
 const FLOAT_FILTER_INPUT: &str = "AxonFloatFilterInput";
 const BOOLEAN_FILTER_INPUT: &str = "AxonBooleanFilterInput";
 const JSON_FILTER_INPUT: &str = "AxonJsonFilterInput";
+const AGGREGATE_FUNCTION_ENUM: &str = "AxonAggregateFunction";
+const AGGREGATE_VALUE_TYPE: &str = "AxonAggregateValue";
 const ENTITY_TYPE: &str = "Entity";
 const ENTITY_EDGE_TYPE: &str = "EntityEdge";
 const ENTITY_CONNECTION_TYPE: &str = "EntityConnection";
@@ -321,6 +323,58 @@ fn typed_sort_input_object(name: &str, sort_field_enum: &str) -> InputObject {
         .field(InputValue::new(
             "direction",
             TypeRef::named(TypeRef::STRING),
+        ))
+}
+
+fn aggregate_function_enum() -> Enum {
+    Enum::new(AGGREGATE_FUNCTION_ENUM)
+        .item("COUNT")
+        .item("SUM")
+        .item("AVG")
+        .item("MIN")
+        .item("MAX")
+}
+
+fn aggregate_input_object(name: &str, field_enum: &str) -> InputObject {
+    InputObject::new(name)
+        .field(InputValue::new(
+            "function",
+            TypeRef::named_nn(AGGREGATE_FUNCTION_ENUM),
+        ))
+        .field(InputValue::new("field", TypeRef::named(field_enum)))
+}
+
+fn aggregate_value_object() -> Object {
+    Object::new(AGGREGATE_VALUE_TYPE)
+        .field(json_object_field(
+            "function",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("field", TypeRef::named(TypeRef::STRING)))
+        .field(json_object_field("value", TypeRef::named("JSON")))
+        .field(json_object_field("count", TypeRef::named_nn(TypeRef::INT)))
+}
+
+fn aggregate_group_object(name: &str) -> Object {
+    Object::new(name)
+        .field(json_object_field("key", TypeRef::named("JSON")))
+        .field(json_object_field("keyFields", TypeRef::named("JSON")))
+        .field(json_object_field("count", TypeRef::named_nn(TypeRef::INT)))
+        .field(json_object_field(
+            "values",
+            TypeRef::named_nn_list(AGGREGATE_VALUE_TYPE),
+        ))
+}
+
+fn aggregate_result_object(name: &str, group_type: &str) -> Object {
+    Object::new(name)
+        .field(json_object_field(
+            "totalCount",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "groups",
+            TypeRef::named_nn_list(group_type),
         ))
 }
 
@@ -724,6 +778,250 @@ fn parse_graphql_filter_list(value: &Value, name: &str) -> Result<Vec<FilterNode
         .as_array()
         .ok_or_else(|| GqlError::new(format!("filter.{name} must be a list")))?;
     items.iter().map(parse_graphql_filter_json).collect()
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GraphqlAggregateFunction {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+impl GraphqlAggregateFunction {
+    fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_uppercase().as_str() {
+            "COUNT" => Some(Self::Count),
+            "SUM" => Some(Self::Sum),
+            "AVG" => Some(Self::Avg),
+            "MIN" => Some(Self::Min),
+            "MAX" => Some(Self::Max),
+            _ => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Count => "COUNT",
+            Self::Sum => "SUM",
+            Self::Avg => "AVG",
+            Self::Min => "MIN",
+            Self::Max => "MAX",
+        }
+    }
+
+    fn is_numeric(self) -> bool {
+        !matches!(self, Self::Count)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GraphqlAggregationSpec {
+    function: GraphqlAggregateFunction,
+    field: Option<String>,
+}
+
+fn parse_graphql_group_by_arg(value: &GqlValue) -> Result<Vec<String>, GqlError> {
+    let json = gql_input_to_json(value)?;
+    let items = json
+        .as_array()
+        .ok_or_else(|| invalid_aggregate_argument("groupBy must be a list"))?;
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| invalid_aggregate_argument("groupBy entries must be fields"))
+        })
+        .collect()
+}
+
+fn parse_graphql_aggregations_arg(
+    value: &GqlValue,
+) -> Result<Vec<GraphqlAggregationSpec>, GqlError> {
+    let json = gql_input_to_json(value)?;
+    let items = json
+        .as_array()
+        .ok_or_else(|| invalid_aggregate_argument("aggregations must be a list"))?;
+    if items.is_empty() {
+        return Err(invalid_aggregate_argument(
+            "aggregations must contain at least one entry",
+        ));
+    }
+
+    let mut specs = Vec::with_capacity(items.len());
+    for item in items {
+        let obj = item
+            .as_object()
+            .ok_or_else(|| invalid_aggregate_argument("aggregation entries must be objects"))?;
+        let function = obj
+            .get("function")
+            .and_then(Value::as_str)
+            .and_then(GraphqlAggregateFunction::parse)
+            .ok_or_else(|| invalid_aggregate_argument("unknown aggregation function"))?;
+        let field = obj
+            .get("field")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        if function.is_numeric() && field.is_none() {
+            return Err(invalid_aggregate_argument(
+                "numeric aggregations require a field",
+            ));
+        }
+        specs.push(GraphqlAggregationSpec { function, field });
+    }
+    Ok(specs)
+}
+
+fn invalid_aggregate_argument(message: impl Into<String>) -> GqlError {
+    GqlError::new(message.into()).extend_with(|_err, ext| {
+        ext.set("code", "INVALID_ARGUMENT");
+        ext.set("category", "AGGREGATION");
+    })
+}
+
+fn graphql_aggregate_response(
+    entities: &[Entity],
+    total_count: usize,
+    group_by: &[String],
+    specs: &[GraphqlAggregationSpec],
+) -> Result<Value, GqlError> {
+    let mut groups: BTreeMap<String, (Value, Value, Vec<&Entity>)> = BTreeMap::new();
+
+    for entity in entities {
+        let (key, key_fields) = aggregate_group_key(entity, group_by);
+        let map_key = serde_json::to_string(&key_fields).map_err(|e| {
+            invalid_aggregate_argument(format!("failed to serialize group key: {e}"))
+        })?;
+        groups
+            .entry(map_key)
+            .or_insert_with(|| (key, key_fields, Vec::new()))
+            .2
+            .push(entity);
+    }
+
+    let mut group_values = Vec::with_capacity(groups.len());
+    for (_, (key, key_fields, group_entities)) in groups {
+        let count = group_entities.len();
+        let mut values = Vec::with_capacity(specs.len());
+        for spec in specs {
+            values.push(aggregate_spec_value(spec, &group_entities)?);
+        }
+        group_values.push(json!({
+            "key": key,
+            "keyFields": key_fields,
+            "count": count,
+            "values": values,
+        }));
+    }
+
+    Ok(json!({
+        "totalCount": total_count,
+        "groups": group_values,
+    }))
+}
+
+fn aggregate_group_key(entity: &Entity, group_by: &[String]) -> (Value, Value) {
+    if group_by.is_empty() {
+        return (Value::Null, json!({}));
+    }
+
+    let mut key_fields = serde_json::Map::new();
+    for field in group_by {
+        key_fields.insert(
+            field.clone(),
+            entity_field_value(entity, field).unwrap_or(Value::Null),
+        );
+    }
+
+    let key = if group_by.len() == 1 {
+        key_fields.get(&group_by[0]).cloned().unwrap_or(Value::Null)
+    } else {
+        Value::Object(key_fields.clone())
+    };
+    (key, Value::Object(key_fields))
+}
+
+fn aggregate_spec_value(
+    spec: &GraphqlAggregationSpec,
+    entities: &[&Entity],
+) -> Result<Value, GqlError> {
+    if matches!(spec.function, GraphqlAggregateFunction::Count) {
+        return Ok(json!({
+            "function": spec.function.as_str(),
+            "field": Value::Null,
+            "value": entities.len(),
+            "count": entities.len(),
+        }));
+    }
+
+    let field = spec
+        .field
+        .as_deref()
+        .ok_or_else(|| invalid_aggregate_argument("numeric aggregations require a field"))?;
+    let mut numbers = Vec::new();
+    for entity in entities {
+        match entity_field_value(entity, field) {
+            Some(value) if value.is_number() => {
+                if let Some(number) = value.as_f64() {
+                    numbers.push(number);
+                }
+            }
+            Some(Value::Null) | None => {}
+            Some(_) => {
+                return Err(
+                    invalid_aggregate_argument(format!("field '{field}' is not numeric"))
+                        .extend_with(|_err, ext| {
+                            ext.set("field", field);
+                            ext.set("function", spec.function.as_str());
+                        }),
+                );
+            }
+        }
+    }
+
+    let value = if numbers.is_empty() {
+        Value::Null
+    } else {
+        json!(compute_graphql_aggregate(spec.function, &numbers))
+    };
+    Ok(json!({
+        "function": spec.function.as_str(),
+        "field": field,
+        "value": value,
+        "count": numbers.len(),
+    }))
+}
+
+fn compute_graphql_aggregate(function: GraphqlAggregateFunction, values: &[f64]) -> f64 {
+    match function {
+        GraphqlAggregateFunction::Count => len_as_f64(values.len()),
+        GraphqlAggregateFunction::Sum => values.iter().sum(),
+        GraphqlAggregateFunction::Avg => values.iter().sum::<f64>() / len_as_f64(values.len()),
+        GraphqlAggregateFunction::Min => values.iter().copied().fold(f64::INFINITY, f64::min),
+        GraphqlAggregateFunction::Max => values.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+    }
+}
+
+fn len_as_f64(len: usize) -> f64 {
+    u32::try_from(len).map_or_else(|_| f64::from(u32::MAX), f64::from)
+}
+
+fn entity_field_value(entity: &Entity, field: &str) -> Option<Value> {
+    match field {
+        "id" => Some(Value::String(entity.id.to_string())),
+        "version" => Some(json!(entity.version)),
+        "createdAt" => entity.created_at_ns.map(|ns| Value::String(format_ns(ns))),
+        "updatedAt" => entity.updated_at_ns.map(|ns| Value::String(format_ns(ns))),
+        _ => {
+            let mut value = &entity.data;
+            for part in field.split('.') {
+                value = value.get(part)?;
+            }
+            Some(value.clone())
+        }
+    }
 }
 
 fn parse_graphql_sort_arg(value: &GqlValue) -> Result<Vec<SortField>, GqlError> {
@@ -2255,6 +2553,9 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let filter_input_name = format!("{type_name}Filter");
         let sort_field_enum_name = format!("{type_name}SortField");
         let sort_input_name = format!("{type_name}Sort");
+        let aggregate_input_name = format!("{type_name}Aggregation");
+        let aggregate_group_name = format!("{type_name}AggregateGroup");
+        let aggregate_result_name = format!("{type_name}Aggregate");
         let create_input_name = format!("Create{type_name}Input");
         let update_input_name = format!("Update{type_name}Input");
         let patch_input_name = format!("Patch{type_name}Input");
@@ -2275,6 +2576,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         enum_objects.push(typed_sort_field_enum(&sort_field_enum_name, &data_fields));
         input_objects.push(typed_sort_input_object(
             &sort_input_name,
+            &sort_field_enum_name,
+        ));
+        input_objects.push(aggregate_input_object(
+            &aggregate_input_name,
             &sort_field_enum_name,
         ));
         input_objects.push(typed_entity_input_object(
@@ -2314,6 +2619,11 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         type_objects.push(typed_connection_object(
             &connection_type_name,
             &edge_type_name,
+        ));
+        type_objects.push(aggregate_group_object(&aggregate_group_name));
+        type_objects.push(aggregate_result_object(
+            &aggregate_result_name,
+            &aggregate_group_name,
         ));
         type_objects.push(typed_entity_payload_object(
             &create_payload_name,
@@ -2516,6 +2826,66 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             TypeRef::named_nn_list(&sort_input_name),
         ));
         query = query.field(list_connection_field);
+
+        // ── Query: aggregate ─────────────────────────────────────────────
+        let aggregate_field_name = format!("{}Aggregate", get_field_name);
+        let handler_aggregate = Arc::clone(&handler);
+        let col_for_aggregate = col_id.clone();
+        let aggregate_result_name_ref = aggregate_result_name.clone();
+        let filter_input_name_ref = filter_input_name.clone();
+        let sort_field_enum_name_ref = sort_field_enum_name.clone();
+        let aggregate_input_name_ref = aggregate_input_name.clone();
+        let aggregate_field = Field::new(
+            &aggregate_field_name,
+            TypeRef::named_nn(&aggregate_result_name_ref),
+            move |ctx| {
+                let handler = Arc::clone(&handler_aggregate);
+                let col = col_for_aggregate.clone();
+                FieldFuture::new(async move {
+                    let filter = match ctx.args.try_get("filter") {
+                        Ok(value) => Some(parse_graphql_filter_arg(value.as_value())?),
+                        Err(_) => None,
+                    };
+                    let group_by = match ctx.args.try_get("groupBy") {
+                        Ok(value) => parse_graphql_group_by_arg(value.as_value())?,
+                        Err(_) => Vec::new(),
+                    };
+                    let aggregations = parse_graphql_aggregations_arg(
+                        ctx.args.try_get("aggregations")?.as_value(),
+                    )?;
+
+                    let guard = handler.lock().await;
+                    let response = guard.query_entities(QueryEntitiesRequest {
+                        collection: col.clone(),
+                        filter,
+                        sort: Vec::new(),
+                        limit: None,
+                        after_id: None,
+                        count_only: false,
+                    })?;
+                    let payload = graphql_aggregate_response(
+                        &response.entities,
+                        response.total_count,
+                        &group_by,
+                        &aggregations,
+                    )?;
+                    Ok(Some(json_to_field_value(payload)))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "filter",
+            TypeRef::named(&filter_input_name_ref),
+        ))
+        .argument(InputValue::new(
+            "groupBy",
+            TypeRef::named_nn_list(&sort_field_enum_name_ref),
+        ))
+        .argument(InputValue::new(
+            "aggregations",
+            TypeRef::named_nn_list(&aggregate_input_name_ref),
+        ));
+        query = query.field(aggregate_field);
 
         // ── Mutation: create ─────────────────────────────────────────────
         let create_field_name = format!("create{type_name}");
@@ -3020,6 +3390,9 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
     for input in scalar_filter_input_objects() {
         schema_builder = schema_builder.register(input);
     }
+    schema_builder = schema_builder
+        .register(aggregate_function_enum())
+        .register(aggregate_value_object());
     schema_builder = register_root_objects(schema_builder);
 
     if let Some(sub) = subscription {
@@ -3251,6 +3624,9 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
     for input in scalar_filter_input_objects() {
         schema_builder = schema_builder.register(input);
     }
+    schema_builder = schema_builder
+        .register(aggregate_function_enum())
+        .register(aggregate_value_object());
     schema_builder = register_root_objects(schema_builder);
 
     for obj in type_objects {

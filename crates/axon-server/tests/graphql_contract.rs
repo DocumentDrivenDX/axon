@@ -54,7 +54,10 @@ async fn seed_collection(server: &axum_test::TestServer, name: &str) {
                         "hours": { "type": "number" },
                         "billable": { "type": "boolean" }
                     }
-                }
+                },
+                "indexes": [
+                    { "field": "status", "type": "string" }
+                ]
             },
             "actor": "test"
         }))
@@ -453,6 +456,159 @@ async fn graphql_generated_typed_inputs_payloads_filters_and_sorts() {
         "unexpected list errors: {listed}"
     );
     assert_eq!(listed["data"]["tasks"][0]["id"], "typed-1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_per_collection_aggregate_queries() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let introspection = gql(
+        &server,
+        r#"{
+            aggregate: __type(name: "ItemAggregate") { fields { name } }
+            group: __type(name: "ItemAggregateGroup") { fields { name } }
+            input: __type(name: "ItemAggregation") { inputFields { name } }
+            functions: __type(name: "AxonAggregateFunction") { enumValues { name } }
+        }"#,
+    )
+    .await;
+    assert!(
+        introspection["errors"].is_null(),
+        "unexpected introspection errors: {introspection}"
+    );
+    assert!(
+        introspection["data"]["functions"]["enumValues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["name"] == "SUM"),
+        "aggregate function enum should include SUM"
+    );
+
+    for (id, data) in [
+        (
+            "agg-1",
+            json!({"label": "Alpha", "status": "approved", "week": "2026-W16", "hours": 4.0, "billable": true}),
+        ),
+        (
+            "agg-2",
+            json!({"label": "Beta", "status": "approved", "week": "2026-W16", "billable": false}),
+        ),
+        (
+            "agg-3",
+            json!({"label": "Gamma", "status": "approved", "week": "2026-W17", "hours": 6.0, "billable": true}),
+        ),
+        (
+            "agg-4",
+            json!({"label": "Draft", "status": "draft", "week": "2026-W16", "hours": 8.0, "billable": false}),
+        ),
+    ] {
+        let body = create_item(&server, id, data).await;
+        assert!(body["errors"].is_null(), "unexpected create error: {body}");
+    }
+
+    let body = gql(
+        &server,
+        r#"{
+            itemAggregate(
+                filter: { status: { eq: "approved" } }
+                groupBy: [status, week]
+                aggregations: [
+                    { function: COUNT }
+                    { function: SUM, field: hours }
+                    { function: AVG, field: hours }
+                    { function: MIN, field: hours }
+                    { function: MAX, field: hours }
+                ]
+            ) {
+                totalCount
+                groups {
+                    key
+                    keyFields
+                    count
+                    values { function field value count }
+                }
+            }
+            items(limit: 1) { id }
+        }"#,
+    )
+    .await;
+    assert!(
+        body["errors"].is_null(),
+        "unexpected aggregate errors: {body}"
+    );
+    let aggregate = &body["data"]["itemAggregate"];
+    assert_eq!(aggregate["totalCount"], 3);
+    assert_eq!(aggregate["groups"].as_array().unwrap().len(), 2);
+    assert_eq!(body["data"]["items"][0]["id"], "agg-1");
+
+    let week_16 = aggregate["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|group| group["keyFields"]["week"] == "2026-W16")
+        .expect("week 16 group should be present");
+    assert_eq!(week_16["count"], 2);
+    let sum = week_16["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|value| value["function"] == "SUM")
+        .expect("SUM value should be present");
+    assert_eq!(sum["value"].as_f64().unwrap(), 4.0);
+    assert_eq!(sum["count"], 1);
+
+    let invalid = gql(
+        &server,
+        r#"{
+            itemAggregate(aggregations: [{ function: SUM, field: label }]) {
+                totalCount
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        invalid["errors"].is_array(),
+        "SUM over a string field should fail: {invalid}"
+    );
+    assert_eq!(
+        invalid["errors"][0]["extensions"]["code"],
+        "INVALID_ARGUMENT"
+    );
+    assert_eq!(
+        invalid["errors"][0]["extensions"]["category"],
+        "AGGREGATION"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_aggregate_empty_collection_returns_zero_count() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let body = gql(
+        &server,
+        r#"{
+            itemAggregate(aggregations: [{ function: COUNT }]) {
+                totalCount
+                groups { count }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        body["errors"].is_null(),
+        "unexpected aggregate errors: {body}"
+    );
+    assert_eq!(body["data"]["itemAggregate"]["totalCount"], 0);
+    assert_eq!(
+        body["data"]["itemAggregate"]["groups"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

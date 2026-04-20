@@ -405,6 +405,41 @@ mutation {
 Patch remains JSON because RFC 7396 null-removal semantics require preserving
 the difference between omitted fields and explicit `null`.
 
+Generated schemas also expose per-collection aggregation queries named
+`<collection>Aggregate`. Aggregations reuse the same typed filter inputs as list
+queries and accept one or more aggregate functions in a single request. `COUNT`
+counts matching entities; `SUM`, `AVG`, `MIN`, and `MAX` require a numeric
+field. `groupBy` accepts one or more generated field enum values and returns
+both a compact `key` and a `keyFields` object for multi-field groups:
+
+```graphql
+{
+  timeEntriesAggregate(
+    filter: { status: { eq: "approved" } }
+    groupBy: [status, week]
+    aggregations: [
+      { function: COUNT }
+      { function: SUM, field: hours }
+      { function: AVG, field: hours }
+    ]
+  ) {
+    totalCount
+    groups {
+      keyFields
+      count
+      values { function field value count }
+    }
+  }
+}
+```
+
+Null or missing numeric values are excluded from numeric aggregates and reported
+through each value's `count`; group `count` still reflects all matching entities
+in the group. Empty collections return `totalCount: 0` and an empty `groups`
+array. Invalid numeric aggregations, such as `SUM` on a string field, return a
+GraphQL error with `extensions.code = "INVALID_ARGUMENT"` and
+`extensions.category = "AGGREGATION"`.
+
 Collection-to-GraphQL naming is deterministic:
 
 - Generic root fields always take the stored collection name as a string and
