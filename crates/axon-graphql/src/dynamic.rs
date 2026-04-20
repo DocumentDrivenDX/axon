@@ -5155,6 +5155,97 @@ mod tests {
         assert_eq!(collection["tasksChanged"]["auditId"], "audit-fanout-task");
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscription_schema_rebuild_tracks_collection_drop_and_schema_add() {
+        let tasks = test_schema();
+        let handler_with_tasks = make_handler(std::slice::from_ref(&tasks)).await;
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let schema_with_tasks = build_schema_with_handler_and_broker(
+            &[tasks],
+            Arc::clone(&handler_with_tasks),
+            Some(broker.clone()),
+        )
+        .expect("schema with tasks should build");
+        assert!(schema_with_tasks.schema.sdl().contains("tasksChanged"));
+
+        let empty_handler = make_handler(&[]).await;
+        let schema_after_drop =
+            build_schema_with_handler_and_broker(&[], Arc::clone(&empty_handler), Some(broker))
+                .expect("schema after drop should build");
+        let sdl_after_drop = schema_after_drop.schema.sdl();
+        assert!(sdl_after_drop.contains("entityChanged"));
+        assert!(
+            !sdl_after_drop.contains("tasksChanged"),
+            "rebuilt subscription schema should remove per-collection fields for dropped collections"
+        );
+
+        let users = CollectionSchema {
+            collection: CollectionId::new("users"),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" }
+                }
+            })),
+            link_types: Default::default(),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+        let handler_with_users = make_handler(std::slice::from_ref(&users)).await;
+        let schema_after_add = build_schema_with_handler_and_broker(
+            &[users],
+            Arc::clone(&handler_with_users),
+            Some(crate::subscriptions::BroadcastBroker::default()),
+        )
+        .expect("schema after add should build");
+        let sdl_after_add = schema_after_add.schema.sdl();
+        assert!(sdl_after_add.contains("usersChanged"));
+        assert!(!sdl_after_add.contains("tasksChanged"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn subscription_stream_delivery_stays_under_latency_target_for_test_load() {
+        let ts = test_schema();
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let schema =
+            build_schema_with_handler_and_broker(&[ts], Arc::clone(&handler), Some(broker.clone()))
+                .expect("schema with broker should build");
+
+        let mut stream = schema.schema.execute_stream(async_graphql::Request::new(
+            r#"subscription {
+                tasksChanged { entityId auditId }
+            }"#,
+        ));
+
+        let publish = async {
+            wait_for_receivers(&broker, 1).await;
+            let started = tokio::time::Instant::now();
+            let _ = broker.publish(subscription_test_event("latency-task", "open"));
+            started
+        };
+        let receive = async {
+            tokio::time::timeout(std::time::Duration::from_millis(500), stream.next())
+                .await
+                .expect("subscription delivers within FEAT-015 latency target")
+                .expect("subscription stream yields a response")
+        };
+
+        let (response, started) = tokio::join!(receive, publish);
+        let elapsed = started.elapsed();
+        let data = response_data(response);
+        assert_eq!(data["tasksChanged"]["entityId"], "latency-task");
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "write-to-subscriber latency exceeded target: {elapsed:?}"
+        );
+    }
+
     #[test]
     fn subscription_filter_matches_filter_node_semantics() {
         let event = crate::subscriptions::ChangeEvent {
