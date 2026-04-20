@@ -153,6 +153,13 @@ type GraphQLEntityConnection = {
 	};
 };
 
+type GraphQLPutSchemaPayload = {
+	schema: CollectionSchema;
+	compatibility: SchemaPreviewResult['compatibility'];
+	diff: SchemaDiff | null;
+	dryRun: boolean;
+};
+
 type AuditFilters = {
 	collection?: string;
 	actor?: string;
@@ -440,6 +447,34 @@ export async function updateSchema(
 	options?: { force?: boolean },
 	scope?: Scope,
 ): Promise<CollectionSchema> {
+	if (scope) {
+		const data = await graphqlRequest<{ putSchema: GraphQLPutSchemaPayload }>(
+			scope,
+			`mutation AxonUiPutSchema(
+				$collection: String!
+				$schema: JSON!
+				$force: Boolean
+			) {
+				putSchema(input: {
+					collection: $collection
+					schema: $schema
+					force: $force
+				}) {
+					schema
+					compatibility
+					diff
+					dryRun
+				}
+			}`,
+			{
+				collection,
+				schema,
+				force: options?.force ?? false,
+			},
+		);
+		return data.putSchema.schema;
+	}
+
 	const response = await request<{ schema: CollectionSchema }>(
 		`/collections/${encodeURIComponent(collection)}/schema`,
 		{
@@ -464,6 +499,31 @@ export async function previewSchemaChange(
 	schema: CollectionSchema,
 	scope?: Scope,
 ): Promise<SchemaPreviewResult> {
+	if (scope) {
+		const data = await graphqlRequest<{ putSchema: GraphQLPutSchemaPayload }>(
+			scope,
+			`mutation AxonUiPreviewSchema($collection: String!, $schema: JSON!) {
+				putSchema(input: {
+					collection: $collection
+					schema: $schema
+					dryRun: true
+				}) {
+					schema
+					compatibility
+					diff
+					dryRun
+				}
+			}`,
+			{ collection, schema },
+		);
+		return {
+			schema: data.putSchema.schema,
+			compatibility: data.putSchema.compatibility,
+			diff: data.putSchema.diff,
+			dry_run: data.putSchema.dryRun,
+		};
+	}
+
 	return request<SchemaPreviewResult>(
 		`/collections/${encodeURIComponent(collection)}/schema`,
 		{
@@ -486,6 +546,22 @@ export async function createCollection(
 	schema: Omit<CollectionSchema, 'collection'>,
 	scope?: Scope,
 ): Promise<void> {
+	if (scope) {
+		await graphqlRequest<{ createCollection: GraphQLCollectionMeta }>(
+			scope,
+			`mutation AxonUiCreateCollection($name: String!, $schema: JSON!) {
+				createCollection(input: { name: $name, schema: $schema }) {
+					name
+					entityCount
+					schemaVersion
+					schema
+				}
+			}`,
+			{ name, schema },
+		);
+		return;
+	}
+
 	await request<{ name: string }>(
 		`/collections/${encodeURIComponent(name)}`,
 		{
@@ -545,6 +621,20 @@ export async function fetchAuthMe(): Promise<AuthIdentity> {
 }
 
 export async function dropCollection(name: string, scope?: Scope): Promise<void> {
+	if (scope) {
+		await graphqlRequest<{ dropCollection: { name: string; entitiesRemoved: number } }>(
+			scope,
+			`mutation AxonUiDropCollection($name: String!) {
+				dropCollection(input: { name: $name, confirm: true }) {
+					name
+					entitiesRemoved
+				}
+			}`,
+			{ name },
+		);
+		return;
+	}
+
 	await request<void>(
 		`/collections/${encodeURIComponent(name)}`,
 		{

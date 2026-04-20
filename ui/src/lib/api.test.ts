@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test';
 
 import {
+	createCollection,
+	dropCollection,
 	fetchAudit,
 	fetchCollection,
 	fetchCollections,
@@ -9,7 +11,9 @@ import {
 	fetchSchema,
 	issueCredential,
 	listCredentials,
+	previewSchemaChange,
 	revokeCredential,
+	updateSchema,
 } from './api';
 
 const originalFetch = globalThis.fetch;
@@ -220,6 +224,109 @@ test('fetchEntity() uses tenant-scoped GraphQL entity query', async () => {
 		version: 3,
 		data: { title: 'one' },
 	});
+});
+
+test('createCollection() uses tenant-scoped GraphQL createCollection mutation', async () => {
+	mockFetch({
+		data: {
+			createCollection: {
+				name: 'tasks',
+				entityCount: 0,
+				schemaVersion: 1,
+				schema: { collection: 'tasks', version: 1 },
+			},
+		},
+	});
+
+	await createCollection(
+		'tasks',
+		{
+			version: 1,
+			entity_schema: { type: 'object' },
+			link_types: {},
+		},
+		{ tenant: 'acme', database: 'orders' },
+	);
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('createCollection');
+	expect(body.variables).toEqual({
+		name: 'tasks',
+		schema: { version: 1, entity_schema: { type: 'object' }, link_types: {} },
+	});
+});
+
+test('updateSchema() uses tenant-scoped GraphQL putSchema mutation', async () => {
+	const schema = { collection: 'tasks', version: 2, entity_schema: { type: 'object' } };
+	mockFetch({
+		data: {
+			putSchema: {
+				schema,
+				compatibility: 'compatible',
+				diff: null,
+				dryRun: false,
+			},
+		},
+	});
+
+	const result = await updateSchema(
+		'tasks',
+		schema,
+		{ force: true },
+		{
+			tenant: 'acme',
+			database: 'orders',
+		},
+	);
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('putSchema');
+	expect(body.variables).toEqual({ collection: 'tasks', schema, force: true });
+	expect(result).toEqual(schema);
+});
+
+test('previewSchemaChange() uses tenant-scoped GraphQL dry-run putSchema mutation', async () => {
+	const schema = { collection: 'tasks', version: 2, entity_schema: { type: 'object' } };
+	mockFetch({
+		data: {
+			putSchema: {
+				schema,
+				compatibility: 'metadata_only',
+				diff: { compatibility: 'metadata_only', changes: [] },
+				dryRun: true,
+			},
+		},
+	});
+
+	const result = await previewSchemaChange('tasks', schema, { tenant: 'acme', database: 'orders' });
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('dryRun: true');
+	expect(body.variables).toEqual({ collection: 'tasks', schema });
+	expect(result).toEqual({
+		schema,
+		compatibility: 'metadata_only',
+		diff: { compatibility: 'metadata_only', changes: [] },
+		dry_run: true,
+	});
+});
+
+test('dropCollection() uses tenant-scoped GraphQL dropCollection mutation', async () => {
+	mockFetch({
+		data: {
+			dropCollection: { name: 'tasks', entitiesRemoved: 2 },
+		},
+	});
+
+	await dropCollection('tasks', { tenant: 'acme', database: 'orders' });
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('dropCollection');
+	expect(body.variables).toEqual({ name: 'tasks' });
 });
 
 // ── Credential API helpers ────────────────────────────────────────────────────
