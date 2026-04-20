@@ -4171,7 +4171,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
     }
 
     // -- Subscription type ---------------------------------------------------
-    let subscription = broker.map(build_entity_changed_subscription);
+    let subscription = broker.map(|broker| build_entity_changed_subscription(broker, collections));
 
     let subscription_name = subscription.as_ref().map(|s| s.type_name().to_owned());
     let mut schema_builder = Schema::build(
@@ -4456,175 +4456,282 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
 /// Build the `ChangeEvent` GraphQL object type used by subscription resolvers.
 fn change_event_object() -> Object {
     Object::new("ChangeEvent")
-        .field(Field::new(
+        .field(change_event_object_field(
+            "auditId",
+            TypeRef::named_nn(TypeRef::ID),
+            "auditId",
+        ))
+        .field(change_event_object_field(
             "collection",
             TypeRef::named_nn(TypeRef::STRING),
-            |ctx| {
-                FieldFuture::new(async move {
-                    match ctx.parent_value.try_to_value() {
-                        Ok(GqlValue::Object(map)) => {
-                            let key = async_graphql::Name::new("collection");
-                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
-                        }
-                        _ => Ok(Some(FieldValue::NULL)),
-                    }
-                })
-            },
+            "collection",
         ))
-        .field(Field::new(
+        .field(change_event_object_field(
             "entityId",
             TypeRef::named_nn(TypeRef::STRING),
-            |ctx| {
-                FieldFuture::new(async move {
-                    match ctx.parent_value.try_to_value() {
-                        Ok(GqlValue::Object(map)) => {
-                            let key = async_graphql::Name::new("entityId");
-                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
-                        }
-                        _ => Ok(Some(FieldValue::NULL)),
-                    }
-                })
-            },
+            "entityId",
         ))
-        .field(Field::new(
+        .field(change_event_object_field(
             "operation",
             TypeRef::named_nn(TypeRef::STRING),
-            |ctx| {
-                FieldFuture::new(async move {
-                    match ctx.parent_value.try_to_value() {
-                        Ok(GqlValue::Object(map)) => {
-                            let key = async_graphql::Name::new("operation");
-                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
-                        }
-                        _ => Ok(Some(FieldValue::NULL)),
-                    }
-                })
-            },
+            "operation",
         ))
-        .field(Field::new("data", TypeRef::named(TypeRef::STRING), |ctx| {
-            FieldFuture::new(async move {
-                match ctx.parent_value.try_to_value() {
-                    Ok(GqlValue::Object(map)) => {
-                        let key = async_graphql::Name::new("data");
-                        Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
-                    }
-                    _ => Ok(Some(FieldValue::NULL)),
-                }
-            })
-        }))
-        .field(Field::new(
+        .field(change_event_object_field(
+            "mutation",
+            TypeRef::named_nn(TypeRef::STRING),
+            "operation",
+        ))
+        .field(change_event_object_field(
+            "data",
+            TypeRef::named("JSON"),
+            "data",
+        ))
+        .field(change_event_object_field(
+            "previousData",
+            TypeRef::named("JSON"),
+            "previousData",
+        ))
+        .field(change_event_object_field(
             "version",
             TypeRef::named_nn(TypeRef::INT),
-            |ctx| {
-                FieldFuture::new(async move {
-                    match ctx.parent_value.try_to_value() {
-                        Ok(GqlValue::Object(map)) => {
-                            let key = async_graphql::Name::new("version");
-                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
-                        }
-                        _ => Ok(Some(FieldValue::NULL)),
-                    }
-                })
-            },
+            "version",
         ))
-        .field(Field::new(
+        .field(change_event_object_field(
+            "previousVersion",
+            TypeRef::named(TypeRef::INT),
+            "previousVersion",
+        ))
+        .field(change_event_object_field(
             "timestampMs",
             TypeRef::named_nn(TypeRef::INT),
-            |ctx| {
-                FieldFuture::new(async move {
-                    match ctx.parent_value.try_to_value() {
-                        Ok(GqlValue::Object(map)) => {
-                            let key = async_graphql::Name::new("timestampMs");
-                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
-                        }
-                        _ => Ok(Some(FieldValue::NULL)),
-                    }
-                })
-            },
+            "timestampMs",
         ))
-        .field(Field::new(
+        .field(change_event_object_field(
+            "timestampNs",
+            TypeRef::named_nn(TypeRef::STRING),
+            "timestampNs",
+        ))
+        .field(change_event_object_field(
             "actor",
             TypeRef::named_nn(TypeRef::STRING),
-            |ctx| {
-                FieldFuture::new(async move {
-                    match ctx.parent_value.try_to_value() {
-                        Ok(GqlValue::Object(map)) => {
-                            let key = async_graphql::Name::new("actor");
-                            Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
-                        }
-                        _ => Ok(Some(FieldValue::NULL)),
-                    }
-                })
-            },
+            "actor",
         ))
+}
+
+fn change_event_object_field(name: &'static str, ty: TypeRef, key: &'static str) -> Field {
+    Field::new(name, ty, move |ctx| {
+        FieldFuture::new(async move {
+            match ctx.parent_value.try_to_value() {
+                Ok(GqlValue::Object(map)) => {
+                    let key = async_graphql::Name::new(key);
+                    Ok(map.get(&key).map(|v| FieldValue::from(v.clone())))
+                }
+                _ => Ok(Some(FieldValue::NULL)),
+            }
+        })
+    })
 }
 
 /// Convert a `ChangeEvent` into a `FieldValue` suitable for subscription emission.
 fn change_event_to_field_value(event: &crate::subscriptions::ChangeEvent) -> FieldValue<'static> {
     let mut map = serde_json::Map::new();
+    map.insert("auditId".into(), Value::String(event.audit_id.clone()));
     map.insert("collection".into(), Value::String(event.collection.clone()));
     map.insert("entityId".into(), Value::String(event.entity_id.clone()));
     map.insert("operation".into(), Value::String(event.operation.clone()));
     if let Some(data) = &event.data {
-        map.insert("data".into(), Value::String(data.to_string()));
+        map.insert("data".into(), data.clone());
+    }
+    if let Some(previous_data) = &event.previous_data {
+        map.insert("previousData".into(), previous_data.clone());
     }
     map.insert("version".into(), json!(event.version));
+    if let Some(previous_version) = event.previous_version {
+        map.insert("previousVersion".into(), json!(previous_version));
+    }
     map.insert("timestampMs".into(), json!(event.timestamp_ms));
+    map.insert(
+        "timestampNs".into(),
+        Value::String(event.timestamp_ms.saturating_mul(1_000_000).to_string()),
+    );
     map.insert("actor".into(), Value::String(event.actor.clone()));
 
     FieldValue::from(GqlValue::from_json(Value::Object(map)).unwrap_or(GqlValue::Null))
 }
 
-/// Build the `Subscription` type with an `entityChanged` field that
-/// streams change events from the `BroadcastBroker`.
-fn build_entity_changed_subscription(broker: BroadcastBroker) -> Subscription {
-    let entity_changed = SubscriptionField::new(
-        "entityChanged",
-        TypeRef::named_nn("ChangeEvent"),
-        move |ctx| {
-            let broker = broker.clone();
+fn subscription_filter_matches(
+    filter: &FilterNode,
+    event: &crate::subscriptions::ChangeEvent,
+) -> bool {
+    let data = event.data.as_ref().or(event.previous_data.as_ref());
+    match filter {
+        FilterNode::Field(field) => subscription_field_filter_matches(field, data),
+        FilterNode::Gate(_) => false,
+        FilterNode::And { filters } => filters
+            .iter()
+            .all(|filter| subscription_filter_matches(filter, event)),
+        FilterNode::Or { filters } => filters
+            .iter()
+            .any(|filter| subscription_filter_matches(filter, event)),
+    }
+}
 
-            // Optional collection filter from argument.
-            let collection_filter: Option<String> = ctx
+fn subscription_field_filter_matches(field: &FieldFilter, data: Option<&Value>) -> bool {
+    let field_value = data.and_then(|data| subscription_field_value(data, &field.field));
+    match field.op {
+        FilterOp::Eq => field_value == Some(&field.value),
+        FilterOp::Ne => field_value != Some(&field.value),
+        FilterOp::Gt => subscription_compare_values(field_value, Some(&field.value)).is_gt(),
+        FilterOp::Gte => {
+            let ordering = subscription_compare_values(field_value, Some(&field.value));
+            ordering.is_gt() || ordering.is_eq()
+        }
+        FilterOp::Lt => subscription_compare_values(field_value, Some(&field.value)).is_lt(),
+        FilterOp::Lte => {
+            let ordering = subscription_compare_values(field_value, Some(&field.value));
+            ordering.is_lt() || ordering.is_eq()
+        }
+        FilterOp::In => match &field.value {
+            Value::Array(values) => values.iter().any(|value| field_value == Some(value)),
+            _ => false,
+        },
+        FilterOp::Contains => match (field_value, &field.value) {
+            (Some(Value::String(value)), Value::String(needle)) => value.contains(needle),
+            _ => false,
+        },
+    }
+}
+
+fn subscription_field_value<'a>(data: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut current = data;
+    for segment in path.split('.') {
+        current = current.get(segment)?;
+    }
+    Some(current)
+}
+
+fn subscription_compare_values(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(Value::Number(a)), Some(Value::Number(b))) => a
+            .as_f64()
+            .and_then(|a| b.as_f64().and_then(|b| a.partial_cmp(&b)))
+            .unwrap_or(Ordering::Equal),
+        (Some(Value::String(a)), Some(Value::String(b))) => a.cmp(b),
+        (Some(Value::Bool(a)), Some(Value::Bool(b))) => a.cmp(b),
+        (Some(Value::Null), Some(Value::Null)) | (None, None) => Ordering::Equal,
+        (Some(Value::Null) | None, Some(_)) => Ordering::Less,
+        (Some(_), Some(Value::Null) | None) => Ordering::Greater,
+        _ => Ordering::Equal,
+    }
+}
+
+fn subscription_event_matches(
+    event: &crate::subscriptions::ChangeEvent,
+    collection: Option<&str>,
+    filter: Option<&FilterNode>,
+) -> bool {
+    if let Some(collection) = collection {
+        if event.collection != collection {
+            return false;
+        }
+    }
+    match filter {
+        Some(filter) => subscription_filter_matches(filter, event),
+        None => true,
+    }
+}
+
+fn build_change_subscription_field(
+    field_name: &str,
+    broker: BroadcastBroker,
+    fixed_collection: Option<String>,
+) -> SubscriptionField {
+    let has_fixed_collection = fixed_collection.is_some();
+    let mut field =
+        SubscriptionField::new(field_name, TypeRef::named_nn("ChangeEvent"), move |ctx| {
+            let broker = broker.clone();
+            let fixed_collection = fixed_collection.clone();
+
+            let collection_filter = match fixed_collection {
+                Some(collection) => Some(collection),
+                None => ctx
+                    .args
+                    .try_get("collection")
+                    .ok()
+                    .and_then(|v| v.string().ok())
+                    .map(str::to_owned),
+            };
+            let filter_result = ctx
                 .args
-                .try_get("collection")
+                .try_get("filter")
                 .ok()
-                .and_then(|v| v.string().ok())
-                .map(|s| s.to_owned());
+                .map(|value| parse_graphql_filter_arg(value.as_value()))
+                .transpose();
 
             SubscriptionFieldFuture::new(async move {
+                let filter = filter_result?;
                 let rx = broker.subscribe();
                 let stream =
                     tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(move |result| {
-                        let filter = collection_filter.clone();
+                        let collection_filter = collection_filter.clone();
+                        let filter = filter.clone();
                         async move {
                             match result {
-                                Ok(event) => {
-                                    // Apply optional collection filter.
-                                    if let Some(ref col) = filter {
-                                        if event.collection != *col {
-                                            return None;
-                                        }
-                                    }
+                                Ok(event)
+                                    if subscription_event_matches(
+                                        &event,
+                                        collection_filter.as_deref(),
+                                        filter.as_ref(),
+                                    ) =>
+                                {
                                     Some(Ok(change_event_to_field_value(&event)))
                                 }
-                                // Lagged -- some events were dropped; skip.
-                                Err(_) => None,
+                                Ok(_) | Err(_) => None,
                             }
                         }
                     });
 
                 Ok(stream)
             })
-        },
-    )
-    .argument(InputValue::new(
-        "collection",
-        TypeRef::named(TypeRef::STRING),
-    ))
-    .description("Subscribe to entity change events. Optionally filter by collection name.");
+        })
+        .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)));
 
-    Subscription::new("Subscription").field(entity_changed)
+    if !has_fixed_collection {
+        field = field.argument(InputValue::new(
+            "collection",
+            TypeRef::named(TypeRef::STRING),
+        ));
+    }
+    field
+}
+
+/// Build the `Subscription` type with generic and per-collection change fields.
+fn build_entity_changed_subscription(
+    broker: BroadcastBroker,
+    collections: &[CollectionSchema],
+) -> Subscription {
+    let entity_changed = build_change_subscription_field("entityChanged", broker.clone(), None)
+        .description("Subscribe to entity change events. Optionally filter by collection name.");
+    let mut subscription = Subscription::new("Subscription").field(entity_changed);
+    for schema in collections {
+        let field_name = format!(
+            "{}Changed",
+            collection_field_name(schema.collection.as_str())
+        );
+        subscription = subscription.field(
+            build_change_subscription_field(
+                &field_name,
+                broker.clone(),
+                Some(schema.collection.to_string()),
+            )
+            .description(format!(
+                "Subscribe to {} entity change events.",
+                schema.collection
+            )),
+        );
+    }
+    subscription
 }
 
 /// Convert a snake_case collection name to PascalCase for the GraphQL type.
@@ -4850,9 +4957,64 @@ mod tests {
             "SDL should contain entityChanged field"
         );
         assert!(
+            sdl.contains("tasksChanged"),
+            "SDL should contain generated per-collection subscription field"
+        );
+        assert!(sdl.contains("filter: AxonFilterInput"));
+        assert!(
             sdl.contains("type ChangeEvent"),
             "SDL should contain ChangeEvent type"
         );
+        for field in [
+            "auditId",
+            "previousData",
+            "previousVersion",
+            "timestampNs",
+            "mutation",
+        ] {
+            assert!(sdl.contains(field), "SDL should contain {field}");
+        }
+    }
+
+    #[test]
+    fn subscription_filter_matches_filter_node_semantics() {
+        let event = crate::subscriptions::ChangeEvent {
+            audit_id: "7".into(),
+            collection: "tasks".into(),
+            entity_id: "task-1".into(),
+            operation: "update".into(),
+            data: Some(json!({"status": "open", "priority": 3})),
+            previous_data: Some(json!({"status": "draft", "priority": 2})),
+            version: 2,
+            previous_version: Some(1),
+            timestamp_ms: 1000,
+            actor: "alice".into(),
+        };
+        let filter = FilterNode::And {
+            filters: vec![
+                FilterNode::Field(FieldFilter {
+                    field: "status".into(),
+                    op: FilterOp::Eq,
+                    value: json!("open"),
+                }),
+                FilterNode::Field(FieldFilter {
+                    field: "priority".into(),
+                    op: FilterOp::Gte,
+                    value: json!(3),
+                }),
+            ],
+        };
+
+        assert!(subscription_event_matches(
+            &event,
+            Some("tasks"),
+            Some(&filter)
+        ));
+        assert!(!subscription_event_matches(
+            &event,
+            Some("notes"),
+            Some(&filter)
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread")]

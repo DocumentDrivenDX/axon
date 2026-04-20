@@ -32,6 +32,9 @@ pub struct ChangeEvent {
     pub previous_data: Option<serde_json::Value>,
     /// Entity version after the change.
     pub version: u64,
+    /// Entity version before the change (None for creates or when unavailable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_version: Option<u64>,
     /// Timestamp in milliseconds.
     pub timestamp_ms: u64,
     /// Actor who made the change.
@@ -239,6 +242,7 @@ mod tests {
             data: Some(json!({"title": "test"})),
             previous_data: None,
             version: 1,
+            previous_version: None,
             timestamp_ms: 1000,
             actor: "agent".into(),
         }

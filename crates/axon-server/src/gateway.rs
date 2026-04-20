@@ -761,6 +761,7 @@ fn broadcast_entity_change(
     entity: &Entity,
     operation: &str,
     audit_id: String,
+    actor: &str,
 ) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -775,8 +776,13 @@ fn broadcast_entity_change(
         data: Some(entity.data.clone()),
         previous_data: None,
         version: entity.version,
+        previous_version: if operation == "create" || entity.version == 0 {
+            None
+        } else {
+            Some(entity.version.saturating_sub(1))
+        },
         timestamp_ms: now,
-        actor: "system".to_string(),
+        actor: actor.to_string(),
     };
     let _ = broker.publish(event);
 }
@@ -790,6 +796,7 @@ fn broadcast_entity_delete(
     collection: &str,
     entity_id: &str,
     audit_id: String,
+    actor: &str,
 ) {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -804,8 +811,9 @@ fn broadcast_entity_delete(
         data: None,
         previous_data: None,
         version: 0,
+        previous_version: None,
         timestamp_ms: now,
-        actor: "system".to_string(),
+        actor: actor.to_string(),
     };
     let _ = broker.publish(event);
 }
@@ -1245,6 +1253,7 @@ async fn create_entity(
                 &resp.entity,
                 "create",
                 audit_id_string(resp.audit_id),
+                &caller.actor,
             );
             (
                 StatusCode::CREATED,
@@ -1371,6 +1380,7 @@ async fn update_entity(
                 &resp.entity,
                 "update",
                 audit_id_string(resp.audit_id),
+                &caller.actor,
             );
             Json(json!({
                 "entity": entity_payload(&resp.entity)
@@ -1421,7 +1431,13 @@ async fn delete_entity(
     match result {
         Ok(resp) => {
             notify_entity_change_by_parts(&mcp_sessions, &current_database, &collection, &id);
-            broadcast_entity_delete(&broker, &collection, &id, audit_id_string(resp.audit_id));
+            broadcast_entity_delete(
+                &broker,
+                &collection,
+                &id,
+                audit_id_string(resp.audit_id),
+                &caller.actor,
+            );
             Json(json!({"collection": resp.collection, "id": resp.id})).into_response()
         }
         Err(e) => axon_error_response(e),
@@ -1579,6 +1595,7 @@ async fn transition_lifecycle_handler(
                 &resp.entity,
                 "update",
                 audit_id_string(resp.audit_id),
+                &caller.actor,
             );
             Json(json!({
                 "entity": entity_payload(&resp.entity)
@@ -1974,6 +1991,7 @@ async fn revert_entity(
                 &resp.entity,
                 "update",
                 resp.audit_entry.id.to_string(),
+                &identity.actor,
             );
             Json(json!({
                 "entity": entity_payload(&resp.entity),
@@ -2043,12 +2061,13 @@ async fn rollback_collection_entity(
         Err(error) => return axon_error_response(error),
     };
 
+    let actor = identity.actor.clone();
     match handler.lock().await.rollback_entity(RollbackEntityRequest {
         collection: qualify_collection_name(&collection, &current_database),
         id: EntityId::new(&id),
         target,
         expected_version: body.expected_version,
-        actor: Some(identity.actor),
+        actor: Some(actor.clone()),
         dry_run: body.dry_run,
     }) {
         Ok(axon_api::response::RollbackEntityResponse::Applied {
@@ -2056,7 +2075,13 @@ async fn rollback_collection_entity(
             audit_entry,
         }) => {
             notify_entity_change(&mcp_sessions, &current_database, &entity);
-            broadcast_entity_change(&broker, &entity, "update", audit_entry.id.to_string());
+            broadcast_entity_change(
+                &broker,
+                &entity,
+                "update",
+                audit_entry.id.to_string(),
+                &actor,
+            );
             Json(json!({
                 "entity": entity_payload(&entity),
                 "audit_entry": audit_entry_payload(&audit_entry),
@@ -2971,7 +2996,11 @@ async fn commit_transaction(
                     .find(|e| &e.collection == entity_collection && &e.entity_id == entity_key)
                     .map(|e| e.id.to_string())
                     .unwrap_or_default();
-                broadcast_entity_change(&broker, entity, "update", audit_id);
+                let actor = tx_entries
+                    .iter()
+                    .find(|e| &e.collection == entity_collection && &e.entity_id == entity_key)
+                    .map_or(caller.actor.as_str(), |e| e.actor.as_str());
+                broadcast_entity_change(&broker, entity, "update", audit_id, actor);
             }
             let entities: Vec<Value> = written
                 .iter()

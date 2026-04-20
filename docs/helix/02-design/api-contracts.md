@@ -781,6 +781,48 @@ Browser clients should use the same route-scoped bearer token they use for
 entity writes. Integration workers should use a service credential whose actor
 is meaningful in audit history, for example `auth-sync@nexiq`.
 
+## GraphQL Subscriptions
+
+When a deployment enables the GraphQL broadcast broker, the schema exposes both
+generic and generated subscription fields:
+
+```graphql
+subscription {
+  entityChanged(
+    collection: "time_entries"
+    filter: { field: "status", op: "eq", value: "approved" }
+  ) {
+    auditId
+    operation
+    mutation
+    collection
+    entityId
+    data
+    previousData
+    version
+    previousVersion
+    actor
+    timestampMs
+    timestampNs
+  }
+
+  timeEntriesChanged(filter: { field: "status", op: "eq", value: "approved" }) {
+    auditId
+    data
+  }
+}
+```
+
+`filter` uses the same `AxonFilterInput` semantics as GraphQL list queries.
+`data` is the entity state after the write. `previousData` and
+`previousVersion` are nullable and populated only when the write path has that
+state available. `auditId` is the audit cursor for the change event.
+
+Current reconnect behavior is no-resume: a disconnected WebSocket subscriber
+does not receive events missed while offline. Clients should reconnect and then
+use `auditLog(after: lastSeenAuditId)` to catch up before trusting the live
+stream again. Native replay/resume in the subscription protocol is deferred.
+
 ## Collection, Schema, And Lifecycle GraphQL
 
 GraphQL is the primary developer surface for collection and schema lifecycle
