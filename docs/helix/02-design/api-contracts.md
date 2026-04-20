@@ -56,9 +56,9 @@ SPA talking to a differently named Axon host still needs this CORS policy.
 
 ## Current User
 
-Use the GraphQL current-user query before choosing a tenant/database route once
-the control-plane GraphQL surface is available. During the compatibility
-window, `GET /auth/me` returns the same identity envelope.
+Use the GraphQL current-user query before choosing a tenant/database route.
+During the compatibility window, `GET /auth/me` returns the same identity
+envelope.
 
 ```http
 GET /auth/me
@@ -78,6 +78,86 @@ should not send body-level `actor` fields for normal writes; route handlers use
 the authenticated caller identity. JWT-authenticated control-plane callers also
 receive `user_id` and `tenant_id`. Tailscale/no-auth/guest callers receive null
 for those fields because those modes do not require a users-collection lookup.
+
+## Control-Plane GraphQL
+
+`POST /control/graphql` is the primary UI and SDK surface for deployment
+administration. It uses the same `Authorization: Bearer <jwt>` credential model
+as the REST control-plane routes and falls back to the legacy HTTP identity in
+`--no-auth`/Tailscale compatibility modes.
+
+Canonical queries:
+
+```graphql
+query($tenantId: String!) {
+  tenants { id name dbName createdAt }
+  tenant(id: $tenantId) { id name dbName createdAt }
+  users { id displayName email createdAtMs suspendedAtMs }
+  tenantMembers(tenantId: $tenantId) { tenantId userId role }
+  tenantDatabases(tenantId: $tenantId) { tenantId name createdAtMs }
+  credentials(tenantId: $tenantId) {
+    jti
+    userId
+    tenantId
+    issuedAtMs
+    expiresAtMs
+    revoked
+    grants
+  }
+}
+```
+
+Canonical mutations:
+
+```graphql
+mutation($tenantId: String!, $userId: String!, $jti: String!) {
+  createTenant(name: "Acme") { id name dbName dbPath createdAt }
+  deleteTenant(id: $tenantId) { deleted tenantId dbName }
+  provisionUser(displayName: "Ada", email: "ada@example.com") { id }
+  suspendUser(userId: $userId) { userId suspended }
+  upsertTenantMember(tenantId: $tenantId, userId: $userId, role: "write") {
+    tenantId
+    userId
+    role
+  }
+  removeTenantMember(tenantId: $tenantId, userId: $userId) { deleted }
+  createTenantDatabase(tenantId: $tenantId, name: "orders") { tenantId name }
+  deleteTenantDatabase(tenantId: $tenantId, name: "orders") { deleted }
+  revokeCredential(tenantId: $tenantId, jti: $jti) { jti revoked }
+}
+```
+
+Credential issuance returns signed token material exactly once:
+
+```graphql
+mutation($tenantId: String!, $targetUser: String!) {
+  issueCredential(
+    tenantId: $tenantId
+    targetUser: $targetUser
+    grants: { databases: [{ name: "orders", ops: ["read", "write"] }] }
+    ttlSeconds: 3600
+  ) {
+    jwt
+    jti
+    expiresAt
+  }
+}
+```
+
+`credentials` never returns `jwt` or other signed secret material. Deployment
+admins can manage all tenants, users, memberships, databases, and credentials.
+Tenant admins can list tenant members/databases, manage tenant databases, and
+list/revoke tenant credentials. Regular credential holders can list and revoke
+only their own credentials.
+
+GraphQL control-plane errors use REST-compatible lower-case
+`extensions.code` values such as `forbidden`, `not_found`, `already_exists`,
+`invalid_identifier`, `invalid_role`, `not_a_tenant_member`,
+`grants_exceed_role`, `invalid_jti`, `not_configured`, and `storage_error`.
+
+REST control-plane routes remain for compatibility, operational scripts, and
+break-glass administration. New browser and SDK flows should use GraphQL except
+for health/metrics/static assets and streaming or file-oriented endpoints.
 
 ## Data-Layer Access Control
 

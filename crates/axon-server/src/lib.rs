@@ -48,6 +48,7 @@ pub mod bootstrap;
 mod collection_listing;
 pub mod control_plane;
 pub mod control_plane_authz;
+mod control_plane_graphql;
 pub mod control_plane_routes;
 pub mod cors_config;
 pub mod database_router;

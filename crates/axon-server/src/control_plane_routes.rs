@@ -148,12 +148,12 @@ impl From<Tenant> for TenantResponse {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Generate an ISO-8601 UTC timestamp string.
-fn now_iso8601() -> String {
+pub(crate) fn now_iso8601() -> String {
     humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string()
 }
 
 /// Detect SQLite UNIQUE constraint violations in error messages.
-fn is_unique_violation(msg: &str) -> bool {
+pub(crate) fn is_unique_violation(msg: &str) -> bool {
     msg.contains("UNIQUE constraint failed")
 }
 
@@ -166,7 +166,7 @@ fn is_unique_violation(msg: &str) -> bool {
 /// # Examples
 /// - `"Acme Corp"` + `"01966b3c-..."` → `"acme-corp-01966b3c"`
 /// - `"  -- "` + `"01966b3c-..."` → `"tenant-01966b3c"`
-fn name_to_db_slug(name: &str, id: &str) -> String {
+pub(crate) fn name_to_db_slug(name: &str, id: &str) -> String {
     let slug: String = name
         .chars()
         .map(|c| {
@@ -199,6 +199,11 @@ fn name_to_db_slug(name: &str, id: &str) -> String {
 /// under the `/control` prefix and providing a `ControlPlaneState`.
 pub fn control_plane_routes() -> Router<ControlPlaneState> {
     Router::new()
+        .route(
+            "/graphql",
+            get(crate::control_plane_graphql::control_graphql_handler)
+                .post(crate::control_plane_graphql::control_graphql_handler),
+        )
         .route("/tenants", post(create_tenant))
         .route("/tenants", get(list_tenants))
         .route("/tenants/{id}", get(get_tenant))
@@ -713,7 +718,7 @@ struct MemberResponse {
     role: String,
 }
 
-fn tenant_role_from_str(s: &str) -> Option<TenantRole> {
+pub(crate) fn tenant_role_from_str(s: &str) -> Option<TenantRole> {
     match s {
         "admin" => Some(TenantRole::Admin),
         "write" => Some(TenantRole::Write),
@@ -722,7 +727,7 @@ fn tenant_role_from_str(s: &str) -> Option<TenantRole> {
     }
 }
 
-fn tenant_role_to_str(r: TenantRole) -> &'static str {
+pub(crate) fn tenant_role_to_str(r: TenantRole) -> &'static str {
     match r {
         TenantRole::Admin => "admin",
         TenantRole::Write => "write",
@@ -1058,7 +1063,7 @@ struct CreateDatabaseBody {
 /// - 1–63 characters
 /// - ASCII only: `[a-zA-Z0-9_-]`
 /// - First character must not be a digit
-fn is_valid_database_identifier(s: &str) -> bool {
+pub(crate) fn is_valid_database_identifier(s: &str) -> bool {
     if s.is_empty() || s.len() > 63 {
         return false;
     }
@@ -1861,7 +1866,9 @@ async fn suspend_user_handler(
 // ── Provisioning ────────────────────────────────────────────────────────────
 
 /// Create and initialize a new tenant SQLite database at the given path.
-fn provision_tenant_database(path: &std::path::Path) -> Result<(), axon_core::error::AxonError> {
+pub(crate) fn provision_tenant_database(
+    path: &std::path::Path,
+) -> Result<(), axon_core::error::AxonError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             axon_core::error::AxonError::Storage(format!(
