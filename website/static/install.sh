@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-REPO="erikd/axon"
-INSTALL_DIR="$HOME/.local/bin"
-CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/axon"
-DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/axon"
+REPO="${AXON_INSTALL_REPO:-DocumentDrivenDX/axon}"
+INSTALL_DIR="${AXON_INSTALL_DIR:-$HOME/.local/bin}"
+CONFIG_DIR="${AXON_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/axon}"
+DATA_DIR="${AXON_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/axon}"
 TMPFILE=""
 
 cleanup() {
@@ -37,7 +37,13 @@ detect_platform() {
     esac
 
     ARTIFACT="axon-${OS}-${ARCH}"
-    URL="https://github.com/${REPO}/releases/latest/download/${ARTIFACT}"
+    if [ -n "${AXON_INSTALL_URL:-}" ]; then
+        URL="$AXON_INSTALL_URL"
+    elif [ -n "${AXON_INSTALL_VERSION:-}" ]; then
+        URL="https://github.com/${REPO}/releases/download/${AXON_INSTALL_VERSION}/${ARTIFACT}"
+    else
+        URL="https://github.com/${REPO}/releases/latest/download/${ARTIFACT}"
+    fi
     printf "detected platform: %s/%s\n" "$OS" "$ARCH"
 }
 

@@ -86,23 +86,23 @@ server. This means:
   accessible.
 - Shows Axon version.
 
-#### `axon install`
+#### `axon server install`
 
-- `axon install` (no subcommand) installs Axon as a user service:
+- `axon server install` installs Axon as a user service:
   - Linux: writes `~/.config/systemd/user/axon.service`, runs
     `systemctl --user daemon-reload && enable axon`
   - macOS: writes `~/Library/LaunchAgents/com.axon.server.plist`, runs
     `launchctl load`
-- `axon install --global` installs as a system service (requires root):
+- `axon server install --global` installs as a system service (requires root):
   - Linux: creates `axon` system user, creates `/var/lib/axon/`, writes
     `/etc/systemd/system/axon.service`
   - macOS: creates `_axon` system user, writes
     `/Library/LaunchDaemons/com.axon.server.plist`
 - Service units run `axon serve` using the installed binary and config
   file.
-- `axon install start|stop|restart|status` manage the installed service,
+- `axon server start|stop|restart|status` manage the installed service,
   delegating to `systemctl` (Linux) or `launchctl` (macOS).
-- `axon install uninstall` removes the service unit and disables it.
+- `axon server uninstall` removes the service unit and disables it.
 
 #### Client Mode
 
@@ -218,16 +218,16 @@ variables (`AXON_` prefix, e.g. `AXON_SERVER_HTTP_PORT`) < CLI flags.
 ### Story US-072: Install Axon as a system service [FEAT-028]
 
 **As a** developer running Axon persistently
-**I want** to run `axon install` to set up a user service
+**I want** to run `axon server install` to set up a user service
 **So that** Axon starts automatically and survives reboots
 
 **Acceptance Criteria:**
-- [ ] `axon install` creates and enables a user-level service
-- [ ] `axon install start` starts the service
-- [ ] `axon install status` reports whether the service is running
-- [ ] `axon install --global` creates a system service with dedicated
+- [ ] `axon server install` creates and enables a user-level service
+- [ ] `axon server start` starts the service
+- [ ] `axon server status` reports whether the service is running
+- [ ] `axon server install --global` creates a system service with dedicated
       user and `/var/lib/axon` storage
-- [ ] `axon install uninstall` removes the service
+- [ ] `axon server uninstall` removes the service
 
 ### Story US-073: Use CLI against a running server [FEAT-028]
 
@@ -278,8 +278,8 @@ variables (`AXON_` prefix, e.g. `AXON_SERVER_HTTP_PORT`) < CLI flags.
   the port responds.
 - **No write access to data dir**: `axon serve` prints the path and
   permission error, suggests `mkdir -p` or `--global` install.
-- **Service already installed**: `axon install` prints "service already
-  installed" and exits cleanly. Use `axon install uninstall` first to
+- **Service already installed**: `axon server install` prints "service already
+  installed" and exits cleanly. Use `axon server uninstall` first to
   reinstall.
 - **Client mode timeout**: 200ms connect timeout. If the server is
   unreachable, CLI falls back to embedded mode with a one-line notice:
