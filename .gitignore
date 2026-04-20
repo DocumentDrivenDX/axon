@@ -14,6 +14,7 @@ ui/node_modules/
 ui/playwright-report/
 ui/test-results/
 *.db
+tenants/
 website/public/
 website/.hugo_build.lock
 docs/demos/quickstart/recordings/

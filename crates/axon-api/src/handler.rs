@@ -9414,6 +9414,91 @@ link_types:
     }
 
     #[test]
+    fn save_gate_rejects_privileged_role_on_browser_writable_create() {
+        use axon_schema::rules::{RequirementOp, RuleRequirement, ValidationRule};
+
+        let mut h = handler();
+        let col = CollectionId::new("users");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: Some("Browser bootstrap users".into()),
+                version: 1,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "required": ["display_name", "role"],
+                    "properties": {
+                        "display_name": { "type": "string" },
+                        "role": {
+                            "type": "string",
+                            "enum": ["member", "admin"]
+                        }
+                    }
+                })),
+                link_types: Default::default(),
+                gates: Default::default(),
+                validation_rules: vec![ValidationRule {
+                    name: "browser-bootstrap-role-member-only".into(),
+                    gate: Some("save".into()),
+                    advisory: false,
+                    when: None,
+                    require: RuleRequirement {
+                        field: "role".into(),
+                        op: RequirementOp::In(vec![json!("member")]),
+                    },
+                    message: "Browser bootstrap users must start as member".into(),
+                    fix: Some(
+                        "Set role to member; create admin users through a privileged path".into(),
+                    ),
+                }],
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                lifecycles: Default::default(),
+            },
+            actor: Some("schema-admin".into()),
+        })
+        .unwrap();
+
+        let rejected = h
+            .create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("u-admin"),
+                data: json!({
+                    "display_name": "Mallory",
+                    "role": "admin"
+                }),
+                actor: Some("browser:self-service-bootstrap".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .unwrap_err();
+        assert!(matches!(rejected, AxonError::SchemaValidation(_)));
+        assert!(rejected
+            .to_string()
+            .contains("Browser bootstrap users must start as member"));
+
+        let allowed = h
+            .create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("u-member"),
+                data: json!({
+                    "display_name": "Ada",
+                    "role": "member"
+                }),
+                actor: Some("browser:self-service-bootstrap".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .unwrap();
+        assert_eq!(allowed.entity.data["role"], "member");
+        assert_eq!(
+            allowed.entity.created_by.as_deref(),
+            Some("browser:self-service-bootstrap")
+        );
+    }
+
+    #[test]
     fn custom_gate_allows_save_reports_failures() {
         let mut h = handler_with_gated_schema();
         // Has bead_type (save passes) but missing description (complete gate fails).

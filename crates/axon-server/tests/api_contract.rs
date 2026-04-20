@@ -1091,12 +1091,20 @@ async fn http_schema_manifest_supports_static_client_handshake() {
     http.post("/tenants/default/databases/default/collections/time_entries")
         .json(&json!({
             "schema": {
+                "description": "Time entry records used by browser clients",
                 "version": 7,
                 "entity_schema": {
                     "type": "object",
+                    "description": "A time entry payload",
                     "properties": {
-                        "status": {"type": "string"},
-                        "hours": {"type": "number"}
+                        "status": {
+                            "type": "string",
+                            "description": "Approval status label"
+                        },
+                        "hours": {
+                            "type": "number",
+                            "description": "Billable hours for the entry"
+                        }
                     }
                 }
             },
@@ -1119,6 +1127,22 @@ async fn http_schema_manifest_supports_static_client_handshake() {
     assert_eq!(body["expected_header"], "x-axon-schema-hash");
     assert_eq!(body["collections"][0]["name"], "time_entries");
     assert_eq!(body["collections"][0]["version"], 1);
+    assert_eq!(
+        body["collections"][0]["schema"]["description"],
+        "Time entry records used by browser clients"
+    );
+    assert_eq!(
+        body["collections"][0]["schema"]["entity_schema"]["description"],
+        "A time entry payload"
+    );
+    assert_eq!(
+        body["collections"][0]["schema"]["entity_schema"]["properties"]["status"]["description"],
+        "Approval status label"
+    );
+    assert_eq!(
+        body["collections"][0]["schema"]["entity_schema"]["properties"]["hours"]["description"],
+        "Billable hours for the entry"
+    );
 
     let matched = http
         .get("/tenants/default/databases/default/schema")
@@ -1135,6 +1159,80 @@ async fn http_schema_manifest_supports_static_client_handshake() {
     assert_eq!(mismatch_body["code"], "schema_mismatch");
     assert_eq!(mismatch_body["detail"]["expected"], "fnv64:stale");
     assert_eq!(mismatch_body["detail"]["actual"], schema_hash);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_dev_database_reset_requires_force_and_allows_reseed() {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    http.post("/databases/dev")
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+    http.post("/tenants/default/databases/dev/collections/tasks")
+        .json(&json!({
+            "schema": {
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"}
+                    }
+                }
+            }
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+    http.post("/tenants/default/databases/dev/entities/tasks/t-001")
+        .json(&json!({"data": {"title": "before reset"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let guarded = http.delete("/databases/dev").await;
+    guarded.assert_status(axum::http::StatusCode::BAD_REQUEST);
+    let guarded_body: Value = guarded.json();
+    assert_eq!(guarded_body["code"], "invalid_operation");
+    assert!(guarded_body["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Use force=true to drop"));
+
+    let reset = http.delete("/databases/dev?force=true").await;
+    reset.assert_status_ok();
+    let reset_body: Value = reset.json();
+    assert_eq!(reset_body["name"], "dev");
+    assert_eq!(reset_body["collections_removed"], 1);
+
+    http.post("/databases/dev")
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+    http.post("/tenants/default/databases/dev/collections/tasks")
+        .json(&json!({
+            "schema": {
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"}
+                    }
+                }
+            }
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+    http.post("/tenants/default/databases/dev/entities/tasks/t-001")
+        .json(&json!({"data": {"title": "after reset"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let reseeded = http
+        .get("/tenants/default/databases/dev/entities/tasks/t-001")
+        .await;
+    reseeded.assert_status_ok();
+    let reseeded_body: Value = reseeded.json();
+    assert_eq!(reseeded_body["entity"]["data"]["title"], "after reset");
 }
 
 #[tokio::test(flavor = "multi_thread")]

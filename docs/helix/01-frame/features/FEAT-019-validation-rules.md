@@ -254,6 +254,58 @@ Custom gates allow progressive refinement: save early, validate
 incrementally, gate transitions on readiness. The agent always knows
 exactly what's still needed.
 
+FEAT-019 validation runs on every entity write path that persists entity
+payload data: create, update, and patch. The save gate is evaluated after
+lifecycle initial-state handling and JSON Schema validation, but before
+storage writes, index maintenance, and audit append. A failed save gate
+therefore leaves no entity row and no mutation audit entry for that attempted
+write. Custom gates and advisories are also evaluated on create, update, and
+patch; their pass/fail results are materialized on the saved entity and echoed
+in the write response.
+
+Save gates are payload-only in V1. They can validate fields in the submitted
+entity, but they cannot branch on caller identity, tenant role, JWT grant, or
+other request context. Subject-aware authorization belongs to FEAT-029
+policies. Until FEAT-029 is the enforcement layer for an application-specific
+role field, browser-writable bootstrap schemas should use conservative
+payload gates that allow only the safe default values.
+
+#### Browser-Writable Bootstrap Role Pattern
+
+For a browser-writable bootstrap flow, a self-created `users` row must not be
+allowed to self-promote to an application admin role. The recommended interim
+Axon rule is a collection-level save gate on the browser-writable users
+collection that allows only the safe default `member` role:
+
+```yaml
+collection: users
+
+entity_schema:
+  type: object
+  required: [display_name, role]
+  properties:
+    display_name: { type: string }
+    role:
+      type: string
+      enum: [member, admin]
+
+validation_rules:
+  - name: browser-bootstrap-role-member-only
+    gate: save
+    require: { field: role, in: [member] }
+    message: "Browser bootstrap users must start as member"
+    fix: "Set role to member; create admin users through a privileged path"
+```
+
+This rule runs on create as well as update. A browser actor submitting
+`role: admin` is rejected before persistence; `role: member` is accepted.
+Because FEAT-019 rules do not inspect caller context, this schema intentionally
+rejects `admin` for every caller on that browser-writable path. Admin or
+operator bootstrap must use the control-plane membership/credential flow, an
+operator seed script, or a separate admin-only collection/path until FEAT-029
+subject-aware policies can express "non-admin callers may only create
+members" directly.
+
 #### Materialized Gate Status (1:M Table)
 
 On every entity write (create, update, patch), Axon evaluates all

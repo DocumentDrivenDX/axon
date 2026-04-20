@@ -35,6 +35,13 @@ Use `ddx bead` subcommands:
 
 Always re-read the issue immediately before claiming and before closing.
 
+Before closing a bead, verify there is durable evidence for the closure:
+a commit referencing the bead id, an execution bundle under `.ddx/executions/`,
+or an explicit notes entry documenting why implementation was deferred or why
+the bead is tracker-only. If a review step is malformed, empty, over-large, or
+errors before producing a valid verdict with rationale, do not close the bead;
+leave it open/in progress or set a retry path.
+
 ## Commit Format
 
 ```
