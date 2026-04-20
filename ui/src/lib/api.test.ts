@@ -12,6 +12,7 @@ import {
 	fetchCollections,
 	fetchEntities,
 	fetchEntity,
+	fetchEntityAudit,
 	fetchSchema,
 	issueCredential,
 	listCredentials,
@@ -126,12 +127,87 @@ test('request() uses plain path when no scope is provided', async () => {
 	expect(lastRequest?.url).toBe('/collections');
 });
 
-test('request() prefixes audit route with scope', async () => {
-	mockFetch({ entries: [], next_cursor: null });
+test('fetchAudit() uses tenant-scoped GraphQL auditLog query', async () => {
+	mockFetch({
+		data: {
+			auditLog: {
+				edges: [
+					{
+						cursor: '42',
+						node: {
+							id: '42',
+							timestampNs: '123456',
+							collection: 'tasks',
+							entityId: 'task-1',
+							version: 2,
+							mutation: 'entity.update',
+							dataBefore: { title: 'old' },
+							dataAfter: { title: 'new' },
+							actor: 'alice',
+							transactionId: 7,
+							metadata: { source: 'test' },
+						},
+					},
+				],
+				pageInfo: { hasNextPage: true, endCursor: '42' },
+			},
+		},
+	});
 
-	await fetchAudit({}, { tenant: 'acme', database: 'orders' });
+	const result = await fetchAudit(
+		{ collection: 'tasks', actor: 'alice', sinceNs: '1', untilNs: '999' },
+		{ tenant: 'acme', database: 'orders' },
+	);
 
-	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/audit/query');
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('auditLog');
+	expect(body.variables).toEqual({
+		collection: 'tasks',
+		actor: 'alice',
+		sinceNs: '1',
+		untilNs: '999',
+	});
+	expect(result).toEqual({
+		entries: [
+			{
+				id: 42,
+				timestamp_ns: 123456,
+				collection: 'tasks',
+				entity_id: 'task-1',
+				version: 2,
+				mutation: 'entity.update',
+				data_before: { title: 'old' },
+				data_after: { title: 'new' },
+				actor: 'alice',
+				transaction_id: 7,
+				metadata: { source: 'test' },
+			},
+		],
+		next_cursor: 42,
+	});
+});
+
+test('fetchEntityAudit() uses tenant-scoped GraphQL auditLog entity filter', async () => {
+	mockFetch({
+		data: {
+			auditLog: {
+				edges: [],
+				pageInfo: { hasNextPage: false, endCursor: null },
+			},
+		},
+	});
+
+	const result = await fetchEntityAudit('tasks', 'task-1', {
+		tenant: 'acme',
+		database: 'orders',
+	});
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('entityId');
+	expect(body.variables).toEqual({ collection: 'tasks', entityId: 'task-1' });
+	expect(result).toEqual({ entries: [], next_cursor: null });
 });
 
 test('fetchCollections() maps tenant-scoped GraphQL collection metadata', async () => {

@@ -170,6 +170,31 @@ type GraphQLTransactionPayload = {
 	}>;
 };
 
+type GraphQLAuditEntry = {
+	id: string;
+	timestampNs: string;
+	collection: string;
+	entityId: string;
+	version: number;
+	mutation: string;
+	dataBefore: unknown;
+	dataAfter: unknown;
+	actor: string | null;
+	transactionId?: number | null;
+	metadata?: Record<string, string> | null;
+};
+
+type GraphQLAuditConnection = {
+	edges: Array<{
+		cursor: string;
+		node: GraphQLAuditEntry;
+	}>;
+	pageInfo: {
+		hasNextPage: boolean;
+		endCursor: string | null;
+	};
+};
+
 type AuditFilters = {
 	collection?: string;
 	actor?: string;
@@ -294,6 +319,29 @@ async function commitSingleEntityOperation(
 	);
 
 	return data.commitTransaction.results[0]?.entity ?? null;
+}
+
+function auditEntryFromGraphql(entry: GraphQLAuditEntry): AuditEntry {
+	return {
+		id: Number(entry.id),
+		timestamp_ns: Number(entry.timestampNs),
+		collection: entry.collection,
+		entity_id: entry.entityId,
+		version: entry.version,
+		mutation: entry.mutation,
+		data_before: entry.dataBefore,
+		data_after: entry.dataAfter,
+		actor: entry.actor,
+		transaction_id: entry.transactionId ?? null,
+		metadata: entry.metadata ?? null,
+	};
+}
+
+function auditResultFromGraphql(connection: GraphQLAuditConnection): AuditQueryResult {
+	return {
+		entries: connection.edges.map((edge) => auditEntryFromGraphql(edge.node)),
+		next_cursor: connection.pageInfo.hasNextPage ? Number(connection.pageInfo.endCursor) : null,
+	};
 }
 
 export async function fetchCollections(scope?: Scope): Promise<CollectionSummary[]> {
@@ -647,6 +695,53 @@ export async function fetchAudit(
 	filters: AuditFilters = {},
 	scope?: Scope,
 ): Promise<AuditQueryResult> {
+	if (scope) {
+		const data = await graphqlRequest<{ auditLog: GraphQLAuditConnection }>(
+			scope,
+			`query AxonUiAuditLog(
+				$collection: String
+				$actor: String
+				$sinceNs: String
+				$untilNs: String
+			) {
+				auditLog(
+					collection: $collection
+					actor: $actor
+					sinceNs: $sinceNs
+					untilNs: $untilNs
+				) {
+					edges {
+						cursor
+						node {
+							id
+							timestampNs
+							collection
+							entityId
+							version
+							mutation
+							dataBefore
+							dataAfter
+							actor
+							transactionId
+							metadata
+						}
+					}
+					pageInfo {
+						hasNextPage
+						endCursor
+					}
+				}
+			}`,
+			{
+				collection: filters.collection ?? null,
+				actor: filters.actor ?? null,
+				sinceNs: filters.sinceNs ?? null,
+				untilNs: filters.untilNs ?? null,
+			},
+		);
+		return auditResultFromGraphql(data.auditLog);
+	}
+
 	const params = new URLSearchParams();
 	if (filters.collection) {
 		params.set('collection', filters.collection);
@@ -987,6 +1082,38 @@ export async function fetchEntityAudit(
 	id: string,
 	scope?: Scope,
 ): Promise<AuditQueryResult> {
+	if (scope) {
+		const data = await graphqlRequest<{ auditLog: GraphQLAuditConnection }>(
+			scope,
+			`query AxonUiEntityAuditLog($collection: String!, $entityId: ID!) {
+				auditLog(collection: $collection, entityId: $entityId) {
+					edges {
+						cursor
+						node {
+							id
+							timestampNs
+							collection
+							entityId
+							version
+							mutation
+							dataBefore
+							dataAfter
+							actor
+							transactionId
+							metadata
+						}
+					}
+					pageInfo {
+						hasNextPage
+						endCursor
+					}
+				}
+			}`,
+			{ collection, entityId: id },
+		);
+		return auditResultFromGraphql(data.auditLog);
+	}
+
 	return request<AuditQueryResult>(
 		`/audit/entity/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
 		undefined,
