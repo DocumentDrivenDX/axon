@@ -7,7 +7,25 @@
 # Default HTTP port is 4170. gRPC is opt-in via --grpc-port.
 # Health check: GET /health
 
-# ── Stage 1: Builder ──────────────────────────────────────────────────────────
+# ── Stage 1: Playwright E2E runner ────────────────────────────────────────────
+
+FROM oven/bun:1.3.11 AS bun-runtime
+
+FROM mcr.microsoft.com/playwright:v1.59.1-noble AS ui-e2e-runner
+
+COPY --from=bun-runtime /usr/local/bin/bun /usr/local/bin/bun
+
+# ── Stage 2: UI builder ───────────────────────────────────────────────────────
+
+FROM oven/bun:1.3.11 AS ui-builder
+
+WORKDIR /usr/src/axon
+
+COPY ui ./ui
+
+RUN cd ui && bun install --frozen-lockfile && bun run build
+
+# ── Stage 3: Rust builder ─────────────────────────────────────────────────────
 
 FROM rust:1.94-bookworm AS builder
 
@@ -21,11 +39,12 @@ WORKDIR /usr/src/axon
 # Copy the full workspace. The .dockerignore keeps out target/, node_modules/,
 # .git/, etc. to keep the build context small.
 COPY . .
+COPY --from=ui-builder /usr/src/axon/ui/build ui/build
 
 # Build the unified binary in release mode.
 RUN cargo build --release -p axon-cli
 
-# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+# ── Stage 4: Runtime ──────────────────────────────────────────────────────────
 
 FROM debian:bookworm-slim AS runtime
 
@@ -42,6 +61,7 @@ RUN groupadd --system axon && useradd --system --gid axon axon
 RUN mkdir -p /var/lib/axon && chown axon:axon /var/lib/axon
 
 COPY --from=builder /usr/src/axon/target/release/axon /usr/local/bin/axon
+COPY --from=ui-builder /usr/src/axon/ui/build /usr/share/axon/ui
 COPY scripts/ /scripts/
 
 USER axon
@@ -53,4 +73,4 @@ ENTRYPOINT ["axon"]
 
 # Default: serve with SQLite storage, no authentication (dev mode).
 # Override CMD or use environment variables for production configuration.
-CMD ["serve", "--no-auth", "--storage", "sqlite", "--sqlite-path", "/var/lib/axon/axon.db"]
+CMD ["serve", "--no-auth", "--storage", "sqlite", "--sqlite-path", "/var/lib/axon/axon.db", "--control-plane-path", "/var/lib/axon/axon-control-plane.db", "--ui-dir", "/usr/share/axon/ui"]

@@ -17,7 +17,9 @@ import { createTestTenant, tenantUrl } from './helpers';
 test.describe('UI restructure smoke', () => {
 	const unique = Date.now().toString(36);
 	const tenantName = `smoke${unique}`;
-	const dbName = 'default';
+	const dbName = 'first';
+	const collectionName = `tasks-${unique}`;
+	const entityId = `task-${unique}`;
 
 	test('root redirects to /ui/tenants', async ({ page }) => {
 		await page.goto('/ui/');
@@ -25,9 +27,7 @@ test.describe('UI restructure smoke', () => {
 		await expect(page.getByRole('heading', { name: 'Tenants', level: 1 })).toBeVisible();
 	});
 
-	test('top nav shows Tenants and Users only (no Collections/Schemas/Audit)', async ({
-		page,
-	}) => {
+	test('top nav shows Tenants and Users only (no Collections/Schemas/Audit)', async ({ page }) => {
 		await page.goto('/ui/tenants');
 		const topnav = page.locator('header.topnav nav.topnav-links');
 		await expect(topnav.getByRole('link', { name: 'Tenants' })).toBeVisible();
@@ -37,7 +37,11 @@ test.describe('UI restructure smoke', () => {
 		await expect(topnav.getByRole('link', { name: 'Audit Log' })).toHaveCount(0);
 	});
 
-	test('create tenant, open it, create database, walk sub-nav', async ({ page }) => {
+	test('create tenant, create non-default database, create collection and entity', async ({
+		page,
+	}) => {
+		const rawScopeError = page.getByText(/not_found: (database|namespace)/);
+
 		// Create the tenant.
 		await page.goto('/ui/tenants');
 		await page.getByPlaceholder('Tenant name').fill(tenantName);
@@ -67,6 +71,14 @@ test.describe('UI restructure smoke', () => {
 			new RegExp(`/ui/tenants/${tenantName}-[0-9a-f]+/databases/${dbName}$`),
 		);
 		await expect(page.getByRole('heading', { name: dbName, level: 1 })).toBeVisible();
+		await expect(rawScopeError).toHaveCount(0);
+
+		const sidebar = page.locator('aside[aria-label="Workspace navigation"]');
+		await expect(sidebar.getByRole('heading', { name: 'Workspace' })).toBeVisible();
+		await expect(sidebar.getByText('Health')).toHaveCount(0);
+		await expect(sidebar.getByText(tenantName)).toBeVisible();
+		await expect(sidebar.getByText(dbName)).toBeVisible();
+		await expect(sidebar.getByRole('link', { name: 'Overview' })).toBeVisible();
 
 		// Database sub-nav (Collections / Schemas / Audit Log).
 		const dbSubnav = page.locator('.db-header .subnav');
@@ -78,16 +90,59 @@ test.describe('UI restructure smoke', () => {
 		await dbSubnav.getByRole('link', { name: 'Collections' }).click();
 		await expect(page).toHaveURL(/\/collections$/);
 		await expect(page.getByRole('heading', { name: 'Collections', level: 1 })).toBeVisible();
+		await expect(page.getByText('No collections yet')).toBeVisible();
+		await expect(rawScopeError).toHaveCount(0);
 
-		// Schemas page.
-		await dbSubnav.getByRole('link', { name: 'Schemas' }).click();
+		// Schemas page: create a collection in the UI-created non-default database.
+		await sidebar.getByRole('link', { name: 'Schemas' }).click();
 		await expect(page).toHaveURL(/\/schemas$/);
 		await expect(page.getByRole('heading', { name: 'Schemas', level: 1 })).toBeVisible();
+		await expect(rawScopeError).toHaveCount(0);
+
+		await page.getByLabel('Name').fill(collectionName);
+		await page.getByLabel('Entity Schema JSON').fill(`{
+  "type": "object",
+  "properties": {
+    "title": { "type": "string" }
+  }
+}`);
+		await page.getByRole('button', { name: 'Create Collection' }).click();
+		await expect(page.getByText('Collection created.')).toBeVisible();
+		await expect(page.getByRole('button', { name: new RegExp(collectionName) })).toBeVisible();
+		await expect(rawScopeError).toHaveCount(0);
+
+		// Collections route must reflect the newly-created collection and open its detail route.
+		await sidebar.getByRole('link', { name: 'Collections' }).click();
+		await expect(page).toHaveURL(/\/collections$/);
+		const collectionRow = page.locator('tr', { hasText: collectionName });
+		await expect(collectionRow).toBeVisible();
+		await expect(collectionRow.getByRole('link', { name: collectionName })).toBeVisible();
+		await collectionRow.getByRole('link', { name: collectionName }).click();
+		await expect(page).toHaveURL(new RegExp(`/collections/${collectionName}$`));
+		await expect(page.getByRole('heading', { name: collectionName, level: 1 })).toBeVisible();
+		await expect(rawScopeError).toHaveCount(0);
+
+		// The collection is not merely listed: it can accept and read an entity in that scope.
+		await page.getByLabel('Entity ID').fill(entityId);
+		await page.getByLabel('Entity JSON').fill(`{
+  "title": "Smoke task"
+}`);
+		await page
+			.locator('section', { has: page.getByRole('heading', { name: 'Create Entity' }) })
+			.getByRole('button', { name: 'Create Entity' })
+			.click();
+		await expect(page.getByText(`Created ${entityId}.`)).toBeVisible();
+		const entityRow = page.locator('tr', { hasText: entityId });
+		await expect(entityRow).toBeVisible();
+		await expect(entityRow).toContainText('Smoke task');
+		await expect(rawScopeError).toHaveCount(0);
 
 		// Audit Log page.
-		await dbSubnav.getByRole('link', { name: 'Audit Log' }).click();
+		await sidebar.getByRole('link', { name: 'Audit Log' }).click();
 		await expect(page).toHaveURL(/\/audit$/);
 		await expect(page.getByRole('heading', { name: 'Audit Log', level: 1 })).toBeVisible();
+		await expect(page.locator('tr', { hasText: collectionName }).first()).toBeVisible();
+		await expect(rawScopeError).toHaveCount(0);
 	});
 
 	test('tenant Members page loads', async ({ page, request }) => {
@@ -101,10 +156,7 @@ test.describe('UI restructure smoke', () => {
 	test('tenant Credentials page loads', async ({ page, request }) => {
 		const tenant = await createTestTenant(request, 'smoke-creds');
 		await page.goto(tenantUrl(tenant));
-		await page
-			.locator('.tenant-header .subnav')
-			.getByRole('link', { name: 'Credentials' })
-			.click();
+		await page.locator('.tenant-header .subnav').getByRole('link', { name: 'Credentials' }).click();
 		await expect(page).toHaveURL(/\/credentials$/);
 		await expect(page.getByRole('heading', { name: 'Credentials', level: 1 })).toBeVisible();
 	});

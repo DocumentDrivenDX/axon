@@ -17,7 +17,9 @@ dun:
 This review treats "E2E" as the executable path that proves a user's story
 arc through the appropriate product surface:
 
-- Browser workflows use Playwright tests under `ui/tests/e2e/`.
+- Browser workflows use Playwright tests under `ui/tests/e2e/`, executed via
+  `scripts/test-ui-e2e-docker.sh` so the browser/runtime environment is
+  container-controlled even when the target Axon instance is external.
 - HTTP/gRPC/GraphQL/MCP workflows use server contract tests under
   `crates/axon-server/tests/`.
 - Embedded API and business workflows use integration tests under
@@ -90,8 +92,9 @@ FEAT-011 owns browser route coverage. Its reverse matrix confirms each UI
 route/tab has at least one Playwright workflow for the expected CRUD-style
 operation:
 
-- Tenant and database routes: list, create, open, delete, and not-found
-  behavior.
+- Tenant and database routes: list, create, open, delete, not-found behavior,
+  and verification that a newly-created non-default database can immediately
+  create/read collections and entities.
 - User/member/credential routes: create/provision, read, update/revoke,
   suspend/remove.
 - Collection routes: create through schema workspace, list, open detail,

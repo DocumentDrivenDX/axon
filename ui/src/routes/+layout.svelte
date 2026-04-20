@@ -3,7 +3,7 @@ import '../app.css';
 
 import { base } from '$app/paths';
 import { page } from '$app/state';
-import { type AuthState, type HealthStatus, fetchAuthMe, fetchHealth } from '$lib/api';
+import { type AuthState, fetchAuthMe } from '$lib/api';
 // biome-ignore lint/correctness/noUnusedImports: Used in template as TenantPicker component.
 import TenantPicker from '$lib/components/TenantPicker.svelte';
 import type { Snippet } from 'svelte';
@@ -11,8 +11,6 @@ import { onMount } from 'svelte';
 
 const { children }: { children: Snippet } = $props();
 
-let health: HealthStatus | null = $state(null);
-let healthError: string | null = $state(null);
 let authState: AuthState = $state({ status: 'loading' } as AuthState);
 
 const homeHref = `${base}/`;
@@ -50,13 +48,24 @@ const isReadOnly = $derived(
 	authState.status === 'authenticated' && authState.identity.role === 'read',
 );
 
-async function refreshHealth() {
-	try {
-		health = await fetchHealth();
-		healthError = null;
-	} catch (errorValue: unknown) {
-		healthError = errorValue instanceof Error ? errorValue.message : 'Failed to reach /health';
-	}
+const tenantHref = $derived(
+	currentTenantDbName ? `${base}/tenants/${encodeURIComponent(currentTenantDbName)}` : null,
+);
+const membersHref = $derived(tenantHref ? `${tenantHref}/members` : null);
+const credentialsHref = $derived(tenantHref ? `${tenantHref}/credentials` : null);
+const databaseHref = $derived(
+	tenantHref && currentDatabaseName
+		? `${tenantHref}/databases/${encodeURIComponent(currentDatabaseName)}`
+		: null,
+);
+const collectionsHref = $derived(databaseHref ? `${databaseHref}/collections` : null);
+const schemasHref = $derived(databaseHref ? `${databaseHref}/schemas` : null);
+const auditHref = $derived(databaseHref ? `${databaseHref}/audit` : null);
+const graphqlHref = $derived(databaseHref ? `${databaseHref}/graphql` : null);
+
+function isActive(href: string | null): boolean {
+	if (!href) return false;
+	return page.url.pathname === href || page.url.pathname.startsWith(`${href}/`);
 }
 
 async function loadAuth() {
@@ -69,13 +78,7 @@ async function loadAuth() {
 }
 
 onMount(() => {
-	void refreshHealth();
 	void loadAuth();
-	const timer = window.setInterval(() => {
-		void refreshHealth();
-	}, 15_000);
-
-	return () => window.clearInterval(timer);
 });
 </script>
 
@@ -112,39 +115,58 @@ onMount(() => {
 		</div>
 	</header>
 
-	<div class="body">
-		<aside class="sidebar panel">
-			<div class="panel-header">
-				<h2>Health</h2>
-				<span class="pill {healthError ? 'pill-error' : ''}">
-					{healthError ? 'error' : (health?.status ?? 'checking')}
-				</span>
-			</div>
-			<div class="panel-body stack">
-				{#if healthError}
-					<p class="message error">{healthError}</p>
-				{:else if health}
-					<div>
-						<strong>Version</strong>
-						<p class="muted">{health.version}</p>
+		<div class="body">
+			<aside class="sidebar panel" aria-label="Workspace navigation">
+				<div class="panel-header">
+					<h2>Workspace</h2>
+				</div>
+				<nav class="sidebar-nav">
+					<div class="nav-section">
+						<a class="side-link" class:active={isActive(tenantsHref)} href={tenantsHref}>
+							Tenants
+						</a>
+						<a class="side-link" class:active={isActive(usersHref)} href={usersHref}>Users</a>
 					</div>
-					<div>
-						<strong>Uptime</strong>
-						<p class="muted">{health.uptime_seconds}s</p>
-					</div>
-					<div>
-						<strong>Backend</strong>
-						<p class="muted">{health.backing_store.backend}</p>
-					</div>
-					<div>
-						<strong>Default Namespace</strong>
-						<p class="muted">{health.default_namespace}</p>
-					</div>
-				{:else}
-					<p class="muted">Polling…</p>
-				{/if}
-			</div>
-		</aside>
+
+					{#if currentTenantDbName && tenantHref}
+						<div class="nav-section">
+							<div class="nav-label">Tenant</div>
+							<div class="scope-name" title={currentTenantDbName}>{currentTenantDbName}</div>
+							<a
+								class="side-link"
+								class:active={isActive(tenantHref) && !isActive(membersHref) && !isActive(credentialsHref)}
+								href={tenantHref}
+							>
+								Databases
+							</a>
+							<a class="side-link" class:active={isActive(membersHref)} href={membersHref}>Members</a>
+							<a class="side-link" class:active={isActive(credentialsHref)} href={credentialsHref}>
+								Credentials
+							</a>
+						</div>
+					{/if}
+
+					{#if currentDatabaseName && databaseHref}
+						<div class="nav-section">
+							<div class="nav-label">Database</div>
+							<div class="scope-name" title={currentDatabaseName}>{currentDatabaseName}</div>
+							<a
+								class="side-link"
+								class:active={page.url.pathname === databaseHref}
+								href={databaseHref}
+							>
+								Overview
+							</a>
+							<a class="side-link" class:active={isActive(collectionsHref)} href={collectionsHref}>
+								Collections
+							</a>
+							<a class="side-link" class:active={isActive(schemasHref)} href={schemasHref}>Schemas</a>
+							<a class="side-link" class:active={isActive(auditHref)} href={auditHref}>Audit Log</a>
+							<a class="side-link" class:active={isActive(graphqlHref)} href={graphqlHref}>GraphQL</a>
+						</div>
+					{/if}
+				</nav>
+			</aside>
 
 		<main class="content">
 			{@render children()}
@@ -238,12 +260,7 @@ onMount(() => {
 		font-size: 0.82rem;
 	}
 
-	.pill-error {
-		border-color: rgba(251, 113, 133, 0.4);
-		color: var(--danger);
-	}
-
-	/* ── Body grid ───────────────────────────────────────────────────────── */
+		/* ── Body grid ───────────────────────────────────────────────────────── */
 
 	.body {
 		display: grid;
@@ -258,10 +275,64 @@ onMount(() => {
 		align-self: start;
 	}
 
-	.sidebar h2 {
-		margin: 0;
-		font-size: 1rem;
-	}
+		.sidebar h2 {
+			margin: 0;
+			font-size: 1rem;
+		}
+
+		.sidebar-nav {
+			display: flex;
+			flex-direction: column;
+			gap: 0.9rem;
+			padding: 0.75rem;
+		}
+
+		.nav-section {
+			display: flex;
+			flex-direction: column;
+			gap: 0.25rem;
+		}
+
+		.nav-label {
+			margin: 0.25rem 0.25rem 0;
+			color: var(--muted);
+			font-size: 0.72rem;
+			font-weight: 700;
+			text-transform: uppercase;
+		}
+
+		.scope-name {
+			min-width: 0;
+			margin: 0 0.25rem 0.35rem;
+			overflow: hidden;
+			color: var(--text);
+			font-family: monospace;
+			font-size: 0.82rem;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.side-link {
+			display: block;
+			padding: 0.45rem 0.65rem;
+			border-radius: 0.5rem;
+			color: var(--muted);
+			font-size: 0.9rem;
+			text-decoration: none;
+			transition:
+				color 120ms ease,
+				background 120ms ease;
+		}
+
+		.side-link:hover {
+			background: rgba(255, 255, 255, 0.06);
+			color: var(--text);
+		}
+
+		.side-link.active {
+			background: rgba(125, 211, 252, 0.14);
+			color: var(--text);
+		}
 
 	.content {
 		padding: 0;

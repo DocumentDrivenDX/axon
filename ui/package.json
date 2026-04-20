@@ -10,10 +10,10 @@
 		"typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"lint": "bunx biome check biome.json package.json svelte.config.js tsconfig.json vite.config.js src",
 		"test": "bun test src/",
-		"test:e2e": "bunx playwright test",
-		"test:e2e:real": "bunx playwright test --config playwright.e2e.config.ts",
-		"test:e2e:postgres": "bunx playwright test --config playwright.e2e.postgres.config.ts",
-		"test:e2e:sqlite": "bunx playwright test --config playwright.e2e.sqlite.config.ts"
+		"test:e2e": "cd .. && scripts/test-ui-e2e-docker.sh",
+		"test:e2e:real": "cd .. && scripts/test-ui-e2e-docker.sh",
+		"test:e2e:postgres": "cd .. && scripts/test-ui-e2e-docker.sh",
+		"test:e2e:sqlite": "cd .. && scripts/test-ui-e2e-docker.sh"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.4",

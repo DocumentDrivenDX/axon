@@ -134,5 +134,22 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: cd ui && bun install
       - run: cd ui && bun run build
-      - run: cd ui && bunx playwright install --with-deps chromium
-      - run: cd ui && bun run test:e2e:postgres
+      - run: cargo build -p axon-cli
+      - name: Start Axon PostgreSQL E2E server
+        run: |
+          target/debug/axon serve \
+            --no-auth \
+            --storage postgres \
+            --postgres-dsn "$AXON_POSTGRES_DSN" \
+            --http-port 4171 \
+            --ui-dir ui/build > /tmp/axon-e2e.log 2>&1 &
+          echo $! > /tmp/axon-e2e.pid
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:4171/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/axon-e2e.log
+          exit 1
+      - run: cd ui && AXON_E2E_BASE_URL=http://host.docker.internal:4171 bun run test:e2e:postgres

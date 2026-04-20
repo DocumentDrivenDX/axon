@@ -15,6 +15,7 @@ use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 
 use axon_api::handler::AxonHandler;
+use axon_core::{AxonError, DEFAULT_DATABASE};
 use axon_storage::adapter::StorageAdapter;
 use axon_storage::{PostgresStorageAdapter, SqliteStorageAdapter};
 
@@ -22,6 +23,26 @@ use axon_storage::{PostgresStorageAdapter, SqliteStorageAdapter};
 /// `StorageAdapter`.  Used by the HTTP gateway for both SQLite and
 /// PostgreSQL tenants.
 pub type TenantHandler = Arc<Mutex<AxonHandler<Box<dyn StorageAdapter + Send + Sync>>>>;
+
+fn logical_database_from_slug(slug: &str) -> &str {
+    slug.rsplit_once(':')
+        .map(|(_, database)| database)
+        .unwrap_or(DEFAULT_DATABASE)
+}
+
+fn ensure_logical_database<S: StorageAdapter>(storage: &mut S, slug: &str) -> Result<(), String> {
+    let database = logical_database_from_slug(slug);
+    if database == DEFAULT_DATABASE {
+        return Ok(());
+    }
+
+    match storage.create_database(database) {
+        Ok(()) | Err(AxonError::AlreadyExists(_)) => Ok(()),
+        Err(error) => Err(format!(
+            "failed to initialize logical database '{database}' for '{slug}': {error}"
+        )),
+    }
+}
 
 /// Backend-specific state for the router.
 enum RouterBackend {
@@ -177,8 +198,9 @@ impl TenantRouter {
                     )
                 })?;
 
-                let storage = SqliteStorageAdapter::open(path_str)
+                let mut storage = SqliteStorageAdapter::open(path_str)
                     .map_err(|e| format!("failed to open tenant database '{db_name}': {e}"))?;
+                ensure_logical_database(&mut storage, db_name)?;
 
                 let boxed: Box<dyn StorageAdapter + Send + Sync> = Box::new(storage);
                 let handler = Arc::new(Mutex::new(AxonHandler::new(boxed)));
@@ -248,11 +270,12 @@ impl TenantRouter {
                         }
                     }
 
-                    let storage = PostgresStorageAdapter::connect(&tenant_conn_str).map_err(|e| {
+                    let mut storage = PostgresStorageAdapter::connect(&tenant_conn_str).map_err(|e| {
                         format!(
                             "failed to connect to tenant PostgreSQL database 'axon_{db_name_owned}': {e}"
                         )
                     })?;
+                    ensure_logical_database(&mut storage, &db_name_owned)?;
                     let boxed: Box<dyn StorageAdapter + Send + Sync> = Box::new(storage);
                     Ok(Arc::new(Mutex::new(AxonHandler::new(boxed))))
                 })
@@ -367,6 +390,8 @@ impl TenantRouter {
 mod tests {
     use std::path::Path;
 
+    use axon_api::request::{ListDatabasesRequest, ListNamespacesRequest};
+
     use super::*;
 
     /// Create a `TenantRouter` backed by a temporary directory.
@@ -401,6 +426,36 @@ mod tests {
             expected_path.exists(),
             "expected tenant db at {}",
             expected_path.display()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn get_or_create_initializes_logical_database_from_tenant_database_slug() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let router = make_router(tmp.path());
+
+        let handler = router
+            .get_or_create("acme:first")
+            .await
+            .expect("tenant database handler");
+        let guard = handler.lock().await;
+
+        assert!(
+            guard
+                .list_databases(ListDatabasesRequest {})
+                .expect("list databases")
+                .databases
+                .contains(&"first".to_string()),
+            "logical database from path slug should be initialized"
+        );
+        assert_eq!(
+            guard
+                .list_namespaces(ListNamespacesRequest {
+                    database: "first".to_string()
+                })
+                .expect("list namespaces")
+                .schemas,
+            vec!["default".to_string()]
         );
     }
 

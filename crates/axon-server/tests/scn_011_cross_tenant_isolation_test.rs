@@ -12,11 +12,9 @@
 //!     `/tenants/beta/databases/default/…` → `"beta:default"` (handler B)
 //!     `/tenants/acme/databases/extra/…`   → `"acme:extra"`   (handler C)
 //!
-//! Note: we use `databases/default` for the entity-creation path because
-//! `qualify_collection_name` short-circuits for the `"default"` database name
-//! (no namespace pre-initialisation required).  The READ paths for handlers B
-//! and C are fresh databases with no data, so they return 404 regardless of
-//! namespace state.
+//! Non-default database paths must be usable without a separate data-plane
+//! bootstrap call: opening `/tenants/acme/databases/first/...` materializes a
+//! handler whose logical `first.default` namespace exists.
 //!
 //! Scenario:
 //!   1. Create collection `orders` and entity `orders/order-1` under
@@ -97,4 +95,38 @@ async fn cross_tenant_entity_is_not_visible_from_other_tenants() {
     http.get("/tenants/acme/databases/extra/entities/orders/order-1")
         .await
         .assert_status(axum::http::StatusCode::NOT_FOUND);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn non_default_database_path_can_create_collection_and_entity() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let http = make_multi_tenant_server(tmp.path());
+
+    http.post("/tenants/acme/databases/first/collections/orders")
+        .json(&json!({
+            "schema": {
+                "collection": "orders",
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" }
+                    }
+                }
+            }
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    http.post("/tenants/acme/databases/first/entities/orders/order-1")
+        .json(&json!({"data": {"title": "acme order"}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let read = http
+        .get("/tenants/acme/databases/first/entities/orders/order-1")
+        .await;
+    read.assert_status_ok();
+    let body: serde_json::Value = read.json();
+    assert_eq!(body["entity"]["data"]["title"], "acme order");
 }

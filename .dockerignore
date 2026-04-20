@@ -9,6 +9,8 @@ target/
 ui/node_modules/
 ui/build/
 ui/.svelte-kit/
+ui/tests/
+ui/playwright*.config.ts
 ui/playwright-report/
 ui/test-results/
 

@@ -100,8 +100,9 @@ history.
   database-scoped tools
 - **Database sub-navigation**: Collections, Schemas, Audit Log, and GraphQL
   sections are available only within an explicit tenant/database scope
-- **Health indicator**: Live server health status (version, uptime) via
-  `/health` endpoint, polled every 15 seconds
+- **Contextual sidebar navigation**: The left rail shows the active
+  tenant/database context and routes to tenant and database workspace tools.
+  It does not expose health telemetry in place of workspace navigation.
 - **Dark theme**: Default dark color scheme suitable for developer tooling
 - **Responsive**: Usable at 1024px+ viewport width (not mobile-optimized)
 
@@ -131,7 +132,7 @@ history.
 **Acceptance Criteria:**
 - [x] `/ui/` redirects to `/ui/tenants`, and top navigation exposes only tenant and user control-plane roots. E2E: `smoke-restructure.spec.ts`
 - [x] Creating a tenant routes to `/ui/tenants/:tenant`, and tenant sub-navigation exposes Databases, Members, and Credentials. E2E: `smoke-restructure.spec.ts`
-- [x] Creating a database routes to `/ui/tenants/:tenant/databases/:database`, and database sub-navigation exposes Collections, Schemas, Audit Log, and GraphQL. E2E: `smoke-restructure.spec.ts`
+- [x] Creating a database routes to `/ui/tenants/:tenant/databases/:database`, the database is immediately usable for collection/entity creation, and database sub-navigation exposes Collections, Schemas, Audit Log, and GraphQL. E2E: `smoke-restructure.spec.ts`
 - [x] Unknown tenant routes render the not-found state instead of a misleading empty console. E2E: `smoke-restructure.spec.ts`
 - [x] Two tenants can contain the same database, collection, and entity IDs while remaining isolated in the UI. E2E: `tenant-isolation.spec.ts`
 

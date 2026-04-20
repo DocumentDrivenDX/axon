@@ -1,13 +1,15 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const baseURL = process.env.AXON_E2E_BASE_URL ?? 'http://localhost:4170';
+
 /**
  * Playwright E2E configuration for the Axon Admin UI.
  *
- * Run with: bunx playwright test
+ * Run with: bun run test:e2e
  *
- * Requires axon to be installed and running on localhost:4170:
- *   axon server install
- *   axon server start
+ * The package scripts delegate to scripts/test-ui-e2e-docker.sh so Playwright
+ * always runs inside a pinned browser/runtime container. Set AXON_E2E_BASE_URL
+ * to smoke-test an already-running instance without changing the runner.
  *
  * This config targets a real, persistent local service, so it runs serially.
  */
@@ -20,7 +22,7 @@ export default defineConfig({
 	reporter: 'html',
 
 	use: {
-		baseURL: 'http://localhost:4170',
+		baseURL,
 		trace: 'on-first-retry',
 		screenshot: 'only-on-failure',
 	},
