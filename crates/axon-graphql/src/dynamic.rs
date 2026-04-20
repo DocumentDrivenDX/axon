@@ -8,7 +8,9 @@
 //! plain [`build_schema`] function builds a stub schema (useful for SDL
 //! inspection and tests).
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_graphql::dynamic::{
     Field, FieldFuture, FieldValue, InputObject, InputValue, Object, Scalar, Schema, SchemaBuilder,
@@ -16,6 +18,7 @@ use async_graphql::dynamic::{
 };
 use async_graphql::futures_util::StreamExt;
 use async_graphql::{Error as GqlError, ErrorExtensions, Value as GqlValue};
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
@@ -23,15 +26,16 @@ use crate::subscriptions::BroadcastBroker;
 
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
-    DescribeCollectionRequest, FieldFilter, FilterNode, FilterOp, GateFilter, GetEntityRequest,
-    ListCollectionsRequest, PatchEntityRequest, QueryAuditRequest, QueryEntitiesRequest,
-    SortDirection, SortField, TransitionLifecycleRequest, UpdateEntityRequest,
+    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest,
+    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode,
+    FilterOp, GateFilter, GetEntityRequest, ListCollectionsRequest, PatchEntityRequest,
+    PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest, SortDirection, SortField,
+    TransitionLifecycleRequest, UpdateEntityRequest,
 };
-use axon_core::auth::CallerIdentity;
+use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
-use axon_core::types::Entity;
+use axon_core::types::{Entity, Link};
 use axon_schema::schema::CollectionSchema;
 use axon_storage::adapter::StorageAdapter;
 
@@ -55,20 +59,53 @@ const COLLECTION_META_TYPE: &str = "CollectionMeta";
 const AUDIT_ENTRY_TYPE: &str = "AuditEntry";
 const AUDIT_EDGE_TYPE: &str = "AuditEdge";
 const AUDIT_CONNECTION_TYPE: &str = "AuditConnection";
+const CREATE_COLLECTION_INPUT: &str = "CreateCollectionInput";
+const DROP_COLLECTION_INPUT: &str = "DropCollectionInput";
+const PUT_SCHEMA_INPUT: &str = "PutSchemaInput";
+const DROP_COLLECTION_PAYLOAD: &str = "DropCollectionPayload";
+const PUT_SCHEMA_PAYLOAD: &str = "PutSchemaPayload";
+const COMMIT_TRANSACTION_INPUT: &str = "CommitTransactionInput";
+const TRANSACTION_OPERATION_INPUT: &str = "TransactionOperationInput";
+const CREATE_ENTITY_TRANSACTION_INPUT: &str = "CreateEntityTransactionInput";
+const UPDATE_ENTITY_TRANSACTION_INPUT: &str = "UpdateEntityTransactionInput";
+const PATCH_ENTITY_TRANSACTION_INPUT: &str = "PatchEntityTransactionInput";
+const DELETE_ENTITY_TRANSACTION_INPUT: &str = "DeleteEntityTransactionInput";
+const CREATE_LINK_TRANSACTION_INPUT: &str = "CreateLinkTransactionInput";
+const DELETE_LINK_TRANSACTION_INPUT: &str = "DeleteLinkTransactionInput";
+const COMMIT_TRANSACTION_PAYLOAD: &str = "CommitTransactionPayload";
+const TRANSACTION_OPERATION_RESULT: &str = "TransactionOperationResult";
 const DEFAULT_MAX_GRAPHQL_DEPTH: usize = 10;
 const DEFAULT_MAX_GRAPHQL_COMPLEXITY: usize = 256;
 const MAX_DEPTH_ENV: &str = "AXON_GRAPHQL_MAX_DEPTH";
 const MAX_COMPLEXITY_ENV: &str = "AXON_GRAPHQL_MAX_COMPLEXITY";
+const IDEMPOTENCY_TTL: Duration = Duration::from_secs(5 * 60);
+
+static GRAPHQL_IDEMPOTENCY_CACHE: OnceLock<StdMutex<HashMap<(String, String), IdempotencyEntry>>> =
+    OnceLock::new();
+
+#[derive(Clone, Debug)]
+pub struct GraphqlIdempotencyScope(pub String);
+
+#[derive(Clone, Debug)]
+struct IdempotencyEntry {
+    response: Value,
+    expires_at: Instant,
+}
+
+fn graphql_idempotency_cache() -> &'static StdMutex<HashMap<(String, String), IdempotencyEntry>> {
+    GRAPHQL_IDEMPOTENCY_CACHE.get_or_init(|| StdMutex::new(HashMap::new()))
+}
 
 // ── Entity → GraphQL FieldValue conversion ──────────────────────────────────
 
-/// Convert an `Entity` into an `async-graphql` `FieldValue` that the dynamic
-/// object type can resolve field-by-field.
-fn entity_to_field_value(entity: &Entity) -> FieldValue<'static> {
-    json_to_field_value(entity_to_typed_json(entity))
+fn entity_to_field_value_with_schema(
+    entity: &Entity,
+    schema: Option<&CollectionSchema>,
+) -> FieldValue<'static> {
+    json_to_field_value(entity_to_typed_json_with_schema(entity, schema))
 }
 
-fn entity_to_typed_json(entity: &Entity) -> Value {
+fn entity_to_typed_json_with_schema(entity: &Entity, schema: Option<&CollectionSchema>) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("id".into(), Value::String(entity.id.to_string()));
     map.insert("version".into(), json!(entity.version));
@@ -84,11 +121,19 @@ fn entity_to_typed_json(entity: &Entity) -> Value {
             map.insert(k.clone(), v.clone());
         }
     }
+    map.insert(
+        "lifecycles".into(),
+        lifecycle_metadata_json(schema, &entity.data),
+    );
 
     Value::Object(map)
 }
 
 fn entity_to_generic_json(entity: &Entity) -> Value {
+    entity_to_generic_json_with_schema(entity, None)
+}
+
+fn entity_to_generic_json_with_schema(entity: &Entity, schema: Option<&CollectionSchema>) -> Value {
     let mut map = serde_json::Map::new();
     map.insert("id".into(), Value::String(entity.id.to_string()));
     map.insert(
@@ -103,7 +148,57 @@ fn entity_to_generic_json(entity: &Entity) -> Value {
     if let Some(ns) = entity.updated_at_ns {
         map.insert("updatedAt".into(), Value::String(format_ns(ns)));
     }
+    map.insert(
+        "lifecycles".into(),
+        lifecycle_metadata_json(schema, &entity.data),
+    );
     Value::Object(map)
+}
+
+fn lifecycle_metadata_json(schema: Option<&CollectionSchema>, data: &Value) -> Value {
+    let Some(schema) = schema else {
+        return json!({});
+    };
+    let mut lifecycles = serde_json::Map::new();
+    for (name, lifecycle) in &schema.lifecycles {
+        let current_state = data
+            .get(&lifecycle.field)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let valid_transitions = current_state
+            .as_deref()
+            .and_then(|state| lifecycle.transitions.get(state))
+            .cloned()
+            .unwrap_or_default();
+        lifecycles.insert(
+            name.clone(),
+            json!({
+                "field": lifecycle.field,
+                "initial": lifecycle.initial,
+                "currentState": current_state,
+                "validTransitions": valid_transitions,
+            }),
+        );
+    }
+    Value::Object(lifecycles)
+}
+
+fn lifecycle_valid_transitions_from_parent(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    let lifecycle_name = ctx.args.try_get("lifecycleName")?.string()?.to_owned();
+    match ctx.parent_value.try_to_value() {
+        Ok(GqlValue::Object(map)) => {
+            let transitions = map
+                .get(&async_graphql::Name::new("lifecycles"))
+                .and_then(|lifecycles| lifecycles.clone().into_json().ok())
+                .and_then(|lifecycles| lifecycles.get(&lifecycle_name).cloned())
+                .and_then(|metadata| metadata.get("validTransitions").cloned())
+                .unwrap_or_else(|| json!([]));
+            Ok(Some(json_to_field_value(transitions)))
+        }
+        _ => Ok(Some(json_to_field_value(json!([])))),
+    }
 }
 
 fn json_to_field_value(value: Value) -> FieldValue<'static> {
@@ -149,6 +244,160 @@ fn sort_input_object() -> InputObject {
         .field(InputValue::new(
             "direction",
             TypeRef::named(TypeRef::STRING),
+        ))
+}
+
+fn create_collection_input_object() -> InputObject {
+    InputObject::new(CREATE_COLLECTION_INPUT)
+        .field(InputValue::new("name", TypeRef::named_nn(TypeRef::STRING)))
+        .field(InputValue::new("schema", TypeRef::named_nn("JSON")))
+}
+
+fn drop_collection_input_object() -> InputObject {
+    InputObject::new(DROP_COLLECTION_INPUT)
+        .field(InputValue::new("name", TypeRef::named_nn(TypeRef::STRING)))
+        .field(InputValue::new(
+            "confirm",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+}
+
+fn put_schema_input_object() -> InputObject {
+    InputObject::new(PUT_SCHEMA_INPUT)
+        .field(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("schema", TypeRef::named_nn("JSON")))
+        .field(InputValue::new("force", TypeRef::named(TypeRef::BOOLEAN)))
+        .field(InputValue::new("dryRun", TypeRef::named(TypeRef::BOOLEAN)))
+}
+
+fn commit_transaction_input_object() -> InputObject {
+    InputObject::new(COMMIT_TRANSACTION_INPUT)
+        .field(InputValue::new(
+            "idempotencyKey",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(InputValue::new(
+            "operations",
+            TypeRef::named_nn_list_nn(TRANSACTION_OPERATION_INPUT),
+        ))
+}
+
+fn transaction_operation_input_object() -> InputObject {
+    InputObject::new(TRANSACTION_OPERATION_INPUT)
+        .field(InputValue::new(
+            "createEntity",
+            TypeRef::named(CREATE_ENTITY_TRANSACTION_INPUT),
+        ))
+        .field(InputValue::new(
+            "updateEntity",
+            TypeRef::named(UPDATE_ENTITY_TRANSACTION_INPUT),
+        ))
+        .field(InputValue::new(
+            "patchEntity",
+            TypeRef::named(PATCH_ENTITY_TRANSACTION_INPUT),
+        ))
+        .field(InputValue::new(
+            "deleteEntity",
+            TypeRef::named(DELETE_ENTITY_TRANSACTION_INPUT),
+        ))
+        .field(InputValue::new(
+            "createLink",
+            TypeRef::named(CREATE_LINK_TRANSACTION_INPUT),
+        ))
+        .field(InputValue::new(
+            "deleteLink",
+            TypeRef::named(DELETE_LINK_TRANSACTION_INPUT),
+        ))
+}
+
+fn create_entity_transaction_input_object() -> InputObject {
+    InputObject::new(CREATE_ENTITY_TRANSACTION_INPUT)
+        .field(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new("data", TypeRef::named_nn("JSON")))
+}
+
+fn update_entity_transaction_input_object() -> InputObject {
+    InputObject::new(UPDATE_ENTITY_TRANSACTION_INPUT)
+        .field(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new(
+            "expectedVersion",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(InputValue::new("data", TypeRef::named_nn("JSON")))
+}
+
+fn patch_entity_transaction_input_object() -> InputObject {
+    InputObject::new(PATCH_ENTITY_TRANSACTION_INPUT)
+        .field(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new(
+            "expectedVersion",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(InputValue::new("patch", TypeRef::named_nn("JSON")))
+}
+
+fn delete_entity_transaction_input_object() -> InputObject {
+    InputObject::new(DELETE_ENTITY_TRANSACTION_INPUT)
+        .field(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new(
+            "expectedVersion",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+}
+
+fn create_link_transaction_input_object() -> InputObject {
+    InputObject::new(CREATE_LINK_TRANSACTION_INPUT)
+        .field(InputValue::new(
+            "sourceCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("sourceId", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new(
+            "targetCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("targetId", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new(
+            "linkType",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("metadata", TypeRef::named("JSON")))
+}
+
+fn delete_link_transaction_input_object() -> InputObject {
+    InputObject::new(DELETE_LINK_TRANSACTION_INPUT)
+        .field(InputValue::new(
+            "sourceCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("sourceId", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new(
+            "targetCollection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("targetId", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new(
+            "linkType",
+            TypeRef::named_nn(TypeRef::STRING),
         ))
 }
 
@@ -315,6 +564,7 @@ fn entity_connection_value(
     next_cursor: Option<String>,
     has_previous_page: bool,
     generic_node: bool,
+    schema: Option<&CollectionSchema>,
 ) -> FieldValue<'static> {
     let edges: Vec<Value> = entities
         .iter()
@@ -322,9 +572,9 @@ fn entity_connection_value(
             json!({
                 "cursor": entity.id.to_string(),
                 "node": if generic_node {
-                    entity_to_generic_json(entity)
+                    entity_to_generic_json_with_schema(entity, schema)
                 } else {
-                    entity_to_typed_json(entity)
+                    entity_to_typed_json_with_schema(entity, schema)
                 },
             })
         })
@@ -456,6 +706,33 @@ fn generic_entity_object() -> Object {
             "updatedAt",
             TypeRef::named(TypeRef::STRING),
         ))
+        .field(json_object_field("lifecycles", TypeRef::named("JSON")))
+        .field(
+            Field::new(
+                "validTransitions",
+                TypeRef::named_nn_list_nn(TypeRef::STRING),
+                |ctx| FieldFuture::new(async move { lifecycle_valid_transitions_from_parent(ctx) }),
+            )
+            .argument(InputValue::new(
+                "lifecycleName",
+                TypeRef::named_nn(TypeRef::STRING),
+            )),
+        )
+}
+
+fn add_entity_lifecycle_fields(obj: Object) -> Object {
+    obj.field(json_object_field("lifecycles", TypeRef::named("JSON")))
+        .field(
+            Field::new(
+                "validTransitions",
+                TypeRef::named_nn_list_nn(TypeRef::STRING),
+                |ctx| FieldFuture::new(async move { lifecycle_valid_transitions_from_parent(ctx) }),
+            )
+            .argument(InputValue::new(
+                "lifecycleName",
+                TypeRef::named_nn(TypeRef::STRING),
+            )),
+        )
 }
 
 fn entity_edge_object() -> Object {
@@ -597,6 +874,61 @@ fn audit_connection_object() -> Object {
         ))
 }
 
+fn transaction_operation_result_object() -> Object {
+    Object::new(TRANSACTION_OPERATION_RESULT)
+        .field(json_object_field("index", TypeRef::named_nn(TypeRef::INT)))
+        .field(json_object_field(
+            "success",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "collection",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field("id", TypeRef::named(TypeRef::ID)))
+        .field(json_object_field("entity", TypeRef::named(ENTITY_TYPE)))
+        .field(json_object_field("link", TypeRef::named("JSON")))
+}
+
+fn commit_transaction_payload_object() -> Object {
+    Object::new(COMMIT_TRANSACTION_PAYLOAD)
+        .field(json_object_field(
+            "transactionId",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "replayHit",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "results",
+            TypeRef::named_nn_list_nn(TRANSACTION_OPERATION_RESULT),
+        ))
+}
+
+fn drop_collection_payload_object() -> Object {
+    Object::new(DROP_COLLECTION_PAYLOAD)
+        .field(json_object_field(
+            "name",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "entitiesRemoved",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+}
+
+fn put_schema_payload_object() -> Object {
+    Object::new(PUT_SCHEMA_PAYLOAD)
+        .field(json_object_field("schema", TypeRef::named_nn("JSON")))
+        .field(json_object_field("compatibility", TypeRef::named("JSON")))
+        .field(json_object_field("diff", TypeRef::named("JSON")))
+        .field(json_object_field(
+            "dryRun",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+}
+
 fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
     schema_builder = schema_builder
         .register(page_info_object())
@@ -606,7 +938,11 @@ fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
         .register(collection_meta_object())
         .register(audit_entry_object())
         .register(audit_edge_object())
-        .register(audit_connection_object());
+        .register(audit_connection_object())
+        .register(transaction_operation_result_object())
+        .register(commit_transaction_payload_object())
+        .register(drop_collection_payload_object())
+        .register(put_schema_payload_object());
     schema_builder
 }
 
@@ -621,14 +957,18 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             FieldFuture::new(async move {
                 let collection = ctx.args.try_get("collection")?.string()?.to_owned();
                 let id = ctx.args.try_get("id")?.string()?.to_owned();
+                let collection_id = CollectionId::new(collection);
                 let guard = handler.lock().await;
+                let schema = guard
+                    .get_schema(&collection_id)
+                    .map_err(axon_error_to_gql)?;
                 match guard.get_entity(GetEntityRequest {
-                    collection: CollectionId::new(collection),
+                    collection: collection_id,
                     id: EntityId::new(id),
                 }) {
-                    Ok(resp) => Ok(Some(json_to_field_value(entity_to_generic_json(
-                        &resp.entity,
-                    )))),
+                    Ok(resp) => Ok(Some(json_to_field_value(
+                        entity_to_generic_json_with_schema(&resp.entity, schema.as_ref()),
+                    ))),
                     Err(AxonError::NotFound(_)) => Ok(None),
                     Err(e) => Err(axon_error_to_gql(e)),
                 }
@@ -677,9 +1017,13 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                         .unwrap_or_default();
                     let has_previous_page = after_id.is_some();
 
+                    let collection_id = CollectionId::new(collection);
                     let guard = handler.lock().await;
+                    let schema = guard
+                        .get_schema(&collection_id)
+                        .map_err(axon_error_to_gql)?;
                     match guard.query_entities(QueryEntitiesRequest {
-                        collection: CollectionId::new(collection),
+                        collection: collection_id,
                         filter,
                         sort,
                         limit,
@@ -692,6 +1036,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                             resp.next_cursor,
                             has_previous_page,
                             true,
+                            schema.as_ref(),
                         ))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
@@ -721,7 +1066,13 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                         let values: Vec<FieldValue> = resp
                             .collections
                             .iter()
-                            .map(|meta| json_to_field_value(collection_meta_json(meta, None)))
+                            .map(|meta| {
+                                let schema = guard
+                                    .get_schema(&CollectionId::new(&meta.name))
+                                    .ok()
+                                    .flatten();
+                                json_to_field_value(collection_meta_json(meta, schema))
+                            })
                             .collect();
                         Ok(Some(FieldValue::list(values)))
                     }
@@ -856,7 +1207,14 @@ fn add_stub_root_query_fields(mut query: Object) -> Object {
             TypeRef::named_nn(ENTITY_CONNECTION_TYPE),
             |_ctx| {
                 FieldFuture::new(async move {
-                    Ok(Some(entity_connection_value(&[], 0, None, false, true)))
+                    Ok(Some(entity_connection_value(
+                        &[],
+                        0,
+                        None,
+                        false,
+                        true,
+                        None,
+                    )))
                 })
             },
         )
@@ -1063,6 +1421,548 @@ fn axon_error_to_gql(err: AxonError) -> GqlError {
     }
 }
 
+fn validate_graphql_idempotency_key(key: &str) -> Result<(), GqlError> {
+    if key.is_empty() || key.len() > 128 {
+        return Err(
+            GqlError::new("idempotencyKey length must be 1..128 characters").extend_with(
+                |_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                },
+            ),
+        );
+    }
+    if !key
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'))
+    {
+        return Err(
+            GqlError::new("idempotencyKey must use ASCII [A-Za-z0-9_.:-] characters").extend_with(
+                |_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                },
+            ),
+        );
+    }
+    Ok(())
+}
+
+fn graphql_idempotency_scope(ctx: &async_graphql::dynamic::ResolverContext<'_>) -> String {
+    ctx.data::<GraphqlIdempotencyScope>()
+        .map(|scope| scope.0.clone())
+        .unwrap_or_else(|_| "default:default".to_string())
+}
+
+fn idempotency_cached(scope: &str, key: &str) -> Option<Value> {
+    let now = Instant::now();
+    let mut cache = graphql_idempotency_cache()
+        .lock()
+        .expect("graphql idempotency cache mutex poisoned");
+    cache.retain(|_, entry| entry.expires_at > now);
+    cache
+        .get(&(scope.to_string(), key.to_string()))
+        .map(|entry| entry.response.clone())
+}
+
+fn idempotency_store(scope: &str, key: &str, response: Value) {
+    let mut cache = graphql_idempotency_cache()
+        .lock()
+        .expect("graphql idempotency cache mutex poisoned");
+    cache.insert(
+        (scope.to_string(), key.to_string()),
+        IdempotencyEntry {
+            response,
+            expires_at: Instant::now() + IDEMPOTENCY_TTL,
+        },
+    );
+}
+
+fn json_merge_patch(target: &mut Value, patch: &Value) {
+    if let Value::Object(patch_map) = patch {
+        if !target.is_object() {
+            *target = Value::Object(serde_json::Map::new());
+        }
+        if let Value::Object(target_map) = target {
+            for (key, value) in patch_map {
+                if value.is_null() {
+                    target_map.remove(key);
+                } else {
+                    let entry = target_map.entry(key.clone()).or_insert(Value::Null);
+                    json_merge_patch(entry, value);
+                }
+            }
+        }
+    } else {
+        *target = patch.clone();
+    }
+}
+
+fn required_object<'a>(
+    value: &'a Value,
+    name: &str,
+    op_index: usize,
+) -> Result<&'a serde_json::Map<String, Value>, GqlError> {
+    value.as_object().ok_or_else(|| {
+        GqlError::new(format!("{name} must be an object")).extend_with(move |_err, ext| {
+            ext.set("code", "INVALID_ARGUMENT");
+            ext.set("operationIndex", op_index as i32);
+        })
+    })
+}
+
+fn required_str(
+    obj: &serde_json::Map<String, Value>,
+    field: &str,
+    op_index: usize,
+) -> Result<String, GqlError> {
+    obj.get(field)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            GqlError::new(format!("{field} must be a string")).extend_with(move |_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+                ext.set("operationIndex", op_index as i32);
+            })
+        })
+}
+
+fn required_u64(
+    obj: &serde_json::Map<String, Value>,
+    field: &str,
+    op_index: usize,
+) -> Result<u64, GqlError> {
+    obj.get(field).and_then(Value::as_u64).ok_or_else(|| {
+        GqlError::new(format!("{field} must be an unsigned integer")).extend_with(
+            move |_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+                ext.set("operationIndex", op_index as i32);
+            },
+        )
+    })
+}
+
+fn input_object<'a>(
+    value: &'a Value,
+    name: &str,
+) -> Result<&'a serde_json::Map<String, Value>, GqlError> {
+    value.as_object().ok_or_else(|| {
+        GqlError::new(format!("{name} must be an object")).extend_with(|_err, ext| {
+            ext.set("code", "INVALID_ARGUMENT");
+        })
+    })
+}
+
+fn input_string(obj: &serde_json::Map<String, Value>, field: &str) -> Result<String, GqlError> {
+    obj.get(field)
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            GqlError::new(format!("{field} must be a string")).extend_with(|_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+            })
+        })
+}
+
+fn input_bool(obj: &serde_json::Map<String, Value>, field: &str, default: bool) -> bool {
+    obj.get(field).and_then(Value::as_bool).unwrap_or(default)
+}
+
+fn get_schema_field<'a>(
+    obj: &'a serde_json::Map<String, Value>,
+    snake_case: &str,
+    camel_case: &str,
+) -> Option<&'a Value> {
+    obj.get(camel_case).or_else(|| obj.get(snake_case))
+}
+
+fn optional_schema_field<T: DeserializeOwned>(
+    obj: &serde_json::Map<String, Value>,
+    snake_case: &str,
+    camel_case: &str,
+) -> Result<Option<T>, GqlError> {
+    match get_schema_field(obj, snake_case, camel_case) {
+        Some(value) if !value.is_null() => {
+            serde_json::from_value(value.clone())
+                .map(Some)
+                .map_err(|e| {
+                    GqlError::new(format!("invalid {camel_case}: {e}")).extend_with(|_err, ext| {
+                        ext.set("code", "INVALID_ARGUMENT");
+                    })
+                })
+        }
+        _ => Ok(None),
+    }
+}
+
+fn collection_schema_from_json(
+    collection: &CollectionId,
+    value: &Value,
+) -> Result<CollectionSchema, GqlError> {
+    let obj = input_object(value, "schema")?;
+    if let Some(schema_collection) =
+        get_schema_field(obj, "collection", "collection").and_then(Value::as_str)
+    {
+        if schema_collection != collection.as_str() {
+            return Err(GqlError::new(format!(
+                "schema.collection '{schema_collection}' does not match collection name '{collection}'"
+            ))
+            .extend_with(|_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+            }));
+        }
+    }
+
+    let version = get_schema_field(obj, "version", "version")
+        .and_then(Value::as_u64)
+        .map(u32::try_from)
+        .transpose()
+        .map_err(|_| {
+            GqlError::new("version must fit in u32").extend_with(|_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+            })
+        })?
+        .unwrap_or(1);
+
+    Ok(CollectionSchema {
+        collection: collection.clone(),
+        description: optional_schema_field(obj, "description", "description")?,
+        version,
+        entity_schema: get_schema_field(obj, "entity_schema", "entitySchema").cloned(),
+        link_types: optional_schema_field(obj, "link_types", "linkTypes")?.unwrap_or_default(),
+        gates: optional_schema_field(obj, "gates", "gates")?.unwrap_or_default(),
+        validation_rules: optional_schema_field(obj, "validation_rules", "validationRules")?
+            .unwrap_or_default(),
+        indexes: optional_schema_field(obj, "indexes", "indexes")?.unwrap_or_default(),
+        compound_indexes: optional_schema_field(obj, "compound_indexes", "compoundIndexes")?
+            .unwrap_or_default(),
+        lifecycles: optional_schema_field(obj, "lifecycles", "lifecycles")?.unwrap_or_default(),
+    })
+}
+
+fn put_schema_payload_value(resp: axon_api::response::PutSchemaResponse) -> Value {
+    json!({
+        "schema": resp.schema,
+        "compatibility": resp.compatibility,
+        "diff": resp.diff,
+        "dryRun": resp.dry_run,
+    })
+}
+
+fn op_error(err: GqlError, op_index: usize) -> GqlError {
+    err.extend_with(move |_err, ext| {
+        ext.set("operationIndex", op_index as i32);
+    })
+}
+
+fn transaction_payload_value(tx_id: &str, written: &[Entity], replay_hit: bool) -> Value {
+    let results: Vec<Value> = written
+        .iter()
+        .enumerate()
+        .map(|(index, entity)| {
+            let is_link = entity.collection == Link::links_collection();
+            json!({
+                "index": index,
+                "success": true,
+                "collection": entity.collection.to_string(),
+                "id": entity.id.to_string(),
+                "entity": if is_link { Value::Null } else { entity_to_generic_json(entity) },
+                "link": if is_link { entity.data.clone() } else { Value::Null },
+            })
+        })
+        .collect();
+
+    json!({
+        "transactionId": tx_id,
+        "replayHit": replay_hit,
+        "results": results,
+    })
+}
+
+async fn commit_transaction_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    use axon_api::transaction::Transaction;
+
+    let input = ctx.args.try_get("input")?.as_value();
+    let input_json = gql_input_to_json(input)?;
+    let input_obj = input_json
+        .as_object()
+        .ok_or_else(|| GqlError::new("input must be an object"))?;
+    let operations = input_obj
+        .get("operations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| GqlError::new("operations must be a list"))?;
+
+    if operations.len() > 100 {
+        return Err(axon_error_to_gql(AxonError::InvalidArgument(
+            "transaction exceeds maximum of 100 operations".into(),
+        )));
+    }
+
+    let idempotency_key = input_obj
+        .get("idempotencyKey")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let scope = graphql_idempotency_scope(&ctx);
+    if let Some(ref key) = idempotency_key {
+        validate_graphql_idempotency_key(key)?;
+        if let Some(mut cached) = idempotency_cached(&scope, key) {
+            if let Some(obj) = cached.as_object_mut() {
+                obj.insert("replayHit".into(), Value::Bool(true));
+            }
+            return Ok(Some(json_to_field_value(cached)));
+        }
+    }
+
+    let mut tx = Transaction::new();
+
+    for (index, op) in operations.iter().enumerate() {
+        let obj = required_object(op, "operation", index)?;
+        let variants: Vec<(&str, &Value)> = obj
+            .iter()
+            .filter(|(_, value)| !value.is_null())
+            .map(|(key, value)| (key.as_str(), value))
+            .collect();
+        if variants.len() != 1 {
+            return Err(
+                GqlError::new("operation must set exactly one variant").extend_with(
+                    move |_err, ext| {
+                        ext.set("code", "INVALID_ARGUMENT");
+                        ext.set("operationIndex", index as i32);
+                    },
+                ),
+            );
+        }
+
+        let (variant, payload) = variants[0];
+        let payload = required_object(payload, variant, index)?;
+        let stage_result = match variant {
+            "createEntity" => {
+                let collection = required_str(payload, "collection", index)?;
+                let id = required_str(payload, "id", index)?;
+                let data = payload.get("data").cloned().unwrap_or(Value::Null);
+                tx.create(Entity::new(
+                    CollectionId::new(collection),
+                    EntityId::new(id),
+                    data,
+                ))
+            }
+            "updateEntity" => {
+                let collection = required_str(payload, "collection", index)?;
+                let id = required_str(payload, "id", index)?;
+                let expected_version = required_u64(payload, "expectedVersion", index)?;
+                let data = payload.get("data").cloned().unwrap_or(Value::Null);
+                let guard = handler.lock().await;
+                let data_before = guard
+                    .get_entity(GetEntityRequest {
+                        collection: CollectionId::new(&collection),
+                        id: EntityId::new(&id),
+                    })
+                    .ok()
+                    .map(|resp| resp.entity.data);
+                drop(guard);
+                tx.update(
+                    Entity::new(CollectionId::new(collection), EntityId::new(id), data),
+                    expected_version,
+                    data_before,
+                )
+            }
+            "patchEntity" => {
+                let collection = required_str(payload, "collection", index)?;
+                let id = required_str(payload, "id", index)?;
+                let expected_version = required_u64(payload, "expectedVersion", index)?;
+                let patch = payload.get("patch").cloned().unwrap_or(Value::Null);
+                let guard = handler.lock().await;
+                let existing = match guard.get_entity(GetEntityRequest {
+                    collection: CollectionId::new(&collection),
+                    id: EntityId::new(&id),
+                }) {
+                    Ok(resp) => resp.entity,
+                    Err(err) => return Err(op_error(axon_error_to_gql(err), index)),
+                };
+                drop(guard);
+                let mut merged = existing.data.clone();
+                json_merge_patch(&mut merged, &patch);
+                tx.update(
+                    Entity::new(CollectionId::new(collection), EntityId::new(id), merged),
+                    expected_version,
+                    Some(existing.data),
+                )
+            }
+            "deleteEntity" => {
+                let collection = required_str(payload, "collection", index)?;
+                let id = required_str(payload, "id", index)?;
+                let expected_version = required_u64(payload, "expectedVersion", index)?;
+                let guard = handler.lock().await;
+                let data_before = guard
+                    .get_entity(GetEntityRequest {
+                        collection: CollectionId::new(&collection),
+                        id: EntityId::new(&id),
+                    })
+                    .ok()
+                    .map(|resp| resp.entity.data);
+                drop(guard);
+                tx.delete(
+                    CollectionId::new(collection),
+                    EntityId::new(id),
+                    expected_version,
+                    data_before,
+                )
+            }
+            "createLink" => {
+                let source_collection = required_str(payload, "sourceCollection", index)?;
+                let source_id = required_str(payload, "sourceId", index)?;
+                let target_collection = required_str(payload, "targetCollection", index)?;
+                let target_id = required_str(payload, "targetId", index)?;
+                let link_type = required_str(payload, "linkType", index)?;
+                let metadata = payload.get("metadata").cloned().unwrap_or(Value::Null);
+                tx.create_link(Link {
+                    source_collection: CollectionId::new(source_collection),
+                    source_id: EntityId::new(source_id),
+                    target_collection: CollectionId::new(target_collection),
+                    target_id: EntityId::new(target_id),
+                    link_type,
+                    metadata,
+                })
+            }
+            "deleteLink" => {
+                let source_collection = required_str(payload, "sourceCollection", index)?;
+                let source_id = required_str(payload, "sourceId", index)?;
+                let target_collection = required_str(payload, "targetCollection", index)?;
+                let target_id = required_str(payload, "targetId", index)?;
+                let link_type = required_str(payload, "linkType", index)?;
+                tx.delete_link(Link {
+                    source_collection: CollectionId::new(source_collection),
+                    source_id: EntityId::new(source_id),
+                    target_collection: CollectionId::new(target_collection),
+                    target_id: EntityId::new(target_id),
+                    link_type,
+                    metadata: Value::Null,
+                })
+            }
+            other => {
+                return Err(
+                    GqlError::new(format!("unsupported transaction operation '{other}'"))
+                        .extend_with(move |_err, ext| {
+                            ext.set("code", "INVALID_ARGUMENT");
+                            ext.set("operationIndex", index as i32);
+                        }),
+                );
+            }
+        };
+
+        if let Err(err) = stage_result {
+            return Err(op_error(axon_error_to_gql(err), index));
+        }
+    }
+
+    let tx_id = tx.id.clone();
+    let mut guard = handler.lock().await;
+    let written = guard
+        .commit_transaction_with_caller(tx, &caller, None)
+        .map_err(axon_error_to_gql)?;
+    drop(guard);
+
+    let payload = transaction_payload_value(&tx_id, &written, false);
+    if let Some(ref key) = idempotency_key {
+        idempotency_store(&scope, key, payload.clone());
+    }
+    Ok(Some(json_to_field_value(payload)))
+}
+
+async fn create_collection_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    caller.check(Operation::Admin).map_err(axon_error_to_gql)?;
+    let input_json = gql_input_to_json(ctx.args.try_get("input")?.as_value())?;
+    let input = input_object(&input_json, "input")?;
+    let name = input_string(input, "name")?;
+    let schema_value = input.get("schema").ok_or_else(|| {
+        GqlError::new("schema is required").extend_with(|_err, ext| {
+            ext.set("code", "INVALID_ARGUMENT");
+        })
+    })?;
+    let collection = CollectionId::new(name);
+    let schema = collection_schema_from_json(&collection, schema_value)?;
+
+    let mut guard = handler.lock().await;
+    guard
+        .create_collection(CreateCollectionRequest {
+            name: collection.clone(),
+            schema,
+            actor: Some(caller.actor),
+        })
+        .map_err(axon_error_to_gql)?;
+    let description = guard
+        .describe_collection(DescribeCollectionRequest { name: collection })
+        .map_err(axon_error_to_gql)?;
+
+    Ok(Some(json_to_field_value(described_collection_json(
+        &description,
+    ))))
+}
+
+async fn drop_collection_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    caller.check(Operation::Admin).map_err(axon_error_to_gql)?;
+    let input_json = gql_input_to_json(ctx.args.try_get("input")?.as_value())?;
+    let input = input_object(&input_json, "input")?;
+    let name = input_string(input, "name")?;
+    let confirm = input_bool(input, "confirm", false);
+    let resp = handler
+        .lock()
+        .await
+        .drop_collection(DropCollectionRequest {
+            name: CollectionId::new(name),
+            actor: Some(caller.actor),
+            confirm,
+        })
+        .map_err(axon_error_to_gql)?;
+
+    Ok(Some(json_to_field_value(json!({
+        "name": resp.name,
+        "entitiesRemoved": resp.entities_removed,
+    }))))
+}
+
+async fn put_schema_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    caller.check(Operation::Admin).map_err(axon_error_to_gql)?;
+    let input_json = gql_input_to_json(ctx.args.try_get("input")?.as_value())?;
+    let input = input_object(&input_json, "input")?;
+    let collection = CollectionId::new(input_string(input, "collection")?);
+    let schema_value = input.get("schema").ok_or_else(|| {
+        GqlError::new("schema is required").extend_with(|_err, ext| {
+            ext.set("code", "INVALID_ARGUMENT");
+        })
+    })?;
+    let schema = collection_schema_from_json(&collection, schema_value)?;
+    let force = input_bool(input, "force", false);
+    let dry_run = input_bool(input, "dryRun", false);
+
+    let resp = handler
+        .lock()
+        .await
+        .handle_put_schema(PutSchemaRequest {
+            schema,
+            actor: Some(caller.actor),
+            force,
+            dry_run,
+        })
+        .map_err(axon_error_to_gql)?;
+
+    Ok(Some(json_to_field_value(put_schema_payload_value(resp))))
+}
+
 // ── Schema builders ─────────────────────────────────────────────────────────
 
 /// Build a dynamic GraphQL schema from the given collection schemas, wired
@@ -1122,6 +2022,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                 })
             }));
         }
+        obj = add_entity_lifecycle_fields(obj);
         type_objects.push(obj);
         type_objects.push(typed_edge_object(&edge_type_name, &type_name));
         type_objects.push(typed_connection_object(
@@ -1133,9 +2034,11 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let col_id = CollectionId::new(collection_name);
         let handler_get = Arc::clone(&handler);
         let col_for_get = col_id.clone();
+        let schema_for_get = schema.clone();
         let get_field = Field::new(&get_field_name, TypeRef::named(&type_name), move |ctx| {
             let handler = Arc::clone(&handler_get);
             let col = col_for_get.clone();
+            let schema = schema_for_get.clone();
             FieldFuture::new(async move {
                 let id_str = ctx.args.try_get("id")?.string()?;
 
@@ -1144,7 +2047,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                     collection: col.clone(),
                     id: EntityId::new(id_str),
                 }) {
-                    Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                    Ok(resp) => Ok(Some(entity_to_field_value_with_schema(
+                        &resp.entity,
+                        Some(&schema),
+                    ))),
                     Err(AxonError::NotFound(_)) => Ok(None),
                     Err(e) => Err(axon_error_to_gql(e)),
                 }
@@ -1156,6 +2062,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         // ── Query: list ──────────────────────────────────────────────────
         let handler_list = Arc::clone(&handler);
         let col_for_list = col_id.clone();
+        let schema_for_list = schema.clone();
         let type_name_list = type_name.clone();
         let list_field = Field::new(
             &list_field_name,
@@ -1163,6 +2070,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_list);
                 let col = col_for_list.clone();
+                let schema = schema_for_list.clone();
                 FieldFuture::new(async move {
                     let limit = ctx
                         .args
@@ -1206,7 +2114,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             let items: Vec<FieldValue> = resp
                                 .entities
                                 .iter()
-                                .map(|e| entity_to_field_value(e))
+                                .map(|e| entity_to_field_value_with_schema(e, Some(&schema)))
                                 .collect();
                             Ok(Some(FieldValue::list(items)))
                         }
@@ -1224,6 +2132,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let list_connection_field_name = format!("{list_field_name}Connection");
         let handler_list_connection = Arc::clone(&handler);
         let col_for_list_connection = col_id.clone();
+        let schema_for_list_connection = schema.clone();
         let connection_type_name_ref = connection_type_name.clone();
         let list_connection_field = Field::new(
             &list_connection_field_name,
@@ -1231,6 +2140,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_list_connection);
                 let col = col_for_list_connection.clone();
+                let schema = schema_for_list_connection.clone();
                 FieldFuture::new(async move {
                     let limit = ctx
                         .args
@@ -1277,6 +2187,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                             resp.next_cursor,
                             has_previous_page,
                             false,
+                            Some(&schema),
                         ))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
@@ -1293,6 +2204,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let create_field_name = format!("create{type_name}");
         let handler_create = Arc::clone(&handler);
         let col_for_create = col_id.clone();
+        let schema_for_create = schema.clone();
         let type_name_create = type_name.clone();
         let create_field = Field::new(
             &create_field_name,
@@ -1300,6 +2212,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_create);
                 let col = col_for_create.clone();
+                let schema = schema_for_create.clone();
                 let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let id_str = ctx.args.try_get("id")?.string()?;
@@ -1322,7 +2235,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         &caller,
                         None,
                     ) {
-                        Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                        Ok(resp) => Ok(Some(entity_to_field_value_with_schema(
+                            &resp.entity,
+                            Some(&schema),
+                        ))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
                 })
@@ -1336,6 +2252,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let update_field_name = format!("update{type_name}");
         let handler_update = Arc::clone(&handler);
         let col_for_update = col_id.clone();
+        let schema_for_update = schema.clone();
         let type_name_update = type_name.clone();
         let update_field = Field::new(
             &update_field_name,
@@ -1343,6 +2260,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_update);
                 let col = col_for_update.clone();
+                let schema = schema_for_update.clone();
                 let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let id_str = ctx.args.try_get("id")?.string()?;
@@ -1367,7 +2285,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         &caller,
                         None,
                     ) {
-                        Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                        Ok(resp) => Ok(Some(entity_to_field_value_with_schema(
+                            &resp.entity,
+                            Some(&schema),
+                        ))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
                 })
@@ -1382,6 +2303,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let patch_field_name = format!("patch{type_name}");
         let handler_patch = Arc::clone(&handler);
         let col_for_patch = col_id.clone();
+        let schema_for_patch = schema.clone();
         let type_name_patch = type_name.clone();
         let patch_field = Field::new(
             &patch_field_name,
@@ -1389,6 +2311,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_patch);
                 let col = col_for_patch.clone();
+                let schema = schema_for_patch.clone();
                 let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let id_str = ctx.args.try_get("id")?.string()?;
@@ -1413,7 +2336,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         &caller,
                         None,
                     ) {
-                        Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                        Ok(resp) => Ok(Some(entity_to_field_value_with_schema(
+                            &resp.entity,
+                            Some(&schema),
+                        ))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
                 })
@@ -1464,6 +2390,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
         let transition_field_name = format!("transition{type_name}Lifecycle");
         let handler_transition = Arc::clone(&handler);
         let col_for_transition = col_id.clone();
+        let schema_for_transition = schema.clone();
         let type_name_transition = type_name.clone();
         let transition_field = Field::new(
             &transition_field_name,
@@ -1471,6 +2398,7 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_transition);
                 let col = col_for_transition.clone();
+                let schema = schema_for_transition.clone();
                 let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let id_str = ctx.args.try_get("id")?.string()?;
@@ -1493,7 +2421,10 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
                         &caller,
                         None,
                     ) {
-                        Ok(resp) => Ok(Some(entity_to_field_value(&resp.entity))),
+                        Ok(resp) => Ok(Some(entity_to_field_value_with_schema(
+                            &resp.entity,
+                            Some(&schema),
+                        ))),
                         Err(e) => Err(axon_error_to_gql(e)),
                     }
                 })
@@ -1513,6 +2444,82 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
             TypeRef::named_nn(TypeRef::INT),
         ));
         mutation = mutation.field(transition_field);
+    }
+
+    // ── Collection and schema administration mutations ──────────────────────
+    {
+        let handler_create_collection = Arc::clone(&handler);
+        let create_collection_field = Field::new(
+            "createCollection",
+            TypeRef::named_nn(COLLECTION_META_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_create_collection);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(
+                    async move { create_collection_resolver(ctx, handler, caller).await },
+                )
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(CREATE_COLLECTION_INPUT),
+        ));
+        mutation = mutation.field(create_collection_field);
+
+        let handler_drop_collection = Arc::clone(&handler);
+        let drop_collection_field = Field::new(
+            "dropCollection",
+            TypeRef::named_nn(DROP_COLLECTION_PAYLOAD),
+            move |ctx| {
+                let handler = Arc::clone(&handler_drop_collection);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(
+                    async move { drop_collection_resolver(ctx, handler, caller).await },
+                )
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(DROP_COLLECTION_INPUT),
+        ));
+        mutation = mutation.field(drop_collection_field);
+
+        let handler_put_schema = Arc::clone(&handler);
+        let put_schema_field = Field::new(
+            "putSchema",
+            TypeRef::named_nn(PUT_SCHEMA_PAYLOAD),
+            move |ctx| {
+                let handler = Arc::clone(&handler_put_schema);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(async move { put_schema_resolver(ctx, handler, caller).await })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(PUT_SCHEMA_INPUT),
+        ));
+        mutation = mutation.field(put_schema_field);
+    }
+
+    // ── Global transaction mutation ──────────────────────────────────────────
+    {
+        let handler_commit_transaction = Arc::clone(&handler);
+        let commit_transaction_field = Field::new(
+            "commitTransaction",
+            TypeRef::named_nn(COMMIT_TRANSACTION_PAYLOAD),
+            move |ctx| {
+                let handler = Arc::clone(&handler_commit_transaction);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(
+                    async move { commit_transaction_resolver(ctx, handler, caller).await },
+                )
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(COMMIT_TRANSACTION_INPUT),
+        ));
+        mutation = mutation.field(commit_transaction_field);
     }
 
     // ── Global link mutations ────────────────────────────────────────────────
@@ -1652,6 +2659,17 @@ pub fn build_schema_with_handler_and_broker<S: StorageAdapter + 'static>(
     .register(Scalar::new("JSON"))
     .register(filter_input_object())
     .register(sort_input_object())
+    .register(create_collection_input_object())
+    .register(drop_collection_input_object())
+    .register(put_schema_input_object())
+    .register(commit_transaction_input_object())
+    .register(transaction_operation_input_object())
+    .register(create_entity_transaction_input_object())
+    .register(update_entity_transaction_input_object())
+    .register(patch_entity_transaction_input_object())
+    .register(delete_entity_transaction_input_object())
+    .register(create_link_transaction_input_object())
+    .register(delete_link_transaction_input_object())
     .register(query)
     .register(mutation);
 
@@ -1703,6 +2721,7 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
                 FieldFuture::new(async move { Ok(Some(FieldValue::NULL)) })
             }));
         }
+        obj = add_entity_lifecycle_fields(obj);
         type_objects.push(obj);
         type_objects.push(typed_edge_object(&edge_type_name, &type_name));
         type_objects.push(typed_connection_object(
@@ -1744,7 +2763,14 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
                 TypeRef::named_nn(&connection_type_name_ref),
                 |_ctx| {
                     FieldFuture::new(async move {
-                        Ok(Some(entity_connection_value(&[], 0, None, false, false)))
+                        Ok(Some(entity_connection_value(
+                            &[],
+                            0,
+                            None,
+                            false,
+                            false,
+                            None,
+                        )))
                     })
                 },
             )
@@ -1783,23 +2809,91 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         ));
     }
 
-    let mutation_type = if collections.is_empty() {
-        None
-    } else {
-        Some(mutation.type_name())
-    };
+    mutation = mutation.field(
+        Field::new(
+            "createCollection",
+            TypeRef::named_nn(COLLECTION_META_TYPE),
+            |_ctx| FieldFuture::new(async move { Ok(Some(FieldValue::NULL)) }),
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(CREATE_COLLECTION_INPUT),
+        )),
+    );
+    mutation = mutation.field(
+        Field::new(
+            "dropCollection",
+            TypeRef::named_nn(DROP_COLLECTION_PAYLOAD),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Ok(Some(json_to_field_value(json!({
+                        "name": "",
+                        "entitiesRemoved": 0,
+                    }))))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(DROP_COLLECTION_INPUT),
+        )),
+    );
+    mutation = mutation.field(
+        Field::new("putSchema", TypeRef::named_nn(PUT_SCHEMA_PAYLOAD), |_ctx| {
+            FieldFuture::new(async move {
+                Ok(Some(json_to_field_value(json!({
+                    "schema": {},
+                    "compatibility": Value::Null,
+                    "diff": Value::Null,
+                    "dryRun": false,
+                }))))
+            })
+        })
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(PUT_SCHEMA_INPUT),
+        )),
+    );
 
-    let mut schema_builder = Schema::build(query.type_name(), mutation_type, None)
+    mutation = mutation.field(
+        Field::new(
+            "commitTransaction",
+            TypeRef::named_nn(COMMIT_TRANSACTION_PAYLOAD),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Ok(Some(json_to_field_value(transaction_payload_value(
+                        "tx-stub",
+                        &[],
+                        false,
+                    ))))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(COMMIT_TRANSACTION_INPUT),
+        )),
+    );
+
+    let mut schema_builder = Schema::build(query.type_name(), Some(mutation.type_name()), None)
         .limit_depth(max_graphql_depth())
         .limit_complexity(max_graphql_complexity())
         .register(Scalar::new("JSON"))
         .register(filter_input_object())
         .register(sort_input_object())
-        .register(query);
-
-    if !collections.is_empty() {
-        schema_builder = schema_builder.register(mutation);
-    }
+        .register(create_collection_input_object())
+        .register(drop_collection_input_object())
+        .register(put_schema_input_object())
+        .register(commit_transaction_input_object())
+        .register(transaction_operation_input_object())
+        .register(create_entity_transaction_input_object())
+        .register(update_entity_transaction_input_object())
+        .register(patch_entity_transaction_input_object())
+        .register(delete_entity_transaction_input_object())
+        .register(create_link_transaction_input_object())
+        .register(delete_link_transaction_input_object())
+        .register(query)
+        .register(mutation);
 
     schema_builder = register_root_objects(schema_builder);
 

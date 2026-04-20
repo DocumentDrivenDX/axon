@@ -28,6 +28,14 @@
 | FEAT-019 | Validation Rules & Actionable Errors | P1 | Draft |
 | FEAT-020 | Link Discovery & Graph Queries | P1 | Draft |
 | FEAT-021 | Change Feeds (Debezium CDC) | P1 | Draft |
+| FEAT-022 | Agent Guardrails | P1 | Draft |
+| FEAT-023 | Rollback & Recovery | P1 | Draft |
+| FEAT-024 | Application Substrate | P2 | Draft |
+| FEAT-025 | BYOC Control Plane | P1 | Draft |
+| FEAT-026 | Markdown Templates | P2 | Draft |
+| FEAT-027 | Git Mirror | P2 | Draft |
+| FEAT-028 | Unified Binary | P1 | Draft |
+| FEAT-029 | Data-Layer Access Control Policies | P0 | Draft |
 
 ## Conventions
 

@@ -5,7 +5,8 @@ use axon_audit::entry::{AuditAttribution, AuditEntry, MutationType};
 use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
-use axon_core::types::Entity;
+use axon_core::types::{Entity, Link};
+use axon_schema::validation::validate;
 use axon_storage::adapter::StorageAdapter;
 use serde_json::Value;
 
@@ -34,6 +35,13 @@ struct WriteOp {
     mutation: MutationType,
 }
 
+#[derive(Debug)]
+enum StagedOp {
+    Entity(WriteOp),
+    LinkCreate(Link),
+    LinkDelete(Link),
+}
+
 /// A multi-entity atomic transaction using optimistic concurrency control (OCC).
 ///
 /// Operations are buffered and applied atomically on [`commit`](Transaction::commit).
@@ -45,7 +53,7 @@ struct WriteOp {
 pub struct Transaction {
     /// Unique identifier for this transaction.
     pub id: String,
-    ops: Vec<WriteOp>,
+    ops: Vec<StagedOp>,
     created_at: Instant,
     timeout: Duration,
 }
@@ -89,12 +97,12 @@ impl Transaction {
     /// Returns `Err(InvalidArgument)` if the transaction already has [`MAX_OPS`] operations.
     pub fn create(&mut self, entity: Entity) -> Result<(), AxonError> {
         self.check_op_limit()?;
-        self.ops.push(WriteOp {
+        self.ops.push(StagedOp::Entity(WriteOp {
             entity,
             expected_version: 0,
             data_before: None,
             mutation: MutationType::EntityCreate,
-        });
+        }));
         Ok(())
     }
 
@@ -111,12 +119,12 @@ impl Transaction {
         data_before: Option<Value>,
     ) -> Result<(), AxonError> {
         self.check_op_limit()?;
-        self.ops.push(WriteOp {
+        self.ops.push(StagedOp::Entity(WriteOp {
             entity,
             expected_version,
             data_before,
             mutation: MutationType::EntityUpdate,
-        });
+        }));
         Ok(())
     }
 
@@ -147,12 +155,26 @@ impl Transaction {
             schema_version: None,
             gate_results: Default::default(),
         };
-        self.ops.push(WriteOp {
+        self.ops.push(StagedOp::Entity(WriteOp {
             entity: sentinel,
             expected_version,
             data_before,
             mutation: MutationType::EntityDelete,
-        });
+        }));
+        Ok(())
+    }
+
+    /// Stage a typed link creation.
+    pub fn create_link(&mut self, link: Link) -> Result<(), AxonError> {
+        self.check_op_limit()?;
+        self.ops.push(StagedOp::LinkCreate(link));
+        Ok(())
+    }
+
+    /// Stage a typed link deletion.
+    pub fn delete_link(&mut self, link: Link) -> Result<(), AxonError> {
+        self.check_op_limit()?;
+        self.ops.push(StagedOp::LinkDelete(link));
         Ok(())
     }
 
@@ -267,33 +289,101 @@ impl Transaction {
 
         // ── Phase 1: Version check ───────────────────────────────────────────
         for op in &self.ops {
-            let current = storage.get(&op.entity.collection, &op.entity.id)?;
-            let current_version = current.as_ref().map(|e| e.version).unwrap_or(0);
+            match op {
+                StagedOp::Entity(op) => {
+                    let current = storage.get(&op.entity.collection, &op.entity.id)?;
+                    let current_version = current.as_ref().map(|e| e.version).unwrap_or(0);
 
-            let ok = match op.mutation {
-                MutationType::EntityCreate => current_version == 0, // must not exist
-                MutationType::EntityUpdate | MutationType::EntityDelete => {
-                    current_version == op.expected_version
+                    let ok = match op.mutation {
+                        MutationType::EntityCreate => current_version == 0, // must not exist
+                        MutationType::EntityUpdate | MutationType::EntityDelete => {
+                            current_version == op.expected_version
+                        }
+                        MutationType::CollectionCreate
+                        | MutationType::CollectionDrop
+                        | MutationType::TemplateCreate
+                        | MutationType::TemplateUpdate
+                        | MutationType::TemplateDelete
+                        | MutationType::SchemaUpdate
+                        | MutationType::EntityRevert
+                        | MutationType::LinkCreate
+                        | MutationType::LinkDelete
+                        | MutationType::GuardrailRejection => true,
+                    };
+
+                    if !ok {
+                        return Err(AxonError::ConflictingVersion {
+                            expected: op.expected_version,
+                            actual: current_version,
+                            current_entity: current.map(Box::new),
+                        });
+                    }
+
+                    if matches!(
+                        op.mutation,
+                        MutationType::EntityCreate | MutationType::EntityUpdate
+                    ) {
+                        if let Some(schema) = storage.get_schema(&op.entity.collection)? {
+                            validate(&schema, &op.entity.data)?;
+                        }
+                    }
                 }
-                // Collection/template/schema mutations, entity reverts, and link mutations are not staged via Transaction.
-                MutationType::CollectionCreate
-                | MutationType::CollectionDrop
-                | MutationType::TemplateCreate
-                | MutationType::TemplateUpdate
-                | MutationType::TemplateDelete
-                | MutationType::SchemaUpdate
-                | MutationType::EntityRevert
-                | MutationType::LinkCreate
-                | MutationType::LinkDelete
-                | MutationType::GuardrailRejection => true,
-            };
-
-            if !ok {
-                return Err(AxonError::ConflictingVersion {
-                    expected: op.expected_version,
-                    actual: current_version,
-                    current_entity: current.map(Box::new),
-                });
+                StagedOp::LinkCreate(link) => {
+                    if storage
+                        .get(&link.source_collection, &link.source_id)?
+                        .is_none()
+                    {
+                        return Err(AxonError::NotFound(format!(
+                            "source entity {}/{}",
+                            link.source_collection, link.source_id
+                        )));
+                    }
+                    if storage
+                        .get(&link.target_collection, &link.target_id)?
+                        .is_none()
+                    {
+                        return Err(AxonError::NotFound(format!(
+                            "target entity {}/{}",
+                            link.target_collection, link.target_id
+                        )));
+                    }
+                    let link_id = Link::storage_id(
+                        &link.source_collection,
+                        &link.source_id,
+                        &link.link_type,
+                        &link.target_collection,
+                        &link.target_id,
+                    );
+                    if storage.get(&Link::links_collection(), &link_id)?.is_some() {
+                        return Err(AxonError::AlreadyExists(format!(
+                            "link {}/{}/{}/{}/{}",
+                            link.source_collection,
+                            link.source_id,
+                            link.link_type,
+                            link.target_collection,
+                            link.target_id
+                        )));
+                    }
+                }
+                StagedOp::LinkDelete(link) => {
+                    let link_id = Link::storage_id(
+                        &link.source_collection,
+                        &link.source_id,
+                        &link.link_type,
+                        &link.target_collection,
+                        &link.target_id,
+                    );
+                    if storage.get(&Link::links_collection(), &link_id)?.is_none() {
+                        return Err(AxonError::NotFound(format!(
+                            "link {}/{} --[{}]--> {}/{}",
+                            link.source_collection,
+                            link.source_id,
+                            link.link_type,
+                            link.target_collection,
+                            link.target_id
+                        )));
+                    }
+                }
             }
         }
 
@@ -305,17 +395,86 @@ impl Transaction {
         let tx_attribution = attribution;
 
         for op in self.ops {
-            match op.mutation {
-                MutationType::EntityCreate => {
-                    storage.put(op.entity.clone())?;
-                    let after = op.entity.data.clone();
+            match op {
+                StagedOp::Entity(op) => match op.mutation {
+                    MutationType::EntityCreate => {
+                        storage.put(op.entity.clone())?;
+                        let after = op.entity.data.clone();
+                        let mut entry = AuditEntry::new(
+                            op.entity.collection.clone(),
+                            op.entity.id.clone(),
+                            op.entity.version,
+                            MutationType::EntityCreate,
+                            None,
+                            Some(after),
+                            Some(actor_str.into()),
+                        );
+                        entry.transaction_id = Some(tx_id.clone());
+                        if let Some(ref attr) = tx_attribution {
+                            entry = entry.with_attribution(attr.clone());
+                        }
+                        pending_entries.push(entry);
+                        written.push(op.entity);
+                    }
+                    MutationType::EntityUpdate => {
+                        let updated =
+                            storage.compare_and_swap(op.entity.clone(), op.expected_version)?;
+                        let after = updated.data.clone();
+                        let mut entry = AuditEntry::new(
+                            updated.collection.clone(),
+                            updated.id.clone(),
+                            updated.version,
+                            MutationType::EntityUpdate,
+                            op.data_before,
+                            Some(after),
+                            Some(actor_str.into()),
+                        );
+                        entry.transaction_id = Some(tx_id.clone());
+                        if let Some(ref attr) = tx_attribution {
+                            entry = entry.with_attribution(attr.clone());
+                        }
+                        pending_entries.push(entry);
+                        written.push(updated);
+                    }
+                    MutationType::EntityDelete => {
+                        storage.delete(&op.entity.collection, &op.entity.id)?;
+                        let mut entry = AuditEntry::new(
+                            op.entity.collection.clone(),
+                            op.entity.id.clone(),
+                            op.entity.version,
+                            MutationType::EntityDelete,
+                            op.data_before,
+                            None,
+                            Some(actor_str.into()),
+                        );
+                        entry.transaction_id = Some(tx_id.clone());
+                        if let Some(ref attr) = tx_attribution {
+                            entry = entry.with_attribution(attr.clone());
+                        }
+                        pending_entries.push(entry);
+                        written.push(op.entity);
+                    }
+                    MutationType::CollectionCreate
+                    | MutationType::CollectionDrop
+                    | MutationType::TemplateCreate
+                    | MutationType::TemplateUpdate
+                    | MutationType::TemplateDelete
+                    | MutationType::SchemaUpdate
+                    | MutationType::EntityRevert
+                    | MutationType::LinkCreate
+                    | MutationType::LinkDelete
+                    | MutationType::GuardrailRejection => {}
+                },
+                StagedOp::LinkCreate(link) => {
+                    storage.put_link(&link)?;
+                    let link_entity = link.to_entity();
                     let mut entry = AuditEntry::new(
-                        op.entity.collection.clone(),
-                        op.entity.id.clone(),
-                        op.entity.version,
-                        MutationType::EntityCreate,
+                        link_entity.collection.clone(),
+                        link_entity.id.clone(),
+                        link_entity.version,
+                        MutationType::LinkCreate,
                         None,
-                        Some(after),
+                        Some(link_entity.data.clone()),
                         Some(actor_str.into()),
                     );
                     entry.transaction_id = Some(tx_id.clone());
@@ -323,36 +482,32 @@ impl Transaction {
                         entry = entry.with_attribution(attr.clone());
                     }
                     pending_entries.push(entry);
-                    written.push(op.entity);
+                    written.push(link_entity);
                 }
-                MutationType::EntityUpdate => {
-                    let updated =
-                        storage.compare_and_swap(op.entity.clone(), op.expected_version)?;
-                    let after = updated.data.clone();
-                    let mut entry = AuditEntry::new(
-                        updated.collection.clone(),
-                        updated.id.clone(),
-                        updated.version,
-                        MutationType::EntityUpdate,
-                        op.data_before,
-                        Some(after),
-                        Some(actor_str.into()),
+                StagedOp::LinkDelete(link) => {
+                    let link_id = Link::storage_id(
+                        &link.source_collection,
+                        &link.source_id,
+                        &link.link_type,
+                        &link.target_collection,
+                        &link.target_id,
                     );
-                    entry.transaction_id = Some(tx_id.clone());
-                    if let Some(ref attr) = tx_attribution {
-                        entry = entry.with_attribution(attr.clone());
-                    }
-                    pending_entries.push(entry);
-                    written.push(updated);
-                }
-                MutationType::EntityDelete => {
-                    storage.delete(&op.entity.collection, &op.entity.id)?;
+                    let link_entity = storage
+                        .get(&Link::links_collection(), &link_id)?
+                        .ok_or_else(|| AxonError::NotFound(format!("link {}", link_id)))?;
+                    storage.delete_link(
+                        &link.source_collection,
+                        &link.source_id,
+                        &link.link_type,
+                        &link.target_collection,
+                        &link.target_id,
+                    )?;
                     let mut entry = AuditEntry::new(
-                        op.entity.collection.clone(),
-                        op.entity.id.clone(),
-                        op.entity.version,
-                        MutationType::EntityDelete,
-                        op.data_before,
+                        link_entity.collection.clone(),
+                        link_entity.id.clone(),
+                        link_entity.version,
+                        MutationType::LinkDelete,
+                        Some(link_entity.data.clone()),
                         None,
                         Some(actor_str.into()),
                     );
@@ -361,19 +516,8 @@ impl Transaction {
                         entry = entry.with_attribution(attr.clone());
                     }
                     pending_entries.push(entry);
-                    written.push(op.entity);
+                    written.push(link_entity);
                 }
-                // Collection/template/schema mutations, entity reverts, and link mutations are not staged via Transaction.
-                MutationType::CollectionCreate
-                | MutationType::CollectionDrop
-                | MutationType::TemplateCreate
-                | MutationType::TemplateUpdate
-                | MutationType::TemplateDelete
-                | MutationType::SchemaUpdate
-                | MutationType::EntityRevert
-                | MutationType::LinkCreate
-                | MutationType::LinkDelete
-                | MutationType::GuardrailRejection => {}
             }
         }
 

@@ -82,6 +82,7 @@ before their criteria are checked off.
 | FEAT-026 Markdown Templates | Stories cover define, render, schema evolution. Missing HTTP route and UI route linkage in feature doc. | `crates/axon-cli/tests/markdown.rs`; `ui/tests/e2e/wave1-capabilities.spec.ts` | HTTP template CRUD; schema warning for removed fields; audit assertions for template changes. |
 | FEAT-027 Git Mirror | Stories cover enabling mirror, commits, shard strategy, resume after failure. Not implemented. | None yet. | Mirror config API/CLI; initial snapshot; create/update/delete commits; transaction commit coalescing; retry/resume. |
 | FEAT-028 Unified Binary | Stories cover `axon serve`, diagnose, install, CLI mode selection, install script, config precedence. Missing executable coverage beyond existing server/UI invocations. | CI and E2E launch server binaries indirectly; no dedicated unified-binary E2E. | `axon serve` healthz; config creation and precedence; diagnose output; service install dry-run; CLI auto-detect/server/embedded mode. |
+| FEAT-029 Data-Layer Access Control Policies | Stories cover hidden rows, field redaction, denied writes, idempotent forbidden replays, and policy explanation. | None yet. | REST/GraphQL hidden-row omission; row filters before pagination; nullable redactable GraphQL fields; audit read redaction; denied write errors; nexiq reference policy set. |
 
 ## Reverse UI Route Coverage
 

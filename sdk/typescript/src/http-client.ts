@@ -168,11 +168,11 @@ export class DatabaseClient {
     operations: unknown[],
     options: { idempotencyKey?: string } = {},
   ): Promise<unknown> {
-    const headers =
+    const body =
       options.idempotencyKey === undefined
-        ? undefined
-        : { "idempotency-key": options.idempotencyKey };
-    return this.request("POST", "/transactions", { operations }, headers);
+        ? { operations }
+        : { operations, idempotency_key: options.idempotencyKey };
+    return this.request("POST", "/transactions", body);
   }
 
   async snapshot(collection: string): Promise<unknown> {

@@ -26,6 +26,7 @@ dun:
 | V3 | Per-entity attribute conditions, policy inheritance, policy UI | **Deferred** |
 | V4 | Per-principal RBAC: Axon-owned user→role registry; `axon user grant/revoke/list`; `/control/users` REST API | **Superseded by V5** |
 | V5 | First-class `User` type with federation; M:N tenant membership (`tenant_users`); JWT credentials with `grants` claim; path-based wire protocol | **In Evolution (ADR-018)** |
+| V6 | Schema-declared entity, row, and field-level data policies | **Specified in FEAT-029** |
 
 Key V1 implementation choices that differ from this spec:
 - **No OIDC support** — Tailscale is the only external provider; OIDC deferred to V2+
@@ -256,6 +257,9 @@ on the resolved user, never on the raw external identity.
 Beyond global roles, Axon supports fine-grained access policies based on
 attributes of the **user**, the **resource** (entity/collection), and the
 **action**. Policies are expressed as rules that combine these attributes.
+FEAT-029 is the governing specification for schema-declared entity-level,
+row-level, and field-level policies enforced uniformly across REST, GraphQL,
+and MCP.
 
 - **Per-collection permissions**: Rules that scope a role to specific
   collections. Example: "erik has `write` on `technical-designs` but
@@ -344,6 +348,7 @@ attributes of the **user**, the **resource** (entity/collection), and the
 | V1 | Global RBAC roles (admin/write/read/none) + `--no-auth` + `--guest-role` | **Shipped** |
 | V2 | Per-collection policies, field masking, field immutability | Scaffolded (structs + tests, not wired) |
 | V3 | Per-entity attribute conditions, policy inheritance, policy UI | Deferred |
+| V6 | Data-layer policy engine for entity, row, and field-level enforcement | Specified in FEAT-029 |
 
 #### Network-Layer Security (Tailscale-Specific)
 

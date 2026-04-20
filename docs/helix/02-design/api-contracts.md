@@ -79,6 +79,45 @@ the authenticated caller identity. JWT-authenticated control-plane callers also
 receive `user_id` and `tenant_id`. Tailscale/no-auth/guest callers receive null
 for those fields because those modes do not require a users-collection lookup.
 
+## Data-Layer Access Control
+
+FEAT-029 policies are enforced below REST, GraphQL, and MCP. Browser code may
+query effective policy metadata to hide controls, but the server repeats policy
+checks during every read and write.
+
+Read denial for hidden rows does not leak existence:
+
+- REST point reads return `404` with `code: "not_found"`.
+- GraphQL point reads resolve nullable entity fields to `null`.
+- GraphQL list, relationship, traversal, and connection fields omit hidden
+  rows before pagination and total-count calculation.
+
+Field-level read denial returns `null` for the field in GraphQL, generic JSON,
+REST, and audit read payloads. Any GraphQL field that can be policy-redacted is
+generated as nullable even when JSON Schema marks it required.
+
+Denied writes return `forbidden` with stable detail:
+
+```json
+{
+  "code": "forbidden",
+  "detail": {
+    "reason": "field_write_denied",
+    "collection": "engagements",
+    "entity_id": "eng-1",
+    "field_path": "status",
+    "policy": "contractors-cannot-transition-engagements"
+  }
+}
+```
+
+GraphQL returns the same values under `extensions` using camelCase field names.
+Stable denial reasons are `collection_read_denied`, `row_write_denied`,
+`field_write_denied`, `policy_filter_unindexed`, and
+`policy_expression_invalid`. Idempotent transaction requests cache terminal
+`forbidden` responses for the idempotency TTL so replaying the same denied
+write returns the same denial.
+
 ## Schema Handshake
 
 Use the GraphQL metadata/schema query on app load once the comprehensive
@@ -301,6 +340,63 @@ connection envelope as entity lists.
 }
 ```
 
+## Collection, Schema, And Lifecycle GraphQL
+
+GraphQL is the primary developer surface for collection and schema lifecycle
+operations:
+
+```graphql
+mutation {
+  createCollection(input: {
+    name: "time_entries"
+    schema: {
+      version: 1
+      entitySchema: {
+        type: "object"
+        required: ["status"]
+        properties: { status: { type: "string" } }
+      }
+      lifecycles: {
+        status: {
+          field: "status"
+          initial: "draft"
+          transitions: { draft: ["submitted"], submitted: ["approved"] }
+        }
+      }
+    }
+  }) {
+    name
+    schemaVersion
+    schema
+  }
+}
+```
+
+`putSchema(input: { collection, schema, force, dryRun })` returns `schema`,
+`compatibility`, `diff`, and `dryRun`. Breaking changes without `force: true`
+return a GraphQL error with `extensions.code: "INVALID_OPERATION"`.
+
+`dropCollection(input: { name, confirm })` requires `confirm: true` and returns
+`name` plus `entitiesRemoved`. REST collection/schema routes remain available as
+compatibility and break-glass endpoints, but examples should prefer GraphQL.
+
+Entity reads expose lifecycle metadata:
+
+```graphql
+{
+  timeEntries(id: "time-1") {
+    status
+    lifecycles
+    validTransitions(lifecycleName: "status")
+  }
+}
+```
+
+The GraphQL schema is rebuilt per request from stored collection schemas. A
+request already executing continues against the schema it started with; the next
+request observes a completed `createCollection`, `dropCollection`, or
+`putSchema` change.
+
 ## Link Traversal
 
 GraphQL relationship fields, `neighbors`, and `linkCandidates` are canonical
@@ -433,6 +529,21 @@ mutation {
   }
 }
 ```
+
+`CommitTransactionInput.operations` is a list of operation wrapper objects.
+Exactly one field must be set per operation:
+
+- `createEntity`: `{ collection, id, data }`
+- `updateEntity`: `{ collection, id, expectedVersion, data }`
+- `patchEntity`: `{ collection, id, expectedVersion, patch }`
+- `deleteEntity`: `{ collection, id, expectedVersion }`
+- `createLink`: `{ sourceCollection, sourceId, targetCollection, targetId, linkType, metadata }`
+- `deleteLink`: `{ sourceCollection, sourceId, targetCollection, targetId, linkType }`
+
+The GraphQL payload returns `transactionId`, `replayHit`, and per-operation
+`results`. GraphQL errors include stable `extensions.code`; validation and
+operation-shape errors also include `extensions.operationIndex` when Axon can
+identify the failing operation before execution.
 
 Common error bodies use `{"code": "...", "detail": ...}`. Browser clients can
 switch on `code`; auth failures use `unauthorized` or `forbidden`, validation

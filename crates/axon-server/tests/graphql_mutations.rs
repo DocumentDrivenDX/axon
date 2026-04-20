@@ -135,6 +135,143 @@ async fn gql_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Val
 // ── Happy-path mutations ─────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
+async fn graphql_collection_admin_create_list_refresh_and_drop() {
+    let server = test_server();
+
+    let create = gql(
+        &server,
+        r#"mutation {
+            createCollection(input: {
+                name: "projects"
+                schema: {
+                    version: 1
+                    entitySchema: {
+                        type: "object"
+                        required: ["title"]
+                        properties: {
+                            title: { type: "string" }
+                        }
+                    }
+                }
+            }) {
+                name
+                entityCount
+                schemaVersion
+                schema
+            }
+        }"#,
+    )
+    .await;
+    assert!(create["errors"].is_null(), "unexpected errors: {create}");
+    assert_eq!(create["data"]["createCollection"]["name"], "projects");
+    assert_eq!(create["data"]["createCollection"]["schemaVersion"], 1);
+
+    let list = gql(&server, r#"{ collections { name schemaVersion schema } }"#).await;
+    assert!(list["errors"].is_null(), "unexpected errors: {list}");
+    let collections = list["data"]["collections"].as_array().unwrap();
+    assert!(
+        collections.iter().any(|collection| {
+            collection["name"] == "projects" && collection["schema"]["version"] == 1
+        }),
+        "created collection should be listed with schema: {list}"
+    );
+
+    let create_entity = gql(
+        &server,
+        r#"mutation { createProjects(id: "p1", input: "{\"title\":\"alpha\"}") { id title version } }"#,
+    )
+    .await;
+    assert!(
+        create_entity["errors"].is_null(),
+        "next request should see regenerated schema: {create_entity}"
+    );
+    assert_eq!(create_entity["data"]["createProjects"]["title"], "alpha");
+
+    let no_confirm = gql(
+        &server,
+        r#"mutation { dropCollection(input: { name: "projects", confirm: false }) { name } }"#,
+    )
+    .await;
+    let errors = no_confirm["errors"].as_array().expect("errors array");
+    assert_eq!(errors[0]["extensions"]["code"], "INVALID_ARGUMENT");
+
+    let drop_body = gql(
+        &server,
+        r#"mutation { dropCollection(input: { name: "projects", confirm: true }) { name entitiesRemoved } }"#,
+    )
+    .await;
+    assert!(
+        drop_body["errors"].is_null(),
+        "unexpected errors: {drop_body}"
+    );
+    assert_eq!(drop_body["data"]["dropCollection"]["name"], "projects");
+    assert_eq!(drop_body["data"]["dropCollection"]["entitiesRemoved"], 1);
+
+    let missing = gql(&server, r#"{ collection(name: "projects") { name } }"#).await;
+    assert!(missing["errors"].is_null(), "unexpected errors: {missing}");
+    assert!(missing["data"]["collection"].is_null());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_put_schema_compatible_and_breaking_changes() {
+    let server = test_server();
+    seed_tasks_collection(&server).await;
+
+    let compatible = gql(
+        &server,
+        r#"mutation {
+            putSchema(input: {
+                collection: "tasks"
+                schema: {
+                    version: 2
+                    entitySchema: {
+                        type: "object"
+                        properties: {
+                            title: { type: "string" }
+                            label: { type: "string" }
+                            priority: { type: "integer" }
+                        }
+                    }
+                }
+            }) {
+                schema
+                compatibility
+                diff
+                dryRun
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        compatible["errors"].is_null(),
+        "unexpected errors: {compatible}"
+    );
+    assert_eq!(compatible["data"]["putSchema"]["schema"]["version"], 2);
+    assert_eq!(compatible["data"]["putSchema"]["dryRun"], false);
+
+    let breaking = gql(
+        &server,
+        r#"mutation {
+            putSchema(input: {
+                collection: "tasks"
+                schema: {
+                    version: 3
+                    entitySchema: {
+                        type: "object"
+                        properties: {
+                            title: { type: "integer" }
+                        }
+                    }
+                }
+            }) { schema }
+        }"#,
+    )
+    .await;
+    let errors = breaking["errors"].as_array().expect("errors array");
+    assert_eq!(errors[0]["extensions"]["code"], "INVALID_OPERATION");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_create_entity_mutation_happy_path() {
     let server = test_server();
     seed_tasks_collection(&server).await;
@@ -233,6 +370,137 @@ async fn graphql_delete_entity_mutation() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_commit_transaction_create_and_idempotent_replay() {
+    let server = test_server();
+    seed_tasks_collection(&server).await;
+
+    let body = gql(
+        &server,
+        r#"mutation {
+            commitTransaction(input: {
+                idempotencyKey: "gql-retry-1"
+                operations: [
+                    { createEntity: {
+                        collection: "tasks"
+                        id: "tx-create-1"
+                        data: { title: "batched" }
+                    }}
+                ]
+            }) {
+                transactionId
+                replayHit
+                results {
+                    index
+                    success
+                    collection
+                    id
+                    entity { id collection version data }
+                }
+            }
+        }"#,
+    )
+    .await;
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+    let tx_id = body["data"]["commitTransaction"]["transactionId"]
+        .as_str()
+        .expect("transaction id");
+    assert!(!tx_id.is_empty());
+    assert_eq!(body["data"]["commitTransaction"]["replayHit"], false);
+    assert_eq!(
+        body["data"]["commitTransaction"]["results"][0]["entity"]["data"]["title"],
+        "batched"
+    );
+
+    let replay = gql(
+        &server,
+        r#"mutation {
+            commitTransaction(input: {
+                idempotencyKey: "gql-retry-1"
+                operations: [
+                    { createEntity: {
+                        collection: "tasks"
+                        id: "tx-create-1"
+                        data: { title: "different-payload" }
+                    }}
+                ]
+            }) {
+                transactionId
+                replayHit
+                results { entity { id version data } }
+            }
+        }"#,
+    )
+    .await;
+    assert!(replay["errors"].is_null(), "unexpected errors: {replay}");
+    assert_eq!(
+        replay["data"]["commitTransaction"]["transactionId"], tx_id,
+        "same key should replay the cached transaction"
+    );
+    assert_eq!(replay["data"]["commitTransaction"]["replayHit"], true);
+    assert_eq!(
+        replay["data"]["commitTransaction"]["results"][0]["entity"]["data"]["title"], "batched",
+        "same-key/different-payload replay returns the original cached response"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_commit_transaction_rolls_back_on_conflict() {
+    let server = test_server();
+    seed_tasks_collection(&server).await;
+
+    gql(
+        &server,
+        r#"mutation { createTasks(id: "tx-a", input: "{\"title\":\"A\"}") { id } }"#,
+    )
+    .await;
+    gql(
+        &server,
+        r#"mutation { createTasks(id: "tx-b", input: "{\"title\":\"B\"}") { id } }"#,
+    )
+    .await;
+
+    let body = gql(
+        &server,
+        r#"mutation {
+            commitTransaction(input: {
+                operations: [
+                    { updateEntity: {
+                        collection: "tasks"
+                        id: "tx-a"
+                        expectedVersion: 1
+                        data: { title: "A-updated" }
+                    }}
+                    { updateEntity: {
+                        collection: "tasks"
+                        id: "tx-b"
+                        expectedVersion: 99
+                        data: { title: "B-stale" }
+                    }}
+                ]
+            }) {
+                transactionId
+            }
+        }"#,
+    )
+    .await;
+
+    let errors = body["errors"].as_array().expect("errors array");
+    assert!(!errors.is_empty(), "expected conflict: {body}");
+    assert_eq!(errors[0]["extensions"]["code"], "VERSION_CONFLICT");
+
+    let get_body = gql(&server, r#"{ tasks(id: "tx-a") { id version title } }"#).await;
+    assert!(
+        get_body["errors"].is_null(),
+        "unexpected errors: {get_body}"
+    );
+    assert_eq!(
+        get_body["data"]["tasks"]["title"], "A",
+        "first update must be rolled back when a later op conflicts"
+    );
+    assert_eq!(get_body["data"]["tasks"]["version"], 1);
+}
+
 // ── Lifecycle transitions ────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
@@ -250,6 +518,29 @@ async fn graphql_transition_lifecycle_mutation() {
         "unexpected errors: {create_body}"
     );
     assert_eq!(create_body["data"]["createTasks"]["status"], "draft");
+
+    let lifecycle_body = gql(
+        &server,
+        r#"{ tasks(id: "t-100") {
+            id
+            status
+            lifecycles
+            validTransitions(lifecycleName: "status")
+        } }"#,
+    )
+    .await;
+    assert!(
+        lifecycle_body["errors"].is_null(),
+        "unexpected errors: {lifecycle_body}"
+    );
+    assert_eq!(
+        lifecycle_body["data"]["tasks"]["lifecycles"]["status"]["currentState"],
+        "draft"
+    );
+    assert_eq!(
+        lifecycle_body["data"]["tasks"]["validTransitions"],
+        json!(["submitted"])
+    );
 
     // Transition draft -> submitted.
     let transition_body = gql(
@@ -285,6 +576,28 @@ async fn graphql_transition_lifecycle_mutation() {
     let get_body = gql(&server, r#"{ tasks(id: "t-100") { id version status } }"#).await;
     assert_eq!(get_body["data"]["tasks"]["version"], 2);
     assert_eq!(get_body["data"]["tasks"]["status"], "submitted");
+
+    let generic_body = gql(
+        &server,
+        r#"{ entity(collection: "tasks", id: "t-100") {
+            id
+            lifecycles
+            validTransitions(lifecycleName: "status")
+        } }"#,
+    )
+    .await;
+    assert!(
+        generic_body["errors"].is_null(),
+        "unexpected errors: {generic_body}"
+    );
+    assert_eq!(
+        generic_body["data"]["entity"]["lifecycles"]["status"]["currentState"],
+        "submitted"
+    );
+    assert_eq!(
+        generic_body["data"]["entity"]["validTransitions"],
+        json!(["approved"])
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

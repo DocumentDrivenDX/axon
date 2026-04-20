@@ -204,8 +204,10 @@ describe("traverse_and_transactions", () => {
 
     const [url, init] = calls[0];
     expect(url).toBe("http://localhost:4170/tenants/acme/databases/orders/transactions");
-    const headers = (init as { headers: Record<string, string> }).headers;
-    expect(headers["idempotency-key"]).toBe("retry-1");
+    expect(JSON.parse((init as { body: string }).body)).toEqual({
+      operations: [{ op: "create", collection: "items", id: "i1", data: {} }],
+      idempotency_key: "retry-1",
+    });
   });
 });
 

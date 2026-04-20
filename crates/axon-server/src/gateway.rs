@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 use tower_http::services::{ServeDir, ServeFile};
 
 use async_graphql::http::{playground_source, GraphQLPlaygroundConfig};
-use axon_graphql::BroadcastBroker;
+use axon_graphql::{BroadcastBroker, GraphqlIdempotencyScope};
 
 use crate::actor_scope::ActorScopeGuard;
 use crate::auth::{AuthContext, AuthError, Identity};
@@ -51,7 +51,7 @@ use axon_audit::AuditLog;
 use axon_core::auth::{CallerIdentity as CoreCallerIdentity, ResolvedIdentity, Role as CoreRole};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
-use axon_core::types::Entity;
+use axon_core::types::{Entity, Link};
 use axon_schema::schema::CollectionSchema;
 use axon_storage::adapter::StorageAdapter;
 
@@ -383,6 +383,19 @@ impl CurrentDatabase {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct CurrentTenant(String);
+
+impl CurrentTenant {
+    pub(crate) fn new(tenant: impl Into<String>) -> Self {
+        Self(tenant.into())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug)]
 struct RequestedDatabaseScope(Option<String>);
 
 impl RequestedDatabaseScope {
@@ -403,6 +416,13 @@ fn request_current_database(request: &axum::extract::Request) -> CurrentDatabase
     CurrentDatabase::new(requested_scope.database().unwrap_or(DEFAULT_DATABASE))
 }
 
+fn request_current_tenant(request: &axum::extract::Request) -> CurrentTenant {
+    let tenant = crate::path_router::extract_tenant_database(request.uri().path())
+        .map(|(tenant, _database)| tenant)
+        .unwrap_or_else(|| "default".to_string());
+    CurrentTenant::new(tenant)
+}
+
 fn qualify_collection_name(collection: &str, current_database: &CurrentDatabase) -> CollectionId {
     if current_database.as_str() == DEFAULT_DATABASE {
         return CollectionId::new(collection);
@@ -412,6 +432,10 @@ fn qualify_collection_name(collection: &str, current_database: &CurrentDatabase)
         collection,
         current_database.as_str(),
     ))
+}
+
+fn idempotency_scope(current_tenant: &CurrentTenant, current_database: &CurrentDatabase) -> String {
+    format!("{}:{}", current_tenant.as_str(), current_database.as_str())
 }
 
 fn default_namespace_health<S: StorageAdapter>(
@@ -504,7 +528,9 @@ pub async fn authenticate_http_request(
 ) -> Response {
     let requested_database_scope = requested_database_scope(&request);
     let current_database = request_current_database(&request);
+    let current_tenant = request_current_tenant(&request);
     request.extensions_mut().insert(current_database);
+    request.extensions_mut().insert(current_tenant);
     request.extensions_mut().insert(requested_database_scope);
     match auth.resolve_peer(request_peer_address(&request)).await {
         Ok(identity) => {
@@ -999,10 +1025,32 @@ pub enum TransactionOp {
         data: Value,
         expected_version: u64,
     },
+    Patch {
+        collection: String,
+        id: String,
+        patch: Value,
+        expected_version: u64,
+    },
     Delete {
         collection: String,
         id: String,
         expected_version: u64,
+    },
+    CreateLink {
+        source_collection: String,
+        source_id: String,
+        target_collection: String,
+        target_id: String,
+        link_type: String,
+        #[serde(default)]
+        metadata: Value,
+    },
+    DeleteLink {
+        source_collection: String,
+        source_id: String,
+        target_collection: String,
+        target_id: String,
+        link_type: String,
     },
 }
 
@@ -1010,6 +1058,7 @@ pub enum TransactionOp {
 #[derive(Deserialize)]
 pub struct TransactionBody {
     pub operations: Vec<TransactionOp>,
+    pub idempotency_key: Option<String>,
     pub actor: Option<String>,
 }
 
@@ -2528,11 +2577,49 @@ async fn drop_namespace(
 
 // ── Transaction endpoint ─────────────────────────────────────────────────────
 
+fn validate_idempotency_key(key: &str) -> Result<(), AxonError> {
+    if key.is_empty() || key.len() > 128 {
+        return Err(AxonError::InvalidArgument(
+            "idempotency_key length must be 1..128 characters".into(),
+        ));
+    }
+    if !key
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'))
+    {
+        return Err(AxonError::InvalidArgument(
+            "idempotency_key must use ASCII [A-Za-z0-9_.:-] characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn json_merge_patch(target: &mut Value, patch: &Value) {
+    if let Value::Object(patch_map) = patch {
+        if !target.is_object() {
+            *target = Value::Object(serde_json::Map::new());
+        }
+        if let Value::Object(target_map) = target {
+            for (key, value) in patch_map {
+                if value.is_null() {
+                    target_map.remove(key);
+                } else {
+                    let entry = target_map.entry(key.clone()).or_insert(Value::Null);
+                    json_merge_patch(entry, value);
+                }
+            }
+        }
+    } else {
+        *target = patch.clone();
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn commit_transaction(
     Extension(handler): Extension<TenantHandler>,
     Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(broker): Extension<BroadcastBroker>,
+    Extension(current_tenant): Extension<CurrentTenant>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Extension(caller): Extension<CoreCallerIdentity>,
@@ -2546,15 +2633,33 @@ async fn commit_transaction(
     if let Err(e) = identity.require_write() {
         return auth_error_response(e);
     }
+    if body.operations.len() > 100 {
+        return axon_error_response(AxonError::InvalidArgument(
+            "transaction exceeds maximum of 100 operations".into(),
+        ));
+    }
     // Check actor scope for every collection referenced in the transaction.
     for op in &body.operations {
-        let collection = match op {
+        let collections: Vec<&str> = match op {
             TransactionOp::Create { collection, .. }
             | TransactionOp::Update { collection, .. }
-            | TransactionOp::Delete { collection, .. } => collection,
+            | TransactionOp::Patch { collection, .. }
+            | TransactionOp::Delete { collection, .. } => vec![collection],
+            TransactionOp::CreateLink {
+                source_collection,
+                target_collection,
+                ..
+            }
+            | TransactionOp::DeleteLink {
+                source_collection,
+                target_collection,
+                ..
+            } => vec![source_collection, target_collection],
         };
-        if let Err(e) = actor_scope.check(&identity.actor, collection, &identity.role) {
-            return auth_error_response(e);
+        for collection in collections {
+            if let Err(e) = actor_scope.check(&identity.actor, collection, &identity.role) {
+                return auth_error_response(e);
+            }
         }
     }
     if let Err(limited) = rate_limiter.check(&identity.actor).await {
@@ -2565,13 +2670,22 @@ async fn commit_transaction(
     //
     // Keys are scoped per database. The `current_database` extension
     // (populated from the URL path by the auth middleware) is authoritative.
-    let idem_key = headers
-        .get(IDEMPOTENCY_KEY_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+    let idem_key = match body.idempotency_key.clone() {
+        Some(key) => Some(key),
+        None => headers
+            .get(IDEMPOTENCY_KEY_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string()),
+    };
+    if let Some(ref key) = idem_key {
+        if let Err(error) = validate_idempotency_key(key) {
+            return axon_error_response(error);
+        }
+    }
+    let idem_scope = idempotency_scope(&current_tenant, &current_database);
 
     if let Some(ref key) = idem_key {
-        match idempotency.try_reserve(current_database.as_str(), key) {
+        match idempotency.try_reserve(&idem_scope, key) {
             ReservationResult::AlreadyCached(cached) => {
                 let mut response = (StatusCode::OK, Json(cached)).into_response();
                 response.headers_mut().insert(
@@ -2641,6 +2755,39 @@ async fn commit_transaction(
                     data_before,
                 )
             }
+            TransactionOp::Patch {
+                collection,
+                id,
+                patch,
+                expected_version,
+            } => {
+                let h = handler.lock().await;
+                let existing = match h.get_entity(GetEntityRequest {
+                    collection: qualify_collection_name(&collection, &current_database),
+                    id: EntityId::new(&id),
+                }) {
+                    Ok(resp) => resp.entity,
+                    Err(e) => {
+                        drop(h);
+                        if let Some(ref key) = idem_key {
+                            idempotency.release(&idem_scope, key);
+                        }
+                        return axon_error_response(e);
+                    }
+                };
+                drop(h);
+                let mut merged = existing.data.clone();
+                json_merge_patch(&mut merged, &patch);
+                tx.update(
+                    Entity::new(
+                        qualify_collection_name(&collection, &current_database),
+                        EntityId::new(&id),
+                        merged,
+                    ),
+                    expected_version,
+                    Some(existing.data),
+                )
+            }
             TransactionOp::Delete {
                 collection,
                 id,
@@ -2662,12 +2809,41 @@ async fn commit_transaction(
                     data_before,
                 )
             }
+            TransactionOp::CreateLink {
+                source_collection,
+                source_id,
+                target_collection,
+                target_id,
+                link_type,
+                metadata,
+            } => tx.create_link(Link {
+                source_collection: qualify_collection_name(&source_collection, &current_database),
+                source_id: EntityId::new(source_id),
+                target_collection: qualify_collection_name(&target_collection, &current_database),
+                target_id: EntityId::new(target_id),
+                link_type,
+                metadata,
+            }),
+            TransactionOp::DeleteLink {
+                source_collection,
+                source_id,
+                target_collection,
+                target_id,
+                link_type,
+            } => tx.delete_link(Link {
+                source_collection: qualify_collection_name(&source_collection, &current_database),
+                source_id: EntityId::new(source_id),
+                target_collection: qualify_collection_name(&target_collection, &current_database),
+                target_id: EntityId::new(target_id),
+                link_type,
+                metadata: Value::Null,
+            }),
         };
         if let Err(e) = result {
             // Staging failure — not cacheable; release the reservation so
             // the client can retry with the same key after correction.
             if let Some(ref key) = idem_key {
-                idempotency.release(current_database.as_str(), key);
+                idempotency.release(&idem_scope, key);
             }
             return axon_error_response(e);
         }
@@ -2721,7 +2897,7 @@ async fn commit_transaction(
             // Cache the response body so a retry with the same key gets the
             // same result without re-executing (FEAT-008 US-081).
             if let Some(ref key) = idem_key {
-                idempotency.store_response(current_database.as_str(), key, body.clone());
+                idempotency.store_response(&idem_scope, key, body.clone());
             }
             (StatusCode::OK, Json(body)).into_response()
         }
@@ -2730,7 +2906,7 @@ async fn commit_transaction(
             // the client can retry with the same key after correcting the
             // payload (FEAT-008 US-081 AC4).
             if let Some(ref key) = idem_key {
-                idempotency.release(current_database.as_str(), key);
+                idempotency.release(&idem_scope, key);
             }
             axon_error_response(e)
         }
@@ -2748,6 +2924,8 @@ async fn commit_transaction(
 async fn graphql_handler(
     Extension(handler): Extension<TenantHandler>,
     Extension(caller): Extension<CoreCallerIdentity>,
+    Extension(current_tenant): Extension<CurrentTenant>,
+    Extension(current_database): Extension<CurrentDatabase>,
     req: async_graphql_axum::GraphQLRequest,
 ) -> Response {
     // 1. Gather current collection schemas.
@@ -2784,10 +2962,13 @@ async fn graphql_handler(
     // 3. Execute the request, injecting the resolved caller identity so
     //    mutation resolvers can attribute audit entries to the authenticated
     //    actor (FEAT-012).
-    let response = gql_schema
-        .schema
-        .execute(req.into_inner().data(caller))
-        .await;
+    let response =
+        gql_schema
+            .schema
+            .execute(req.into_inner().data(caller).data(GraphqlIdempotencyScope(
+                idempotency_scope(&current_tenant, &current_database),
+            )))
+            .await;
     async_graphql_axum::GraphQLResponse::from(response).into_response()
 }
 
