@@ -15,11 +15,11 @@ dun:
 # Feature Specification: FEAT-029 - Data-Layer Access Control Policies
 
 **Feature ID**: FEAT-029
-**Status**: Draft
+**Status**: Specified
 **Priority**: P0
 **Owner**: Core Team
 **Created**: 2026-04-19
-**Updated**: 2026-04-19
+**Updated**: 2026-04-20
 
 ## Overview
 
@@ -54,6 +54,12 @@ Downstream nexiq is the forcing function. Nexiq needs consultants to see only
 their own engagements, contractors to lose budget/rate fields even on otherwise
 visible engagements, and operations managers to read billing records without
 seeing contract rate cards. Those guarantees cannot depend on UI code.
+
+This specification is the frame-level closure for `axon-c5cc071a`: it chooses a
+schema-declared policy model and pins the wire-visible denial contract. Backend
+implementation remains separate work. Until that implementation ships, any
+browser-side filtering in downstream applications is an affordance only, not a
+security boundary.
 
 ## Relationship To Existing Authorization
 
@@ -425,6 +431,17 @@ collections:
             - when: { subject: role, eq: ops_manager }
               redact_as: null
 
+  tasks:
+    read:
+      allow:
+        - when: { subject: role, in: [admin, partner, ops_manager] }
+        - when: { subject: role, in: [consultant, contractor] }
+          where:
+            related:
+              link_type: belongs_to_engagement
+              target_collection: engagements
+              target_policy: read
+
   invoices:
     read:
       allow:
@@ -493,9 +510,13 @@ Required behaviors proven by this policy set:
   current user ID.
 - Contractors see their own engagements but receive `budget_cents` and
   `rate_card_id` as `null`.
+- Contracts and tasks reuse engagement visibility through `target_policy: read`
+  rather than duplicating membership rules.
 - Consultants and contractors cannot read invoices at all.
 - Operations managers read firm-wide invoices and billing entities but receive
   contract rate-card fields as `null`.
+- Operations managers are not granted engagement assignment, time approval, or
+  engagement-status transition writes by this reference policy.
 - A consultant cannot update `engagements.status` on an engagement they cannot
   read, and cannot write denied fields on one they can read.
 
