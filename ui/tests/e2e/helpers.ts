@@ -20,6 +20,12 @@ export type TestDatabase = {
 	name: string;
 };
 
+export const E2E_FIXTURE_PREFIX = 'e2e-';
+
+function withE2eFixturePrefix(value: string): string {
+	return value.startsWith(E2E_FIXTURE_PREFIX) ? value : `${E2E_FIXTURE_PREFIX}${value}`;
+}
+
 async function expectOkResponse(response: APIResponse, label: string) {
 	if (response.ok()) return;
 	let body = '';
@@ -37,7 +43,7 @@ export async function createTestTenant(
 	prefix: string,
 ): Promise<TestTenant> {
 	const suffix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-	const name = `${prefix}${suffix}`;
+	const name = `${withE2eFixturePrefix(prefix)}-${suffix}`;
 	const response = await request.post('/control/tenants', {
 		data: { name },
 	});
@@ -163,7 +169,7 @@ export async function createTestUser(
 	displayName?: string,
 	email?: string | null,
 ): Promise<TestUser> {
-	const name = displayName ?? `test-${Date.now().toString(36)}`;
+	const name = withE2eFixturePrefix(displayName ?? `test-${Date.now().toString(36)}`);
 	const response = await request.post('/control/users/provision', {
 		data: { display_name: name, email: email ?? null },
 	});

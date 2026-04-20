@@ -16,7 +16,7 @@ import { createTestTenant, tenantUrl } from './helpers';
  */
 test.describe('UI restructure smoke', () => {
 	const unique = Date.now().toString(36);
-	const tenantName = `smoke${unique}`;
+	const tenantName = `e2e-smoke-${unique}`;
 	const dbName = 'first';
 	const collectionName = `tasks-${unique}`;
 	const entityId = `task-${unique}`;

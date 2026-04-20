@@ -15,6 +15,8 @@ const baseURL = process.env.AXON_E2E_BASE_URL ?? 'http://localhost:4170';
  */
 export default defineConfig({
 	testDir: './tests/e2e',
+	globalSetup: './tests/e2e/cleanup-fixtures.ts',
+	globalTeardown: './tests/e2e/cleanup-fixtures.ts',
 	fullyParallel: false,
 	forbidOnly: !!process.env.CI,
 	retries: process.env.CI ? 2 : 0,

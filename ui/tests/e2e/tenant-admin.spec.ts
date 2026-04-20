@@ -137,8 +137,8 @@ test.describe('Tenant members — add, change role, remove', () => {
 });
 
 test.describe('Global users ACL — add, change, remove', () => {
-	const login = `test-user-${Date.now().toString(36)}`;
-	const displayName = `Provisioned ${Date.now().toString(36)}`;
+	const login = `e2e-test-user-${Date.now().toString(36)}`;
+	const displayName = `e2e-provisioned-${Date.now().toString(36)}`;
 	const email = `${login}@example.test`;
 
 	test('add a user, change role, remove', async ({ page }) => {
