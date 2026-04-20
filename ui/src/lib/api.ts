@@ -115,6 +115,44 @@ type QueryEntitiesInput = {
 	afterId?: string | null;
 };
 
+type ScopedTenantDatabase = NonNullable<Scope>;
+
+type GraphQLError = {
+	message: string;
+	path?: Array<string | number>;
+};
+
+type GraphQLResult<T> = {
+	data?: T;
+	errors?: GraphQLError[];
+};
+
+type GraphQLCollectionMeta = {
+	name: string;
+	entityCount: number;
+	schemaVersion: number | null;
+	schema?: CollectionSchema | null;
+};
+
+type GraphQLEntity = {
+	collection: string;
+	id: string;
+	version: number;
+	data: Record<string, unknown> | null;
+};
+
+type GraphQLEntityConnection = {
+	totalCount: number;
+	edges: Array<{
+		cursor: string;
+		node: GraphQLEntity;
+	}>;
+	pageInfo: {
+		hasNextPage: boolean;
+		endCursor: string | null;
+	};
+};
+
 type AuditFilters = {
 	collection?: string;
 	actor?: string;
@@ -133,6 +171,10 @@ function formatError(error: ApiError, status: number): string {
 	return error.code ? `${error.code}: ${detail}` : detail;
 }
 
+function scopedPath(path: string, scope: ScopedTenantDatabase): string {
+	return `/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}${path}`;
+}
+
 async function request<T>(path: string, init?: RequestInit, scope?: Scope): Promise<T> {
 	const headers = new Headers(init?.headers);
 	if (init?.body && !headers.has('Content-Type')) {
@@ -140,10 +182,7 @@ async function request<T>(path: string, init?: RequestInit, scope?: Scope): Prom
 	}
 
 	// Control-plane routes (/control/*) are NOT tenant-scoped.
-	const url =
-		scope && !path.startsWith('/control/')
-			? `/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}${path}`
-			: path;
+	const url = scope && !path.startsWith('/control/') ? scopedPath(path, scope) : path;
 
 	const response = await fetch(url, {
 		...init,
@@ -159,7 +198,74 @@ async function request<T>(path: string, init?: RequestInit, scope?: Scope): Prom
 	return payload as T;
 }
 
+async function graphqlRequest<T>(
+	scope: ScopedTenantDatabase,
+	query: string,
+	variables: Record<string, unknown> = {},
+): Promise<T> {
+	const response = await fetch(scopedPath('/graphql', scope), {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ query, variables }),
+	});
+	const text = await response.text();
+	const payload = text ? (JSON.parse(text) as GraphQLResult<T> | ApiError) : null;
+
+	if (!response.ok) {
+		throw new Error(formatError((payload as ApiError | null) ?? {}, response.status));
+	}
+
+	const result = payload as GraphQLResult<T> | null;
+	if (result?.errors?.length) {
+		throw new Error(result.errors.map((error) => error.message).join(', '));
+	}
+	if (result?.data === undefined) {
+		throw new Error('GraphQL response missing data');
+	}
+
+	return result.data;
+}
+
+function collectionSummaryFromGraphql(collection: GraphQLCollectionMeta): CollectionSummary {
+	return {
+		name: collection.name,
+		entity_count: collection.entityCount,
+		schema_version: collection.schemaVersion,
+	};
+}
+
+function collectionDetailFromGraphql(collection: GraphQLCollectionMeta): CollectionDetail {
+	return {
+		name: collection.name,
+		entity_count: collection.entityCount,
+		schema: collection.schema ?? null,
+	};
+}
+
+function entityFromGraphql(entity: GraphQLEntity): EntityRecord {
+	return {
+		collection: entity.collection,
+		id: entity.id,
+		version: entity.version,
+		data: entity.data ?? {},
+	};
+}
+
 export async function fetchCollections(scope?: Scope): Promise<CollectionSummary[]> {
+	if (scope) {
+		const data = await graphqlRequest<{ collections: GraphQLCollectionMeta[] }>(
+			scope,
+			`query AxonUiCollections {
+				collections {
+					name
+					entityCount
+					schemaVersion
+				}
+			}`,
+		);
+		return data.collections.map(collectionSummaryFromGraphql);
+	}
+
 	const response = await request<{ collections: CollectionSummary[] }>(
 		'/collections',
 		undefined,
@@ -169,6 +275,25 @@ export async function fetchCollections(scope?: Scope): Promise<CollectionSummary
 }
 
 export async function fetchCollection(name: string, scope?: Scope): Promise<CollectionDetail> {
+	if (scope) {
+		const data = await graphqlRequest<{ collection: GraphQLCollectionMeta | null }>(
+			scope,
+			`query AxonUiCollection($name: String!) {
+				collection(name: $name) {
+					name
+					entityCount
+					schemaVersion
+					schema
+				}
+			}`,
+			{ name },
+		);
+		if (!data.collection) {
+			throw new Error(`Collection not found: ${name}`);
+		}
+		return collectionDetailFromGraphql(data.collection);
+	}
+
 	return request<CollectionDetail>(`/collections/${encodeURIComponent(name)}`, undefined, scope);
 }
 
@@ -177,6 +302,41 @@ export async function fetchEntities(
 	options: QueryEntitiesInput = {},
 	scope?: Scope,
 ): Promise<QueryEntitiesResult> {
+	if (scope) {
+		const data = await graphqlRequest<{ entities: GraphQLEntityConnection }>(
+			scope,
+			`query AxonUiEntities($collection: String!, $limit: Int, $after: ID) {
+				entities(collection: $collection, limit: $limit, after: $after) {
+					totalCount
+					edges {
+						cursor
+						node {
+							collection
+							id
+							version
+							data
+						}
+					}
+					pageInfo {
+						hasNextPage
+						endCursor
+					}
+				}
+			}`,
+			{
+				collection,
+				limit: options.limit ?? 50,
+				after: options.afterId ?? null,
+			},
+		);
+
+		return {
+			entities: data.entities.edges.map((edge) => entityFromGraphql(edge.node)),
+			total_count: data.entities.totalCount,
+			next_cursor: data.entities.pageInfo.hasNextPage ? data.entities.pageInfo.endCursor : null,
+		};
+	}
+
 	return request<QueryEntitiesResult>(
 		`/collections/${encodeURIComponent(collection)}/query`,
 		{
@@ -195,6 +355,25 @@ export async function fetchEntity(
 	id: string,
 	scope?: Scope,
 ): Promise<EntityRecord> {
+	if (scope) {
+		const data = await graphqlRequest<{ entity: GraphQLEntity | null }>(
+			scope,
+			`query AxonUiEntity($collection: String!, $id: ID!) {
+				entity(collection: $collection, id: $id) {
+					collection
+					id
+					version
+					data
+				}
+			}`,
+			{ collection, id },
+		);
+		if (!data.entity) {
+			throw new Error(`Entity not found: ${collection}/${id}`);
+		}
+		return entityFromGraphql(data.entity);
+	}
+
 	const response = await request<{ entity: EntityRecord }>(
 		`/entities/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
 		undefined,
@@ -239,6 +418,14 @@ export async function updateEntity(
 }
 
 export async function fetchSchema(collection: string, scope?: Scope): Promise<CollectionSchema> {
+	if (scope) {
+		const detail = await fetchCollection(collection, scope);
+		if (!detail.schema) {
+			throw new Error(`Schema not found: ${collection}`);
+		}
+		return detail.schema;
+	}
+
 	const response = await request<{ schema: CollectionSchema }>(
 		`/collections/${encodeURIComponent(collection)}/schema`,
 		undefined,
@@ -881,8 +1068,7 @@ export async function executeGraphql(
 	variables: Record<string, unknown> | undefined,
 	scope: { tenant: string; database: string },
 ): Promise<GraphQLResponse> {
-	const url = `/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}/graphql`;
-	const response = await fetch(url, {
+	const response = await fetch(scopedPath('/graphql', scope), {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ query, variables: variables ?? {} }),
