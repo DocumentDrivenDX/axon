@@ -30,6 +30,62 @@ fn logical_database_from_slug(slug: &str) -> &str {
         .unwrap_or(DEFAULT_DATABASE)
 }
 
+fn is_postgres_database_identifier(name: &str) -> bool {
+    let Some(first) = name.chars().next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn stable_database_hash(name: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in name.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+fn postgres_database_key(public_name: &str) -> String {
+    if is_postgres_database_identifier(public_name) {
+        return public_name.to_owned();
+    }
+
+    let mut stem = String::new();
+    let mut last_was_separator = false;
+    for byte in public_name.bytes() {
+        let next = if byte.is_ascii_alphanumeric() {
+            char::from(byte).to_ascii_lowercase()
+        } else {
+            '_'
+        };
+
+        if next == '_' {
+            if !stem.is_empty() && !last_was_separator {
+                stem.push(next);
+            }
+            last_was_separator = true;
+        } else {
+            stem.push(next);
+            last_was_separator = false;
+        }
+
+        if stem.len() >= 39 {
+            break;
+        }
+    }
+
+    while stem.ends_with('_') {
+        stem.pop();
+    }
+    if stem.is_empty() {
+        stem.push_str("db");
+    }
+
+    format!("t_{stem}_{:016x}", stable_database_hash(public_name))
+}
+
 fn ensure_logical_database<S: StorageAdapter>(storage: &mut S, slug: &str) -> Result<(), String> {
     let database = logical_database_from_slug(slug);
     if database == DEFAULT_DATABASE {
@@ -252,27 +308,31 @@ impl TenantRouter {
 
                 let superadmin_dsn = superadmin_dsn.clone();
                 let db_name_owned = db_name.to_owned();
+                let physical_db_name = postgres_database_key(&db_name_owned);
 
                 // Provision the physical database (may already exist — that's
                 // fine, we just open a connection to it).
-                let tenant_conn_str = axon_storage::tenant_dsn(&superadmin_dsn, &db_name_owned);
+                let tenant_conn_str = axon_storage::tenant_dsn(&superadmin_dsn, &physical_db_name);
 
                 // Spawn the blocking connect on a dedicated thread so we don't
                 // block the async runtime.
                 let handler = tokio::task::spawn_blocking(move || {
                     // Attempt to provision; ignore AlreadyExists.
-                    match axon_storage::provision_postgres_database(&superadmin_dsn, &db_name_owned) {
+                    match axon_storage::provision_postgres_database(
+                        &superadmin_dsn,
+                        &physical_db_name,
+                    ) {
                         Ok(()) | Err(axon_core::error::AxonError::AlreadyExists(_)) => {}
                         Err(e) => {
                             return Err(format!(
-                                "failed to provision PostgreSQL database 'axon_{db_name_owned}': {e}"
+                                "failed to provision PostgreSQL database 'axon_{physical_db_name}' for '{db_name_owned}': {e}"
                             ))
                         }
                     }
 
                     let mut storage = PostgresStorageAdapter::connect(&tenant_conn_str).map_err(|e| {
                         format!(
-                            "failed to connect to tenant PostgreSQL database 'axon_{db_name_owned}': {e}"
+                            "failed to connect to tenant PostgreSQL database 'axon_{physical_db_name}' for '{db_name_owned}': {e}"
                         )
                     })?;
                     ensure_logical_database(&mut storage, &db_name_owned)?;
@@ -360,17 +420,18 @@ impl TenantRouter {
 
                 let superadmin_dsn = superadmin_dsn.clone();
                 let db_name_owned = db_name.to_owned();
+                let physical_db_name = postgres_database_key(&db_name_owned);
 
                 tokio::task::spawn_blocking(move || {
                     match axon_storage::deprovision_postgres_database(
                         &superadmin_dsn,
-                        &db_name_owned,
+                        &physical_db_name,
                     ) {
                         Ok(()) => Ok(()),
                         // Already gone — treat as success.
                         Err(axon_core::error::AxonError::NotFound(_)) => Ok(()),
                         Err(e) => Err(format!(
-                            "failed to drop PostgreSQL database 'axon_{db_name_owned}': {e}"
+                            "failed to drop PostgreSQL database 'axon_{physical_db_name}' for '{db_name_owned}': {e}"
                         )),
                     }
                 })
@@ -400,6 +461,26 @@ mod tests {
             Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
         let default_handler = Arc::new(Mutex::new(AxonHandler::new(default_storage)));
         TenantRouter::new(tmp.to_path_buf(), default_handler)
+    }
+
+    #[test]
+    fn postgres_database_key_preserves_valid_identifiers() {
+        assert_eq!(postgres_database_key("tenant_123"), "tenant_123");
+    }
+
+    #[test]
+    fn postgres_database_key_maps_public_slugs_to_safe_identifiers() {
+        let public = "e2e-smoke-mo7zvzze-019dadd5:first";
+        let key = postgres_database_key(public);
+
+        assert_ne!(key, public);
+        assert!(is_postgres_database_identifier(&key));
+        assert!(key.len() <= 58);
+        assert_eq!(key, postgres_database_key(public));
+        assert_ne!(
+            key,
+            postgres_database_key("e2e-smoke-mo7zvzze-019dadd5:second")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

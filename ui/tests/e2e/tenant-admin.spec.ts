@@ -109,7 +109,7 @@ test.describe('Tenant members — add, change role, remove', () => {
 		await page.getByRole('button', { name: 'UUID' }).click();
 		await page.getByPlaceholder('Paste user UUID…').fill(testUser.id);
 		await page.getByRole('button', { name: 'Use' }).click();
-		await page.getByRole('button', { name: 'Add' }).click();
+		await page.getByRole('button', { name: 'Add', exact: true }).click();
 		await expect(page.locator('table').getByText(testUser.id.slice(0, 8))).toBeVisible({
 			timeout: 5_000,
 		});

@@ -65,7 +65,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={binary_path} serve --no-auth --sqlite-path @SQLITE_PATH@ --control-plane-path @CONTROL_PLANE_PATH@
+ExecStart={binary_path} serve --no-auth --tls-self-signed --sqlite-path @SQLITE_PATH@ --control-plane-path @CONTROL_PLANE_PATH@
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -88,7 +88,7 @@ After=network.target
 Type=simple
 User=axon
 Group=axon
-ExecStart={binary_path} serve --no-auth --sqlite-path @SQLITE_PATH@ --control-plane-path @CONTROL_PLANE_PATH@
+ExecStart={binary_path} serve --no-auth --tls-self-signed --sqlite-path @SQLITE_PATH@ --control-plane-path @CONTROL_PLANE_PATH@
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -232,6 +232,7 @@ const LAUNCHD_PLIST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
         <string>{binary_path}</string>
         <string>serve</string>
         <string>--no-auth</string>
+        <string>--tls-self-signed</string>
         <string>--sqlite-path</string>
         <string>@SQLITE_PATH@</string>
         <string>--control-plane-path</string>
@@ -367,5 +368,34 @@ fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
         Ok(())
     } else {
         anyhow::bail!("{} {} exited with {}", program, args.join(" "), status);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn systemd_user_unit_enables_self_signed_tls() {
+        assert!(
+            SYSTEMD_USER_UNIT.contains("serve --no-auth --tls-self-signed --sqlite-path"),
+            "user systemd service must install with TLS enabled by default",
+        );
+    }
+
+    #[test]
+    fn systemd_global_unit_enables_self_signed_tls() {
+        assert!(
+            SYSTEMD_GLOBAL_UNIT.contains("serve --no-auth --tls-self-signed --sqlite-path"),
+            "global systemd service must install with TLS enabled by default",
+        );
+    }
+
+    #[test]
+    fn launchd_plist_enables_self_signed_tls() {
+        assert!(
+            LAUNCHD_PLIST_TEMPLATE.contains("<string>--tls-self-signed</string>"),
+            "launchd service must install with TLS enabled by default",
+        );
     }
 }

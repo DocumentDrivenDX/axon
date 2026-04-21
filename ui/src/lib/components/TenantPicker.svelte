@@ -1,14 +1,7 @@
 <script lang="ts">
 import { goto } from '$app/navigation';
 import { base } from '$app/paths';
-import {
-	type Tenant,
-	type TenantDatabase,
-	deleteTenant,
-	deleteTenantDatabase,
-	fetchTenantDatabases,
-	fetchTenants,
-} from '$lib/api';
+import { type Tenant, fetchTenants } from '$lib/api';
 
 interface Props {
 	currentTenantDbName: string | null;
@@ -18,16 +11,9 @@ interface Props {
 const { currentTenantDbName, currentDatabaseName }: Props = $props();
 
 let tenants = $state<Tenant[]>([]);
-let databases = $state<TenantDatabase[]>([]);
 let loading = $state(false);
 let showDropdown = $state(false);
 let error = $state<string | null>(null);
-let showDeleteTenant = $state(false);
-let showDeleteDb = $state<string | null>(null);
-let deleteError = $state<string | null>(null);
-
-let selectedTenant = $state<Tenant | null>(null);
-let showDbDropdown = $state(false);
 
 // Current tenant name for display
 const currentTenantName = $derived(
@@ -48,32 +34,6 @@ async function loadTenants() {
 	}
 }
 
-async function loadDatabases(tenant: Tenant) {
-	selectedTenant = tenant;
-	showDbDropdown = true;
-	loading = true;
-	deleteError = null;
-	try {
-		databases = await fetchTenantDatabases(tenant.id);
-	} catch (e: unknown) {
-		deleteError = e instanceof Error ? e.message : 'Failed to load databases';
-	} finally {
-		loading = false;
-	}
-}
-
-async function selectDatabase(db: TenantDatabase) {
-	const tenant = selectedTenant;
-	if (!tenant) return;
-	showDropdown = false;
-	showDbDropdown = false;
-	selectedTenant = null;
-	await goto(
-		`${base}/tenants/${encodeURIComponent(tenant.db_name)}/databases/${encodeURIComponent(db.name)}/collections`,
-		{ replaceState: true },
-	);
-}
-
 function tenantHref(tenant: Tenant): string {
 	return `${base}/tenants/${encodeURIComponent(tenant.db_name)}`;
 }
@@ -82,40 +42,13 @@ function isCurrentTenant(t: Tenant): boolean {
 	return currentTenantDbName !== null && t.db_name === currentTenantDbName;
 }
 
-function isCurrentDatabase(db: TenantDatabase): boolean {
-	return currentDatabaseName !== null && db.name === currentDatabaseName;
-}
-
-async function handleDeleteTenant() {
-	if (!selectedTenant) return;
-	deleteError = null;
-	try {
-		await deleteTenant(selectedTenant.id);
-		await loadTenants();
-		showDeleteTenant = false;
-		showDbDropdown = false;
-		selectedTenant = null;
-	} catch (e: unknown) {
-		deleteError = e instanceof Error ? e.message : 'Failed to delete tenant';
-	}
-}
-
-async function handleDeleteDatabase() {
-	if (!selectedTenant || !showDeleteDb) return;
-	deleteError = null;
-	try {
-		await deleteTenantDatabase(selectedTenant.id, showDeleteDb);
-		await loadDatabases(selectedTenant);
-		showDeleteDb = null;
-	} catch (e: unknown) {
-		deleteError = e instanceof Error ? e.message : 'Failed to delete database';
-	}
-}
-
 function closeDropdown() {
 	showDropdown = false;
-	showDbDropdown = false;
-	selectedTenant = null;
+}
+
+async function selectTenant(tenant: Tenant) {
+	closeDropdown();
+	await goto(tenantHref(tenant));
 }
 
 function openDropdown() {
@@ -166,52 +99,25 @@ $effect(() => {
 		<div class="picker-dropdown">
 			{#if error}
 				<p class="message error">{error}</p>
-			{:else if loading && !selectedTenant}
+			{:else if loading}
 				<p class="muted">Loading tenants…</p>
 			{:else}
-				{#if !selectedTenant}
-					<div class="dropdown-section">
-						<div class="dropdown-label">Tenants</div>
-						{#each tenants as tenant}
-							<button
-								class="dropdown-item"
-								class:selected={isCurrentTenant(tenant)}
-								onclick={() => void loadDatabases(tenant)}
-							>
-								<span class="item-name">{tenant.name}</span>
-								<span class="item-slug">{tenant.db_name}</span>
-								{#if isCurrentTenant(tenant)}
-									<span class="item-check">✓</span>
-								{/if}
-							</button>
-						{/each}
-					</div>
-				{:else}
-					<div class="dropdown-header">
-						<button class="back-btn" onclick={() => { selectedTenant = null; showDbDropdown = false; }}>
-							← Tenants
+				<div class="dropdown-section">
+					<div class="dropdown-label">Tenants</div>
+					{#each tenants as tenant}
+						<button
+							class="dropdown-item"
+							class:selected={isCurrentTenant(tenant)}
+							onclick={() => void selectTenant(tenant)}
+						>
+							<span class="item-name">{tenant.name}</span>
+							<span class="item-slug">{tenant.db_name}</span>
+							{#if isCurrentTenant(tenant)}
+								<span class="item-check">✓</span>
+							{/if}
 						</button>
-						<span class="header-tenant">{selectedTenant.name}</span>
-					</div>
-					<div class="dropdown-section">
-						<div class="dropdown-label">Databases</div>
-						{#each databases as db}
-							<button
-								class="dropdown-item"
-								class:selected={isCurrentDatabase(db)}
-								onclick={() => void selectDatabase(db)}
-							>
-								<span class="item-name">{db.name}</span>
-								{#if isCurrentDatabase(db)}
-									<span class="item-check">✓</span>
-								{/if}
-							</button>
-						{/each}
-						{#if databases.length === 0}
-							<p class="muted">No databases in this tenant.</p>
-						{/if}
-					</div>
-				{/if}
+					{/each}
+				</div>
 			{/if}
 		</div>
 	{/if}
@@ -335,35 +241,6 @@ $effect(() => {
 	.item-check {
 		color: var(--accent);
 		font-size: 0.85rem;
-	}
-
-	.dropdown-header {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-		padding: 0.35rem 0.6rem 0.5rem;
-		border-bottom: 1px solid var(--border);
-		margin-bottom: 0.35rem;
-	}
-
-	.header-tenant {
-		font-weight: 600;
-		font-size: 0.9rem;
-	}
-
-	.back-btn {
-		background: none;
-		border: none;
-		color: var(--accent);
-		font-size: 0.82rem;
-		cursor: pointer;
-		padding: 0.2rem 0.3rem;
-		border-radius: 0.3rem;
-		font-family: inherit;
-	}
-
-	.back-btn:hover {
-		background: rgba(125, 211, 252, 0.1);
 	}
 
 	.muted {

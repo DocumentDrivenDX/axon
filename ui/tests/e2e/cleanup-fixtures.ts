@@ -27,7 +27,7 @@ function userMatches(user: User): boolean {
 }
 
 async function cleanupFixtures() {
-	const context = await playwrightRequest.newContext({ baseURL });
+	const context = await playwrightRequest.newContext({ baseURL, ignoreHTTPSErrors: true });
 	try {
 		const tenantsResponse = await context.get('/control/tenants');
 		if (tenantsResponse.ok()) {

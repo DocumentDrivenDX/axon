@@ -37,6 +37,26 @@ test.describe('UI restructure smoke', () => {
 		await expect(topnav.getByRole('link', { name: 'Audit Log' })).toHaveCount(0);
 	});
 
+	test('tenant list Open and tenant picker navigate to the tenant workspace', async ({
+		page,
+		request,
+	}) => {
+		const tenant = await createTestTenant(request, 'smoke-nav');
+
+		await page.goto('/ui/tenants');
+		const row = page.locator('tr', { hasText: tenant.name });
+		await expect(row).toContainText(tenant.db_name);
+		await row.getByRole('link', { name: 'Open' }).click();
+		await expect(page).toHaveURL(new RegExp(`/ui/tenants/${tenant.db_name}$`));
+		await expect(page.getByRole('heading', { name: tenant.name })).toBeVisible();
+
+		await page.goto('/ui/tenants');
+		await page.getByRole('button', { name: /Select tenant/ }).click();
+		await page.getByRole('button', { name: new RegExp(tenant.name) }).click();
+		await expect(page).toHaveURL(new RegExp(`/ui/tenants/${tenant.db_name}$`));
+		await expect(page.getByRole('heading', { name: tenant.name })).toBeVisible();
+	});
+
 	test('create tenant, create non-default database, create collection and entity', async ({
 		page,
 	}) => {

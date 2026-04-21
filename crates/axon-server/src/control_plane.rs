@@ -160,7 +160,10 @@ impl ControlPlaneDb {
                 .execute(&self.pool),
         );
 
-        // Step 3: drop obsolete junction tables introduced in earlier schema revisions.
+        // Step 3: backfill db_name for tenants created before slugs existed.
+        self.backfill_missing_tenant_db_names()?;
+
+        // Step 4: drop obsolete junction tables introduced in earlier schema revisions.
         self.block_on(sqlx::query("DROP TABLE IF EXISTS tenant_databases").execute(&self.pool))
             .map_err(AxonError::Storage)?;
 
@@ -175,6 +178,34 @@ impl ControlPlaneDb {
             self.rt.as_ref(),
             crate::cors_config::migrate_cors_origins(&self.pool),
         )?;
+        Ok(())
+    }
+
+    fn backfill_missing_tenant_db_names(&self) -> Result<(), AxonError> {
+        let rows = self
+            .block_on(
+                sqlx::query(
+                    "SELECT id, name FROM tenants
+                     WHERE db_name = '' OR db_name IS NULL
+                     ORDER BY created_at",
+                )
+                .fetch_all(&self.pool),
+            )
+            .map_err(AxonError::Storage)?;
+
+        for row in rows {
+            let id: String = row.get("id");
+            let name: String = row.get("name");
+            let db_name = tenant_db_slug(&name, &id);
+            self.block_on(
+                sqlx::query("UPDATE tenants SET db_name = ? WHERE id = ?")
+                    .bind(db_name)
+                    .bind(id)
+                    .execute(&self.pool),
+            )
+            .map_err(AxonError::Storage)?;
+        }
+
         Ok(())
     }
 
@@ -363,6 +394,32 @@ impl ControlPlaneDb {
     }
 }
 
+fn tenant_db_slug(name: &str, id: &str) -> String {
+    let slug: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug: String = slug
+        .split('-')
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+
+    let id_prefix: String = id.chars().filter(|c| c != &'-').take(8).collect();
+
+    if slug.is_empty() {
+        format!("tenant-{id_prefix}")
+    } else {
+        format!("{slug}-{id_prefix}")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -402,6 +459,25 @@ mod tests {
         // Old tables must not be present.
         assert!(!tables.contains(&"nodes".to_string()));
         assert!(!tables.contains(&"tenant_databases".to_string()));
+    }
+
+    #[test]
+    fn migrate_backfills_empty_tenant_db_names() {
+        let db = setup();
+        db.create_tenant(
+            "019d87ba-2e17-7060-8d23-bc8b0aac9c53",
+            "Nexiq",
+            "",
+            "2026-04-13T16:43:38Z",
+        )
+        .expect("create legacy tenant");
+
+        db.migrate().expect("migration should backfill db_name");
+
+        let tenant = db
+            .get_tenant("019d87ba-2e17-7060-8d23-bc8b0aac9c53")
+            .expect("tenant");
+        assert_eq!(tenant.db_name, "nexiq-019d87ba");
     }
 
     // -- tenants ------------------------------------------------------------
