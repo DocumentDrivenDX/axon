@@ -47,6 +47,11 @@ jobs:
         with:
           key: ${{ matrix.target }}
 
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build admin UI
+        run: cd ui && bun install --frozen-lockfile && bun run build
+
       - name: Install protoc (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
