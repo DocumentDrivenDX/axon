@@ -1,5 +1,6 @@
 <script lang="ts">
 import { afterNavigate } from '$app/navigation';
+import { base } from '$app/paths';
 import {
 	type AuditEntry,
 	type CollectionDetail,
@@ -42,8 +43,15 @@ import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();
 const scope = $derived(data.scope);
+const basePath = $derived(
+	`${base}/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}`,
+);
+const schemasHref = $derived(`${basePath}/schemas`);
 
 let collectionName = $state('');
+const selectedSchemaHref = $derived(
+	collectionName ? `${schemasHref}?collection=${encodeURIComponent(collectionName)}` : schemasHref,
+);
 let collection = $state<CollectionDetail | null>(null);
 let entities = $state<EntityRecord[]>([]);
 let selectedEntity = $state<EntityRecord | null>(null);
@@ -130,6 +138,42 @@ let templateStatus = $state<string | null>(null);
 const lifecycleDefs = $derived<Record<string, LifecycleDef>>(
 	collection ? lifecyclesFromSchema(collection.schema) : {},
 );
+
+type EntitySchemaField = {
+	name: string;
+	type: string;
+	required: boolean;
+};
+
+function resolveSchemaType(prop: Record<string, unknown> | null): string {
+	if (!prop) return 'unknown';
+	if (typeof prop.type === 'string') {
+		if (prop.type === 'array' && prop.items && typeof prop.items === 'object') {
+			return `array<${resolveSchemaType(prop.items as Record<string, unknown>)}>`;
+		}
+		return prop.type;
+	}
+	if (Array.isArray(prop.type)) return (prop.type as string[]).join(' | ');
+	return 'unknown';
+}
+
+function entitySchemaFields(schema: unknown): EntitySchemaField[] {
+	if (!schema || typeof schema !== 'object') return [];
+	const entitySchema = schema as Record<string, unknown>;
+	const properties = entitySchema.properties as Record<string, unknown> | undefined;
+	if (!properties || typeof properties !== 'object') return [];
+	const required = new Set(
+		Array.isArray(entitySchema.required) ? (entitySchema.required as string[]) : [],
+	);
+	return Object.entries(properties).map(([name, definition]) => ({
+		name,
+		type: resolveSchemaType(definition as Record<string, unknown> | null),
+		required: required.has(name),
+	}));
+}
+
+const schemaFields = $derived(entitySchemaFields(collection?.schema?.entity_schema));
+const requiredSchemaFields = $derived(schemaFields.filter((field) => field.required));
 
 function currentLifecycleState(def: LifecycleDef): string | null {
 	if (!selectedEntity) return null;
@@ -611,11 +655,19 @@ afterNavigate(() => {
 <div class="page-header">
 	<div>
 		<h1>{collectionName}</h1>
-		<p class="muted">Entity browser with 50-row pagination and tree-style JSON detail.</p>
+		<p class="muted">
+			{collection?.entity_count ?? entities.length} entities
+			{#if collection?.schema}
+				· schema v{collection.schema.version}
+			{:else}
+				· no schema
+			{/if}
+		</p>
 	</div>
 	<div class="actions">
+		<a class="button-link" href={selectedSchemaHref}>Schema</a>
 		<button onclick={() => (createOpen = !createOpen)}>
-			{createOpen ? 'Hide Create Entity' : 'Create Entity'}
+			{createOpen ? 'Hide Form' : 'New Entity'}
 		</button>
 	</div>
 </div>
@@ -632,103 +684,8 @@ afterNavigate(() => {
 	<p class="message success">{deleteMessage}</p>
 {/if}
 
-<section class="panel template-editor" data-testid="collection-template-section">
-	<div class="panel-header">
-		<h2>Markdown Template</h2>
-		<div class="actions">
-			{#if templateEditMode}
-				<button
-					onclick={() => {
-						templateEditMode = false;
-						templateDraft = template?.template ?? '';
-						templateError = null;
-					}}
-				>
-					Cancel
-				</button>
-				<button class="primary" disabled={templateSaving} onclick={() => void saveTemplate()}>
-					{templateSaving ? 'Saving…' : 'Save'}
-				</button>
-			{:else}
-				<button onclick={() => (templateEditMode = true)} data-testid="template-edit-button">
-					{template ? 'Edit' : 'Create'}
-				</button>
-				{#if template}
-					<button class="danger" onclick={() => void deleteTemplate()}>Delete</button>
-				{/if}
-			{/if}
-		</div>
-	</div>
-	<div class="panel-body stack">
-		{#if templateError}
-			<p class="message error">{templateError}</p>
-		{/if}
-		{#if templateStatus && !templateError}
-			<p class="message success">{templateStatus}</p>
-		{/if}
-		{#if templateEditMode}
-			<textarea
-				bind:value={templateDraft}
-				data-testid="template-editor-textarea"
-				placeholder={'# {{title}}\n\n{{description}}'}
-			></textarea>
-			<p class="muted">
-				Mustache-style syntax. Use <code>{'{{field}}'}</code> to interpolate entity fields.
-			</p>
-		{:else if template}
-			<pre data-testid="template-display">{template.template}</pre>
-			<p class="muted">
-				v{template.version}
-				{#if template.updated_at_ns}
-					· updated {new Date(template.updated_at_ns / 1_000_000).toLocaleString()}
-				{/if}
-			</p>
-		{:else}
-			<p class="muted">
-				No markdown template set for this collection. Click <strong>Create</strong> to add one.
-			</p>
-		{/if}
-	</div>
-</section>
-
-{#if createOpen || entities.length === 0}
-	<section class="panel">
-		<div class="panel-header">
-			<h2>Create Entity</h2>
-			{#if collection?.schema?.version}
-				<span class="pill">Schema v{collection.schema.version}</span>
-			{/if}
-		</div>
-		<div class="panel-body stack">
-			{#if entities.length === 0}
-				<p class="muted">
-					This collection is empty. Create the first entity to populate the browser.
-				</p>
-			{/if}
-			<label>
-				<span>Entity ID</span>
-				<input bind:value={createId} placeholder="task-001" />
-			</label>
-			<label>
-				<span>Entity JSON</span>
-				<textarea bind:value={createJson}></textarea>
-			</label>
-			{#if createErrors.length > 0}
-				<div class="message error">
-					{#each createErrors as issue}
-						<p>{issue}</p>
-					{/each}
-				</div>
-			{/if}
-			<div class="actions">
-				<button class="primary" onclick={submitCreateEntity}>Create Entity</button>
-			</div>
-		</div>
-	</section>
-{/if}
-
-<div class="two-column">
-	<section class="panel">
+<div class="entity-workspace">
+	<section class="panel entity-rail">
 		<div class="panel-header">
 			<h2>Entities</h2>
 			<div class="actions">
@@ -736,7 +693,67 @@ afterNavigate(() => {
 				<button disabled={!nextCursor} onclick={nextPage}>Next</button>
 			</div>
 		</div>
-		<div class="panel-body">
+		<div class="panel-body stack">
+			{#if collection?.schema}
+				<div class="schema-context">
+					<div class="schema-context-row">
+						<span class="meta-label">Schema</span>
+						<a href={selectedSchemaHref}>v{collection.schema.version}</a>
+						<span class="muted">{schemaFields.length} fields</span>
+					</div>
+					{#if schemaFields.length > 0}
+						<div class="field-chip-row">
+							{#each schemaFields.slice(0, 8) as field}
+								<span class="field-chip" class:required={field.required}>
+									{field.name}
+									<span>{field.type}</span>
+								</span>
+							{/each}
+							{#if schemaFields.length > 8}
+								<span class="field-chip">+{schemaFields.length - 8}</span>
+							{/if}
+						</div>
+					{/if}
+				</div>
+			{/if}
+
+			{#if createOpen || entities.length === 0}
+				<section class="create-entity-inline" aria-labelledby="create-entity-title">
+					<div class="create-entity-head">
+						<h3 id="create-entity-title">Create Entity</h3>
+						{#if collection?.schema?.version}
+							<span class="pill">Schema v{collection.schema.version}</span>
+						{/if}
+					</div>
+					{#if requiredSchemaFields.length > 0}
+						<div class="required-fields">
+							<span class="meta-label">Required</span>
+							{#each requiredSchemaFields as field}
+								<span class="field-chip required">{field.name}</span>
+							{/each}
+						</div>
+					{/if}
+					<label>
+						<span>Entity ID</span>
+						<input bind:value={createId} placeholder="task-001" />
+					</label>
+					<label>
+						<span>Entity JSON</span>
+						<textarea bind:value={createJson} rows="8"></textarea>
+					</label>
+					{#if createErrors.length > 0}
+						<div class="message error">
+							{#each createErrors as issue}
+								<p>{issue}</p>
+							{/each}
+						</div>
+					{/if}
+					<div class="actions">
+						<button class="primary" onclick={submitCreateEntity}>Create Entity</button>
+					</div>
+				</section>
+			{/if}
+
 			{#if loading}
 				<p class="message">Loading entities...</p>
 			{:else if entities.length === 0}
@@ -767,7 +784,7 @@ afterNavigate(() => {
 		</div>
 	</section>
 
-	<section class="panel">
+	<section class="panel entity-detail-panel">
 		<div class="panel-header">
 			<h2>{selectedEntity ? selectedEntity.id : 'Entity Detail'}</h2>
 			{#if selectedEntity}
@@ -1224,10 +1241,180 @@ afterNavigate(() => {
 	</section>
 </div>
 
+<section class="panel template-editor" data-testid="collection-template-section">
+	<div class="panel-header">
+		<h2>Markdown Template</h2>
+		<div class="actions">
+			{#if templateEditMode}
+				<button
+					onclick={() => {
+						templateEditMode = false;
+						templateDraft = template?.template ?? '';
+						templateError = null;
+					}}
+				>
+					Cancel
+				</button>
+				<button class="primary" disabled={templateSaving} onclick={() => void saveTemplate()}>
+					{templateSaving ? 'Saving...' : 'Save'}
+				</button>
+			{:else}
+				<button onclick={() => (templateEditMode = true)} data-testid="template-edit-button">
+					{template ? 'Edit' : 'Create'}
+				</button>
+				{#if template}
+					<button class="danger" onclick={() => void deleteTemplate()}>Delete</button>
+				{/if}
+			{/if}
+		</div>
+	</div>
+	<div class="panel-body stack">
+		{#if templateError}
+			<p class="message error">{templateError}</p>
+		{/if}
+		{#if templateStatus && !templateError}
+			<p class="message success">{templateStatus}</p>
+		{/if}
+		{#if templateEditMode}
+			<textarea
+				bind:value={templateDraft}
+				data-testid="template-editor-textarea"
+				placeholder={'# {{title}}\n\n{{description}}'}
+			></textarea>
+			<p class="muted">
+				Mustache-style syntax. Use <code>{'{{field}}'}</code> to interpolate entity fields.
+			</p>
+		{:else if template}
+			<pre data-testid="template-display">{template.template}</pre>
+			<p class="muted">
+				v{template.version}
+				{#if template.updated_at_ns}
+					· updated {new Date(template.updated_at_ns / 1_000_000).toLocaleString()}
+				{/if}
+			</p>
+		{:else}
+			<p class="muted">
+				No markdown template set for this collection. Click <strong>Create</strong> to add one.
+			</p>
+		{/if}
+	</div>
+</section>
+
 <style>
 	button.danger {
 		border-color: var(--danger, #fb7185);
 		color: var(--danger, #fb7185);
+	}
+
+	.entity-workspace {
+		display: grid;
+		grid-template-columns: minmax(22rem, 0.85fr) minmax(0, 1.35fr);
+		gap: 1rem;
+		align-items: start;
+		margin-bottom: 1rem;
+	}
+
+	.entity-rail {
+		position: sticky;
+		top: 1rem;
+		max-height: calc(100vh - 7.5rem);
+		overflow: hidden;
+	}
+
+	.entity-rail .panel-body {
+		max-height: calc(100vh - 12rem);
+		overflow: auto;
+	}
+
+	.entity-detail-panel {
+		min-width: 0;
+	}
+
+	.schema-context,
+	.create-entity-inline {
+		border: 1px solid rgba(47, 55, 66, 0.8);
+		border-radius: 0.5rem;
+		background: rgba(15, 23, 32, 0.45);
+	}
+
+	.schema-context {
+		display: flex;
+		flex-direction: column;
+		gap: 0.55rem;
+		padding: 0.75rem;
+	}
+
+	.schema-context-row,
+	.required-fields,
+	.field-chip-row {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 0.45rem;
+	}
+
+	.schema-context-row a {
+		color: var(--accent);
+		font-weight: 700;
+		text-decoration: none;
+	}
+
+	.field-chip {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		max-width: 100%;
+		border: 1px solid rgba(148, 163, 184, 0.28);
+		border-radius: 0.45rem;
+		padding: 0.18rem 0.45rem;
+		color: var(--text);
+		font-size: 0.78rem;
+		background: rgba(15, 23, 32, 0.65);
+	}
+
+	.field-chip span {
+		color: var(--muted);
+	}
+
+	.field-chip.required {
+		border-color: rgba(125, 211, 252, 0.45);
+		color: var(--accent);
+	}
+
+	.create-entity-inline {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		padding: 0.85rem;
+	}
+
+	.create-entity-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+	}
+
+	.create-entity-head h3 {
+		margin: 0;
+		font-size: 0.95rem;
+	}
+
+	.create-entity-inline label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.create-entity-inline label span {
+		color: var(--muted);
+		font-size: 0.78rem;
+		font-weight: 700;
+		text-transform: uppercase;
+	}
+
+	.create-entity-inline textarea {
+		min-height: 8rem;
 	}
 
 	tr {
@@ -1429,5 +1616,20 @@ afterNavigate(() => {
 		border-radius: 0.3rem;
 		white-space: pre-wrap;
 		margin: 0;
+	}
+
+	@media (max-width: 1150px) {
+		.entity-workspace {
+			grid-template-columns: 1fr;
+		}
+
+		.entity-rail {
+			position: static;
+			max-height: none;
+		}
+
+		.entity-rail .panel-body {
+			max-height: none;
+		}
 	}
 </style>

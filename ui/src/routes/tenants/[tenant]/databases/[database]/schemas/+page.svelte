@@ -1,4 +1,6 @@
 <script lang="ts">
+import { base } from '$app/paths';
+import { page } from '$app/state';
 import {
 	type CollectionSchema,
 	type CollectionSummary,
@@ -13,6 +15,10 @@ import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();
 const scope = $derived(data.scope);
+const basePath = $derived(
+	`${base}/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}`,
+);
+const collectionsHref = $derived(`${basePath}/collections`);
 
 let collections = $state<CollectionSummary[]>([]);
 let selectedCollection = $state('');
@@ -203,9 +209,25 @@ function extractCompoundIndexes(schema: CollectionSchema): CompoundIndexInfo[] {
 	}));
 }
 
+function collectionHref(name: string): string {
+	return `${collectionsHref}/${encodeURIComponent(name)}`;
+}
+
+function schemaVersionLabel(collection: CollectionSummary): string {
+	return collection.schema_version ? `v${collection.schema_version}` : 'No schema';
+}
+
 async function loadCollections(preferredCollection?: string) {
 	collections = await fetchCollections(scope);
-	const nextSelection = preferredCollection ?? selectedCollection ?? collections[0]?.name;
+	const querySelection = page.url.searchParams.get('collection') ?? undefined;
+	const requestedSelection =
+		preferredCollection ??
+		querySelection ??
+		(selectedCollection || undefined) ??
+		collections[0]?.name;
+	const nextSelection = collections.some((collection) => collection.name === requestedSelection)
+		? requestedSelection
+		: collections[0]?.name;
 
 	if (nextSelection) {
 		await selectCollection(nextSelection);
@@ -285,9 +307,10 @@ async function confirmSave(force: boolean) {
 
 async function submitCreateCollection() {
 	try {
+		const collectionName = createCollectionName.trim();
 		const entitySchema = createSchemaJson.trim() ? (JSON.parse(createSchemaJson) as unknown) : null;
 		await createCollection(
-			createCollectionName,
+			collectionName,
 			{
 				description: null,
 				version: 1,
@@ -297,9 +320,9 @@ async function submitCreateCollection() {
 			scope,
 		);
 		createCollectionName = '';
-		statusMessage = 'Collection created.';
 		error = null;
-		await loadCollections();
+		await loadCollections(collectionName);
+		statusMessage = 'Collection created.';
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to create collection';
 	}
@@ -315,7 +338,10 @@ $effect(() => {
 <div class="page-header">
 	<div>
 		<h1>Schemas</h1>
-		<p class="muted">View and update collection schemas through the live HTTP endpoints.</p>
+		<p class="muted">Manage collection shape, validation, links, gates, and indexes.</p>
+	</div>
+	<div class="actions">
+		<a class="button-link" href={collectionsHref}>Collections</a>
 	</div>
 </div>
 
@@ -327,55 +353,59 @@ $effect(() => {
 	<p class="message success">{statusMessage}</p>
 {/if}
 
-<div class="two-column">
-	<section class="panel">
+<div class="schema-workspace">
+	<section class="panel collection-rail">
 		<div class="panel-header">
 			<h2>Collections</h2>
 			<span class="pill">{collections.length} registered</span>
 		</div>
 		<div class="panel-body stack">
-			{#if collections.length === 0}
-				<p class="muted">No collections registered yet.</p>
-			{/if}
-			{#each collections as collection}
-				<button onclick={() => selectCollection(collection.name)}>
-					{collection.name} · {collection.schema_version ? `v${collection.schema_version}` : 'No schema'}
-				</button>
-			{/each}
-		</div>
-	</section>
-
-	<section class="stack">
-		<section class="panel">
-			<div class="panel-header">
-				<h2>Create Collection</h2>
-			</div>
-			<div class="panel-body stack">
+			<section class="create-collection-form" aria-labelledby="create-collection-title">
+				<h3 id="create-collection-title">Create Collection</h3>
 				<label>
 					<span>Name</span>
 					<input bind:value={createCollectionName} placeholder="tasks" />
 				</label>
 				<label>
 					<span>Entity Schema JSON</span>
-					<textarea bind:value={createSchemaJson}></textarea>
+					<textarea bind:value={createSchemaJson} rows="6"></textarea>
 				</label>
-				<div class="actions">
-					<button
-						class="primary"
-						disabled={!createCollectionName.trim()}
-						onclick={submitCreateCollection}
-					>
-						Create Collection
-					</button>
-				</div>
-			</div>
-		</section>
+				<button
+					class="primary"
+					disabled={!createCollectionName.trim()}
+					onclick={submitCreateCollection}
+				>
+					Create Collection
+				</button>
+			</section>
 
-		<section class="panel">
+			<div class="collection-list" aria-label="Registered collections">
+				{#if collections.length === 0}
+					<p class="muted">No collections registered yet.</p>
+				{/if}
+				{#each collections as collection}
+					<button
+						class="collection-option"
+						class:selected={selectedCollection === collection.name}
+						onclick={() => selectCollection(collection.name)}
+					>
+						<span class="collection-option-main">
+							<strong>{collection.name}</strong>
+							<span class="muted">{schemaVersionLabel(collection)}</span>
+						</span>
+						<span class="collection-option-meta">{collection.entity_count} entities</span>
+					</button>
+				{/each}
+			</div>
+		</div>
+	</section>
+
+	<section class="panel schema-detail-panel">
 			<div class="panel-header">
 				<h2>{selectedCollection || 'Schema Detail'}</h2>
 				<div class="actions">
 					{#if selectedSchema && !editMode}
+						<a class="button-link" href={collectionHref(selectedSchema.collection)}>Entities</a>
 						<button
 							class:active={viewMode === 'structured'}
 							onclick={() => (viewMode = 'structured')}
@@ -470,6 +500,30 @@ $effect(() => {
 					{@const rules = extractValidationRules(selectedSchema)}
 					{@const indexes = extractIndexes(selectedSchema)}
 					{@const compoundIndexes = extractCompoundIndexes(selectedSchema)}
+					{@const requiredFields = properties.filter((property) => property.required).length}
+
+					<div class="schema-overview">
+						<div>
+							<span>Fields</span>
+							<strong>{properties.length}</strong>
+						</div>
+						<div>
+							<span>Required</span>
+							<strong>{requiredFields}</strong>
+						</div>
+						<div>
+							<span>Links</span>
+							<strong>{linkTypes.length}</strong>
+						</div>
+						<div>
+							<span>Rules</span>
+							<strong>{rules.length}</strong>
+						</div>
+						<div>
+							<span>Indexes</span>
+							<strong>{indexes.length + compoundIndexes.length}</strong>
+						</div>
+					</div>
 
 					<div class="schema-meta">
 						<div><strong>Collection</strong> <span class="muted">{selectedSchema.collection}</span></div>
@@ -678,7 +732,6 @@ $effect(() => {
 					{/if}
 				{/if}
 			</div>
-		</section>
 	</section>
 </div>
 
@@ -686,6 +739,129 @@ $effect(() => {
 	button.active {
 		border-color: var(--accent-strong);
 		background: #253041;
+	}
+
+	.schema-workspace {
+		display: grid;
+		grid-template-columns: minmax(18rem, 22rem) minmax(0, 1fr);
+		gap: 1rem;
+		align-items: start;
+	}
+
+	.collection-rail {
+		position: sticky;
+		top: 1rem;
+		max-height: calc(100vh - 7.5rem);
+		overflow: hidden;
+	}
+
+	.collection-rail .panel-body {
+		max-height: calc(100vh - 12rem);
+		overflow: auto;
+	}
+
+	.create-collection-form {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		padding: 0.85rem;
+		border: 1px solid rgba(47, 55, 66, 0.8);
+		border-radius: 0.5rem;
+		background: rgba(15, 23, 32, 0.45);
+	}
+
+	.create-collection-form h3 {
+		margin: 0;
+		font-size: 0.95rem;
+	}
+
+	.create-collection-form label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+
+	.create-collection-form label span {
+		color: var(--muted);
+		font-size: 0.78rem;
+		font-weight: 700;
+		text-transform: uppercase;
+	}
+
+	.create-collection-form textarea {
+		min-height: 7rem;
+	}
+
+	.collection-list {
+		display: flex;
+		flex-direction: column;
+		gap: 0.45rem;
+	}
+
+	.collection-option {
+		width: 100%;
+		justify-content: space-between;
+		gap: 0.8rem;
+		border-radius: 0.5rem;
+		padding: 0.65rem 0.75rem;
+		text-align: left;
+	}
+
+	.collection-option.selected {
+		border-color: rgba(125, 211, 252, 0.65);
+		background: rgba(125, 211, 252, 0.14);
+	}
+
+	.collection-option-main {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: 0.15rem;
+	}
+
+	.collection-option-main strong,
+	.collection-option-main span {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.collection-option-meta {
+		flex-shrink: 0;
+		color: var(--muted);
+		font-size: 0.78rem;
+	}
+
+	.schema-detail-panel {
+		min-width: 0;
+	}
+
+	.schema-overview {
+		display: grid;
+		grid-template-columns: repeat(5, minmax(6rem, 1fr));
+		gap: 0.5rem;
+	}
+
+	.schema-overview div {
+		display: flex;
+		min-width: 0;
+		flex-direction: column;
+		gap: 0.25rem;
+		padding: 0.7rem;
+		border: 1px solid rgba(47, 55, 66, 0.8);
+		border-radius: 0.5rem;
+		background: rgba(15, 23, 32, 0.45);
+	}
+
+	.schema-overview span {
+		color: var(--muted);
+		font-size: 0.74rem;
+		font-weight: 700;
+		text-transform: uppercase;
+	}
+
+	.schema-overview strong {
+		font-size: 1.15rem;
 	}
 
 	.schema-meta {
@@ -832,5 +1008,24 @@ $effect(() => {
 
 	button.danger:hover {
 		background: rgba(251, 113, 133, 0.25);
+	}
+
+	@media (max-width: 1100px) {
+		.schema-workspace {
+			grid-template-columns: 1fr;
+		}
+
+		.collection-rail {
+			position: static;
+			max-height: none;
+		}
+
+		.collection-rail .panel-body {
+			max-height: none;
+		}
+
+		.schema-overview {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
 </style>
