@@ -20,10 +20,29 @@ use crate::schema::CollectionSchema;
 
 /// Compile the collection's optional access-control policy into a normalized plan.
 pub fn compile_policy_plan(schema: &CollectionSchema) -> Result<Option<PolicyPlan>, AxonError> {
-    match &schema.access_control {
-        Some(policy) => PolicyCompiler::new(schema, policy).compile().map(Some),
-        None => Ok(None),
+    let mut catalog = compile_policy_catalog(std::slice::from_ref(schema))?;
+    Ok(catalog.plans.remove(schema.collection.as_str()))
+}
+
+/// Compile all active collection policies into a catalog-level plan.
+///
+/// Relationship predicates that reuse another collection's `target_policy`
+/// require the full schema set so target collections and recursive policy
+/// references can be validated before activation.
+pub fn compile_policy_catalog(schemas: &[CollectionSchema]) -> Result<PolicyCatalog, AxonError> {
+    let schemas_by_collection = schemas_by_collection(schemas)?;
+    let mut plans = HashMap::new();
+    for schema in schemas {
+        if let Some(policy) = &schema.access_control {
+            let plan = PolicyCompiler::new(schema, policy, &schemas_by_collection).compile()?;
+            plans.insert(schema.collection.to_string(), plan);
+        }
     }
+    detect_relationship_policy_cycles(&plans)?;
+    let report = PolicyCompileReport {
+        required_link_indexes: aggregate_required_link_indexes(plans.values()),
+    };
+    Ok(PolicyCatalog { plans, report })
 }
 
 /// Stable policy compilation diagnostic.
@@ -57,6 +76,68 @@ impl From<PolicyCompileError> for AxonError {
     }
 }
 
+/// Catalog-level policy compilation output.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PolicyCatalog {
+    /// Plans keyed by collection name.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub plans: HashMap<String, PolicyPlan>,
+
+    /// Cross-plan compile report.
+    #[serde(default, skip_serializing_if = "PolicyCompileReport::is_empty")]
+    pub report: PolicyCompileReport,
+}
+
+/// Stable policy compile report for activation dry-runs and admin UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PolicyCompileReport {
+    /// Link-table indexes required to evaluate relationship predicates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_link_indexes: Vec<RequiredLinkIndex>,
+}
+
+impl PolicyCompileReport {
+    pub fn is_empty(&self) -> bool {
+        self.required_link_indexes.is_empty()
+    }
+}
+
+/// Link-table index requirement emitted by relationship predicates.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct RequiredLinkIndex {
+    /// Stable storage index name.
+    pub name: String,
+    /// Link source collection in storage.
+    pub source_collection: String,
+    /// Link type.
+    pub link_type: String,
+    /// Link target collection in storage.
+    pub target_collection: String,
+    /// Relationship lookup direction from the policy row.
+    pub direction: LinkDirection,
+}
+
+impl RequiredLinkIndex {
+    fn new(
+        direction: LinkDirection,
+        source_collection: impl Into<String>,
+        link_type: impl Into<String>,
+        target_collection: impl Into<String>,
+    ) -> Self {
+        let name = match &direction {
+            LinkDirection::Outgoing => "links_primary",
+            LinkDirection::Incoming => "idx_links_target",
+        };
+        Self {
+            name: name.to_string(),
+            source_collection: source_collection.into(),
+            link_type: link_type.into(),
+            target_collection: target_collection.into(),
+            direction,
+        }
+    }
+}
+
 /// Normalized policy plan for one collection schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PolicyPlan {
@@ -75,6 +156,10 @@ pub struct PolicyPlan {
     /// Decision envelopes keyed by operation class.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub envelopes: HashMap<PolicyOperation, Vec<CompiledPolicyEnvelope>>,
+
+    /// Collection-local compile report.
+    #[serde(default, skip_serializing_if = "PolicyCompileReport::is_empty")]
+    pub report: PolicyCompileReport,
 }
 
 /// Normalized allow/deny operation policy.
@@ -189,11 +274,17 @@ pub enum CompiledCompareOp {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompiledRelationshipPredicate {
     pub link_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub direction: Option<LinkDirection>,
+    pub direction: LinkDirection,
+    /// Related entity collection named by the authored predicate.
     pub target_collection: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_policy: Option<PolicyOperation>,
+    /// Link source collection in storage.
+    pub link_source_collection: String,
+    /// Link target collection in storage.
+    pub link_target_collection: String,
+    /// Link-table index required by this relationship lookup.
+    pub required_link_index: RequiredLinkIndex,
 }
 
 /// Normalized shared-relation predicate.
@@ -208,11 +299,16 @@ pub struct CompiledSharesRelationPredicate {
 struct PolicyCompiler<'a> {
     schema: &'a CollectionSchema,
     policy: &'a AccessControlPolicy,
+    schemas: &'a HashMap<String, &'a CollectionSchema>,
     subject_refs: HashSet<String>,
 }
 
 impl<'a> PolicyCompiler<'a> {
-    fn new(schema: &'a CollectionSchema, policy: &'a AccessControlPolicy) -> Self {
+    fn new(
+        schema: &'a CollectionSchema,
+        policy: &'a AccessControlPolicy,
+        schemas: &'a HashMap<String, &'a CollectionSchema>,
+    ) -> Self {
         let mut subject_refs = builtin_subject_refs();
         if let Some(identity) = &policy.identity {
             subject_refs.extend(identity.subject.keys().cloned());
@@ -222,6 +318,7 @@ impl<'a> PolicyCompiler<'a> {
         Self {
             schema,
             policy,
+            schemas,
             subject_refs,
         }
     }
@@ -285,6 +382,7 @@ impl<'a> PolicyCompiler<'a> {
             plan.envelopes.insert(operation.clone(), compiled);
         }
 
+        plan.report.required_link_indexes = aggregate_required_link_indexes(std::iter::once(&plan));
         Ok(plan)
     }
 
@@ -499,18 +597,86 @@ impl<'a> PolicyCompiler<'a> {
         related: &RelationshipPredicate,
         ctx: &str,
     ) -> Result<CompiledPredicate, AxonError> {
-        if !self.schema.link_types.contains_key(&related.link_type) {
-            return Err(PolicyCompileError::new(format!(
-                "unknown link_type '{}' at {ctx}",
-                related.link_type
-            ))
-            .into());
+        let direction = related.direction.clone().unwrap_or(LinkDirection::Outgoing);
+        let related_schema = self
+            .schemas
+            .get(&related.target_collection)
+            .ok_or_else(|| {
+                PolicyCompileError::new(format!(
+                    "unknown target_collection '{}' at {ctx}",
+                    related.target_collection
+                ))
+            })?;
+        let current_collection = self.schema.collection.as_str();
+
+        let (link_source_collection, link_target_collection) = match direction {
+            LinkDirection::Outgoing => {
+                let link_def = self
+                    .schema
+                    .link_types
+                    .get(&related.link_type)
+                    .ok_or_else(|| {
+                        PolicyCompileError::new(format!(
+                            "unknown link_type '{}' at {ctx}",
+                            related.link_type
+                        ))
+                    })?;
+                if link_def.target_collection != related.target_collection {
+                    return Err(PolicyCompileError::new(format!(
+                        "link_type '{}' at {ctx} targets collection '{}', not '{}'",
+                        related.link_type, link_def.target_collection, related.target_collection
+                    ))
+                    .into());
+                }
+                (
+                    current_collection.to_string(),
+                    related.target_collection.clone(),
+                )
+            }
+            LinkDirection::Incoming => {
+                let link_def = related_schema
+                    .link_types
+                    .get(&related.link_type)
+                    .ok_or_else(|| {
+                        PolicyCompileError::new(format!(
+                            "unknown incoming link_type '{}' on source collection '{}' at {ctx}",
+                            related.link_type, related.target_collection
+                        ))
+                    })?;
+                if link_def.target_collection != current_collection {
+                    return Err(PolicyCompileError::new(format!(
+                        "incoming link_type '{}' from collection '{}' at {ctx} targets collection '{}', not '{}'",
+                        related.link_type,
+                        related.target_collection,
+                        link_def.target_collection,
+                        current_collection
+                    ))
+                    .into());
+                }
+                (
+                    related.target_collection.clone(),
+                    current_collection.to_string(),
+                )
+            }
+        };
+
+        if let Some(target_policy) = &related.target_policy {
+            validate_target_policy(related_schema, target_policy, ctx)?;
         }
+        let required_link_index = RequiredLinkIndex::new(
+            direction.clone(),
+            link_source_collection.clone(),
+            related.link_type.clone(),
+            link_target_collection.clone(),
+        );
         Ok(CompiledPredicate::Related(CompiledRelationshipPredicate {
             link_type: related.link_type.clone(),
-            direction: related.direction.clone(),
+            direction,
             target_collection: related.target_collection.clone(),
             target_policy: related.target_policy.clone(),
+            link_source_collection,
+            link_target_collection,
+            required_link_index,
         }))
     }
 
@@ -581,6 +747,351 @@ impl<'a> PolicyCompiler<'a> {
         }
         Ok(())
     }
+}
+
+fn schemas_by_collection(
+    schemas: &[CollectionSchema],
+) -> Result<HashMap<String, &CollectionSchema>, AxonError> {
+    let mut by_collection = HashMap::new();
+    for schema in schemas {
+        let collection = schema.collection.to_string();
+        if by_collection.insert(collection.clone(), schema).is_some() {
+            return Err(PolicyCompileError::new(format!(
+                "duplicate collection schema '{collection}' in policy catalog"
+            ))
+            .into());
+        }
+    }
+    Ok(by_collection)
+}
+
+fn validate_target_policy(
+    schema: &CollectionSchema,
+    operation: &PolicyOperation,
+    ctx: &str,
+) -> Result<(), AxonError> {
+    let Some(policy) = &schema.access_control else {
+        return Err(PolicyCompileError::new(format!(
+            "target_policy '{}' at {ctx} references collection '{}' without access_control",
+            operation.as_str(),
+            schema.collection
+        ))
+        .into());
+    };
+    if operation_policy(policy, operation).is_some() {
+        Ok(())
+    } else {
+        Err(PolicyCompileError::new(format!(
+            "target_policy '{}' at {ctx} is not declared on collection '{}'",
+            operation.as_str(),
+            schema.collection
+        ))
+        .into())
+    }
+}
+
+fn operation_policy<'a>(
+    policy: &'a AccessControlPolicy,
+    operation: &PolicyOperation,
+) -> Option<&'a OperationPolicy> {
+    match operation {
+        PolicyOperation::Read => policy.read.as_ref(),
+        PolicyOperation::Create => policy.create.as_ref(),
+        PolicyOperation::Update => policy.update.as_ref(),
+        PolicyOperation::Delete => policy.delete.as_ref(),
+        PolicyOperation::Write => policy.write.as_ref(),
+        PolicyOperation::Admin => policy.admin.as_ref(),
+    }
+}
+
+fn aggregate_required_link_indexes<'a>(
+    plans: impl IntoIterator<Item = &'a PolicyPlan>,
+) -> Vec<RequiredLinkIndex> {
+    let mut indexes = Vec::new();
+    for plan in plans {
+        collect_required_link_indexes_from_plan(plan, &mut indexes);
+    }
+    indexes.sort();
+    indexes.dedup();
+    indexes
+}
+
+fn collect_required_link_indexes_from_plan(
+    plan: &PolicyPlan,
+    indexes: &mut Vec<RequiredLinkIndex>,
+) {
+    for operation in plan.operations.values() {
+        collect_required_link_indexes_from_operation(operation, indexes);
+    }
+    for field_policy in plan.fields.values() {
+        if let Some(read) = &field_policy.read {
+            for rule in read.allow.iter().chain(read.deny.iter()) {
+                collect_required_link_indexes_from_optional_predicate(rule.when.as_ref(), indexes);
+                collect_required_link_indexes_from_optional_predicate(
+                    rule.where_clause.as_ref(),
+                    indexes,
+                );
+            }
+        }
+        if let Some(write) = &field_policy.write {
+            for rule in write.allow.iter().chain(write.deny.iter()) {
+                collect_required_link_indexes_from_optional_predicate(rule.when.as_ref(), indexes);
+                collect_required_link_indexes_from_optional_predicate(
+                    rule.where_clause.as_ref(),
+                    indexes,
+                );
+            }
+        }
+    }
+    for transitions in plan.transitions.values() {
+        for operation in transitions.values() {
+            collect_required_link_indexes_from_operation(operation, indexes);
+        }
+    }
+    for envelopes in plan.envelopes.values() {
+        for envelope in envelopes {
+            collect_required_link_indexes_from_optional_predicate(envelope.when.as_ref(), indexes);
+        }
+    }
+}
+
+fn collect_required_link_indexes_from_operation(
+    operation: &CompiledOperationPolicy,
+    indexes: &mut Vec<RequiredLinkIndex>,
+) {
+    for rule in operation.allow.iter().chain(operation.deny.iter()) {
+        collect_required_link_indexes_from_optional_predicate(rule.when.as_ref(), indexes);
+        collect_required_link_indexes_from_optional_predicate(rule.where_clause.as_ref(), indexes);
+    }
+}
+
+fn collect_required_link_indexes_from_optional_predicate(
+    predicate: Option<&CompiledPredicate>,
+    indexes: &mut Vec<RequiredLinkIndex>,
+) {
+    if let Some(predicate) = predicate {
+        collect_required_link_indexes_from_predicate(predicate, indexes);
+    }
+}
+
+fn collect_required_link_indexes_from_predicate(
+    predicate: &CompiledPredicate,
+    indexes: &mut Vec<RequiredLinkIndex>,
+) {
+    match predicate {
+        CompiledPredicate::All(predicates) | CompiledPredicate::Any(predicates) => {
+            for predicate in predicates {
+                collect_required_link_indexes_from_predicate(predicate, indexes);
+            }
+        }
+        CompiledPredicate::Not(predicate) => {
+            collect_required_link_indexes_from_predicate(predicate, indexes);
+        }
+        CompiledPredicate::Related(related) => {
+            indexes.push(related.required_link_index.clone());
+        }
+        CompiledPredicate::Compare(_)
+        | CompiledPredicate::Operation(_)
+        | CompiledPredicate::SharesRelation(_) => {}
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct PolicyNode {
+    collection: String,
+    operation: PolicyOperation,
+}
+
+fn detect_relationship_policy_cycles(plans: &HashMap<String, PolicyPlan>) -> Result<(), AxonError> {
+    let mut adjacency: HashMap<PolicyNode, Vec<PolicyNode>> = HashMap::new();
+    for (collection, plan) in plans {
+        collect_relationship_policy_edges(collection, plan, &mut adjacency);
+    }
+    for targets in adjacency.values_mut() {
+        targets.sort();
+        targets.dedup();
+    }
+    let mut nodes: Vec<PolicyNode> = adjacency.keys().cloned().collect();
+    nodes.sort();
+    nodes.dedup();
+    let mut permanent = HashSet::new();
+    let mut stack = Vec::new();
+    for node in nodes {
+        if let Some(cycle) =
+            relationship_policy_cycle_from(&node, &adjacency, &mut permanent, &mut stack)
+        {
+            let labels = cycle
+                .iter()
+                .map(policy_node_label)
+                .collect::<Vec<_>>()
+                .join(" -> ");
+            return Err(PolicyCompileError::new(format!(
+                "relationship target_policy cycle detected: {labels}"
+            ))
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn collect_relationship_policy_edges(
+    collection: &str,
+    plan: &PolicyPlan,
+    adjacency: &mut HashMap<PolicyNode, Vec<PolicyNode>>,
+) {
+    for (operation, policy) in &plan.operations {
+        let from = PolicyNode {
+            collection: collection.to_string(),
+            operation: operation.clone(),
+        };
+        collect_relationship_policy_edges_from_operation(&from, policy, adjacency);
+    }
+    for field_policy in plan.fields.values() {
+        if let Some(read) = &field_policy.read {
+            let from = PolicyNode {
+                collection: collection.to_string(),
+                operation: PolicyOperation::Read,
+            };
+            collect_relationship_policy_edges_from_field_access(&from, read, adjacency);
+        }
+        if let Some(write) = &field_policy.write {
+            let from = PolicyNode {
+                collection: collection.to_string(),
+                operation: PolicyOperation::Write,
+            };
+            collect_relationship_policy_edges_from_field_access(&from, write, adjacency);
+        }
+    }
+    for transitions in plan.transitions.values() {
+        for policy in transitions.values() {
+            let from = PolicyNode {
+                collection: collection.to_string(),
+                operation: PolicyOperation::Update,
+            };
+            collect_relationship_policy_edges_from_operation(&from, policy, adjacency);
+        }
+    }
+    for (operation, envelopes) in &plan.envelopes {
+        let from = PolicyNode {
+            collection: collection.to_string(),
+            operation: operation.clone(),
+        };
+        for envelope in envelopes {
+            collect_relationship_policy_edges_from_optional_predicate(
+                &from,
+                envelope.when.as_ref(),
+                adjacency,
+            );
+        }
+    }
+}
+
+fn collect_relationship_policy_edges_from_operation(
+    from: &PolicyNode,
+    policy: &CompiledOperationPolicy,
+    adjacency: &mut HashMap<PolicyNode, Vec<PolicyNode>>,
+) {
+    for rule in policy.allow.iter().chain(policy.deny.iter()) {
+        collect_relationship_policy_edges_from_optional_predicate(
+            from,
+            rule.when.as_ref(),
+            adjacency,
+        );
+        collect_relationship_policy_edges_from_optional_predicate(
+            from,
+            rule.where_clause.as_ref(),
+            adjacency,
+        );
+    }
+}
+
+fn collect_relationship_policy_edges_from_field_access(
+    from: &PolicyNode,
+    policy: &CompiledFieldAccessPolicy,
+    adjacency: &mut HashMap<PolicyNode, Vec<PolicyNode>>,
+) {
+    for rule in policy.allow.iter().chain(policy.deny.iter()) {
+        collect_relationship_policy_edges_from_optional_predicate(
+            from,
+            rule.when.as_ref(),
+            adjacency,
+        );
+        collect_relationship_policy_edges_from_optional_predicate(
+            from,
+            rule.where_clause.as_ref(),
+            adjacency,
+        );
+    }
+}
+
+fn collect_relationship_policy_edges_from_optional_predicate(
+    from: &PolicyNode,
+    predicate: Option<&CompiledPredicate>,
+    adjacency: &mut HashMap<PolicyNode, Vec<PolicyNode>>,
+) {
+    if let Some(predicate) = predicate {
+        collect_relationship_policy_edges_from_predicate(from, predicate, adjacency);
+    }
+}
+
+fn collect_relationship_policy_edges_from_predicate(
+    from: &PolicyNode,
+    predicate: &CompiledPredicate,
+    adjacency: &mut HashMap<PolicyNode, Vec<PolicyNode>>,
+) {
+    match predicate {
+        CompiledPredicate::All(predicates) | CompiledPredicate::Any(predicates) => {
+            for predicate in predicates {
+                collect_relationship_policy_edges_from_predicate(from, predicate, adjacency);
+            }
+        }
+        CompiledPredicate::Not(predicate) => {
+            collect_relationship_policy_edges_from_predicate(from, predicate, adjacency);
+        }
+        CompiledPredicate::Related(related) => {
+            if let Some(target_policy) = &related.target_policy {
+                adjacency.entry(from.clone()).or_default().push(PolicyNode {
+                    collection: related.target_collection.clone(),
+                    operation: target_policy.clone(),
+                });
+            }
+        }
+        CompiledPredicate::Compare(_)
+        | CompiledPredicate::Operation(_)
+        | CompiledPredicate::SharesRelation(_) => {}
+    }
+}
+
+fn relationship_policy_cycle_from(
+    node: &PolicyNode,
+    adjacency: &HashMap<PolicyNode, Vec<PolicyNode>>,
+    permanent: &mut HashSet<PolicyNode>,
+    stack: &mut Vec<PolicyNode>,
+) -> Option<Vec<PolicyNode>> {
+    if permanent.contains(node) {
+        return None;
+    }
+    if let Some(position) = stack.iter().position(|entry| entry == node) {
+        let mut cycle = stack[position..].to_vec();
+        cycle.push(node.clone());
+        return Some(cycle);
+    }
+    stack.push(node.clone());
+    if let Some(targets) = adjacency.get(node) {
+        for target in targets {
+            if let Some(cycle) = relationship_policy_cycle_from(target, adjacency, permanent, stack)
+            {
+                return Some(cycle);
+            }
+        }
+    }
+    let _ = stack.pop();
+    permanent.insert(node.clone());
+    None
+}
+
+fn policy_node_label(node: &PolicyNode) -> String {
+    format!("{}.{}", node.collection, node.operation.as_str())
 }
 
 fn builtin_subject_refs() -> HashSet<String> {
@@ -706,6 +1217,145 @@ access_control:
         compile_policy_plan(&schema).map(|plan| plan.expect("policy should be present"))
     }
 
+    fn parse_schema(input: &str) -> CollectionSchema {
+        EsfDocument::parse(input)
+            .expect("fixture should parse")
+            .into_collection_schema()
+            .expect("fixture should convert")
+    }
+
+    const ENGAGEMENTS_POLICY_ESF: &str = r#"
+esf_version: "1.0"
+collection: engagements
+entity_schema:
+  type: object
+  required: [members]
+  properties:
+    members:
+      type: array
+      items:
+        type: object
+        required: [user_id]
+        properties:
+          user_id: { type: string }
+access_control:
+  identity:
+    user_id: subject.user_id
+  read:
+    allow:
+      - name: members-read-engagements
+        where: { field: "members[].user_id", contains_subject: user_id }
+"#;
+
+    const CONTRACTS_RELATED_POLICY_ESF: &str = r#"
+esf_version: "1.0"
+collection: contracts
+entity_schema:
+  type: object
+  required: [title]
+  properties:
+    title: { type: string }
+link_types:
+  belongs_to_engagement:
+    target_collection: engagements
+    cardinality: many-to-one
+access_control:
+  identity:
+    user_id: subject.user_id
+  read:
+    allow:
+      - name: contracts-visible-through-engagement
+        where:
+          related:
+            link_type: belongs_to_engagement
+            direction: outgoing
+            target_collection: engagements
+            target_policy: read
+"#;
+
+    const CONTRACTS_SIMPLE_POLICY_ESF: &str = r#"
+esf_version: "1.0"
+collection: contracts
+entity_schema:
+  type: object
+  required: [title]
+  properties:
+    title: { type: string }
+link_types:
+  belongs_to_engagement:
+    target_collection: engagements
+    cardinality: many-to-one
+access_control:
+  read:
+    allow:
+      - name: contracts-read
+        where: { field: title, is_null: false }
+"#;
+
+    const ENGAGEMENTS_INCOMING_POLICY_ESF: &str = r#"
+esf_version: "1.0"
+collection: engagements
+entity_schema:
+  type: object
+  required: [name]
+  properties:
+    name: { type: string }
+access_control:
+  read:
+    allow:
+      - name: engagements-visible-through-contracts
+        where:
+          related:
+            link_type: belongs_to_engagement
+            direction: incoming
+            target_collection: contracts
+            target_policy: read
+"#;
+
+    const A_CYCLE_POLICY_ESF: &str = r#"
+esf_version: "1.0"
+collection: a
+entity_schema:
+  type: object
+  properties:
+    name: { type: string }
+link_types:
+  to_b:
+    target_collection: b
+    cardinality: many-to-one
+access_control:
+  read:
+    allow:
+      - name: a-through-b
+        where:
+          related:
+            link_type: to_b
+            target_collection: b
+            target_policy: read
+"#;
+
+    const B_CYCLE_POLICY_ESF: &str = r#"
+esf_version: "1.0"
+collection: b
+entity_schema:
+  type: object
+  properties:
+    name: { type: string }
+link_types:
+  to_a:
+    target_collection: a
+    cardinality: many-to-one
+access_control:
+  read:
+    allow:
+      - name: b-through-a
+        where:
+          related:
+            link_type: to_a
+            target_collection: a
+            target_policy: read
+"#;
+
     #[test]
     fn compiles_procurement_style_policy_plan() {
         let plan = compile_fixture(PROCUREMENT_POLICY_ESF).expect("policy should compile");
@@ -821,6 +1471,118 @@ access_control:
         assert_eq!(
             err.to_string(),
             "schema validation failed: policy_expression_invalid: field path 'line_items.sku' at operations.Read.allow[2].where: array segment 'line_items' must use []"
+        );
+    }
+
+    #[test]
+    fn compiles_outgoing_target_policy_and_reports_forward_link_index() {
+        let schemas = [
+            parse_schema(ENGAGEMENTS_POLICY_ESF),
+            parse_schema(CONTRACTS_RELATED_POLICY_ESF),
+        ];
+        let catalog = compile_policy_catalog(&schemas).expect("catalog should compile");
+        let contracts = catalog
+            .plans
+            .get("contracts")
+            .expect("contracts plan missing");
+        let read = contracts
+            .operations
+            .get(&PolicyOperation::Read)
+            .expect("read policy missing");
+        let related = match read.allow[0].where_clause.as_ref() {
+            Some(CompiledPredicate::Related(related)) => related,
+            other => panic!("expected related predicate, got {other:?}"),
+        };
+        assert_eq!(related.direction, LinkDirection::Outgoing);
+        assert_eq!(related.target_collection, "engagements");
+        assert_eq!(related.target_policy, Some(PolicyOperation::Read));
+        assert_eq!(related.link_source_collection, "contracts");
+        assert_eq!(related.link_target_collection, "engagements");
+
+        let expected = vec![RequiredLinkIndex {
+            name: "links_primary".to_string(),
+            source_collection: "contracts".to_string(),
+            link_type: "belongs_to_engagement".to_string(),
+            target_collection: "engagements".to_string(),
+            direction: LinkDirection::Outgoing,
+        }];
+        assert_eq!(contracts.report.required_link_indexes, expected);
+        assert_eq!(catalog.report.required_link_indexes, expected);
+    }
+
+    #[test]
+    fn compiles_incoming_target_policy_and_reports_reverse_link_index() {
+        let schemas = [
+            parse_schema(ENGAGEMENTS_INCOMING_POLICY_ESF),
+            parse_schema(CONTRACTS_SIMPLE_POLICY_ESF),
+        ];
+        let catalog = compile_policy_catalog(&schemas).expect("catalog should compile");
+        let engagements = catalog
+            .plans
+            .get("engagements")
+            .expect("engagements plan missing");
+        let read = engagements
+            .operations
+            .get(&PolicyOperation::Read)
+            .expect("read policy missing");
+        let related = match read.allow[0].where_clause.as_ref() {
+            Some(CompiledPredicate::Related(related)) => related,
+            other => panic!("expected related predicate, got {other:?}"),
+        };
+        assert_eq!(related.direction, LinkDirection::Incoming);
+        assert_eq!(related.target_collection, "contracts");
+        assert_eq!(related.target_policy, Some(PolicyOperation::Read));
+        assert_eq!(related.link_source_collection, "contracts");
+        assert_eq!(related.link_target_collection, "engagements");
+        assert_eq!(
+            engagements.report.required_link_indexes,
+            vec![RequiredLinkIndex {
+                name: "idx_links_target".to_string(),
+                source_collection: "contracts".to_string(),
+                link_type: "belongs_to_engagement".to_string(),
+                target_collection: "engagements".to_string(),
+                direction: LinkDirection::Incoming,
+            }]
+        );
+    }
+
+    #[test]
+    fn missing_relationship_link_type_returns_stable_diagnostic() {
+        let contracts = CONTRACTS_RELATED_POLICY_ESF.replace(
+            "link_type: belongs_to_engagement",
+            "link_type: missing_link",
+        );
+        let schemas = [
+            parse_schema(ENGAGEMENTS_POLICY_ESF),
+            parse_schema(&contracts),
+        ];
+        let err = compile_policy_catalog(&schemas).expect_err("missing link type should fail");
+        assert_eq!(
+            err.to_string(),
+            "schema validation failed: policy_expression_invalid: unknown link_type 'missing_link' at operations.Read.allow[0].where"
+        );
+    }
+
+    #[test]
+    fn missing_relationship_target_collection_returns_stable_diagnostic() {
+        let schemas = [parse_schema(CONTRACTS_RELATED_POLICY_ESF)];
+        let err = compile_policy_catalog(&schemas).expect_err("missing collection should fail");
+        assert_eq!(
+            err.to_string(),
+            "schema validation failed: policy_expression_invalid: unknown target_collection 'engagements' at operations.Read.allow[0].where"
+        );
+    }
+
+    #[test]
+    fn relationship_target_policy_cycles_return_stable_diagnostic() {
+        let schemas = [
+            parse_schema(A_CYCLE_POLICY_ESF),
+            parse_schema(B_CYCLE_POLICY_ESF),
+        ];
+        let err = compile_policy_catalog(&schemas).expect_err("cycle should fail");
+        assert_eq!(
+            err.to_string(),
+            "schema validation failed: policy_expression_invalid: relationship target_policy cycle detected: a.read -> b.read -> a.read"
         );
     }
 }

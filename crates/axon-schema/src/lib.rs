@@ -27,10 +27,11 @@ pub use evolution::{
 };
 pub use gates::{evaluate_gates, GateEvaluation, GateResult};
 pub use policy::{
-    compile_policy_plan, CompiledCompareOp, CompiledComparison, CompiledFieldAccessPolicy,
-    CompiledFieldPolicy, CompiledFieldPolicyRule, CompiledOperationPolicy, CompiledPolicyEnvelope,
-    CompiledPolicyRule, CompiledPredicate, CompiledRelationshipPredicate,
-    CompiledSharesRelationPredicate, PolicyCompileError, PolicyPlan, PredicateTarget,
+    compile_policy_catalog, compile_policy_plan, CompiledCompareOp, CompiledComparison,
+    CompiledFieldAccessPolicy, CompiledFieldPolicy, CompiledFieldPolicyRule,
+    CompiledOperationPolicy, CompiledPolicyEnvelope, CompiledPolicyRule, CompiledPredicate,
+    CompiledRelationshipPredicate, CompiledSharesRelationPredicate, PolicyCatalog,
+    PolicyCompileError, PolicyCompileReport, PolicyPlan, PredicateTarget, RequiredLinkIndex,
 };
 pub use rules::validate_rule_definitions;
 pub use rules::ValidationRule;

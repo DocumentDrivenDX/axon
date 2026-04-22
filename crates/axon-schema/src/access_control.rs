@@ -192,7 +192,7 @@ pub struct PolicyEnvelope {
 }
 
 /// Policy operation classes from FEAT-029.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyOperation {
     Read,
@@ -201,6 +201,19 @@ pub enum PolicyOperation {
     Delete,
     Write,
     Admin,
+}
+
+impl PolicyOperation {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Create => "create",
+            Self::Update => "update",
+            Self::Delete => "delete",
+            Self::Write => "write",
+            Self::Admin => "admin",
+        }
+    }
 }
 
 /// Policy decisions from ADR-019.
@@ -285,7 +298,7 @@ pub struct RelationshipPredicate {
 }
 
 /// Link traversal direction for relationship-backed predicates.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkDirection {
     Incoming,
