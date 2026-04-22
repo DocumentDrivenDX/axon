@@ -1,10 +1,12 @@
 ---
-dun:
+ddx:
   id: FEAT-022
   depends_on:
     - helix.prd
     - FEAT-012
     - FEAT-019
+    - FEAT-029
+    - FEAT-030
 ---
 # Feature Specification: FEAT-022 - Agent Guardrails
 
@@ -13,7 +15,7 @@ dun:
 **Priority**: P1
 **Owner**: Core Team
 **Created**: 2026-04-06
-**Updated**: 2026-04-06
+**Updated**: 2026-04-22
 
 ## Overview
 
@@ -21,6 +23,11 @@ Preventive controls for agent interactions with Axon, beyond the reactive
 audit trail. Agents operating through MCP, GraphQL, or the JSON API are
 subject to scope constraints, rate limits, and semantic validation hooks
 that prevent misuse before data is committed.
+
+Guardrails do not replace data-layer policies (FEAT-029) or mutation intents
+(FEAT-030). Guardrails bound an agent's operational blast radius; policies
+decide what data the subject may see or mutate; intents route valid but risky
+writes for approval.
 
 ## Problem Statement
 
@@ -58,9 +65,18 @@ the blast radius of misbehaving agents.
 
 Semantic validation hooks — allowing external validators to examine
 proposed mutations in context before commit — are architecturally
-desirable but deferred. Full semantic validation is an open research
-problem. The hook interface will be designed when scope constraints and
-rate limiting are proven in production.
+desirable but deferred. Full semantic validation is an open research problem.
+The hook interface will be designed only after FEAT-029 policy enforcement and
+FEAT-030 mutation intents are proven in production.
+
+#### Delegated Agent Identity
+
+- Guardrail decisions must distinguish the delegating user/service from the
+  delegated agent identity.
+- Rejections and approvals include `user_id`, `agent_id`, `delegated_by`,
+  credential ID, grant version, tenant, database, and applied guardrail policy.
+- Credential rotation and revocation take effect for subsequent requests and
+  must be visible in audit.
 
 ### Non-Functional Requirements
 
@@ -75,6 +91,9 @@ rate limiting are proven in production.
 - FEAT-012 (Authorization) — scope constraints build on RBAC/ABAC grants.
 - FEAT-019 (Validation Rules) — semantic hooks extend the validation
   pipeline.
+- FEAT-029 (Access Control) — guardrails run alongside data-layer policies.
+- FEAT-030 (Mutation Intents) — approval-routed writes are represented as
+  mutation intents, not guardrail bypasses.
 
 ## User Stories
 

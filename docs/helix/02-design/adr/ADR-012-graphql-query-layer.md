@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: ADR-012
   depends_on:
     - ADR-002
@@ -15,7 +15,7 @@ dun:
 
 | Date | Status | Deciders | Related | Confidence |
 |------|--------|----------|---------|------------|
-| 2026-04-05 | Accepted | Erik LaBianca | ADR-002, ADR-010, FEAT-002, FEAT-004, FEAT-009, FEAT-013 | High |
+| 2026-04-05 | Accepted | Erik LaBianca | ADR-002, ADR-010, ADR-019, FEAT-002, FEAT-004, FEAT-009, FEAT-013, FEAT-029, FEAT-030 | High |
 
 ## Context
 
@@ -42,10 +42,13 @@ constraints. This is the same information a GraphQL schema encodes.
 
 ## Decision
 
-Add a **read-only GraphQL API** that is **auto-generated from ESF schemas
-at runtime**. No hand-written `.graphql` files. The GraphQL schema is
-derived from the active collection schemas and regenerated when schemas
-change.
+Add a **full read/write GraphQL API** that is **auto-generated from ESF
+schemas at runtime**. No hand-written `.graphql` files. The GraphQL schema is
+derived from the active collection schemas and regenerated when schemas change.
+GraphQL is the primary application API surface for reads, writes, policy
+explanation, mutation preview/approval, and audit workflows. MCP mirrors these
+semantics for agents; REST/JSON is a fallback and operational compatibility
+surface.
 
 ### 1. Schema Generation
 
@@ -71,7 +74,8 @@ scalar types.
 | `object` (nested) | Generated nested type |
 
 JSON Schema `required` fields map to non-nullable GraphQL fields (`!`).
-Optional fields are nullable.
+Optional fields are nullable. If FEAT-029 policy can redact a field, the
+generated GraphQL field is nullable even when ESF marks the field required.
 
 #### System Fields
 
@@ -372,6 +376,40 @@ type Mutation {
   putSchema(input: PutSchemaInput!): PutSchemaPayload!
 }
 ```
+
+### 4a. Policy And Mutation Intent Fields
+
+ADR-019, FEAT-029, and FEAT-030 add GraphQL policy and approval workflows:
+
+```graphql
+type Query {
+  effectivePolicy(collection: String!, entityId: ID): EffectiveCollectionPolicy!
+  explainPolicy(input: ExplainPolicyInput!): PolicyDecision!
+  pendingMutationIntents(filter: MutationIntentFilter): MutationIntentConnection!
+  mutationIntent(id: ID!): MutationIntent
+}
+
+type Mutation {
+  previewMutation(input: MutationPreviewInput!): MutationPreviewResult!
+  approveMutationIntent(input: ApproveIntentInput!): MutationIntent!
+  rejectMutationIntent(input: RejectIntentInput!): MutationIntent!
+  commitMutationIntent(input: CommitIntentInput!): CommitIntentResult!
+}
+```
+
+Generated collection mutations may also expose a preview mode, but the generic
+intent workflow is canonical so SDKs and agents can implement one approval path
+across collections.
+
+Policy semantics are part of GraphQL execution:
+
+- row filters run before connection edges, cursors, and counts;
+- relationship fields omit hidden target entities;
+- hidden point reads return `null` rather than a policy error when existence
+  would leak;
+- redacted fields resolve to `null`;
+- intent execution fails if pre-image versions, schema version, policy version,
+  grant version, or operation hash differ from preview.
 
 #### Entity CRUD Inputs and Payloads
 
@@ -734,9 +772,9 @@ GET  /graphql          — GraphQL Playground (dev mode only)
 WS   /graphql/ws       — GraphQL subscriptions (WebSocket)
 ```
 
-These are served by axum alongside the existing REST gateway and gRPC
-service. All three protocols (REST, gRPC, GraphQL) share the same
-`AxonHandler` instance.
+These are served by axum alongside compatibility HTTP routes and any internal
+gRPC/native SDK surfaces. All protocols share the same `AxonHandler` instance,
+but GraphQL is the primary public application interface.
 
 ### 7. Schema Regeneration
 

@@ -220,19 +220,19 @@ for health/metrics/static assets and streaming or file-oriented endpoints.
 
 ## Data-Layer Access Control
 
-FEAT-029 policies are enforced below REST, GraphQL, and MCP. Browser code may
-query effective policy metadata to hide controls, but the server repeats policy
-checks during every read and write.
+FEAT-029 policies are enforced below GraphQL, MCP, and any REST compatibility
+routes. Browser code may query effective policy metadata to hide controls, but
+the server repeats policy checks during every read and write.
 
 Read denial for hidden rows does not leak existence:
 
-- REST point reads return `404` with `code: "not_found"`.
+- REST compatibility point reads return `404` with `code: "not_found"`.
 - GraphQL point reads resolve nullable entity fields to `null`.
 - GraphQL list, relationship, traversal, and connection fields omit hidden
   rows before pagination and total-count calculation.
 
 Field-level read denial returns `null` for the field in GraphQL, generic JSON,
-REST, and audit read payloads. Any GraphQL field that can be policy-redacted is
+REST compatibility, and audit read payloads. Any GraphQL field that can be policy-redacted is
 generated as nullable even when JSON Schema marks it required.
 
 Denied writes return `forbidden` with stable detail:

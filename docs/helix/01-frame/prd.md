@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: helix.prd
   depends_on: []
 ---
@@ -7,17 +7,26 @@ dun:
 
 **Version**: 0.2.0
 **Date**: 2026-04-04
-**Revised**: 2026-04-06
+**Revised**: 2026-04-22
 **Status**: Draft
 **Author**: Erik LaBianca
 
 ## Executive Summary
 
-Axon is an entity-first online transaction processing (OLTP) store designed for real-time human and agentic workflows. It provides a unified, schema-driven interface for storing, querying, validating, and auditing structured entities with graph relationships.
+Axon is an entity-first online transaction processing (OLTP) store designed for
+real-time human and agentic workflows. It provides a unified, schema-driven
+interface for storing, querying, validating, approving, and auditing structured
+entities with graph relationships.
 
 Axon combines entity richness (document stores), relationship modeling (graph databases), transactional correctness (relational databases), and audit-first design (unique value). Entity data is stored opaquely as JSON blobs; secondary indexes use an Entity-Attribute-Value (EAV) pattern for uniform, schema-agnostic query acceleration across all entity types. Users push JSON, get JSON back, and work with the schema — the EAV indexing strategy is an implementation detail.
 
-Target users are developers building agentic applications (beads, research agents, coding agents) and teams building business workflows (approval chains, document management, time tracking). Axon also serves as an application substrate for domain-specific systems (ERP, CDP, artifact management). V1 focuses on the core entity-graph data model, ACID transactions, audit system, schema engine, and API surface — enough to replace ad-hoc storage in internal projects and prove the agent-native value proposition.
+Target users are developers building agents that safely mutate durable business
+records and teams building business workflows that need approval, audit, and
+policy. Axon also serves as an application substrate for domain-specific
+systems (ERP, CDP, artifact management). V1 focuses on the core entity-graph
+data model, ACID transactions, audit system, schema engine, GraphQL/MCP
+surfaces, data-layer policies, and mutation preview/approval - enough to prove
+the governed-agent-write value proposition.
 
 ---
 
@@ -30,9 +39,10 @@ Target users are developers building agentic applications (beads, research agent
 | 3 | **Schema-first collections** — define structure upfront, get validation, migration, and documentation for free | Agents work with well-typed data instead of guessing at shapes. Schema evolution is managed, not hoped for |
 | 4 | **ACID transactions** — multi-entity atomic operations with optimistic concurrency | Debit A and credit B atomically. Read-your-writes guarantee. No silent overwrites from stale state |
 | 5 | **Cloud-native abstraction** — Axon is Axon regardless of backing storage | Developers don't couple to storage engines. Axon can run embedded, on a server, or as a managed service — same API |
-| 6 | **Agent-native API surface** — designed for how agents consume and produce structured data | Agents get transactional batches, optimistic concurrency, change feeds, and structured queries — not raw SQL or file I/O |
-| 7 | **Local-first sync** — collections can sync between local and cloud instances with conflict resolution | Offline-capable UIs and agents. Edit locally, sync when connected. CRDTs or OT where appropriate |
-| 8 | **Workflow primitives** — state machines, transition guards, and lifecycle hooks built into the collection layer | Business processes (invoice approval, document review, bead lifecycle) get first-class state management without external orchestrators |
+| 6 | **GraphQL-primary application surface** — generated read/write GraphQL with policy-aware traversal, pagination, and mutation intents | UI, SDK, and operator workflows use one expressive API for data, approval, and audit |
+| 7 | **Agent-native MCP surface** — generated tools/resources with the same policy model as GraphQL | Agents discover valid writes, policy envelopes, conflicts, and approval requirements before corrupting state |
+| 8 | **Governed mutation intents** — preview, explain, approve, and transactionally bind risky writes | Low-risk agent work can proceed autonomously while high-risk writes route to human approval |
+| 9 | **Workflow primitives** — entity state machines and transition guards built into the collection layer | Business processes (invoice approval, document review, bead lifecycle) get first-class state guards without Axon becoming a durable workflow engine |
 
 ---
 
@@ -53,6 +63,9 @@ Agent state management is an unsolved infrastructure problem. As AI agents becom
 - **No audit trail**: Agents modify state without provenance. When something goes wrong, there's no way to trace what happened, who/what caused it, or how to revert
 - **No schema enforcement**: Agents write malformed data, schemas drift silently, and downstream consumers break on unexpected shapes
 - **No transactional guarantees**: Concurrent agent operations produce corrupt or inconsistent state
+- **No governed write path**: Agents can often write or fail, but cannot
+  preview a diff, explain policy, route risky changes for approval, or bind an
+  approval to the reviewed pre-image
 - **No agent-native API**: Agents are forced to use APIs designed for human-driven UIs — raw SQL, REST CRUD, file I/O — none of which match how agents naturally produce and consume state
 - **Storage coupling**: Applications are locked to a specific database engine, making it impossible to run the same logic embedded, on-premise, or in the cloud
 
@@ -65,11 +78,17 @@ Agent state management is an unsolved infrastructure problem. As AI agents becom
 | **DoltDB** | Git-like versioning, SQL | No real-time sync, no agent-native API, versioning != audit, SQL-only interface |
 | **Turso** | Edge-distributed SQLite, libSQL | No audit trail, no schema enforcement beyond SQL, no agent affordances |
 | **Raw Postgres/SQLite** | Mature, flexible, well-understood | Everything must be built: audit, schemas, sync, agent API. Massive undifferentiated effort |
+| **Postgres + RLS + Hasura/PostGraphile + OpenFGA/Oso/Cerbos** | Credible DIY GraphQL and policy stack | Multiple policy models, custom approval plumbing, TOCTOU-prone preview flows, incomplete prompt/tool lineage, hard-to-test redaction and count-leak behavior |
+| **Workflow engines (Temporal/Restate/Inngest/DBOS/LangGraph)** | Durable orchestration and agent execution | Not the governed system of record. They still need a schema-first, auditable, policy-aware data store for business entities |
 | **JSON files on disk** | Zero setup, agent-accessible | No concurrency, no audit, no schema, no query, no sync. Breaks immediately at scale |
 
 ### Opportunity
 
-The agent era is creating a new infrastructure category: **agent-native state management**. No existing product owns this space. The requirements — audit-first, schema-first, agent-friendly API, cloud-native abstraction, local-first sync — are not incremental features on existing databases. They require purpose-built architecture.
+The agent era is creating a new infrastructure category: **governed
+agent-native state management**. No existing product owns this space. The
+requirements - audit-first, schema-first, GraphQL-first, MCP-native,
+policy-aware, previewable, and approval-routable - are not incremental features
+on existing databases. They require purpose-built architecture.
 
 Timing factors:
 - Agent frameworks (LangChain, CrewAI, beads) are proliferating but each reinvents state storage
@@ -199,8 +218,8 @@ Each operation within the transaction is validated (schema, version) and the ent
 ### Business Goals
 
 1. **Become the default data layer for internal agentic projects** — beads, DDx document state, daily loop, and future tools all store state in Axon
-2. **Prove the agent-native state management category** — demonstrate that purpose-built infrastructure for agents delivers measurable benefits over general-purpose databases
-3. **Establish Axon as an open-source project with external adoption** — attract developers building agentic applications who need audit, schema, and sync out of the box
+2. **Prove the governed agent-native state management category** — demonstrate that purpose-built infrastructure for agents delivers measurable benefits over general-purpose databases and assembled Postgres policy stacks
+3. **Establish Axon as an open-source project with external adoption** — attract developers building agentic applications who need audit, schema, policy, approval, and GraphQL/MCP out of the box
 
 ### Success Metrics
 
@@ -210,6 +229,9 @@ Each operation within the transaction is validated (schema, version) and the ent
 | Schema enforcement | 100% of production collections validated | Schema validation pass rate | V1 launch |
 | Audit completeness | 100% of mutations audited | Audit log gap detection | V1 launch |
 | API latency (p99) | <10ms for single-entity operations | Benchmark suite | V1 launch |
+| Time to first trusted agent write | <1 day for a competent developer | Invoice/procurement tutorial from schema to audited GraphQL/MCP write | V1 launch |
+| GraphQL policy correctness | 100% pass on relationship, pagination, redaction, and count-leak test suite | FEAT-015/029 contract tests | V1 launch |
+| Approval safety | 100% stale intent rejection for changed pre-image, policy, schema, grant, or operation hash | FEAT-030 contract tests | V1 launch |
 | External early adopters | 10+ projects | GitHub stars, integration PRs | 12 months |
 | Agent framework integrations | 3+ (beads, LangChain state, CrewAI state) | Published integration packages | 18 months |
 
@@ -218,6 +240,8 @@ Each operation within the transaction is validated (schema, version) and the ent
 - **Replacing analytical databases** — Axon is transactional, not analytical. Niflheim handles analytics
 - **Building a full ORM** — Axon provides a data API, not an object-relational mapper
 - **Supporting arbitrary SQL** — Axon has a structured query interface, not a general SQL engine
+- **Being a durable workflow engine** — Axon enforces entity transitions and records approvals, but does not orchestrate long-running execution
+- **Being REST-first** — REST can exist as a compatibility surface, but GraphQL and MCP are the product-defining interfaces
 - **Multi-region replication in V1** — node topology is designed (ADR-011) and database placement is modeled, but actual multi-node routing and database migration are P2
 - **GIN / backend-specific query acceleration** — secondary indexes use the portable EAV pattern, not backend-specific features like JSONB containment operators
 
@@ -229,23 +253,29 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 
 ### Primary Persona: Agent Developer ("Ava")
 
-**Role**: Software engineer building agentic applications
-**Background**: Experienced developer working with AI agent frameworks. Ships code daily with AI assistance. Comfortable with APIs and CLIs, not interested in database administration.
+**Role**: Software engineer building agentic applications that mutate durable
+business records
+**Background**: Experienced developer working with AI agent frameworks. Ships
+code daily with AI assistance. Comfortable with GraphQL, APIs, and CLIs, not
+interested in assembling database triggers, policy engines, approval services,
+and audit pipelines.
 
 **Goals**:
-- Store agent work items (beads) with full lifecycle tracking
-- Query historical state to debug agent behavior
+- Give agents a governed place to read, preview, and write business state
+- Query historical state to debug agent behavior and policy decisions
 - Run agents locally during development, deploy to cloud in production — same data layer
 
 **Pain Points**:
 - Agents corrupt state because there's no schema validation
 - Can't trace what an agent did because there's no audit trail
+- Can't approve risky writes without custom, stale-prone application plumbing
 - Different storage in dev (SQLite) vs prod (Postgres) causes bugs
-- Building audit/schema/sync from scratch for every project
+- Building audit/schema/policy/approval from scratch for every project
 
 **Needs**:
-- Transactional API that agents can call without hand-holding
+- GraphQL and MCP APIs that agents can call without hand-holding
 - Schema that prevents garbage writes
+- Policy envelopes that explain autonomous, approval-routed, and denied writes
 - Audit log that answers "what happened and why?"
 - Same API locally and in the cloud
 
@@ -284,9 +314,18 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 7. **Link operations** — create, traverse, query, delete links between entities
 8. **ACID transactions** — multi-entity/link atomic operations with snapshot isolation (V1). All-or-nothing commits. Serializable isolation is P1.
 9. **Optimistic concurrency** — version-based conflict detection. Stale writes are rejected with current state
-10. **API surface** — well-defined API (gRPC or HTTP) suitable for agent and human consumption
-11. **Embedded mode** — run Axon in-process for development and testing
-12. **CLI** — command-line tool for collection management, schema operations, data inspection, and audit queries
+10. **GraphQL-first API surface** — generated read/write GraphQL suitable for
+    UI, SDK, operator, audit, policy, and approval workflows
+11. **MCP surface** — generated tools/resources for agents, mirroring GraphQL
+    semantics
+12. **Data-layer access policies** — schema-declared row, field, relationship,
+    and transition policies enforced below GraphQL and MCP
+13. **Mutation preview and approval** — preview diffs, explain policy, route
+    high-risk writes for approval, and bind execution to the reviewed
+    pre-image
+14. **Embedded mode** — run Axon in-process for development and testing
+15. **CLI** — command-line tool for collection management, schema operations,
+    data inspection, policy testing, and audit queries
 
 ### Should Have (P1)
 
@@ -301,18 +340,24 @@ Deferred items tracked in `docs/helix/parking-lot.md`.
 9. **Secondary indexes** — EAV-pattern typed indexes (string, integer, float, datetime, boolean) declared in schema. Single-field, compound, and unique indexes. Query planner uses indexes for equality, range, and sort acceleration. Background index build for existing collections. See FEAT-013
 10. **Tenancy, namespace hierarchy, and path-based addressing** — four-level conceptual hierarchy `tenant → database → schema → collection`, with tenant as a first-class global account boundary that owns users, credentials, and multiple databases. A single `axon-server` deployment hosts many tenants. Pure path-based wire protocol: `/tenants/{tenant}/databases/{database}/{resource...}` for every data-plane route. No `X-Axon-Database` header, no un-prefixed routes. Users are M:N with tenants via `tenant_users(tenant_id, user_id, role)`. Access control grants are carried in JWT credentials and scoped to `(tenant, database, op)` tuples. Default tenant and database auto-bootstrap on first authenticated request of a zero-tenant deployment. See FEAT-014 and ADR-018 (governing)
 11. **Physical storage architecture** — numeric collection IDs (O(1) renames), native UUID entity IDs, dedicated links table with DB-enforced referential integrity, portable design across SQL and KV backends. See ADR-010
-12. **GraphQL API** — full read/write GraphQL API auto-generated from ESF schemas. Queries: entity types, relationship fields from link types, lifecycle fields, filter/sort inputs, Relay-style cursor pagination. Mutations: entity CRUD with OCC, merge patch, link management, lifecycle transitions, atomic transactions. Subscriptions: change feeds backed by audit log via WebSocket. See FEAT-015, ADR-012
-13. **MCP server** — Model Context Protocol server exposing Axon to AI agents. Tools (CRUD, query, traverse, transition) auto-generated from ESF schemas. Resources with URI scheme for entity/collection data. Subscriptions for change notification. GraphQL bridge via `axon.query` tool. Stdio and HTTP+SSE transports. See FEAT-016, ADR-013
+12. **GraphQL API hardening** — subscriptions, advanced relationship queries,
+    admin/control-plane GraphQL, and performance hardening beyond the baseline
+    policy-safe V1 path. See FEAT-015, ADR-012
+13. **MCP server hardening** — stdio/HTTP transports, subscriptions, prompts,
+    tool grouping, and agent ergonomics beyond the baseline GraphQL bridge and
+    policy-envelope tools. See FEAT-016, ADR-013
 14. **Validation rules** — cross-field conditional validation (ESF Layer 5) with severity levels (error/warning/info). Actionable error messages with fix suggestions and "did you mean?" near-match detection. Enhanced JSON Schema errors. See FEAT-019
 15. **Link discovery and graph queries** — fast, indexed queries for finding link targets, listing entity neighbors, and exploring the entity graph. Powers autocomplete, relationship building, and graph exploration. Exposed via structured API, GraphQL relationship fields, and MCP tools. See FEAT-020
-16. **Agent guardrails** — preventive controls beyond audit trails. Scope constraints (agent can only modify entities within assigned scope), rate limiting (prevent bulk mutation without approval), semantic validation hooks (external validators examine proposed mutations in context before commit). See FEAT-022
+16. **Agent guardrails** — preventive controls beyond audit trails. Scope constraints (agent can only modify entities within assigned scope), rate limiting (prevent bulk mutation without approval), delegated authority, credential rotation, and semantic validation hooks only after mutation intents are proven. See FEAT-022, FEAT-030
 17. **Rollback and recovery** — point-in-time rollback (undo all changes after a timestamp), entity-level rollback (revert specific entity to previous state), transaction-level rollback (undo a specific transaction), dry-run rollback (show what would change without committing). Powered by the audit log. See FEAT-023
 18. **BYOC deployment control plane** — lightweight management plane (PostgreSQL-backed) for fleets of Axon deployments across customer clouds. Observes and provisions `axon-server` deployments — each of which may host many tenants internally (see FEAT-014). Single pane of glass for monitoring, operations, and deployment lifecycle across the fleet. Never reads per-deployment data. Strict separation from the embedded per-deployment control plane that manages tenants/users/credentials inside a single instance (see FEAT-012 + FEAT-014). See FEAT-025 and ADR-017
 
 ### Nice to Have (P2)
 
 1. **Local-first sync** — CRDTs or OT for offline-capable clients with conflict resolution
-2. **Workflow primitives** — state machine definitions, transition guards, lifecycle hooks
+2. **Workflow primitives beyond transition guards** — state machine definitions,
+  richer lifecycle hooks, and integration points with external durable workflow
+  engines. Axon does not become the workflow orchestrator
 3. **Schema registry** — shared schema definitions across Axon instances
 4. **Node topology and database migration** — geographic node registry, database-to-node placement, request routing/proxy, database migration between nodes. See FEAT-014 (P2 section)
 5. **Niflheim bridge** — CDC export from Axon collections to niflheim for analytics
@@ -335,6 +380,28 @@ compatible with Axon but are not prioritized for any release:
 
 ## 9. User Journey
 
+### Primary Flow: Trusted Agent Invoice Update
+
+1. **Model**: Developer defines `invoices`, `vendors`, and `users` collections
+   with ESF schemas, link types, indexes, transition guards, and
+   `access_control` policy.
+2. **Policy**: Developer declares an autonomous envelope for invoice updates
+   under $10,000 and an approval envelope above that threshold.
+3. **Test**: Developer dry-runs the policy against fixture subjects and sample
+   mutations. Axon reports GraphQL nullability changes, missing indexes, and
+   approval routes before activation.
+4. **Discover**: Agent inspects MCP tools or GraphQL introspection and sees
+   allowed fields, redactions, autonomous limits, and approval requirements.
+5. **Preview**: Agent proposes an invoice update. Axon returns a diff, policy
+   explanation, pre-image versions, and either `allow`, `needs_approval`, or
+   `deny`.
+6. **Approve**: For a high-risk update, a finance approver reviews the GraphQL
+   intent, records a reason, and approves.
+7. **Commit**: Axon executes only if the entity versions, policy version,
+   schema version, grant version, and operation hash still match the preview.
+8. **Audit**: Operator queries one audit trail showing agent identity, delegated
+   authority, tool call, policy decision, approval, and redacted pre/post images.
+
 ### Primary Flow: Agent Storing a Bead
 
 1. **Setup**: Developer defines a `beads` collection with a schema describing bead structure (id, type, status, content, dependencies, metadata)
@@ -349,6 +416,8 @@ compatible with Axon but are not prioritized for any release:
 - **Schema violation**: Agent attempts to write a bead with missing required field. Axon rejects with structured error describing the violation. Agent can self-correct
 - **Concurrent write**: Two agents update the same bead simultaneously. Second write fails with version conflict. Agent retries with fresh state
 - **Bulk operation**: Agent completes a batch of beads atomically — all succeed or none do
+- **Approval stale**: A human approves a mutation after the entity changed.
+  Axon rejects the intent as stale and requires a new preview
 
 ---
 
@@ -394,6 +463,10 @@ compatible with Axon but are not prioritized for any release:
 | Transactional guarantees across heterogeneous indexes | Low | High | Adding vector/BM25 indexes as separate services creates distributed transaction problems. Keep indexes co-located as long as possible |
 | Agent semantic misuse | Medium | Medium | Agents can submit structurally valid but semantically wrong data. Schema validation catches structure, not intent. Agent guardrails (FEAT-022) help but this remains an open problem |
 | Backend abstraction leakage | Medium | High | If PostgreSQL-specific behaviors bleed through the API, future backend migration will be painful. Storage adapter trait must be rigorously tested across backends |
+| Policy authoring too complex | Medium | High | Use ADR-019's closed declarative grammar, compile reports, fixture tests, and historical dry-runs. Avoid arbitrary code and hidden resolver logic |
+| GraphQL policy leaks | Medium | High | Make GraphQL relationship traversal, pagination, redaction, and count safety a P0 contract suite before broad feature expansion |
+| Agent identity and delegation unclear | Medium | High | Model stable `user_id`, `agent_id`, `delegated_by`, credential ID, and grant version in every policy decision and audit record |
+| Immutable audit conflicts with erasure | Medium | High | Support caller-side redaction, tenant/field encryption, crypto-shredding, and erasure tombstones while preserving non-sensitive lineage |
 
 ---
 
@@ -411,7 +484,7 @@ compatible with Axon but are not prioritized for any release:
 
 ### Phase 2: API and Integration (6 weeks)
 
-- Server mode with network API (gRPC + HTTP gateway)
+- Server mode with GraphQL primary API, MCP server, and compatibility gateways
 - Query/filter/sort/paginate across collections
 - Graph traversal queries over typed links
 - Bead storage adapter (entity + link schemas)
@@ -442,6 +515,8 @@ compatible with Axon but are not prioritized for any release:
 - [ ] All P0 requirements implemented and tested
 - [ ] Audit log captures 100% of mutations with actor, timestamp, operation, diff
 - [ ] Schema validation rejects all invalid writes with structured errors
+- [ ] GraphQL and MCP enforce identical data-layer policy decisions for the same subject and operation
+- [ ] Mutation preview/approval rejects stale pre-image, schema, policy, grant, and operation-hash changes
 - [ ] Embedded and server modes pass identical test suites
 - [ ] API latency targets met (p99 <10ms single-entity operations)
 - [ ] CLI supports collection management, schema operations, data inspection, audit queries
@@ -449,6 +524,7 @@ compatible with Axon but are not prioritized for any release:
 ### Launch Criteria
 
 - [ ] At least one internal project (beads) successfully using Axon as primary data store
+- [ ] Invoice/procurement reference workflow demonstrates time-to-first trusted agent write through GraphQL and MCP
 - [ ] Documentation covers getting started, schema definition, API reference, audit queries
 - [ ] Benchmark suite demonstrates performance characteristics
 - [ ] No known data corruption or audit gap bugs
@@ -485,7 +561,9 @@ Core architecture is well-understood:
 - **Storage abstraction**: Proven pattern (niflheim uses similar layering). SQLite for embedded, Postgres for server
 - **Schema engine**: JSON Schema or similar. Tablespec's UMF provides prior art for schema-to-multi-format generation
 - **Audit log**: Append-only event log. Can leverage niflheim's WAL patterns for performance
-- **API**: gRPC with HTTP gateway is standard. Protobuf schema = self-documenting API
+- **API**: GraphQL is the primary application surface; MCP is the
+  agent-native surface; gRPC/native handler APIs remain internal and SDK
+  integration surfaces; REST/JSON is a compatibility fallback
 - **Embedded mode**: SQLite in-process. Well-understood, battle-tested
 
 ### C. Prior Art from Internal Projects

@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: SPIKE-001
   depends_on:
     - helix.prd

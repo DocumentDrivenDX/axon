@@ -1,7 +1,7 @@
 # Feature Specifications
 
 **Project**: Axon
-**Last Updated**: 2026-04-05
+**Last Updated**: 2026-04-22
 
 ## Feature Registry
 
@@ -16,13 +16,13 @@
 | FEAT-007 | Entity-Graph-Relational Data Model | P0 | Draft |
 | FEAT-008 | ACID Transactions | P0 | Draft |
 | FEAT-009 | Graph Traversal Queries | P1 | Draft |
-| FEAT-010 | Workflow State Machines | P2 | Draft |
+| FEAT-010 | Entity State Machines and Transition Guards | P1 | Draft |
 | FEAT-011 | Admin Web UI | P1 | Draft |
 | FEAT-012 | Authorization | P1 | Draft |
 | FEAT-013 | Secondary Indexes & Query Acceleration | P1 | Draft |
 | FEAT-014 | Multi-Tenancy & Namespace Hierarchy | P1/P2 | Draft |
-| FEAT-015 | GraphQL Query Layer | P1 | Draft |
-| FEAT-016 | MCP Server | P1 | Draft |
+| FEAT-015 | GraphQL Query Layer | P0 | Draft |
+| FEAT-016 | MCP Server | P0 | Draft |
 | FEAT-017 | Schema Evolution & Migration | P1 | Draft |
 | FEAT-018 | Aggregation Queries | P1 | Draft |
 | FEAT-019 | Validation Rules & Actionable Errors | P1 | Draft |
@@ -35,7 +35,8 @@
 | FEAT-026 | Markdown Templates | P2 | Draft |
 | FEAT-027 | Git Mirror | P2 | Draft |
 | FEAT-028 | Unified Binary | P1 | Draft |
-| FEAT-029 | Data-Layer Access Control Policies | P0 | Draft |
+| FEAT-029 | Data-Layer Access Control Policies | P0 | Specified |
+| FEAT-030 | Mutation Intents and Approval | P0 | Specified |
 
 ## Conventions
 

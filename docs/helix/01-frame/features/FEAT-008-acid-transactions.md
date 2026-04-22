@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: FEAT-008
   depends_on:
     - helix.prd

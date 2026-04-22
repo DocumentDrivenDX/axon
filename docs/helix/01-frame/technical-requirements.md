@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: helix.technical-requirements
   depends_on:
     - helix.prd
@@ -9,7 +9,7 @@ dun:
 
 **Version**: 0.2.0
 **Date**: 2026-04-04
-**Revised**: 2026-04-06
+**Revised**: 2026-04-22
 **Status**: Draft
 
 ---
@@ -349,6 +349,60 @@ ESF bridges bidirectionally to other schema formats:
 
 ---
 
+## 5a. Policy Authoring And Enforcement
+
+Data-layer policy is schema-adjacent ESF metadata governed by
+[ADR-019](../02-design/adr/ADR-019-policy-authoring-and-intents.md) and
+[FEAT-029](features/FEAT-029-access-control.md). The policy language is a
+closed declarative grammar. It is not arbitrary Rust, JavaScript, SQL, or custom
+GraphQL resolver code.
+
+### Policy Compiler Requirements
+
+When a schema/policy version is written, Axon must compile the policy document
+before activation:
+
+- Resolve and type-check subject paths, field paths, relationship predicates,
+  transition guards, and approval envelopes.
+- Detect recursive relationship-policy references.
+- Identify GraphQL fields that must become nullable because they can be
+  redacted.
+- Classify row-policy predicates as indexable or unindexed and fail unsafe
+  unindexed policy plans unless bounded by configured limits.
+- Generate the policy explanation plan used by GraphQL and MCP.
+- Emit a dry-run compile report for operator review.
+
+### Runtime Policy Requirements
+
+- GraphQL and MCP must evaluate the same policy snapshot for the same subject,
+  operation, and schema version.
+- Row filters are applied before GraphQL connection edges, cursors, limits, and
+  counts are constructed.
+- Relationship fields apply target collection policy before materializing
+  related entities.
+- Hidden rows are omitted or returned as `null` where revealing `forbidden`
+  would leak existence.
+- Redacted fields resolve to `null` in GraphQL and are omitted/redacted in MCP
+  tool/resource payloads according to the same policy plan.
+- Policy changes are administrative schema changes and are audited.
+
+### Mutation Intent Requirements
+
+Mutation preview and approval are governed by
+[FEAT-030](features/FEAT-030-mutation-intents-approval.md):
+
+- Preview validates the proposed operation and returns diff, affected records,
+  pre-image versions, policy decision, explanation, and an intent token when
+  applicable.
+- Intent tokens are bound to tenant, database, subject, credential ID, grant
+  version, schema version, policy version, operation hash, and affected
+  pre-image versions.
+- Commit revalidates all bound values. Any mismatch returns a stale or mismatch
+  error and no partial data change.
+- Approval, rejection, expiration, and committed intent lineage are auditable.
+
+---
+
 ## 6. Correctness Requirements
 
 ### Deterministic Simulation Testing
@@ -425,8 +479,18 @@ Quality metrics that can only improve:
 
 ### Protocol
 
-- **Primary**: gRPC (tonic) with protobuf definitions
-- **Secondary**: HTTP/JSON gateway (tonic-web or separate gateway)
+- **Primary application API**: GraphQL. GraphQL is the public surface for
+  generated reads, writes, relationship traversal, policy explanation, mutation
+  preview/approval, audit queries, and UI/SDK workflows.
+- **Agent-native API**: MCP. MCP tools/resources/prompts are generated from ESF
+  and must mirror GraphQL semantics for policy, mutation intents, conflicts,
+  and audit.
+- **Internal/server API**: Native Rust traits and any gRPC/protobuf surface are
+  implementation and SDK integration mechanisms, not the product-defining
+  public application surface.
+- **REST/JSON fallback**: Operational compatibility only. Health checks,
+  binary/streaming edges, and unusually awkward GraphQL cases may use REST/JSON,
+  but REST parity is not a V1 policy or approval requirement.
 - **Embedded**: Native Rust trait (no serialization overhead)
 
 ### Client SDKs
@@ -434,13 +498,18 @@ Quality metrics that can only improve:
 | Language | Priority | Notes |
 |----------|----------|-------|
 | Rust | P0 | Native, generated from trait definitions |
-| TypeScript | P0 | For local-first UI, generated from protobuf |
-| Go | P1 | For DDx integration, generated from protobuf |
-| Python | P1 | For data pipeline integration, generated from protobuf |
+| TypeScript | P0 | For UI and application clients, generated from GraphQL schema and shared core types where possible |
+| Go | P1 | For DDx integration, generated from GraphQL/protobuf as appropriate |
+| Python | P1 | For data pipeline integration, generated from GraphQL/protobuf as appropriate |
+
+SDKs may use generated GraphQL operations, native bindings, or protobuf where
+appropriate, but public product documentation must lead with GraphQL and MCP
+for application and agent workflows.
 
 ### CLI
 
-- `axon` binary wrapping the gRPC API
+- `axon` binary wrapping GraphQL/MCP and native handler workflows, with
+  compatibility clients where needed
 - Supports embedded mode (no server required) and remote mode
 - Output formats: human-readable table (default), JSON, YAML
 
@@ -465,6 +534,8 @@ The schema is the single source of truth for what data is valid. To eliminate th
 - **TypeScript validator** generated from ESF schema, usable directly in browser UIs.
 - **Same rules** enforced server-side and client-side — no divergence.
 - **Schema queryable by agents** via MCP/GraphQL — agents can understand what's valid before attempting a write, reducing failed writes and retry loops.
+- **Policy queryable by agents** via MCP/GraphQL — agents can understand which
+  writes are autonomous, approval-routed, or denied before attempting a commit.
 
 ---
 
@@ -482,12 +553,13 @@ The schema is the single source of truth for what data is valid. To eliminate th
 | Secondary indexes | Section 8 P1 #9 | FEAT-013 (Indexes) | ADR-010 |
 | Multi-tenancy / namespaces | Section 8 P1 #10, P2 #4 | FEAT-014 (Multi-Tenancy) | ADR-011 |
 | Authentication / authorization | Section 8 P1 #6 | FEAT-012 (Authorization) | ADR-005 |
+| Policy authoring / access control | Section 8 P0 #12, Section 5a | FEAT-029 (Access Control), FEAT-030 (Mutation Intents) | ADR-019 |
 | Admin web UI | Section 8 P1 #8 | FEAT-011 (Admin Web UI) | ADR-006 |
 | Schema evolution | Section 8 P1 #1 | FEAT-017 (Schema Evolution) | ADR-007 |
 | Change feeds | Section 8 P1 #2 | FEAT-015 (GraphQL subscriptions), FEAT-003 (Audit polling) | ADR-003, ADR-012 |
 | Aggregation queries | Section 8 P1 #3 | FEAT-018 (Aggregation) | — |
-| GraphQL API | Section 8 P1 #12 | FEAT-015 (GraphQL) | ADR-012 |
-| MCP server | Section 8 P1 #13 | FEAT-016 (MCP) | ADR-013 |
+| GraphQL API | Section 8 P0 #10, P1 #12 | FEAT-015 (GraphQL) | ADR-012 |
+| MCP server | Section 8 P0 #11, P1 #13 | FEAT-016 (MCP) | ADR-013 |
 | Agent guardrails | Section 8 P1 #16 | FEAT-022 (Agent Guardrails) | — |
 | Rollback and recovery | Section 8 P1 #17 | FEAT-023 (Rollback/Recovery) | — |
 | Application substrate | Section 8 P2 #8 | FEAT-024 (Application Substrate) | — |

@@ -1,13 +1,10 @@
 ---
-dun:
+ddx:
   id: ADR-017
   depends_on:
     - helix.prd
     - ADR-003
     - ADR-011
-    - FEAT-012
-    - FEAT-014
-    - FEAT-025
 ---
 # ADR-017: Control Plane Topology and BYOC Deployment Model
 

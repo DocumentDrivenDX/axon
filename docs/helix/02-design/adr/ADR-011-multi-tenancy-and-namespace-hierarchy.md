@@ -1,11 +1,9 @@
 ---
-dun:
+ddx:
   id: ADR-011
   depends_on:
     - ADR-003
     - ADR-010
-    - FEAT-012
-    - FEAT-014
 ---
 # ADR-011: Multi-Tenancy, Namespace Hierarchy, and Node Topology
 

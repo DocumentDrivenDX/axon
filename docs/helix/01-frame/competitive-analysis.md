@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: helix.competitive-analysis
   depends_on:
     - helix.prd
@@ -8,6 +8,7 @@ dun:
 
 **Version**: 0.1.0
 **Date**: 2026-04-04
+**Revised**: 2026-04-22
 **Status**: Draft
 **Author**: Erik LaBianca
 
@@ -17,7 +18,36 @@ dun:
 
 Axon occupies a novel position in the data infrastructure landscape: an **entity-graph-relational** data store that is audit-first, schema-first, and agent-native. No existing product combines these properties. This document surveys six categories of data systems, identifies the trade-offs each makes, and maps the whitespace Axon targets.
 
-The key finding: graph databases have powerful relationship models but weak audit and embeddability; relational databases are mature but require massive scaffolding for audit and graph queries; NoSQL systems trade consistency for flexibility; and the new-wave hybrid systems each solve one or two of Axon's requirements but none solve all of them. The closest competitors are EdgeDB (graph-relational query model), DoltDB (audit-via-versioning), and SurrealDB (multi-model ambitions), but each has fundamental gaps that Axon's architecture addresses.
+The key finding: graph databases have powerful relationship models but weak
+audit and embeddability; relational databases are mature but require massive
+scaffolding for audit, policy, approval, and graph queries; NoSQL systems trade
+consistency for flexibility; and the new-wave hybrid systems each solve one or
+two of Axon's requirements but none solve all of them. The closest individual
+database competitors are EdgeDB (graph-relational query model), DoltDB
+(audit-via-versioning), and SurrealDB (multi-model ambitions), but the most
+credible practical alternative is now the assembled stack: PostgreSQL + RLS +
+audit triggers + Hasura/PostGraphile + OpenFGA/Oso/Cerbos + custom approval
+services.
+
+## 2026 Positioning Update
+
+Axon's market position is not "a better REST backend" or "MCP for databases."
+The position is: **the durable, reviewable state layer for governed agent
+writes to business records**.
+
+GraphQL is the primary application API. MCP is the agent-native surface. REST
+is a fallback for health checks, operational edges, and cases where GraphQL is
+genuinely intractable.
+
+The product must beat the DIY stack on:
+
+- time to first trusted agent write;
+- one schema/policy/audit model across GraphQL and MCP;
+- policy-safe GraphQL traversal, pagination, and redaction;
+- mutation preview/approval bound to reviewed pre-image versions;
+- agent/tool/prompt/policy lineage in audit;
+- lower assembly and maintenance cost than stitching together database,
+  GraphQL, policy, audit, and approval tools.
 
 ---
 
@@ -211,6 +241,38 @@ All of these are **build-it-yourself** approaches. None provide Axon's guarantee
 - **Schema + document hybrid** -- PostgreSQL's JSONB columns are powerful but unvalidated. You get either rigid SQL schemas or freeform JSON, not validated semi-structured documents.
 - **Graph-aware data model** -- Relational databases can model graphs but do not optimize for them. Recursive CTEs are functional but not efficient for deep traversals.
 - **Agent-native API** -- SQL is designed for human developers and ORMs, not for AI agents that need structured errors, optimistic concurrency, and self-describing schemas.
+
+### PostgreSQL + RLS + Hasura/PostGraphile + OpenFGA/Cerbos
+
+This is the strongest baseline for serious buyers. It combines mature storage,
+GraphQL generation, row-level security or external authorization, and optional
+audit triggers.
+
+**What works:**
+
+- PostgreSQL is mature, trusted, and already approved in many organizations.
+- Hasura/PostGraphile can expose a productive GraphQL API quickly.
+- RLS, OpenFGA, Oso, or Cerbos can express substantial authorization models.
+- Audit triggers and CDC can capture change history with enough engineering
+  discipline.
+
+**Where Axon must win:**
+
+- **Policy drift**: DIY stacks split policy between database RLS, GraphQL
+  permissions, application code, external policy engines, and UI affordances.
+  Axon uses one schema-adjacent policy model for GraphQL and MCP.
+- **Approval safety**: DIY preview/approval is usually custom application code.
+  Binding approval to pre-image versions, policy version, grant version, and
+  operation hash is easy to miss. Axon makes this a first-class mutation intent.
+- **GraphQL leak resistance**: relationship traversal, filtered pagination,
+  `totalCount`, nullable redaction, and error shapes are hard to prove across
+  generated GraphQL layers. Axon treats this as a P0 contract.
+- **Agent lineage**: triggers and RLS do not naturally capture agent identity,
+  delegated authority, tool call, prompt context, policy rule, and approval
+  reason in one audit record.
+- **Time to first trusted agent write**: Axon should demonstrate an invoice or
+  procurement workflow in less than one day, where a DIY stack usually requires
+  weeks of assembly before it is reviewable.
 
 ---
 
@@ -492,7 +554,45 @@ Event sourcing systems are audit-by-design because the event log is the source o
 
 ---
 
-## 7. Positioning Analysis
+## 7. Durable Workflow And Agent Orchestration Engines
+
+Temporal, Restate, Inngest, DBOS, LangGraph, and similar systems orchestrate
+execution. They are relevant because agent teams may assume a workflow engine
+can also solve trusted state mutation.
+
+### Product Comparison
+
+| Capability | Temporal / Restate / Inngest / DBOS | LangGraph | Axon |
+|------------|--------------------------------------|-----------|------|
+| Long-running orchestration | Strong | Strong for agent graphs | Non-goal |
+| Durable task retry | Strong | Framework-dependent | Non-goal |
+| Agent execution graph | Limited | Strong | Non-goal |
+| Schema-first business records | External database required | External database required | Core |
+| Data-layer policy | External application concern | External application concern | Core |
+| Mutation preview/approval | Application code | Application code | Core |
+| GraphQL data API | External | External | Primary |
+| MCP governed writes | External adapter | External adapter | Core |
+| Audit of prompt/tool/policy/write lineage | Custom | Partial/custom | Core |
+
+### Positioning
+
+Workflow engines are complementary. Use them to orchestrate long-running agent
+or business processes. Use Axon as the governed system of record those
+workflows mutate.
+
+The crisp message:
+
+> Temporal or LangGraph decides what step runs next. Axon decides whether the
+> proposed business-state change is valid, visible, approval-routed, and
+> auditable.
+
+Axon should not compete by becoming a workflow engine. Its durable
+differentiator is the state boundary: GraphQL and MCP writes under schema,
+policy, OCC, preview, approval, and audit.
+
+---
+
+## 8. Positioning Analysis
 
 ### Where Axon Sits on the Trade-off Curves
 
@@ -537,8 +637,13 @@ Axon is the only system that simultaneously provides:
 1. **Schema-first with flexible zones** -- stricter than document databases, more flexible than SQL DDL
 2. **Audit as architecture** -- every mutation produces a structured, immutable record (not optional, not external)
 3. **Typed linkages** -- first-class relationships without requiring a full graph database
-4. **Embeddable and cloud-native** -- same API in-process and over the network
-5. **Agent-native API** -- structured errors, optimistic concurrency, self-describing schemas, transactional batches
+4. **GraphQL-first application surface** -- generated read/write GraphQL with
+   policy-safe traversal, pagination, redaction, and mutation intents
+5. **MCP-native agent surface** -- tools and resources that mirror GraphQL
+   policy and approval semantics
+6. **Embeddable and cloud-native** -- same API in-process and over the network
+7. **Governed agent writes** -- structured errors, optimistic concurrency,
+   self-describing schemas, transactional batches, preview, approval, and audit
 
 No existing system occupies this intersection. The closest are:
 
@@ -587,7 +692,7 @@ Axon's architecture separates the data model and API from the storage layer. V1 
 
 1. **Audit that works without building it** -- Every developer who needs audit trails builds them from scratch on top of PostgreSQL triggers, or uses pg_audit (which logs SQL, not semantics), or gives up. There is no off-the-shelf solution.
 2. **Graph relationships in a document-friendly model** -- Developers want MongoDB's ease of use with Neo4j's relationship queries. ArangoDB and SurrealDB attempt this but sacrifice schema enforcement.
-3. **Agent-native data infrastructure** -- As of 2026, no data system is designed for AI agents as first-class consumers. Every agent framework (LangChain, CrewAI, beads) builds ad-hoc state management. This is a greenfield category.
+3. **Governed agent-native data infrastructure** -- As of 2026, no data system is designed for AI agents as first-class consumers that can safely mutate durable business state. Every agent framework (LangChain, CrewAI, beads) builds ad-hoc state management. This is a greenfield category.
 
 ---
 

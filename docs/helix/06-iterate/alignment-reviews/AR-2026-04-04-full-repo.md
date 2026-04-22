@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: helix.ar-2026-04-04
   depends_on:
     - helix.prd

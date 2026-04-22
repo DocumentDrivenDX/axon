@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: ADR-013
   depends_on:
     - ADR-002
@@ -15,7 +15,7 @@ dun:
 
 | Date | Status | Deciders | Related | Confidence |
 |------|--------|----------|---------|------------|
-| 2026-04-05 | Accepted | Erik LaBianca | ADR-002, ADR-012, FEAT-004, FEAT-005, FEAT-015 | High |
+| 2026-04-05 | Accepted | Erik LaBianca | ADR-002, ADR-012, ADR-019, FEAT-004, FEAT-005, FEAT-015, FEAT-029, FEAT-030 | High |
 
 ## Context
 
@@ -25,16 +25,17 @@ interact with external tools and data sources. If Axon is "the central
 nervous system for agentic applications," agents should be able to talk
 to it natively via MCP without writing custom integration code.
 
-Axon currently has gRPC, HTTP/JSON, and (per ADR-012) GraphQL interfaces.
-These are developer APIs — an agent framework has to write an adapter to
-use them. MCP eliminates this: any MCP-capable agent can connect to Axon
-and immediately discover what collections exist, what operations are
-available, and what data shapes to expect.
+Axon currently has GraphQL as the primary application API plus compatibility
+and internal interfaces. These are developer APIs - an agent framework has to
+write an adapter to use them. MCP eliminates this: any MCP-capable agent can
+connect to Axon and immediately discover what collections exist, what
+operations are available, what data shapes to expect, and which writes are
+autonomous, approval-routed, or denied by policy.
 
 | Aspect | Description |
 |--------|-------------|
 | Problem | Agents need custom integration code to use Axon. No standard agent-to-data-store protocol |
-| Current State | gRPC + HTTP + GraphQL — all developer-facing, not agent-native |
+| Current State | GraphQL plus compatibility/internal APIs - developer-facing, not agent-native |
 | Requirements | MCP server that exposes Axon's full read/write surface to agents via the standard MCP primitives (tools, resources, prompts) |
 
 ## Decision
@@ -43,6 +44,9 @@ Axon implements an **MCP server** that auto-generates its tool and
 resource surface from ESF schemas, just as ADR-012 auto-generates
 GraphQL types. The MCP server is a protocol adapter over the same
 `AxonHandler` used by all other interfaces.
+
+MCP mirrors GraphQL semantics for policy and mutation intents. It does not
+define a second authorization model.
 
 ### 1. MCP Primitives Mapping
 
@@ -66,6 +70,18 @@ axon.query
     query: string (required) — GraphQL query or mutation text
     variables: object (optional) — GraphQL variables
   returns: GraphQL response JSON
+
+axon.mutation.preview
+  description: "Preview a GraphQL mutation or transaction and return diff, policy decision, and intent token"
+  parameters:
+    operation: object (required)
+  returns: mutation preview result
+
+axon.mutation.commit_intent
+  description: "Commit a previously previewed and allowed/approved mutation intent"
+  parameters:
+    intent_token: string (required)
+  returns: commit result or stale/mismatch error
 
 axon.collection.create
   description: "Create a new collection with a schema"
@@ -382,7 +398,7 @@ POST /mcp          — MCP JSON-RPC requests
 GET  /mcp/sse      — Server-Sent Events for notifications
 ```
 
-These are served by axum alongside the REST, gRPC, and GraphQL endpoints.
+These are served by axum alongside GraphQL and compatibility endpoints.
 
 Both transports speak the same MCP JSON-RPC protocol. The server
 implementation is transport-agnostic.
@@ -392,7 +408,7 @@ implementation is transport-agnostic.
 MCP requests carry the same identity as other Axon protocols:
 
 - **Stdio**: No auth (same process, same trust boundary as `--no-auth`)
-- **HTTP+SSE**: Same auth middleware as the REST gateway (FEAT-012).
+- **HTTP+SSE**: Same auth middleware as the GraphQL/API gateway (FEAT-012).
   The MCP request includes the auth header; the server resolves identity
   and applies RBAC/ABAC before executing the tool
 

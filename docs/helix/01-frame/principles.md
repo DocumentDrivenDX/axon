@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: helix.principles
   depends_on: [helix.prd]
 ---

@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: helix.test-plan
   depends_on:
     - helix.prd
@@ -575,6 +575,43 @@ Representative rows:
 - [ ] The BYOC control plane has no data-plane surface (attempts to read an entity via the control plane return 404)
 - [ ] Each deployment's audit log is self-contained (no BYOC-level cross-deployment audit)
 
+### SCN-017: Trusted Agent Invoice Write via GraphQL and MCP (FEAT-015, FEAT-016, FEAT-029, FEAT-030)
+
+**Source**: Product positioning review, ADR-019, FEAT-030
+
+**Setup**:
+- Create `users`, `vendors`, and `invoices` collections with ESF schemas,
+  link types, indexes, transition guards, and `access_control`.
+- Policy allows finance agents to update invoice metadata under $10,000
+  autonomously and requires `finance_approver` approval above $10,000.
+- Contractor subjects can see assigned invoices but receive commercial fields
+  as `null`.
+
+**Execution**:
+1. Run GraphQL introspection and MCP `tools/list`; assert both expose the same
+   policy envelopes for the agent subject.
+2. Query invoices through GraphQL with relationship traversal and pagination.
+3. Preview an under-threshold update; commit the returned intent.
+4. Preview an over-threshold update; approve it through GraphQL with a reason;
+   commit the returned intent.
+5. Preview another over-threshold update, then change the invoice before
+   commit; attempt to commit the stale intent.
+6. Query the audit trail as an operator and as a contractor.
+
+**Check**:
+- [ ] GraphQL edges, cursors, and `totalCount` are computed after row policy
+  filtering.
+- [ ] Redacted GraphQL fields are nullable and resolve to `null`.
+- [ ] MCP tool metadata matches GraphQL effective policy for the same subject.
+- [ ] Under-threshold preview returns `allow`; over-threshold preview returns
+  `needs_approval`.
+- [ ] Approval audit records include approver, reason, policy version, and
+  intent ID.
+- [ ] Stale intent execution returns `intent_stale` and commits no partial data.
+- [ ] Operator audit shows agent identity, delegated authority, policy decision,
+  approval, and pre/post images.
+- [ ] Contractor audit reads apply the same field redaction as entity reads.
+
 ---
 
 ## 5. L3: Property-Based Tests
@@ -607,9 +644,9 @@ Representative rows:
 
 ### PROP-010: Path Routing Determinism (ADR-018, FEAT-014)
 
-**Property**: For any URL `/tenants/{t}/databases/{d}/collections/{c}/entities/{id}`, the `(tenant, database, collection, entity_id)` tuple extracted by the routing middleware is identical across all backends, all protocols (REST and GraphQL), and all sessions. The extraction is a pure function of the URL; no hidden state affects the result.
+**Property**: For any URL `/tenants/{t}/databases/{d}/collections/{c}/entities/{id}`, the `(tenant, database, collection, entity_id)` tuple extracted by the routing middleware is identical across all backends, GraphQL, and REST compatibility routes where present. The extraction is a pure function of the URL; no hidden state affects the result.
 
-**Generators**: random URL segments (including Unicode, URL-encoded bytes, max-length identifiers). The same URL is fed through REST and through GraphQL's equivalent `entity(tenant, database, collection, id)` query; the resolved tuple must match.
+**Generators**: random URL segments (including Unicode, URL-encoded bytes, max-length identifiers). The same URL is fed through a REST compatibility route and through GraphQL's equivalent `entity(tenant, database, collection, id)` query; the resolved tuple must match.
 
 ### PROP-011: Tailscale ↔ JWT Equivalence (ADR-018 §4, FEAT-012)
 

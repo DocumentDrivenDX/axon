@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: ADR-018
   depends_on:
     - helix.prd
@@ -7,9 +7,6 @@ dun:
     - ADR-011
     - ADR-012
     - ADR-017
-    - FEAT-012
-    - FEAT-014
-    - FEAT-025
 ---
 # ADR-018: Tenant as Global Account Boundary, M:N Users, JWT Credentials, and Path-Based Wire Protocol
 
@@ -706,7 +703,7 @@ use case. See section 5.
 
 | Type | Impact |
 |------|--------|
-| **Positive** | Clear tenant isolation; M:N users enable real SaaS and team-organization deployments; canonical entity URLs enable edge routing and HTTP caching; JWTs give us industry-standard credentials with structured grants; Tailscale stays the simple default for dev while OIDC arrives later as a clean provider addition; division of labor between REST and GraphQL is explicit; the whole stack (wire protocol, storage, auth, UI, SDK) becomes internally consistent about what a tenant is |
+| **Positive** | Clear tenant isolation; M:N users enable real SaaS and team-organization deployments; canonical entity URLs enable edge routing and HTTP caching; JWTs give us industry-standard credentials with structured grants; Tailscale stays the simple default for dev while OIDC arrives later as a clean provider addition; GraphQL-primary behavior and REST exceptions are explicit; the whole stack (wire protocol, storage, auth, UI, SDK) becomes internally consistent about what a tenant is |
 | **Negative** | Non-trivial implementation scope: SQL migration, auth middleware redesign, router restructure, UI two-level picker, SDK rewrite, test matrix rewrite; JWT introduces a new runtime dependency and a signing key management surface (see "Signing key rotation" below); per-tenant credentials mean users with access to N tenants carry N credentials in their config (but N is small for humans, and SDKs can manage the list) |
 | **Neutral** | The 4-level hierarchy is one level deeper than ADR-011 intended; users have to understand what a tenant is, but this concept is well-established in SaaS tooling and doesn't need invention; GraphQL mutation resolvers gain a new context extraction path (the `(user_id, tenant_id, grants)` extension) but the resolvers themselves are unchanged |
 

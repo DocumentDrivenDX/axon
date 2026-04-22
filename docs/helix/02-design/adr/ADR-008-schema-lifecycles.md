@@ -1,12 +1,11 @@
 ---
-dun:
+ddx:
   id: ADR-008
   depends_on:
     - ADR-002
     - ADR-007
     - FEAT-002
     - FEAT-006
-    - FEAT-019
 ---
 # ADR-008: Lifecycle State Machines as Schema Declarations
 

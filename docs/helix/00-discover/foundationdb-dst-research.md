@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: helix.foundationdb-dst-research
   depends_on:
     - helix.product-vision

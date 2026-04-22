@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: helix.schema-format-research
   depends_on:
     - helix.product-vision

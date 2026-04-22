@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: ADR-015
   depends_on:
     - ADR-004

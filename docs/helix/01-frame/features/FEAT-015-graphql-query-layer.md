@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: FEAT-015
   depends_on:
     - helix.prd
@@ -14,21 +14,22 @@ dun:
 
 **Feature ID**: FEAT-015
 **Status**: Draft
-**Priority**: P1
+**Priority**: P0
 **Owner**: Core Team
 **Created**: 2026-04-05
-**Updated**: 2026-04-05
+**Updated**: 2026-04-22
 
 ## Overview
 
-A read-only GraphQL API auto-generated from Entity Schema Format (ESF)
+A full read/write GraphQL API auto-generated from Entity Schema Format (ESF)
 declarations. Entity types, relationship fields, filter/sort inputs,
-and Relay-style pagination are derived from the active collection schemas
-at runtime. WebSocket subscriptions provide real-time change feeds backed
-by the audit log.
+mutations, policy metadata, mutation-intent workflows, and Relay-style
+pagination are derived from the active collection schemas at runtime.
+WebSocket subscriptions provide real-time change feeds backed by the audit log.
 
-Writes stay in the existing structured API (gRPC/HTTP). GraphQL is the
-primary read and subscription interface.
+GraphQL is Axon's primary application API surface. MCP mirrors the same
+semantics for agents. REST/JSON endpoints remain compatibility and operational
+fallbacks for cases where GraphQL is genuinely intractable.
 
 See [ADR-012](../../02-design/adr/ADR-012-graphql-query-layer.md) for
 the full design.
@@ -41,7 +42,10 @@ to traverse links and assemble related data. There is no subscription
 protocol for change feeds — clients must poll the audit log.
 
 GraphQL solves both: declarative queries with nested relationship
-resolution, and subscriptions for push-based change notification.
+resolution, mutations that share the same type surface, and subscriptions for
+push-based change notification. Because GraphQL is also the primary policy
+surface, resolver correctness under redaction, row filtering, relationship
+traversal, and pagination is a V1 proof point.
 
 ## Requirements
 
@@ -81,6 +85,8 @@ resolution, and subscriptions for push-based change notification.
 - **Audit log**: `auditLog(collection, entityId, actor, mutation, ...)`
 - **Relay pagination**: All list fields return Connection types with
   edges, pageInfo, and totalCount
+- **Policy-safe pagination**: Row policies are applied before edges,
+  cursors, and `totalCount` are constructed
 
 #### Filters and Sorting
 
@@ -111,6 +117,30 @@ resolution, and subscriptions for push-based change notification.
 - **Collection management**: `createCollection`, `dropCollection`,
   `putSchema` mutations for admin operations
 
+#### Policy And Mutation Intents
+
+- **Effective policy**: `effectivePolicy(collection, entityId)` exposes the
+  caller's current collection/entity capabilities for UI and SDK affordances
+- **Policy explanation**: `explainPolicy(input)` returns allow, deny, or
+  needs-approval decisions with rule names and denied/redacted field paths
+- **Mutation preview**: `previewMutation(input)` validates a proposed write,
+  returns a diff and policy explanation, and creates a bound intent token when
+  allowed or approval-routed
+- **Approval workflow**: `approveMutationIntent`, `rejectMutationIntent`, and
+  `commitMutationIntent` expose FEAT-030 through GraphQL
+- **Redaction-aware types**: Any field that can be redacted by FEAT-029 is
+  nullable in the generated GraphQL type, even if it is required in ESF
+
+#### Policy-Safe Relationship Resolution
+
+- **No hidden target leaks**: Relationship fields omit hidden target entities
+  rather than returning policy errors
+- **Target policy reuse**: Relationship predicates can reuse the target
+  collection's read policy without duplicating membership rules
+- **Count safety**: `totalCount` never includes hidden rows
+- **Error safety**: Policy denials for hidden rows are indistinguishable from
+  not-found/null results where existence would otherwise leak
+
 #### Subscriptions (Change Feeds)
 
 - **Per-collection subscriptions**: `beadChanged(filter)` pushes events
@@ -138,6 +168,8 @@ resolution, and subscriptions for push-based change notification.
   abusive recursive queries)
 - **Query complexity limit**: Configurable max complexity score based on
   field weights
+- **Policy correctness**: Policy filtering, redaction, relationship traversal,
+  and pagination must be tested against realistic business schemas before V1
 - **Subscription latency**: < 500ms from entity write to subscriber
   notification (polling interval)
 
@@ -204,6 +236,36 @@ resolution, and subscriptions for push-based change notification.
 - [ ] `commitTransaction` with multiple operations either commits all or rolls back all; partial success is impossible
 - [ ] Version conflict error includes current entity state in GraphQL error extensions
 
+### Story US-110: Enforce Policy Across GraphQL Traversal [FEAT-015]
+
+**As an** application developer
+**I want** GraphQL queries to enforce row and field policies across nested
+relationships and pagination
+**So that** direct GraphQL access cannot leak hidden business records
+
+**Acceptance Criteria:**
+- [ ] A denied point read resolves to `null` without revealing hidden existence
+- [ ] Connection edges and `totalCount` are computed after FEAT-029 row filters
+- [ ] Redactable fields are nullable in generated GraphQL types and resolve to
+  `null` when denied
+- [ ] Nested relationship fields omit hidden targets and do not leak counts
+- [ ] Policy explanations are available through GraphQL without weakening
+  enforcement on the real operation
+
+### Story US-111: Preview And Commit Mutation Intents [FEAT-015]
+
+**As an** agent or UI client
+**I want** GraphQL to preview, approve, and commit mutation intents
+**So that** governed writes use one primary API surface
+
+**Acceptance Criteria:**
+- [ ] `previewMutation` returns diff, policy decision, pre-image versions, and
+  intent token when applicable
+- [ ] `approveMutationIntent` and `rejectMutationIntent` audit operator action
+- [ ] `commitMutationIntent` rejects stale entity versions, stale policy
+  versions, and operation hash mismatches
+- [ ] The committed mutation audit entry links to the approved intent
+
 ### Story US-051: Use GraphQL from the Admin UI [FEAT-015]
 
 **As the** admin web UI
@@ -240,6 +302,10 @@ resolution, and subscriptions for push-based change notification.
   schema change
 - **Large result sets**: Pagination is mandatory for list fields.
   Default limit applies if none specified
+- **Policy changes during query**: In-flight queries use the policy snapshot
+  active when execution starts
+- **Policy changes during intent approval**: FEAT-030 marks the intent stale
+  and requires preview again
 
 ## Dependencies
 
@@ -247,12 +313,15 @@ resolution, and subscriptions for push-based change notification.
   schema generation
 - **FEAT-004** (Entity Operations): GraphQL resolvers delegate to
   existing entity operations
-- **FEAT-005** (API Surface): GraphQL endpoint served alongside REST and
-  gRPC
+- **FEAT-005** (API Surface): GraphQL endpoint served by the shared server
 - **FEAT-009** (Graph Traversal): Relationship field resolution uses
   link traversal
 - **FEAT-013** (Secondary Indexes): Filter arguments route through the
   query planner to use indexes
+- **FEAT-029** (Data-Layer Access Control Policies): GraphQL enforces row
+  filters, field redaction, policy explanation, and safe pagination
+- **FEAT-030** (Mutation Intents and Approval): GraphQL exposes preview,
+  approval, and intent commit workflows
 - **ADR-012**: Full design for schema generation, resolvers, subscriptions
 
 ### Crate Dependencies
@@ -277,10 +346,12 @@ resolution, and subscriptions for push-based change notification.
 
 ### Related Artifacts
 - **Parent PRD Section**: Requirements Overview > P1 #12 (GraphQL query layer)
-- **User Stories**: US-048, US-049, US-050, US-051, US-057
+- **User Stories**: US-048, US-049, US-050, US-051, US-057, US-110, US-111
 - **Architecture**: ADR-012 (GraphQL Query Layer)
 - **Implementation**: `crates/axon-graphql/`
 
 ### Feature Dependencies
 - **Depends On**: FEAT-002, FEAT-004, FEAT-005, FEAT-009, FEAT-013
-- **Depended By**: FEAT-011 (Admin UI uses GraphQL for data fetching)
+- **Depended By**: FEAT-011 (Admin UI uses GraphQL for data fetching),
+  FEAT-016 (MCP GraphQL bridge), FEAT-029 (policy enforcement), FEAT-030
+  (mutation intents)

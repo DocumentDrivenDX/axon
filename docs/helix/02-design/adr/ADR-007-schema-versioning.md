@@ -1,9 +1,8 @@
 ---
-dun:
+ddx:
   id: ADR-007
   depends_on:
     - FEAT-002
-    - FEAT-017
     - ADR-002
 ---
 # ADR-007: Schema Versioning and Link Type Validation

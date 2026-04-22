@@ -1,10 +1,9 @@
 ---
-dun:
+ddx:
   id: FEAT-012
   depends_on:
     - helix.prd
     - FEAT-005
-    - FEAT-014
     - ADR-005
     - ADR-018
 ---
@@ -585,7 +584,8 @@ role_claim = "axon_role"
 
 ## Dependencies
 
-- **FEAT-005** (API Surface): Auth middleware wraps HTTP and gRPC endpoints
+- **FEAT-005 / FEAT-015 / FEAT-016**: Auth middleware wraps GraphQL, MCP,
+  native/SDK, and compatibility endpoints
 - **FEAT-014** (Multi-Tenancy): Tenant as global account boundary; path-
   based wire protocol `/tenants/{tenant}/databases/{database}/...`.
   FEAT-012's auth middleware resolves tenant from the URL path.

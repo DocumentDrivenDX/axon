@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: FEAT-016
   depends_on:
     - helix.prd
@@ -14,10 +14,10 @@ dun:
 
 **Feature ID**: FEAT-016
 **Status**: Draft
-**Priority**: P1
+**Priority**: P0
 **Owner**: Core Team
 **Created**: 2026-04-05
-**Updated**: 2026-04-05
+**Updated**: 2026-04-22
 
 ## Overview
 
@@ -30,16 +30,21 @@ Tool definitions and resource templates are auto-generated from ESF
 schemas. When a collection schema changes, the MCP tool surface updates
 automatically and connected agents are notified.
 
+MCP is not a separate policy surface. It mirrors the GraphQL semantics from
+FEAT-015, FEAT-029, and FEAT-030 so agents observe the same row filters, field
+redaction, policy explanations, mutation intents, and approval outcomes that
+human and UI clients see through GraphQL.
+
 See [ADR-013](../../02-design/adr/ADR-013-mcp-server.md) for the full
 design.
 
 ## Problem Statement
 
 AI agents (Claude, GPT, local agent frameworks) need a standard way to
-interact with structured data stores. Today, each agent framework must
-write custom integration code to use Axon's gRPC or HTTP API. MCP
-eliminates this: any MCP-capable agent connects and immediately discovers
-what data exists and what operations are available.
+interact with structured data stores. Today, each agent framework must write
+custom integration code to use Axon's GraphQL API directly. MCP eliminates
+this: any MCP-capable agent connects and immediately discovers what data exists
+and what operations are available.
 
 Axon's value proposition is being agent-native. MCP is the agent-native
 protocol.
@@ -67,6 +72,12 @@ protocol.
 - **Tool regeneration**: Schema changes trigger tool definition
   regeneration. Connected agents receive `tools/list_changed`
   notification
+- **Policy envelopes**: Tool descriptions include the caller-visible policy
+  envelopes generated from ADR-019, such as autonomous thresholds and approval
+  requirements
+- **Intent outcomes**: Write tools return structured `allowed`,
+  `needs_approval`, `denied`, and `conflict` results; approval-routed writes
+  use FEAT-030 mutation intents
 
 #### Resources (Read Operations)
 
@@ -106,7 +117,7 @@ protocol.
 - **Stdio**: `axon-server --mcp-stdio` for local agents (Claude Code,
   local frameworks). MCP over stdin/stdout
 - **HTTP+SSE**: `/mcp` (POST) and `/mcp/sse` (GET) for remote agents.
-  Served by axum alongside REST, gRPC, and GraphQL
+  Served by axum alongside GraphQL and compatibility routes
 
 ### Non-Functional Requirements
 
@@ -117,6 +128,8 @@ protocol.
   underlying Axon operation
 - **Subscription latency**: < 500ms from entity write to agent
   notification
+- **Policy parity**: MCP tool behavior must match GraphQL policy decisions for
+  the same subject, operation, and policy version
 
 ## User Stories
 
@@ -195,6 +208,23 @@ protocol.
 - [ ] No authentication required for stdio transport
 - [ ] MCP server can be configured as a Claude Code MCP server via `axon-server --mcp-stdio`
 
+### Story US-112: Agent Discovers Policy Envelopes [FEAT-016]
+
+**As an** agent
+**I want** MCP tool metadata to describe allowed, approval-routed, and denied
+write envelopes
+**So that** I can choose safe actions before attempting a mutation
+
+**Acceptance Criteria:**
+- [ ] Tool descriptions include policy envelope summaries for the current
+  subject where available
+- [ ] A write inside an autonomous envelope returns `allowed` and commits only
+  when the caller chooses commit mode
+- [ ] A write outside the autonomous envelope returns `needs_approval` with a
+  mutation intent token
+- [ ] A denied write returns the same policy explanation as GraphQL
+- [ ] Tool metadata refreshes after policy/schema changes
+
 ## Edge Cases
 
 - **Schema change during agent session**: Agent receives
@@ -215,15 +245,21 @@ protocol.
   `tools/list_changed` notification sent
 - **Version conflict on write**: MCP tool error includes current entity
   state so the agent can retry with the correct version
+- **Policy change during session**: Agent receives `tools/list_changed` or a
+  policy version mismatch result and must re-fetch tool metadata
 
 ## Dependencies
 
 - **FEAT-004** (Entity Operations): MCP tools delegate to entity CRUD
-- **FEAT-005** (API Surface): MCP endpoint served alongside REST/gRPC
+- **FEAT-005** (API Surface): MCP endpoint served by the shared server
 - **FEAT-009** (Graph Traversal): Traverse tools use link traversal
 - **FEAT-013** (Secondary Indexes): Query tools route through index-aware
   planner
 - **FEAT-015** (GraphQL): `axon.query` tool bridges MCP to GraphQL
+- **FEAT-029** (Data-Layer Access Control Policies): MCP mirrors row filters,
+  field redaction, and policy explanation
+- **FEAT-030** (Mutation Intents and Approval): MCP mirrors preview,
+  approval, and intent commit outcomes
 - **ADR-013**: Full design for tool generation, resources, prompts,
   transports
 
@@ -235,8 +271,9 @@ protocol.
 ## Out of Scope
 
 - **MCP Sampling**: Axon requesting LLM completions (not needed)
-- **Per-agent tool filtering**: Showing only tools the agent has
-  permission for (requires FEAT-012 integration, deferred)
+- **Per-agent tool hiding as a security boundary**: Tool metadata may hide or
+  annotate unavailable operations for ergonomics, but enforcement always
+  happens in GraphQL/MCP execution via FEAT-029
 - **MCP tool annotations**: Read-only vs destructive hints (spec still
   evolving)
 - **Tool grouping / namespacing**: For large deployments with many
@@ -248,10 +285,10 @@ protocol.
 
 ### Related Artifacts
 - **Parent PRD Section**: Requirements Overview > P1 #13 (MCP server)
-- **User Stories**: US-052, US-053, US-054, US-055, US-056
+- **User Stories**: US-052, US-053, US-054, US-055, US-056, US-112
 - **Architecture**: ADR-013 (MCP Server)
 - **Implementation**: `crates/axon-mcp/`
 
 ### Feature Dependencies
 - **Depends On**: FEAT-004, FEAT-005, FEAT-009, FEAT-013, FEAT-015
-- **Depended By**: None (leaf feature — agents are the consumers)
+- **Depended By**: Agent-facing workflows and policy-authoring validation

@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: helix.implementation-plan
   depends_on:
     - helix.prd
@@ -9,7 +9,7 @@ dun:
 
 **Version**: 0.2.0
 **Date**: 2026-04-10
-**Revised**: 2026-04-16
+**Revised**: 2026-04-22
 **Status**: Living document
 
 ---
@@ -36,7 +36,8 @@ dun:
 
 Additional surfaces:
 - **Admin UI** (`ui/`): SvelteKit + Bun, 12 Svelte pages with tenant-scoped routing, Playwright E2E tests
-- **TypeScript SDK** (`sdk/typescript/`): HTTP + gRPC clients, protobuf codegen, auth error parity
+- **TypeScript SDK** (`sdk/typescript/`): GraphQL-first client target with
+  compatibility HTTP/gRPC clients still present during transition
 - **Website** (`website/`): Marketing/documentation site
 
 ---
@@ -74,9 +75,13 @@ Build order (topological): `axon-core` -> `axon-schema`, `axon-audit`, `axon-ren
 | FEAT-003 | Audit log | axon-audit, axon-api | Done | Append-only, query by entity/actor/operation/time, cursor pagination, replay |
 | FEAT-004 | Entity operations | axon-api, axon-storage | Done | Create, read, update (full replace), patch (RFC 7396 merge-patch), delete, list, query with filter/sort/pagination |
 | FEAT-005 | API surface | axon-server, axon-api | Done | HTTP gateway via Axum with pure path-based routing (ADR-018), transaction endpoint, audit endpoint |
+| FEAT-015 | GraphQL API | axon-graphql, axon-server | Done; policy hardening pending | Dynamic schema from collections, queries with filter/sort/pagination, mutations (CRUD + OCC), subscriptions via WebSocket. GraphQL is now the primary public application surface |
+| FEAT-016 | MCP server | axon-mcp, axon-server | Done; policy hardening pending | JSON-RPC 2.0 protocol, auto-generated CRUD tools, resources, prompts, query/aggregate/neighbor tools, stdio + HTTP transports. MCP mirrors GraphQL for agents |
 | FEAT-007 | Entity-graph model | axon-core, axon-api, axon-storage | Done | Typed directional links, link metadata, link-type constraints via schema |
 | FEAT-008 | ACID transactions | axon-api, axon-storage | Done | Multi-entity atomic commit, OCC via version-based compare-and-swap, serializable isolation |
 | FEAT-009 | Graph traversal | axon-api | Done | Traverse with depth limit, direction control, reachable check, neighbor listing, link candidate finder. HTTP contract test for `direction=reverse` complete |
+| FEAT-029 | Data-layer access control policies | axon-schema, axon-api, axon-graphql, axon-mcp | Not started | P0 product hardening. GraphQL/MCP row policies, field redaction, relationship traversal safety, policy authoring compiler |
+| FEAT-030 | Mutation intents and approval | axon-api, axon-graphql, axon-mcp, axon-audit | Not started | P0 product hardening. Preview, policy explanation, approval routing, TOCTOU-safe intent tokens |
 | P0-10 | Embedded mode | axon-cli, axon-storage | Done | SQLite in-process via `axon-cli`, same AxonHandler as server mode |
 | P0-11 | CLI | axon-cli | Done | Collection mgmt, entity CRUD, link ops, schema ops, audit queries, template management, namespace/database commands |
 
@@ -88,8 +93,6 @@ Build order (topological): `axon-core` -> `axon-schema`, `axon-audit`, `axon-ren
 | FEAT-012 | Auth/authorization | axon-core, axon-server | Done (V1+V5) | Tailscale whois via Unix socket (ADR-005); 9-step JWT auth pipeline (ADR-018); RBAC role checks on all write paths; 42+ integration tests; M:N tenant membership; credential issue/revoke; `--no-auth` and `--guest-role` modes |
 | FEAT-013 | Secondary indexes | axon-storage, axon-schema | Done | EAV-pattern indexes (string, int, float, datetime, bool), compound indexes, unique indexes, background build |
 | FEAT-014 | Multi-tenancy | axon-core, axon-api, axon-server | Done | Four-level hierarchy (tenant → database → schema → collection) per ADR-018. Pure path-based routing. DatabaseRouter + DatabaseAdapterFactory. Per-tenant SQLite isolation. No legacy routes |
-| FEAT-015 | GraphQL API | axon-graphql, axon-server | Done | Dynamic schema from collections, queries with filter/sort/pagination, mutations (CRUD + OCC), subscriptions via WebSocket. Per-tenant routing |
-| FEAT-016 | MCP server | axon-mcp, axon-server | Done | JSON-RPC 2.0 protocol, auto-generated CRUD tools, resource discovery, prompts, query/aggregate/neighbor tools, stdio + HTTP transports |
 | FEAT-017 | Schema evolution | axon-schema, axon-api | Done | Compatibility classification (compatible/breaking/metadata-only), field-level diff, revalidation, schema_version stamping on all entities, 409 on breaking changes without `force`, `axon schema revalidate` CLI. Migration declarations deferred |
 | FEAT-018 | Aggregation queries | axon-api | Done | COUNT, SUM, AVG, MIN, MAX with GROUP BY, exposed via handler, GraphQL, and MCP |
 | FEAT-019 | Validation rules | axon-schema | Done | Cross-field when/require rules (ESF Layer 5), severity levels, gate evaluation, advisory rules, structured error messages with fix suggestions |
@@ -100,13 +103,13 @@ Build order (topological): `axon-core` -> `axon-schema`, `axon-audit`, `axon-ren
 | FEAT-025 | Control plane | axon-server, axon-control-plane | Done | SQLite-backed tenant/user/credential/database/member management. 20+ HTTP routes. Retention policies. Data-sovereignty-aware. Monitoring not implemented |
 | FEAT-026 | Markdown templates | axon-render, axon-api | Done | Mustache rendering, field reference validation, LRU template cache, per-collection views |
 | FEAT-028 | Unified binary | axon-cli, axon-config, axon-server | Done | `axon serve/mcp/doctor/install` subcommands. XDG-compliant paths. TOML config. Client mode against running server. Install script. Self-signed TLS bootstrap. PostgreSQL per-tenant provisioning |
+| FEAT-010 | Entity state machines and transition guards | axon-schema, axon-api, axon-graphql, axon-mcp | Not started | P1. Guarded entity transitions only; durable workflow orchestration is explicitly out of scope |
 
 ### P2 (Nice to Have) Features
 
 | Feature | Description | Status | Notes |
 |---------|------------|:------:|-------|
 | Local-first sync | CRDTs, offline clients | Not started | -- |
-| FEAT-010 | Workflow state machines | Not started | Depends on FEAT-019 (done), FEAT-008 (done), FEAT-009 (done) |
 | Schema registry | Shared schemas across instances | Not started | -- |
 | FEAT-024 | Application substrate | Deferred | graphql-codegen deemed sufficient for now |
 | FEAT-027 | Git mirror | Draft spec only | No implementation |
@@ -115,6 +118,51 @@ Build order (topological): `axon-core` -> `axon-schema`, `axon-audit`, `axon-ren
 | Plugin system | Custom validators/hooks | Not started | -- |
 
 ---
+
+## 3a. GraphQL-Primary Policy Workstream
+
+The 2026-04-22 product review reset the near-term execution order around the
+non-negotiable API target: GraphQL is primary, MCP is agent-native, and REST is
+fallback only.
+
+### P0 Proof Slice
+
+The next product proof must demonstrate a realistic invoice/procurement schema:
+
+1. ESF schema with invoices, vendors, users, link types, indexes, and entity
+   transition guards.
+2. Schema-adjacent `access_control` policy compiled under ADR-019.
+3. GraphQL query with relationship traversal, row filtering before pagination,
+   safe `totalCount`, and nullable redacted fields.
+4. MCP tool metadata exposing the same policy envelopes as GraphQL.
+5. GraphQL/MCP mutation preview that returns diff, policy decision, pre-image
+   versions, and intent token.
+6. Approval-routed mutation that fails if entity version, schema version,
+   policy version, grant version, or operation hash changes before commit.
+7. Audit trail linking agent identity, delegated authority, tool call,
+   policy decision, approval, and redacted pre/post images.
+
+### Priority Order
+
+1. FEAT-029 GraphQL/MCP policy compiler and enforcement.
+2. FEAT-030 mutation preview, approval, and intent execution.
+3. Agent identity/delegation audit completeness: `user_id`, `agent_id`,
+   `delegated_by`, credential ID, grant version, policy version.
+4. Developer policy test harness: fixture subjects, simulated agents, compile
+   reports, and optional historical audit dry-run.
+5. Operator controls: pending intent review, break-glass audit, credential
+   rotation, cost/quota visibility.
+6. Minimal compliance/erasure story: redacted audit reads, tenant/field
+   encryption hooks, crypto-shred/tombstone semantics.
+
+### Explicit Cuts
+
+- Broad REST parity for policy, preview, and approval.
+- Durable long-running workflow orchestration.
+- Generated app substrate as a core product path.
+- Git mirror as primary adoption path.
+- Broad framework integrations before the GraphQL/MCP policy slice is proven.
+- Arbitrary graph-wide point-in-time rollback.
 
 ## 4. Storage Backend Status
 
@@ -213,7 +261,8 @@ The `storage_conformance_tests!` macro generates the identical test suite for ea
 - Authentication: Tailscale whois + JWT auth pipeline (9-step) + RBAC enforcement
 - Control plane: tenant/user/credential/database/member management (20+ routes)
 - Admin UI: 12 SvelteKit pages with tenant-scoped routing
-- TypeScript SDK: HTTP + gRPC clients with protobuf codegen
+- TypeScript SDK: GraphQL-first client target with compatibility HTTP/gRPC
+  clients still present during transition
 - Rate limiting (per-actor sliding window) and actor scope constraints
 - DST framework with all 8 correctness invariant workloads
 - Storage conformance macro (memory, SQLite, PostgreSQL all passing)
@@ -222,6 +271,11 @@ The `storage_conformance_tests!` macro generates the identical test suite for ea
 
 | Item | Priority | Blocking? | Est. Effort |
 |------|:--------:|:---------:|:-----------:|
+| FEAT-029 GraphQL/MCP data-layer policy proof | P0 | Yes | Large |
+| FEAT-030 mutation intents and approval | P0 | Yes | Large |
+| Policy authoring compiler, fixture tests, and dry-run reports | P0 | Yes | Large |
+| Agent identity/delegation audit fields | P0 | Yes | Medium |
+| Minimal compliance/erasure story for immutable audit | P1 | No | Medium |
 | sqlx migration for storage adapters (`axon-6d816f52`) | P1 | No | Medium |
 | L2 business scenario tests (SCN-001 through SCN-010) | P1 | No | Large |
 | L5 performance benchmarks (criterion) | P1 | No | Medium |
@@ -231,7 +285,7 @@ The `storage_conformance_tests!` macro generates the identical test suite for ea
 | Agent guardrails: semantic validation hooks (FEAT-022) | P1 | No | Medium |
 | Control plane monitoring (FEAT-025) | P1 | No | Medium |
 | Schema migration declarations (FEAT-017) | P1 | No | Medium |
-| Workflow state machines (FEAT-010) | P2 | No | Large |
+| Entity state machines and transition guards (FEAT-010) | P1 | No | Large |
 | FoundationDB backend | P2 | No | Large |
 | Local-first sync | P2 | No | Large |
 | Git mirror (FEAT-027) | P2 | No | Medium |

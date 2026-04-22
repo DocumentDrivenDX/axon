@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: ADR-009
   depends_on:
     - FEAT-004

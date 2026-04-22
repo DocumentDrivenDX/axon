@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: FEAT-029
   depends_on:
     - helix.prd
@@ -11,6 +11,7 @@ dun:
     - FEAT-019
     - ADR-012
     - ADR-018
+    - ADR-019
 ---
 # Feature Specification: FEAT-029 - Data-Layer Access Control Policies
 
@@ -19,14 +20,19 @@ dun:
 **Priority**: P0
 **Owner**: Core Team
 **Created**: 2026-04-19
-**Updated**: 2026-04-20
+**Updated**: 2026-04-22
 
 ## Overview
 
 Axon enforces application access control at the data layer. A browser, agent,
-SDK, GraphQL client, REST client, or MCP tool that has network access to Axon
-must receive only the entities and fields its resolved identity is allowed to
-see, and must be able to mutate only the rows and fields its policies allow.
+SDK, GraphQL client, or MCP tool that has network access to Axon must receive
+only the entities and fields its resolved identity is allowed to see, and must
+be able to mutate only the rows and fields its policies allow.
+
+GraphQL is the primary application API surface for policy-aware reads, writes,
+introspection, and approval workflows. MCP mirrors the same semantics for
+agents. REST/JSON routes may expose compatibility or operational behavior where
+GraphQL is intractable, but REST is not the baseline policy surface.
 
 FEAT-012 and ADR-018 establish identity, tenant membership, JWT credentials,
 and tenant/database grants. FEAT-029 layers schema-declared data policies on top
@@ -41,7 +47,8 @@ of that foundation:
 
 Policies are declared in or alongside the collection schema, not as ad-hoc Rust
 closures. They are introspectable, testable, audited on change, and enforced
-uniformly below all API surfaces.
+uniformly below GraphQL, MCP, SDK, and any compatibility routes. ADR-019 governs
+the authoring model and mutation-intent binding.
 
 ## Problem Statement
 
@@ -56,10 +63,10 @@ visible engagements, and operations managers to read billing records without
 seeing contract rate cards. Those guarantees cannot depend on UI code.
 
 This specification is the frame-level closure for `axon-c5cc071a`: it chooses a
-schema-declared policy model and pins the wire-visible denial contract. Backend
-implementation remains separate work. Until that implementation ships, any
-browser-side filtering in downstream applications is an affordance only, not a
-security boundary.
+schema-declared policy model and pins the GraphQL/MCP-visible denial contract.
+Backend implementation remains separate work. Until that implementation ships,
+any browser-side filtering in downstream applications is an affordance only, not
+a security boundary.
 
 ## Relationship To Existing Authorization
 
@@ -152,6 +159,68 @@ changes follow FEAT-017: broadening read visibility is compatible; narrowing
 read visibility or write permissions is operationally safe but must be visible
 in schema diffs because clients may lose fields or operations.
 
+## Policy Authoring Model
+
+ADR-019 defines the governing authoring model:
+
+- ESF `access_control` metadata is the source of truth.
+- GraphQL SDL, MCP tool descriptions, SDK metadata, and REST compatibility
+  behavior are generated views of the same compiled policy plan.
+- The policy language is closed and declarative. Axon rejects arbitrary code,
+  SQL snippets, JavaScript, Rust hooks, and custom GraphQL resolvers as policy.
+- Policy compilation type-checks field paths, subject references,
+  relationship predicates, redaction nullability, and approval envelopes before
+  a schema version can become active.
+- Policy changes are schema changes. They are diffed, audited, and evaluated
+  against a fixed policy snapshot during each request.
+
+The authoring workflow is:
+
+1. Edit ESF and `access_control`.
+2. Run a dry-run schema/policy compile.
+3. Test fixture subjects, agents, and proposed mutations.
+4. Optionally replay historical audit entries to identify changed decisions.
+5. Apply the schema/policy version and atomically refresh GraphQL and MCP.
+
+### Policy Envelopes
+
+Application policies can return three decisions:
+
+| Decision | Meaning |
+|---|---|
+| `allow` | The operation can commit without human approval |
+| `needs_approval` | The operation is valid but must flow through FEAT-030 |
+| `deny` | The operation fails |
+
+`deny` overrides every other decision. `needs_approval` is not a soft allow:
+the write cannot commit directly. It must produce or consume a mutation intent
+bound to the pre-image versions, schema version, policy version, subject, grant
+version, and operation hash.
+
+Example envelope:
+
+```yaml
+access_control:
+  envelopes:
+    write:
+      - name: auto-small-invoice-adjustment
+        when:
+          all:
+            - { operation: update }
+            - { field: amount_cents, lte: 1000000 }
+            - { subject: role, in: [finance, admin] }
+        decision: allow
+      - name: approve-large-invoice-adjustment
+        when:
+          all:
+            - { operation: update }
+            - { field: amount_cents, gt: 1000000 }
+        decision: needs_approval
+        approval:
+          role: finance_approver
+          reason_required: true
+```
+
 ## Policy Model
 
 ### Subjects
@@ -239,7 +308,7 @@ Point reads first determine whether the entity exists, then whether it is
 visible to the caller. If the entity exists but is not visible, the read surface
 returns the same shape as a missing entity:
 
-- REST point read: `404` with `code: "not_found"`.
+- REST compatibility point read: `404` with `code: "not_found"`.
 - GraphQL point read: nullable entity field resolves to `null` with no policy
   error.
 - GraphQL list/relationship field: the denied entity is omitted.
@@ -277,7 +346,8 @@ Read denial:
 - GraphQL generated fields that can be redacted are nullable, even if JSON
   Schema marks the field as required.
 - Redacted GraphQL fields resolve to `null`.
-- Generic JSON and REST responses return the field as `null` by default.
+- Generic JSON and REST compatibility responses return the field as `null` by
+  default.
 - Audit `data_before`, `data_after`, and diff payloads apply the same redaction
   before returning to callers.
 
@@ -311,7 +381,7 @@ allowable.
 
 ## Denial Contract
 
-REST error shape:
+REST compatibility error shape:
 
 ```json
 {
@@ -383,9 +453,13 @@ type EffectiveCollectionPolicy {
 
 `effectivePolicy(collection, entityId)` reports the caller's effective
 capabilities for a collection or specific entity. `explainPolicy(input)` is a
-dry-run query that returns `allowed`, `reason`, `policy`, and field paths
-without executing a mutation. REST may expose the same capability as a
-compatibility endpoint, but GraphQL is the primary UI/SDK surface.
+dry-run query that returns `allowed`, `needsApproval`, `reason`, `policy`, and
+field paths without executing a mutation. FEAT-030 defines `previewMutation`,
+which applies the same policy explanation to a concrete mutation and produces a
+bound intent token when the operation is allowed or approval-routed.
+
+REST may expose the same capability as a compatibility endpoint, but GraphQL is
+the primary UI/SDK surface.
 
 Introspection is advisory. Enforcement always happens again in the mutation or
 query execution path.
@@ -544,7 +618,7 @@ Required behaviors proven by this policy set:
 **Acceptance Criteria:**
 - [ ] GraphQL generated fields that may be redacted are nullable
 - [ ] Redacted fields return `null`
-- [ ] Generic JSON, REST, and audit read payloads apply the same redaction
+- [ ] Generic JSON, REST compatibility, and audit read payloads apply the same redaction
 - [ ] Required JSON Schema fields can still be redacted on read
 
 ### Story US-103: Reject Denied Writes [FEAT-029]
@@ -573,6 +647,24 @@ security
 - [ ] Explanations name the matching policy and denied field paths
 - [ ] Enforcement is repeated during the real operation
 
+### Story US-109: Author And Test Policy Before Activation [FEAT-029]
+
+**As an** application developer
+**I want** schema policy changes to compile, explain, and run against fixtures
+before activation
+**So that** I can prove row, field, relationship, and approval behavior before
+agents touch live data
+
+**Acceptance Criteria:**
+- [ ] A dry-run schema update returns a policy compile report without changing
+  the active policy version
+- [ ] Invalid field paths, subject references, and relationship-policy cycles
+  are rejected at schema write time
+- [ ] The compile report names GraphQL fields made nullable by redaction
+- [ ] Fixture tests can evaluate policy decisions for named subjects and sample
+  mutations
+- [ ] Policy changes are audited with old and new policy versions
+
 ## Edge Cases
 
 - **Non-null GraphQL fields**: any field with a read policy is nullable in the
@@ -584,7 +676,10 @@ security
 - **Audit reads**: audit rows remain immutable in storage, but returned
   `data_before`, `data_after`, and diffs are policy-filtered for the caller.
 - **Admin break-glass**: documented deployment-admin recovery paths may bypass
-  application policies, but normal GraphQL/REST application calls do not.
+  application policies, but normal GraphQL and MCP application calls do not.
+  REST compatibility routes follow the same rule when present.
+- **Approval-routed writes**: a `needs_approval` decision does not write data
+  until FEAT-030 executes an approved mutation intent.
 - **Create without existing row**: collection create policy decides whether the
   create is allowed; row predicates can evaluate only fields present in the new
   payload and subject context.
@@ -600,8 +695,12 @@ security
 - **FEAT-014**: Policies are scoped by tenant/database path.
 - **FEAT-015 / ADR-012**: GraphQL must expose filtered reads, redacted fields,
   stable errors, and policy introspection.
+- **FEAT-016 / ADR-013**: MCP must expose the same effective policy and
+  approval-envelope semantics as GraphQL.
 - **FEAT-019**: Policy predicates reuse and extend validation-rule condition
   grammar.
+- **FEAT-030 / ADR-019**: Approval-routed writes use mutation intents bound to
+  the reviewed pre-image and policy version.
 
 ## Out Of Scope
 
@@ -610,19 +709,24 @@ security
 - Full-text or vector policy predicates.
 - Cross-tenant policy joins.
 - Policy authoring UI beyond introspection/dry-run API.
+- Treating REST parity as a launch blocker for data policy.
 
 ## Verification
 
 Implementation beads must add tests for:
 
-- REST and GraphQL read omission of hidden rows.
+- GraphQL and MCP read omission of hidden rows; REST compatibility routes match
+  when present.
 - Row filters applied before pagination.
 - GraphQL nullable generation for redactable fields.
 - Field redaction in entity reads, list reads, relationship reads, and audit
   reads.
 - Denied field writes on create, update, patch, lifecycle transition, rollback,
   and transaction commit.
-- Stable REST and GraphQL `forbidden` error detail.
+- Stable GraphQL and MCP `forbidden` error detail, with REST compatibility
+  matching when present.
 - Idempotent replay of forbidden transaction responses.
 - Indexed policy plan generation and `policy_filter_unindexed` fallback.
 - The reference nexiq policy set above.
+- Policy compile reports for invalid paths, cyclic relationship policies,
+  missing indexes, GraphQL nullability changes, and approval envelopes.

@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: ADR-010
   depends_on:
     - ADR-003
@@ -7,7 +7,6 @@ dun:
     - ADR-009
     - FEAT-002
     - FEAT-004
-    - FEAT-013
 ---
 # ADR-010: Physical Storage Schema and Secondary Indexes
 

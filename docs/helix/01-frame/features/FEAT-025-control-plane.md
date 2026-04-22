@@ -1,10 +1,11 @@
 ---
-dun:
+ddx:
   id: FEAT-025
   depends_on:
     - helix.prd
     - FEAT-012
     - FEAT-014
+    - ADR-017
     - ADR-018
 ---
 # Feature Specification: FEAT-025 - BYOC Deployment Control Plane

@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: ADR-005
   depends_on:
     - helix.prd

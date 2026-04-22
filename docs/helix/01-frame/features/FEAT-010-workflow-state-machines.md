@@ -1,5 +1,5 @@
 ---
-dun:
+ddx:
   id: FEAT-010
   depends_on:
     - helix.prd
@@ -8,18 +8,32 @@ dun:
     - FEAT-009
     - FEAT-019
 ---
-# Feature Specification: FEAT-010 - Workflow State Machines
+# Feature Specification: FEAT-010 - Entity State Machines and Transition Guards
 
 **Feature ID**: FEAT-010
 **Status**: Draft
-**Priority**: P2
+**Priority**: P1
 **Owner**: Core Team
 **Created**: 2026-04-04
-**Updated**: 2026-04-04
+**Updated**: 2026-04-22
 
 ## Overview
 
-Workflow state machines provide first-class lifecycle management for entities. A state machine definition specifies valid states, allowed transitions, guard conditions, and side effects. When an entity's status field changes, Axon validates the transition against the state machine, rejects invalid transitions, and optionally triggers side effects (link creation, audit metadata, field updates). Use case research shows this pattern in 6 of 10 domains: approval chains (AP/AR, time tracking), deal pipelines (CRM), issue lifecycles (issue tracking), document review (document management), and bead lifecycles (agentic apps).
+Entity state machines provide first-class lifecycle management for entities. A
+state machine definition specifies valid states, allowed transitions, guard
+conditions, and audit metadata. When an entity's status field changes, Axon
+validates the transition against the state machine and rejects invalid
+transitions.
+
+This feature is deliberately limited to entity transition guards. Axon does not
+become a durable long-running workflow engine. External orchestrators such as
+Temporal, Restate, Inngest, DBOS, or LangGraph may coordinate long-running work;
+Axon enforces whether the resulting entity transition is valid and auditable.
+
+Use case research shows this pattern in 6 of 10 domains: approval chains
+(AP/AR, time tracking), deal pipelines (CRM), issue lifecycles (issue
+tracking), document review (document management), and bead lifecycles (agentic
+apps).
 
 ## Problem Statement
 
@@ -33,7 +47,10 @@ Every application that manages entities with lifecycles reinvents state machine 
 - **Transition validation**: On entity update, if the status field changes, Axon validates the transition against the state machine. Invalid transitions are rejected with a structured error listing valid transitions from the current state
 - **Guard conditions**: Transitions can require conditions on the entity or its links. "Can only move to `approved` if `approver_id` is set." "Can only move to `done` if all `depends-on` targets are `done`"
 - **Transition metadata**: Each transition can carry metadata captured in the audit entry. "Moved to `rejected` with `reason: 'budget exceeded'`"
-- **Side effects** (P2+): Transitions can trigger: link creation (e.g., `approved-by` link on approval), field updates (e.g., `completed_at = now()` on transition to `done`), notification hooks
+- **Side effects** (P2+): Transitions can declare tightly bounded field updates
+  (e.g., `completed_at = now()` on transition to `done`). Long-running
+  orchestration, retries, timers, notifications, and external task execution
+  remain outside Axon
 - **State introspection**: API returns the state machine definition for a collection and the valid transitions from any given state
 
 ### State Machine Schema (Conceptual)
@@ -85,6 +102,13 @@ transitions:
 
 - **Performance**: Transition validation < 2ms (guard evaluation may add latency for link-based conditions)
 - **Atomicity**: Transition validation, entity update, and audit entry are one atomic operation
+
+## Non-Goals
+
+- Durable workflow orchestration.
+- Timers, retries, sleeps, queues, or scheduled task execution.
+- Replacing LangGraph, Temporal, Restate, Inngest, or DBOS.
+- Arbitrary side-effect hooks that mutate external systems.
 
 ## User Stories
 
@@ -150,7 +174,7 @@ transitions:
 ## Traceability
 
 ### Related Artifacts
-- **Parent PRD Section**: Section 8 (P2 #2 workflow primitives)
+- **Parent PRD Section**: Section 8 (P1/P2 workflow primitives and transition guards)
 - **Use Case Research**: AP/AR, CRM, Issue Tracking, Time Tracking, Document Management, Agentic Applications
 - **User Stories**: US-026, US-027, US-028
 - **Test Suites**: `tests/FEAT-010/`
