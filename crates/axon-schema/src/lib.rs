@@ -8,6 +8,7 @@
 pub mod access_control;
 pub mod evolution;
 pub mod gates;
+pub mod policy;
 pub mod rules;
 pub mod schema;
 pub mod validation;
@@ -25,6 +26,12 @@ pub use evolution::{
     classify, diff_schemas, Compatibility, FieldChange, FieldChangeKind, SchemaDiff,
 };
 pub use gates::{evaluate_gates, GateEvaluation, GateResult};
+pub use policy::{
+    compile_policy_plan, CompiledCompareOp, CompiledComparison, CompiledFieldAccessPolicy,
+    CompiledFieldPolicy, CompiledFieldPolicyRule, CompiledOperationPolicy, CompiledPolicyEnvelope,
+    CompiledPolicyRule, CompiledPredicate, CompiledRelationshipPredicate,
+    CompiledSharesRelationPredicate, PolicyCompileError, PolicyPlan, PredicateTarget,
+};
 pub use rules::validate_rule_definitions;
 pub use rules::ValidationRule;
 pub use schema::{
