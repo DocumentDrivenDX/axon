@@ -39,9 +39,7 @@ pub fn compile_policy_catalog(schemas: &[CollectionSchema]) -> Result<PolicyCata
         }
     }
     detect_relationship_policy_cycles(&plans)?;
-    let report = PolicyCompileReport {
-        required_link_indexes: aggregate_required_link_indexes(plans.values()),
-    };
+    let report = aggregate_policy_compile_reports(plans.values());
     Ok(PolicyCatalog { plans, report })
 }
 
@@ -94,11 +92,26 @@ pub struct PolicyCompileReport {
     /// Link-table indexes required to evaluate relationship predicates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_link_indexes: Vec<RequiredLinkIndex>,
+
+    /// GraphQL fields that must become nullable because policy can redact them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nullable_fields: Vec<PolicyNullableField>,
+
+    /// Fields with explicit write-deny policy rules.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_write_fields: Vec<PolicyDeniedWriteField>,
+
+    /// Decision envelope summaries for GraphQL/MCP introspection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub envelope_summaries: Vec<PolicyEnvelopeSummary>,
 }
 
 impl PolicyCompileReport {
     pub fn is_empty(&self) -> bool {
         self.required_link_indexes.is_empty()
+            && self.nullable_fields.is_empty()
+            && self.denied_write_fields.is_empty()
+            && self.envelope_summaries.is_empty()
     }
 }
 
@@ -138,9 +151,91 @@ impl RequiredLinkIndex {
     }
 }
 
+/// Field nullability consequence emitted by field read-redaction policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyNullableField {
+    pub collection: String,
+    pub field: String,
+    pub required_by_schema: bool,
+    pub graphql_nullable: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_ids: Vec<String>,
+}
+
+/// Field write-denial consequence emitted by field write policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyDeniedWriteField {
+    pub collection: String,
+    pub field: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_ids: Vec<String>,
+}
+
+/// Summary of a policy decision envelope for capability metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyEnvelopeSummary {
+    pub collection: String,
+    pub operation: PolicyOperation,
+    pub envelope_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub decision: PolicyDecision,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<ApprovalRoute>,
+}
+
+/// Explanation metadata for policy rules and envelopes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PolicyExplainPlan {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<PolicyExplainEntry>,
+}
+
+impl PolicyExplainPlan {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// One rule/envelope explanation entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyExplainEntry {
+    pub rule_id: String,
+    pub collection: String,
+    pub operation: PolicyOperation,
+    pub kind: PolicyExplainKind,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<PolicyDecision>,
+}
+
+/// Explanation entry type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyExplainKind {
+    OperationAllow,
+    OperationDeny,
+    FieldReadAllow,
+    FieldReadDeny,
+    FieldWriteAllow,
+    FieldWriteDeny,
+    TransitionAllow,
+    TransitionDeny,
+    Envelope,
+}
+
 /// Normalized policy plan for one collection schema.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PolicyPlan {
+    /// Policy version bound to the collection schema version.
+    pub policy_version: u32,
+
     /// Operation policies keyed by operation class.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub operations: HashMap<PolicyOperation, CompiledOperationPolicy>,
@@ -160,6 +255,10 @@ pub struct PolicyPlan {
     /// Collection-local compile report.
     #[serde(default, skip_serializing_if = "PolicyCompileReport::is_empty")]
     pub report: PolicyCompileReport,
+
+    /// Explanation metadata consumed by GraphQL/MCP policy introspection.
+    #[serde(default, skip_serializing_if = "PolicyExplainPlan::is_empty")]
+    pub explain: PolicyExplainPlan,
 }
 
 /// Normalized allow/deny operation policy.
@@ -192,6 +291,8 @@ pub struct CompiledFieldAccessPolicy {
 /// Normalized operation rule.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CompiledPolicyRule {
+    pub rule_id: String,
+    pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -203,6 +304,8 @@ pub struct CompiledPolicyRule {
 /// Normalized field rule.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CompiledFieldPolicyRule {
+    pub rule_id: String,
+    pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -216,6 +319,8 @@ pub struct CompiledFieldPolicyRule {
 /// Normalized decision envelope.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompiledPolicyEnvelope {
+    pub envelope_id: String,
+    pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -324,7 +429,10 @@ impl<'a> PolicyCompiler<'a> {
     }
 
     fn compile(&self) -> Result<PolicyPlan, AxonError> {
-        let mut plan = PolicyPlan::default();
+        let mut plan = PolicyPlan {
+            policy_version: self.schema.version,
+            ..PolicyPlan::default()
+        };
         self.compile_operation(&mut plan, PolicyOperation::Read, self.policy.read.as_ref())?;
         self.compile_operation(
             &mut plan,
@@ -382,7 +490,8 @@ impl<'a> PolicyCompiler<'a> {
             plan.envelopes.insert(operation.clone(), compiled);
         }
 
-        plan.report.required_link_indexes = aggregate_required_link_indexes(std::iter::once(&plan));
+        plan.explain = build_explain_plan(self.schema.collection.as_str(), &plan);
+        plan.report = self.compile_report(&plan);
         Ok(plan)
     }
 
@@ -423,6 +532,8 @@ impl<'a> PolicyCompiler<'a> {
             .map(|(idx, rule)| {
                 let rule_ctx = format!("{ctx}[{idx}]");
                 Ok(CompiledPolicyRule {
+                    rule_id: self.stable_policy_id("rule", &rule_ctx, rule.name.as_deref()),
+                    path: rule_ctx.clone(),
                     name: rule.name.clone(),
                     when: self.compile_optional_predicate(
                         rule.when.as_ref(),
@@ -482,6 +593,8 @@ impl<'a> PolicyCompiler<'a> {
             .map(|(idx, rule)| {
                 let rule_ctx = format!("{ctx}[{idx}]");
                 Ok(CompiledFieldPolicyRule {
+                    rule_id: self.stable_policy_id("rule", &rule_ctx, rule.name.as_deref()),
+                    path: rule_ctx.clone(),
                     name: rule.name.clone(),
                     when: self.compile_optional_predicate(
                         rule.when.as_ref(),
@@ -503,12 +616,32 @@ impl<'a> PolicyCompiler<'a> {
         ctx: &str,
     ) -> Result<CompiledPolicyEnvelope, AxonError> {
         Ok(CompiledPolicyEnvelope {
+            envelope_id: self.stable_policy_id("envelope", ctx, envelope.name.as_deref()),
+            path: ctx.to_string(),
             name: envelope.name.clone(),
             when: self
                 .compile_optional_predicate(envelope.when.as_ref(), &format!("{ctx}.when"))?,
             decision: envelope.decision.clone(),
             approval: envelope.approval.clone(),
         })
+    }
+
+    fn compile_report(&self, plan: &PolicyPlan) -> PolicyCompileReport {
+        let mut report = PolicyCompileReport {
+            required_link_indexes: aggregate_required_link_indexes(std::iter::once(plan)),
+            nullable_fields: nullable_fields_for_plan(self.schema, plan),
+            denied_write_fields: denied_write_fields_for_plan(
+                self.schema.collection.as_str(),
+                plan,
+            ),
+            envelope_summaries: envelope_summaries_for_plan(self.schema.collection.as_str(), plan),
+        };
+        sort_policy_compile_report(&mut report);
+        report
+    }
+
+    fn stable_policy_id(&self, prefix: &str, ctx: &str, name: Option<&str>) -> String {
+        stable_policy_id(self.schema.collection.as_str(), prefix, ctx, name)
     }
 
     fn compile_optional_predicate(
@@ -804,6 +937,64 @@ fn operation_policy<'a>(
     }
 }
 
+fn aggregate_policy_compile_reports<'a>(
+    plans: impl IntoIterator<Item = &'a PolicyPlan>,
+) -> PolicyCompileReport {
+    let mut report = PolicyCompileReport::default();
+    for plan in plans {
+        report
+            .required_link_indexes
+            .extend(plan.report.required_link_indexes.iter().cloned());
+        report
+            .nullable_fields
+            .extend(plan.report.nullable_fields.iter().cloned());
+        report
+            .denied_write_fields
+            .extend(plan.report.denied_write_fields.iter().cloned());
+        report
+            .envelope_summaries
+            .extend(plan.report.envelope_summaries.iter().cloned());
+    }
+    sort_policy_compile_report(&mut report);
+    report
+}
+
+fn sort_policy_compile_report(report: &mut PolicyCompileReport) {
+    report.required_link_indexes.sort();
+    report.required_link_indexes.dedup();
+    report.nullable_fields.sort_by(|left, right| {
+        (
+            left.collection.as_str(),
+            left.field.as_str(),
+            left.required_by_schema,
+        )
+            .cmp(&(
+                right.collection.as_str(),
+                right.field.as_str(),
+                right.required_by_schema,
+            ))
+    });
+    report.nullable_fields.dedup();
+    report.denied_write_fields.sort_by(|left, right| {
+        (left.collection.as_str(), left.field.as_str())
+            .cmp(&(right.collection.as_str(), right.field.as_str()))
+    });
+    report.denied_write_fields.dedup();
+    report.envelope_summaries.sort_by(|left, right| {
+        (
+            left.collection.as_str(),
+            &left.operation,
+            left.envelope_id.as_str(),
+        )
+            .cmp(&(
+                right.collection.as_str(),
+                &right.operation,
+                right.envelope_id.as_str(),
+            ))
+    });
+    report.envelope_summaries.dedup();
+}
+
 fn aggregate_required_link_indexes<'a>(
     plans: impl IntoIterator<Item = &'a PolicyPlan>,
 ) -> Vec<RequiredLinkIndex> {
@@ -894,6 +1085,336 @@ fn collect_required_link_indexes_from_predicate(
         | CompiledPredicate::Operation(_)
         | CompiledPredicate::SharesRelation(_) => {}
     }
+}
+
+fn nullable_fields_for_plan(
+    schema: &CollectionSchema,
+    plan: &PolicyPlan,
+) -> Vec<PolicyNullableField> {
+    let collection = schema.collection.to_string();
+    let mut fields = Vec::new();
+    for (field, policy) in &plan.fields {
+        let Some(read) = &policy.read else {
+            continue;
+        };
+        let mut rule_ids = read
+            .deny
+            .iter()
+            .filter(|rule| rule.redact_as.is_some())
+            .map(|rule| rule.rule_id.clone())
+            .collect::<Vec<_>>();
+        if rule_ids.is_empty() {
+            continue;
+        }
+        rule_ids.sort();
+        rule_ids.dedup();
+        fields.push(PolicyNullableField {
+            collection: collection.clone(),
+            field: field.clone(),
+            required_by_schema: field_path_required(schema.entity_schema.as_ref(), field),
+            graphql_nullable: true,
+            rule_ids,
+        });
+    }
+    fields
+}
+
+fn denied_write_fields_for_plan(
+    collection: &str,
+    plan: &PolicyPlan,
+) -> Vec<PolicyDeniedWriteField> {
+    let mut fields = Vec::new();
+    for (field, policy) in &plan.fields {
+        let Some(write) = &policy.write else {
+            continue;
+        };
+        let mut rule_ids = write
+            .deny
+            .iter()
+            .map(|rule| rule.rule_id.clone())
+            .collect::<Vec<_>>();
+        if rule_ids.is_empty() {
+            continue;
+        }
+        rule_ids.sort();
+        rule_ids.dedup();
+        fields.push(PolicyDeniedWriteField {
+            collection: collection.to_string(),
+            field: field.clone(),
+            rule_ids,
+        });
+    }
+    fields
+}
+
+fn envelope_summaries_for_plan(collection: &str, plan: &PolicyPlan) -> Vec<PolicyEnvelopeSummary> {
+    let mut summaries = Vec::new();
+    for (operation, envelopes) in &plan.envelopes {
+        for envelope in envelopes {
+            summaries.push(PolicyEnvelopeSummary {
+                collection: collection.to_string(),
+                operation: operation.clone(),
+                envelope_id: envelope.envelope_id.clone(),
+                name: envelope.name.clone(),
+                decision: envelope.decision.clone(),
+                approval: envelope.approval.clone(),
+            });
+        }
+    }
+    summaries
+}
+
+fn build_explain_plan(collection: &str, plan: &PolicyPlan) -> PolicyExplainPlan {
+    let mut entries = Vec::new();
+    for (operation, policy) in &plan.operations {
+        collect_operation_explain_entries(collection, operation, policy, &mut entries);
+    }
+    for (field, policy) in &plan.fields {
+        if let Some(read) = &policy.read {
+            collect_field_explain_entries(
+                collection,
+                PolicyOperation::Read,
+                field,
+                read,
+                PolicyExplainKind::FieldReadAllow,
+                PolicyExplainKind::FieldReadDeny,
+                &mut entries,
+            );
+        }
+        if let Some(write) = &policy.write {
+            collect_field_explain_entries(
+                collection,
+                PolicyOperation::Write,
+                field,
+                write,
+                PolicyExplainKind::FieldWriteAllow,
+                PolicyExplainKind::FieldWriteDeny,
+                &mut entries,
+            );
+        }
+    }
+    for (field, transitions) in &plan.transitions {
+        for (transition, policy) in transitions {
+            for rule in &policy.allow {
+                entries.push(explain_entry(ExplainEntrySpec {
+                    collection,
+                    operation: PolicyOperation::Update,
+                    kind: PolicyExplainKind::TransitionAllow,
+                    rule_id: &rule.rule_id,
+                    path: &rule.path,
+                    name: rule.name.clone(),
+                    field_path: Some(field.clone()),
+                    transition: Some(transition.clone()),
+                    decision: None,
+                }));
+            }
+            for rule in &policy.deny {
+                entries.push(explain_entry(ExplainEntrySpec {
+                    collection,
+                    operation: PolicyOperation::Update,
+                    kind: PolicyExplainKind::TransitionDeny,
+                    rule_id: &rule.rule_id,
+                    path: &rule.path,
+                    name: rule.name.clone(),
+                    field_path: Some(field.clone()),
+                    transition: Some(transition.clone()),
+                    decision: None,
+                }));
+            }
+        }
+    }
+    for (operation, envelopes) in &plan.envelopes {
+        for envelope in envelopes {
+            entries.push(explain_entry(ExplainEntrySpec {
+                collection,
+                operation: operation.clone(),
+                kind: PolicyExplainKind::Envelope,
+                rule_id: &envelope.envelope_id,
+                path: &envelope.path,
+                name: envelope.name.clone(),
+                field_path: None,
+                transition: None,
+                decision: Some(envelope.decision.clone()),
+            }));
+        }
+    }
+    entries.sort_by(|left, right| {
+        (left.collection.as_str(), left.rule_id.as_str())
+            .cmp(&(right.collection.as_str(), right.rule_id.as_str()))
+    });
+    entries.dedup();
+    PolicyExplainPlan { entries }
+}
+
+fn collect_operation_explain_entries(
+    collection: &str,
+    operation: &PolicyOperation,
+    policy: &CompiledOperationPolicy,
+    entries: &mut Vec<PolicyExplainEntry>,
+) {
+    for rule in &policy.allow {
+        entries.push(explain_entry(ExplainEntrySpec {
+            collection,
+            operation: operation.clone(),
+            kind: PolicyExplainKind::OperationAllow,
+            rule_id: &rule.rule_id,
+            path: &rule.path,
+            name: rule.name.clone(),
+            field_path: None,
+            transition: None,
+            decision: None,
+        }));
+    }
+    for rule in &policy.deny {
+        entries.push(explain_entry(ExplainEntrySpec {
+            collection,
+            operation: operation.clone(),
+            kind: PolicyExplainKind::OperationDeny,
+            rule_id: &rule.rule_id,
+            path: &rule.path,
+            name: rule.name.clone(),
+            field_path: None,
+            transition: None,
+            decision: None,
+        }));
+    }
+}
+
+fn collect_field_explain_entries(
+    collection: &str,
+    operation: PolicyOperation,
+    field: &str,
+    policy: &CompiledFieldAccessPolicy,
+    allow_kind: PolicyExplainKind,
+    deny_kind: PolicyExplainKind,
+    entries: &mut Vec<PolicyExplainEntry>,
+) {
+    for rule in &policy.allow {
+        entries.push(explain_entry(ExplainEntrySpec {
+            collection,
+            operation: operation.clone(),
+            kind: allow_kind.clone(),
+            rule_id: &rule.rule_id,
+            path: &rule.path,
+            name: rule.name.clone(),
+            field_path: Some(field.to_string()),
+            transition: None,
+            decision: None,
+        }));
+    }
+    for rule in &policy.deny {
+        entries.push(explain_entry(ExplainEntrySpec {
+            collection,
+            operation: operation.clone(),
+            kind: deny_kind.clone(),
+            rule_id: &rule.rule_id,
+            path: &rule.path,
+            name: rule.name.clone(),
+            field_path: Some(field.to_string()),
+            transition: None,
+            decision: None,
+        }));
+    }
+}
+
+struct ExplainEntrySpec<'a> {
+    collection: &'a str,
+    operation: PolicyOperation,
+    kind: PolicyExplainKind,
+    rule_id: &'a str,
+    path: &'a str,
+    name: Option<String>,
+    field_path: Option<String>,
+    transition: Option<String>,
+    decision: Option<PolicyDecision>,
+}
+
+fn explain_entry(spec: ExplainEntrySpec<'_>) -> PolicyExplainEntry {
+    PolicyExplainEntry {
+        rule_id: spec.rule_id.to_string(),
+        collection: spec.collection.to_string(),
+        operation: spec.operation,
+        kind: spec.kind,
+        path: spec.path.to_string(),
+        name: spec.name,
+        field_path: spec.field_path,
+        transition: spec.transition,
+        decision: spec.decision,
+    }
+}
+
+fn stable_policy_id(collection: &str, prefix: &str, ctx: &str, name: Option<&str>) -> String {
+    let collection = normalize_policy_id_part(collection);
+    let ctx = normalize_policy_id_part(ctx);
+    match name {
+        Some(name) if !name.is_empty() => {
+            format!(
+                "{prefix}:{collection}:{ctx}:{}",
+                normalize_policy_id_part(name)
+            )
+        }
+        _ => format!("{prefix}:{collection}:{ctx}"),
+    }
+}
+
+fn normalize_policy_id_part(input: &str) -> String {
+    let mut output = String::new();
+    let mut last_was_separator = false;
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            output.push(ch.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if matches!(ch, '-' | '_') {
+            output.push(ch);
+            last_was_separator = false;
+        } else if !last_was_separator && !output.is_empty() {
+            output.push('.');
+            last_was_separator = true;
+        }
+    }
+    while output.ends_with('.') {
+        let _ = output.pop();
+    }
+    if output.is_empty() {
+        "unnamed".to_string()
+    } else {
+        output
+    }
+}
+
+fn field_path_required(schema: Option<&Value>, path: &str) -> bool {
+    let Some(mut current) = schema else {
+        return false;
+    };
+    for raw_segment in path.split('.') {
+        if raw_segment.is_empty() {
+            return false;
+        }
+        let expects_array = raw_segment.ends_with("[]");
+        let segment = raw_segment.strip_suffix("[]").unwrap_or(raw_segment);
+        if !object_required_contains(current, segment) {
+            return false;
+        }
+        let Some(next) = object_property(current, segment) else {
+            return false;
+        };
+        current = if expects_array {
+            match array_items(next) {
+                Some(items) => items,
+                None => return false,
+            }
+        } else {
+            next
+        };
+    }
+    true
+}
+
+fn object_required_contains(schema: &Value, segment: &str) -> bool {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .is_some_and(|required| required.iter().any(|value| value.as_str() == Some(segment)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1136,7 +1657,7 @@ esf_version: "1.0"
 collection: purchase_orders
 entity_schema:
   type: object
-  required: [status, amount_cents, requester_id, line_items]
+  required: [status, amount_cents, requester_id, line_items, restricted_notes]
   properties:
     status: { type: string, enum: [draft, submitted, approved, rejected] }
     amount_cents: { type: integer }
@@ -1190,6 +1711,10 @@ access_control:
           - name: buyers-do-not-see-restricted-notes
             when: { subject: role, eq: buyer }
             redact_as: null
+      write:
+        deny:
+          - name: buyers-cannot-write-restricted-notes
+            when: { subject: role, eq: buyer }
   envelopes:
     write:
       - name: auto-approve-small-order
@@ -1207,6 +1732,14 @@ access_control:
         approval:
           role: finance_approver
           reason_required: true
+          deadline_seconds: 86400
+          separation_of_duties: true
+      - name: deny-rejected-order-updates
+        when:
+          all:
+            - { operation: update }
+            - { field: status, eq: rejected }
+        decision: deny
 "#;
 
     fn compile_fixture(input: &str) -> Result<PolicyPlan, AxonError> {
@@ -1384,6 +1917,80 @@ access_control:
             .expect("field policy missing");
         let deny = &field.read.as_ref().expect("read policy missing").deny[0];
         assert_eq!(deny.redact_as.as_ref(), Some(&Value::Null));
+        assert_eq!(plan.policy_version, 1);
+    }
+
+    #[test]
+    fn compile_report_exposes_nullability_denied_fields_envelopes_and_explain_ids() {
+        let plan = compile_fixture(PROCUREMENT_POLICY_ESF).expect("policy should compile");
+        let nullable = plan
+            .report
+            .nullable_fields
+            .iter()
+            .find(|field| field.field == "restricted_notes")
+            .expect("restricted_notes should be nullable");
+        assert_eq!(nullable.collection, "purchase_orders");
+        assert!(nullable.required_by_schema);
+        assert!(nullable.graphql_nullable);
+        assert_eq!(
+            nullable.rule_ids,
+            vec![
+                "rule:purchase_orders:fields.restricted_notes.read.deny.0:buyers-do-not-see-restricted-notes"
+                    .to_string()
+            ]
+        );
+
+        let denied_write = plan
+            .report
+            .denied_write_fields
+            .iter()
+            .find(|field| field.field == "restricted_notes")
+            .expect("restricted_notes write denial should be reported");
+        assert_eq!(
+            denied_write.rule_ids,
+            vec![
+                "rule:purchase_orders:fields.restricted_notes.write.deny.0:buyers-cannot-write-restricted-notes"
+                    .to_string()
+            ]
+        );
+
+        let decisions = plan
+            .report
+            .envelope_summaries
+            .iter()
+            .map(|summary| summary.decision.clone())
+            .collect::<Vec<_>>();
+        assert!(decisions.contains(&PolicyDecision::Allow));
+        assert!(decisions.contains(&PolicyDecision::NeedsApproval));
+        assert!(decisions.contains(&PolicyDecision::Deny));
+
+        let approval = plan
+            .report
+            .envelope_summaries
+            .iter()
+            .find(|summary| summary.decision == PolicyDecision::NeedsApproval)
+            .and_then(|summary| summary.approval.as_ref())
+            .expect("needs_approval envelope should carry approval metadata");
+        assert_eq!(approval.role.as_deref(), Some("finance_approver"));
+        assert!(approval.reason_required);
+        assert_eq!(approval.deadline_seconds, Some(86400));
+        assert!(approval.separation_of_duties);
+
+        let explain = plan
+            .explain
+            .entries
+            .iter()
+            .find(|entry| {
+                entry.rule_id
+                    == "rule:purchase_orders:fields.restricted_notes.read.deny.0:buyers-do-not-see-restricted-notes"
+            })
+            .expect("field redaction rule should be explainable");
+        assert_eq!(explain.kind, PolicyExplainKind::FieldReadDeny);
+        assert_eq!(explain.field_path.as_deref(), Some("restricted_notes"));
+        assert_eq!(
+            explain.name.as_deref(),
+            Some("buyers-do-not-see-restricted-notes")
+        );
     }
 
     #[test]

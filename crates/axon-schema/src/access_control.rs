@@ -217,7 +217,7 @@ impl PolicyOperation {
 }
 
 /// Policy decisions from ADR-019.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PolicyDecision {
     Allow,
@@ -226,7 +226,7 @@ pub enum PolicyDecision {
 }
 
 /// Human approval routing metadata for `needs_approval` decisions.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ApprovalRoute {
     /// Role whose members can approve the intent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -235,6 +235,14 @@ pub struct ApprovalRoute {
     /// Whether approval must carry a human-readable reason.
     #[serde(default)]
     pub reason_required: bool,
+
+    /// Relative approval deadline in seconds from intent creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_seconds: Option<u64>,
+
+    /// Whether the requester/delegator is forbidden from approving.
+    #[serde(default)]
+    pub separation_of_duties: bool,
 }
 
 /// Declarative policy predicate grammar.
