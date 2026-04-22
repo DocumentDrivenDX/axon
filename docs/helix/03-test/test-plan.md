@@ -586,6 +586,8 @@ Representative rows:
   autonomously and requires `finance_approver` approval above $10,000.
 - Contractor subjects can see assigned invoices but receive commercial fields
   as `null`.
+- The Axon web UI is built and served from the same test server. Playwright
+  uses the seeded tenant/database and role fixtures to exercise FEAT-031.
 
 **Execution**:
 1. Run GraphQL introspection and MCP `tools/list`; assert both expose the same
@@ -597,6 +599,18 @@ Representative rows:
 5. Preview another over-threshold update, then change the invoice before
    commit; attempt to commit the stale intent.
 6. Query the audit trail as an operator and as a contractor.
+7. Open the UI as a finance approver, review the pending over-threshold intent
+   in `/intents`, inspect the diff and policy explanation, approve with a
+   reason, and follow the audit link after commit.
+8. Open the UI as a contractor and verify invoice lists, detail, relationship,
+   and audit views omit hidden rows and render redacted commercial fields
+   without leaking values into the DOM.
+9. Open the UI policy workspace, dry-run the active `access_control` block for
+   finance-agent, finance-approver, requester, and contractor subjects, and
+   compare the result with GraphQL `effectivePolicy`/`explainPolicy`.
+10. Open an MCP-originated intent in the UI and verify agent identity, tool
+    envelope, delegated authority, policy outcome, and audit lineage are
+    visible.
 
 **Check**:
 - [ ] GraphQL edges, cursors, and `totalCount` are computed after row policy
@@ -611,6 +625,22 @@ Representative rows:
 - [ ] Operator audit shows agent identity, delegated authority, policy decision,
   approval, and pre/post images.
 - [ ] Contractor audit reads apply the same field redaction as entity reads.
+- [ ] UI policy authoring/dry-run shows compile reports, effective policy,
+  field redaction, denial, and approval envelopes. E2E:
+  `ui/tests/e2e/policy-authoring.spec.ts`
+- [ ] UI entity list/detail/relationship/audit views match GraphQL row
+  filtering and redaction with no sensitive values in the DOM. E2E:
+  `ui/tests/e2e/policy-enforcement.spec.ts`
+- [ ] UI mutation preview shows diff, pre-image versions, policy decision,
+  token/intent ID, stale/mismatch state, and successful commit audit link.
+  E2E: `ui/tests/e2e/mutation-intents.spec.ts`
+- [ ] UI approval inbox supports filter, open detail, approve, reject,
+  separation-of-duties denial, required reason, and stale/expired state. E2E:
+  `ui/tests/e2e/approval-inbox.spec.ts`
+- [ ] UI audit lineage links MCP tool envelope, intent, approval/rejection,
+  commit, policy version, and redacted pre/post images. E2E:
+  `ui/tests/e2e/intent-audit-lineage.spec.ts`,
+  `ui/tests/e2e/mcp-envelope-preview.spec.ts`
 
 ---
 

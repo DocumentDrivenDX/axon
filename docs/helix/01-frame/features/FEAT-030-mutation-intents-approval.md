@@ -239,6 +239,9 @@ under human control
 - **FEAT-017**: Schema and policy versions bind intent validity.
 - **FEAT-029 / ADR-019**: Data policies and envelopes produce allow,
   needs-approval, or deny decisions.
+- **FEAT-031**: The admin web UI renders mutation preview, pending-intent
+  review, approve/reject controls, stale-intent handling, MCP-originated
+  intent visibility, and audit lineage for each FEAT-030 user story.
 
 FEAT-022 agent guardrails integrate with mutation intents later by adding
 rate/scope risk signals, but FEAT-030 does not depend on FEAT-022 to define the
@@ -249,7 +252,8 @@ baseline preview, approval, and stale-intent safety model.
 - Durable long-running workflow orchestration.
 - Arbitrary external semantic validation hooks.
 - Broad REST parity for preview and approval.
-- Approval UI design beyond the GraphQL/MCP contract.
+- Custom application-specific approval workflow builders beyond FEAT-031's
+  baseline Axon web UI intent inbox and intent detail flows.
 - Graph-wide arbitrary point-in-time rollback.
 
 ## Verification

@@ -37,6 +37,7 @@
 | FEAT-028 | Unified Binary | P1 | Draft |
 | FEAT-029 | Data-Layer Access Control Policies | P0 | Specified |
 | FEAT-030 | Mutation Intents and Approval | P0 | Specified |
+| FEAT-031 | Policy and Intents Admin UI | P0 | Specified |
 
 ## Conventions
 

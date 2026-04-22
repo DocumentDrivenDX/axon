@@ -701,6 +701,9 @@ agents touch live data
   grammar.
 - **FEAT-030 / ADR-019**: Approval-routed writes use mutation intents bound to
   the reviewed pre-image and policy version.
+- **FEAT-031**: The admin web UI renders effective-policy inspection,
+  policy dry-run, redaction states, denied write explanations, and the
+  operator-facing policy surfaces required for each FEAT-029 user story.
 
 ## Out Of Scope
 
@@ -708,7 +711,8 @@ agents touch live data
 - Browser-side enforcement as a security boundary.
 - Full-text or vector policy predicates.
 - Cross-tenant policy joins.
-- Policy authoring UI beyond introspection/dry-run API.
+- A visual policy-builder DSL beyond FEAT-031's raw policy editor, compile
+  report, effective-policy inspector, and dry-run evaluator.
 - Treating REST parity as a launch blocker for data policy.
 
 ## Verification

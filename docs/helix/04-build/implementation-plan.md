@@ -80,8 +80,9 @@ Build order (topological): `axon-core` -> `axon-schema`, `axon-audit`, `axon-ren
 | FEAT-007 | Entity-graph model | axon-core, axon-api, axon-storage | Done | Typed directional links, link metadata, link-type constraints via schema |
 | FEAT-008 | ACID transactions | axon-api, axon-storage | Done | Multi-entity atomic commit, OCC via version-based compare-and-swap, serializable isolation |
 | FEAT-009 | Graph traversal | axon-api | Done | Traverse with depth limit, direction control, reachable check, neighbor listing, link candidate finder. HTTP contract test for `direction=reverse` complete |
-| FEAT-029 | Data-layer access control policies | axon-schema, axon-api, axon-graphql, axon-mcp | Not started | P0 product hardening. GraphQL/MCP row policies, field redaction, relationship traversal safety, policy authoring compiler |
-| FEAT-030 | Mutation intents and approval | axon-api, axon-graphql, axon-mcp, axon-audit | Not started | P0 product hardening. Preview, policy explanation, approval routing, TOCTOU-safe intent tokens |
+| FEAT-029 | Data-layer access control policies | axon-schema, axon-api, axon-graphql, axon-mcp | Not started | P0 product hardening. GraphQL/MCP row policies, field redaction, relationship traversal safety, policy authoring compiler. Execution parent: `axon-d556e197` |
+| FEAT-030 | Mutation intents and approval | axon-api, axon-graphql, axon-mcp, axon-audit | Not started | P0 product hardening. Preview, policy explanation, approval routing, TOCTOU-safe intent tokens. Execution parent: `axon-c7111156` |
+| FEAT-031 | Policy and intents admin UI | ui/ | Not started | P0 product hardening. Axon web UI coverage for policy explanation, dry-run, redaction, denied writes, mutation preview, approval inbox, stale-intent handling, MCP envelope visibility, and audit lineage. Execution parent: `axon-c5a64173` |
 | P0-10 | Embedded mode | axon-cli, axon-storage | Done | SQLite in-process via `axon-cli`, same AxonHandler as server mode |
 | P0-11 | CLI | axon-cli | Done | Collection mgmt, entity CRUD, link ops, schema ops, audit queries, template management, namespace/database commands |
 
@@ -150,9 +151,12 @@ The next product proof must demonstrate a realistic invoice/procurement schema:
    `delegated_by`, credential ID, grant version, policy version.
 4. Developer policy test harness: fixture subjects, simulated agents, compile
    reports, and optional historical audit dry-run.
-5. Operator controls: pending intent review, break-glass audit, credential
-   rotation, cost/quota visibility.
-6. Minimal compliance/erasure story: redacted audit reads, tenant/field
+5. FEAT-031 Axon web UI policy and intent workflows: policy explain/dry-run,
+   policy-safe entity browsing, mutation preview, approval inbox, stale-intent
+   handling, MCP envelope visibility, and audit lineage.
+6. Operator controls beyond FEAT-031: break-glass audit, credential rotation,
+   cost/quota visibility.
+7. Minimal compliance/erasure story: redacted audit reads, tenant/field
    encryption hooks, crypto-shred/tombstone semantics.
 
 ### Explicit Cuts

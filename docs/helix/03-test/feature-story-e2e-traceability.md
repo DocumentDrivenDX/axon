@@ -10,7 +10,7 @@ ddx:
 
 **Date**: 2026-04-19
 **Status**: Active
-**Scope**: FEAT-001 through FEAT-028
+**Scope**: FEAT-001 through FEAT-031
 
 ## Review Standard
 
@@ -84,8 +84,9 @@ before their criteria are checked off.
 | FEAT-026 Markdown Templates | Stories cover define, render, schema evolution. Missing HTTP route and UI route linkage in feature doc. | `crates/axon-cli/tests/markdown.rs`; `ui/tests/e2e/wave1-capabilities.spec.ts` | HTTP template CRUD; schema warning for removed fields; audit assertions for template changes. |
 | FEAT-027 Git Mirror | Stories cover enabling mirror, commits, shard strategy, resume after failure. Not implemented. | None yet. | Mirror config API/CLI; initial snapshot; create/update/delete commits; transaction commit coalescing; retry/resume. |
 | FEAT-028 Unified Binary | Stories cover `axon serve`, diagnose, install, CLI mode selection, install script, config precedence. Linux installer and user-service management now have Docker-backed CI coverage. | CI and E2E launch server binaries indirectly; `scripts/test-linux-installer-service.sh` exercises the Linux install script plus `axon server install/start/status/stop/restart/uninstall` with stubbed systemd control. | `axon serve` healthz; config creation and precedence; diagnose output; real systemd/launchd daemon smoke outside stubbed CI; CLI auto-detect/server/embedded mode. |
-| FEAT-029 Data-Layer Access Control Policies | Stories cover hidden rows, field redaction, denied writes, idempotent forbidden replays, policy explanation, policy authoring compile reports, and approval envelopes. | None yet. | GraphQL/MCP hidden-row omission; row filters before pagination; nullable redactable GraphQL fields; audit read redaction; denied write errors; policy compile reports; invoice/procurement and nexiq reference policy sets. |
-| FEAT-030 Mutation Intents and Approval | Stories cover preview, approval routing, TOCTOU-safe intent execution, and MCP intent outcomes. | None yet. | GraphQL preview/approval/commit; stale entity/policy/schema/grant/operation-hash rejection; approval audit; MCP `needs_approval`; multi-entity intent binding. |
+| FEAT-029 Data-Layer Access Control Policies | Stories cover hidden rows, field redaction, denied writes, idempotent forbidden replays, policy explanation, policy authoring compile reports, and approval envelopes. FEAT-031 maps each story to an Axon web UI workflow. | Planned: `crates/axon-server/tests/graphql_policy_contract.rs`, `crates/axon-server/tests/mcp_policy_contract.rs`, `ui/tests/e2e/policy-authoring.spec.ts`, `ui/tests/e2e/policy-enforcement.spec.ts`, `ui/tests/e2e/graphql-policy-console.spec.ts` | GraphQL/MCP hidden-row omission; row filters before pagination; nullable redactable GraphQL fields; audit read redaction; denied write errors; policy compile reports; invoice/procurement and nexiq reference policy sets; UI redaction with no DOM leakage; UI policy dry-run and explain. |
+| FEAT-030 Mutation Intents and Approval | Stories cover preview, approval routing, TOCTOU-safe intent execution, and MCP intent outcomes. FEAT-031 maps each story to an Axon web UI workflow. | Planned: `crates/axon-server/tests/graphql_intents_contract.rs`, `crates/axon-server/tests/mcp_intents_contract.rs`, `ui/tests/e2e/mutation-intents.spec.ts`, `ui/tests/e2e/approval-inbox.spec.ts`, `ui/tests/e2e/intent-audit-lineage.spec.ts`, `ui/tests/e2e/mcp-envelope-preview.spec.ts` | GraphQL preview/approval/commit; stale entity/policy/schema/grant/operation-hash rejection; approval audit; MCP `needs_approval`; multi-entity intent binding; UI intent preview/diff, approve/reject, stale/mismatch handling, audit lineage, MCP-originated intent visibility. |
+| FEAT-031 Policy and Intents Admin UI | Stories cover effective-policy inspection, policy authoring dry-run, policy-safe entity browsing, mutation preview, approval inbox, stale-intent handling, and MCP-originated intent audit. | Planned: `ui/tests/e2e/policy-authoring.spec.ts`, `ui/tests/e2e/policy-enforcement.spec.ts`, `ui/tests/e2e/graphql-policy-console.spec.ts`, `ui/tests/e2e/mutation-intents.spec.ts`, `ui/tests/e2e/approval-inbox.spec.ts`, `ui/tests/e2e/intent-audit-lineage.spec.ts`, `ui/tests/e2e/mcp-envelope-preview.spec.ts` | All target specs absent; FEAT-031 depends on FEAT-029/030 backend GraphQL and MCP contracts before UI can pass. |
 
 ## Reverse UI Route Coverage
 
@@ -108,6 +109,9 @@ operation:
 - Link/lifecycle/markdown tabs: create/delete links, perform transitions,
   create/preview/delete templates.
 - GraphQL route: execute introspection and render errors.
+- FEAT-031 policy/intents routes: policy explain/dry-run, policy-safe entity
+  browsing, pending-intent inbox, intent detail, approve/reject, stale-intent
+  handling, MCP envelope preview, and audit lineage.
 
 Any new UI route must add a row to FEAT-011's reverse matrix and at least
 one Playwright test before the route is considered implemented.

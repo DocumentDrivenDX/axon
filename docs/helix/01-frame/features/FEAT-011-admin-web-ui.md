@@ -25,6 +25,12 @@ global users, tenants, tenant members, tenant credentials, tenant databases,
 and database-scoped collections, entities, schemas, audit history, GraphQL,
 links, lifecycle transitions, rollback, and markdown templates.
 
+FEAT-031 extends this console with policy and mutation-intent operator
+workflows: policy explanation, policy dry-run, approval inbox, intent detail,
+stale-intent handling, MCP envelope visibility, and audit lineage. Those
+workflows are specified separately because FEAT-011's original tenant/database
+administration scope is already implemented.
+
 The UI is a SvelteKit application built with Bun, served as static files
 by the axon-server HTTP gateway (see ADR-006). The cross-cutting concern
 for the UI surface is `typescript-bun`, with ADR-006 providing the
@@ -100,6 +106,9 @@ history.
   database-scoped tools
 - **Database sub-navigation**: Collections, Schemas, Audit Log, and GraphQL
   sections are available only within an explicit tenant/database scope
+- **Policy and intent extension points**: FEAT-031 adds Policies and Intents
+  database tools that use the same tenant/database scoped route model and
+  GraphQL-first client strategy
 - **Contextual sidebar navigation**: The left rail shows the active
   tenant/database context and routes to tenant and database workspace tools.
   It does not expose health telemetry in place of workspace navigation.
@@ -224,6 +233,9 @@ history.
 | `/schemas` | Create collection, read structured/raw schema, preview and update schema | `schema-editing.spec.ts` |
 | `/audit` | Route reachability, collection filter, entry detail, revert update entry | `smoke-restructure.spec.ts`, `audit-route.spec.ts` |
 | `/graphql` | Read console, execute introspection, handle invalid query | `wave1-capabilities.spec.ts` |
+| `/policies` | FEAT-031 extension: effective-policy inspection, explain/dry-run, MCP envelope preview | `policy-authoring.spec.ts`, `mcp-envelope-preview.spec.ts` |
+| `/intents` | FEAT-031 extension: pending intent inbox, filters, approval-state navigation | `approval-inbox.spec.ts` |
+| `/intents/:intent` | FEAT-031 extension: diff, version bindings, policy explanation, approve/reject/commit, stale handling | `approval-inbox.spec.ts`, `mutation-intents.spec.ts`, `intent-audit-lineage.spec.ts` |
 
 ## Technical Design
 
@@ -300,6 +312,8 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
   static assets, and documented break-glass operations
 - **FEAT-015** (GraphQL Query Layer): UI is the canonical GraphQL consumer
   for tenant data-plane and control-plane workflows
+- **FEAT-031** (Policy and Intents Admin UI): Extends FEAT-011 with policy
+  explanation, policy dry-run, approval inbox, and intent audit-lineage routes
 - **ADR-006**: Technology choices (SvelteKit, Bun, Vite)
 - **Cross-cutting concern**: `typescript-bun` with ADR-006 overrides for
   the admin UI surface
@@ -320,6 +334,7 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 - **Parent PRD Section**: Requirements Overview > P1 #8 (Admin web UI)
 - **User Stories**: US-040, US-041, US-042, US-043, US-044, US-045
 - **Architecture**: ADR-006 (SvelteKit + Bun + Vite)
+- **Extension**: FEAT-031 (Policy and Intents Admin UI)
 - **Cross-cutting concern**: `typescript-bun` in `concerns.md`, scoped to
   `area:ui` beads with ADR-006 overrides
 - **Implementation**: `ui/` at project root
@@ -328,7 +343,7 @@ under the `/ui` path prefix. When omitted, the UI routes are not registered
 
 ### Feature Dependencies
 - **Depends On**: FEAT-001, FEAT-002, FEAT-004, FEAT-005
-- **Depended By**: None (leaf feature)
+- **Depended By**: FEAT-031
 
 ### Playwright E2E Test Coverage
 
