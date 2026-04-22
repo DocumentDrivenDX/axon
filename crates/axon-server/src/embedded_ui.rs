@@ -5,25 +5,52 @@
 //! headers, and falls back to `index.html` for any unrecognised path so that
 //! SvelteKit client-side routing works correctly.
 //!
-//! **Build prerequisite**: `ui/build` must exist before `cargo build`.
-//! Run `cd ui && bun run build` (or `npm run build`) first.
+//! Release and installer builds should run `cd ui && bun run build` before
+//! compiling the server. Plain Rust-only checks use a small compile-time
+//! fallback so the server still builds from a fresh checkout.
+
+use std::borrow::Cow;
 
 use axum::body::Body;
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
+#[cfg(axon_embed_ui_bundle)]
 use rust_embed::RustEmbed;
 
 /// All files under `ui/build`, embedded at compile time.
 ///
 /// The `#[folder]` path is relative to the crate root (`crates/axon-server/`),
 /// so `../../ui/build` resolves to `ui/build` in the workspace root.
+#[cfg(axon_embed_ui_bundle)]
 #[derive(RustEmbed)]
 #[folder = "../../ui/build"]
 struct UiAssets;
 
+#[cfg(axon_embed_ui_bundle)]
+fn embedded_asset(path: &str) -> Option<Cow<'static, [u8]>> {
+    UiAssets::get(path).map(|content| content.data)
+}
+
+#[cfg(not(axon_embed_ui_bundle))]
+fn embedded_asset(path: &str) -> Option<Cow<'static, [u8]>> {
+    const FALLBACK_INDEX_HTML: &[u8] = br#"<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Axon Admin UI</title></head>
+<body><main>Axon admin UI bundle was not built.</main><script type="module" src="/ui/_app/env.js"></script></body>
+</html>
+"#;
+    const FALLBACK_ENV_JS: &[u8] = b"export {};\n";
+
+    match path {
+        "index.html" => Some(Cow::Borrowed(FALLBACK_INDEX_HTML)),
+        "_app/env.js" => Some(Cow::Borrowed(FALLBACK_ENV_JS)),
+        _ => None,
+    }
+}
+
 /// Axum handler for `GET /ui` and `GET /ui/*path`.
 ///
-/// Strips the `/ui` prefix, looks up the file in [`UiAssets`], and responds
+/// Strips the `/ui` prefix, looks up the embedded file, and responds
 /// with the correct `Content-Type`.  Unknown paths fall back to `index.html`
 /// so SvelteKit's client-side router can handle them.
 pub async fn embedded_ui_handler(uri: Uri) -> Response {
@@ -43,20 +70,20 @@ pub async fn embedded_ui_handler(uri: Uri) -> Response {
 }
 
 fn serve_asset(path: &str) -> Response {
-    match UiAssets::get(path) {
+    match embedded_asset(path) {
         Some(content) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
             Response::builder()
                 .header(header::CONTENT_TYPE, mime.as_ref())
-                .body(Body::from(content.data))
+                .body(Body::from(content))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
         None => {
             // SPA fallback: let the client-side router handle unknown paths.
-            match UiAssets::get("index.html") {
+            match embedded_asset("index.html") {
                 Some(index) => Response::builder()
                     .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-                    .body(Body::from(index.data))
+                    .body(Body::from(index))
                     .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
                 None => StatusCode::NOT_FOUND.into_response(),
             }

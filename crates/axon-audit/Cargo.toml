@@ -11,7 +11,7 @@ rust-version.workspace = true
 default = []
 # Enable real rdkafka producer integration.
 # Run Kafka-specific tests with: cargo test -p axon-audit --features kafka
-kafka = ["dep:rdkafka"]
+kafka = ["dep:rdkafka", "dep:tokio"]
 
 [lints]
 workspace = true
@@ -20,8 +20,8 @@ workspace = true
 axon-core = { path = "../axon-core" }
 serde.workspace = true
 serde_json.workspace = true
-tracing.workspace = true
 rdkafka = { version = "0.36", optional = true, features = ["cmake-build", "tokio"] }
+tokio = { workspace = true, optional = true }
 
 [dev-dependencies]
 pretty_assertions.workspace = true

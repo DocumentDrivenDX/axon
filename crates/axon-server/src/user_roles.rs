@@ -34,20 +34,31 @@ impl UserRoleStore {
     /// assignment exists; the caller should fall back to tag-based or default
     /// role resolution.
     pub fn get(&self, login: &str) -> Option<Role> {
-        self.0.read().unwrap().get(login).cloned()
+        self.0
+            .read()
+            .expect("user role store read lock poisoned")
+            .get(login)
+            .cloned()
     }
 
     /// Assign `role` to `login` in the in-memory cache.
     /// The caller is responsible for also persisting to the DB.
     pub fn set_cached(&self, login: impl Into<String>, role: Role) {
-        self.0.write().unwrap().insert(login.into(), role);
+        self.0
+            .write()
+            .expect("user role store write lock poisoned")
+            .insert(login.into(), role);
     }
 
     /// Remove the explicit role for `login` from the in-memory cache.
     /// Returns `true` if an entry was present.
     /// The caller is responsible for also persisting to the DB.
     pub fn remove_cached(&self, login: &str) -> bool {
-        self.0.write().unwrap().remove(login).is_some()
+        self.0
+            .write()
+            .expect("user role store write lock poisoned")
+            .remove(login)
+            .is_some()
     }
 
     /// Snapshot of all current assignments, sorted by login for stable output.
@@ -55,7 +66,7 @@ impl UserRoleStore {
         let mut entries: Vec<_> = self
             .0
             .read()
-            .unwrap()
+            .expect("user role store read lock poisoned")
             .iter()
             .map(|(login, role)| UserRoleEntry {
                 login: login.clone(),
@@ -69,7 +80,7 @@ impl UserRoleStore {
     /// Populate the in-memory cache from a pre-loaded list of entries.
     /// Used during server startup after reading from the database.
     pub fn load_from_entries(&self, entries: Vec<UserRoleEntry>) {
-        let mut map = self.0.write().unwrap();
+        let mut map = self.0.write().expect("user role store write lock poisoned");
         for entry in entries {
             map.insert(entry.login, entry.role);
         }

@@ -3,6 +3,7 @@ Cargo.lock
 .agent/
 .claude/worktrees/
 .ddx/agent-logs/
+.ddx/.execute-bead-wt-*
 .ddx/*.bak
 .ddx/executions/*/embedded/
 .ddx/server/

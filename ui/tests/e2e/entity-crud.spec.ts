@@ -41,7 +41,8 @@ test.describe('Entity CRUD', () => {
 			.locator('section', { hasText: 'Entity JSON' })
 			.getByRole('button', { name: 'Create Entity' })
 			.click();
-		await expect(page.locator('tr', { hasText: 'note-001' })).toBeVisible({ timeout: 10_000 });
+		const entityRow = page.locator('.entity-rail tbody tr', { hasText: 'note-001' });
+		await expect(entityRow).toBeVisible({ timeout: 10_000 });
 		await expect(page.getByText('Draft').first()).toBeVisible();
 
 		await page.getByRole('button', { name: 'Edit' }).click();
@@ -56,7 +57,7 @@ test.describe('Entity CRUD', () => {
 		await page.getByRole('button', { name: 'Delete' }).click();
 		await page.getByRole('button', { name: 'Confirm' }).click();
 		await expect(page.getByText('Deleted note-001.')).toBeVisible({ timeout: 10_000 });
-		await expect(page.locator('tr', { hasText: 'note-001' })).toHaveCount(0);
+		await expect(entityRow).toHaveCount(0);
 
 		expect(dataPlaneRequests.some((path) => path.endsWith('/graphql'))).toBe(true);
 		expect(

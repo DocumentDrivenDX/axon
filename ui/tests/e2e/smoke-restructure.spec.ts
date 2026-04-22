@@ -113,13 +113,8 @@ test.describe('UI restructure smoke', () => {
 		await expect(page.getByText('No collections yet')).toBeVisible();
 		await expect(rawScopeError).toHaveCount(0);
 
-		// Schemas page: create a collection in the UI-created non-default database.
-		await sidebar.getByRole('link', { name: 'Schemas' }).click();
-		await expect(page).toHaveURL(/\/schemas$/);
-		await expect(page.getByRole('heading', { name: 'Schemas', level: 1 })).toBeVisible();
-		await expect(rawScopeError).toHaveCount(0);
-
-		await page.getByLabel('Name').fill(collectionName);
+		// Collections page: create a collection in the UI-created non-default database.
+		await page.getByLabel('Collection name').fill(collectionName);
 		await page.getByLabel('Entity Schema JSON').fill(`{
   "type": "object",
   "properties": {
@@ -127,15 +122,23 @@ test.describe('UI restructure smoke', () => {
   }
 }`);
 		await page.getByRole('button', { name: 'Create Collection' }).click();
-		await expect(page.getByText('Collection created.')).toBeVisible();
+		await expect(page.getByText(`Created ${collectionName}.`)).toBeVisible();
+		const collectionRow = page.locator('[data-testid="collection-row"]', {
+			hasText: collectionName,
+		});
+		await expect(collectionRow).toBeVisible();
+		await expect(rawScopeError).toHaveCount(0);
+
+		// Schemas route remains the place to inspect and evolve the registered schema.
+		await sidebar.getByRole('link', { name: 'Schemas' }).click();
+		await expect(page).toHaveURL(/\/schemas$/);
+		await expect(page.getByRole('heading', { name: 'Schemas', level: 1 })).toBeVisible();
 		await expect(page.getByRole('button', { name: new RegExp(collectionName) })).toBeVisible();
 		await expect(rawScopeError).toHaveCount(0);
 
-		// Collections route must reflect the newly-created collection and open its detail route.
+		// Collections route must open the newly-created collection detail route.
 		await sidebar.getByRole('link', { name: 'Collections' }).click();
 		await expect(page).toHaveURL(/\/collections$/);
-		const collectionRow = page.locator('tr', { hasText: collectionName });
-		await expect(collectionRow).toBeVisible();
 		await expect(collectionRow.getByRole('link', { name: collectionName })).toBeVisible();
 		await collectionRow.getByRole('link', { name: collectionName }).click();
 		await expect(page).toHaveURL(new RegExp(`/collections/${collectionName}$`));
@@ -152,7 +155,7 @@ test.describe('UI restructure smoke', () => {
 			.getByRole('button', { name: 'Create Entity' })
 			.click();
 		await expect(page.getByText(`Created ${entityId}.`)).toBeVisible();
-		const entityRow = page.locator('tr', { hasText: entityId });
+		const entityRow = page.locator('.entity-rail tbody tr', { hasText: entityId });
 		await expect(entityRow).toBeVisible();
 		await expect(entityRow).toContainText('Smoke task');
 		await expect(rawScopeError).toHaveCount(0);

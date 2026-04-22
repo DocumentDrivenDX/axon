@@ -601,6 +601,12 @@ async function submitCreateEntity() {
 		paginationHistory = [null];
 		pageIndex = 0;
 		await loadCollection(collectionName, null);
+		const existingIndex = entities.findIndex((e) => e.id === entity.id);
+		if (existingIndex >= 0) {
+			entities[existingIndex] = entity;
+		} else {
+			entities = [entity, ...entities];
+		}
 		selectedEntity = entity;
 		createMessage = `Created ${entity.id}.`;
 	} catch (errorValue: unknown) {

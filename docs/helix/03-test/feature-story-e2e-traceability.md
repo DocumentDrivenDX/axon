@@ -97,8 +97,10 @@ operation:
   create/read collections and entities.
 - User/member/credential routes: create/provision, read, update/revoke,
   suspend/remove.
-- Collection routes: create through schema workspace, list, open detail,
-  drop.
+- Collection routes: create from the database Collections route, list, open
+  detail, drop.
+- Schema route: create for schema-first workflows, inspect structured/raw
+  schema, preview and apply schema evolution.
 - Entity data tab: create, read, update, delete.
 - Entity history/audit/rollback tabs: read audit history, preview recovery,
   apply recovery.

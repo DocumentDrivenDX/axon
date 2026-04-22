@@ -157,7 +157,8 @@ history.
 
 **Acceptance Criteria:**
 - [x] The database Collections route lists registered collections and links to each collection detail route. E2E: `tenant-isolation.spec.ts`
-- [x] A collection can be created through the schema workspace, appears in the collections route, and can be dropped with confirmation. E2E: `schema-editing.spec.ts`
+- [x] A collection can be created directly from the Collections route in the current tenant/database scope, appears in the collections list, and opens its detail route for entity creation. E2E: `smoke-restructure.spec.ts`
+- [x] A collection can be dropped with confirmation from the Collections route. E2E: `schema-editing.spec.ts`
 - [x] The collection detail route supports entity create, read, update, and delete from the UI. E2E: `entity-crud.spec.ts`
 - [x] The entity detail route shows version, collection, schema version, and JSON data. E2E: `entity-crud.spec.ts`, `wave1-capabilities.spec.ts`
 - [x] The entity History tab shows audit versions for the selected entity. E2E: `wave1-capabilities.spec.ts`
@@ -171,7 +172,7 @@ history.
 **Acceptance Criteria:**
 - [x] The Schemas route lists registered collections and opens a structured schema view. E2E: `schema-editing.spec.ts`
 - [x] The raw JSON view displays the full collection schema payload. E2E: `schema-editing.spec.ts`
-- [x] Creating a collection accepts entity schema JSON and registers the collection in the current tenant/database scope. E2E: `schema-editing.spec.ts`
+- [x] Creating a collection from the schema workspace accepts entity schema JSON and registers the collection in the current tenant/database scope for schema-first workflows. E2E: `schema-editing.spec.ts`
 - [x] Editing a schema requires previewing the change before saving. E2E: `schema-editing.spec.ts`
 
 ### Story US-044: Inspect Audit and Recover Entity State [FEAT-011]
@@ -213,7 +214,7 @@ history.
 | `/ui/tenants/:tenant/credentials` | Issue, read, revoke credential | `tenant-admin.spec.ts` |
 | `/ui/users` | Provision/suspend user; create, read, update, delete ACL user row | `tenant-admin.spec.ts` |
 | `/ui/tenants/:tenant/databases/:database` | Read database overview and section links | `tenant-isolation.spec.ts` |
-| `/collections` | Read collections, route to detail, drop collection | `schema-editing.spec.ts`, `tenant-isolation.spec.ts` |
+| `/collections` | Create collection, read collections, route to detail, drop collection | `smoke-restructure.spec.ts`, `schema-editing.spec.ts`, `tenant-isolation.spec.ts` |
 | `/collections/:name` Data tab | Create, read, update, delete entity | `entity-crud.spec.ts` |
 | `/collections/:name` History tab | Read entity audit history | `wave1-capabilities.spec.ts` |
 | `/collections/:name` Links tab | Create and delete outbound links | `wave1-capabilities.spec.ts` |

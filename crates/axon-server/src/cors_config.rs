@@ -29,36 +29,54 @@ pub struct CorsStore(Arc<RwLock<HashSet<String>>>);
 impl CorsStore {
     /// Returns `true` if `origin` is explicitly allowed or wildcard (`*`) is set.
     pub fn is_allowed(&self, origin: &str) -> bool {
-        let set = self.0.read().unwrap();
+        let set = self.0.read().expect("cors store read lock poisoned");
         set.contains("*") || set.contains(origin)
     }
 
     /// Returns `true` if the wildcard entry `"*"` is present.
     pub fn is_wildcard(&self) -> bool {
-        self.0.read().unwrap().contains("*")
+        self.0
+            .read()
+            .expect("cors store read lock poisoned")
+            .contains("*")
     }
 
     /// Returns `true` if no origins have been configured.
     pub fn is_empty(&self) -> bool {
-        self.0.read().unwrap().is_empty()
+        self.0
+            .read()
+            .expect("cors store read lock poisoned")
+            .is_empty()
     }
 
     /// Add an origin to the in-memory cache.
     /// The caller is responsible for also persisting to the DB.
     pub fn add_cached(&self, origin: impl Into<String>) {
-        self.0.write().unwrap().insert(origin.into());
+        self.0
+            .write()
+            .expect("cors store write lock poisoned")
+            .insert(origin.into());
     }
 
     /// Remove an origin from the in-memory cache.
     /// Returns `true` if the entry was present.
     /// The caller is responsible for also persisting to the DB.
     pub fn remove_cached(&self, origin: &str) -> bool {
-        self.0.write().unwrap().remove(origin)
+        self.0
+            .write()
+            .expect("cors store write lock poisoned")
+            .remove(origin)
     }
 
     /// Snapshot of all configured origins, sorted for stable output.
     pub fn list(&self) -> Vec<String> {
-        let mut origins: Vec<String> = self.0.read().unwrap().iter().cloned().collect();
+        let mut origins: Vec<String> = self
+            .0
+            .read()
+            .expect("cors store read lock poisoned")
+            .iter()
+            .cloned()
+            .collect();
         origins.sort();
         origins
     }
@@ -66,7 +84,7 @@ impl CorsStore {
     /// Populate the in-memory cache from a pre-loaded list.
     /// Used during server startup after reading from the database.
     pub fn load_from_entries(&self, origins: Vec<String>) {
-        let mut set = self.0.write().unwrap();
+        let mut set = self.0.write().expect("cors store write lock poisoned");
         for o in origins {
             set.insert(o);
         }
