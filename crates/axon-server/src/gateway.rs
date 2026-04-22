@@ -981,6 +981,7 @@ pub struct CreateCollectionSchemaBody {
     pub version: u32,
     pub entity_schema: Option<Value>,
     pub link_types: Option<std::collections::HashMap<String, axon_schema::LinkTypeDef>>,
+    pub access_control: Option<axon_schema::AccessControlPolicy>,
     pub gates: Option<std::collections::HashMap<String, axon_schema::GateDef>>,
     pub validation_rules: Option<Vec<axon_schema::ValidationRule>>,
     pub indexes: Option<Vec<axon_schema::IndexDef>>,
@@ -1020,6 +1021,7 @@ pub struct PutSchemaBody {
     pub version: u32,
     pub entity_schema: Option<Value>,
     pub link_types: Option<std::collections::HashMap<String, axon_schema::LinkTypeDef>>,
+    pub access_control: Option<axon_schema::AccessControlPolicy>,
     pub gates: Option<std::collections::HashMap<String, axon_schema::GateDef>>,
     pub validation_rules: Option<Vec<axon_schema::ValidationRule>>,
     pub indexes: Option<Vec<axon_schema::IndexDef>>,
@@ -2393,6 +2395,7 @@ async fn create_collection(
         version: schema_body.version,
         entity_schema: schema_body.entity_schema,
         link_types: schema_body.link_types.unwrap_or_default(),
+        access_control: schema_body.access_control,
         gates: schema_body.gates.unwrap_or_default(),
         validation_rules: schema_body.validation_rules.unwrap_or_default(),
         indexes: schema_body.indexes.unwrap_or_default(),
@@ -2582,6 +2585,7 @@ async fn put_schema(
         version: body.version,
         entity_schema: body.entity_schema,
         link_types: body.link_types.unwrap_or_default(),
+        access_control: body.access_control,
         gates: body.gates.unwrap_or_default(),
         validation_rules: body.validation_rules.unwrap_or_default(),
         indexes: body.indexes.unwrap_or_default(),
@@ -4062,6 +4066,7 @@ mod tests {
                         "required": ["title"]
                     })),
                     link_types: Default::default(),
+                    access_control: None,
                     gates: Default::default(),
                     validation_rules: Default::default(),
                     indexes: Default::default(),
@@ -4829,6 +4834,7 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
+                    access_control: None,
                     gates: HashMap::from([(
                         "complete".into(),
                         GateDef {
@@ -5463,6 +5469,7 @@ mod tests {
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: vec![IndexDef {

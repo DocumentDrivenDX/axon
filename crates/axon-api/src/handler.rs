@@ -4634,6 +4634,7 @@ mod tests {
                         "required": ["title"]
                     })),
                     link_types: Default::default(),
+                    access_control: None,
                     gates: Default::default(),
                     validation_rules: Default::default(),
                     indexes: Default::default(),
@@ -4688,6 +4689,7 @@ mod tests {
                         "required": ["title"]
                     })),
                     link_types: Default::default(),
+                    access_control: None,
                     gates: Default::default(),
                     validation_rules: Default::default(),
                     indexes: Default::default(),
@@ -4795,6 +4797,7 @@ mod tests {
                         "required": ["title"]
                     })),
                     link_types: Default::default(),
+                    access_control: None,
                     gates: Default::default(),
                     validation_rules: Default::default(),
                     indexes: Default::default(),
@@ -4949,6 +4952,7 @@ mod tests {
                     "required": ["title"]
                 })),
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
@@ -7332,6 +7336,7 @@ entity_schema:
             version: 1,
             entity_schema: Some(json!({"type": "object"})),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -7444,6 +7449,7 @@ entity_schema:
             version: 1,
             entity_schema: Some(json!({"type": "bogus"})),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -7536,6 +7542,7 @@ entity_schema:
             version: 99, // ignored — auto-increment assigns v2
             entity_schema: None,
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -7566,6 +7573,7 @@ entity_schema:
             version: 2,
             entity_schema: None,
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -8745,6 +8753,7 @@ link_types:
             version: 1,
             entity_schema: Some(json!({"type": "object"})),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -8794,6 +8803,7 @@ link_types:
             version: 1,
             entity_schema: None,
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -8865,6 +8875,7 @@ link_types:
             version: 1,
             entity_schema: Some(json!({"type": "bogus"})),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -8889,6 +8900,7 @@ link_types:
             version: 1,
             entity_schema: Some(json!({"type": "bogus"})),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -8922,6 +8934,7 @@ link_types:
                 json!({"type": "object", "properties": {"title": {"type": "string"}}}),
             ),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -8955,6 +8968,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -8984,6 +8998,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -9018,6 +9033,7 @@ link_types:
                 "properties": {"title": {"type": "string"}}
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -9046,6 +9062,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -9081,6 +9098,7 @@ link_types:
                 "properties": {"title": {"type": "string"}}
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -9109,6 +9127,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -9148,6 +9167,7 @@ link_types:
                 "properties": {"title": {"type": "string"}}
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -9176,6 +9196,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -9301,6 +9322,7 @@ link_types:
             version: 1,
             entity_schema: None,
             link_types: Default::default(),
+            access_control: None,
             gates: HashMap::from([
                 (
                     "complete".into(),
@@ -9437,6 +9459,7 @@ link_types:
                     }
                 })),
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: vec![ValidationRule {
                     name: "browser-bootstrap-role-member-only".into(),
@@ -10639,6 +10662,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -10717,6 +10741,7 @@ link_types:
                     }
                 })),
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
@@ -10751,6 +10776,7 @@ link_types:
                 version: 1,
                 entity_schema: Some(json!({"type": "object"})),
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
@@ -11001,6 +11027,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -11027,6 +11054,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -11101,6 +11129,7 @@ link_types:
                     }
                 })),
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
@@ -11125,6 +11154,7 @@ link_types:
                     }
                 })),
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
@@ -11152,6 +11182,7 @@ link_types:
                     }
                 })),
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
@@ -11351,6 +11382,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: vec![
@@ -11559,6 +11591,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: vec![IndexDef {
@@ -11680,6 +11713,7 @@ link_types:
             version: 1,
             entity_schema: None,
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: vec![IndexDef {
@@ -11717,6 +11751,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: vec![IndexDef {
@@ -12876,6 +12911,7 @@ link_types:
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
@@ -12921,6 +12957,7 @@ link_types:
                 version: 1,
                 entity_schema: None,
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
@@ -13162,6 +13199,7 @@ link_types:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: std::collections::HashMap::from([(
                 "complete".into(),
                 GateDef {
@@ -13502,6 +13540,7 @@ link_types:
             version: 1,
             entity_schema: None,
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),

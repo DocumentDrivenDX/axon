@@ -642,6 +642,7 @@ entity_schema:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -690,6 +691,7 @@ entity_schema:
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),

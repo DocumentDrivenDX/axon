@@ -1,0 +1,41 @@
+{
+  "attempt_id": "20260422T130025-a59d581b",
+  "bead_id": "axon-761d6f4a",
+  "base_rev": "5a21e94e63097c9c8dc23f21f4dc4baab095f40c",
+  "created_at": "2026-04-22T13:00:26.045227376Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "effort": "high",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-761d6f4a",
+    "title": "build(feat-029/schema): parse ESF access_control metadata",
+    "description": "Add typed access_control structures to axon-schema ESF parsing and CollectionSchema, preserving backward compatibility when absent. Cover identity, operation rules, field rules, transitions, and envelopes as schema-adjacent metadata.",
+    "acceptance": "YAML/JSON ESF fixtures round-trip with access_control; schemas without policies deserialize unchanged; malformed policy blocks return SchemaValidation with stable diagnostic text.",
+    "parent": "axon-fac5ca31",
+    "labels": [
+      "helix",
+      "phase:build",
+      "kind:implementation",
+      "area:schema",
+      "feat-029"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-22T13:00:25Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "4141227",
+      "execute-loop-heartbeat-at": "2026-04-22T13:00:25.52744449Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260422T130025-a59d581b",
+    "prompt": ".ddx/executions/20260422T130025-a59d581b/prompt.md",
+    "manifest": ".ddx/executions/20260422T130025-a59d581b/manifest.json",
+    "result": ".ddx/executions/20260422T130025-a59d581b/result.json",
+    "checks": ".ddx/executions/20260422T130025-a59d581b/checks.json",
+    "usage": ".ddx/executions/20260422T130025-a59d581b/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-761d6f4a-20260422T130025-a59d581b"
+  }
+}

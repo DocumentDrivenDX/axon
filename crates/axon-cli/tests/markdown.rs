@@ -69,6 +69,7 @@ fn seed_namespaced_collection(db: &str, qualified: &str) {
                 "required": ["title"]
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),

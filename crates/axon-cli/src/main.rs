@@ -1117,6 +1117,7 @@ fn run_collection(
                 version: 1,
                 entity_schema,
                 link_types: Default::default(),
+                access_control: None,
                 gates: Default::default(),
                 validation_rules: Default::default(),
                 indexes: Default::default(),
@@ -1835,6 +1836,7 @@ fn run_schema(
                     .as_ref()
                     .map(|s| s.link_types.clone())
                     .unwrap_or_default(),
+                access_control: existing.as_ref().and_then(|s| s.access_control.clone()),
                 gates: existing
                     .as_ref()
                     .map(|s| s.gates.clone())
@@ -2677,6 +2679,7 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
+                    access_control: None,
                     gates: Default::default(),
                     validation_rules: Default::default(),
                     indexes: Default::default(),
@@ -2722,6 +2725,7 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
+                    access_control: None,
                     gates: Default::default(),
                     validation_rules: Default::default(),
                     indexes: Default::default(),
@@ -2770,6 +2774,7 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
+                    access_control: None,
                     gates: Default::default(),
                     validation_rules: Default::default(),
                     indexes: Default::default(),
@@ -2832,6 +2837,7 @@ mod tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
+                    access_control: None,
                     gates: Default::default(),
                     validation_rules: Default::default(),
                     indexes: Default::default(),

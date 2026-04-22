@@ -3112,6 +3112,7 @@ fn collection_schema_from_json(
         version,
         entity_schema: get_schema_field(obj, "entity_schema", "entitySchema").cloned(),
         link_types: optional_schema_field(obj, "link_types", "linkTypes")?.unwrap_or_default(),
+        access_control: optional_schema_field(obj, "access_control", "accessControl")?,
         gates: optional_schema_field(obj, "gates", "gates")?.unwrap_or_default(),
         validation_rules: optional_schema_field(obj, "validation_rules", "validationRules")?
             .unwrap_or_default(),
@@ -5501,6 +5502,7 @@ mod tests {
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -5775,6 +5777,7 @@ mod tests {
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),
@@ -5905,6 +5908,7 @@ mod tests {
                 }
             })),
             link_types: Default::default(),
+            access_control: None,
             gates: Default::default(),
             validation_rules: Default::default(),
             indexes: Default::default(),

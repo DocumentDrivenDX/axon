@@ -6,6 +6,7 @@ use serde_json::Value;
 use axon_core::error::AxonError;
 use axon_core::id::CollectionId;
 
+use crate::access_control::AccessControlPolicy;
 use crate::rules::ValidationRule;
 
 /// Cardinality constraint for a link type (ADR-002).
@@ -146,6 +147,9 @@ pub struct CollectionSchema {
     /// Link-type definitions (Layer 2 of ESF). Keys are link-type names.
     #[serde(default)]
     pub link_types: HashMap<String, LinkTypeDef>,
+    /// Data-layer access-control policy metadata (FEAT-029 / ADR-019).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_control: Option<AccessControlPolicy>,
     /// Gate definitions (ESF Layer 5). Keys are gate names.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub gates: HashMap<String, GateDef>,
@@ -208,6 +212,7 @@ impl CollectionSchema {
             version: 1,
             entity_schema: None,
             link_types: HashMap::new(),
+            access_control: None,
             gates: HashMap::new(),
             validation_rules: Vec::new(),
             indexes: Vec::new(),
@@ -235,6 +240,8 @@ pub struct EsfDocument {
     pub entity_schema: Option<Value>,
     /// Layer 2: Link-type definitions (Axon vocabulary). Stored as raw JSON for now.
     pub link_types: Option<Value>,
+    /// Schema-adjacent data-layer access-control policy metadata.
+    pub access_control: Option<Value>,
     /// Layer 3: Custom validation rules with severity. Stored as raw JSON for now.
     pub validation_rules: Option<Value>,
     /// Layer 6: Lifecycle definitions. Stored as raw JSON for now.
@@ -269,12 +276,19 @@ impl EsfDocument {
             })?,
             None => HashMap::new(),
         };
+        let access_control: Option<AccessControlPolicy> = match self.access_control {
+            Some(val) => Some(serde_json::from_value(val).map_err(|e| {
+                AxonError::SchemaValidation(format!("invalid access_control definition: {e}"))
+            })?),
+            None => None,
+        };
         Ok(CollectionSchema {
             collection: CollectionId::new(self.collection),
             description: None,
             version: 1,
             entity_schema: self.entity_schema,
             link_types,
+            access_control,
             gates: HashMap::new(),
             validation_rules: Vec::new(),
             indexes: Vec::new(),
@@ -345,6 +359,92 @@ entity_schema:
             minimum: 0
 "#;
 
+    const ACCESS_CONTROL_ESF: &str = r#"
+esf_version: "1.0"
+collection: engagements
+entity_schema:
+  type: object
+  required: [name, status, members]
+  properties:
+    name: { type: string }
+    status: { type: string, enum: [draft, active, closed] }
+    budget_cents: { type: integer }
+    amount_cents: { type: integer }
+    lead_partner_id: { type: string }
+    members:
+      type: array
+      items:
+        type: object
+        required: [user_id, role]
+        properties:
+          user_id: { type: string }
+          role: { type: string }
+
+access_control:
+  identity:
+    user_id: subject.user_id
+    role: subject.attributes.user_role
+
+  read:
+    allow:
+      - name: firm-admins-see-all
+        when: { subject: role, in: [admin, partner] }
+      - name: assigned-consultants-see-own
+        when: { subject: role, in: [consultant, contractor] }
+        where:
+          field: members[].user_id
+          contains_subject: user_id
+
+  write:
+    allow:
+      - name: admins-write-all
+        when: { subject: role, eq: admin }
+      - name: partners-write-led-engagements
+        when: { subject: role, eq: partner }
+        where:
+          field: lead_partner_id
+          eq_subject: user_id
+
+  fields:
+    budget_cents:
+      read:
+        deny:
+          - name: contractors-do-not-see-budget
+            when: { subject: role, eq: contractor }
+            redact_as: null
+      write:
+        allow:
+          - name: admins-only-budget
+            when: { subject: role, eq: admin }
+
+  transitions:
+    status:
+      activate:
+        allow:
+          - name: partners-activate-led-engagements
+            when: { subject: role, eq: partner }
+            where: { field: lead_partner_id, eq_subject: user_id }
+
+  envelopes:
+    write:
+      - name: auto-small-engagement-adjustment
+        when:
+          all:
+            - { operation: update }
+            - { field: amount_cents, lte: 1000000 }
+            - { subject: role, in: [finance, admin] }
+        decision: allow
+      - name: approve-large-engagement-adjustment
+        when:
+          all:
+            - { operation: update }
+            - { field: amount_cents, gt: 1000000 }
+        decision: needs_approval
+        approval:
+          role: finance_approver
+          reason_required: true
+"#;
+
     #[test]
     fn parse_esf_from_adr_002() {
         let doc = EsfDocument::parse(INVOICE_ESF).expect("invoice ESF fixture should parse");
@@ -375,6 +475,133 @@ entity_schema:
         assert_eq!(schema.collection.as_str(), "invoices");
         assert_eq!(schema.version, 1);
         assert!(schema.entity_schema.is_some());
+    }
+
+    #[test]
+    fn esf_parses_access_control_metadata() {
+        let doc = EsfDocument::parse(ACCESS_CONTROL_ESF).expect("access-control ESF should parse");
+        let schema = doc
+            .into_collection_schema()
+            .expect("access-control ESF should convert to collection schema");
+        let policy = schema
+            .access_control
+            .expect("access-control policy should be present");
+
+        let identity = policy.identity.expect("identity metadata missing");
+        assert_eq!(
+            identity.aliases.get("user_id").map(String::as_str),
+            Some("subject.user_id")
+        );
+        assert_eq!(
+            identity.aliases.get("role").map(String::as_str),
+            Some("subject.attributes.user_role")
+        );
+
+        let read_policy = policy.read.expect("read policy missing");
+        assert_eq!(read_policy.allow.len(), 2);
+        assert_eq!(
+            read_policy.allow[0].name.as_deref(),
+            Some("firm-admins-see-all")
+        );
+        assert!(read_policy.allow[1].where_clause.is_some());
+
+        let budget_policy = policy
+            .fields
+            .get("budget_cents")
+            .expect("budget field policy missing");
+        let read = budget_policy
+            .read
+            .as_ref()
+            .expect("field read policy missing");
+        assert_eq!(read.deny.len(), 1);
+        assert_eq!(
+            read.deny[0].redact_as.as_ref(),
+            Some(&serde_json::Value::Null)
+        );
+
+        let status_transitions = policy
+            .transitions
+            .get("status")
+            .expect("status transition policies missing");
+        assert!(status_transitions.contains_key("activate"));
+
+        let write_envelopes = policy
+            .envelopes
+            .get(&crate::access_control::PolicyOperation::Write)
+            .expect("write envelopes missing");
+        assert_eq!(write_envelopes.len(), 2);
+        assert_eq!(
+            write_envelopes[1].decision,
+            crate::access_control::PolicyDecision::NeedsApproval
+        );
+        assert_eq!(
+            write_envelopes[1]
+                .approval
+                .as_ref()
+                .and_then(|route| route.role.as_deref()),
+            Some("finance_approver")
+        );
+    }
+
+    #[test]
+    fn access_control_round_trips_through_collection_schema_json() {
+        let schema = EsfDocument::parse(ACCESS_CONTROL_ESF)
+            .expect("access-control ESF should parse")
+            .into_collection_schema()
+            .expect("access-control ESF should convert to collection schema");
+
+        let json = serde_json::to_string(&schema).expect("schema should serialize");
+        let restored: CollectionSchema =
+            serde_json::from_str(&json).expect("schema should deserialize");
+
+        assert_eq!(restored.access_control, schema.access_control);
+    }
+
+    #[test]
+    fn json_esf_parses_access_control_metadata() {
+        let yaml_doc =
+            EsfDocument::parse(ACCESS_CONTROL_ESF).expect("access-control ESF should parse");
+        let json_esf = serde_json::to_string(&yaml_doc).expect("ESF document should serialize");
+
+        let schema = EsfDocument::parse(&json_esf)
+            .expect("JSON ESF should parse")
+            .into_collection_schema()
+            .expect("JSON ESF should convert to collection schema");
+
+        assert!(schema.access_control.is_some());
+    }
+
+    #[test]
+    fn collection_schema_without_access_control_defaults_to_none() {
+        let doc = EsfDocument::parse(INVOICE_ESF).expect("invoice ESF fixture should parse");
+        let schema = doc
+            .into_collection_schema()
+            .expect("invoice ESF fixture should convert to collection schema");
+        assert!(schema.access_control.is_none());
+    }
+
+    #[test]
+    fn invalid_access_control_returns_schema_validation_error() {
+        let malformed = r#"
+esf_version: "1.0"
+collection: broken
+entity_schema:
+  type: object
+access_control:
+  read: definitely-not-a-policy
+"#;
+        let doc = EsfDocument::parse(malformed).expect("malformed policy block is structural YAML");
+        let err = doc
+            .into_collection_schema()
+            .expect_err("malformed access-control block should fail");
+        assert!(
+            matches!(
+                err,
+                AxonError::SchemaValidation(ref msg)
+                    if msg.starts_with("invalid access_control definition:")
+            ),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -432,6 +659,7 @@ entity_schema:
             version: 1,
             entity_schema: None,
             link_types: HashMap::new(),
+            access_control: None,
             gates: HashMap::new(),
             validation_rules: Vec::new(),
             indexes: Vec::new(),

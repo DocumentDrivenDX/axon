@@ -5,6 +5,7 @@
 //! stored in Axon collections. Every collection has an associated schema that
 //! validates entity fields, types, and constraints.
 
+pub mod access_control;
 pub mod evolution;
 pub mod gates;
 pub mod rules;
@@ -14,6 +15,12 @@ pub mod validation;
 #[cfg(test)]
 mod proptest_schema;
 
+pub use access_control::{
+    AccessControlIdentity, AccessControlPolicy, ApprovalRoute, FieldAccessPolicy, FieldPolicy,
+    FieldPolicyRule, IdentityAttributeSource, LinkDirection, OperationPolicy, PolicyCompareOp,
+    PolicyDecision, PolicyEnvelope, PolicyOperation, PolicyPredicate, PolicyRule,
+    RelationshipPredicate, SharesRelationPredicate,
+};
 pub use evolution::{
     classify, diff_schemas, Compatibility, FieldChange, FieldChangeKind, SchemaDiff,
 };
