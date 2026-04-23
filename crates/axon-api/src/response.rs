@@ -505,6 +505,9 @@ pub struct PutSchemaResponse {
     /// Field-level diff from the previous schema version.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diff: Option<axon_schema::SchemaDiff>,
+    /// Policy compile report for the candidate schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy_compile_report: Option<axon_schema::PolicyCompileReport>,
     /// True if this was a dry-run (schema was not applied).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dry_run: bool,

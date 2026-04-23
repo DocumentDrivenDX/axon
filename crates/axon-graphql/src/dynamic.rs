@@ -2282,6 +2282,10 @@ fn put_schema_payload_object() -> Object {
         .field(json_object_field("compatibility", TypeRef::named("JSON")))
         .field(json_object_field("diff", TypeRef::named("JSON")))
         .field(json_object_field(
+            "policyCompileReport",
+            TypeRef::named("JSON"),
+        ))
+        .field(json_object_field(
             "dryRun",
             TypeRef::named_nn(TypeRef::BOOLEAN),
         ))
@@ -3203,7 +3207,7 @@ fn axon_error_to_gql(err: AxonError) -> GqlError {
             let code = if denial.is_policy_filter_unindexed() {
                 "POLICY_FILTER_UNINDEXED"
             } else {
-                "FORBIDDEN"
+                "forbidden"
             };
             let detail = denial.detail();
             GqlError::new(denial.to_string()).extend_with(move |_err, ext| {
@@ -3442,6 +3446,7 @@ fn put_schema_payload_value(resp: axon_api::response::PutSchemaResponse) -> Valu
         "schema": resp.schema,
         "compatibility": resp.compatibility,
         "diff": resp.diff,
+        "policyCompileReport": resp.policy_compile_report,
         "dryRun": resp.dry_run,
     })
 }

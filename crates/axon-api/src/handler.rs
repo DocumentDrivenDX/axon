@@ -501,6 +501,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(schemas)
     }
 
+    fn policy_compile_report_for_schema(
+        &self,
+        schema: &CollectionSchema,
+    ) -> Result<axon_schema::PolicyCompileReport, AxonError> {
+        let schemas = self.policy_catalog_schemas(schema)?;
+        Ok(compile_policy_catalog(&schemas)?.report)
+    }
+
     fn enforce_write_policy(
         &self,
         schema: Option<&CollectionSchema>,
@@ -5475,6 +5483,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let new_entity_schema = req.schema.entity_schema.as_ref();
         let diff = axon_schema::diff_schemas(old_entity_schema, new_entity_schema);
         let compatibility = axon_schema::classify(&diff);
+        let policy_compile_report = self.policy_compile_report_for_schema(&req.schema)?;
 
         // Dry-run: return classification without applying.
         if req.dry_run {
@@ -5482,6 +5491,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 schema: req.schema,
                 compatibility: Some(compatibility),
                 diff: Some(diff),
+                policy_compile_report: Some(policy_compile_report),
                 dry_run: true,
             });
         }
@@ -5526,6 +5536,45 @@ impl<S: StorageAdapter> AxonHandler<S> {
         audit_meta.insert("fields_removed".to_string(), fields_removed.to_string());
         audit_meta.insert("fields_modified".to_string(), fields_modified.to_string());
         audit_meta.insert("total_changes".to_string(), diff.changes.len().to_string());
+        audit_meta.insert(
+            "old_schema_version".to_string(),
+            existing
+                .as_ref()
+                .map(|schema| schema.version.to_string())
+                .unwrap_or_else(|| "none".into()),
+        );
+        audit_meta.insert(
+            "new_schema_version".to_string(),
+            req.schema.version.to_string(),
+        );
+        audit_meta.insert(
+            "old_policy_version".to_string(),
+            existing
+                .as_ref()
+                .and_then(|schema| schema.access_control.as_ref().map(|_| schema.version))
+                .map(|version| version.to_string())
+                .unwrap_or_else(|| "none".into()),
+        );
+        audit_meta.insert(
+            "new_policy_version".to_string(),
+            req.schema
+                .access_control
+                .as_ref()
+                .map(|_| req.schema.version.to_string())
+                .unwrap_or_else(|| "none".into()),
+        );
+        audit_meta.insert(
+            "policy_nullable_fields".to_string(),
+            policy_compile_report.nullable_fields.len().to_string(),
+        );
+        audit_meta.insert(
+            "policy_denied_write_fields".to_string(),
+            policy_compile_report.denied_write_fields.len().to_string(),
+        );
+        audit_meta.insert(
+            "policy_envelopes".to_string(),
+            policy_compile_report.envelope_summaries.len().to_string(),
+        );
 
         self.audit.append(
             AuditEntry::new(
@@ -5543,6 +5592,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             schema: req.schema,
             compatibility: Some(compatibility),
             diff: Some(diff),
+            policy_compile_report: Some(policy_compile_report),
             dry_run: false,
         })
     }

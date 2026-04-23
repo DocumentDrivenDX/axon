@@ -646,7 +646,7 @@ async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
     .await;
     assert_eq!(
         direct_mutation["errors"][0]["extensions"]["code"],
-        "FORBIDDEN"
+        "forbidden"
     );
     assert_eq!(
         direct_mutation["errors"][0]["extensions"]["detail"]["reason"],
@@ -660,4 +660,322 @@ async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
     )
     .await;
     assert_eq!(stored["data"]["entity"]["data"]["budget_cents"], 5000);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_put_schema_exposes_policy_compile_reports_and_errors() {
+    let server = test_server();
+
+    server
+        .post("/tenants/default/databases/default/collections/policy_report")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "required": ["title", "secret"],
+                    "properties": {
+                        "title": { "type": "string" },
+                        "secret": { "type": "string" },
+                        "amount_cents": { "type": "integer" }
+                    }
+                }
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    let dry_run = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            putSchema(input: {
+                collection: "policy_report",
+                dryRun: true,
+                schema: {
+                    version: 2,
+                    entitySchema: {
+                        type: "object",
+                        required: ["title", "secret"],
+                        properties: {
+                            title: { type: "string" },
+                            secret: { type: "string" },
+                            amount_cents: { type: "integer" }
+                        }
+                    },
+                    accessControl: {
+                        read: { allow: [{ name: "admins-read", when: { subject: "user_id", eq: "admin" } }] },
+                        update: { allow: [{ name: "admins-update", when: { subject: "user_id", eq: "admin" } }] },
+                        fields: {
+                            secret: {
+                                read: {
+                                    deny: [{
+                                        name: "mask-secret-for-contractors",
+                                        when: { subject: "user_id", eq: "contractor" },
+                                        redact_as: null
+                                    }]
+                                },
+                                write: {
+                                    deny: [{
+                                        name: "contractors-cannot-write-secret",
+                                        when: { subject: "user_id", eq: "contractor" }
+                                    }]
+                                }
+                            }
+                        },
+                        envelopes: {
+                            write: [{
+                                name: "large-amount-needs-approval",
+                                when: {
+                                    all: [
+                                        { operation: "update" },
+                                        { field: "amount_cents", gt: 10000 }
+                                    ]
+                                },
+                                decision: "needs_approval",
+                                approval: {
+                                    role: "finance_approver",
+                                    reason_required: true,
+                                    deadline_seconds: 86400,
+                                    separation_of_duties: true
+                                }
+                            }]
+                        }
+                    }
+                }
+            }) {
+                dryRun
+                schema
+                policyCompileReport
+            }
+        }"#,
+    )
+    .await;
+    assert!(dry_run["errors"].is_null(), "unexpected errors: {dry_run}");
+    let report = &dry_run["data"]["putSchema"]["policyCompileReport"];
+    assert_eq!(dry_run["data"]["putSchema"]["dryRun"], true);
+    assert_eq!(dry_run["data"]["putSchema"]["schema"]["version"], 2);
+    assert_eq!(report["nullable_fields"][0]["field"], "secret");
+    assert_eq!(report["nullable_fields"][0]["required_by_schema"], true);
+    assert_eq!(report["denied_write_fields"][0]["field"], "secret");
+    assert_eq!(
+        report["envelope_summaries"][0]["name"],
+        "large-amount-needs-approval"
+    );
+    assert_eq!(
+        report["envelope_summaries"][0]["decision"],
+        "needs_approval"
+    );
+
+    let active = gql_as(
+        &server,
+        "admin",
+        r#"{ collection(name: "policy_report") { name schemaVersion } }"#,
+    )
+    .await;
+    assert_eq!(active["data"]["collection"]["schemaVersion"], 1);
+
+    let invalid_path = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            putSchema(input: {
+                collection: "policy_report",
+                dryRun: true,
+                schema: {
+                    version: 2,
+                    entitySchema: {
+                        type: "object",
+                        properties: { title: { type: "string" } }
+                    },
+                    accessControl: {
+                        read: {
+                            allow: [{
+                                name: "bad-path",
+                                where: { field: "missing_field", eq: "x" }
+                            }]
+                        }
+                    }
+                }
+            }) { dryRun policyCompileReport }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        invalid_path["errors"][0]["extensions"]["code"],
+        "SCHEMA_VALIDATION"
+    );
+    assert!(
+        invalid_path["errors"][0]["extensions"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("unknown field path 'missing_field'"),
+        "invalid path error should report the bad path: {invalid_path}"
+    );
+
+    server
+        .post("/tenants/default/databases/default/collections/a")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": { "name": { "type": "string" } }
+                },
+                "link_types": {
+                    "to_b": {
+                        "target_collection": "b",
+                        "cardinality": "many-to-one"
+                    }
+                },
+                "access_control": {
+                    "read": { "allow": [{ "name": "a-visible" }] }
+                }
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+    server
+        .post("/tenants/default/databases/default/collections/b")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": { "name": { "type": "string" } }
+                },
+                "link_types": {
+                    "to_a": {
+                        "target_collection": "a",
+                        "cardinality": "many-to-one"
+                    }
+                },
+                "access_control": {
+                    "read": {
+                        "allow": [{
+                            "name": "b-through-a",
+                            "where": {
+                                "related": {
+                                    "link_type": "to_a",
+                                    "target_collection": "a",
+                                    "target_policy": "read"
+                                }
+                            }
+                        }]
+                    }
+                }
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+    let cycle = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            putSchema(input: {
+                collection: "a",
+                dryRun: true,
+                schema: {
+                    version: 2,
+                    entitySchema: {
+                        type: "object",
+                        properties: { name: { type: "string" } }
+                    },
+                    linkTypes: {
+                        to_b: { target_collection: "b", cardinality: "many-to-one" }
+                    },
+                    accessControl: {
+                        read: {
+                            allow: [{
+                                name: "a-through-b",
+                                where: {
+                                    related: {
+                                        link_type: "to_b",
+                                        target_collection: "b",
+                                        target_policy: "read"
+                                    }
+                                }
+                            }]
+                        }
+                    }
+                }
+            }) { dryRun policyCompileReport }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        cycle["errors"][0]["extensions"]["code"],
+        "SCHEMA_VALIDATION"
+    );
+    assert!(
+        cycle["errors"][0]["extensions"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("relationship target_policy cycle detected"),
+        "cycle error should report the target_policy cycle: {cycle}"
+    );
+
+    let applied = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            putSchema(input: {
+                collection: "policy_report",
+                schema: {
+                    version: 2,
+                    entitySchema: {
+                        type: "object",
+                        required: ["title", "secret"],
+                        properties: {
+                            title: { type: "string" },
+                            secret: { type: "string" },
+                            amount_cents: { type: "integer" }
+                        }
+                    },
+                    accessControl: {
+                        read: { allow: [{ name: "admins-read", when: { subject: "user_id", eq: "admin" } }] },
+                        update: { allow: [{ name: "admins-update", when: { subject: "user_id", eq: "admin" } }] },
+                        envelopes: {
+                            write: [{
+                                name: "large-amount-needs-approval",
+                                when: {
+                                    all: [
+                                        { operation: "update" },
+                                        { field: "amount_cents", gt: 10000 }
+                                    ]
+                                },
+                                decision: "needs_approval",
+                                approval: { role: "finance_approver", reason_required: true }
+                            }]
+                        }
+                    }
+                }
+            }) { dryRun schema policyCompileReport }
+        }"#,
+    )
+    .await;
+    assert!(applied["errors"].is_null(), "unexpected errors: {applied}");
+    assert_eq!(applied["data"]["putSchema"]["dryRun"], false);
+    assert_eq!(applied["data"]["putSchema"]["schema"]["version"], 2);
+
+    let audit = gql_as(
+        &server,
+        "admin",
+        r#"{
+            auditLog(collection: "policy_report", operation: "schema.update") {
+                totalCount
+                edges { node { metadata } }
+            }
+        }"#,
+    )
+    .await;
+    let metadata = &audit["data"]["auditLog"]["edges"][0]["node"]["metadata"];
+    assert_eq!(metadata["old_schema_version"], "1");
+    assert_eq!(metadata["new_schema_version"], "2");
+    assert_eq!(metadata["old_policy_version"], "none");
+    assert_eq!(metadata["new_policy_version"], "2");
+    assert_eq!(metadata["policy_envelopes"], "1");
 }
