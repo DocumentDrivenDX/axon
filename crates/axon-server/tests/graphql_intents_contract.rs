@@ -174,12 +174,22 @@ async fn budget_cents(server: &axum_test::TestServer) -> Value {
 async fn audit_by_intent(
     server: &axum_test::TestServer,
     intent_id: &str,
-    operation: &str,
+    operation: Option<&str>,
 ) -> Value {
+    let operation_query = operation
+        .map(|operation| format!("&operation={operation}"))
+        .unwrap_or_default();
     server
         .get(&format!(
-            "/tenants/default/databases/default/audit/query?intent_id={intent_id}&operation={operation}"
+            "/tenants/default/databases/default/audit/query?intent_id={intent_id}{operation_query}"
         ))
+        .await
+        .json::<Value>()
+}
+
+async fn audit_entity(server: &axum_test::TestServer) -> Value {
+    server
+        .get("/tenants/default/databases/default/audit/entity/task/task-a")
         .await
         .json::<Value>()
 }
@@ -249,7 +259,7 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
         approved["data"]["approveMutationIntent"]["approvalState"],
         "approved"
     );
-    let approval_audit = audit_by_intent(&server, &intent_id, "intent.approve").await;
+    let approval_audit = audit_by_intent(&server, &intent_id, Some("intent.approve")).await;
     let approval_entries = approval_audit["entries"].as_array().unwrap();
     assert_eq!(approval_entries.len(), 1);
     assert_eq!(approval_entries[0]["actor"], "finance-approver");
@@ -267,6 +277,40 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
         "committed"
     );
     assert_eq!(budget_cents(&server).await, json!(20_000));
+
+    let lineage_audit = audit_by_intent(&server, &intent_id, None).await;
+    let lineage_entries = lineage_audit["entries"].as_array().unwrap();
+    assert_eq!(lineage_entries.len(), 2);
+    assert!(
+        lineage_entries
+            .iter()
+            .any(|entry| entry["mutation"] == "intent.approve"
+                && entry["actor"] == "finance-approver")
+    );
+    let committed_entry = lineage_entries
+        .iter()
+        .find(|entry| entry["mutation"] == "entity.update")
+        .expect("intent lineage query should include committed mutation audit");
+    assert_eq!(committed_entry["actor"], "finance-agent");
+    assert_eq!(
+        committed_entry["intent_lineage"]["subject_snapshot"]["user_id"],
+        "finance-agent"
+    );
+    assert_eq!(committed_entry["intent_lineage"]["policy_version"], 1);
+    assert_eq!(committed_entry["diff"]["budget_cents"]["before"], 5000);
+    assert_eq!(committed_entry["diff"]["budget_cents"]["after"], 20_000);
+
+    let entity_audit = audit_entity(&server).await;
+    let entity_entries = entity_audit["entries"].as_array().unwrap();
+    let entity_update = entity_entries
+        .iter()
+        .find(|entry| {
+            entry["mutation"] == "entity.update"
+                && entry["intent_lineage"]["intent_id"] == intent_id
+        })
+        .expect("entity audit should carry committed intent lineage");
+    assert_eq!(entity_update["diff"]["budget_cents"]["before"], 5000);
+    assert_eq!(entity_update["diff"]["budget_cents"]["after"], 20_000);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -298,7 +342,7 @@ async fn rejected_intent_cannot_commit() {
         rejected["data"]["rejectMutationIntent"]["approvalState"],
         "rejected"
     );
-    let rejection_audit = audit_by_intent(&server, &intent_id, "intent.reject").await;
+    let rejection_audit = audit_by_intent(&server, &intent_id, Some("intent.reject")).await;
     let rejection_entries = rejection_audit["entries"].as_array().unwrap();
     assert_eq!(rejection_entries.len(), 1);
     assert_eq!(rejection_entries[0]["actor"], "finance-approver");

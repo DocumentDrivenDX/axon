@@ -2431,6 +2431,45 @@ mod tests {
                 Some("mint_tx_mixed")
             );
         }
+        let intent_entries = audit
+            .query_paginated(AuditQuery {
+                intent_id: Some("mint_tx_mixed".into()),
+                ..AuditQuery::default()
+            })
+            .expect("committed mutation lineage should be queryable by intent id");
+        assert_eq!(intent_entries.entries.len(), 2);
+        let update_entry = intent_entries
+            .entries
+            .iter()
+            .find(|entry| entry.mutation == MutationType::EntityUpdate)
+            .expect("intent query should include committed entity update audit");
+        let lineage = update_entry
+            .intent_lineage
+            .as_deref()
+            .expect("entity update audit should carry intent lineage");
+        assert_eq!(lineage.decision, MutationIntentDecision::Allow);
+        assert_eq!(lineage.approval_id, None);
+        assert_eq!(lineage.policy_version, 7);
+        assert_eq!(lineage.schema_version, 7);
+        assert_eq!(
+            lineage.subject_snapshot.user_id.as_deref(),
+            Some("usr_requester")
+        );
+        assert_eq!(
+            lineage.subject_snapshot.agent_id.as_deref(),
+            Some("agent_ap")
+        );
+        assert_eq!(
+            lineage.subject_snapshot.credential_id.as_deref(),
+            Some("cred_live")
+        );
+        let balance_diff = update_entry
+            .diff
+            .as_ref()
+            .and_then(|diff| diff.get("balance"))
+            .expect("entity update audit should retain committed field diff");
+        assert_eq!(balance_diff.before.as_ref(), Some(&json!(100)));
+        assert_eq!(balance_diff.after.as_ref(), Some(&json!(125)));
     }
 
     #[test]
