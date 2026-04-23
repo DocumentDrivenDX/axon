@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 axon-core = { path = "../axon-core" }
-axon-api = { path = "../axon-api" }
+axon-api = { path = "../axon-api", features = ["test-fixtures"] }
 axon-audit = { path = "../axon-audit" }
 axon-schema = { path = "../axon-schema" }
 axon-storage = { path = "../axon-storage" }

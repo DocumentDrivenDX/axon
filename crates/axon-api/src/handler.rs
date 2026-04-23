@@ -892,23 +892,55 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .storage
             .range_scan(&Link::links_collection(), None, None, None)?;
         for link in links.iter().filter_map(Link::from_entity) {
-            let matched = match related.direction {
-                LinkDirection::Outgoing => {
+            let (matched, target_collection, target_id) = match related.direction {
+                LinkDirection::Outgoing => (
                     &link.source_collection == source_collection
                         && link.source_id == entity_id
                         && link.link_type == related.link_type
-                        && link.target_collection.as_str() == related.target_collection
-                }
-                LinkDirection::Incoming => {
+                        && link.target_collection.as_str() == related.target_collection,
+                    &link.target_collection,
+                    &link.target_id,
+                ),
+                LinkDirection::Incoming => (
                     &link.target_collection == source_collection
                         && link.target_id == entity_id
                         && link.link_type == related.link_type
-                        && link.source_collection.as_str() == related.target_collection
-                }
+                        && link.source_collection.as_str() == related.target_collection,
+                    &link.source_collection,
+                    &link.source_id,
+                ),
             };
-            if matched {
-                return Ok(true);
+            if !matched {
+                continue;
             }
+            if let Some(operation) = &related.target_policy {
+                let Some(target) = self.storage.get(target_collection, target_id)? else {
+                    continue;
+                };
+                let Some(target_schema) = self.storage.get_schema(target_collection)? else {
+                    continue;
+                };
+                let Some(target_plan) = self.compile_policy_plan_for_schema(&target_schema)? else {
+                    continue;
+                };
+                let mut target_snapshot = ctx.snapshot.clone();
+                target_snapshot.collection = target_collection.clone();
+                let target_data = entity_policy_data(&target);
+                if !self.policy_operation_allows(
+                    &target_plan,
+                    &target_snapshot,
+                    PolicyOperationCheck {
+                        collection: target_collection,
+                        entity_id: Some(target_id),
+                        operation: operation.clone(),
+                        data: &target_data,
+                        operation_index: None,
+                    },
+                )? {
+                    continue;
+                }
+            }
+            return Ok(true);
         }
 
         Ok(false)
@@ -9679,6 +9711,22 @@ mod tests {
             attribution: None,
         })
         .expect("hidden assignment link");
+
+        let visible = h
+            .get_entity(GetEntityRequest {
+                collection: tasks.clone(),
+                id: EntityId::new("t-visible"),
+            })
+            .expect("visible related point read");
+        assert_eq!(visible.entity.id, EntityId::new("t-visible"));
+
+        let hidden = h
+            .get_entity(GetEntityRequest {
+                collection: tasks.clone(),
+                id: EntityId::new("t-hidden"),
+            })
+            .expect_err("hidden related point read should look absent");
+        assert!(matches!(hidden, AxonError::NotFound(_)));
 
         let resp = h
             .query_entities(QueryEntitiesRequest {

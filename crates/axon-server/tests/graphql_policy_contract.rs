@@ -24,6 +24,8 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
+use axon_api::test_fixtures::{seed_nexiq_reference_fixture, NexiqReferenceFixture};
+
 type TestStorage = Box<dyn StorageAdapter + Send + Sync>;
 type TestHandler = Arc<Mutex<AxonHandler<TestStorage>>>;
 
@@ -213,6 +215,11 @@ async fn explain_policy_as(server: &axum_test::TestServer, actor: &str, input: &
         "unexpected explainPolicy errors for {actor}: {body}"
     );
     body["data"]["explainPolicy"].clone()
+}
+
+async fn seed_nexiq_fixture(handler: &TestHandler) -> NexiqReferenceFixture {
+    let mut guard = handler.lock().await;
+    seed_nexiq_reference_fixture(&mut *guard).expect("nexiq reference fixture should seed")
 }
 
 async fn seed_policy_fixture(server: &axum_test::TestServer) {
@@ -577,6 +584,277 @@ async fn graphql_policy_read_semantics_are_safe() {
         Value::Null,
         "generic entity payloads must use the same field redaction"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_nexiq_reference_policy_set_applies_visibility_and_redaction() {
+    let (server, handler) = test_server_with_handler();
+    let fixture = seed_nexiq_fixture(&handler).await;
+
+    let consultant = gql_as(
+        &server,
+        fixture.subjects.consultant,
+        &format!(
+            r#"{{
+                visibleEngagement: entity(collection: "{engagements}", id: "{engagement_alpha}") {{ id data }}
+                hiddenEngagement: entity(collection: "{engagements}", id: "{engagement_beta}") {{ id data }}
+                engagements: entities(collection: "{engagements}", limit: 10) {{
+                    totalCount
+                    edges {{ node {{ id }} }}
+                }}
+                visibleContract: entity(collection: "{contracts}", id: "{contract_alpha}") {{ id data }}
+                hiddenContract: entity(collection: "{contracts}", id: "{contract_beta}") {{ id data }}
+                contracts: entities(collection: "{contracts}", limit: 10) {{
+                    totalCount
+                    edges {{ node {{ id }} }}
+                }}
+                visibleTask: entity(collection: "{tasks}", id: "{task_alpha}") {{ id data }}
+                hiddenTask: entity(collection: "{tasks}", id: "{task_beta}") {{ id data }}
+                tasks: entities(collection: "{tasks}", limit: 10) {{
+                    totalCount
+                    edges {{ node {{ id }} }}
+                }}
+                invoice: entity(collection: "{invoices}", id: "{invoice_alpha}") {{ id data }}
+                invoices: entities(collection: "{invoices}", limit: 10) {{
+                    totalCount
+                    edges {{ node {{ id }} }}
+                }}
+            }}"#,
+            engagements = fixture.collections.engagements.as_str(),
+            engagement_alpha = fixture.ids.engagement_alpha.as_str(),
+            engagement_beta = fixture.ids.engagement_beta.as_str(),
+            contracts = fixture.collections.contracts.as_str(),
+            contract_alpha = fixture.ids.contract_alpha.as_str(),
+            contract_beta = fixture.ids.contract_beta.as_str(),
+            tasks = fixture.collections.tasks.as_str(),
+            task_alpha = fixture.ids.task_alpha.as_str(),
+            task_beta = fixture.ids.task_beta.as_str(),
+            invoices = fixture.collections.invoices.as_str(),
+            invoice_alpha = fixture.ids.invoice_alpha.as_str(),
+        ),
+    )
+    .await;
+    assert!(
+        consultant["errors"].is_null(),
+        "unexpected consultant GraphQL errors: {consultant}"
+    );
+    assert_eq!(
+        consultant["data"]["visibleEngagement"]["id"],
+        fixture.ids.engagement_alpha.as_str()
+    );
+    assert_eq!(consultant["data"]["hiddenEngagement"], Value::Null);
+    assert_eq!(consultant["data"]["engagements"]["totalCount"], 1);
+    assert_eq!(
+        consultant["data"]["engagements"]["edges"][0]["node"]["id"],
+        fixture.ids.engagement_alpha.as_str()
+    );
+    assert_eq!(
+        consultant["data"]["visibleContract"]["id"],
+        fixture.ids.contract_alpha.as_str()
+    );
+    assert_eq!(consultant["data"]["hiddenContract"], Value::Null);
+    assert_eq!(consultant["data"]["contracts"]["totalCount"], 1);
+    assert_eq!(
+        consultant["data"]["contracts"]["edges"][0]["node"]["id"],
+        fixture.ids.contract_alpha.as_str()
+    );
+    assert_eq!(
+        consultant["data"]["visibleTask"]["id"],
+        fixture.ids.task_alpha.as_str()
+    );
+    assert_eq!(consultant["data"]["hiddenTask"], Value::Null);
+    assert_eq!(consultant["data"]["tasks"]["totalCount"], 1);
+    assert_eq!(
+        consultant["data"]["tasks"]["edges"][0]["node"]["id"],
+        fixture.ids.task_alpha.as_str()
+    );
+    assert_eq!(consultant["data"]["invoice"], Value::Null);
+    assert_eq!(consultant["data"]["invoices"]["totalCount"], 0);
+
+    let contractor = gql_as(
+        &server,
+        fixture.subjects.contractor,
+        &format!(
+            r#"{{
+                engagement: entity(collection: "{engagements}", id: "{engagement_alpha}") {{ id data }}
+                invoice: entity(collection: "{invoices}", id: "{invoice_alpha}") {{ id data }}
+                invoices: entities(collection: "{invoices}", limit: 10) {{
+                    totalCount
+                    edges {{ node {{ id }} }}
+                }}
+            }}"#,
+            engagements = fixture.collections.engagements.as_str(),
+            engagement_alpha = fixture.ids.engagement_alpha.as_str(),
+            invoices = fixture.collections.invoices.as_str(),
+            invoice_alpha = fixture.ids.invoice_alpha.as_str(),
+        ),
+    )
+    .await;
+    assert!(
+        contractor["errors"].is_null(),
+        "unexpected contractor GraphQL errors: {contractor}"
+    );
+    assert_eq!(
+        contractor["data"]["engagement"]["id"],
+        fixture.ids.engagement_alpha.as_str()
+    );
+    assert_eq!(
+        contractor["data"]["engagement"]["data"]["budget_cents"],
+        Value::Null
+    );
+    assert_eq!(
+        contractor["data"]["engagement"]["data"]["rate_card_id"],
+        Value::Null
+    );
+    assert_eq!(contractor["data"]["invoice"], Value::Null);
+    assert_eq!(contractor["data"]["invoices"]["totalCount"], 0);
+
+    let ops_manager = gql_as(
+        &server,
+        fixture.subjects.ops_manager,
+        &format!(
+            r#"{{
+                contract: entity(collection: "{contracts}", id: "{contract_alpha}") {{ id data }}
+                invoice: entity(collection: "{invoices}", id: "{invoice_alpha}") {{ id data }}
+                timeVisible: entity(collection: "{time_entries}", id: "{time_entry_alpha}") {{ id data }}
+                timeHidden: entity(collection: "{time_entries}", id: "{time_entry_beta}") {{ id data }}
+                timeEntries: entities(collection: "{time_entries}", limit: 10) {{
+                    totalCount
+                    edges {{ node {{ id data }} }}
+                }}
+            }}"#,
+            contracts = fixture.collections.contracts.as_str(),
+            contract_alpha = fixture.ids.contract_alpha.as_str(),
+            invoices = fixture.collections.invoices.as_str(),
+            invoice_alpha = fixture.ids.invoice_alpha.as_str(),
+            time_entries = fixture.collections.time_entries.as_str(),
+            time_entry_alpha = fixture.ids.time_entry_alpha.as_str(),
+            time_entry_beta = fixture.ids.time_entry_beta.as_str(),
+        ),
+    )
+    .await;
+    assert!(
+        ops_manager["errors"].is_null(),
+        "unexpected ops-manager GraphQL errors: {ops_manager}"
+    );
+    assert_eq!(
+        ops_manager["data"]["contract"]["id"],
+        fixture.ids.contract_alpha.as_str()
+    );
+    assert_eq!(
+        ops_manager["data"]["contract"]["data"]["rate_card_entries"],
+        Value::Null
+    );
+    assert_eq!(
+        ops_manager["data"]["invoice"]["id"],
+        fixture.ids.invoice_alpha.as_str()
+    );
+    assert_eq!(
+        ops_manager["data"]["timeVisible"]["id"],
+        fixture.ids.time_entry_alpha.as_str()
+    );
+    assert_eq!(ops_manager["data"]["timeHidden"], Value::Null);
+    assert_eq!(ops_manager["data"]["timeEntries"]["totalCount"], 1);
+    assert_eq!(
+        ops_manager["data"]["timeEntries"]["edges"][0]["node"]["id"],
+        fixture.ids.time_entry_alpha.as_str()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_nexiq_reference_policy_set_returns_stable_write_denials() {
+    let (server, handler) = test_server_with_handler();
+    let fixture = seed_nexiq_fixture(&handler).await;
+
+    let engagement_denial = gql_as(
+        &server,
+        fixture.subjects.consultant,
+        &format!(
+            r#"mutation {{
+                patchEngagements(
+                    id: "{engagement_alpha}",
+                    version: 1,
+                    typedInput: {{ patch: {{ status: "closed" }} }}
+                ) {{ id }}
+            }}"#,
+            engagement_alpha = fixture.ids.engagement_alpha.as_str(),
+        ),
+    )
+    .await;
+    assert_eq!(
+        engagement_denial["errors"][0]["extensions"]["code"],
+        "forbidden"
+    );
+    assert_eq!(
+        engagement_denial["errors"][0]["extensions"]["detail"]["reason"],
+        "field_write_denied"
+    );
+    assert_eq!(
+        engagement_denial["errors"][0]["extensions"]["detail"]["collection"],
+        fixture.collections.engagements.as_str()
+    );
+    assert_eq!(
+        engagement_denial["errors"][0]["extensions"]["detail"]["entity_id"],
+        fixture.ids.engagement_alpha.as_str()
+    );
+    assert_eq!(
+        engagement_denial["errors"][0]["extensions"]["detail"]["field_path"],
+        "status"
+    );
+
+    let time_entry_denial = gql_as(
+        &server,
+        fixture.subjects.ops_manager,
+        &format!(
+            r#"mutation {{
+                patchTimeEntries(
+                    id: "{time_entry_alpha}",
+                    version: 1,
+                    typedInput: {{ patch: {{ status: "approved" }} }}
+                ) {{ id }}
+            }}"#,
+            time_entry_alpha = fixture.ids.time_entry_alpha.as_str(),
+        ),
+    )
+    .await;
+    assert_eq!(
+        time_entry_denial["errors"][0]["extensions"]["code"],
+        "forbidden"
+    );
+    assert_eq!(
+        time_entry_denial["errors"][0]["extensions"]["detail"]["reason"],
+        "row_write_denied"
+    );
+    assert_eq!(
+        time_entry_denial["errors"][0]["extensions"]["detail"]["collection"],
+        fixture.collections.time_entries.as_str()
+    );
+    assert_eq!(
+        time_entry_denial["errors"][0]["extensions"]["detail"]["entity_id"],
+        fixture.ids.time_entry_alpha.as_str()
+    );
+    assert!(
+        time_entry_denial["errors"][0]["extensions"]["detail"]["field_path"].is_null(),
+        "row denial should not name a field path: {time_entry_denial}"
+    );
+
+    let stored = gql_as(
+        &server,
+        fixture.subjects.admin,
+        &format!(
+            r#"{{
+                engagement: entity(collection: "{engagements}", id: "{engagement_alpha}") {{ data }}
+                timeEntry: entity(collection: "{time_entries}", id: "{time_entry_alpha}") {{ data }}
+            }}"#,
+            engagements = fixture.collections.engagements.as_str(),
+            engagement_alpha = fixture.ids.engagement_alpha.as_str(),
+            time_entries = fixture.collections.time_entries.as_str(),
+            time_entry_alpha = fixture.ids.time_entry_alpha.as_str(),
+        ),
+    )
+    .await;
+    assert_eq!(stored["data"]["engagement"]["data"]["status"], "active");
+    assert_eq!(stored["data"]["timeEntry"]["data"]["status"], "submitted");
 }
 
 #[tokio::test(flavor = "multi_thread")]
