@@ -187,6 +187,10 @@ async function previewBudgetIntent(
 		collection?: string;
 		actor?: string;
 		agentId?: string;
+		credentialId?: string;
+		delegatedBy?: string;
+		grantVersion?: number;
+		tenantRole?: string;
 		expiresInSeconds?: number;
 	} = {},
 ): Promise<PreviewedIntent> {
@@ -194,11 +198,22 @@ async function previewBudgetIntent(
 		collection = TASK_COLLECTION,
 		actor = 'finance-agent',
 		agentId,
+		credentialId = `cred-${actor}`,
+		delegatedBy,
+		grantVersion = 7,
+		tenantRole = actor === 'finance-approver' ? 'finance_approver' : 'finance_agent',
 		expiresInSeconds = 600,
 	} = options;
 	const subjectBlock = [`userId: "${actor}"`, ...(agentId ? [`agentId: "${agentId}"`] : [])].join(
 		'\n\t\t\t\t\t',
 	);
+	const fullSubjectBlock = [
+		subjectBlock,
+		`tenantRole: "${tenantRole}"`,
+		`credentialId: "${credentialId}"`,
+		`grantVersion: ${grantVersion}`,
+		...(delegatedBy ? [`delegatedBy: "${delegatedBy}"`] : []),
+	].join('\n\t\t\t\t\t');
 	const data = await gqlAs(
 		request,
 		db,
@@ -215,7 +230,7 @@ async function previewBudgetIntent(
 					}
 				}
 				subject: {
-					${subjectBlock}
+					${fullSubjectBlock}
 				}
 				expiresInSeconds: ${expiresInSeconds}
 			}) {
@@ -291,9 +306,11 @@ async function seedIntentStates(
 
 	const pending = await previewBudgetIntent(request, db, 'task-pending', 20_000, {
 		agentId: 'mcp.finance-cli',
+		grantVersion: 9,
 	});
 	const approved = await previewBudgetIntent(request, db, 'task-approved', 21_000, {
 		agentId: 'mcp.finance-cli',
+		grantVersion: 11,
 	});
 	await approveIntent(request, db, approved.intentId);
 	const rejected = await previewBudgetIntent(request, db, 'task-rejected', 22_000, {
@@ -311,10 +328,13 @@ async function seedIntentStates(
 	const approveTarget = await previewBudgetIntent(request, db, 'task-ui-approve', 23_000, {
 		actor: 'finance-bot',
 		agentId: 'tool.review-console',
+		delegatedBy: 'finance-agent',
+		grantVersion: 13,
 	});
 	const rejectTarget = await previewBudgetIntent(request, db, 'expense-ui-reject', 24_000, {
 		collection: EXPENSE_COLLECTION,
 		agentId: 'mcp.gateway',
+		grantVersion: 15,
 	});
 
 	await new Promise((resolve) => setTimeout(resolve, 5));
@@ -372,6 +392,12 @@ test.describe('Approval inbox', () => {
 		await expect(detail).toContainText('approved');
 		await expect(detail).toContainText('large-budget-needs-finance-approval');
 		await expect(detail).toContainText('task/task-approved');
+		await expect(page.getByTestId('intent-bindings')).toContainText('cred-finance-agent');
+		await expect(page.getByTestId('intent-bindings')).toContainText('11');
+		await expect(page.getByTestId('intent-diff')).toContainText('budget_cents');
+		await expect(page.getByTestId('intent-audit-trail')).toContainText('intent.approve');
+		await expect(page.getByTestId('intent-audit-trail')).toContainText('approved');
+		await expect(page.getByTestId('intent-deep-links')).toContainText('Open audit log');
 	});
 
 	test('supports dense filters, keyboard selection, and inline review without leaving inbox', async ({

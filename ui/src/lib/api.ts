@@ -78,9 +78,10 @@ export type AuditEntry = {
 	data_before: unknown;
 	data_after: unknown;
 	actor: string | null;
-	transaction_id?: number | null;
+	transaction_id?: string | number | null;
 	metadata?: Record<string, string> | null;
 	diff?: Record<string, unknown> | null;
+	intent_lineage?: MutationIntentAuditMetadata | null;
 };
 
 export type AuditQueryResult = {
@@ -252,6 +253,40 @@ export type MutationIntentApprovalState =
 	| 'committed';
 
 export type MutationIntentStatusFilter = MutationIntentApprovalState | 'history' | 'all';
+
+export type MutationIntentAuditOrigin = {
+	surface: string;
+	tool_name?: string | null;
+	request_id?: string | null;
+	operation_hash?: string | null;
+};
+
+export type MutationIntentAuditApprover = {
+	user_id?: string | null;
+	actor?: string | null;
+	tenant_role?: string | null;
+	credential_id?: string | null;
+};
+
+export type MutationIntentAuditLink = {
+	relation: string;
+	audit_id?: number | null;
+	intent_id?: string | null;
+	approval_id?: string | null;
+};
+
+export type MutationIntentAuditMetadata = {
+	intent_id: string;
+	decision: MutationIntentDecision;
+	approval_id?: string | null;
+	policy_version: number;
+	schema_version: number;
+	subject_snapshot: unknown;
+	approver?: MutationIntentAuditApprover | null;
+	reason?: string | null;
+	origin?: MutationIntentAuditOrigin | null;
+	lineage_links?: MutationIntentAuditLink[] | null;
+};
 
 export type MutationApprovalRoute = {
 	role: string;
@@ -631,6 +666,7 @@ function auditEntryFromGraphql(entry: GraphQLAuditEntry): AuditEntry {
 		actor: entry.actor,
 		transaction_id: entry.transactionId ?? null,
 		metadata: entry.metadata ?? null,
+		intent_lineage: null,
 	};
 }
 
@@ -1668,6 +1704,14 @@ export async function fetchEntityAudit(
 
 	return request<AuditQueryResult>(
 		`/audit/entity/${encodeURIComponent(collection)}/${encodeURIComponent(id)}`,
+		undefined,
+		scope,
+	);
+}
+
+export async function fetchIntentAudit(intentId: string, scope: Scope): Promise<AuditQueryResult> {
+	return request<AuditQueryResult>(
+		`/audit/query?intent_id=${encodeURIComponent(intentId)}`,
 		undefined,
 		scope,
 	);

@@ -23,6 +23,7 @@ import {
 	fetchEntities,
 	fetchEntity,
 	fetchEntityAudit,
+	fetchIntentAudit,
 	fetchMutationIntent,
 	fetchMutationIntents,
 	fetchRenderedEntity,
@@ -235,6 +236,7 @@ test('fetchAudit() uses tenant-scoped GraphQL auditLog query', async () => {
 				actor: 'alice',
 				transaction_id: 7,
 				metadata: { source: 'test' },
+				intent_lineage: null,
 			},
 		],
 		next_cursor: 42,
@@ -261,6 +263,41 @@ test('fetchEntityAudit() uses tenant-scoped GraphQL auditLog entity filter', asy
 	expect(body.query).toContain('entityId');
 	expect(body.variables).toEqual({ collection: 'tasks', entityId: 'task-1' });
 	expect(result).toEqual({ entries: [], next_cursor: null });
+});
+
+test('fetchIntentAudit() uses tenant-scoped REST audit query with intent filter', async () => {
+	mockFetch({
+		entries: [
+			{
+				id: 3,
+				timestamp_ns: 1000000000,
+				collection: 'tasks',
+				entity_id: 'task-1',
+				version: 2,
+				mutation: 'intent.approve',
+				data_before: null,
+				data_after: null,
+				actor: 'finance-approver',
+				transaction_id: null,
+				metadata: { reason: 'approved' },
+				intent_lineage: {
+					intent_id: 'mint_1',
+					decision: 'needs_approval',
+					policy_version: 1,
+					schema_version: 1,
+					subject_snapshot: { user_id: 'finance-agent' },
+					reason: 'approved',
+				},
+			},
+		],
+		next_cursor: null,
+	});
+
+	const result = await fetchIntentAudit('mint_1', { tenant: 'acme', database: 'orders' });
+
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/audit/query?intent_id=mint_1');
+	expect(result.entries[0]?.mutation).toBe('intent.approve');
+	expect(result.entries[0]?.intent_lineage?.intent_id).toBe('mint_1');
 });
 
 test('previewMutationIntent() posts typed preview mutation input', async () => {
@@ -1092,6 +1129,7 @@ test('entity rollback helpers use tenant-scoped GraphQL rollbackEntity mutation'
 			actor: 'ui',
 			transaction_id: null,
 			metadata: null,
+			intent_lineage: null,
 		},
 	});
 

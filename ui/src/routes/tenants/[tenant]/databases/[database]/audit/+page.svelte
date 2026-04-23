@@ -33,7 +33,7 @@ let txRollbackConfirming = $state(false);
 let txRollbackMessage = $state<string | null>(null);
 let txRollbackError = $state<string | null>(null);
 
-function txSiblingCount(txId: number | null | undefined): number {
+function txSiblingCount(txId: string | number | null | undefined): number {
 	if (!txId) return 0;
 	return entries.filter((e) => e.transaction_id === txId).length;
 }
