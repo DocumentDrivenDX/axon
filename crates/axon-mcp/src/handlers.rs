@@ -182,9 +182,12 @@ fn tool_policy_metadata(
             can_update: effective.can_update,
             can_delete: effective.can_delete,
         },
+        tool_operation: None,
         redacted_fields: effective.redacted_fields,
         denied_fields: effective.denied_fields,
         envelopes,
+        applicable_envelopes: Vec::new(),
+        envelope_summary: None,
     }
 }
 

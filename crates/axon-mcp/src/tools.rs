@@ -71,12 +71,18 @@ pub struct ToolPolicyMetadata {
     pub collection: String,
     pub policy_version: u32,
     pub capabilities: ToolPolicyCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_operation: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redacted_fields: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub denied_fields: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub envelopes: Vec<ToolPolicyEnvelopeSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub applicable_envelopes: Vec<ToolPolicyEnvelopeSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub envelope_summary: Option<String>,
 }
 
 impl ToolPolicyMetadata {
@@ -89,28 +95,47 @@ impl ToolPolicyMetadata {
             format!("policyVersion={}", self.policy_version),
         ];
 
+        if let Some(operation) = &self.tool_operation {
+            parts.push(format!("toolOperation={operation}"));
+        }
         if !self.redacted_fields.is_empty() {
             parts.push(format!("redactedFields={}", self.redacted_fields.join(",")));
         }
         if !self.denied_fields.is_empty() {
             parts.push(format!("deniedFields={}", self.denied_fields.join(",")));
         }
-        if !self.envelopes.is_empty() {
-            let labels = self
-                .envelopes
-                .iter()
-                .map(|envelope| {
-                    envelope
-                        .name
-                        .clone()
-                        .unwrap_or_else(|| envelope.envelope_id.clone())
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            parts.push(format!("envelopes={labels}"));
+        if let Some(summary) = &self.envelope_summary {
+            parts.push(format!("envelopes={summary}"));
         }
 
         format!("{base}. Policy: {}.", parts.join("; "))
+    }
+
+    fn for_tool(&self, tool_name: &str, collection: &str) -> Self {
+        let tool_operation = tool_operation_for_tool(tool_name, collection).map(str::to_string);
+        let applicable_envelopes = tool_operation
+            .as_deref()
+            .map(|operation| {
+                self.envelopes
+                    .iter()
+                    .filter(|envelope| envelope_applies_to_tool_operation(envelope, operation))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let envelope_summary = envelope_summary_text(&applicable_envelopes);
+
+        Self {
+            collection: self.collection.clone(),
+            policy_version: self.policy_version,
+            capabilities: self.capabilities.clone(),
+            tool_operation,
+            redacted_fields: self.redacted_fields.clone(),
+            denied_fields: self.denied_fields.clone(),
+            envelopes: self.envelopes.clone(),
+            applicable_envelopes,
+            envelope_summary,
+        }
     }
 }
 
@@ -161,6 +186,33 @@ pub struct ToolPolicyEnvelopeSummary {
     pub approval: Option<ToolPolicyApproval>,
 }
 
+impl ToolPolicyEnvelopeSummary {
+    fn label(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.envelope_id)
+    }
+
+    fn summary_text(&self) -> String {
+        let decision = match self.decision.as_str() {
+            "allow" => "autonomous",
+            other => other,
+        };
+        let mut parts = vec![format!("{}:{}={decision}", self.operation, self.label())];
+        if let Some(approval) = &self.approval {
+            if let Some(role) = &approval.role {
+                parts.push(format!("role={role}"));
+            }
+            parts.push(format!("reasonRequired={}", approval.reason_required));
+            if let Some(deadline) = approval.deadline_seconds {
+                parts.push(format!("deadlineSeconds={deadline}"));
+            }
+            if approval.separation_of_duties {
+                parts.push("separationOfDuties=true".into());
+            }
+        }
+        parts.join(" ")
+    }
+}
+
 impl From<PolicyEnvelopeSummary> for ToolPolicyEnvelopeSummary {
     fn from(summary: PolicyEnvelopeSummary) -> Self {
         Self {
@@ -171,6 +223,41 @@ impl From<PolicyEnvelopeSummary> for ToolPolicyEnvelopeSummary {
             decision: policy_decision_name(&summary.decision).to_string(),
             approval: summary.approval.map(ToolPolicyApproval::from),
         }
+    }
+}
+
+fn envelope_summary_text(envelopes: &[ToolPolicyEnvelopeSummary]) -> Option<String> {
+    (!envelopes.is_empty()).then(|| {
+        envelopes
+            .iter()
+            .map(ToolPolicyEnvelopeSummary::summary_text)
+            .collect::<Vec<_>>()
+            .join(", ")
+    })
+}
+
+fn tool_operation_for_tool<'a>(tool_name: &'a str, collection: &str) -> Option<&'a str> {
+    let suffix = tool_name.strip_prefix(collection)?;
+    match suffix {
+        ".create" => Some("create"),
+        ".get" | ".aggregate" | ".link_candidates" | ".neighbors" => Some("read"),
+        ".patch" => Some("patch"),
+        ".delete" => Some("delete"),
+        _ => None,
+    }
+}
+
+fn envelope_applies_to_tool_operation(
+    envelope: &ToolPolicyEnvelopeSummary,
+    tool_operation: &str,
+) -> bool {
+    match tool_operation {
+        "create" => matches!(envelope.operation.as_str(), "create" | "write"),
+        "patch" | "update" | "transition" | "rollback" => {
+            matches!(envelope.operation.as_str(), "update" | "write")
+        }
+        "delete" => matches!(envelope.operation.as_str(), "delete" | "write"),
+        operation => envelope.operation == operation,
     }
 }
 
@@ -230,7 +317,9 @@ impl ToolRegistry {
         self.tools
             .iter()
             .map(|t| {
-                let policy = self.policy_for_tool(&t.name).cloned();
+                let policy = self
+                    .policy_for_tool(&t.name)
+                    .map(|(collection, policy)| policy.for_tool(&t.name, collection));
                 ToolInfo {
                     name: t.name.clone(),
                     description: policy.as_ref().map_or_else(
@@ -244,17 +333,19 @@ impl ToolRegistry {
             .collect()
     }
 
-    fn policy_for_tool(&self, tool_name: &str) -> Option<&ToolPolicyMetadata> {
+    fn policy_for_tool(&self, tool_name: &str) -> Option<(&str, &ToolPolicyMetadata)> {
         self.collection_policies
             .iter()
             .filter_map(|(collection, policy)| {
                 let suffix = tool_name.strip_prefix(collection)?;
-                COLLECTION_TOOL_SUFFIXES
-                    .contains(&suffix)
-                    .then_some((collection.len(), policy))
+                COLLECTION_TOOL_SUFFIXES.contains(&suffix).then_some((
+                    collection.len(),
+                    collection.as_str(),
+                    policy,
+                ))
             })
-            .max_by_key(|(len, _)| *len)
-            .map(|(_, policy)| policy)
+            .max_by_key(|(len, _, _)| *len)
+            .map(|(_, collection, policy)| (collection, policy))
     }
 
     /// Call a tool by name.

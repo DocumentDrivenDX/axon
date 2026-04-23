@@ -532,6 +532,19 @@ async fn mcp_tools_list_includes_crud_after_collection_created() {
 async fn mcp_tools_list_exposes_policy_metadata_matching_graphql_effective_policy() {
     let server = test_server();
     seed_policy_collection(&server).await;
+    server
+        .post("/tenants/default/databases/default/entities/policy_item/p1")
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({
+            "data": {
+                "label": "policy target",
+                "secret": "classified",
+                "amount_cents": 100
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
 
     let effective = gql_as(
         &server,
@@ -591,12 +604,267 @@ async fn mcp_tools_list_exposes_policy_metadata_matching_graphql_effective_polic
         "finance_approver"
     );
     assert_eq!(policy["envelopes"][0]["approval"]["reasonRequired"], true);
+    assert_eq!(policy["toolOperation"], "patch");
+    assert_eq!(
+        policy["applicableEnvelopes"][0]["name"],
+        "large-amount-needs-approval"
+    );
+    assert_eq!(
+        policy["applicableEnvelopes"][0]["decision"],
+        "needs_approval"
+    );
+    assert_eq!(
+        policy["envelopeSummary"],
+        "write:large-amount-needs-approval=needs_approval role=finance_approver reasonRequired=true"
+    );
     assert_eq!(&patch_tool["inputSchema"]["x-axon-policy"], policy);
     let description = patch_tool["description"].as_str().unwrap();
     assert!(description.contains("Policy: canRead=true"));
+    assert!(description.contains("toolOperation=patch"));
     assert!(description.contains("redactedFields=secret"));
     assert!(description.contains("deniedFields=secret"));
-    assert!(description.contains("envelopes=large-amount-needs-approval"));
+    assert!(description.contains(
+        "envelopes=write:large-amount-needs-approval=needs_approval role=finance_approver reasonRequired=true"
+    ));
+
+    let autonomous = explain_policy_as(
+        &server,
+        "contractor",
+        r#"{
+            operation: "patch",
+            collection: "policy_item",
+            entityId: "p1",
+            expectedVersion: 1,
+            patch: { label: "safe autonomous update" }
+        }"#,
+    )
+    .await;
+    assert_eq!(autonomous["operation"], policy["toolOperation"]);
+    assert_eq!(autonomous["decision"], "allow");
+    assert_eq!(capabilities["canUpdate"], true);
+
+    let approval = explain_policy_as(
+        &server,
+        "contractor",
+        r#"{
+            operation: "patch",
+            collection: "policy_item",
+            entityId: "p1",
+            expectedVersion: 1,
+            patch: { amount_cents: 20000 }
+        }"#,
+    )
+    .await;
+    assert_eq!(approval["operation"], policy["toolOperation"]);
+    assert_eq!(approval["policyVersion"], policy["policyVersion"]);
+    assert_eq!(approval["decision"], "needs_approval");
+    assert_eq!(
+        approval["approval"]["name"],
+        policy["applicableEnvelopes"][0]["name"]
+    );
+    assert_eq!(
+        approval["approval"]["decision"],
+        policy["applicableEnvelopes"][0]["decision"]
+    );
+    assert_eq!(
+        approval["approval"]["role"],
+        policy["applicableEnvelopes"][0]["approval"]["role"]
+    );
+    assert_eq!(
+        approval["approval"]["reasonRequired"],
+        policy["applicableEnvelopes"][0]["approval"]["reasonRequired"]
+    );
+    assert!(description.contains(
+        approval["approval"]["name"]
+            .as_str()
+            .expect("approval envelope should have a name")
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_tool_descriptions_summarize_autonomous_and_approval_envelopes() {
+    let server = test_server();
+    server
+        .post("/tenants/default/databases/default/collections/policy_invoice")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "amount_cents": { "type": "integer" },
+                        "memo": { "type": "string" }
+                    }
+                },
+                "access_control": {
+                    "read": { "allow": [{ "name": "all-read" }] },
+                    "create": {
+                        "allow": [{
+                            "name": "finance-agent-create",
+                            "when": { "subject": "user_id", "eq": "finance-agent" }
+                        }]
+                    },
+                    "update": {
+                        "allow": [{
+                            "name": "finance-agent-update",
+                            "when": { "subject": "user_id", "eq": "finance-agent" }
+                        }]
+                    },
+                    "envelopes": {
+                        "write": [
+                            {
+                                "name": "small-amount-autonomous",
+                                "when": { "field": "amount_cents", "lte": 10000 },
+                                "decision": "allow"
+                            },
+                            {
+                                "name": "large-amount-needs-approval",
+                                "when": { "field": "amount_cents", "gt": 10000 },
+                                "decision": "needs_approval",
+                                "approval": {
+                                    "role": "finance_approver",
+                                    "reason_required": true
+                                }
+                            }
+                        ]
+                    }
+                }
+            },
+            "actor": "schema-admin"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+    server
+        .post("/tenants/default/databases/default/entities/policy_invoice/inv-1")
+        .add_header("x-axon-actor", "finance-agent")
+        .json(&json!({
+            "data": {
+                "amount_cents": 5000,
+                "memo": "initial"
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    let effective = gql_as(
+        &server,
+        "finance-agent",
+        r#"{
+            effectivePolicy(collection: "policy_invoice") {
+                canUpdate
+                policyVersion
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        effective["errors"].is_null(),
+        "unexpected GraphQL effectivePolicy error: {effective}"
+    );
+    let effective = &effective["data"]["effectivePolicy"];
+
+    let list = mcp_as(
+        &server,
+        "finance-agent",
+        &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+    )
+    .await;
+    assert!(
+        list["error"].is_null(),
+        "unexpected MCP tools/list error: {list}"
+    );
+    let patch_tool = list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "policy_invoice.patch")
+        .expect("policy_invoice.patch should be listed");
+    let policy = &patch_tool["policy"];
+    assert_eq!(policy["toolOperation"], "patch");
+    assert_eq!(policy["policyVersion"], effective["policyVersion"]);
+    assert_eq!(policy["capabilities"]["canUpdate"], effective["canUpdate"]);
+    assert_eq!(&patch_tool["inputSchema"]["x-axon-policy"], policy);
+
+    let applicable = policy["applicableEnvelopes"].as_array().unwrap();
+    let autonomous = applicable
+        .iter()
+        .find(|envelope| envelope["name"] == "small-amount-autonomous")
+        .expect("autonomous envelope should be applicable to patch");
+    assert_eq!(autonomous["operation"], "write");
+    assert_eq!(autonomous["decision"], "allow");
+    let approval_envelope = applicable
+        .iter()
+        .find(|envelope| envelope["name"] == "large-amount-needs-approval")
+        .expect("approval envelope should be applicable to patch");
+    assert_eq!(approval_envelope["operation"], "write");
+    assert_eq!(approval_envelope["decision"], "needs_approval");
+    assert_eq!(approval_envelope["approval"]["role"], "finance_approver");
+    assert_eq!(approval_envelope["approval"]["reasonRequired"], true);
+
+    let description = patch_tool["description"].as_str().unwrap();
+    assert!(
+        description.contains("toolOperation=patch"),
+        "description should contain tool operation: {description}"
+    );
+    for expected in [
+        "write:small-amount-autonomous=autonomous",
+        "write:large-amount-needs-approval=needs_approval role=finance_approver reasonRequired=true",
+    ] {
+        assert!(
+            description.contains(expected),
+            "description should contain {expected:?}: {description}"
+        );
+        assert!(
+            policy["envelopeSummary"].as_str().unwrap().contains(expected),
+            "input policy metadata should contain {expected:?}: {policy}"
+        );
+    }
+
+    let small_patch = explain_policy_as(
+        &server,
+        "finance-agent",
+        r#"{
+            operation: "patch",
+            collection: "policy_invoice",
+            entityId: "inv-1",
+            expectedVersion: 1,
+            patch: { amount_cents: 9000 }
+        }"#,
+    )
+    .await;
+    assert_eq!(small_patch["operation"], policy["toolOperation"]);
+    assert_eq!(small_patch["policyVersion"], policy["policyVersion"]);
+    assert_eq!(small_patch["decision"], "allow");
+
+    let large_patch = explain_policy_as(
+        &server,
+        "finance-agent",
+        r#"{
+            operation: "patch",
+            collection: "policy_invoice",
+            entityId: "inv-1",
+            expectedVersion: 1,
+            patch: { amount_cents: 20000 }
+        }"#,
+    )
+    .await;
+    assert_eq!(large_patch["operation"], policy["toolOperation"]);
+    assert_eq!(large_patch["policyVersion"], policy["policyVersion"]);
+    assert_eq!(large_patch["decision"], "needs_approval");
+    assert_eq!(large_patch["approval"]["name"], approval_envelope["name"]);
+    assert_eq!(
+        large_patch["approval"]["decision"],
+        approval_envelope["decision"]
+    );
+    assert_eq!(
+        large_patch["approval"]["role"],
+        approval_envelope["approval"]["role"]
+    );
+    assert_eq!(
+        large_patch["approval"]["reasonRequired"],
+        approval_envelope["approval"]["reasonRequired"]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
