@@ -10,6 +10,7 @@ use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
 };
+use axon_core::intent::{ApprovalState, MutationIntent};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use uuid::Uuid;
@@ -62,6 +63,7 @@ impl NumericIdCache {
 
 /// Key for the dedicated link store: (source_col, source_id, link_type, target_col, target_id).
 type LinkKey = (CollectionId, EntityId, String, CollectionId, EntityId);
+type IntentKey = (String, String, String);
 
 /// Combined snapshot of mutable state captured at transaction start.
 #[derive(Debug, Clone)]
@@ -80,6 +82,8 @@ struct TxSnapshot {
     numeric_ids: NumericIdCache,
     /// Dedicated link store snapshot.
     links: BTreeMap<LinkKey, Link>,
+    /// Mutation intent records snapshot.
+    mutation_intents: BTreeMap<IntentKey, MutationIntent>,
 }
 
 /// In-memory storage adapter for testing and development.
@@ -115,6 +119,8 @@ pub struct MemoryStorageAdapter {
     /// Dedicated link store (ADR-010): replaces __axon_links__ pseudo-collection
     /// for new code paths. Keyed by (source_col, source_id, link_type, target_col, target_id).
     links: BTreeMap<LinkKey, Link>,
+    /// Server-side mutation intents keyed by (tenant_id, database_id, intent_id).
+    mutation_intents: BTreeMap<IntentKey, MutationIntent>,
     /// Revoked JWT IDs (ADR-018).
     revoked_jtis: HashSet<Uuid>,
     /// User store (ADR-018).
@@ -164,6 +170,21 @@ fn now_ns() -> u64 {
         .as_nanos() as u64
 }
 
+fn mutation_intent_key(tenant_id: &str, database_id: &str, intent_id: &str) -> IntentKey {
+    (
+        tenant_id.to_string(),
+        database_id.to_string(),
+        intent_id.to_string(),
+    )
+}
+
+fn is_expirable_intent_state(state: &ApprovalState) -> bool {
+    matches!(
+        state,
+        ApprovalState::None | ApprovalState::Pending | ApprovalState::Approved
+    )
+}
+
 fn unregistered_collection_error(collection: &CollectionId) -> AxonError {
     AxonError::InvalidArgument(format!(
         "collection '{}' is not registered",
@@ -194,6 +215,7 @@ impl Default for MemoryStorageAdapter {
             compound_indexes: BTreeMap::new(),
             numeric_ids: NumericIdCache::default(),
             links: BTreeMap::new(),
+            mutation_intents: BTreeMap::new(),
             revoked_jtis: HashSet::new(),
             users: std::sync::Mutex::new(HashMap::new()),
             tenant_members: std::sync::Mutex::new(HashMap::new()),
@@ -505,6 +527,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             compound_indexes: self.compound_indexes.clone(),
             numeric_ids: self.numeric_ids.clone(),
             links: self.links.clone(),
+            mutation_intents: self.mutation_intents.clone(),
         });
         Ok(())
     }
@@ -529,8 +552,119 @@ impl StorageAdapter for MemoryStorageAdapter {
             self.compound_indexes = snapshot.compound_indexes;
             self.numeric_ids = snapshot.numeric_ids;
             self.links = snapshot.links;
+            self.mutation_intents = snapshot.mutation_intents;
         }
         Ok(())
+    }
+
+    fn create_mutation_intent(&mut self, intent: &MutationIntent) -> Result<(), AxonError> {
+        let key = mutation_intent_key(
+            &intent.scope.tenant_id,
+            &intent.scope.database_id,
+            &intent.intent_id,
+        );
+        if self.mutation_intents.contains_key(&key) {
+            return Err(AxonError::AlreadyExists(format!(
+                "mutation intent '{}' already exists in tenant '{}' database '{}'",
+                intent.intent_id, intent.scope.tenant_id, intent.scope.database_id
+            )));
+        }
+        self.mutation_intents.insert(key, intent.clone());
+        Ok(())
+    }
+
+    fn get_mutation_intent(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        intent_id: &str,
+    ) -> Result<Option<MutationIntent>, AxonError> {
+        Ok(self
+            .mutation_intents
+            .get(&mutation_intent_key(tenant_id, database_id, intent_id))
+            .cloned())
+    }
+
+    fn list_pending_mutation_intents(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        let mut intents: Vec<_> = self
+            .mutation_intents
+            .values()
+            .filter(|intent| {
+                intent.scope.tenant_id == tenant_id
+                    && intent.scope.database_id == database_id
+                    && intent.approval_state == ApprovalState::Pending
+                    && intent.expires_at > now_ns
+            })
+            .cloned()
+            .collect();
+        intents.sort_by(|a, b| {
+            a.expires_at
+                .cmp(&b.expires_at)
+                .then_with(|| a.intent_id.cmp(&b.intent_id))
+        });
+        if let Some(limit) = limit {
+            intents.truncate(limit);
+        }
+        Ok(intents)
+    }
+
+    fn list_expired_mutation_intents(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        let mut intents: Vec<_> = self
+            .mutation_intents
+            .values()
+            .filter(|intent| {
+                intent.scope.tenant_id == tenant_id
+                    && intent.scope.database_id == database_id
+                    && intent.expires_at <= now_ns
+                    && is_expirable_intent_state(&intent.approval_state)
+            })
+            .cloned()
+            .collect();
+        intents.sort_by(|a, b| {
+            a.expires_at
+                .cmp(&b.expires_at)
+                .then_with(|| a.intent_id.cmp(&b.intent_id))
+        });
+        if let Some(limit) = limit {
+            intents.truncate(limit);
+        }
+        Ok(intents)
+    }
+
+    fn update_mutation_intent_state(
+        &mut self,
+        tenant_id: &str,
+        database_id: &str,
+        intent_id: &str,
+        expected: ApprovalState,
+        new_state: ApprovalState,
+    ) -> Result<MutationIntent, AxonError> {
+        let key = mutation_intent_key(tenant_id, database_id, intent_id);
+        let intent = self
+            .mutation_intents
+            .get_mut(&key)
+            .ok_or_else(|| AxonError::NotFound(format!("mutation intent '{intent_id}'")))?;
+        if intent.approval_state != expected {
+            return Err(AxonError::InvalidOperation(format!(
+                "mutation intent '{intent_id}' state is '{}', expected '{}'",
+                intent.approval_state.as_str(),
+                expected.as_str()
+            )));
+        }
+        intent.approval_state = new_state;
+        Ok(intent.clone())
     }
 
     fn create_database(&mut self, name: &str) -> Result<(), AxonError> {

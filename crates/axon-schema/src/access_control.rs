@@ -245,6 +245,48 @@ pub struct ApprovalRoute {
     pub separation_of_duties: bool,
 }
 
+impl From<PolicyDecision> for axon_core::intent::MutationIntentDecision {
+    fn from(decision: PolicyDecision) -> Self {
+        match decision {
+            PolicyDecision::Allow => Self::Allow,
+            PolicyDecision::NeedsApproval => Self::NeedsApproval,
+            PolicyDecision::Deny => Self::Deny,
+        }
+    }
+}
+
+impl From<&PolicyDecision> for axon_core::intent::MutationIntentDecision {
+    fn from(decision: &PolicyDecision) -> Self {
+        match decision {
+            PolicyDecision::Allow => Self::Allow,
+            PolicyDecision::NeedsApproval => Self::NeedsApproval,
+            PolicyDecision::Deny => Self::Deny,
+        }
+    }
+}
+
+impl From<ApprovalRoute> for axon_core::intent::MutationApprovalRoute {
+    fn from(route: ApprovalRoute) -> Self {
+        Self {
+            role: route.role,
+            reason_required: route.reason_required,
+            deadline_seconds: route.deadline_seconds,
+            separation_of_duties: route.separation_of_duties,
+        }
+    }
+}
+
+impl From<&ApprovalRoute> for axon_core::intent::MutationApprovalRoute {
+    fn from(route: &ApprovalRoute) -> Self {
+        Self {
+            role: route.role.clone(),
+            reason_required: route.reason_required,
+            deadline_seconds: route.deadline_seconds,
+            separation_of_duties: route.separation_of_duties,
+        }
+    }
+}
+
 /// Declarative policy predicate grammar.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -320,4 +362,44 @@ pub struct SharesRelationPredicate {
     pub field: String,
     pub subject_field: String,
     pub target_field: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use axon_core::intent::{MutationApprovalRoute, MutationIntentDecision};
+    use pretty_assertions::assert_eq;
+
+    use super::*;
+
+    #[test]
+    fn policy_decision_and_approval_route_convert_to_intent_types() {
+        assert_eq!(
+            MutationIntentDecision::from(PolicyDecision::Allow),
+            MutationIntentDecision::Allow
+        );
+        assert_eq!(
+            MutationIntentDecision::from(PolicyDecision::NeedsApproval),
+            MutationIntentDecision::NeedsApproval
+        );
+        assert_eq!(
+            MutationIntentDecision::from(PolicyDecision::Deny),
+            MutationIntentDecision::Deny
+        );
+
+        let route = ApprovalRoute {
+            role: Some("finance_approver".into()),
+            reason_required: true,
+            deadline_seconds: Some(3_600),
+            separation_of_duties: true,
+        };
+        assert_eq!(
+            MutationApprovalRoute::from(&route),
+            MutationApprovalRoute {
+                role: Some("finance_approver".into()),
+                reason_required: true,
+                deadline_seconds: Some(3_600),
+                separation_of_duties: true,
+            }
+        );
+    }
 }

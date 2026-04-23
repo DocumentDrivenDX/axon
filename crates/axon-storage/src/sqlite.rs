@@ -6,6 +6,7 @@ use axon_core::error::AxonError;
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
 };
+use axon_core::intent::{ApprovalState, MutationIntent};
 use axon_core::types::Entity;
 use axon_schema::schema::{CollectionSchema, CollectionView};
 
@@ -344,6 +345,37 @@ impl SqliteStorageAdapter {
                     transaction_id TEXT,
                     entry_json     TEXT NOT NULL
                 )",
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE TABLE IF NOT EXISTS mutation_intents (
+                    tenant_id      TEXT NOT NULL,
+                    database_id    TEXT NOT NULL,
+                    intent_id      TEXT NOT NULL,
+                    decision       TEXT NOT NULL,
+                    approval_state TEXT NOT NULL,
+                    expires_at_ns  INTEGER NOT NULL,
+                    intent_json    TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, database_id, intent_id)
+                )",
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_mutation_intents_pending
+                 ON mutation_intents
+                    (tenant_id, database_id, approval_state, expires_at_ns, intent_id)",
+            )
+            .execute(&self.pool),
+        )?;
+        self.block_on(
+            sqlx::query(
+                "CREATE INDEX IF NOT EXISTS idx_mutation_intents_expired
+                 ON mutation_intents
+                    (tenant_id, database_id, expires_at_ns, approval_state, intent_id)",
             )
             .execute(&self.pool),
         )?;
@@ -885,6 +917,12 @@ impl SqliteStorageAdapter {
         })
     }
 
+    fn row_to_mutation_intent(row: &sqlx::sqlite::SqliteRow) -> Result<MutationIntent, AxonError> {
+        use sqlx::Row;
+        let intent_json: String = row.get("intent_json");
+        serde_json::from_str(&intent_json).map_err(AxonError::Serialization)
+    }
+
     /// Run a raw SQL query and return the count (as i64).
     /// Used in tests that need to verify row counts directly.
     pub fn query_scalar_i64(&self, sql: &str) -> Result<i64, AxonError> {
@@ -1142,6 +1180,154 @@ impl StorageAdapter for SqliteStorageAdapter {
         self.block_on(sqlx::query("ROLLBACK").execute(&self.pool))?;
         self.in_tx = false;
         Ok(())
+    }
+
+    fn create_mutation_intent(&mut self, intent: &MutationIntent) -> Result<(), AxonError> {
+        let intent_json = serde_json::to_string(intent)?;
+        let result = self.block_on(
+            sqlx::query(
+                "INSERT OR IGNORE INTO mutation_intents
+                    (tenant_id, database_id, intent_id, decision, approval_state, expires_at_ns, intent_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )
+            .bind(intent.scope.tenant_id.as_str())
+            .bind(intent.scope.database_id.as_str())
+            .bind(intent.intent_id.as_str())
+            .bind(intent.decision.as_str())
+            .bind(intent.approval_state.as_str())
+            .bind(intent.expires_at as i64)
+            .bind(intent_json)
+            .execute(&self.pool),
+        )?;
+        if result.rows_affected() == 0 {
+            return Err(AxonError::AlreadyExists(format!(
+                "mutation intent '{}' already exists in tenant '{}' database '{}'",
+                intent.intent_id, intent.scope.tenant_id, intent.scope.database_id
+            )));
+        }
+        Ok(())
+    }
+
+    fn get_mutation_intent(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        intent_id: &str,
+    ) -> Result<Option<MutationIntent>, AxonError> {
+        let row = self.block_on(
+            sqlx::query(
+                "SELECT intent_json FROM mutation_intents
+                 WHERE tenant_id = ?1 AND database_id = ?2 AND intent_id = ?3",
+            )
+            .bind(tenant_id)
+            .bind(database_id)
+            .bind(intent_id)
+            .fetch_optional(&self.pool),
+        )?;
+        row.as_ref().map(Self::row_to_mutation_intent).transpose()
+    }
+
+    fn list_pending_mutation_intents(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        let limit = limit.unwrap_or(i64::MAX as usize) as i64;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT intent_json FROM mutation_intents
+                 WHERE tenant_id = ?1
+                   AND database_id = ?2
+                   AND approval_state = ?3
+                   AND expires_at_ns > ?4
+                 ORDER BY expires_at_ns ASC, intent_id ASC
+                 LIMIT ?5",
+            )
+            .bind(tenant_id)
+            .bind(database_id)
+            .bind(ApprovalState::Pending.as_str())
+            .bind(now_ns as i64)
+            .bind(limit)
+            .fetch_all(&self.pool),
+        )?;
+        rows.iter().map(Self::row_to_mutation_intent).collect()
+    }
+
+    fn list_expired_mutation_intents(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        let limit = limit.unwrap_or(i64::MAX as usize) as i64;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT intent_json FROM mutation_intents
+                 WHERE tenant_id = ?1
+                   AND database_id = ?2
+                   AND expires_at_ns <= ?3
+                   AND approval_state IN (?4, ?5, ?6)
+                 ORDER BY expires_at_ns ASC, intent_id ASC
+                 LIMIT ?7",
+            )
+            .bind(tenant_id)
+            .bind(database_id)
+            .bind(now_ns as i64)
+            .bind(ApprovalState::None.as_str())
+            .bind(ApprovalState::Pending.as_str())
+            .bind(ApprovalState::Approved.as_str())
+            .bind(limit)
+            .fetch_all(&self.pool),
+        )?;
+        rows.iter().map(Self::row_to_mutation_intent).collect()
+    }
+
+    fn update_mutation_intent_state(
+        &mut self,
+        tenant_id: &str,
+        database_id: &str,
+        intent_id: &str,
+        expected: ApprovalState,
+        new_state: ApprovalState,
+    ) -> Result<MutationIntent, AxonError> {
+        let mut intent = self
+            .get_mutation_intent(tenant_id, database_id, intent_id)?
+            .ok_or_else(|| AxonError::NotFound(format!("mutation intent '{intent_id}'")))?;
+        if intent.approval_state != expected {
+            return Err(AxonError::InvalidOperation(format!(
+                "mutation intent '{intent_id}' state is '{}', expected '{}'",
+                intent.approval_state.as_str(),
+                expected.as_str()
+            )));
+        }
+        intent.approval_state = new_state;
+        let intent_json = serde_json::to_string(&intent)?;
+        let result = self.block_on(
+            sqlx::query(
+                "UPDATE mutation_intents
+                 SET approval_state = ?1, intent_json = ?2
+                 WHERE tenant_id = ?3
+                   AND database_id = ?4
+                   AND intent_id = ?5
+                   AND approval_state = ?6",
+            )
+            .bind(intent.approval_state.as_str())
+            .bind(intent_json)
+            .bind(tenant_id)
+            .bind(database_id)
+            .bind(intent_id)
+            .bind(expected.as_str())
+            .execute(&self.pool),
+        )?;
+        if result.rows_affected() == 0 {
+            return Err(AxonError::InvalidOperation(format!(
+                "mutation intent '{intent_id}' state changed before transition"
+            )));
+        }
+        Ok(intent)
     }
 
     fn create_database(&mut self, name: &str) -> Result<(), AxonError> {
@@ -2377,6 +2563,10 @@ impl StorageAdapter for SqliteStorageAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axon_core::intent::{
+        CanonicalOperationMetadata, MutationIntentDecision, MutationIntentScopeBinding,
+        MutationIntentSubjectBinding, MutationOperationKind, MutationReviewSummary,
+    };
     use axon_core::types::Link;
     use serde_json::json;
     use tempfile::NamedTempFile;
@@ -2387,6 +2577,30 @@ mod tests {
 
     fn entity(id: &str) -> Entity {
         Entity::new(tasks(), EntityId::new(id), json!({"title": id}))
+    }
+
+    fn intent(intent_id: &str) -> MutationIntent {
+        MutationIntent {
+            intent_id: intent_id.into(),
+            scope: MutationIntentScopeBinding {
+                tenant_id: "tenant-a".into(),
+                database_id: "finance".into(),
+            },
+            subject: MutationIntentSubjectBinding::default(),
+            schema_version: 1,
+            policy_version: 1,
+            operation: CanonicalOperationMetadata {
+                operation_kind: MutationOperationKind::UpdateEntity,
+                operation_hash: format!("sha256:{intent_id}"),
+                canonical_operation: Some(json!({"id": intent_id})),
+            },
+            pre_images: Vec::new(),
+            decision: MutationIntentDecision::NeedsApproval,
+            approval_state: ApprovalState::Pending,
+            approval_route: None,
+            expires_at: 2_000,
+            review_summary: MutationReviewSummary::default(),
+        }
     }
 
     fn store() -> SqliteStorageAdapter {
@@ -2985,6 +3199,33 @@ mod tests {
         assert_eq!(e.id.as_str(), "t-001");
         assert_eq!(e.data["title"], "t-001");
         assert_eq!(e.version, 1);
+    }
+
+    #[test]
+    fn mutation_intents_persist_across_reopen() {
+        let file = NamedTempFile::new().expect("temp sqlite file should be created");
+        let path = file.path().to_str().expect("temp path should be utf-8");
+
+        {
+            let mut s = SqliteStorageAdapter::open(path).expect("sqlite file should open");
+            s.create_mutation_intent(&intent("mint-reopen"))
+                .expect("intent create should succeed");
+            s.update_mutation_intent_state(
+                "tenant-a",
+                "finance",
+                "mint-reopen",
+                ApprovalState::Pending,
+                ApprovalState::Approved,
+            )
+            .expect("intent state update should succeed");
+        }
+
+        let reopened = SqliteStorageAdapter::open(path).expect("sqlite file should reopen");
+        let stored = reopened
+            .get_mutation_intent("tenant-a", "finance", "mint-reopen")
+            .expect("intent lookup should succeed")
+            .expect("intent should persist");
+        assert_eq!(stored.approval_state, ApprovalState::Approved);
     }
 
     #[test]

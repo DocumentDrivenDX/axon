@@ -8,6 +8,7 @@ use axon_core::auth::{
 };
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, QualifiedCollectionId};
+use axon_core::intent::{ApprovalState, MutationIntent};
 use axon_core::types::{Entity, Link};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use uuid::Uuid;
@@ -252,6 +253,76 @@ pub trait StorageAdapter: Send + Sync {
     /// override this method.
     fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
         Ok(entry)
+    }
+
+    // ── Mutation intent persistence (FEAT-030) ──────────────────────────────
+
+    /// Persist a server-side mutation intent record.
+    ///
+    /// Intent IDs are unique within a tenant/database scope. Implementations
+    /// must reject duplicate `(tenant_id, database_id, intent_id)` records.
+    fn create_mutation_intent(&mut self, intent: &MutationIntent) -> Result<(), AxonError> {
+        let _ = intent;
+        Err(AxonError::InvalidOperation(
+            "mutation intent persistence not supported by this adapter".into(),
+        ))
+    }
+
+    /// Retrieve an intent by tenant/database scope and stable intent ID.
+    fn get_mutation_intent(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        intent_id: &str,
+    ) -> Result<Option<MutationIntent>, AxonError> {
+        let _ = (tenant_id, database_id, intent_id);
+        Ok(None)
+    }
+
+    /// List unexpired review-pending intents for a tenant/database scope.
+    fn list_pending_mutation_intents(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        let _ = (tenant_id, database_id, now_ns, limit);
+        Ok(vec![])
+    }
+
+    /// List expired, non-terminal intents for a tenant/database scope.
+    ///
+    /// This powers background expiry scans. Implementations should return
+    /// intents whose `expires_at <= now_ns` and whose approval state is not
+    /// already `expired`, `rejected`, or `committed`.
+    fn list_expired_mutation_intents(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        let _ = (tenant_id, database_id, now_ns, limit);
+        Ok(vec![])
+    }
+
+    /// Transition an intent approval state if it currently matches `expected`.
+    ///
+    /// Returns the updated intent record. This conditional transition prevents
+    /// approval/rejection/commit races from silently overwriting each other.
+    fn update_mutation_intent_state(
+        &mut self,
+        tenant_id: &str,
+        database_id: &str,
+        intent_id: &str,
+        expected: ApprovalState,
+        new_state: ApprovalState,
+    ) -> Result<MutationIntent, AxonError> {
+        let _ = (tenant_id, database_id, intent_id, expected, new_state);
+        Err(AxonError::InvalidOperation(
+            "mutation intent state transitions not supported by this adapter".into(),
+        ))
     }
 
     // ── Database and namespace catalogs (FEAT-014) ─────────────────────────
@@ -1157,6 +1228,51 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
     }
     fn append_audit_entry(&mut self, entry: AuditEntry) -> Result<AuditEntry, AxonError> {
         (**self).append_audit_entry(entry)
+    }
+    fn create_mutation_intent(&mut self, intent: &MutationIntent) -> Result<(), AxonError> {
+        (**self).create_mutation_intent(intent)
+    }
+    fn get_mutation_intent(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        intent_id: &str,
+    ) -> Result<Option<MutationIntent>, AxonError> {
+        (**self).get_mutation_intent(tenant_id, database_id, intent_id)
+    }
+    fn list_pending_mutation_intents(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        (**self).list_pending_mutation_intents(tenant_id, database_id, now_ns, limit)
+    }
+    fn list_expired_mutation_intents(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        (**self).list_expired_mutation_intents(tenant_id, database_id, now_ns, limit)
+    }
+    fn update_mutation_intent_state(
+        &mut self,
+        tenant_id: &str,
+        database_id: &str,
+        intent_id: &str,
+        expected: ApprovalState,
+        new_state: ApprovalState,
+    ) -> Result<MutationIntent, AxonError> {
+        (**self).update_mutation_intent_state(
+            tenant_id,
+            database_id,
+            intent_id,
+            expected,
+            new_state,
+        )
     }
     fn create_database(&mut self, name: &str) -> Result<(), AxonError> {
         (**self).create_database(name)

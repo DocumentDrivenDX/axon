@@ -10,6 +10,7 @@ pub mod clock;
 pub mod error;
 pub mod guardrails;
 pub mod id;
+pub mod intent;
 pub mod topology;
 pub mod types;
 
@@ -26,5 +27,11 @@ pub use guardrails::{
 pub use id::{
     CollectionId, EntityId, LinkId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE,
     DEFAULT_SCHEMA,
+};
+pub use intent::{
+    ApprovalState, CanonicalOperationMetadata, ExecutableMutationIntent, MutationApprovalRoute,
+    MutationIntent, MutationIntentDecision, MutationIntentModelError, MutationIntentScopeBinding,
+    MutationIntentSubjectBinding, MutationIntentToken, MutationIntentTokenLookupError,
+    MutationIntentTokenSigner, MutationOperationKind, MutationReviewSummary, PreImageBinding,
 };
 pub use types::{Entity, GateResult, Link, RuleViolation, LINKS_COLLECTION};

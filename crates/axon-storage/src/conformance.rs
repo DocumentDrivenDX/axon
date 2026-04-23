@@ -21,6 +21,12 @@ macro_rules! storage_conformance_tests {
             use $crate::adapter::StorageAdapter;
             use axon_core::error::AxonError;
             use axon_core::id::{CollectionId, EntityId};
+            use axon_core::intent::{
+                ApprovalState, CanonicalOperationMetadata, MutationIntent,
+                MutationIntentDecision, MutationIntentScopeBinding,
+                MutationIntentSubjectBinding, MutationOperationKind,
+                MutationReviewSummary, PreImageBinding,
+            };
             use axon_core::types::Entity;
             use axon_schema::{diff_schemas, Compatibility};
             use axon_schema::schema::{CollectionSchema, CollectionView};
@@ -36,6 +42,69 @@ macro_rules! storage_conformance_tests {
 
             fn store() -> impl StorageAdapter {
                 $make_adapter
+            }
+
+            fn intent(
+                tenant_id: &str,
+                database_id: &str,
+                intent_id: &str,
+                approval_state: ApprovalState,
+                expires_at: u64,
+            ) -> MutationIntent {
+                let decision = match approval_state {
+                    ApprovalState::None => MutationIntentDecision::Allow,
+                    ApprovalState::Pending
+                    | ApprovalState::Approved
+                    | ApprovalState::Rejected
+                    | ApprovalState::Expired
+                    | ApprovalState::Committed => MutationIntentDecision::NeedsApproval,
+                };
+
+                MutationIntent {
+                    intent_id: intent_id.into(),
+                    scope: MutationIntentScopeBinding {
+                        tenant_id: tenant_id.into(),
+                        database_id: database_id.into(),
+                    },
+                    subject: MutationIntentSubjectBinding {
+                        user_id: Some("usr_requester".into()),
+                        agent_id: Some("agent_reconciler".into()),
+                        delegated_by: None,
+                        tenant_role: Some("member".into()),
+                        credential_id: Some("cred_live".into()),
+                        grant_version: Some(1),
+                        attributes: Default::default(),
+                    },
+                    schema_version: 1,
+                    policy_version: 1,
+                    operation: CanonicalOperationMetadata {
+                        operation_kind: MutationOperationKind::UpdateEntity,
+                        operation_hash: format!("sha256:{intent_id}"),
+                        canonical_operation: Some(json!({
+                            "collection": "tasks",
+                            "id": "t-001",
+                            "patch": {"title": intent_id}
+                        })),
+                    },
+                    pre_images: vec![PreImageBinding::Entity {
+                        collection: tasks(),
+                        id: EntityId::new("t-001"),
+                        version: 1,
+                    }],
+                    decision,
+                    approval_state,
+                    approval_route: None,
+                    expires_at,
+                    review_summary: MutationReviewSummary {
+                        title: Some(format!("Review {intent_id}")),
+                        summary: format!("Review mutation intent {intent_id}"),
+                        risk: None,
+                        affected_records: Vec::new(),
+                        affected_fields: vec!["title".into()],
+                        diff: json!({"title": {"after": intent_id}}),
+                        policy_explanation: vec!["test policy matched".into()],
+                    },
+                }
             }
 
             // ── Core entity operations ──────────────────────────────────
@@ -259,6 +328,140 @@ macro_rules! storage_conformance_tests {
                 let mut s = store();
                 // Should not error.
                 s.abort_tx().expect("test operation should succeed");
+            }
+
+            // ── Mutation intent persistence (FEAT-030) ─────────────────
+
+            #[test]
+            fn create_get_mutation_intent_roundtrip() {
+                let mut s = store();
+                let expected = intent(
+                    "tenant-a",
+                    "finance",
+                    "mint-001",
+                    ApprovalState::Pending,
+                    2_000,
+                );
+
+                s.create_mutation_intent(&expected)
+                    .expect("intent create should succeed");
+                let got = s
+                    .get_mutation_intent("tenant-a", "finance", "mint-001")
+                    .expect("intent lookup should succeed")
+                    .expect("intent should exist");
+                assert_eq!(got, expected);
+
+                let duplicate = s
+                    .create_mutation_intent(&expected)
+                    .expect_err("duplicate intent create should fail");
+                assert!(
+                    matches!(duplicate, AxonError::AlreadyExists(_)),
+                    "expected AlreadyExists, got: {duplicate}"
+                );
+            }
+
+            #[test]
+            fn pending_mutation_intents_are_scoped_and_ordered() {
+                let mut s = store();
+                for intent in [
+                    intent("tenant-a", "finance", "mint-late", ApprovalState::Pending, 3_000),
+                    intent("tenant-a", "finance", "mint-early", ApprovalState::Pending, 2_000),
+                    intent("tenant-a", "ops", "mint-other-db", ApprovalState::Pending, 1_500),
+                    intent("tenant-b", "finance", "mint-other-tenant", ApprovalState::Pending, 1_500),
+                    intent("tenant-a", "finance", "mint-approved", ApprovalState::Approved, 1_500),
+                    intent("tenant-a", "finance", "mint-expired", ApprovalState::Pending, 900),
+                ] {
+                    s.create_mutation_intent(&intent)
+                        .expect("intent create should succeed");
+                }
+
+                let pending = s
+                    .list_pending_mutation_intents("tenant-a", "finance", 1_000, None)
+                    .expect("pending list should succeed");
+                let ids: Vec<_> = pending.iter().map(|intent| intent.intent_id.as_str()).collect();
+                assert_eq!(ids, vec!["mint-early", "mint-late"]);
+
+                let limited = s
+                    .list_pending_mutation_intents("tenant-a", "finance", 1_000, Some(1))
+                    .expect("limited pending list should succeed");
+                assert_eq!(limited.len(), 1);
+                assert_eq!(limited[0].intent_id, "mint-early");
+            }
+
+            #[test]
+            fn update_mutation_intent_state_is_conditional() {
+                let mut s = store();
+                let initial = intent(
+                    "tenant-a",
+                    "finance",
+                    "mint-state",
+                    ApprovalState::Pending,
+                    2_000,
+                );
+                s.create_mutation_intent(&initial)
+                    .expect("intent create should succeed");
+
+                let updated = s
+                    .update_mutation_intent_state(
+                        "tenant-a",
+                        "finance",
+                        "mint-state",
+                        ApprovalState::Pending,
+                        ApprovalState::Approved,
+                    )
+                    .expect("state transition should succeed");
+                assert_eq!(updated.approval_state, ApprovalState::Approved);
+
+                let stored = s
+                    .get_mutation_intent("tenant-a", "finance", "mint-state")
+                    .expect("intent lookup should succeed")
+                    .expect("intent should exist");
+                assert_eq!(stored.approval_state, ApprovalState::Approved);
+
+                let err = s
+                    .update_mutation_intent_state(
+                        "tenant-a",
+                        "finance",
+                        "mint-state",
+                        ApprovalState::Pending,
+                        ApprovalState::Rejected,
+                    )
+                    .expect_err("stale state transition should fail");
+                assert!(
+                    matches!(err, AxonError::InvalidOperation(_)),
+                    "expected InvalidOperation, got: {err}"
+                );
+            }
+
+            #[test]
+            fn expired_mutation_intent_scan_returns_non_terminal_states_only() {
+                let mut s = store();
+                for intent in [
+                    intent("tenant-a", "finance", "mint-none", ApprovalState::None, 900),
+                    intent("tenant-a", "finance", "mint-pending", ApprovalState::Pending, 800),
+                    intent("tenant-a", "finance", "mint-approved", ApprovalState::Approved, 700),
+                    intent("tenant-a", "finance", "mint-rejected", ApprovalState::Rejected, 600),
+                    intent("tenant-a", "finance", "mint-expired", ApprovalState::Expired, 500),
+                    intent("tenant-a", "finance", "mint-committed", ApprovalState::Committed, 400),
+                    intent("tenant-a", "finance", "mint-live", ApprovalState::Pending, 2_000),
+                    intent("tenant-b", "finance", "mint-other-tenant", ApprovalState::Pending, 300),
+                ] {
+                    s.create_mutation_intent(&intent)
+                        .expect("intent create should succeed");
+                }
+
+                let expired = s
+                    .list_expired_mutation_intents("tenant-a", "finance", 1_000, None)
+                    .expect("expired scan should succeed");
+                let ids: Vec<_> = expired.iter().map(|intent| intent.intent_id.as_str()).collect();
+                assert_eq!(ids, vec!["mint-approved", "mint-pending", "mint-none"]);
+
+                let limited = s
+                    .list_expired_mutation_intents("tenant-a", "finance", 1_000, Some(2))
+                    .expect("limited expired scan should succeed");
+                let limited_ids: Vec<_> =
+                    limited.iter().map(|intent| intent.intent_id.as_str()).collect();
+                assert_eq!(limited_ids, vec!["mint-approved", "mint-pending"]);
             }
 
             // ── Schema persistence ──────────────────────────────────────
