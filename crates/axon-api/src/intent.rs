@@ -1,0 +1,669 @@
+use std::collections::HashMap;
+use std::error::Error;
+use std::fmt;
+
+use axon_core::id::{CollectionId, EntityId, LinkId};
+use axon_schema::access_control::{ApprovalRoute, PolicyDecision};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Tenant/database scope bound into a mutation intent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutationIntentScopeBinding {
+    /// Tenant route context active when the intent was previewed.
+    pub tenant_id: String,
+    /// Database route context active when the intent was previewed.
+    pub database_id: String,
+}
+
+/// Request subject snapshot bound into a mutation intent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MutationIntentSubjectBinding {
+    /// Stable Axon user ID when a human principal exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// Stable service or agent identity when delegated or service-originated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+    /// Principal that delegated authority to the agent, when applicable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delegated_by: Option<String>,
+    /// Tenant role resolved at preview time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_role: Option<String>,
+    /// Credential that authenticated the preview request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+    /// Version of the credential grant snapshot used for the preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grant_version: Option<u64>,
+    /// Request-scoped policy attributes resolved at preview time.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub attributes: HashMap<String, Value>,
+}
+
+/// Entity or link version reviewed during mutation preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PreImageBinding {
+    /// Entity version reviewed by the caller or approver.
+    Entity {
+        /// Collection that stores the entity.
+        collection: CollectionId,
+        /// Entity ID.
+        id: EntityId,
+        /// Version observed during preview.
+        version: u64,
+    },
+    /// Link version reviewed by the caller or approver.
+    Link {
+        /// Collection that stores the link record.
+        collection: CollectionId,
+        /// Link ID.
+        id: LinkId,
+        /// Version observed during preview.
+        version: u64,
+    },
+}
+
+/// Canonical operation class for an intent-bound write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationOperationKind {
+    CreateEntity,
+    UpdateEntity,
+    PatchEntity,
+    DeleteEntity,
+    CreateLink,
+    DeleteLink,
+    Transaction,
+    Transition,
+    Rollback,
+    Revert,
+}
+
+/// Canonical operation metadata bound into a mutation intent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CanonicalOperationMetadata {
+    /// Operation class represented by the canonical payload.
+    pub operation_kind: MutationOperationKind,
+    /// Hash of the canonical mutation input, usually prefixed with `sha256:`.
+    pub operation_hash: String,
+    /// Optional canonical payload retained for diagnostics or tests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_operation: Option<Value>,
+}
+
+/// Policy envelope decision captured by mutation preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationIntentDecision {
+    Allow,
+    NeedsApproval,
+    Deny,
+}
+
+impl MutationIntentDecision {
+    /// Returns whether the decision may produce an executable intent token.
+    pub fn can_have_executable_token(&self) -> bool {
+        matches!(self, Self::Allow | Self::NeedsApproval)
+    }
+}
+
+impl From<PolicyDecision> for MutationIntentDecision {
+    fn from(decision: PolicyDecision) -> Self {
+        match decision {
+            PolicyDecision::Allow => Self::Allow,
+            PolicyDecision::NeedsApproval => Self::NeedsApproval,
+            PolicyDecision::Deny => Self::Deny,
+        }
+    }
+}
+
+impl From<&PolicyDecision> for MutationIntentDecision {
+    fn from(decision: &PolicyDecision) -> Self {
+        match decision {
+            PolicyDecision::Allow => Self::Allow,
+            PolicyDecision::NeedsApproval => Self::NeedsApproval,
+            PolicyDecision::Deny => Self::Deny,
+        }
+    }
+}
+
+/// Review lifecycle state for a mutation intent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalState {
+    None,
+    Pending,
+    Approved,
+    Rejected,
+    Expired,
+    Committed,
+}
+
+/// Human approval route captured from a matching policy envelope.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MutationApprovalRoute {
+    /// Role whose members can approve the intent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Whether approval must include a human-readable reason.
+    #[serde(default)]
+    pub reason_required: bool,
+    /// Relative approval deadline in seconds from preview time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_seconds: Option<u64>,
+    /// Whether the requester/delegator is forbidden from approving.
+    #[serde(default)]
+    pub separation_of_duties: bool,
+}
+
+impl From<ApprovalRoute> for MutationApprovalRoute {
+    fn from(route: ApprovalRoute) -> Self {
+        Self {
+            role: route.role,
+            reason_required: route.reason_required,
+            deadline_seconds: route.deadline_seconds,
+            separation_of_duties: route.separation_of_duties,
+        }
+    }
+}
+
+impl From<&ApprovalRoute> for MutationApprovalRoute {
+    fn from(route: &ApprovalRoute) -> Self {
+        Self {
+            role: route.role.clone(),
+            reason_required: route.reason_required,
+            deadline_seconds: route.deadline_seconds,
+            separation_of_duties: route.separation_of_duties,
+        }
+    }
+}
+
+/// Approver-safe diff and policy summary for a mutation intent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct MutationReviewSummary {
+    /// Short operator-facing title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Human-readable summary of the proposed change.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary: String,
+    /// Optional risk label or explanation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<String>,
+    /// Records affected by the reviewed operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected_records: Vec<PreImageBinding>,
+    /// Field paths affected by the reviewed operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub affected_fields: Vec<String>,
+    /// Computed diff, redacted to the approver-safe view.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub diff: Value,
+    /// Policy rule explanations safe to show to operators or agents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_explanation: Vec<String>,
+}
+
+/// Server-side mutation intent record bound to preview, approval, and commit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MutationIntent {
+    /// Stable ID for lookup, approval, audit, and token binding.
+    pub intent_id: String,
+    /// Tenant/database scope binding.
+    #[serde(flatten)]
+    pub scope: MutationIntentScopeBinding,
+    /// Subject and grant binding captured at preview time.
+    pub subject: MutationIntentSubjectBinding,
+    /// Collection schema version active during preview.
+    pub schema_version: u32,
+    /// Policy version active during preview.
+    pub policy_version: u32,
+    /// Canonical operation metadata.
+    #[serde(flatten)]
+    pub operation: CanonicalOperationMetadata,
+    /// Entity and link versions reviewed during preview.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pre_images: Vec<PreImageBinding>,
+    /// Policy envelope decision.
+    pub decision: MutationIntentDecision,
+    /// Approval lifecycle state.
+    pub approval_state: ApprovalState,
+    /// Approval route when the decision is `needs_approval`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_route: Option<MutationApprovalRoute>,
+    /// Expiration timestamp in nanoseconds since Unix epoch.
+    pub expires_at: u64,
+    /// Approver-safe review summary.
+    #[serde(default)]
+    pub review_summary: MutationReviewSummary,
+}
+
+impl MutationIntent {
+    /// Returns whether this intent's decision may be executed with a token.
+    pub fn can_have_executable_token(&self) -> bool {
+        self.decision.can_have_executable_token()
+    }
+}
+
+/// Opaque mutation intent token returned by allowed or approval-routed previews.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct MutationIntentToken(String);
+
+impl MutationIntentToken {
+    /// Wraps an opaque token string.
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    /// Returns the opaque token string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Intent plus token for decisions that can legally be committed later.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    try_from = "ExecutableMutationIntentWire",
+    into = "ExecutableMutationIntentWire"
+)]
+pub struct ExecutableMutationIntent {
+    intent: MutationIntent,
+    intent_token: MutationIntentToken,
+}
+
+impl ExecutableMutationIntent {
+    /// Creates an executable token binding for an allowed or approval-routed intent.
+    pub fn new(
+        intent: MutationIntent,
+        intent_token: MutationIntentToken,
+    ) -> Result<Self, MutationIntentModelError> {
+        if intent.can_have_executable_token() {
+            Ok(Self {
+                intent,
+                intent_token,
+            })
+        } else {
+            Err(MutationIntentModelError::DeniedIntentToken {
+                intent_id: intent.intent_id,
+            })
+        }
+    }
+
+    /// Intent record referenced by this executable token.
+    pub fn intent(&self) -> &MutationIntent {
+        &self.intent
+    }
+
+    /// Opaque token that resolves to the intent record.
+    pub fn intent_token(&self) -> &MutationIntentToken {
+        &self.intent_token
+    }
+
+    /// Consumes the wrapper and returns the record plus token.
+    pub fn into_parts(self) -> (MutationIntent, MutationIntentToken) {
+        (self.intent, self.intent_token)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ExecutableMutationIntentWire {
+    intent: MutationIntent,
+    intent_token: MutationIntentToken,
+}
+
+impl TryFrom<ExecutableMutationIntentWire> for ExecutableMutationIntent {
+    type Error = MutationIntentModelError;
+
+    fn try_from(value: ExecutableMutationIntentWire) -> Result<Self, Self::Error> {
+        Self::new(value.intent, value.intent_token)
+    }
+}
+
+impl From<ExecutableMutationIntent> for ExecutableMutationIntentWire {
+    fn from(value: ExecutableMutationIntent) -> Self {
+        let (intent, intent_token) = value.into_parts();
+        Self {
+            intent,
+            intent_token,
+        }
+    }
+}
+
+/// Domain model validation failures for mutation intent values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutationIntentModelError {
+    /// A denied preview was incorrectly paired with an executable token.
+    DeniedIntentToken { intent_id: String },
+}
+
+impl fmt::Display for MutationIntentModelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DeniedIntentToken { intent_id } => write!(
+                f,
+                "denied mutation intent '{intent_id}' cannot carry an executable token"
+            ),
+        }
+    }
+}
+
+impl Error for MutationIntentModelError {}
+
+/// Failures while resolving or validating an opaque mutation intent token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationIntentTokenLookupError {
+    MalformedToken,
+    InvalidSignature,
+    NotFound,
+    TenantDatabaseMismatch,
+    Expired,
+    Rejected,
+    AlreadyCommitted,
+    ApprovalRequired,
+    Unauthorized,
+    GrantVersionStale,
+    SchemaVersionStale,
+    PolicyVersionStale,
+    PreImageStale,
+    OperationMismatch,
+}
+
+#[cfg(test)]
+mod tests {
+    use pretty_assertions::assert_eq;
+    use serde_json::{json, Value};
+
+    use super::*;
+
+    fn sample_subject() -> MutationIntentSubjectBinding {
+        let mut attributes = HashMap::new();
+        attributes.insert("app_role".into(), json!("finance"));
+
+        MutationIntentSubjectBinding {
+            user_id: Some("usr_finance_ops".into()),
+            agent_id: Some("agent_ap_reconciler".into()),
+            delegated_by: Some("usr_director".into()),
+            tenant_role: Some("member".into()),
+            credential_id: Some("cred_live".into()),
+            grant_version: Some(7),
+            attributes,
+        }
+    }
+
+    fn entity_pre_image() -> PreImageBinding {
+        PreImageBinding::Entity {
+            collection: CollectionId::new("invoices"),
+            id: EntityId::new("inv_001"),
+            version: 5,
+        }
+    }
+
+    fn link_pre_image() -> PreImageBinding {
+        PreImageBinding::Link {
+            collection: CollectionId::new("__axon_links__"),
+            id: LinkId::new("vendors/vendor_001/approves/invoices/inv_001"),
+            version: 2,
+        }
+    }
+
+    fn sample_intent(decision: MutationIntentDecision) -> MutationIntent {
+        let approval_route = if decision == MutationIntentDecision::NeedsApproval {
+            Some(MutationApprovalRoute {
+                role: Some("finance_approver".into()),
+                reason_required: true,
+                deadline_seconds: Some(86_400),
+                separation_of_duties: true,
+            })
+        } else {
+            None
+        };
+        let approval_state = match decision {
+            MutationIntentDecision::NeedsApproval => ApprovalState::Pending,
+            MutationIntentDecision::Allow | MutationIntentDecision::Deny => ApprovalState::None,
+        };
+
+        MutationIntent {
+            intent_id: "mint_01H".into(),
+            scope: MutationIntentScopeBinding {
+                tenant_id: "acme".into(),
+                database_id: "finance".into(),
+            },
+            subject: sample_subject(),
+            schema_version: 12,
+            policy_version: 12,
+            operation: CanonicalOperationMetadata {
+                operation_kind: MutationOperationKind::UpdateEntity,
+                operation_hash: "sha256:abc123".into(),
+                canonical_operation: Some(json!({
+                    "collection": "invoices",
+                    "id": "inv_001",
+                    "patch": {"amount_cents": 1_250_000}
+                })),
+            },
+            pre_images: vec![entity_pre_image(), link_pre_image()],
+            decision,
+            approval_state,
+            approval_route,
+            expires_at: 1_766_273_600_000_000_000,
+            review_summary: MutationReviewSummary {
+                title: Some("Invoice amount change".into()),
+                summary: "Update invoice amount before approval.".into(),
+                risk: Some("amount_above_autonomous_limit".into()),
+                affected_records: vec![entity_pre_image()],
+                affected_fields: vec!["amount_cents".into()],
+                diff: json!({
+                    "amount_cents": {
+                        "before": 900_000,
+                        "after": 1_250_000
+                    }
+                }),
+                policy_explanation: vec!["require-approval-large-invoice matched".into()],
+            },
+        }
+    }
+
+    #[test]
+    fn mutation_intent_roundtrips_all_adr019_binding_fields() {
+        let intent = sample_intent(MutationIntentDecision::NeedsApproval);
+        let value = serde_json::to_value(&intent).expect("intent should serialize");
+
+        for field in [
+            "intent_id",
+            "tenant_id",
+            "database_id",
+            "subject",
+            "schema_version",
+            "policy_version",
+            "operation_kind",
+            "operation_hash",
+            "pre_images",
+            "decision",
+            "approval_state",
+            "expires_at",
+            "approval_route",
+            "review_summary",
+        ] {
+            assert!(
+                value.get(field).is_some(),
+                "serialized intent should include {field}: {value}"
+            );
+        }
+
+        assert_eq!(value["subject"]["user_id"], json!("usr_finance_ops"));
+        assert_eq!(value["subject"]["agent_id"], json!("agent_ap_reconciler"));
+        assert_eq!(value["subject"]["delegated_by"], json!("usr_director"));
+        assert_eq!(value["subject"]["credential_id"], json!("cred_live"));
+        assert_eq!(value["subject"]["grant_version"], json!(7));
+        assert_eq!(value["pre_images"][0]["kind"], json!("entity"));
+        assert_eq!(value["pre_images"][1]["kind"], json!("link"));
+
+        let restored: MutationIntent =
+            serde_json::from_value(value).expect("intent should deserialize");
+        assert_eq!(restored, intent);
+    }
+
+    #[test]
+    fn approval_states_model_full_lifecycle() {
+        let states = vec![
+            ApprovalState::None,
+            ApprovalState::Pending,
+            ApprovalState::Approved,
+            ApprovalState::Rejected,
+            ApprovalState::Expired,
+            ApprovalState::Committed,
+        ];
+        let value = serde_json::to_value(&states).expect("states should serialize");
+        assert_eq!(
+            value,
+            json!([
+                "none",
+                "pending",
+                "approved",
+                "rejected",
+                "expired",
+                "committed"
+            ])
+        );
+
+        let restored: Vec<ApprovalState> =
+            serde_json::from_value(value).expect("states should deserialize");
+        assert_eq!(restored, states);
+    }
+
+    #[test]
+    fn policy_decision_and_approval_route_convert_to_intent_types() {
+        assert_eq!(
+            MutationIntentDecision::from(PolicyDecision::Allow),
+            MutationIntentDecision::Allow
+        );
+        assert_eq!(
+            MutationIntentDecision::from(PolicyDecision::NeedsApproval),
+            MutationIntentDecision::NeedsApproval
+        );
+        assert_eq!(
+            MutationIntentDecision::from(PolicyDecision::Deny),
+            MutationIntentDecision::Deny
+        );
+
+        let route = ApprovalRoute {
+            role: Some("finance_approver".into()),
+            reason_required: true,
+            deadline_seconds: Some(3_600),
+            separation_of_duties: true,
+        };
+        assert_eq!(
+            MutationApprovalRoute::from(&route),
+            MutationApprovalRoute {
+                role: Some("finance_approver".into()),
+                reason_required: true,
+                deadline_seconds: Some(3_600),
+                separation_of_duties: true,
+            }
+        );
+    }
+
+    #[test]
+    fn executable_intent_roundtrips_for_allowed_decision() {
+        let executable = ExecutableMutationIntent::new(
+            sample_intent(MutationIntentDecision::Allow),
+            MutationIntentToken::new("token.parts"),
+        )
+        .expect("allowed intent can carry a token");
+
+        let value = serde_json::to_value(&executable).expect("executable should serialize");
+        assert_eq!(value["intent_token"], json!("token.parts"));
+
+        let restored: ExecutableMutationIntent =
+            serde_json::from_value(value).expect("executable should deserialize");
+        assert_eq!(restored.intent_token().as_str(), "token.parts");
+        assert_eq!(restored.intent().decision, MutationIntentDecision::Allow);
+    }
+
+    #[test]
+    fn denied_intent_cannot_carry_executable_token() {
+        let err = ExecutableMutationIntent::new(
+            sample_intent(MutationIntentDecision::Deny),
+            MutationIntentToken::new("token.parts"),
+        )
+        .expect_err("denied intent should reject executable token");
+
+        assert_eq!(
+            err,
+            MutationIntentModelError::DeniedIntentToken {
+                intent_id: "mint_01H".into()
+            }
+        );
+    }
+
+    #[test]
+    fn denied_executable_intent_wire_is_rejected() {
+        let value = json!({
+            "intent": sample_intent(MutationIntentDecision::Deny),
+            "intent_token": "token.parts"
+        });
+
+        let err =
+            serde_json::from_value::<ExecutableMutationIntent>(value).expect_err("wire is invalid");
+        assert!(
+            err.to_string().contains("cannot carry an executable token"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn token_lookup_errors_roundtrip() {
+        let errors = vec![
+            MutationIntentTokenLookupError::MalformedToken,
+            MutationIntentTokenLookupError::InvalidSignature,
+            MutationIntentTokenLookupError::NotFound,
+            MutationIntentTokenLookupError::TenantDatabaseMismatch,
+            MutationIntentTokenLookupError::Expired,
+            MutationIntentTokenLookupError::Rejected,
+            MutationIntentTokenLookupError::AlreadyCommitted,
+            MutationIntentTokenLookupError::ApprovalRequired,
+            MutationIntentTokenLookupError::Unauthorized,
+            MutationIntentTokenLookupError::GrantVersionStale,
+            MutationIntentTokenLookupError::SchemaVersionStale,
+            MutationIntentTokenLookupError::PolicyVersionStale,
+            MutationIntentTokenLookupError::PreImageStale,
+            MutationIntentTokenLookupError::OperationMismatch,
+        ];
+        let value = serde_json::to_value(&errors).expect("errors should serialize");
+        assert_eq!(
+            value,
+            json!([
+                "malformed_token",
+                "invalid_signature",
+                "not_found",
+                "tenant_database_mismatch",
+                "expired",
+                "rejected",
+                "already_committed",
+                "approval_required",
+                "unauthorized",
+                "grant_version_stale",
+                "schema_version_stale",
+                "policy_version_stale",
+                "pre_image_stale",
+                "operation_mismatch"
+            ])
+        );
+
+        let restored: Vec<MutationIntentTokenLookupError> =
+            serde_json::from_value(value).expect("errors should deserialize");
+        assert_eq!(restored, errors);
+    }
+
+    #[test]
+    fn review_summary_defaults_skip_empty_optional_fields() {
+        let value = serde_json::to_value(MutationReviewSummary::default())
+            .expect("summary should serialize");
+        assert_eq!(value, Value::Object(Default::default()));
+    }
+}

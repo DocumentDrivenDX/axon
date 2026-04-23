@@ -7,11 +7,18 @@
 
 pub mod bead;
 pub mod handler;
+pub mod intent;
 pub mod policy;
 pub mod request;
 pub mod response;
 pub mod transaction;
 
+pub use intent::{
+    ApprovalState, CanonicalOperationMetadata, ExecutableMutationIntent, MutationApprovalRoute,
+    MutationIntent, MutationIntentDecision, MutationIntentModelError, MutationIntentScopeBinding,
+    MutationIntentSubjectBinding, MutationIntentToken, MutationIntentTokenLookupError,
+    MutationOperationKind, MutationReviewSummary, PreImageBinding,
+};
 pub use policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
 pub use transaction::Transaction;
 
