@@ -8,6 +8,7 @@ import {
 } from './helpers';
 
 const TASK_COLLECTION = 'task';
+const EXPENSE_COLLECTION = 'expense';
 
 type PreviewedIntent = {
 	intentId: string;
@@ -79,7 +80,10 @@ function approvalPolicy() {
 			allow: [
 				{
 					name: 'finance-update',
-					when: { subject: 'user_id', in: ['finance-agent', 'finance-approver'] },
+					when: {
+						subject: 'user_id',
+						in: ['finance-agent', 'finance-approver', 'finance-bot'],
+					},
 				},
 			],
 		},
@@ -144,10 +148,15 @@ async function seedApprovalCollections(
 		entity_schema: taskSchema(),
 		access_control: approvalPolicy(),
 	});
+	await createTestCollection(request, db, EXPENSE_COLLECTION, {
+		entity_schema: taskSchema(),
+		access_control: approvalPolicy(),
+	});
 	for (const [id, role] of [
 		['finance-agent', 'finance_agent'],
 		['finance-approver', 'finance_approver'],
-	]) {
+		['finance-bot', 'finance_agent'],
+	] as const) {
 		await createTestEntity(request, db, 'users', id, {
 			user_id: id,
 			approval_role: role,
@@ -156,8 +165,13 @@ async function seedApprovalCollections(
 	return db;
 }
 
-async function createTask(request: APIRequestContext, db: TestDatabase, id: string) {
-	await createTestEntity(request, db, TASK_COLLECTION, id, {
+async function createBudgetRecord(
+	request: APIRequestContext,
+	db: TestDatabase,
+	collection: string,
+	id: string,
+) {
+	await createTestEntity(request, db, collection, id, {
 		title: id,
 		budget_cents: 5000,
 		status: 'draft',
@@ -169,22 +183,39 @@ async function previewBudgetIntent(
 	db: TestDatabase,
 	entityId: string,
 	budgetCents: number,
-	expiresInSeconds = 600,
+	options: {
+		collection?: string;
+		actor?: string;
+		agentId?: string;
+		expiresInSeconds?: number;
+	} = {},
 ): Promise<PreviewedIntent> {
+	const {
+		collection = TASK_COLLECTION,
+		actor = 'finance-agent',
+		agentId,
+		expiresInSeconds = 600,
+	} = options;
+	const subjectBlock = [`userId: "${actor}"`, ...(agentId ? [`agentId: "${agentId}"`] : [])].join(
+		'\n\t\t\t\t\t',
+	);
 	const data = await gqlAs(
 		request,
 		db,
-		'finance-agent',
+		actor,
 		`mutation {
 			previewMutation(input: {
 				operation: {
 					operationKind: "patch_entity"
 					operation: {
-						collection: "${TASK_COLLECTION}"
+						collection: "${collection}"
 						id: "${entityId}"
 						expected_version: 1
 						patch: { budget_cents: ${budgetCents} }
 					}
+				}
+				subject: {
+					${subjectBlock}
 				}
 				expiresInSeconds: ${expiresInSeconds}
 			}) {
@@ -253,21 +284,38 @@ async function seedIntentStates(
 		'task-expired',
 		'task-committed',
 		'task-ui-approve',
-		'task-ui-reject',
 	]) {
-		await createTask(request, db, id);
+		await createBudgetRecord(request, db, TASK_COLLECTION, id);
 	}
+	await createBudgetRecord(request, db, EXPENSE_COLLECTION, 'expense-ui-reject');
 
-	const pending = await previewBudgetIntent(request, db, 'task-pending', 20_000);
-	const approved = await previewBudgetIntent(request, db, 'task-approved', 21_000);
+	const pending = await previewBudgetIntent(request, db, 'task-pending', 20_000, {
+		agentId: 'mcp.finance-cli',
+	});
+	const approved = await previewBudgetIntent(request, db, 'task-approved', 21_000, {
+		agentId: 'mcp.finance-cli',
+	});
 	await approveIntent(request, db, approved.intentId);
-	const rejected = await previewBudgetIntent(request, db, 'task-rejected', 22_000);
+	const rejected = await previewBudgetIntent(request, db, 'task-rejected', 22_000, {
+		agentId: 'tool.bulk-review',
+	});
 	await rejectIntent(request, db, rejected.intentId);
-	const expired = await previewBudgetIntent(request, db, 'task-expired', 6000, 0);
-	const committed = await previewBudgetIntent(request, db, 'task-committed', 6000);
+	const expired = await previewBudgetIntent(request, db, 'task-expired', 6000, {
+		agentId: 'tool.expiring',
+		expiresInSeconds: 0,
+	});
+	const committed = await previewBudgetIntent(request, db, 'task-committed', 6000, {
+		agentId: 'tool.commit',
+	});
 	await commitIntent(request, db, committed);
-	const approveTarget = await previewBudgetIntent(request, db, 'task-ui-approve', 23_000);
-	const rejectTarget = await previewBudgetIntent(request, db, 'task-ui-reject', 24_000);
+	const approveTarget = await previewBudgetIntent(request, db, 'task-ui-approve', 23_000, {
+		actor: 'finance-bot',
+		agentId: 'tool.review-console',
+	});
+	const rejectTarget = await previewBudgetIntent(request, db, 'expense-ui-reject', 24_000, {
+		collection: EXPENSE_COLLECTION,
+		agentId: 'mcp.gateway',
+	});
 
 	await new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -291,7 +339,7 @@ test.describe('Approval inbox', () => {
 		const db = await seedApprovalCollections(request, 'approval-inbox');
 		const ids = await seedIntentStates(request, db);
 		const foreignDb = await seedApprovalCollections(request, 'approval-foreign');
-		await createTask(request, foreignDb, 'task-foreign');
+		await createBudgetRecord(request, foreignDb, TASK_COLLECTION, 'task-foreign');
 		const foreign = await previewBudgetIntent(request, foreignDb, 'task-foreign', 20_000);
 
 		await routeGraphqlAs(page, 'finance-approver');
@@ -300,24 +348,80 @@ test.describe('Approval inbox', () => {
 		await expect(page.getByRole('heading', { name: 'Mutation Intents' })).toBeVisible();
 		await expect(page.getByTestId(`intent-row-${ids.pending}`)).toBeVisible();
 		await expect(page.getByText(foreign.intentId)).toHaveCount(0);
+		await selectStatus(page, 'history');
+		await expect(page.getByTestId(`intent-row-${ids.approved}`)).toBeVisible();
+		await expect(page.getByTestId(`intent-row-${ids.rejected}`)).toBeVisible();
+		await expect(page.getByTestId(`intent-row-${ids.expired}`)).toBeVisible();
+		await expect(page.getByTestId(`intent-row-${ids.committed}`)).toBeVisible();
 
 		for (const [status, intentId] of [
 			['approved', ids.approved],
 			['rejected', ids.rejected],
 			['expired', ids.expired],
 			['committed', ids.committed],
-		]) {
+		] as const) {
 			await selectStatus(page, status);
 			await expect(page.getByTestId(`intent-row-${intentId}`)).toBeVisible();
 		}
 
 		await selectStatus(page, 'approved');
-		await page.getByTestId(`intent-row-${ids.approved}`).getByRole('link').click();
+		await page.getByTestId(`intent-row-${ids.approved}`).click();
+		await page.getByTestId('intent-open-detail').click();
 		const detail = page.getByTestId('intent-detail');
 		await expect(detail).toContainText(ids.approved);
 		await expect(detail).toContainText('approved');
 		await expect(detail).toContainText('large-budget-needs-finance-approval');
 		await expect(detail).toContainText('task/task-approved');
+	});
+
+	test('supports dense filters, keyboard selection, and inline review without leaving inbox', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedApprovalCollections(request, 'approval-filters');
+		const ids = await seedIntentStates(request, db);
+
+		await routeGraphqlAs(page, 'finance-approver');
+		await page.goto(dbIntentsUrl(db));
+
+		await page.getByTestId('intent-filter-requester').fill('finance-bot');
+		await expect(page.getByTestId(`intent-row-${ids.approveTarget}`)).toBeVisible();
+		await expect(page.getByTestId(`intent-row-${ids.pending}`)).toHaveCount(0);
+
+		await page.getByTestId('intent-filter-requester').fill('');
+		await page.getByTestId('intent-filter-subject').fill('expense-ui-reject');
+		await page.getByTestId('intent-filter-role').selectOption('finance_approver');
+		await page.getByTestId('intent-filter-risk').fill('large-budget-needs-finance-approval');
+		await page.getByTestId('intent-filter-collection').selectOption(EXPENSE_COLLECTION);
+		await page.getByTestId('intent-filter-origin').selectOption('mcp.gateway');
+		await expect(page.getByTestId(`intent-row-${ids.rejectTarget}`)).toBeVisible();
+		await expect(page.getByTestId(`intent-row-${ids.approveTarget}`)).toHaveCount(0);
+
+		await page.getByTestId('intent-filter-age').selectOption('older_than_day');
+		await expect(page.getByTestId('intent-empty')).toBeVisible();
+		await page.getByTestId('intent-filter-age').selectOption('last_hour');
+		await expect(page.getByTestId(`intent-row-${ids.rejectTarget}`)).toBeVisible();
+		await page.getByRole('button', { name: 'Clear filters' }).click();
+
+		await page.getByTestId('intent-inbox-grid').focus();
+		await page.keyboard.press('Home');
+		await page.keyboard.press('ArrowDown');
+		await expect(page.getByTestId(`intent-row-${ids.approveTarget}`)).toHaveAttribute(
+			'aria-selected',
+			'true',
+		);
+		await page.getByTestId('intent-inline-reason').fill('approved in inbox');
+		await page.getByTestId('intent-inline-approve').click();
+		await expect(page.getByTestId('intent-inline-message')).toContainText('Intent approved.');
+		await expect(page).toHaveURL(dbIntentsUrl(db));
+		await expect(page.getByTestId(`intent-row-${ids.approveTarget}`)).toHaveCount(0);
+
+		await page.getByTestId(`intent-row-${ids.rejectTarget}`).click();
+		await page.getByTestId('intent-inline-reason').fill('not enough context');
+		await page.getByTestId('intent-inline-reject').click();
+		await expect(page.getByTestId('intent-inline-message')).toContainText('Intent rejected.');
+		await expect(page).toHaveURL(dbIntentsUrl(db));
+		await expect(page.getByTestId(`intent-row-${ids.rejectTarget}`)).toHaveCount(0);
 	});
 
 	test('approves and rejects pending intents from the detail route', async ({ page, request }) => {
@@ -336,5 +440,60 @@ test.describe('Approval inbox', () => {
 		await page.getByTestId('intent-reject').click();
 		await expect(page.getByText('Intent rejected.')).toBeVisible({ timeout: 10_000 });
 		await expect(page.getByTestId('intent-detail')).toContainText('rejected');
+	});
+
+	test('distinguishes loading, empty, and error states', async ({ page, request }) => {
+		const db = await seedApprovalCollections(request, 'approval-states');
+		const ids = await seedIntentStates(request, db);
+		let releaseLoad!: () => void;
+		const loadGate = new Promise<void>((resolve) => {
+			releaseLoad = resolve;
+		});
+
+		await page.route('**/graphql', async (route) => {
+			const body = route.request().postDataJSON() as { query?: string };
+			if (body.query?.includes('pendingMutationIntents')) {
+				await loadGate;
+			}
+			await route.continue({
+				headers: {
+					...route.request().headers(),
+					'x-axon-actor': 'finance-approver',
+				},
+			});
+		});
+
+		const navigation = page.goto(dbIntentsUrl(db));
+		await expect(page.getByTestId('intent-loading')).toBeVisible();
+		releaseLoad();
+		await navigation;
+		await expect(page.getByTestId(`intent-row-${ids.pending}`)).toBeVisible();
+
+		await page.getByTestId('intent-filter-subject').fill('does-not-exist');
+		await expect(page.getByTestId('intent-empty')).toBeVisible();
+
+		await page.unroute('**/graphql');
+		await page.route('**/graphql', async (route) => {
+			const body = route.request().postDataJSON() as { query?: string };
+			if (body.query?.includes('pendingMutationIntents')) {
+				await route.fulfill({
+					status: 200,
+					contentType: 'application/json',
+					body: JSON.stringify({
+						errors: [{ message: 'forced inbox error' }],
+					}),
+				});
+				return;
+			}
+			await route.continue({
+				headers: {
+					...route.request().headers(),
+					'x-axon-actor': 'finance-approver',
+				},
+			});
+		});
+
+		await page.reload();
+		await expect(page.getByTestId('intent-error')).toContainText('forced inbox error');
 	});
 });

@@ -251,6 +251,8 @@ export type MutationIntentApprovalState =
 	| 'expired'
 	| 'committed';
 
+export type MutationIntentStatusFilter = MutationIntentApprovalState | 'history' | 'all';
+
 export type MutationApprovalRoute = {
 	role: string;
 	reasonRequired?: boolean;
@@ -349,8 +351,8 @@ export type CommitMutationIntentOutcome =
 	| { ok: false; error: MutationIntentError };
 
 export type MutationIntentFilter = {
-	status?: MutationIntentApprovalState;
-	statuses?: MutationIntentApprovalState[];
+	status?: MutationIntentStatusFilter;
+	statuses?: MutationIntentStatusFilter[];
 	decision?: MutationIntentDecision;
 	includeExpired?: boolean;
 };
