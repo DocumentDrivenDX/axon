@@ -687,6 +687,121 @@ impl From<AxonError> for MutationIntentLifecycleError {
     }
 }
 
+/// Current request-time bindings used to revalidate a mutation intent before commit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MutationIntentCommitValidationContext {
+    /// Subject and grant snapshot resolved for the commit request.
+    pub subject: MutationIntentSubjectBinding,
+    /// Current collection schema version observed during commit validation.
+    pub schema_version: u32,
+    /// Current policy version observed during commit validation.
+    pub policy_version: u32,
+    /// Canonical hash for the operation supplied to commit.
+    pub operation_hash: String,
+    /// Whether the caller still has the current authorization envelope required to commit.
+    pub caller_authorized: bool,
+}
+
+/// A stale binding dimension detected while validating intent commit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutationIntentStaleDimension {
+    /// Stable dimension name, for example `schema_version` or `pre_image`.
+    pub dimension: String,
+    /// Version or value bound at preview time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<String>,
+    /// Version or value observed at commit time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual: Option<String>,
+    /// Optional record path for entity/link pre-image drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Commit-time intent validation failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutationIntentCommitValidationError {
+    /// Token lookup or lifecycle state validation failed.
+    Token(MutationIntentTokenLookupError),
+    /// Storage failed while loading intent or pre-image state.
+    Storage(String),
+    /// The caller-supplied operation hash no longer matches the preview.
+    IntentMismatch {
+        intent_id: String,
+        expected_hash: String,
+        actual_hash: String,
+    },
+    /// One or more non-operation binding dimensions changed since preview.
+    IntentStale {
+        intent_id: String,
+        dimensions: Vec<MutationIntentStaleDimension>,
+    },
+    /// The caller no longer has the current grants/authorization envelope required to commit.
+    AuthorizationFailed { intent_id: String, reason: String },
+}
+
+impl MutationIntentCommitValidationError {
+    /// Stable machine-readable error code for GraphQL, MCP, and API surfaces.
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            Self::Token(error) => token_lookup_error_code(error),
+            Self::Storage(_) => "intent_storage_error",
+            Self::IntentMismatch { .. } => "intent_mismatch",
+            Self::IntentStale { .. } => "intent_stale",
+            Self::AuthorizationFailed { .. } => "intent_authorization_failed",
+        }
+    }
+}
+
+impl fmt::Display for MutationIntentCommitValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Token(error) => write!(f, "mutation intent token validation failed: {error:?}"),
+            Self::Storage(message) => write!(f, "mutation intent storage error: {message}"),
+            Self::IntentMismatch {
+                intent_id,
+                expected_hash,
+                actual_hash,
+            } => write!(
+                f,
+                "mutation intent '{intent_id}' operation mismatch: expected {expected_hash}, got {actual_hash}"
+            ),
+            Self::IntentStale {
+                intent_id,
+                dimensions,
+            } => write!(
+                f,
+                "mutation intent '{intent_id}' has stale commit bindings: {dimensions:?}"
+            ),
+            Self::AuthorizationFailed { intent_id, reason } => write!(
+                f,
+                "mutation intent '{intent_id}' authorization failed before commit: {reason}"
+            ),
+        }
+    }
+}
+
+impl Error for MutationIntentCommitValidationError {}
+
+fn token_lookup_error_code(error: &MutationIntentTokenLookupError) -> &'static str {
+    match error {
+        MutationIntentTokenLookupError::MalformedToken
+        | MutationIntentTokenLookupError::InvalidSignature
+        | MutationIntentTokenLookupError::NotFound
+        | MutationIntentTokenLookupError::TenantDatabaseMismatch => "intent_token_invalid",
+        MutationIntentTokenLookupError::Expired => "intent_expired",
+        MutationIntentTokenLookupError::Rejected => "intent_rejected",
+        MutationIntentTokenLookupError::AlreadyCommitted => "intent_already_committed",
+        MutationIntentTokenLookupError::ApprovalRequired => "intent_approval_required",
+        MutationIntentTokenLookupError::Unauthorized => "intent_authorization_failed",
+        MutationIntentTokenLookupError::GrantVersionStale
+        | MutationIntentTokenLookupError::SchemaVersionStale
+        | MutationIntentTokenLookupError::PolicyVersionStale
+        | MutationIntentTokenLookupError::PreImageStale => "intent_stale",
+        MutationIntentTokenLookupError::OperationMismatch => "intent_mismatch",
+    }
+}
+
 /// Service-level helpers for mutation intent preview, review, expiry, and commit.
 #[derive(Debug, Clone)]
 pub struct MutationIntentLifecycleService {
@@ -941,6 +1056,54 @@ impl MutationIntentLifecycleService {
             .map_err(MutationIntentLifecycleError::from)
     }
 
+    /// Validate token, lifecycle state, authorization, and all preview-bound dimensions.
+    pub fn validate_commit_bindings<S: StorageAdapter>(
+        &self,
+        storage: &S,
+        scope: &MutationIntentScopeBinding,
+        token: &MutationIntentToken,
+        current: &MutationIntentCommitValidationContext,
+        now_ns: u64,
+    ) -> Result<MutationIntent, MutationIntentCommitValidationError> {
+        let intent_id = self
+            .token_signer
+            .verify(token)
+            .map_err(MutationIntentCommitValidationError::Token)?;
+        let loaded = load_intent(storage, scope, &intent_id).map_err(commit_load_error)?;
+        let intent = self
+            .token_signer
+            .resolve_for_commit(token, scope, now_ns, |resolved_id, expected_scope| {
+                (resolved_id == loaded.intent_id && &loaded.scope == expected_scope)
+                    .then(|| loaded.clone())
+            })
+            .map_err(MutationIntentCommitValidationError::Token)?;
+
+        if intent.operation.operation_hash != current.operation_hash {
+            return Err(MutationIntentCommitValidationError::IntentMismatch {
+                intent_id: intent.intent_id,
+                expected_hash: intent.operation.operation_hash,
+                actual_hash: current.operation_hash.clone(),
+            });
+        }
+
+        if !current.caller_authorized {
+            return Err(MutationIntentCommitValidationError::AuthorizationFailed {
+                intent_id: intent.intent_id,
+                reason: "current grants do not authorize intent commit".into(),
+            });
+        }
+
+        let stale = stale_commit_dimensions(storage, &intent, current)?;
+        if !stale.is_empty() {
+            return Err(MutationIntentCommitValidationError::IntentStale {
+                intent_id: intent.intent_id,
+                dimensions: stale,
+            });
+        }
+
+        Ok(intent)
+    }
+
     /// Mark an allowed or approved intent as committed.
     pub fn mark_committed<S: StorageAdapter>(
         &self,
@@ -1025,6 +1188,151 @@ fn load_intent<S: StorageAdapter>(
         .ok_or_else(|| MutationIntentLifecycleError::NotFound {
             intent_id: intent_id.to_string(),
         })
+}
+
+fn commit_load_error(error: MutationIntentLifecycleError) -> MutationIntentCommitValidationError {
+    match error {
+        MutationIntentLifecycleError::NotFound { .. } => {
+            MutationIntentCommitValidationError::Token(MutationIntentTokenLookupError::NotFound)
+        }
+        MutationIntentLifecycleError::Storage(message) => {
+            MutationIntentCommitValidationError::Storage(message)
+        }
+        other => MutationIntentCommitValidationError::Storage(other.to_string()),
+    }
+}
+
+fn stale_commit_dimensions<S: StorageAdapter>(
+    storage: &S,
+    intent: &MutationIntent,
+    current: &MutationIntentCommitValidationContext,
+) -> Result<Vec<MutationIntentStaleDimension>, MutationIntentCommitValidationError> {
+    let mut stale = Vec::new();
+
+    if intent.subject.grant_version != current.subject.grant_version {
+        stale.push(stale_dimension(
+            "grant_version",
+            intent
+                .subject
+                .grant_version
+                .map(|version| version.to_string()),
+            current
+                .subject
+                .grant_version
+                .map(|version| version.to_string()),
+            None,
+        ));
+    }
+
+    if subject_without_grant(&intent.subject) != subject_without_grant(&current.subject) {
+        stale.push(stale_dimension(
+            "subject",
+            Some(subject_stable_string(&intent.subject)),
+            Some(subject_stable_string(&current.subject)),
+            None,
+        ));
+    }
+
+    if intent.schema_version != current.schema_version {
+        stale.push(stale_dimension(
+            "schema_version",
+            Some(intent.schema_version.to_string()),
+            Some(current.schema_version.to_string()),
+            None,
+        ));
+    }
+
+    if intent.policy_version != current.policy_version {
+        stale.push(stale_dimension(
+            "policy_version",
+            Some(intent.policy_version.to_string()),
+            Some(current.policy_version.to_string()),
+            None,
+        ));
+    }
+
+    for pre_image in &intent.pre_images {
+        let current_version = current_pre_image_version(storage, pre_image)
+            .map_err(|error| MutationIntentCommitValidationError::Storage(error.to_string()))?;
+        if current_version != Some(pre_image_version(pre_image)) {
+            stale.push(stale_dimension(
+                "pre_image",
+                Some(pre_image_version(pre_image).to_string()),
+                current_version
+                    .map(|version| version.to_string())
+                    .or_else(|| Some("missing".into())),
+                Some(pre_image_path(pre_image)),
+            ));
+        }
+    }
+
+    Ok(stale)
+}
+
+fn stale_dimension(
+    dimension: impl Into<String>,
+    expected: Option<String>,
+    actual: Option<String>,
+    path: Option<String>,
+) -> MutationIntentStaleDimension {
+    MutationIntentStaleDimension {
+        dimension: dimension.into(),
+        expected,
+        actual,
+        path,
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct SubjectWithoutGrant<'a> {
+    user_id: Option<&'a str>,
+    agent_id: Option<&'a str>,
+    delegated_by: Option<&'a str>,
+    tenant_role: Option<&'a str>,
+    credential_id: Option<&'a str>,
+    attributes: String,
+}
+
+fn subject_without_grant(subject: &MutationIntentSubjectBinding) -> SubjectWithoutGrant<'_> {
+    SubjectWithoutGrant {
+        user_id: subject.user_id.as_deref(),
+        agent_id: subject.agent_id.as_deref(),
+        delegated_by: subject.delegated_by.as_deref(),
+        tenant_role: subject.tenant_role.as_deref(),
+        credential_id: subject.credential_id.as_deref(),
+        attributes: canonical_json_string(&json!(subject.attributes)),
+    }
+}
+
+fn subject_stable_string(subject: &MutationIntentSubjectBinding) -> String {
+    canonical_json_string(&serde_json::to_value(subject).unwrap_or(Value::Null))
+}
+
+fn pre_image_version(pre_image: &PreImageBinding) -> u64 {
+    match pre_image {
+        PreImageBinding::Entity { version, .. } | PreImageBinding::Link { version, .. } => *version,
+    }
+}
+
+fn pre_image_path(pre_image: &PreImageBinding) -> String {
+    match pre_image {
+        PreImageBinding::Entity { collection, id, .. } => format!("entity:{collection}/{id}"),
+        PreImageBinding::Link { collection, id, .. } => format!("link:{collection}/{id}"),
+    }
+}
+
+fn current_pre_image_version<S: StorageAdapter>(
+    storage: &S,
+    pre_image: &PreImageBinding,
+) -> Result<Option<u64>, AxonError> {
+    match pre_image {
+        PreImageBinding::Entity { collection, id, .. } => storage
+            .get(collection, id)
+            .map(|entity| entity.map(|e| e.version)),
+        PreImageBinding::Link { collection, id, .. } => storage
+            .get(collection, &EntityId::new(id.to_string()))
+            .map(|entity| entity.map(|e| e.version)),
+    }
 }
 
 fn update_state<S: StorageAdapter>(
@@ -1205,6 +1513,7 @@ mod tests {
     use super::*;
     use axon_audit::log::{AuditLog, AuditQuery, MemoryAuditLog};
     use axon_core::id::{CollectionId, EntityId};
+    use axon_core::types::Entity;
     use axon_storage::memory::MemoryStorageAdapter;
 
     fn scope() -> MutationIntentScopeBinding {
@@ -1282,6 +1591,169 @@ mod tests {
                 policy_explanation: vec!["large-invoice-update matched".into()],
             },
         }
+    }
+
+    fn current_commit_context(intent: &MutationIntent) -> MutationIntentCommitValidationContext {
+        MutationIntentCommitValidationContext {
+            subject: intent.subject.clone(),
+            schema_version: intent.schema_version,
+            policy_version: intent.policy_version,
+            operation_hash: intent.operation.operation_hash.clone(),
+            caller_authorized: true,
+        }
+    }
+
+    fn seed_pre_image_entity(storage: &mut MemoryStorageAdapter, version: u64) {
+        let mut entity = Entity::new(
+            CollectionId::new("invoices"),
+            EntityId::new("inv-001"),
+            json!({"amount_cents": 1000}),
+        );
+        entity.version = version;
+        storage.put(entity).expect("seed entity");
+    }
+
+    fn seed_preview(
+        storage: &mut MemoryStorageAdapter,
+        svc: &MutationIntentLifecycleService,
+        intent: MutationIntent,
+    ) -> MutationIntentToken {
+        svc.create_preview_record(storage, intent)
+            .expect("preview record")
+            .intent_token
+            .expect("executable token")
+    }
+
+    #[test]
+    fn commit_validation_accepts_current_bound_dimensions() {
+        let mut storage = MemoryStorageAdapter::default();
+        let svc = service();
+        let intent = intent(
+            "mint_commit_valid",
+            MutationIntentDecision::Allow,
+            ApprovalState::None,
+            100,
+            false,
+        );
+        seed_pre_image_entity(&mut storage, 3);
+        let token = seed_preview(&mut storage, &svc, intent.clone());
+
+        let resolved = svc
+            .validate_commit_bindings(
+                &storage,
+                &scope(),
+                &token,
+                &current_commit_context(&intent),
+                1,
+            )
+            .expect("current bindings should validate");
+
+        assert_eq!(resolved.intent_id, "mint_commit_valid");
+    }
+
+    #[test]
+    fn commit_validation_reports_stale_schema_policy_grant_and_pre_image_details() {
+        let mut storage = MemoryStorageAdapter::default();
+        let svc = service();
+        let intent = intent(
+            "mint_commit_stale",
+            MutationIntentDecision::Allow,
+            ApprovalState::None,
+            100,
+            false,
+        );
+        seed_pre_image_entity(&mut storage, 4);
+        let token = seed_preview(&mut storage, &svc, intent.clone());
+        let mut current = current_commit_context(&intent);
+        current.subject.grant_version = Some(2);
+        current.schema_version = 8;
+        current.policy_version = 9;
+
+        let err = svc
+            .validate_commit_bindings(&storage, &scope(), &token, &current, 1)
+            .expect_err("stale dimensions should reject commit");
+
+        assert_eq!(err.error_code(), "intent_stale");
+        let MutationIntentCommitValidationError::IntentStale { dimensions, .. } = err else {
+            panic!("expected stale error");
+        };
+        assert!(dimensions.iter().any(|dimension| {
+            dimension.dimension == "grant_version"
+                && dimension.expected.as_deref() == Some("1")
+                && dimension.actual.as_deref() == Some("2")
+        }));
+        assert!(dimensions.iter().any(|dimension| {
+            dimension.dimension == "schema_version"
+                && dimension.expected.as_deref() == Some("7")
+                && dimension.actual.as_deref() == Some("8")
+        }));
+        assert!(dimensions.iter().any(|dimension| {
+            dimension.dimension == "policy_version"
+                && dimension.expected.as_deref() == Some("7")
+                && dimension.actual.as_deref() == Some("9")
+        }));
+        assert!(dimensions.iter().any(|dimension| {
+            dimension.dimension == "pre_image"
+                && dimension.expected.as_deref() == Some("3")
+                && dimension.actual.as_deref() == Some("4")
+                && dimension.path.as_deref() == Some("entity:invoices/inv-001")
+        }));
+    }
+
+    #[test]
+    fn commit_validation_reports_operation_hash_drift_as_mismatch() {
+        let mut storage = MemoryStorageAdapter::default();
+        let svc = service();
+        let intent = intent(
+            "mint_commit_mismatch",
+            MutationIntentDecision::Allow,
+            ApprovalState::None,
+            100,
+            false,
+        );
+        seed_pre_image_entity(&mut storage, 3);
+        let token = seed_preview(&mut storage, &svc, intent.clone());
+        let mut current = current_commit_context(&intent);
+        current.operation_hash = "sha256:different".into();
+
+        let err = svc
+            .validate_commit_bindings(&storage, &scope(), &token, &current, 1)
+            .expect_err("operation drift should reject commit");
+
+        assert_eq!(err.error_code(), "intent_mismatch");
+        let MutationIntentCommitValidationError::IntentMismatch {
+            expected_hash,
+            actual_hash,
+            ..
+        } = err
+        else {
+            panic!("expected mismatch error");
+        };
+        assert_eq!(expected_hash, intent.operation.operation_hash);
+        assert_eq!(actual_hash, "sha256:different");
+    }
+
+    #[test]
+    fn commit_validation_reports_current_authorization_failure() {
+        let mut storage = MemoryStorageAdapter::default();
+        let svc = service();
+        let intent = intent(
+            "mint_commit_auth",
+            MutationIntentDecision::Allow,
+            ApprovalState::None,
+            100,
+            false,
+        );
+        seed_pre_image_entity(&mut storage, 3);
+        let token = seed_preview(&mut storage, &svc, intent.clone());
+        let mut current = current_commit_context(&intent);
+        current.caller_authorized = false;
+
+        let err = svc
+            .validate_commit_bindings(&storage, &scope(), &token, &current, 1)
+            .expect_err("lost grants should reject commit");
+
+        assert_eq!(err.error_code(), "intent_authorization_failed");
     }
 
     #[test]
