@@ -46,6 +46,61 @@ pub struct EffectivePolicyResponse {
     pub policy_version: u32,
 }
 
+/// Rule metadata that contributed to a policy explanation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyRuleMatch {
+    pub rule_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field_path: Option<String>,
+}
+
+/// Approval-route metadata for a matching policy envelope.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyApprovalEnvelopeSummary {
+    pub policy_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub decision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    pub reason_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_seconds: Option<u64>,
+    pub separation_of_duties: bool,
+}
+
+/// Caller-specific explanation of a policy dry-run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyExplanationResponse {
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_index: Option<usize>,
+    pub decision: String,
+    pub reason: String,
+    pub policy_version: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policy_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub field_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<PolicyRuleMatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval: Option<PolicyApprovalEnvelopeSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<PolicyExplanationResponse>,
+}
+
 /// Response after successfully creating an entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntityResponse {

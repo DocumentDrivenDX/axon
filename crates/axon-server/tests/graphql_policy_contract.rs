@@ -69,6 +69,63 @@ async fn effective_policy_as(
     body["data"]["effectivePolicy"].clone()
 }
 
+async fn explain_policy_as(server: &axum_test::TestServer, actor: &str, input: &str) -> Value {
+    let body = gql_as(
+        server,
+        actor,
+        &format!(
+            r#"{{
+                explainPolicy(input: {input}) {{
+                    operation
+                    collection
+                    entityId
+                    operationIndex
+                    decision
+                    reason
+                    policyVersion
+                    ruleIds
+                    policyIds
+                    fieldPaths
+                    deniedFields
+                    rules {{ ruleId name kind fieldPath }}
+                    approval {{
+                        policyId
+                        name
+                        decision
+                        role
+                        reasonRequired
+                        deadlineSeconds
+                        separationOfDuties
+                    }}
+                    operations {{
+                        operation
+                        operationIndex
+                        decision
+                        reason
+                        policyVersion
+                        deniedFields
+                        approval {{
+                            policyId
+                            name
+                            decision
+                            role
+                            reasonRequired
+                            deadlineSeconds
+                            separationOfDuties
+                        }}
+                    }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert!(
+        body["errors"].is_null(),
+        "unexpected explainPolicy errors for {actor}: {body}"
+    );
+    body["data"]["explainPolicy"].clone()
+}
+
 async fn seed_policy_fixture(server: &axum_test::TestServer) {
     server
         .post("/tenants/default/databases/default/collections/user")
@@ -108,6 +165,7 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                         "title": { "type": "string" },
                         "requester_id": { "type": "string" },
                         "assigned_contractor_id": { "type": "string" },
+                        "budget_cents": { "type": "integer" },
                         "secret": { "type": "string" }
                     }
                 },
@@ -160,12 +218,36 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                                 }]
                             },
                             "write": {
-                                "deny": [{
-                                    "name": "contractors-cannot-write-secret",
-                                    "when": { "subject": "user_id", "eq": "contractor" }
-                                }]
+                                "deny": [
+                                    {
+                                        "name": "contractors-cannot-write-secret",
+                                        "when": { "subject": "user_id", "eq": "contractor" }
+                                    },
+                                    {
+                                        "name": "finance-cannot-write-secret",
+                                        "when": { "subject": "user_id", "eq": "finance-agent" }
+                                    }
+                                ]
                             }
                         }
+                    },
+                    "envelopes": {
+                        "write": [{
+                            "name": "large-budget-needs-finance-approval",
+                            "when": {
+                                "all": [
+                                    { "operation": "update" },
+                                    { "field": "budget_cents", "gt": 10000 }
+                                ]
+                            },
+                            "decision": "needs_approval",
+                            "approval": {
+                                "role": "finance_approver",
+                                "reason_required": true,
+                                "deadline_seconds": 86400,
+                                "separation_of_duties": true
+                            }
+                        }]
                     }
                 }
             },
@@ -183,6 +265,7 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                 "title": "Visible A",
                 "requester_id": "requester",
                 "assigned_contractor_id": "contractor",
+                "budget_cents": 5000,
                 "secret": "alpha"
             }),
         ),
@@ -193,6 +276,7 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                 "title": "Hidden B",
                 "requester_id": "other-requester",
                 "assigned_contractor_id": "other-contractor",
+                "budget_cents": 4000,
                 "secret": "beta"
             }),
         ),
@@ -203,6 +287,7 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                 "title": "Visible C",
                 "requester_id": "requester",
                 "assigned_contractor_id": "other-contractor",
+                "budget_cents": 3000,
                 "secret": "gamma"
             }),
         ),
@@ -213,6 +298,7 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                 "title": "Contractor visible",
                 "requester_id": "other-requester",
                 "assigned_contractor_id": "contractor",
+                "budget_cents": 2500,
                 "secret": "classified"
             }),
         ),
@@ -387,13 +473,14 @@ async fn graphql_effective_policy_reports_subject_capabilities() {
     assert_eq!(finance["canUpdate"], true);
     assert_eq!(finance["canDelete"], false);
     assert_eq!(finance["redactedFields"], json!([]));
-    assert_eq!(finance["deniedFields"], json!([]));
+    assert_eq!(finance["deniedFields"], json!(["secret"]));
 
     let finance_entity = effective_policy_as(&server, "finance-agent", Some("task-b")).await;
     assert_eq!(finance_entity["canRead"], true);
     assert_eq!(finance_entity["canCreate"], true);
     assert_eq!(finance_entity["canUpdate"], true);
     assert_eq!(finance_entity["canDelete"], false);
+    assert_eq!(finance_entity["deniedFields"], json!(["secret"]));
 
     let requester_collection = effective_policy_as(&server, "requester", None).await;
     assert_eq!(requester_collection["canRead"], true);
@@ -424,4 +511,153 @@ async fn graphql_effective_policy_reports_subject_capabilities() {
     assert_eq!(contractor["canDelete"], false);
     assert_eq!(contractor["redactedFields"], json!(["secret"]));
     assert_eq!(contractor["deniedFields"], json!(["secret"]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
+    let server = test_server();
+    seed_policy_fixture(&server).await;
+
+    let read = explain_policy_as(
+        &server,
+        "requester",
+        r#"{ operation: "read", collection: "task", entityId: "task-a" }"#,
+    )
+    .await;
+    assert_eq!(read["decision"], "allow");
+    assert_eq!(read["reason"], "allowed");
+    assert_eq!(read["policyVersion"], 1);
+    let read_rule_names: Vec<_> = read["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|rule| rule["name"].as_str())
+        .collect();
+    assert!(
+        read_rule_names.contains(&"requesters-read-own-tasks"),
+        "read explanation should name the matching requester rule: {read}"
+    );
+
+    let field_denial = explain_policy_as(
+        &server,
+        "finance-agent",
+        r#"{
+            operation: "update",
+            collection: "task",
+            entityId: "task-a",
+            data: {
+                title: "Secret change",
+                requester_id: "requester",
+                assigned_contractor_id: "contractor",
+                budget_cents: 5000,
+                secret: "changed"
+            }
+        }"#,
+    )
+    .await;
+    assert_eq!(field_denial["decision"], "deny");
+    assert_eq!(field_denial["reason"], "field_write_denied");
+    assert_eq!(field_denial["deniedFields"], json!(["secret"]));
+    assert_eq!(field_denial["fieldPaths"], json!(["secret"]));
+    let denial_rule_names: Vec<_> = field_denial["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|rule| rule["name"].as_str())
+        .collect();
+    assert!(
+        denial_rule_names.contains(&"finance-cannot-write-secret"),
+        "field denial should name the matching rule: {field_denial}"
+    );
+
+    let approval = explain_policy_as(
+        &server,
+        "finance-agent",
+        r#"{
+            operation: "update",
+            collection: "task",
+            entityId: "task-a",
+            data: {
+                title: "Large budget",
+                requester_id: "requester",
+                assigned_contractor_id: "contractor",
+                budget_cents: 20000
+            }
+        }"#,
+    )
+    .await;
+    assert_eq!(approval["decision"], "needs_approval");
+    assert_eq!(approval["reason"], "needs_approval");
+    assert_eq!(
+        approval["approval"]["name"],
+        "large-budget-needs-finance-approval"
+    );
+    assert_eq!(approval["approval"]["decision"], "needs_approval");
+    assert_eq!(approval["approval"]["role"], "finance_approver");
+    assert_eq!(approval["approval"]["reasonRequired"], true);
+    assert_eq!(approval["approval"]["deadlineSeconds"], 86400);
+    assert_eq!(approval["approval"]["separationOfDuties"], true);
+
+    let transaction = explain_policy_as(
+        &server,
+        "finance-agent",
+        r#"{
+            operation: "transaction",
+            operations: [{
+                updateEntity: {
+                    collection: "task",
+                    id: "task-a",
+                    expectedVersion: 1,
+                    data: {
+                        title: "Bulk budget",
+                        requester_id: "requester",
+                        assigned_contractor_id: "contractor",
+                        budget_cents: 20000
+                    }
+                }
+            }]
+        }"#,
+    )
+    .await;
+    assert_eq!(transaction["decision"], "needs_approval");
+    assert_eq!(transaction["operations"][0]["operation"], "update");
+    assert_eq!(transaction["operations"][0]["operationIndex"], 0);
+    assert_eq!(
+        transaction["operations"][0]["approval"]["name"],
+        "large-budget-needs-finance-approval"
+    );
+
+    let direct_mutation = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            updateTask(
+                id: "task-a",
+                version: 1,
+                input: {
+                    title: "Large budget",
+                    requester_id: "requester",
+                    assigned_contractor_id: "contractor",
+                    budget_cents: 20000
+                }
+            ) { id version title }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        direct_mutation["errors"][0]["extensions"]["code"],
+        "FORBIDDEN"
+    );
+    assert_eq!(
+        direct_mutation["errors"][0]["extensions"]["detail"]["reason"],
+        "needs_approval"
+    );
+
+    let stored = gql_as(
+        &server,
+        "admin",
+        r#"{ entity(collection: "task", id: "task-a") { id data } }"#,
+    )
+    .await;
+    assert_eq!(stored["data"]["entity"]["data"]["budget_cents"], 5000);
 }

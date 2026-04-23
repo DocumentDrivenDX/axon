@@ -28,12 +28,12 @@ use axon_api::handler::AxonHandler;
 use axon_api::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest,
     DeleteCollectionTemplateRequest, DeleteEntityRequest, DeleteLinkRequest,
-    DescribeCollectionRequest, DropCollectionRequest, FieldFilter, FilterNode, FilterOp,
-    FindLinkCandidatesRequest, GateFilter, GetCollectionTemplateRequest, GetEntityRequest,
-    ListCollectionsRequest, PatchEntityRequest, PutCollectionTemplateRequest, PutSchemaRequest,
-    QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest, RollbackEntityRequest,
-    RollbackEntityTarget, SortDirection, SortField, TransitionLifecycleRequest, TraverseDirection,
-    TraverseRequest, UpdateEntityRequest,
+    DescribeCollectionRequest, DropCollectionRequest, ExplainPolicyRequest, FieldFilter,
+    FilterNode, FilterOp, FindLinkCandidatesRequest, GateFilter, GetCollectionTemplateRequest,
+    GetEntityRequest, ListCollectionsRequest, PatchEntityRequest, PutCollectionTemplateRequest,
+    PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest,
+    RollbackEntityRequest, RollbackEntityTarget, SortDirection, SortField,
+    TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::AxonError;
@@ -69,6 +69,10 @@ const PAGE_INFO_TYPE: &str = "PageInfo";
 const COLLECTION_META_TYPE: &str = "CollectionMeta";
 const COLLECTION_TEMPLATE_TYPE: &str = "CollectionTemplate";
 const EFFECTIVE_POLICY_TYPE: &str = "EffectiveCollectionPolicy";
+const EXPLAIN_POLICY_INPUT: &str = "ExplainPolicyInput";
+const POLICY_EXPLANATION_TYPE: &str = "PolicyExplanation";
+const POLICY_RULE_MATCH_TYPE: &str = "PolicyRuleMatch";
+const POLICY_APPROVAL_ENVELOPE_TYPE: &str = "PolicyApprovalEnvelope";
 const RENDERED_ENTITY_TYPE: &str = "RenderedEntity";
 const AUDIT_ENTRY_TYPE: &str = "AuditEntry";
 const AUDIT_EDGE_TYPE: &str = "AuditEdge";
@@ -431,6 +435,106 @@ fn effective_policy_object() -> Object {
         ))
 }
 
+fn policy_rule_match_object() -> Object {
+    Object::new(POLICY_RULE_MATCH_TYPE)
+        .field(json_object_field(
+            "ruleId",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("name", TypeRef::named(TypeRef::STRING)))
+        .field(json_object_field(
+            "kind",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "fieldPath",
+            TypeRef::named(TypeRef::STRING),
+        ))
+}
+
+fn policy_approval_envelope_object() -> Object {
+    Object::new(POLICY_APPROVAL_ENVELOPE_TYPE)
+        .field(json_object_field(
+            "policyId",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("name", TypeRef::named(TypeRef::STRING)))
+        .field(json_object_field(
+            "decision",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("role", TypeRef::named(TypeRef::STRING)))
+        .field(json_object_field(
+            "reasonRequired",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "deadlineSeconds",
+            TypeRef::named(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "separationOfDuties",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+}
+
+fn policy_explanation_object() -> Object {
+    Object::new(POLICY_EXPLANATION_TYPE)
+        .field(json_object_field(
+            "operation",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "collection",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field("entityId", TypeRef::named(TypeRef::ID)))
+        .field(json_object_field(
+            "operationIndex",
+            TypeRef::named(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "decision",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "reason",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "policyVersion",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "ruleIds",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "policyIds",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "fieldPaths",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "deniedFields",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "rules",
+            TypeRef::named_nn_list_nn(POLICY_RULE_MATCH_TYPE),
+        ))
+        .field(json_object_field(
+            "approval",
+            TypeRef::named(POLICY_APPROVAL_ENVELOPE_TYPE),
+        ))
+        .field(json_object_field(
+            "operations",
+            TypeRef::named_nn_list_nn(POLICY_EXPLANATION_TYPE),
+        ))
+}
+
 fn typed_entity_input_object(
     name: &str,
     fields: &[(String, String, bool)],
@@ -591,6 +695,38 @@ fn rollback_entity_input_object() -> InputObject {
             TypeRef::named(TypeRef::INT),
         ))
         .field(InputValue::new("dryRun", TypeRef::named(TypeRef::BOOLEAN)))
+}
+
+fn explain_policy_input_object() -> InputObject {
+    InputObject::new(EXPLAIN_POLICY_INPUT)
+        .field(InputValue::new(
+            "operation",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new(
+            "collection",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(InputValue::new("entityId", TypeRef::named(TypeRef::ID)))
+        .field(InputValue::new(
+            "expectedVersion",
+            TypeRef::named(TypeRef::INT),
+        ))
+        .field(InputValue::new("data", TypeRef::named("JSON")))
+        .field(InputValue::new("patch", TypeRef::named("JSON")))
+        .field(InputValue::new(
+            "lifecycleName",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(InputValue::new(
+            "targetState",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(InputValue::new("toVersion", TypeRef::named(TypeRef::INT)))
+        .field(InputValue::new(
+            "operations",
+            TypeRef::named_nn_list(TRANSACTION_OPERATION_INPUT),
+        ))
 }
 
 fn commit_transaction_input_object() -> InputObject {
@@ -2176,6 +2312,9 @@ fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
         .register(collection_meta_object())
         .register(collection_template_object())
         .register(effective_policy_object())
+        .register(policy_rule_match_object())
+        .register(policy_approval_envelope_object())
+        .register(policy_explanation_object())
         .register(rendered_entity_object())
         .register(audit_entry_object())
         .register(audit_edge_object())
@@ -2278,6 +2417,34 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             TypeRef::named_nn(TypeRef::STRING),
         ))
         .argument(InputValue::new("entityId", TypeRef::named(TypeRef::ID))),
+    );
+
+    let handler_explain_policy = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "explainPolicy",
+            TypeRef::named_nn(POLICY_EXPLANATION_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_explain_policy);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(async move {
+                    let input = explain_policy_request_from_value(&gql_input_to_json(
+                        ctx.args.try_get("input")?.as_value(),
+                    )?)?;
+                    let guard = handler.lock().await;
+                    let explanation = guard
+                        .explain_policy_with_caller(input, &caller, None)
+                        .map_err(axon_error_to_gql)?;
+                    Ok(Some(json_to_field_value(policy_explanation_json(
+                        &explanation,
+                    ))))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(EXPLAIN_POLICY_INPUT),
+        )),
     );
 
     let handler_entities = Arc::clone(&handler);
@@ -3276,6 +3443,199 @@ fn put_schema_payload_value(resp: axon_api::response::PutSchemaResponse) -> Valu
         "compatibility": resp.compatibility,
         "diff": resp.diff,
         "dryRun": resp.dry_run,
+    })
+}
+
+fn empty_explain_policy_request(operation: impl Into<String>) -> ExplainPolicyRequest {
+    ExplainPolicyRequest {
+        operation: operation.into(),
+        collection: None,
+        entity_id: None,
+        expected_version: None,
+        data: None,
+        patch: None,
+        lifecycle_name: None,
+        target_state: None,
+        to_version: None,
+        operations: Vec::new(),
+    }
+}
+
+fn explain_policy_request_from_value(value: &Value) -> Result<ExplainPolicyRequest, GqlError> {
+    let input = input_object(value, "input")?;
+    let mut request = empty_explain_policy_request(input_string(input, "operation")?);
+    request.collection = input
+        .get("collection")
+        .and_then(Value::as_str)
+        .map(CollectionId::new);
+    request.entity_id = input
+        .get("entityId")
+        .and_then(Value::as_str)
+        .map(EntityId::new);
+    request.expected_version = input.get("expectedVersion").and_then(Value::as_u64);
+    request.data = input.get("data").cloned();
+    request.patch = input.get("patch").cloned();
+    request.lifecycle_name = input
+        .get("lifecycleName")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    request.target_state = input
+        .get("targetState")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    request.to_version = input.get("toVersion").and_then(Value::as_u64);
+    request.operations = input
+        .get("operations")
+        .map(explain_transaction_operations_from_value)
+        .transpose()?
+        .unwrap_or_default();
+    Ok(request)
+}
+
+fn explain_transaction_operations_from_value(
+    value: &Value,
+) -> Result<Vec<ExplainPolicyRequest>, GqlError> {
+    let operations = value.as_array().ok_or_else(|| {
+        GqlError::new("operations must be a list").extend_with(|_err, ext| {
+            ext.set("code", "INVALID_ARGUMENT");
+        })
+    })?;
+    operations
+        .iter()
+        .enumerate()
+        .map(explain_transaction_operation_from_value)
+        .collect()
+}
+
+fn explain_transaction_operation_from_value(
+    (index, op): (usize, &Value),
+) -> Result<ExplainPolicyRequest, GqlError> {
+    let obj = required_object(op, "operation", index)?;
+    let variants: Vec<(&str, &Value)> = obj
+        .iter()
+        .filter(|(_, value)| !value.is_null())
+        .map(|(key, value)| (key.as_str(), value))
+        .collect();
+    if variants.len() != 1 {
+        return Err(
+            GqlError::new("operation must set exactly one variant").extend_with(
+                move |_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                    ext.set("operationIndex", index as i32);
+                },
+            ),
+        );
+    }
+
+    let (variant, payload) = variants[0];
+    let payload = required_object(payload, variant, index)?;
+    let mut request = match variant {
+        "createEntity" => {
+            let mut request = empty_explain_policy_request("create");
+            request.collection = Some(CollectionId::new(required_str(
+                payload,
+                "collection",
+                index,
+            )?));
+            request.entity_id = Some(EntityId::new(required_str(payload, "id", index)?));
+            request.data = payload.get("data").cloned();
+            request
+        }
+        "updateEntity" => {
+            let mut request = empty_explain_policy_request("update");
+            request.collection = Some(CollectionId::new(required_str(
+                payload,
+                "collection",
+                index,
+            )?));
+            request.entity_id = Some(EntityId::new(required_str(payload, "id", index)?));
+            request.expected_version = Some(required_u64(payload, "expectedVersion", index)?);
+            request.data = payload.get("data").cloned();
+            request
+        }
+        "patchEntity" => {
+            let mut request = empty_explain_policy_request("patch");
+            request.collection = Some(CollectionId::new(required_str(
+                payload,
+                "collection",
+                index,
+            )?));
+            request.entity_id = Some(EntityId::new(required_str(payload, "id", index)?));
+            request.expected_version = Some(required_u64(payload, "expectedVersion", index)?);
+            request.patch = payload.get("patch").cloned();
+            request
+        }
+        "deleteEntity" => {
+            let mut request = empty_explain_policy_request("delete");
+            request.collection = Some(CollectionId::new(required_str(
+                payload,
+                "collection",
+                index,
+            )?));
+            request.entity_id = Some(EntityId::new(required_str(payload, "id", index)?));
+            request.expected_version = Some(required_u64(payload, "expectedVersion", index)?);
+            request
+        }
+        "createLink" => empty_explain_policy_request("create_link"),
+        "deleteLink" => empty_explain_policy_request("delete_link"),
+        other => {
+            return Err(
+                GqlError::new(format!("unsupported transaction operation '{other}'")).extend_with(
+                    move |_err, ext| {
+                        ext.set("code", "INVALID_ARGUMENT");
+                        ext.set("operationIndex", index as i32);
+                    },
+                ),
+            );
+        }
+    };
+    request.operation = request.operation.trim().to_ascii_lowercase();
+    Ok(request)
+}
+
+fn policy_explanation_json(response: &axon_api::response::PolicyExplanationResponse) -> Value {
+    json!({
+        "operation": response.operation,
+        "collection": response.collection,
+        "entityId": response.entity_id,
+        "operationIndex": response.operation_index,
+        "decision": response.decision,
+        "reason": response.reason,
+        "policyVersion": response.policy_version,
+        "ruleIds": response.rule_ids,
+        "policyIds": response.policy_ids,
+        "fieldPaths": response.field_paths,
+        "deniedFields": response.denied_fields,
+        "rules": response.rules.iter().map(policy_rule_match_json).collect::<Vec<_>>(),
+        "approval": response.approval.as_ref().map(policy_approval_envelope_json),
+        "operations": response
+            .operations
+            .iter()
+            .map(policy_explanation_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn policy_rule_match_json(rule: &axon_api::response::PolicyRuleMatch) -> Value {
+    json!({
+        "ruleId": rule.rule_id,
+        "name": rule.name,
+        "kind": rule.kind,
+        "fieldPath": rule.field_path,
+    })
+}
+
+fn policy_approval_envelope_json(
+    approval: &axon_api::response::PolicyApprovalEnvelopeSummary,
+) -> Value {
+    json!({
+        "policyId": approval.policy_id,
+        "name": approval.name,
+        "decision": approval.decision,
+        "role": approval.role,
+        "reasonRequired": approval.reason_required,
+        "deadlineSeconds": approval.deadline_seconds,
+        "separationOfDuties": approval.separation_of_duties,
     })
 }
 
@@ -4872,6 +5232,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
     .register(put_schema_input_object())
     .register(put_collection_template_input_object())
     .register(rollback_entity_input_object())
+    .register(explain_policy_input_object())
     .register(commit_transaction_input_object())
     .register(transaction_operation_input_object())
     .register(create_entity_transaction_input_object())
@@ -5223,6 +5584,7 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         .register(put_schema_input_object())
         .register(put_collection_template_input_object())
         .register(rollback_entity_input_object())
+        .register(explain_policy_input_object())
         .register(commit_transaction_input_object())
         .register(transaction_operation_input_object())
         .register(create_entity_transaction_input_object())

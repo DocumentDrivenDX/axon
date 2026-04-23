@@ -470,6 +470,32 @@ pub struct GetSchemaRequest {
     pub collection: CollectionId,
 }
 
+/// Request to explain the policy decision for a read or mutation preview.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplainPolicyRequest {
+    /// Operation to explain: read, create, update, patch, delete, transition,
+    /// rollback, transaction, create_link, or delete_link.
+    pub operation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<CollectionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<EntityId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_version: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_version: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<ExplainPolicyRequest>,
+}
+
 /// Request to revalidate all entities in a collection against the current schema.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevalidateRequest {

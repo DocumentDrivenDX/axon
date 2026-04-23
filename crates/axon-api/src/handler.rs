@@ -41,14 +41,14 @@ use crate::request::{
     CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
     DeleteCollectionTemplateRequest, DeleteEntityRequest, DeleteLinkRequest,
     DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest, DropDatabaseRequest,
-    DropNamespaceRequest, FieldFilter, FilterNode, FilterOp, GetCollectionTemplateRequest,
-    GetEntityRequest, GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
-    ListNamespaceCollectionsRequest, ListNamespacesRequest, PatchEntityRequest,
-    PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
-    ReachableRequest, RevalidateRequest, RevertEntityRequest, RollbackCollectionRequest,
-    RollbackEntityRequest, RollbackEntityTarget, RollbackTransactionRequest, SnapshotRequest,
-    SortDirection, TransitionLifecycleRequest, TraverseDirection, TraverseRequest,
-    UpdateEntityRequest,
+    DropNamespaceRequest, ExplainPolicyRequest, FieldFilter, FilterNode, FilterOp,
+    GetCollectionTemplateRequest, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest,
+    ListDatabasesRequest, ListNamespaceCollectionsRequest, ListNamespacesRequest,
+    PatchEntityRequest, PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest,
+    QueryEntitiesRequest, ReachableRequest, RevalidateRequest, RevertEntityRequest,
+    RollbackCollectionRequest, RollbackEntityRequest, RollbackEntityTarget,
+    RollbackTransactionRequest, SnapshotRequest, SortDirection, TransitionLifecycleRequest,
+    TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use crate::response::{
     AggregateGroup, AggregateResponse, CollectionMetadata, CountEntitiesResponse, CountGroup,
@@ -59,12 +59,12 @@ use crate::response::{
     GetCollectionTemplateResponse, GetEntityMarkdownResponse, GetEntityResponse, GetSchemaResponse,
     InvalidEntity, ListCollectionsResponse, ListDatabasesResponse,
     ListNamespaceCollectionsResponse, ListNamespacesResponse, PatchEntityResponse,
-    PolicyQueryPlanDiagnostics, PutCollectionTemplateResponse, PutSchemaResponse,
-    QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevalidateResponse,
-    RevertEntityResponse, RollbackCollectionEntityResult, RollbackCollectionResponse,
-    RollbackEntityResponse, RollbackTransactionEntityResult, RollbackTransactionResponse,
-    SnapshotResponse, TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse,
-    UpdateEntityResponse,
+    PolicyApprovalEnvelopeSummary, PolicyExplanationResponse, PolicyQueryPlanDiagnostics,
+    PolicyRuleMatch, PutCollectionTemplateResponse, PutSchemaResponse, QueryAuditResponse,
+    QueryEntitiesResponse, ReachableResponse, RevalidateResponse, RevertEntityResponse,
+    RollbackCollectionEntityResult, RollbackCollectionResponse, RollbackEntityResponse,
+    RollbackTransactionEntityResult, RollbackTransactionResponse, SnapshotResponse,
+    TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -1220,6 +1220,887 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
         }
         Ok(fields.into_iter().collect())
+    }
+
+    pub fn explain_policy_with_caller(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        self.explain_policy_inner(req, caller, attribution.as_ref(), None)
+    }
+
+    fn explain_policy_inner(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let operation = req.operation.trim().to_ascii_lowercase();
+        match operation.as_str() {
+            "read" => self.explain_read_policy(req, caller, attribution, operation_index),
+            "create" => self.explain_create_policy(req, caller, attribution, operation_index),
+            "update" => self.explain_update_policy(req, caller, attribution, operation_index),
+            "patch" => self.explain_patch_policy(req, caller, attribution, operation_index),
+            "delete" => self.explain_delete_policy(req, caller, attribution, operation_index),
+            "transition" => {
+                self.explain_transition_policy(req, caller, attribution, operation_index)
+            }
+            "rollback" => self.explain_rollback_policy(req, caller, attribution, operation_index),
+            "transaction" => {
+                self.explain_transaction_policy(req, caller, attribution, operation_index)
+            }
+            "create_link" | "delete_link" => Ok(policy_explanation(
+                operation,
+                None,
+                None,
+                operation_index,
+                "allow",
+                "link_policy_not_configured",
+                0,
+            )),
+            other => Err(AxonError::InvalidArgument(format!(
+                "unsupported policy explanation operation '{other}'"
+            ))),
+        }
+    }
+
+    fn explain_policy_plan_for_request(
+        &self,
+        collection: &CollectionId,
+        schema: &CollectionSchema,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<Option<(PolicyRequestSnapshot, PolicyPlan)>, AxonError> {
+        let Some(snapshot) = self.policy_snapshot_for_request(
+            collection,
+            Some(schema),
+            None,
+            Some(caller),
+            attribution,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(plan) = self.compile_policy_plan_for_schema(schema)? else {
+            return Ok(None);
+        };
+        Ok(Some((snapshot, plan)))
+    }
+
+    fn explain_collection_schema(
+        &self,
+        req: &ExplainPolicyRequest,
+    ) -> Result<(CollectionId, CollectionSchema), AxonError> {
+        let collection = req
+            .collection
+            .clone()
+            .ok_or_else(|| AxonError::InvalidArgument("collection is required".into()))?;
+        let schema = self
+            .storage
+            .get_schema(&collection)?
+            .ok_or_else(|| AxonError::NotFound(collection.to_string()))?;
+        Ok((collection, schema))
+    }
+
+    fn explain_read_policy(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let policy_version = schema.version;
+        let Some((snapshot, plan)) =
+            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        else {
+            return Ok(policy_explanation(
+                "read",
+                Some(&collection),
+                req.entity_id.as_ref(),
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+        let (entity_id, data) = if let Some(entity_id) = req.entity_id.as_ref() {
+            let entity = self
+                .storage
+                .get(&collection, entity_id)?
+                .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?;
+            (Some(entity_id), entity_policy_data(&entity))
+        } else {
+            let data = req.data.ok_or_else(|| {
+                AxonError::InvalidArgument("read explanation requires entityId or data".into())
+            })?;
+            (None, data)
+        };
+
+        self.explain_operation_policy_response(
+            "read",
+            &collection,
+            entity_id,
+            &plan,
+            &snapshot,
+            PolicyOperation::Read,
+            &data,
+            "row_read_denied",
+            policy_version,
+            operation_index,
+        )
+    }
+
+    fn explain_create_policy(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let policy_version = schema.version;
+        let mut data = req
+            .data
+            .ok_or_else(|| AxonError::InvalidArgument("create explanation requires data".into()))?;
+        enforce_lifecycle_initial_state(&schema, &mut data, LifecycleEnforcementMode::Create)?;
+        let entity_id = req.entity_id.as_ref();
+        let Some((snapshot, plan)) =
+            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        else {
+            return Ok(policy_explanation(
+                "create",
+                Some(&collection),
+                entity_id,
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+
+        self.explain_write_policy_response(
+            "create",
+            &collection,
+            entity_id,
+            &plan,
+            &snapshot,
+            PolicyWriteCheck {
+                collection: &collection,
+                entity_id,
+                operation: PolicyOperation::Create,
+                current_data: None,
+                candidate_data: &data,
+                field_scope: FieldWriteScope::PresentFields(&data),
+                operation_index,
+            },
+            policy_version,
+        )
+    }
+
+    fn explain_update_policy(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let policy_version = schema.version;
+        let entity_id = req.entity_id.as_ref().ok_or_else(|| {
+            AxonError::InvalidArgument("update explanation requires entityId".into())
+        })?;
+        let mut data = req
+            .data
+            .ok_or_else(|| AxonError::InvalidArgument("update explanation requires data".into()))?;
+        enforce_lifecycle_initial_state(&schema, &mut data, LifecycleEnforcementMode::Update)?;
+        let current = self
+            .storage
+            .get(&collection, entity_id)?
+            .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?;
+        let Some((snapshot, plan)) =
+            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        else {
+            return Ok(policy_explanation(
+                "update",
+                Some(&collection),
+                Some(entity_id),
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+
+        self.explain_write_policy_response(
+            "update",
+            &collection,
+            Some(entity_id),
+            &plan,
+            &snapshot,
+            PolicyWriteCheck {
+                collection: &collection,
+                entity_id: Some(entity_id),
+                operation: PolicyOperation::Update,
+                current_data: Some(&current.data),
+                candidate_data: &data,
+                field_scope: FieldWriteScope::PresentFields(&data),
+                operation_index,
+            },
+            policy_version,
+        )
+    }
+
+    fn explain_patch_policy(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let policy_version = schema.version;
+        let entity_id = req.entity_id.as_ref().ok_or_else(|| {
+            AxonError::InvalidArgument("patch explanation requires entityId".into())
+        })?;
+        let patch = req
+            .patch
+            .ok_or_else(|| AxonError::InvalidArgument("patch explanation requires patch".into()))?;
+        let current = self
+            .storage
+            .get(&collection, entity_id)?
+            .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?;
+        let mut merged = current.data.clone();
+        json_merge_patch(&mut merged, &patch);
+        enforce_lifecycle_initial_state(&schema, &mut merged, LifecycleEnforcementMode::Update)?;
+        let Some((snapshot, plan)) =
+            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        else {
+            return Ok(policy_explanation(
+                "patch",
+                Some(&collection),
+                Some(entity_id),
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+
+        self.explain_write_policy_response(
+            "patch",
+            &collection,
+            Some(entity_id),
+            &plan,
+            &snapshot,
+            PolicyWriteCheck {
+                collection: &collection,
+                entity_id: Some(entity_id),
+                operation: PolicyOperation::Update,
+                current_data: Some(&current.data),
+                candidate_data: &merged,
+                field_scope: FieldWriteScope::Patch(&patch),
+                operation_index,
+            },
+            policy_version,
+        )
+    }
+
+    fn explain_delete_policy(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let policy_version = schema.version;
+        let entity_id = req.entity_id.as_ref().ok_or_else(|| {
+            AxonError::InvalidArgument("delete explanation requires entityId".into())
+        })?;
+        let current = self
+            .storage
+            .get(&collection, entity_id)?
+            .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?;
+        let Some((snapshot, plan)) =
+            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        else {
+            return Ok(policy_explanation(
+                "delete",
+                Some(&collection),
+                Some(entity_id),
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+
+        self.explain_write_policy_response(
+            "delete",
+            &collection,
+            Some(entity_id),
+            &plan,
+            &snapshot,
+            PolicyWriteCheck {
+                collection: &collection,
+                entity_id: Some(entity_id),
+                operation: PolicyOperation::Delete,
+                current_data: Some(&current.data),
+                candidate_data: &current.data,
+                field_scope: FieldWriteScope::PresentFields(&current.data),
+                operation_index,
+            },
+            policy_version,
+        )
+    }
+
+    fn explain_transition_policy(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let policy_version = schema.version;
+        let entity_id = req.entity_id.as_ref().ok_or_else(|| {
+            AxonError::InvalidArgument("transition explanation requires entityId".into())
+        })?;
+        let lifecycle_name = req.lifecycle_name.as_ref().ok_or_else(|| {
+            AxonError::InvalidArgument("transition explanation requires lifecycleName".into())
+        })?;
+        let target_state = req.target_state.as_ref().ok_or_else(|| {
+            AxonError::InvalidArgument("transition explanation requires targetState".into())
+        })?;
+        let lifecycle =
+            schema
+                .lifecycles
+                .get(lifecycle_name)
+                .ok_or_else(|| AxonError::LifecycleNotFound {
+                    lifecycle_name: lifecycle_name.clone(),
+                })?;
+        let entity = self
+            .storage
+            .get(&collection, entity_id)?
+            .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?;
+        let current_state = entity
+            .data
+            .get(&lifecycle.field)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let allowed = lifecycle
+            .transitions
+            .get(&current_state)
+            .cloned()
+            .unwrap_or_default();
+        if !allowed.contains(target_state) {
+            return Err(AxonError::InvalidTransition {
+                lifecycle_name: lifecycle_name.clone(),
+                current_state,
+                target_state: target_state.clone(),
+                valid_transitions: allowed,
+            });
+        }
+        let mut data = entity.data.clone();
+        data[&lifecycle.field] = Value::String(target_state.clone());
+        let Some((snapshot, plan)) =
+            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        else {
+            return Ok(policy_explanation(
+                "transition",
+                Some(&collection),
+                Some(entity_id),
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+
+        let transition = self.explain_transition_policy_response(
+            &collection,
+            entity_id,
+            &plan,
+            &snapshot,
+            &lifecycle.field,
+            target_state,
+            &data,
+            policy_version,
+            operation_index,
+        )?;
+        if transition.decision == "deny" {
+            return Ok(transition);
+        }
+
+        let mut write = self.explain_write_policy_response(
+            "transition",
+            &collection,
+            Some(entity_id),
+            &plan,
+            &snapshot,
+            PolicyWriteCheck {
+                collection: &collection,
+                entity_id: Some(entity_id),
+                operation: PolicyOperation::Update,
+                current_data: Some(&entity.data),
+                candidate_data: &data,
+                field_scope: FieldWriteScope::PresentFields(&data),
+                operation_index,
+            },
+            policy_version,
+        )?;
+        merge_policy_explanation(&mut write, transition);
+        Ok(finalize_policy_explanation(write))
+    }
+
+    fn explain_rollback_policy(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let policy_version = schema.version;
+        let entity_id = req.entity_id.as_ref().ok_or_else(|| {
+            AxonError::InvalidArgument("rollback explanation requires entityId".into())
+        })?;
+        let to_version = req.to_version.ok_or_else(|| {
+            AxonError::InvalidArgument("rollback explanation requires toVersion".into())
+        })?;
+        let source = self.resolve_rollback_source_entry(
+            &collection,
+            entity_id,
+            &RollbackEntityTarget::Version(to_version),
+        )?;
+        let target_data = source.data_after.clone().ok_or_else(|| {
+            AxonError::NotFound(format!(
+                "entity version {} not found in audit log for {}",
+                to_version, entity_id
+            ))
+        })?;
+        let current = self.storage.get(&collection, entity_id)?;
+        let operation = if current.is_some() {
+            PolicyOperation::Update
+        } else {
+            PolicyOperation::Create
+        };
+        let Some((snapshot, plan)) =
+            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        else {
+            return Ok(policy_explanation(
+                "rollback",
+                Some(&collection),
+                Some(entity_id),
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+
+        self.explain_write_policy_response(
+            "rollback",
+            &collection,
+            Some(entity_id),
+            &plan,
+            &snapshot,
+            PolicyWriteCheck {
+                collection: &collection,
+                entity_id: Some(entity_id),
+                operation,
+                current_data: current.as_ref().map(|entity| &entity.data),
+                candidate_data: &target_data,
+                field_scope: FieldWriteScope::PresentFields(&target_data),
+                operation_index,
+            },
+            policy_version,
+        )
+    }
+
+    fn explain_transaction_policy(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let mut response = policy_explanation(
+            "transaction",
+            None,
+            None,
+            operation_index,
+            "allow",
+            "allowed",
+            0,
+        );
+        let mut saw_needs_approval = false;
+        for (index, operation) in req.operations.into_iter().enumerate() {
+            let child = self.explain_policy_inner(operation, caller, attribution, Some(index))?;
+            response.policy_version = response.policy_version.max(child.policy_version);
+            if child.decision == "deny" {
+                response.decision = "deny".into();
+                response.reason = "transaction_denied".into();
+            } else if response.decision != "deny" && child.decision == "needs_approval" {
+                saw_needs_approval = true;
+                response.decision = "needs_approval".into();
+                response.reason = "needs_approval".into();
+                if response.approval.is_none() {
+                    response.approval = child.approval.clone();
+                }
+            }
+            merge_policy_explanation(&mut response, child.clone());
+            response.operations.push(child);
+        }
+        if response.decision == "allow" && !saw_needs_approval {
+            response.reason = "allowed".into();
+        }
+        Ok(finalize_policy_explanation(response))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn explain_operation_policy_response(
+        &self,
+        operation_name: impl Into<String>,
+        collection: &CollectionId,
+        entity_id: Option<&EntityId>,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        operation: PolicyOperation,
+        data: &Value,
+        denied_reason: &str,
+        policy_version: u32,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let mut response = policy_explanation(
+            operation_name,
+            Some(collection),
+            entity_id,
+            operation_index,
+            "allow",
+            "allowed",
+            policy_version,
+        );
+        let mut allow_rules_present = false;
+        let mut allow_matched = false;
+
+        for policy in applicable_operation_policies(plan, &operation) {
+            for rule in &policy.deny {
+                if self.policy_rule_matches(rule, snapshot, &operation, data)? {
+                    response.decision = "deny".into();
+                    response.reason = denied_reason.into();
+                    response
+                        .rules
+                        .push(operation_rule_match(rule, "operation_deny"));
+                    return Ok(finalize_policy_explanation(response));
+                }
+            }
+
+            if !policy.allow.is_empty() {
+                allow_rules_present = true;
+            }
+            for rule in &policy.allow {
+                if self.policy_rule_matches(rule, snapshot, &operation, data)? {
+                    allow_matched = true;
+                    response
+                        .rules
+                        .push(operation_rule_match(rule, "operation_allow"));
+                }
+            }
+        }
+
+        if allow_rules_present && !allow_matched {
+            response.decision = "deny".into();
+            response.reason = denied_reason.into();
+            response.policy_ids.push(operation.as_str().to_string());
+        }
+
+        Ok(finalize_policy_explanation(response))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn explain_write_policy_response(
+        &self,
+        operation_name: impl Into<String>,
+        collection: &CollectionId,
+        entity_id: Option<&EntityId>,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        check: PolicyWriteCheck<'_>,
+        policy_version: u32,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let operation_name = operation_name.into();
+        let mut response = policy_explanation(
+            operation_name.clone(),
+            Some(collection),
+            entity_id,
+            check.operation_index,
+            "allow",
+            "allowed",
+            policy_version,
+        );
+
+        if let Some(current_data) = check.current_data {
+            let read = self.explain_operation_policy_response(
+                operation_name.clone(),
+                collection,
+                entity_id,
+                plan,
+                snapshot,
+                PolicyOperation::Read,
+                current_data,
+                "row_read_denied",
+                policy_version,
+                check.operation_index,
+            )?;
+            merge_policy_explanation(&mut response, read.clone());
+            if read.decision == "deny" {
+                response.decision = "deny".into();
+                response.reason = read.reason;
+                return Ok(finalize_policy_explanation(response));
+            }
+        }
+
+        let operation = self.explain_operation_policy_response(
+            operation_name,
+            collection,
+            entity_id,
+            plan,
+            snapshot,
+            check.operation.clone(),
+            check.candidate_data,
+            "row_write_denied",
+            policy_version,
+            check.operation_index,
+        )?;
+        merge_policy_explanation(&mut response, operation.clone());
+        if operation.decision == "deny" {
+            response.decision = "deny".into();
+            response.reason = operation.reason;
+            return Ok(finalize_policy_explanation(response));
+        }
+
+        if let Some(field_denial) =
+            self.explain_field_write_policy(plan, snapshot, check.clone(), policy_version)?
+        {
+            merge_policy_explanation(&mut response, field_denial.clone());
+            response.decision = "deny".into();
+            response.reason = field_denial.reason;
+            return Ok(finalize_policy_explanation(response));
+        }
+
+        if let Some(envelope) =
+            self.explain_policy_envelopes(plan, snapshot, check.clone(), policy_version)?
+        {
+            merge_policy_explanation(&mut response, envelope.clone());
+            response.decision = envelope.decision;
+            response.reason = envelope.reason;
+            response.approval = envelope.approval;
+        }
+
+        Ok(finalize_policy_explanation(response))
+    }
+
+    fn explain_field_write_policy(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        check: PolicyWriteCheck<'_>,
+        policy_version: u32,
+    ) -> Result<Option<PolicyExplanationResponse>, AxonError> {
+        for (field_path, field_policy) in &plan.fields {
+            let Some(write_policy) = field_policy.write.as_ref() else {
+                continue;
+            };
+            if !field_write_scope_touches_path(check.field_scope, field_path) {
+                continue;
+            }
+
+            for rule in &write_policy.deny {
+                if self.field_policy_rule_matches(
+                    rule,
+                    snapshot,
+                    &check.operation,
+                    check.candidate_data,
+                )? {
+                    let mut response = policy_explanation(
+                        check.operation.as_str(),
+                        Some(check.collection),
+                        check.entity_id,
+                        check.operation_index,
+                        "deny",
+                        "field_write_denied",
+                        policy_version,
+                    );
+                    response.denied_fields.push(field_path.clone());
+                    response.field_paths.push(field_path.clone());
+                    response
+                        .rules
+                        .push(field_rule_match(rule, field_path, "field_write_deny"));
+                    return Ok(Some(finalize_policy_explanation(response)));
+                }
+            }
+
+            if !write_policy.allow.is_empty() {
+                let mut matched = false;
+                for rule in &write_policy.allow {
+                    if self.field_policy_rule_matches(
+                        rule,
+                        snapshot,
+                        &check.operation,
+                        check.candidate_data,
+                    )? {
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    let mut response = policy_explanation(
+                        check.operation.as_str(),
+                        Some(check.collection),
+                        check.entity_id,
+                        check.operation_index,
+                        "deny",
+                        "field_write_denied",
+                        policy_version,
+                    );
+                    response.denied_fields.push(field_path.clone());
+                    response.field_paths.push(field_path.clone());
+                    if let Some(rule) = write_policy.allow.first() {
+                        response.rules.push(field_rule_match(
+                            rule,
+                            field_path,
+                            "field_write_allow",
+                        ));
+                    }
+                    return Ok(Some(finalize_policy_explanation(response)));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn explain_policy_envelopes(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        check: PolicyWriteCheck<'_>,
+        policy_version: u32,
+    ) -> Result<Option<PolicyExplanationResponse>, AxonError> {
+        let mut needs_approval = None;
+
+        for envelope in applicable_policy_envelopes(plan, &check.operation) {
+            if self.policy_predicate_matches(
+                envelope.when.as_ref(),
+                PolicyPredicateContext {
+                    snapshot,
+                    operation: &check.operation,
+                    data: check.candidate_data,
+                },
+            )? {
+                match envelope.decision {
+                    PolicyDecision::Deny => {
+                        let mut response = policy_explanation(
+                            check.operation.as_str(),
+                            Some(check.collection),
+                            check.entity_id,
+                            check.operation_index,
+                            "deny",
+                            "row_write_denied",
+                            policy_version,
+                        );
+                        response.policy_ids.push(envelope.envelope_id.clone());
+                        return Ok(Some(finalize_policy_explanation(response)));
+                    }
+                    PolicyDecision::NeedsApproval => {
+                        needs_approval = Some(envelope);
+                    }
+                    PolicyDecision::Allow => {}
+                }
+            }
+        }
+
+        Ok(needs_approval.map(|envelope| {
+            let mut response = policy_explanation(
+                check.operation.as_str(),
+                Some(check.collection),
+                check.entity_id,
+                check.operation_index,
+                "needs_approval",
+                "needs_approval",
+                policy_version,
+            );
+            response.policy_ids.push(envelope.envelope_id.clone());
+            response.approval = Some(approval_envelope_summary(envelope));
+            finalize_policy_explanation(response)
+        }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn explain_transition_policy_response(
+        &self,
+        collection: &CollectionId,
+        entity_id: &EntityId,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        lifecycle_field: &str,
+        target_state: &str,
+        data: &Value,
+        policy_version: u32,
+        operation_index: Option<usize>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let mut response = policy_explanation(
+            "transition",
+            Some(collection),
+            Some(entity_id),
+            operation_index,
+            "allow",
+            "allowed",
+            policy_version,
+        );
+        let Some(transitions) = plan.transitions.get(lifecycle_field) else {
+            return Ok(response);
+        };
+        let Some(policy) = transitions.get(target_state) else {
+            return Ok(response);
+        };
+
+        for rule in &policy.deny {
+            if self.policy_rule_matches(rule, snapshot, &PolicyOperation::Update, data)? {
+                response.decision = "deny".into();
+                response.reason = "row_write_denied".into();
+                response.field_paths.push(lifecycle_field.to_string());
+                response
+                    .rules
+                    .push(operation_rule_match(rule, "transition_deny"));
+                return Ok(finalize_policy_explanation(response));
+            }
+        }
+
+        if !policy.allow.is_empty() {
+            let mut matched = false;
+            for rule in &policy.allow {
+                if self.policy_rule_matches(rule, snapshot, &PolicyOperation::Update, data)? {
+                    matched = true;
+                    response
+                        .rules
+                        .push(operation_rule_match(rule, "transition_allow"));
+                }
+            }
+            if !matched {
+                response.decision = "deny".into();
+                response.reason = "row_write_denied".into();
+                response.field_paths.push(lifecycle_field.to_string());
+            }
+        }
+
+        Ok(finalize_policy_explanation(response))
     }
 
     fn get_visible_entity_for_read_with_context(
@@ -6734,6 +7615,149 @@ fn policy_envelope_label(envelope: &CompiledPolicyEnvelope) -> String {
         .name
         .clone()
         .unwrap_or_else(|| envelope.envelope_id.clone())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn policy_explanation(
+    operation: impl Into<String>,
+    collection: Option<&CollectionId>,
+    entity_id: Option<&EntityId>,
+    operation_index: Option<usize>,
+    decision: impl Into<String>,
+    reason: impl Into<String>,
+    policy_version: u32,
+) -> PolicyExplanationResponse {
+    PolicyExplanationResponse {
+        operation: operation.into(),
+        collection: collection.map(ToString::to_string),
+        entity_id: entity_id.map(ToString::to_string),
+        operation_index,
+        decision: decision.into(),
+        reason: reason.into(),
+        policy_version,
+        rule_ids: Vec::new(),
+        policy_ids: Vec::new(),
+        field_paths: Vec::new(),
+        denied_fields: Vec::new(),
+        rules: Vec::new(),
+        approval: None,
+        operations: Vec::new(),
+    }
+}
+
+fn operation_rule_match(rule: &CompiledPolicyRule, kind: impl Into<String>) -> PolicyRuleMatch {
+    PolicyRuleMatch {
+        rule_id: rule.rule_id.clone(),
+        name: rule.name.clone(),
+        kind: kind.into(),
+        field_path: None,
+    }
+}
+
+fn field_rule_match(
+    rule: &CompiledFieldPolicyRule,
+    field_path: &str,
+    kind: impl Into<String>,
+) -> PolicyRuleMatch {
+    PolicyRuleMatch {
+        rule_id: rule.rule_id.clone(),
+        name: rule.name.clone(),
+        kind: kind.into(),
+        field_path: Some(field_path.to_string()),
+    }
+}
+
+fn approval_envelope_summary(envelope: &CompiledPolicyEnvelope) -> PolicyApprovalEnvelopeSummary {
+    PolicyApprovalEnvelopeSummary {
+        policy_id: envelope.envelope_id.clone(),
+        name: envelope.name.clone(),
+        decision: policy_decision_name(&envelope.decision).to_string(),
+        role: envelope
+            .approval
+            .as_ref()
+            .and_then(|approval| approval.role.clone()),
+        reason_required: envelope
+            .approval
+            .as_ref()
+            .is_some_and(|approval| approval.reason_required),
+        deadline_seconds: envelope
+            .approval
+            .as_ref()
+            .and_then(|approval| approval.deadline_seconds),
+        separation_of_duties: envelope
+            .approval
+            .as_ref()
+            .is_some_and(|approval| approval.separation_of_duties),
+    }
+}
+
+fn policy_decision_name(decision: &PolicyDecision) -> &'static str {
+    match decision {
+        PolicyDecision::Allow => "allow",
+        PolicyDecision::NeedsApproval => "needs_approval",
+        PolicyDecision::Deny => "deny",
+    }
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+fn merge_policy_explanation(
+    target: &mut PolicyExplanationResponse,
+    mut source: PolicyExplanationResponse,
+) {
+    for rule_id in source.rule_ids.drain(..) {
+        push_unique(&mut target.rule_ids, rule_id);
+    }
+    for policy_id in source.policy_ids.drain(..) {
+        push_unique(&mut target.policy_ids, policy_id);
+    }
+    for field_path in source.field_paths.drain(..) {
+        push_unique(&mut target.field_paths, field_path);
+    }
+    for field_path in source.denied_fields.drain(..) {
+        push_unique(&mut target.denied_fields, field_path);
+    }
+    target.rules.append(&mut source.rules);
+    if target.approval.is_none() {
+        target.approval = source.approval;
+    }
+}
+
+fn finalize_policy_explanation(
+    mut response: PolicyExplanationResponse,
+) -> PolicyExplanationResponse {
+    for rule in &response.rules {
+        push_unique(&mut response.rule_ids, rule.rule_id.clone());
+        if let Some(field_path) = &rule.field_path {
+            push_unique(&mut response.field_paths, field_path.clone());
+        }
+    }
+    if let Some(approval) = &response.approval {
+        push_unique(&mut response.policy_ids, approval.policy_id.clone());
+    }
+
+    let mut seen_rules = HashSet::new();
+    response.rules.retain(|rule| {
+        seen_rules.insert(format!(
+            "{}\u{1f}{}\u{1f}{}",
+            rule.rule_id,
+            rule.kind,
+            rule.field_path.as_deref().unwrap_or("")
+        ))
+    });
+    response.rule_ids.sort();
+    response.policy_ids.sort();
+    response.field_paths.sort();
+    response.denied_fields.sort();
+    response.rule_ids.dedup();
+    response.policy_ids.dedup();
+    response.field_paths.dedup();
+    response.denied_fields.dedup();
+    response
 }
 
 fn policy_forbidden(
