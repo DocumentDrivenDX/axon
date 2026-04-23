@@ -108,6 +108,39 @@ async fn gql_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Val
         .json::<Value>()
 }
 
+async fn explain_policy_as(server: &axum_test::TestServer, actor: &str, input: &str) -> Value {
+    let body = gql_as(
+        server,
+        actor,
+        &format!(
+            r#"{{
+                explainPolicy(input: {input}) {{
+                    operation
+                    collection
+                    entityId
+                    decision
+                    reason
+                    policyVersion
+                    fieldPaths
+                    deniedFields
+                    approval {{
+                        name
+                        decision
+                        role
+                        reasonRequired
+                    }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert!(
+        body["errors"].is_null(),
+        "unexpected GraphQL explainPolicy error for {actor}: {body}"
+    );
+    body["data"]["explainPolicy"].clone()
+}
+
 async fn seed_policy_collection(server: &axum_test::TestServer) {
     server
         .post("/tenants/default/databases/default/collections/policy_item")
@@ -698,6 +731,217 @@ async fn mcp_tools_list_refreshes_policy_metadata_after_schema_update() {
         "large-amount-needs-approval-v2"
     );
     assert_eq!(&refreshed_patch["inputSchema"]["x-axon-policy"], policy);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_mcp_policy_parity_matrix_matches_expected_decisions() {
+    let server = test_server();
+    seed_policy_collection(&server).await;
+    server
+        .post("/tenants/default/databases/default/entities/policy_item/p1")
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({
+            "data": {
+                "label": "policy target",
+                "secret": "classified",
+                "amount_cents": 100
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    let effective = gql_as(
+        &server,
+        "contractor",
+        r#"{
+            effectivePolicy(collection: "policy_item") {
+                policyVersion
+                redactedFields
+                deniedFields
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        effective["errors"].is_null(),
+        "unexpected GraphQL effectivePolicy error: {effective}"
+    );
+    let effective = &effective["data"]["effectivePolicy"];
+
+    let tools = mcp_as(
+        &server,
+        "contractor",
+        &json!({"jsonrpc":"2.0","id":"tools","method":"tools/list"}),
+    )
+    .await;
+    assert!(
+        tools["error"].is_null(),
+        "unexpected MCP tools/list error: {tools}"
+    );
+    let patch_tool = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "policy_item.patch")
+        .expect("policy_item.patch should be listed");
+    let tool_policy = &patch_tool["policy"];
+    assert_eq!(tool_policy["policyVersion"], effective["policyVersion"]);
+    assert_eq!(tool_policy["redactedFields"], effective["redactedFields"]);
+    assert_eq!(tool_policy["deniedFields"], effective["deniedFields"]);
+    assert_eq!(tool_policy["redactedFields"], json!(["secret"]));
+    assert_eq!(tool_policy["deniedFields"], json!(["secret"]));
+
+    let envelope = &tool_policy["envelopes"][0];
+    assert_eq!(envelope["name"], "large-amount-needs-approval");
+    assert_eq!(envelope["decision"], "needs_approval");
+    assert_eq!(envelope["approval"]["role"], "finance_approver");
+    assert_eq!(envelope["approval"]["reasonRequired"], true);
+
+    let matrix = [
+        (
+            "contractor-denied-secret-patch",
+            "contractor",
+            r#"{
+                operation: "patch",
+                collection: "policy_item",
+                entityId: "p1",
+                expectedVersion: 1,
+                patch: { secret: "leaked" }
+            }"#,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "contractor-denied-secret-patch",
+                "method": "tools/call",
+                "params": {
+                    "name": "policy_item.patch",
+                    "arguments": {
+                        "id": "p1",
+                        "data": { "secret": "leaked" },
+                        "expected_version": 1
+                    }
+                }
+            }),
+            "deny",
+            "denied",
+            "field_write_denied",
+            json!(["secret"]),
+            Value::Null,
+        ),
+        (
+            "admin-approval-large-amount-patch",
+            "admin",
+            r#"{
+                operation: "patch",
+                collection: "policy_item",
+                entityId: "p1",
+                expectedVersion: 1,
+                patch: { amount_cents: 20000 }
+            }"#,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "admin-approval-large-amount-patch",
+                "method": "tools/call",
+                "params": {
+                    "name": "policy_item.patch",
+                    "arguments": {
+                        "id": "p1",
+                        "data": { "amount_cents": 20000 },
+                        "expected_version": 1
+                    }
+                }
+            }),
+            "needs_approval",
+            "needs_approval",
+            "needs_approval",
+            json!([]),
+            json!({
+                "name": "large-amount-needs-approval",
+                "decision": "needs_approval",
+                "role": "finance_approver",
+                "reasonRequired": true
+            }),
+        ),
+    ];
+
+    for (
+        case_name,
+        actor,
+        explain_input,
+        mcp_request,
+        graph_decision,
+        mcp_outcome,
+        reason,
+        field_paths,
+        expected_approval,
+    ) in matrix
+    {
+        let graph = explain_policy_as(&server, actor, explain_input).await;
+        assert_eq!(
+            graph["policyVersion"], effective["policyVersion"],
+            "{case_name}"
+        );
+        assert_eq!(graph["decision"], graph_decision, "{case_name}");
+        assert_eq!(graph["reason"], reason, "{case_name}");
+        assert_eq!(graph["fieldPaths"], field_paths, "{case_name}");
+
+        let mcp = mcp_as(&server, actor, &mcp_request).await;
+        assert!(
+            mcp["error"].is_null(),
+            "unexpected MCP protocol error for {case_name}: {mcp}"
+        );
+        assert_eq!(mcp["result"]["isError"], true, "{case_name}");
+        let structured = &mcp["result"]["structuredContent"];
+        assert_eq!(
+            structured["policyVersion"], graph["policyVersion"],
+            "{case_name}"
+        );
+        assert_eq!(structured["outcome"], mcp_outcome, "{case_name}");
+        assert_eq!(structured["reason"], graph["reason"], "{case_name}");
+        let empty_field_paths = json!([]);
+        let structured_field_paths = structured.get("fieldPaths").unwrap_or(&empty_field_paths);
+        assert_eq!(structured_field_paths, &graph["fieldPaths"], "{case_name}");
+        assert_eq!(structured["collection"], graph["collection"], "{case_name}");
+        assert_eq!(structured["entityId"], graph["entityId"], "{case_name}");
+
+        if expected_approval.is_null() {
+            assert!(
+                structured["approval"].is_null(),
+                "unexpected MCP approval for {case_name}: {structured}"
+            );
+            let graph_approval_absent = graph["approval"].is_null()
+                || graph["approval"]
+                    .as_object()
+                    .is_some_and(|approval| approval.values().all(Value::is_null));
+            assert!(
+                graph_approval_absent,
+                "unexpected GraphQL approval for {case_name}: {graph}"
+            );
+        } else {
+            assert_eq!(graph["approval"], expected_approval, "{case_name}");
+            assert_eq!(
+                structured["approval"]["name"], graph["approval"]["name"],
+                "{case_name}"
+            );
+            assert_eq!(
+                structured["approval"]["decision"], graph["approval"]["decision"],
+                "{case_name}"
+            );
+            assert_eq!(
+                structured["approval"]["role"], graph["approval"]["role"],
+                "{case_name}"
+            );
+            assert_eq!(
+                structured["approval"]["reason_required"], graph["approval"]["reasonRequired"],
+                "{case_name}"
+            );
+            assert_eq!(envelope["name"], graph["approval"]["name"], "{case_name}");
+            assert_eq!(
+                envelope["decision"], graph["approval"]["decision"],
+                "{case_name}"
+            );
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
