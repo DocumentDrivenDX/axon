@@ -726,6 +726,8 @@ pub struct MutationIntentTransactionCommitRequest {
     pub token: MutationIntentToken,
     /// Staged transaction to validate and commit.
     pub transaction: Transaction,
+    /// Canonical operation being consumed; defaults to the staged transaction hash.
+    pub canonical_operation: Option<CanonicalOperationMetadata>,
     /// Current request-time binding snapshot.
     pub current: MutationIntentCommitValidationContext,
     /// Current time in nanoseconds for TTL validation.
@@ -1150,12 +1152,14 @@ impl MutationIntentLifecycleService {
             scope,
             token,
             transaction,
+            canonical_operation,
             current,
             now_ns,
             actor,
             attribution,
         } = request;
-        let operation = canonical_staged_transaction_operation(&transaction);
+        let operation = canonical_operation
+            .unwrap_or_else(|| canonical_staged_transaction_operation(&transaction));
         let mut current = current;
         current.operation_hash = operation.operation_hash.clone();
         let intent = self.validate_commit_bindings(storage, &scope, &token, &current, now_ns)?;
@@ -1967,6 +1971,7 @@ mod tests {
                     scope: scope(),
                     token,
                     transaction: tx,
+                    canonical_operation: None,
                     current: current_commit_context(&intent),
                     now_ns: 1,
                     actor: Some("system".into()),
@@ -2053,6 +2058,7 @@ mod tests {
                     scope: scope(),
                     token,
                     transaction: drifted_tx,
+                    canonical_operation: None,
                     current: current_commit_context(&intent),
                     now_ns: 1,
                     actor: Some("system".into()),
@@ -2123,6 +2129,7 @@ mod tests {
                     scope: scope(),
                     token,
                     transaction: tx,
+                    canonical_operation: None,
                     current: current_commit_context(&intent),
                     now_ns: 1,
                     actor: Some("system".into()),
@@ -2208,6 +2215,7 @@ mod tests {
                     scope: scope(),
                     token,
                     transaction: tx,
+                    canonical_operation: None,
                     current: current_commit_context(&intent),
                     now_ns: 1,
                     actor: Some("system".into()),

@@ -28,9 +28,12 @@ use crate::subscriptions::BroadcastBroker;
 use axon_api::handler::AxonHandler;
 use axon_api::intent::{
     canonicalize_intent_operation, ApprovalState, CanonicalOperationMetadata,
-    MutationApprovalRoute, MutationIntent, MutationIntentDecision, MutationIntentLifecycleService,
+    MutationApprovalRoute, MutationIntent, MutationIntentCommitValidationContext,
+    MutationIntentCommitValidationError, MutationIntentDecision, MutationIntentLifecycleService,
     MutationIntentReviewMetadata, MutationIntentScopeBinding, MutationIntentSubjectBinding,
-    MutationIntentTokenSigner, MutationOperationKind, MutationReviewSummary, PreImageBinding,
+    MutationIntentToken, MutationIntentTokenLookupError, MutationIntentTokenSigner,
+    MutationIntentTransactionCommitRequest, MutationOperationKind, MutationReviewSummary,
+    PreImageBinding,
 };
 use axon_api::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest,
@@ -42,6 +45,7 @@ use axon_api::request::{
     RollbackEntityRequest, RollbackEntityTarget, SortDirection, SortField,
     TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
+use axon_api::transaction::Transaction;
 use axon_audit::entry::compute_diff;
 use axon_audit::log::AuditLog;
 use axon_core::auth::{CallerIdentity, Operation};
@@ -2828,10 +2832,15 @@ fn add_handler_intent_root_mutation_fields<S: StorageAdapter + 'static>(
         Field::new(
             "commitMutationIntent",
             TypeRef::named_nn(COMMIT_INTENT_RESULT_TYPE),
-            |_ctx| {
-                FieldFuture::new(async move {
-                    Err::<Option<FieldValue<'static>>, GqlError>(mutation_intents_not_implemented())
-                })
+            {
+                let handler = Arc::clone(&handler);
+                move |ctx| {
+                    let handler = Arc::clone(&handler);
+                    let caller = caller_from_ctx(&ctx);
+                    FieldFuture::new(async move {
+                        commit_mutation_intent_resolver(ctx, handler, caller).await
+                    })
+                }
             },
         )
         .argument(InputValue::new(
@@ -4332,25 +4341,101 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
     Ok(Some(json_to_field_value(mutation_intent_json(&intent))))
 }
 
-async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
+async fn commit_mutation_intent_resolver<S: StorageAdapter + 'static>(
     ctx: async_graphql::dynamic::ResolverContext<'_>,
     handler: SharedHandler<S>,
     caller: CallerIdentity,
 ) -> Result<Option<FieldValue<'static>>, GqlError> {
     let input = gql_input_to_json(ctx.args.try_get("input")?.as_value())?;
     let input_obj = input_object(&input, "input")?;
-    let operation_input = input_obj
+    let token = MutationIntentToken::new(input_string(input_obj, "intentToken")?);
+    let token_intent_id = graphql_intent_token_signer()
+        .verify(&token)
+        .map_err(mutation_intent_token_error_to_gql)?;
+    if let Some(intent_id) = input_obj.get("intentId").and_then(Value::as_str) {
+        if intent_id != token_intent_id {
+            return Err(
+                GqlError::new("intentId does not match intentToken").extend_with(|_err, ext| {
+                    ext.set("code", "intent_token_invalid");
+                }),
+            );
+        }
+    }
+    let supplied_operation = input_obj
         .get("operation")
-        .ok_or_else(|| GqlError::new("operation is required"))?;
-    let operation_obj = input_object(operation_input, "operation")?;
+        .filter(|value| !value.is_null())
+        .map(canonical_operation_from_input)
+        .transpose()?;
+    let scope = graphql_intent_scope(&ctx);
+    let now_ns = current_time_ns();
+    let service = graphql_intent_lifecycle_service();
+
+    let mut guard = handler.lock().await;
+    let stored_intent = guard
+        .storage_ref()
+        .get_mutation_intent(&scope.tenant_id, &scope.database_id, &token_intent_id)
+        .map_err(axon_error_to_gql)?
+        .ok_or_else(|| {
+            mutation_intent_commit_error_to_gql(MutationIntentCommitValidationError::Token(
+                MutationIntentTokenLookupError::NotFound,
+            ))
+        })?;
+    let operation = supplied_operation.unwrap_or_else(|| stored_intent.operation.clone());
+    let operation_payload = canonical_operation_payload(&operation)?;
+    let schema_version = schema_version_for_intent_operation(
+        &guard,
+        &operation.operation_kind,
+        operation_payload,
+        0,
+    )?;
+    let current = MutationIntentCommitValidationContext {
+        subject: stored_intent.subject.clone(),
+        schema_version,
+        policy_version: schema_version,
+        operation_hash: operation.operation_hash.clone(),
+        caller_authorized: caller.check(Operation::Write).is_ok(),
+    };
+    service
+        .validate_commit_bindings(guard.storage_ref(), &scope, &token, &current, now_ns)
+        .map_err(mutation_intent_commit_error_to_gql)?;
+    let transaction = transaction_from_intent_operation(&guard, &operation)?;
+    let (storage, audit) = guard.storage_and_audit_mut();
+    let result = service
+        .commit_transaction_intent(
+            storage,
+            audit,
+            MutationIntentTransactionCommitRequest {
+                scope,
+                token,
+                transaction,
+                canonical_operation: Some(operation),
+                current,
+                now_ns,
+                actor: Some(caller.actor.clone()),
+                attribution: None,
+            },
+        )
+        .map_err(mutation_intent_commit_error_to_gql)?;
+
+    Ok(Some(json_to_field_value(json!({
+        "committed": true,
+        "intent": mutation_intent_json(&result.intent),
+        "transactionId": result.transaction_id,
+        "auditEntry": Value::Null,
+        "stale": [],
+        "errorCode": Value::Null,
+    }))))
+}
+
+fn canonical_operation_from_input(value: &Value) -> Result<CanonicalOperationMetadata, GqlError> {
+    let operation_obj = input_object(value, "operation")?;
     let operation_kind =
         parse_mutation_operation_kind(input_string(operation_obj, "operationKind")?)?;
     let operation_payload = operation_obj
         .get("operation")
         .cloned()
         .ok_or_else(|| GqlError::new("operation.operation is required"))?;
-    let canonical_operation =
-        canonicalize_intent_operation(operation_kind.clone(), operation_payload.clone());
+    let canonical_operation = canonicalize_intent_operation(operation_kind, operation_payload);
     if let Some(expected_hash) = operation_obj.get("operationHash").and_then(Value::as_str) {
         if expected_hash != canonical_operation.operation_hash {
             return Err(
@@ -4362,6 +4447,33 @@ async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
             );
         }
     }
+    Ok(canonical_operation)
+}
+
+fn canonical_operation_payload(operation: &CanonicalOperationMetadata) -> Result<&Value, GqlError> {
+    operation.canonical_operation.as_ref().ok_or_else(|| {
+        GqlError::new("canonical operation payload is required").extend_with(|_err, ext| {
+            ext.set("code", "INVALID_ARGUMENT");
+        })
+    })
+}
+
+async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    let input = gql_input_to_json(ctx.args.try_get("input")?.as_value())?;
+    let input_obj = input_object(&input, "input")?;
+    let operation_input = input_obj
+        .get("operation")
+        .ok_or_else(|| GqlError::new("operation is required"))?;
+    let canonical_operation = canonical_operation_from_input(operation_input)?;
+    let operation_kind = canonical_operation.operation_kind.clone();
+    let operation_payload = canonical_operation
+        .canonical_operation
+        .clone()
+        .unwrap_or(Value::Null);
 
     let expires_in_seconds = input_obj
         .get("expiresInSeconds")
@@ -4373,14 +4485,7 @@ async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
     let expires_at = now_ns.saturating_add(expires_in_seconds.saturating_mul(1_000_000_000));
 
     let mut guard = handler.lock().await;
-    let preview = mutation_preview_computation(
-        &guard,
-        &operation_kind,
-        canonical_operation
-            .canonical_operation
-            .as_ref()
-            .unwrap_or(&operation_payload),
-    )?;
+    let preview = mutation_preview_computation(&guard, &operation_kind, &operation_payload)?;
     let policy = guard
         .explain_policy_with_caller(preview.explain_request, &caller, None)
         .map_err(axon_error_to_gql)?;
@@ -4887,6 +4992,362 @@ fn transaction_payload_to_canonical_operation(
     Ok(value)
 }
 
+fn schema_version_for_intent_operation<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    kind: &MutationOperationKind,
+    operation: &Value,
+    op_index: usize,
+) -> Result<u32, GqlError> {
+    let obj = required_object(operation, "operation", op_index)?;
+    match kind {
+        MutationOperationKind::CreateEntity
+        | MutationOperationKind::UpdateEntity
+        | MutationOperationKind::PatchEntity
+        | MutationOperationKind::DeleteEntity
+        | MutationOperationKind::Transition => {
+            let collection = CollectionId::new(required_str(obj, "collection", op_index)?);
+            Ok(required_schema(handler, &collection)?.version)
+        }
+        MutationOperationKind::CreateLink | MutationOperationKind::DeleteLink => {
+            schema_version_for_link_operation(handler, obj)
+        }
+        MutationOperationKind::Transaction => {
+            let operations = transaction_operations_array(obj, op_index)?;
+            let mut schema_version = 0;
+            for (index, child) in operations.iter().enumerate() {
+                schema_version = schema_version
+                    .max(schema_version_for_transaction_child(handler, index, child)?);
+            }
+            Ok(schema_version)
+        }
+        MutationOperationKind::Rollback | MutationOperationKind::Revert => {
+            Err(unsupported_intent_commit(kind))
+        }
+    }
+}
+
+fn schema_version_for_transaction_child<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    index: usize,
+    operation: &Value,
+) -> Result<u32, GqlError> {
+    let obj = required_object(operation, "operation", index)?;
+    if let Some(op) = obj.get("op").and_then(Value::as_str) {
+        let kind = parse_mutation_operation_kind(op.to_string())?;
+        return schema_version_for_intent_operation(handler, &kind, operation, index);
+    }
+
+    let variants: Vec<(&str, &Value)> = obj
+        .iter()
+        .filter(|(_, value)| !value.is_null())
+        .map(|(key, value)| (key.as_str(), value))
+        .collect();
+    if variants.len() != 1 {
+        return Err(
+            GqlError::new("operation must set exactly one variant").extend_with(
+                move |_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                    ext.set("operationIndex", index as i32);
+                },
+            ),
+        );
+    }
+    let (variant, payload) = variants[0];
+    let payload = required_object(payload, variant, index)?;
+    let normalized = transaction_payload_to_canonical_operation(variant, payload)?;
+    let kind = transaction_variant_kind(variant, index)?;
+    schema_version_for_intent_operation(handler, &kind, &normalized, index)
+}
+
+fn schema_version_for_link_operation<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<u32, GqlError> {
+    let link = link_from_operation(operation)?;
+    let source_version = required_schema(handler, &link.source_collection)?.version;
+    let target_version = required_schema(handler, &link.target_collection)?.version;
+    Ok(source_version.max(target_version))
+}
+
+fn transaction_from_intent_operation<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    operation: &CanonicalOperationMetadata,
+) -> Result<Transaction, GqlError> {
+    let mut transaction = Transaction::new();
+    let payload = canonical_operation_payload(operation)?;
+    stage_intent_operation(
+        handler,
+        &mut transaction,
+        &operation.operation_kind,
+        payload,
+        0,
+    )?;
+    Ok(transaction)
+}
+
+fn stage_intent_operation<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    kind: &MutationOperationKind,
+    operation: &Value,
+    op_index: usize,
+) -> Result<(), GqlError> {
+    let obj = required_object(operation, "operation", op_index)?;
+    match kind {
+        MutationOperationKind::CreateEntity => stage_create_entity(transaction, obj, op_index),
+        MutationOperationKind::UpdateEntity => {
+            stage_update_entity(handler, transaction, obj, op_index)
+        }
+        MutationOperationKind::PatchEntity => {
+            stage_patch_entity(handler, transaction, obj, op_index)
+        }
+        MutationOperationKind::DeleteEntity => {
+            stage_delete_entity(handler, transaction, obj, op_index)
+        }
+        MutationOperationKind::CreateLink => stage_create_link(transaction, obj, op_index),
+        MutationOperationKind::DeleteLink => stage_delete_link(transaction, obj, op_index),
+        MutationOperationKind::Transition => {
+            stage_transition_entity(handler, transaction, obj, op_index)
+        }
+        MutationOperationKind::Transaction => stage_transaction(handler, transaction, obj),
+        MutationOperationKind::Rollback | MutationOperationKind::Revert => {
+            Err(unsupported_intent_commit(kind))
+        }
+    }
+}
+
+fn stage_create_entity(
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+    op_index: usize,
+) -> Result<(), GqlError> {
+    let collection = CollectionId::new(required_str(operation, "collection", op_index)?);
+    let id = EntityId::new(required_str(operation, "id", op_index)?);
+    let data = operation.get("data").cloned().unwrap_or(Value::Null);
+    transaction
+        .create(Entity::new(collection, id, data))
+        .map_err(|error| op_error(axon_error_to_gql(error), op_index))
+}
+
+fn stage_update_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+    op_index: usize,
+) -> Result<(), GqlError> {
+    let collection = CollectionId::new(required_str(operation, "collection", op_index)?);
+    let id = EntityId::new(required_str(operation, "id", op_index)?);
+    let data = operation.get("data").cloned().unwrap_or(Value::Null);
+    let schema = required_schema(handler, &collection)?;
+    validate(&schema, &data).map_err(axon_error_to_gql)?;
+    let current = required_entity(handler, &collection, &id)?;
+    let expected_version = operation
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(current.version);
+    transaction
+        .update(
+            Entity::new(collection, id, data),
+            expected_version,
+            Some(current.data),
+        )
+        .map_err(|error| op_error(axon_error_to_gql(error), op_index))
+}
+
+fn stage_patch_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+    op_index: usize,
+) -> Result<(), GqlError> {
+    let collection = CollectionId::new(required_str(operation, "collection", op_index)?);
+    let id = EntityId::new(required_str(operation, "id", op_index)?);
+    let patch = operation.get("patch").cloned().unwrap_or(Value::Null);
+    let schema = required_schema(handler, &collection)?;
+    let current = required_entity(handler, &collection, &id)?;
+    let expected_version = operation
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(current.version);
+    let mut merged = current.data.clone();
+    json_merge_patch(&mut merged, &patch);
+    validate(&schema, &merged).map_err(axon_error_to_gql)?;
+    transaction
+        .update(
+            Entity::new(collection, id, merged),
+            expected_version,
+            Some(current.data),
+        )
+        .map_err(|error| op_error(axon_error_to_gql(error), op_index))
+}
+
+fn stage_delete_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+    op_index: usize,
+) -> Result<(), GqlError> {
+    let collection = CollectionId::new(required_str(operation, "collection", op_index)?);
+    let id = EntityId::new(required_str(operation, "id", op_index)?);
+    let current = required_entity(handler, &collection, &id)?;
+    let expected_version = operation
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(current.version);
+    transaction
+        .delete(collection, id, expected_version, Some(current.data))
+        .map_err(|error| op_error(axon_error_to_gql(error), op_index))
+}
+
+fn stage_transition_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+    op_index: usize,
+) -> Result<(), GqlError> {
+    let collection = CollectionId::new(required_str(operation, "collection", op_index)?);
+    let id = EntityId::new(required_str(operation, "id", op_index)?);
+    let lifecycle_name = input_string(operation, "lifecycle_name")?;
+    let target_state = input_string(operation, "target_state")?;
+    let schema = required_schema(handler, &collection)?;
+    let lifecycle = schema.lifecycles.get(&lifecycle_name).ok_or_else(|| {
+        axon_error_to_gql(AxonError::LifecycleNotFound {
+            lifecycle_name: lifecycle_name.clone(),
+        })
+    })?;
+    let current = required_entity(handler, &collection, &id)?;
+    let expected_version = operation
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(current.version);
+    let mut candidate = current.data.clone();
+    candidate[&lifecycle.field] = Value::String(target_state);
+    validate(&schema, &candidate).map_err(axon_error_to_gql)?;
+    transaction
+        .update(
+            Entity::new(collection, id, candidate),
+            expected_version,
+            Some(current.data),
+        )
+        .map_err(|error| op_error(axon_error_to_gql(error), op_index))
+}
+
+fn stage_create_link(
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+    op_index: usize,
+) -> Result<(), GqlError> {
+    transaction
+        .create_link(link_from_operation(operation)?)
+        .map_err(|error| op_error(axon_error_to_gql(error), op_index))
+}
+
+fn stage_delete_link(
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+    op_index: usize,
+) -> Result<(), GqlError> {
+    transaction
+        .delete_link(link_from_operation(operation)?)
+        .map_err(|error| op_error(axon_error_to_gql(error), op_index))
+}
+
+fn stage_transaction<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<(), GqlError> {
+    for (index, child) in transaction_operations_array(operation, 0)?
+        .iter()
+        .enumerate()
+    {
+        stage_transaction_child(handler, transaction, index, child)?;
+    }
+    Ok(())
+}
+
+fn stage_transaction_child<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    index: usize,
+    operation: &Value,
+) -> Result<(), GqlError> {
+    let obj = required_object(operation, "operation", index)?;
+    if let Some(op) = obj.get("op").and_then(Value::as_str) {
+        let kind = parse_mutation_operation_kind(op.to_string())?;
+        return stage_intent_operation(handler, transaction, &kind, operation, index);
+    }
+
+    let variants: Vec<(&str, &Value)> = obj
+        .iter()
+        .filter(|(_, value)| !value.is_null())
+        .map(|(key, value)| (key.as_str(), value))
+        .collect();
+    if variants.len() != 1 {
+        return Err(
+            GqlError::new("operation must set exactly one variant").extend_with(
+                move |_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                    ext.set("operationIndex", index as i32);
+                },
+            ),
+        );
+    }
+
+    let (variant, payload) = variants[0];
+    let payload = required_object(payload, variant, index)?;
+    let normalized = transaction_payload_to_canonical_operation(variant, payload)?;
+    let kind = transaction_variant_kind(variant, index)?;
+    stage_intent_operation(handler, transaction, &kind, &normalized, index)
+}
+
+fn transaction_operations_array(
+    operation: &serde_json::Map<String, Value>,
+    op_index: usize,
+) -> Result<&Vec<Value>, GqlError> {
+    operation
+        .get("operations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            GqlError::new("operations must be a list").extend_with(move |_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+                ext.set("operationIndex", op_index as i32);
+            })
+        })
+}
+
+fn transaction_variant_kind(
+    variant: &str,
+    op_index: usize,
+) -> Result<MutationOperationKind, GqlError> {
+    match variant {
+        "createEntity" => Ok(MutationOperationKind::CreateEntity),
+        "updateEntity" => Ok(MutationOperationKind::UpdateEntity),
+        "patchEntity" => Ok(MutationOperationKind::PatchEntity),
+        "deleteEntity" => Ok(MutationOperationKind::DeleteEntity),
+        "createLink" => Ok(MutationOperationKind::CreateLink),
+        "deleteLink" => Ok(MutationOperationKind::DeleteLink),
+        other => Err(
+            GqlError::new(format!("unsupported transaction operation '{other}'")).extend_with(
+                move |_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                    ext.set("operationIndex", op_index as i32);
+                },
+            ),
+        ),
+    }
+}
+
+fn unsupported_intent_commit(kind: &MutationOperationKind) -> GqlError {
+    GqlError::new(format!(
+        "commitMutationIntent does not support {} operations",
+        operation_kind_label(kind)
+    ))
+    .extend_with(|_err, ext| {
+        ext.set("code", "INVALID_ARGUMENT");
+    })
+}
+
 fn preview_result(
     explain_request: ExplainPolicyRequest,
     pre_images: Vec<PreImageBinding>,
@@ -5301,9 +5762,11 @@ fn mutation_intent_connection_value(
 }
 
 fn graphql_intent_lifecycle_service() -> MutationIntentLifecycleService {
-    MutationIntentLifecycleService::new(MutationIntentTokenSigner::new(
-        GRAPHQL_INTENT_TOKEN_SECRET.to_vec(),
-    ))
+    MutationIntentLifecycleService::new(graphql_intent_token_signer())
+}
+
+fn graphql_intent_token_signer() -> MutationIntentTokenSigner {
+    MutationIntentTokenSigner::new(GRAPHQL_INTENT_TOKEN_SECRET.to_vec())
 }
 
 fn graphql_intent_scope(
@@ -5340,6 +5803,28 @@ fn mutation_intent_lifecycle_error_to_gql(
 ) -> GqlError {
     GqlError::new(error.to_string()).extend_with(move |_err, ext| {
         ext.set("code", error.error_code());
+    })
+}
+
+fn mutation_intent_token_error_to_gql(error: MutationIntentTokenLookupError) -> GqlError {
+    mutation_intent_commit_error_to_gql(MutationIntentCommitValidationError::Token(error))
+}
+
+fn mutation_intent_commit_error_to_gql(error: MutationIntentCommitValidationError) -> GqlError {
+    let code = error.error_code();
+    let stale = match &error {
+        MutationIntentCommitValidationError::IntentStale { dimensions, .. } => {
+            serde_json::to_value(dimensions).ok()
+        }
+        _ => None,
+    };
+    GqlError::new(error.to_string()).extend_with(move |_err, ext| {
+        ext.set("code", code);
+        if let Some(value) = &stale {
+            if let Ok(gql_value) = GqlValue::from_json(value.clone()) {
+                ext.set("stale", gql_value);
+            }
+        }
     })
 }
 
