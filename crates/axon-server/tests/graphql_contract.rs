@@ -278,6 +278,154 @@ async fn graphql_root_contract_types_and_fields_are_introspectable() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn graphql_introspection_exposes_mutation_intent_contract() {
+    let server = test_server();
+
+    let body = gql(
+        &server,
+        r#"{
+            query: __type(name: "Query") { fields { name } }
+            mutation: __type(name: "Mutation") { fields { name args { name } } }
+            previewInput: __type(name: "MutationPreviewInput") { inputFields { name } }
+            canonicalInput: __type(name: "CanonicalOperationInput") { inputFields { name } }
+            previewResult: __type(name: "MutationPreviewResult") { fields { name } }
+            intent: __type(name: "MutationIntent") { fields { name } }
+            approvalRoute: __type(name: "MutationApprovalRoute") { fields { name } }
+            preImage: __type(name: "MutationIntentPreImage") { fields { name } }
+            stale: __type(name: "MutationIntentStaleDimension") { fields { name } }
+            commitResult: __type(name: "CommitIntentResult") { fields { name } }
+        }"#,
+    )
+    .await;
+
+    assert!(body["errors"].is_null(), "unexpected errors: {body}");
+
+    let query_fields: Vec<&str> = body["data"]["query"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    for expected in ["mutationIntent", "pendingMutationIntents"] {
+        assert!(
+            query_fields.contains(&expected),
+            "missing intent query field {expected}: {body}"
+        );
+    }
+
+    let mutation_fields: Vec<&str> = body["data"]["mutation"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|field| field["name"].as_str())
+        .collect();
+    for expected in [
+        "previewMutation",
+        "approveMutationIntent",
+        "rejectMutationIntent",
+        "commitMutationIntent",
+    ] {
+        assert!(
+            mutation_fields.contains(&expected),
+            "missing intent mutation field {expected}: {body}"
+        );
+    }
+
+    for (type_alias, member_key, expected_fields) in [
+        (
+            "previewInput",
+            "inputFields",
+            vec!["operation", "subject", "expiresInSeconds", "reason"],
+        ),
+        (
+            "canonicalInput",
+            "inputFields",
+            vec!["operationKind", "operationHash", "operation"],
+        ),
+        (
+            "previewResult",
+            "fields",
+            vec![
+                "decision",
+                "intent",
+                "intentToken",
+                "canonicalOperation",
+                "diff",
+                "affectedRecords",
+                "affectedFields",
+                "approvalRoute",
+                "policyExplanation",
+            ],
+        ),
+        (
+            "intent",
+            "fields",
+            vec![
+                "id",
+                "tenantId",
+                "databaseId",
+                "subject",
+                "schemaVersion",
+                "policyVersion",
+                "operation",
+                "operationHash",
+                "preImages",
+                "decision",
+                "approvalState",
+                "approvalRoute",
+                "expiresAtNs",
+                "reviewSummary",
+            ],
+        ),
+        (
+            "approvalRoute",
+            "fields",
+            vec![
+                "role",
+                "reasonRequired",
+                "deadlineSeconds",
+                "separationOfDuties",
+            ],
+        ),
+        (
+            "preImage",
+            "fields",
+            vec!["kind", "collection", "id", "version"],
+        ),
+        (
+            "stale",
+            "fields",
+            vec!["dimension", "expected", "actual", "path"],
+        ),
+        (
+            "commitResult",
+            "fields",
+            vec![
+                "committed",
+                "intent",
+                "transactionId",
+                "auditEntry",
+                "stale",
+                "errorCode",
+            ],
+        ),
+    ] {
+        let field_names: Vec<&str> = body["data"][type_alias][member_key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        for expected in expected_fields {
+            assert!(
+                field_names.contains(&expected),
+                "missing {type_alias}.{expected}: {body}"
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_empty_database_exposes_root_schema_and_empty_collections() {
     let server = test_server();
 

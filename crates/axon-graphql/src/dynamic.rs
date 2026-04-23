@@ -102,6 +102,21 @@ const CREATE_LINK_TRANSACTION_INPUT: &str = "CreateLinkTransactionInput";
 const DELETE_LINK_TRANSACTION_INPUT: &str = "DeleteLinkTransactionInput";
 const COMMIT_TRANSACTION_PAYLOAD: &str = "CommitTransactionPayload";
 const TRANSACTION_OPERATION_RESULT: &str = "TransactionOperationResult";
+const CANONICAL_OPERATION_INPUT: &str = "CanonicalOperationInput";
+const CANONICAL_OPERATION_TYPE: &str = "CanonicalOperation";
+const MUTATION_PREVIEW_INPUT: &str = "MutationPreviewInput";
+const APPROVE_INTENT_INPUT: &str = "ApproveIntentInput";
+const REJECT_INTENT_INPUT: &str = "RejectIntentInput";
+const COMMIT_INTENT_INPUT: &str = "CommitIntentInput";
+const MUTATION_INTENT_FILTER_INPUT: &str = "MutationIntentFilter";
+const MUTATION_PREVIEW_RESULT_TYPE: &str = "MutationPreviewResult";
+const MUTATION_INTENT_TYPE: &str = "MutationIntent";
+const MUTATION_APPROVAL_ROUTE_TYPE: &str = "MutationApprovalRoute";
+const MUTATION_INTENT_PRE_IMAGE_TYPE: &str = "MutationIntentPreImage";
+const MUTATION_INTENT_STALE_DIMENSION_TYPE: &str = "MutationIntentStaleDimension";
+const MUTATION_INTENT_EDGE_TYPE: &str = "MutationIntentEdge";
+const MUTATION_INTENT_CONNECTION_TYPE: &str = "MutationIntentConnection";
+const COMMIT_INTENT_RESULT_TYPE: &str = "CommitIntentResult";
 const DEFAULT_MAX_GRAPHQL_DEPTH: usize = 10;
 const DEFAULT_MAX_GRAPHQL_COMPLEXITY: usize = 256;
 const MAX_DEPTH_ENV: &str = "AXON_GRAPHQL_MAX_DEPTH";
@@ -854,6 +869,75 @@ fn delete_link_transaction_input_object() -> InputObject {
         .field(InputValue::new(
             "linkType",
             TypeRef::named_nn(TypeRef::STRING),
+        ))
+}
+
+fn canonical_operation_input_object() -> InputObject {
+    InputObject::new(CANONICAL_OPERATION_INPUT)
+        .field(InputValue::new(
+            "operationKind",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new(
+            "operationHash",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(InputValue::new("operation", TypeRef::named_nn("JSON")))
+}
+
+fn mutation_preview_input_object() -> InputObject {
+    InputObject::new(MUTATION_PREVIEW_INPUT)
+        .field(InputValue::new(
+            "operation",
+            TypeRef::named_nn(CANONICAL_OPERATION_INPUT),
+        ))
+        .field(InputValue::new("subject", TypeRef::named("JSON")))
+        .field(InputValue::new(
+            "expiresInSeconds",
+            TypeRef::named(TypeRef::INT),
+        ))
+        .field(InputValue::new("reason", TypeRef::named(TypeRef::STRING)))
+}
+
+fn approve_intent_input_object() -> InputObject {
+    InputObject::new(APPROVE_INTENT_INPUT)
+        .field(InputValue::new("intentId", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new("reason", TypeRef::named(TypeRef::STRING)))
+}
+
+fn reject_intent_input_object() -> InputObject {
+    InputObject::new(REJECT_INTENT_INPUT)
+        .field(InputValue::new("intentId", TypeRef::named_nn(TypeRef::ID)))
+        .field(InputValue::new(
+            "reason",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+}
+
+fn commit_intent_input_object() -> InputObject {
+    InputObject::new(COMMIT_INTENT_INPUT)
+        .field(InputValue::new(
+            "intentToken",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(InputValue::new("intentId", TypeRef::named(TypeRef::ID)))
+        .field(InputValue::new(
+            "operation",
+            TypeRef::named(CANONICAL_OPERATION_INPUT),
+        ))
+}
+
+fn mutation_intent_filter_input_object() -> InputObject {
+    InputObject::new(MUTATION_INTENT_FILTER_INPUT)
+        .field(InputValue::new("status", TypeRef::named(TypeRef::STRING)))
+        .field(InputValue::new(
+            "statuses",
+            TypeRef::named_nn_list(TypeRef::STRING),
+        ))
+        .field(InputValue::new("decision", TypeRef::named(TypeRef::STRING)))
+        .field(InputValue::new(
+            "includeExpired",
+            TypeRef::named(TypeRef::BOOLEAN),
         ))
 }
 
@@ -2307,6 +2391,323 @@ fn rollback_entity_payload_object() -> Object {
         ))
 }
 
+fn canonical_operation_object() -> Object {
+    Object::new(CANONICAL_OPERATION_TYPE)
+        .field(json_object_field(
+            "operationKind",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "operationHash",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("operation", TypeRef::named("JSON")))
+}
+
+fn mutation_approval_route_object() -> Object {
+    Object::new(MUTATION_APPROVAL_ROUTE_TYPE)
+        .field(json_object_field("role", TypeRef::named(TypeRef::STRING)))
+        .field(json_object_field(
+            "reasonRequired",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "deadlineSeconds",
+            TypeRef::named(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "separationOfDuties",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+}
+
+fn mutation_intent_pre_image_object() -> Object {
+    Object::new(MUTATION_INTENT_PRE_IMAGE_TYPE)
+        .field(json_object_field(
+            "kind",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("id", TypeRef::named(TypeRef::ID)))
+        .field(json_object_field("version", TypeRef::named(TypeRef::INT)))
+}
+
+fn mutation_intent_object() -> Object {
+    Object::new(MUTATION_INTENT_TYPE)
+        .field(json_object_field("id", TypeRef::named_nn(TypeRef::ID)))
+        .field(json_object_field(
+            "tenantId",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "databaseId",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field("subject", TypeRef::named_nn("JSON")))
+        .field(json_object_field(
+            "schemaVersion",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "policyVersion",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "operation",
+            TypeRef::named_nn(CANONICAL_OPERATION_TYPE),
+        ))
+        .field(json_object_field(
+            "operationHash",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "preImages",
+            TypeRef::named_nn_list_nn(MUTATION_INTENT_PRE_IMAGE_TYPE),
+        ))
+        .field(json_object_field(
+            "decision",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "approvalState",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "approvalRoute",
+            TypeRef::named(MUTATION_APPROVAL_ROUTE_TYPE),
+        ))
+        .field(json_object_field(
+            "expiresAtNs",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "reviewSummary",
+            TypeRef::named_nn("JSON"),
+        ))
+}
+
+fn mutation_preview_result_object() -> Object {
+    Object::new(MUTATION_PREVIEW_RESULT_TYPE)
+        .field(json_object_field(
+            "decision",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "intent",
+            TypeRef::named(MUTATION_INTENT_TYPE),
+        ))
+        .field(json_object_field(
+            "intentToken",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "canonicalOperation",
+            TypeRef::named_nn(CANONICAL_OPERATION_TYPE),
+        ))
+        .field(json_object_field("diff", TypeRef::named_nn("JSON")))
+        .field(json_object_field(
+            "affectedRecords",
+            TypeRef::named_nn_list_nn(MUTATION_INTENT_PRE_IMAGE_TYPE),
+        ))
+        .field(json_object_field(
+            "affectedFields",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "approvalRoute",
+            TypeRef::named(MUTATION_APPROVAL_ROUTE_TYPE),
+        ))
+        .field(json_object_field(
+            "policyExplanation",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+}
+
+fn mutation_intent_stale_dimension_object() -> Object {
+    Object::new(MUTATION_INTENT_STALE_DIMENSION_TYPE)
+        .field(json_object_field(
+            "dimension",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "expected",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field("actual", TypeRef::named(TypeRef::STRING)))
+        .field(json_object_field("path", TypeRef::named(TypeRef::STRING)))
+}
+
+fn mutation_intent_edge_object() -> Object {
+    Object::new(MUTATION_INTENT_EDGE_TYPE)
+        .field(json_object_field(
+            "cursor",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "node",
+            TypeRef::named_nn(MUTATION_INTENT_TYPE),
+        ))
+}
+
+fn mutation_intent_connection_object() -> Object {
+    Object::new(MUTATION_INTENT_CONNECTION_TYPE)
+        .field(json_object_field(
+            "edges",
+            TypeRef::named_nn_list_nn(MUTATION_INTENT_EDGE_TYPE),
+        ))
+        .field(json_object_field(
+            "pageInfo",
+            TypeRef::named_nn(PAGE_INFO_TYPE),
+        ))
+        .field(json_object_field(
+            "totalCount",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+}
+
+fn commit_intent_result_object() -> Object {
+    Object::new(COMMIT_INTENT_RESULT_TYPE)
+        .field(json_object_field(
+            "committed",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "intent",
+            TypeRef::named(MUTATION_INTENT_TYPE),
+        ))
+        .field(json_object_field(
+            "transactionId",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "auditEntry",
+            TypeRef::named(AUDIT_ENTRY_TYPE),
+        ))
+        .field(json_object_field(
+            "stale",
+            TypeRef::named_nn_list_nn(MUTATION_INTENT_STALE_DIMENSION_TYPE),
+        ))
+        .field(json_object_field(
+            "errorCode",
+            TypeRef::named(TypeRef::STRING),
+        ))
+}
+
+fn empty_mutation_intent_connection_value() -> FieldValue<'static> {
+    json_to_field_value(json!({
+        "edges": [],
+        "pageInfo": {
+            "hasNextPage": false,
+            "hasPreviousPage": false,
+            "startCursor": Value::Null,
+            "endCursor": Value::Null,
+        },
+        "totalCount": 0,
+    }))
+}
+
+fn mutation_intents_not_implemented() -> GqlError {
+    GqlError::new("mutation intent GraphQL execution is not implemented yet").extend_with(
+        |_err, ext| {
+            ext.set("code", "INTENT_GRAPHQL_NOT_IMPLEMENTED");
+        },
+    )
+}
+
+fn add_intent_root_query_fields(mut query: Object) -> Object {
+    query = query.field(
+        Field::new(
+            "mutationIntent",
+            TypeRef::named(MUTATION_INTENT_TYPE),
+            |_ctx| FieldFuture::new(async move { Ok(None::<FieldValue>) }),
+        )
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID))),
+    );
+    query = query.field(
+        Field::new(
+            "pendingMutationIntents",
+            TypeRef::named_nn(MUTATION_INTENT_CONNECTION_TYPE),
+            |_ctx| {
+                FieldFuture::new(async move { Ok(Some(empty_mutation_intent_connection_value())) })
+            },
+        )
+        .argument(InputValue::new(
+            "filter",
+            TypeRef::named(MUTATION_INTENT_FILTER_INPUT),
+        ))
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING))),
+    );
+    query
+}
+
+fn add_intent_root_mutation_fields(mut mutation: Object) -> Object {
+    mutation = mutation.field(
+        Field::new(
+            "previewMutation",
+            TypeRef::named_nn(MUTATION_PREVIEW_RESULT_TYPE),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Err::<Option<FieldValue<'static>>, GqlError>(mutation_intents_not_implemented())
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(MUTATION_PREVIEW_INPUT),
+        )),
+    );
+    mutation = mutation.field(
+        Field::new(
+            "approveMutationIntent",
+            TypeRef::named_nn(MUTATION_INTENT_TYPE),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Err::<Option<FieldValue<'static>>, GqlError>(mutation_intents_not_implemented())
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(APPROVE_INTENT_INPUT),
+        )),
+    );
+    mutation = mutation.field(
+        Field::new(
+            "rejectMutationIntent",
+            TypeRef::named_nn(MUTATION_INTENT_TYPE),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Err::<Option<FieldValue<'static>>, GqlError>(mutation_intents_not_implemented())
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(REJECT_INTENT_INPUT),
+        )),
+    );
+    mutation = mutation.field(
+        Field::new(
+            "commitMutationIntent",
+            TypeRef::named_nn(COMMIT_INTENT_RESULT_TYPE),
+            |_ctx| {
+                FieldFuture::new(async move {
+                    Err::<Option<FieldValue<'static>>, GqlError>(mutation_intents_not_implemented())
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "input",
+            TypeRef::named_nn(COMMIT_INTENT_INPUT),
+        )),
+    );
+    mutation
+}
+
 fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
     schema_builder = schema_builder
         .register(page_info_object())
@@ -2334,7 +2735,16 @@ fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
         .register(delete_collection_template_payload_object())
         .register(revert_audit_entry_payload_object())
         .register(put_schema_payload_object())
-        .register(rollback_entity_payload_object());
+        .register(rollback_entity_payload_object())
+        .register(canonical_operation_object())
+        .register(mutation_approval_route_object())
+        .register(mutation_intent_pre_image_object())
+        .register(mutation_intent_object())
+        .register(mutation_preview_result_object())
+        .register(mutation_intent_stale_dimension_object())
+        .register(mutation_intent_edge_object())
+        .register(mutation_intent_connection_object())
+        .register(commit_intent_result_object());
     schema_builder
 }
 
@@ -4218,6 +4628,8 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
     }
 
     query = add_handler_root_query_fields(query, Arc::clone(&handler));
+    query = add_intent_root_query_fields(query);
+    mutation = add_intent_root_mutation_fields(mutation);
 
     for schema in collections {
         let collection_name = schema.collection.as_str();
@@ -5246,6 +5658,12 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
     .register(delete_entity_transaction_input_object())
     .register(create_link_transaction_input_object())
     .register(delete_link_transaction_input_object())
+    .register(canonical_operation_input_object())
+    .register(mutation_preview_input_object())
+    .register(approve_intent_input_object())
+    .register(reject_intent_input_object())
+    .register(commit_intent_input_object())
+    .register(mutation_intent_filter_input_object())
     .register(query)
     .register(mutation);
 
@@ -5292,6 +5710,8 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
     let mut type_objects = Vec::new();
 
     query = add_stub_root_query_fields(query);
+    query = add_intent_root_query_fields(query);
+    mutation = add_intent_root_mutation_fields(mutation);
 
     for schema in collections {
         let collection_name = schema.collection.as_str();
@@ -5598,6 +6018,12 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         .register(delete_entity_transaction_input_object())
         .register(create_link_transaction_input_object())
         .register(delete_link_transaction_input_object())
+        .register(canonical_operation_input_object())
+        .register(mutation_preview_input_object())
+        .register(approve_intent_input_object())
+        .register(reject_intent_input_object())
+        .register(commit_intent_input_object())
+        .register(mutation_intent_filter_input_object())
         .register(query)
         .register(mutation);
 
@@ -6013,7 +6439,13 @@ fn is_simple_graphql_name(s: &str) -> bool {
 fn is_reserved_query_field_name(name: &str) -> bool {
     matches!(
         name,
-        "entity" | "entities" | "collections" | "collection" | "auditLog"
+        "entity"
+            | "entities"
+            | "collections"
+            | "collection"
+            | "auditLog"
+            | "mutationIntent"
+            | "pendingMutationIntents"
     )
 }
 
@@ -6037,6 +6469,21 @@ fn is_reserved_graphql_type_name(name: &str) -> bool {
             | "Boolean"
             | "ID"
             | "JSON"
+            | "CanonicalOperation"
+            | "MutationPreviewInput"
+            | "CanonicalOperationInput"
+            | "ApproveIntentInput"
+            | "RejectIntentInput"
+            | "CommitIntentInput"
+            | "MutationIntentFilter"
+            | "MutationPreviewResult"
+            | "MutationIntent"
+            | "MutationApprovalRoute"
+            | "MutationIntentPreImage"
+            | "MutationIntentStaleDimension"
+            | "MutationIntentEdge"
+            | "MutationIntentConnection"
+            | "CommitIntentResult"
     )
 }
 
@@ -6211,6 +6658,153 @@ mod tests {
             sdl.contains("createTasks"),
             "SDL should contain createTasks mutation"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn build_schema_exposes_mutation_intent_roots_and_types() {
+        let schema = build_schema(&[]).expect("schema should build");
+        let result = schema
+            .schema
+            .execute(
+                r#"{
+                    query: __type(name: "Query") { fields { name } }
+                    mutation: __type(name: "Mutation") {
+                        fields { name args { name type { kind name ofType { kind name } } } }
+                    }
+                    previewInput: __type(name: "MutationPreviewInput") {
+                        inputFields { name }
+                    }
+                    canonicalInput: __type(name: "CanonicalOperationInput") {
+                        inputFields { name }
+                    }
+                    previewResult: __type(name: "MutationPreviewResult") {
+                        fields { name }
+                    }
+                    intent: __type(name: "MutationIntent") { fields { name } }
+                    approvalRoute: __type(name: "MutationApprovalRoute") { fields { name } }
+                    preImage: __type(name: "MutationIntentPreImage") { fields { name } }
+                    stale: __type(name: "MutationIntentStaleDimension") { fields { name } }
+                    commitResult: __type(name: "CommitIntentResult") { fields { name } }
+                }"#,
+            )
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let body = result.data.into_json().expect("introspection data is JSON");
+
+        let query_fields: Vec<&str> = body["query"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        for expected in ["mutationIntent", "pendingMutationIntents"] {
+            assert!(
+                query_fields.contains(&expected),
+                "missing intent query field {expected}: {body}"
+            );
+        }
+
+        let mutation_fields: Vec<&str> = body["mutation"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        for expected in [
+            "previewMutation",
+            "approveMutationIntent",
+            "rejectMutationIntent",
+            "commitMutationIntent",
+        ] {
+            assert!(
+                mutation_fields.contains(&expected),
+                "missing intent mutation field {expected}: {body}"
+            );
+        }
+
+        for (type_alias, expected_fields) in [
+            (
+                "previewInput",
+                vec!["operation", "subject", "expiresInSeconds", "reason"],
+            ),
+            (
+                "canonicalInput",
+                vec!["operationKind", "operationHash", "operation"],
+            ),
+            (
+                "previewResult",
+                vec![
+                    "decision",
+                    "intent",
+                    "intentToken",
+                    "canonicalOperation",
+                    "diff",
+                    "affectedRecords",
+                    "affectedFields",
+                    "approvalRoute",
+                    "policyExplanation",
+                ],
+            ),
+            (
+                "intent",
+                vec![
+                    "id",
+                    "tenantId",
+                    "databaseId",
+                    "subject",
+                    "schemaVersion",
+                    "policyVersion",
+                    "operation",
+                    "operationHash",
+                    "preImages",
+                    "decision",
+                    "approvalState",
+                    "approvalRoute",
+                    "expiresAtNs",
+                    "reviewSummary",
+                ],
+            ),
+            (
+                "approvalRoute",
+                vec![
+                    "role",
+                    "reasonRequired",
+                    "deadlineSeconds",
+                    "separationOfDuties",
+                ],
+            ),
+            ("preImage", vec!["kind", "collection", "id", "version"]),
+            ("stale", vec!["dimension", "expected", "actual", "path"]),
+            (
+                "commitResult",
+                vec![
+                    "committed",
+                    "intent",
+                    "transactionId",
+                    "auditEntry",
+                    "stale",
+                    "errorCode",
+                ],
+            ),
+        ] {
+            let member_key = if type_alias.ends_with("Input") {
+                "inputFields"
+            } else {
+                "fields"
+            };
+            let fields: Vec<&str> = body[type_alias][member_key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|field| field["name"].as_str())
+                .collect();
+            for expected in expected_fields {
+                assert!(
+                    fields.contains(&expected),
+                    "missing {type_alias}.{expected}: {body}"
+                );
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
