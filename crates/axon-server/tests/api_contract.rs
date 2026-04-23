@@ -1565,6 +1565,265 @@ async fn http_caller_identity_per_operation_type() {
     assert_eq!(entries[2]["actor"], "deleter");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn http_policy_denials_and_audit_redaction_are_end_to_end() {
+    let server = caller_identity_http_server();
+
+    server
+        .post("/tenants/default/databases/default/collections/policy_audit_docs")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "secret": { "type": "string" }
+                    }
+                },
+                "access_control": {
+                    "read": { "allow": [{ "name": "all-read" }] },
+                    "create": { "allow": [{ "name": "all-create" }] },
+                    "update": { "allow": [{ "name": "all-update" }] },
+                    "delete": { "allow": [{ "name": "all-delete" }] },
+                    "fields": {
+                        "secret": {
+                            "read": {
+                                "deny": [{
+                                    "name": "contractor-secret-redaction",
+                                    "when": { "subject": "user_id", "eq": "contractor" },
+                                    "redact_as": null
+                                }]
+                            },
+                            "write": {
+                                "deny": [{
+                                    "name": "contractor-secret-write-denied",
+                                    "when": { "subject": "user_id", "eq": "contractor" }
+                                }]
+                            }
+                        }
+                    }
+                }
+            },
+            "actor": "schema-admin"
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    server
+        .post("/tenants/default/databases/default/collections/policy_row_docs")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" }
+                    }
+                },
+                "access_control": {
+                    "read": { "allow": [{ "name": "all-read" }] },
+                    "create": {
+                        "allow": [{
+                            "name": "operator-create",
+                            "when": { "subject": "user_id", "eq": "operator" }
+                        }]
+                    }
+                }
+            },
+            "actor": "schema-admin"
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    server
+        .post("/tenants/default/databases/default/entities/policy_audit_docs/doc-1")
+        .add_header("x-axon-actor", "operator")
+        .json(&json!({
+            "data": {
+                "title": "seed",
+                "secret": "classified"
+            }
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    server
+        .put("/tenants/default/databases/default/entities/policy_audit_docs/doc-1")
+        .add_header("x-axon-actor", "operator")
+        .json(&json!({
+            "data": {
+                "title": "updated",
+                "secret": "changed"
+            },
+            "expected_version": 1
+        }))
+        .await
+        .assert_status_ok();
+
+    let operator_audit = server
+        .get("/tenants/default/databases/default/audit/entity/policy_audit_docs/doc-1")
+        .add_header("x-axon-actor", "operator")
+        .await;
+    operator_audit.assert_status_ok();
+    let operator_audit: Value = operator_audit.json();
+    let operator_entries = operator_audit["entries"].as_array().unwrap();
+    assert_eq!(operator_entries.len(), 2);
+    let operator_update = operator_entries
+        .iter()
+        .find(|entry| entry["mutation"] == "entity.update")
+        .expect("operator should see the update audit entry");
+    assert_eq!(operator_update["data_before"]["secret"], "classified");
+    assert_eq!(operator_update["data_after"]["secret"], "changed");
+
+    let contractor_audit = server
+        .get("/tenants/default/databases/default/audit/entity/policy_audit_docs/doc-1")
+        .add_header("x-axon-actor", "contractor")
+        .await;
+    contractor_audit.assert_status_ok();
+    let contractor_audit: Value = contractor_audit.json();
+    let contractor_entries = contractor_audit["entries"].as_array().unwrap();
+    assert_eq!(contractor_entries.len(), 2);
+    let contractor_update = contractor_entries
+        .iter()
+        .find(|entry| entry["mutation"] == "entity.update")
+        .expect("contractor should see the redacted update audit entry");
+    assert_eq!(contractor_update["data_before"]["secret"], Value::Null);
+    assert_eq!(contractor_update["data_after"]["secret"], Value::Null);
+    let contractor_audit_text = contractor_audit.to_string();
+    assert!(!contractor_audit_text.contains("classified"));
+    assert!(!contractor_audit_text.contains("changed"));
+
+    let denied_field = server
+        .put("/tenants/default/databases/default/entities/policy_audit_docs/doc-1")
+        .add_header("x-axon-actor", "contractor")
+        .json(&json!({
+            "data": {
+                "title": "bad update",
+                "secret": "leaked"
+            },
+            "expected_version": 2
+        }))
+        .await;
+    denied_field.assert_status(axum::http::StatusCode::FORBIDDEN);
+    let denied_field_body: Value = denied_field.json();
+    assert_eq!(denied_field_body["detail"]["reason"], "field_write_denied");
+    assert_eq!(denied_field_body["detail"]["field_path"], "secret");
+
+    let after_denied = server
+        .get("/tenants/default/databases/default/entities/policy_audit_docs/doc-1")
+        .add_header("x-axon-actor", "operator")
+        .await;
+    after_denied.assert_status_ok();
+    let after_denied: Value = after_denied.json();
+    assert_eq!(after_denied["entity"]["version"], 2);
+    assert_eq!(after_denied["entity"]["data"]["title"], "updated");
+    assert_eq!(after_denied["entity"]["data"]["secret"], "changed");
+
+    let audit_after_denial = server
+        .get("/tenants/default/databases/default/audit/entity/policy_audit_docs/doc-1")
+        .add_header("x-axon-actor", "operator")
+        .await;
+    audit_after_denial.assert_status_ok();
+    let audit_after_denial: Value = audit_after_denial.json();
+    assert_eq!(
+        audit_after_denial["entries"].as_array().unwrap().len(),
+        operator_entries.len(),
+        "denied field write must not append audit entries"
+    );
+
+    let denied_row = server
+        .post("/tenants/default/databases/default/entities/policy_row_docs/row-denied")
+        .add_header("x-axon-actor", "contractor")
+        .json(&json!({
+            "data": {
+                "title": "blocked"
+            }
+        }))
+        .await;
+    denied_row.assert_status(axum::http::StatusCode::FORBIDDEN);
+    let denied_row_body: Value = denied_row.json();
+    assert_eq!(denied_row_body["detail"]["reason"], "row_write_denied");
+    server
+        .get("/tenants/default/databases/default/entities/policy_row_docs/row-denied")
+        .add_header("x-axon-actor", "operator")
+        .await
+        .assert_status_not_found();
+    let row_audit = server
+        .get("/tenants/default/databases/default/audit/entity/policy_row_docs/row-denied")
+        .add_header("x-axon-actor", "operator")
+        .await;
+    row_audit.assert_status_ok();
+    let row_audit: Value = row_audit.json();
+    assert!(row_audit["entries"].as_array().unwrap().is_empty());
+
+    let tx_body = json!({
+        "idempotency_key": "policy-denied-transaction-replay",
+        "operations": [
+            {
+                "op": "create",
+                "collection": "policy_audit_docs",
+                "id": "tx-allowed",
+                "data": { "title": "allowed" }
+            },
+            {
+                "op": "create",
+                "collection": "policy_audit_docs",
+                "id": "tx-denied",
+                "data": { "title": "denied", "secret": "classified" }
+            }
+        ]
+    });
+    let first_tx = server
+        .post("/tenants/default/databases/default/transactions")
+        .add_header("x-axon-actor", "contractor")
+        .json(&tx_body)
+        .await;
+    first_tx.assert_status(axum::http::StatusCode::FORBIDDEN);
+    let first_tx_body: Value = first_tx.json();
+    assert_eq!(first_tx_body["detail"]["reason"], "field_write_denied");
+    assert_eq!(first_tx_body["detail"]["field_path"], "secret");
+    assert_eq!(first_tx_body["detail"]["operation_index"], 1);
+
+    let replay_tx = server
+        .post("/tenants/default/databases/default/transactions")
+        .add_header("x-axon-actor", "contractor")
+        .json(&tx_body)
+        .await;
+    replay_tx.assert_status(axum::http::StatusCode::FORBIDDEN);
+    assert_eq!(
+        replay_tx
+            .headers()
+            .get("x-idempotent-cache")
+            .and_then(|value| value.to_str().ok()),
+        Some("hit")
+    );
+    let replay_tx_body: Value = replay_tx.json();
+    assert_eq!(replay_tx_body, first_tx_body);
+
+    for entity_id in ["tx-allowed", "tx-denied"] {
+        server
+            .get(&format!(
+                "/tenants/default/databases/default/entities/policy_audit_docs/{entity_id}"
+            ))
+            .add_header("x-axon-actor", "operator")
+            .await
+            .assert_status_not_found();
+        let tx_audit = server
+            .get(&format!(
+                "/tenants/default/databases/default/audit/entity/policy_audit_docs/{entity_id}"
+            ))
+            .add_header("x-axon-actor", "operator")
+            .await;
+        tx_audit.assert_status_ok();
+        let tx_audit: Value = tx_audit.json();
+        assert!(
+            tx_audit["entries"].as_array().unwrap().is_empty(),
+            "aborted transaction must not append audit entries for {entity_id}"
+        );
+    }
+}
+
 // ── Idempotency tests (FEAT-008 US-081) ──────────────────────────────────────
 
 /// AC1 + AC2: POST with `Idempotency-Key` stores the response; a retry with
