@@ -5,6 +5,7 @@ import {
 	createTestDatabase,
 	createTestEntity,
 	createTestTenant,
+	updateTestEntity,
 } from './helpers';
 
 const TASK_COLLECTION = 'task';
@@ -178,6 +179,26 @@ async function createBudgetRecord(
 	});
 }
 
+async function updateApprovalRole(
+	request: APIRequestContext,
+	db: TestDatabase,
+	actor: string,
+	role: string,
+	expectedVersion = 1,
+) {
+	await updateTestEntity(
+		request,
+		db,
+		'users',
+		actor,
+		{
+			user_id: actor,
+			approval_role: role,
+		},
+		expectedVersion,
+	);
+}
+
 async function previewBudgetIntent(
 	request: APIRequestContext,
 	db: TestDatabase,
@@ -284,6 +305,33 @@ async function commitIntent(request: APIRequestContext, db: TestDatabase, intent
 				intentToken: "${intent.token}"
 				intentId: "${intent.intentId}"
 			}) { committed intent { id approvalState } }
+		}`,
+	);
+}
+
+async function patchBudgetRecordAs(
+	request: APIRequestContext,
+	db: TestDatabase,
+	actor: string,
+	collection: string,
+	id: string,
+	budgetCents: number,
+	expectedVersion = 1,
+) {
+	await gqlAs(
+		request,
+		db,
+		actor,
+		`mutation {
+			update${collection === TASK_COLLECTION ? 'Task' : 'Expense'}(
+				id: "${id}"
+				version: ${expectedVersion}
+				input: {
+					title: "${id}"
+					budget_cents: ${budgetCents}
+					status: "changed-after-preview"
+				}
+			) { id version }
 		}`,
 	);
 }
@@ -436,6 +484,12 @@ test.describe('Approval inbox', () => {
 			'aria-selected',
 			'true',
 		);
+		await page.getByTestId('intent-inline-approve').focus();
+		await page.keyboard.press('Enter');
+		await expect(page.getByTestId('intent-inline-reason-error')).toContainText(
+			'Approval reason is required',
+		);
+		await expect(page.getByTestId('intent-inline-reason')).toBeFocused();
 		await page.getByTestId('intent-inline-reason').fill('approved in inbox');
 		await page.getByTestId('intent-inline-approve').click();
 		await expect(page.getByTestId('intent-inline-message')).toContainText('Intent approved.');
@@ -466,6 +520,99 @@ test.describe('Approval inbox', () => {
 		await page.getByTestId('intent-reject').click();
 		await expect(page.getByText('Intent rejected.')).toBeVisible({ timeout: 10_000 });
 		await expect(page.getByTestId('intent-detail')).toContainText('rejected');
+	});
+
+	test('shows authorization failures without clearing the entered reason', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedApprovalCollections(request, 'approval-errors');
+		await seedIntentStates(request, db);
+		await createBudgetRecord(request, db, TASK_COLLECTION, 'task-self-approve');
+		const selfApproval = await previewBudgetIntent(request, db, 'task-self-approve', 25_000, {
+			actor: 'finance-approver',
+			grantVersion: 17,
+			tenantRole: 'finance_approver',
+		});
+		await createBudgetRecord(request, db, TASK_COLLECTION, 'task-lost-role');
+		const lostRole = await previewBudgetIntent(request, db, 'task-lost-role', 26_000, {
+			grantVersion: 19,
+		});
+
+		await routeGraphqlAs(page, 'finance-approver');
+		await page.goto(dbIntentUrl(db, selfApproval.intentId));
+		await page.getByTestId('intent-reason').fill('self review attempt');
+		await page.getByTestId('intent-approve').click();
+		await expect(page.getByTestId('intent-action-error')).toContainText(
+			'intent_authorization_failed',
+		);
+		await expect(page.getByTestId('intent-action-error')).toContainText(
+			'cannot review their own mutation intent',
+		);
+		await expect(page.getByTestId('intent-reason')).toHaveValue('self review attempt');
+
+		await updateApprovalRole(request, db, 'finance-approver', 'contractor');
+		await page.goto(dbIntentUrl(db, lostRole.intentId));
+		await page.getByTestId('intent-reason').fill('lost role attempt');
+		await page.getByTestId('intent-approve').click();
+		await expect(page.getByTestId('intent-action-error')).toContainText(
+			'intent_authorization_failed',
+		);
+		await expect(page.getByTestId('intent-action-error')).toContainText(
+			'does not satisfy required approver role',
+		);
+		await expect(page.getByTestId('intent-reason')).toHaveValue('lost role attempt');
+	});
+
+	test('shows disabled action states for rejected, expired, committed, and stale intents', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedApprovalCollections(request, 'approval-disabled');
+		const ids = await seedIntentStates(request, db);
+		await createBudgetRecord(request, db, TASK_COLLECTION, 'task-stale');
+		const staleIntent = await previewBudgetIntent(request, db, 'task-stale', 27_000, {
+			grantVersion: 21,
+		});
+		await approveIntent(request, db, staleIntent.intentId);
+		await patchBudgetRecordAs(request, db, 'finance-agent', TASK_COLLECTION, 'task-stale', 5100);
+
+		await routeGraphqlAs(page, 'finance-agent');
+
+		for (const [intentId, reviewStatus, commitStatus] of [
+			[
+				ids.rejected,
+				'Rejected intents cannot be reviewed again.',
+				'Rejected intents cannot be committed.',
+			],
+			[
+				ids.expired,
+				'Expired intents cannot be approved or rejected.',
+				'Expired intents cannot be committed.',
+			],
+			[
+				ids.committed,
+				'Committed intents are already consumed.',
+				'Committed intents cannot be committed again.',
+			],
+		] as const) {
+			await page.goto(dbIntentUrl(db, intentId));
+			await expect(page.getByTestId('intent-review-status')).toContainText(reviewStatus);
+			await expect(page.getByTestId('intent-commit-status')).toContainText(commitStatus);
+			await expect(page.getByTestId('intent-approve')).toBeDisabled();
+			await expect(page.getByTestId('intent-reject')).toBeDisabled();
+			await expect(page.getByTestId('intent-commit-action')).toBeDisabled();
+		}
+
+		await page.goto(dbIntentUrl(db, staleIntent.intentId));
+		await page.getByTestId('intent-commit-token').fill(staleIntent.token);
+		await page.getByTestId('intent-commit-action').click();
+		await expect(page.getByTestId('intent-commit-error')).toContainText('intent_stale');
+		await expect(page.getByTestId('intent-commit-status')).toContainText(
+			'disabled because the latest validation returned intent_stale',
+		);
+		await expect(page.getByTestId('intent-commit-token')).toBeDisabled();
+		await expect(page.getByTestId('intent-commit-action')).toBeDisabled();
 	});
 
 	test('distinguishes loading, empty, and error states', async ({ page, request }) => {

@@ -34,19 +34,27 @@ let auditError = $state<string | null>(null);
 let loading = $state(true);
 let error = $state<string | null>(null);
 let actionMessage = $state<string | null>(null);
+let actionError = $state<string | null>(null);
 let reviewReason = $state('');
+let reviewReasonError = $state<string | null>(null);
 let reviewing = $state(false);
 let commitToken = $state('');
 let committing = $state(false);
 let commitOutcome = $state<CommitMutationIntentOutcome | null>(null);
+// biome-ignore lint/style/useConst: Svelte bind:this assigns the element ref at runtime.
+let reviewReasonField = $state<HTMLTextAreaElement | null>(null);
 
-const canApprove = $derived(
-	intent?.approvalState === 'pending' &&
-		(!intent.approvalRoute?.reasonRequired || reviewReason.trim().length > 0),
+const canApprove = $derived(intent?.approvalState === 'pending' && !reviewing);
+const canReject = $derived(intent?.approvalState === 'pending' && !reviewing);
+const staleCommitCode = $derived(
+	commitOutcome && !commitOutcome.ok ? (commitOutcome.error.code ?? null) : null,
 );
-const canReject = $derived(intent?.approvalState === 'pending' && reviewReason.trim().length > 0);
+const commitBlockedByStale = $derived(
+	staleCommitCode === 'intent_stale' || staleCommitCode === 'intent_mismatch',
+);
 const canCommit = $derived(
 	(intent?.approvalState === 'approved' || intent?.approvalState === 'none') &&
+		!commitBlockedByStale &&
 		commitToken.trim().length > 0,
 );
 
@@ -118,6 +126,9 @@ function affectedFields(currentIntent: MutationIntent): string[] {
 }
 
 function executionSummary(currentIntent: MutationIntent): string {
+	if (commitBlockedByStale) {
+		return `Commit blocked by ${staleCommitCode}. Re-preview is required before commit.`;
+	}
 	switch (currentIntent.approvalState) {
 		case 'pending':
 			return 'Waiting for an approver in the configured review route.';
@@ -161,6 +172,63 @@ function hasReviewDiff(currentIntent: MutationIntent): boolean {
 	);
 }
 
+function reviewStatus(currentIntent: MutationIntent): string {
+	switch (currentIntent.approvalState) {
+		case 'pending':
+			return currentIntent.approvalRoute?.reasonRequired
+				? 'Approval on this route requires a reason. Rejection also requires a reason.'
+				: 'Rejection requires a reason.';
+		case 'none':
+			return 'This intent does not require approval.';
+		case 'approved':
+			return 'Review is complete. Approve and reject are disabled.';
+		case 'rejected':
+			return 'Rejected intents cannot be reviewed again.';
+		case 'expired':
+			return 'Expired intents cannot be approved or rejected.';
+		case 'committed':
+			return 'Committed intents are already consumed.';
+		default:
+			return 'Review status unavailable.';
+	}
+}
+
+function commitStatus(currentIntent: MutationIntent): string {
+	if (commitBlockedByStale) {
+		return `Commit is disabled because the latest validation returned ${staleCommitCode}.`;
+	}
+	switch (currentIntent.approvalState) {
+		case 'pending':
+			return 'Commit is unavailable until an approver accepts the intent.';
+		case 'approved':
+		case 'none':
+			return 'Enter the preview token to commit this intent.';
+		case 'rejected':
+			return 'Rejected intents cannot be committed.';
+		case 'expired':
+			return 'Expired intents cannot be committed.';
+		case 'committed':
+			return 'Committed intents cannot be committed again.';
+		default:
+			return 'Commit status unavailable.';
+	}
+}
+
+function validateReviewReason(action: 'approve' | 'reject'): boolean {
+	if (!intent || intent.approvalState !== 'pending') return false;
+	const requiresReason = action === 'reject' || Boolean(intent.approvalRoute?.reasonRequired);
+	if (!requiresReason || reviewReason.trim().length > 0) {
+		reviewReasonError = null;
+		return true;
+	}
+	reviewReasonError =
+		action === 'approve'
+			? 'Approval reason is required by the current approval route.'
+			: 'Rejection reason is required.';
+	reviewReasonField?.focus();
+	return false;
+}
+
 async function loadAuditTrail(targetIntentId: string) {
 	auditLoading = true;
 	auditError = null;
@@ -178,7 +246,9 @@ async function loadAuditTrail(targetIntentId: string) {
 async function loadIntent() {
 	loading = true;
 	error = null;
+	actionError = null;
 	actionMessage = null;
+	reviewReasonError = null;
 	auditEntries = [];
 	auditError = null;
 	try {
@@ -196,9 +266,9 @@ async function loadIntent() {
 }
 
 async function approveIntent() {
-	if (!intent || !canApprove) return;
+	if (!intent || !canApprove || !validateReviewReason('approve')) return;
 	reviewing = true;
-	error = null;
+	actionError = null;
 	actionMessage = null;
 	try {
 		intent = await approveMutationIntent(scope, {
@@ -206,19 +276,20 @@ async function approveIntent() {
 			...(reviewReason.trim() ? { reason: reviewReason.trim() } : {}),
 		});
 		reviewReason = '';
+		reviewReasonError = null;
 		actionMessage = 'Intent approved.';
 		await loadAuditTrail(intent.id);
 	} catch (errorValue: unknown) {
-		error = errorValue instanceof Error ? errorValue.message : 'Failed to approve intent';
+		actionError = errorValue instanceof Error ? errorValue.message : 'Failed to approve intent';
 	} finally {
 		reviewing = false;
 	}
 }
 
 async function rejectIntent() {
-	if (!intent || !canReject) return;
+	if (!intent || !canReject || !validateReviewReason('reject')) return;
 	reviewing = true;
-	error = null;
+	actionError = null;
 	actionMessage = null;
 	try {
 		intent = await rejectMutationIntent(scope, {
@@ -226,10 +297,11 @@ async function rejectIntent() {
 			reason: reviewReason.trim(),
 		});
 		reviewReason = '';
+		reviewReasonError = null;
 		actionMessage = 'Intent rejected.';
 		await loadAuditTrail(intent.id);
 	} catch (errorValue: unknown) {
-		error = errorValue instanceof Error ? errorValue.message : 'Failed to reject intent';
+		actionError = errorValue instanceof Error ? errorValue.message : 'Failed to reject intent';
 	} finally {
 		reviewing = false;
 	}
@@ -238,7 +310,7 @@ async function rejectIntent() {
 async function commitIntent() {
 	if (!intent || !canCommit) return;
 	committing = true;
-	error = null;
+	actionError = null;
 	actionMessage = null;
 	commitOutcome = null;
 	try {
@@ -254,11 +326,24 @@ async function commitIntent() {
 			await loadAuditTrail(intent.id);
 		}
 	} catch (errorValue: unknown) {
-		error = errorValue instanceof Error ? errorValue.message : 'Failed to commit intent';
+		actionError = errorValue instanceof Error ? errorValue.message : 'Failed to commit intent';
 	} finally {
 		committing = false;
 	}
 }
+
+$effect(() => {
+	if (reviewReason.trim().length > 0 && reviewReasonError) {
+		reviewReasonError = null;
+	}
+});
+
+$effect(() => {
+	if (intent?.approvalState !== 'pending' && reviewReason.length > 0) {
+		reviewReason = '';
+		reviewReasonError = null;
+	}
+});
 
 onMount(() => {
 	void loadIntent();
@@ -299,8 +384,8 @@ onMount(() => {
 				</div>
 			</div>
 			<div class="panel-body stack" data-testid="intent-overview">
-				{#if error}
-					<p class="message error">{error}</p>
+				{#if actionError}
+					<p class="message error" data-testid="intent-action-error">{actionError}</p>
 				{/if}
 				{#if actionMessage}
 					<p class="message success">{actionMessage}</p>
@@ -495,38 +580,59 @@ onMount(() => {
 				<h2>Actions</h2>
 			</div>
 			<div class="panel-body stack">
-				{#if intent.approvalState === 'pending'}
+				<div class="action-block">
+					<h3>Review decision</h3>
 					<label>
 						<span>Reason</span>
-						<textarea bind:value={reviewReason} data-testid="intent-reason"></textarea>
+						<textarea
+							bind:value={reviewReason}
+							bind:this={reviewReasonField}
+							aria-invalid={reviewReasonError ? 'true' : undefined}
+							disabled={intent.approvalState !== 'pending'}
+							data-testid="intent-reason"
+						></textarea>
 					</label>
+					{#if reviewReasonError}
+						<p class="message error" data-testid="intent-reason-error">{reviewReasonError}</p>
+					{/if}
+					<p class="muted" data-testid="intent-review-status">{reviewStatus(intent)}</p>
 					<div class="actions">
 						<button
 							type="button"
 							class="primary"
-							disabled={!canApprove || reviewing}
+							disabled={!canApprove}
 							onclick={() => void approveIntent()}
 							data-testid="intent-approve"
 						>
-							Approve
+							{reviewing ? 'Approving...' : 'Approve'}
 						</button>
 						<button
 							type="button"
 							class="danger"
-							disabled={!canReject || reviewing}
+							disabled={!canReject}
 							onclick={() => void rejectIntent()}
 							data-testid="intent-reject"
 						>
-							Reject
+							{reviewing ? 'Rejecting...' : 'Reject'}
 						</button>
 					</div>
-				{/if}
+				</div>
 
-				{#if intent.approvalState === 'approved' || intent.approvalState === 'none'}
+				<div class="action-block">
+					<h3>Commit</h3>
 					<label>
 						<span>Intent token</span>
-						<input bind:value={commitToken} type="password" data-testid="intent-commit-token" />
+						<input
+							bind:value={commitToken}
+							type="password"
+							disabled={
+								(intent.approvalState !== 'approved' && intent.approvalState !== 'none') ||
+								commitBlockedByStale
+							}
+							data-testid="intent-commit-token"
+						/>
 					</label>
+					<p class="muted" data-testid="intent-commit-status">{commitStatus(intent)}</p>
 					<div class="actions">
 						<button
 							type="button"
@@ -538,11 +644,7 @@ onMount(() => {
 							{committing ? 'Committing...' : 'Commit'}
 						</button>
 					</div>
-				{/if}
-
-				{#if intent.approvalState !== 'pending' && intent.approvalState !== 'approved' && intent.approvalState !== 'none'}
-					<p class="muted">No review action is available for {intent.approvalState} intents.</p>
-				{/if}
+				</div>
 			</div>
 		</section>
 	</div>
@@ -618,6 +720,11 @@ onMount(() => {
 		gap: 1rem;
 	}
 
+	.action-block {
+		display: grid;
+		gap: 0.75rem;
+	}
+
 	.policy-list {
 		margin: 0;
 		padding-left: 1.2rem;
@@ -633,6 +740,10 @@ onMount(() => {
 
 	textarea {
 		min-height: 6rem;
+	}
+
+	textarea[aria-invalid='true'] {
+		border-color: rgba(248, 113, 113, 0.7);
 	}
 
 	@media (max-width: 1000px) {

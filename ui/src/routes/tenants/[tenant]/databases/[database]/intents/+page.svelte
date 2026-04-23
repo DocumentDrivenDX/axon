@@ -42,9 +42,12 @@ let collectionFilter = $state('all');
 let originFilter = $state('all');
 let selectedIntentId = $state<string | null>(null);
 let reviewReason = $state('');
+let reviewReasonError = $state<string | null>(null);
 let actionMessage = $state<string | null>(null);
 let actionError = $state<string | null>(null);
 let reviewing = $state(false);
+// biome-ignore lint/style/useConst: Svelte bind:this assigns the element ref at runtime.
+let reviewReasonField = $state<HTMLTextAreaElement | null>(null);
 
 function formatNs(value: string | undefined): string {
 	if (!value) return '-';
@@ -243,13 +246,45 @@ const filteredIntents = $derived.by(() =>
 const selectedIntent = $derived(
 	filteredIntents.find((intent) => intent.id === selectedIntentId) ?? null,
 );
-const canApprove = $derived(
-	selectedIntent?.approvalState === 'pending' &&
-		(!selectedIntent.approvalRoute?.reasonRequired || reviewReason.trim().length > 0),
-);
-const canReject = $derived(
-	selectedIntent?.approvalState === 'pending' && reviewReason.trim().length > 0,
-);
+const canApprove = $derived(selectedIntent?.approvalState === 'pending' && !reviewing);
+const canReject = $derived(selectedIntent?.approvalState === 'pending' && !reviewing);
+
+function reviewStatus(intent: MutationIntent): string {
+	switch (intent.approvalState) {
+		case 'pending':
+			return intent.approvalRoute?.reasonRequired
+				? 'Approval on this route requires a reason. Rejection also requires a reason.'
+				: 'Rejection requires a reason.';
+		case 'none':
+			return 'This intent does not require approval.';
+		case 'approved':
+			return 'Review is complete. Approve and reject are disabled.';
+		case 'rejected':
+			return 'Rejected intents cannot be reviewed again.';
+		case 'expired':
+			return 'Expired intents cannot be approved or rejected.';
+		case 'committed':
+			return 'Committed intents are already consumed.';
+		default:
+			return 'Review status unavailable.';
+	}
+}
+
+function validateSelectedReason(action: 'approve' | 'reject'): boolean {
+	if (!selectedIntent || selectedIntent.approvalState !== 'pending') return false;
+	const requiresReason =
+		action === 'reject' || Boolean(selectedIntent.approvalRoute?.reasonRequired);
+	if (!requiresReason || reviewReason.trim().length > 0) {
+		reviewReasonError = null;
+		return true;
+	}
+	reviewReasonError =
+		action === 'approve'
+			? 'Approval reason is required by the current approval route.'
+			: 'Rejection reason is required.';
+	reviewReasonField?.focus();
+	return false;
+}
 
 function clearFilters() {
 	requesterQuery = '';
@@ -268,6 +303,7 @@ async function loadIntents(
 	loading = true;
 	error = null;
 	actionError = null;
+	reviewReasonError = null;
 	try {
 		const result = await fetchMutationIntents(scope, {
 			filter: { status },
@@ -288,6 +324,7 @@ async function selectStatus(status: MutationIntentStatusFilter) {
 	activeStatus = status;
 	actionMessage = null;
 	actionError = null;
+	reviewReasonError = null;
 	await loadIntents(status, null);
 }
 
@@ -295,6 +332,7 @@ function selectIntent(intentId: string) {
 	selectedIntentId = intentId;
 	actionMessage = null;
 	actionError = null;
+	reviewReasonError = null;
 }
 
 function moveSelection(offset: number) {
@@ -315,7 +353,7 @@ async function openSelectedIntent() {
 }
 
 async function reviewSelected(action: 'approve' | 'reject') {
-	if (!selectedIntent) return;
+	if (!selectedIntent || !validateSelectedReason(action)) return;
 	reviewing = true;
 	actionMessage = null;
 	actionError = null;
@@ -338,6 +376,7 @@ async function reviewSelected(action: 'approve' | 'reject') {
 		}
 		intents = nextIntents;
 		reviewReason = '';
+		reviewReasonError = null;
 		actionMessage = action === 'approve' ? 'Intent approved.' : 'Intent rejected.';
 	} catch (errorValue: unknown) {
 		actionError = errorValue instanceof Error ? errorValue.message : `Failed to ${action} intent`;
@@ -401,6 +440,13 @@ $effect(() => {
 $effect(() => {
 	if (selectedIntent?.approvalState !== 'pending') {
 		reviewReason = '';
+		reviewReasonError = null;
+	}
+});
+
+$effect(() => {
+	if (reviewReason.trim().length > 0 && reviewReasonError) {
+		reviewReasonError = null;
 	}
 });
 
@@ -620,36 +666,42 @@ onMount(() => {
 								<p class="muted">{selectedIntent.reviewSummary.summary || '-'}</p>
 							</div>
 						</div>
-						{#if selectedIntent.approvalState === 'pending'}
-							<label>
-								<span>Review reason</span>
-								<textarea bind:value={reviewReason} data-testid="intent-inline-reason"></textarea>
-							</label>
-							<div class="actions">
-								<button
-									type="button"
-									class="primary"
-									disabled={!canApprove || reviewing}
-									onclick={() => void reviewSelected('approve')}
-									data-testid="intent-inline-approve"
-								>
-									Approve
-								</button>
-								<button
-									type="button"
-									class="danger"
-									disabled={!canReject || reviewing}
-									onclick={() => void reviewSelected('reject')}
-									data-testid="intent-inline-reject"
-								>
-									Reject
-								</button>
-							</div>
-						{:else}
-							<p class="muted">
-								Inline review is unavailable for {selectedIntent.approvalState} intents.
+						<label>
+							<span>Review reason</span>
+							<textarea
+								bind:value={reviewReason}
+								bind:this={reviewReasonField}
+								aria-invalid={reviewReasonError ? 'true' : undefined}
+								disabled={selectedIntent.approvalState !== 'pending'}
+								data-testid="intent-inline-reason"
+							></textarea>
+						</label>
+						{#if reviewReasonError}
+							<p class="message error" data-testid="intent-inline-reason-error">
+								{reviewReasonError}
 							</p>
 						{/if}
+						<p class="muted" data-testid="intent-inline-status">{reviewStatus(selectedIntent)}</p>
+						<div class="actions">
+							<button
+								type="button"
+								class="primary"
+								disabled={!canApprove}
+								onclick={() => void reviewSelected('approve')}
+								data-testid="intent-inline-approve"
+							>
+								{reviewing ? 'Approving...' : 'Approve'}
+							</button>
+							<button
+								type="button"
+								class="danger"
+								disabled={!canReject}
+								onclick={() => void reviewSelected('reject')}
+								data-testid="intent-inline-reject"
+							>
+								{reviewing ? 'Rejecting...' : 'Reject'}
+							</button>
+						</div>
 					</aside>
 				{/if}
 			</div>
@@ -789,6 +841,10 @@ onMount(() => {
 
 	textarea {
 		min-height: 6rem;
+	}
+
+	textarea[aria-invalid='true'] {
+		border-color: rgba(248, 113, 113, 0.7);
 	}
 
 	.pager {
