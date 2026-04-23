@@ -17,7 +17,9 @@ pub mod transaction;
 
 pub use intent::{
     ApprovalState, CanonicalOperationMetadata, ExecutableMutationIntent, MutationApprovalRoute,
-    MutationIntent, MutationIntentDecision, MutationIntentModelError, MutationIntentScopeBinding,
+    MutationIntent, MutationIntentDecision, MutationIntentLifecycleError,
+    MutationIntentLifecycleOperation, MutationIntentLifecycleService, MutationIntentModelError,
+    MutationIntentPreviewRecord, MutationIntentReviewMetadata, MutationIntentScopeBinding,
     MutationIntentSubjectBinding, MutationIntentToken, MutationIntentTokenLookupError,
     MutationIntentTokenSigner, MutationOperationKind, MutationReviewSummary, PreImageBinding,
 };
