@@ -5525,6 +5525,7 @@ fn is_reserved_graphql_type_name(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axon_api::test_fixtures::seed_procurement_fixture;
     use axon_core::id::CollectionId;
     use axon_schema::access_control::AccessControlPolicy;
     use axon_storage::MemoryStorageAdapter;
@@ -6083,6 +6084,58 @@ mod tests {
         assert_non_null_scalar(&fields, "title", "String");
         assert_nullable_scalar(&fields, "status", "String");
         assert_nullable_scalar(&fields, "priority", "Int");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn procurement_fixture_can_drive_graphql_schema_and_relationships() {
+        let mut seeded = AxonHandler::new(MemoryStorageAdapter::default());
+        let fixture =
+            seed_procurement_fixture(&mut seeded).expect("procurement fixture should seed");
+        let handler = Arc::new(Mutex::new(seeded));
+
+        let schema =
+            build_schema_with_handler(&fixture.schemas, Arc::clone(&handler)).expect("schema");
+        let fields = introspected_type_fields(&schema, "Invoices").await;
+        assert_nullable_scalar(&fields, "amount_cents", "Int");
+        assert_nullable_scalar(&fields, "commercial_terms", "String");
+        assert_non_null_scalar(&fields, "number", "String");
+
+        let result = schema
+            .schema
+            .execute(format!(
+                r#"{{
+                    invoices(id: "{}") {{
+                        id
+                        number
+                        amount_cents
+                        commercial_terms
+                        vendor(limit: 1) {{
+                            totalCount
+                            edges {{ linkType node {{ id name }} }}
+                        }}
+                    }}
+                }}"#,
+                fixture.ids.under_threshold_invoice.as_str()
+            ))
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+
+        let data = result.data.into_json().expect("result data should be JSON");
+        let expected = fixture
+            .entity(
+                &fixture.collections.invoices,
+                &fixture.ids.under_threshold_invoice,
+            )
+            .expect("under-threshold invoice should be fixture data");
+        let invoice = &data["invoices"];
+        assert_eq!(invoice["number"], expected.data["number"]);
+        assert_eq!(invoice["amount_cents"], expected.data["amount_cents"]);
+        assert_eq!(invoice["vendor"]["totalCount"], json!(1));
+        assert_eq!(invoice["vendor"]["edges"][0]["linkType"], json!("vendor"));
+        assert_eq!(
+            invoice["vendor"]["edges"][0]["node"]["id"],
+            json!(fixture.ids.primary_vendor.as_str())
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

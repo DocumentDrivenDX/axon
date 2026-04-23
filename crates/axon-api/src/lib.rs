@@ -11,6 +11,8 @@ pub mod intent;
 pub mod policy;
 pub mod request;
 pub mod response;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod test_fixtures;
 pub mod transaction;
 
 pub use intent::{

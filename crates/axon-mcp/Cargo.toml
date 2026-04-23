@@ -22,4 +22,5 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+axon-api = { path = "../axon-api", features = ["test-fixtures"] }
 pretty_assertions.workspace = true

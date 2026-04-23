@@ -1279,6 +1279,7 @@ mod tests {
     use crate::tools::ToolDef;
     use axon_api::handler::AxonHandler;
     use axon_api::request::{CreateCollectionRequest, CreateLinkRequest};
+    use axon_api::test_fixtures::seed_procurement_fixture;
     use axon_schema::schema::{Cardinality, CollectionSchema, LinkTypeDef};
     use axon_storage::memory::MemoryStorageAdapter;
     use serde_json::{json, Value};
@@ -1414,6 +1415,40 @@ mod tests {
         let result = invoke_tool(get_tool, serde_json::json!({"id": "t-001"}));
         let entity = parse_tool_payload(&result);
         assert_eq!(entity["data"]["title"], "Test task");
+    }
+
+    #[test]
+    fn procurement_fixture_can_seed_mcp_handler() {
+        let handler = make_handler();
+        let fixture = {
+            let mut guard = handler
+                .lock()
+                .expect("procurement fixture handler should lock");
+            seed_procurement_fixture(&mut guard).expect("procurement fixture should seed")
+        };
+
+        let tools = build_crud_tools(fixture.collections.invoices.as_str(), Arc::clone(&handler));
+        let get_tool = &tools[1];
+        assert_eq!(get_tool.name, "invoices.get");
+
+        let result = invoke_tool(
+            get_tool,
+            json!({ "id": fixture.ids.over_threshold_invoice.as_str() }),
+        );
+        let invoice = parse_tool_payload(&result);
+        let expected = fixture
+            .entity(
+                &fixture.collections.invoices,
+                &fixture.ids.over_threshold_invoice,
+            )
+            .expect("over-threshold invoice should be fixture data");
+
+        assert_eq!(invoice["data"]["number"], expected.data["number"]);
+        assert_eq!(
+            invoice["data"]["amount_cents"],
+            expected.data["amount_cents"]
+        );
+        assert_eq!(invoice["data"]["amount_cents"], json!(1_250_000));
     }
 
     #[test]
