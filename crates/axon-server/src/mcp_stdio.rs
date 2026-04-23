@@ -70,7 +70,10 @@ fn build_registry<S: StorageAdapter + 'static>(
         .map_err(|e| io::Error::other(format!("failed to build policy metadata: {e}")))?;
     }
 
-    registry.register(build_query_tool(Arc::clone(&handler)));
+    registry.register(build_query_tool(
+        Arc::clone(&handler),
+        CallerIdentity::anonymous(),
+    ));
     registry.register(build_transition_lifecycle_tool(handler));
     Ok(registry)
 }

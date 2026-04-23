@@ -14,6 +14,7 @@ workspace = true
 axon-core.path = "../axon-core"
 axon-schema.path = "../axon-schema"
 axon-api.path = "../axon-api"
+axon-graphql.path = "../axon-graphql"
 axon-storage.path = "../axon-storage"
 async-graphql.workspace = true
 thiserror.workspace = true

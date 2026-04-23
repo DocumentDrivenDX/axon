@@ -165,6 +165,191 @@ async fn seed_policy_collection(server: &axum_test::TestServer) {
         .assert_status(StatusCode::CREATED);
 }
 
+async fn seed_query_policy_fixture(server: &axum_test::TestServer) {
+    server
+        .post("/tenants/default/databases/default/collections/policy_user")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" }
+                    }
+                },
+                "link_types": {
+                    "assigned-to": {
+                        "target_collection": "policy_task",
+                        "cardinality": "many-to-many"
+                    }
+                },
+                "access_control": {
+                    "read": { "allow": [{ "name": "users-visible" }] },
+                    "create": { "allow": [{ "name": "admins-create-users" }] }
+                }
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    server
+        .post("/tenants/default/databases/default/collections/policy_task")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "requester_id": { "type": "string" },
+                        "assigned_contractor_id": { "type": "string" },
+                        "secret": { "type": "string" }
+                    }
+                },
+                "access_control": {
+                    "read": {
+                        "allow": [
+                            {
+                                "name": "admins-read-tasks",
+                                "when": { "subject": "user_id", "eq": "admin" }
+                            },
+                            {
+                                "name": "requesters-read-own-tasks",
+                                "where": { "field": "requester_id", "eq_subject": "user_id" }
+                            },
+                            {
+                                "name": "contractors-read-assigned-tasks",
+                                "where": { "field": "assigned_contractor_id", "eq_subject": "user_id" }
+                            }
+                        ]
+                    },
+                    "create": {
+                        "allow": [{
+                            "name": "admins-create-tasks",
+                            "when": { "subject": "user_id", "eq": "admin" }
+                        }]
+                    },
+                    "fields": {
+                        "secret": {
+                            "read": {
+                                "deny": [{
+                                    "name": "contractors-cannot-read-secret",
+                                    "when": { "subject": "user_id", "eq": "contractor" },
+                                    "redact_as": null
+                                }]
+                            }
+                        }
+                    }
+                }
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    for (collection, id, data) in [
+        ("policy_user", "u1", json!({ "name": "Ada" })),
+        (
+            "policy_task",
+            "task-a",
+            json!({
+                "title": "Visible A",
+                "requester_id": "requester",
+                "assigned_contractor_id": "contractor",
+                "secret": "alpha"
+            }),
+        ),
+        (
+            "policy_task",
+            "task-b",
+            json!({
+                "title": "Hidden B",
+                "requester_id": "other-requester",
+                "assigned_contractor_id": "other-contractor",
+                "secret": "beta"
+            }),
+        ),
+        (
+            "policy_task",
+            "task-c",
+            json!({
+                "title": "Visible C",
+                "requester_id": "requester",
+                "assigned_contractor_id": "other-contractor",
+                "secret": "gamma"
+            }),
+        ),
+        (
+            "policy_task",
+            "task-contractor",
+            json!({
+                "title": "Contractor visible",
+                "requester_id": "other-requester",
+                "assigned_contractor_id": "contractor",
+                "secret": "classified"
+            }),
+        ),
+    ] {
+        server
+            .post(&format!(
+                "/tenants/default/databases/default/entities/{collection}/{id}"
+            ))
+            .add_header("x-axon-actor", "admin")
+            .json(&json!({ "data": data, "actor": "setup" }))
+            .await
+            .assert_status(StatusCode::CREATED);
+    }
+
+    for target in ["task-a", "task-b"] {
+        server
+            .post("/tenants/default/databases/default/links")
+            .add_header("x-axon-actor", "admin")
+            .json(&json!({
+                "source_collection": "policy_user",
+                "source_id": "u1",
+                "target_collection": "policy_task",
+                "target_id": target,
+                "link_type": "assigned-to"
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+    }
+}
+
+async fn mcp_query_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Value {
+    let response = mcp_as(
+        server,
+        actor,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "query",
+            "method": "tools/call",
+            "params": {
+                "name": "axon.query",
+                "arguments": {
+                    "query": query
+                }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        response["error"].is_null(),
+        "unexpected MCP JSON-RPC error: {response}"
+    );
+    assert!(
+        response["result"]["isError"].is_null(),
+        "unexpected MCP tool error: {response}"
+    );
+    serde_json::from_str(
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("axon.query should return text content"),
+    )
+    .expect("axon.query text should be a GraphQL JSON response")
+}
+
 // ── Protocol basics ───────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
@@ -367,6 +552,114 @@ async fn mcp_tools_list_exposes_policy_metadata_matching_graphql_effective_polic
     assert!(description.contains("redactedFields=secret"));
     assert!(description.contains("deniedFields=secret"));
     assert!(description.contains("envelopes=large-amount-needs-approval"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_axon_query_matches_graphql_policy_semantics() {
+    let server = test_server();
+    seed_query_policy_fixture(&server).await;
+
+    let first_page_query = r#"
+        fragment EntityBits on Entity {
+            id
+            data
+        }
+
+        {
+            hidden: entity(collection: "policy_task", id: "task-b") {
+                ...EntityBits
+            }
+            page: entities(collection: "policy_task", limit: 1) {
+                totalCount
+                edges {
+                    cursor
+                    node { ...EntityBits }
+                }
+                pageInfo {
+                    hasNextPage
+                    hasPreviousPage
+                    startCursor
+                    endCursor
+                }
+            }
+            related: neighbors(
+                collection: "policy_user",
+                id: "u1",
+                direction: "outbound",
+                linkType: "assigned-to",
+                limit: 10
+            ) {
+                totalCount
+                groups {
+                    linkType
+                    direction
+                    totalCount
+                    edges {
+                        linkType
+                        direction
+                        node { ...EntityBits }
+                    }
+                }
+            }
+        }
+    "#;
+    let gql = gql_as(&server, "requester", first_page_query).await;
+    let mcp = mcp_query_as(&server, "requester", first_page_query).await;
+    assert!(gql["errors"].is_null(), "unexpected GraphQL errors: {gql}");
+    assert!(
+        mcp["errors"].is_null(),
+        "unexpected MCP GraphQL errors: {mcp}"
+    );
+    assert_eq!(mcp["data"], gql["data"]);
+    assert_eq!(mcp["data"]["hidden"], Value::Null);
+    assert_eq!(mcp["data"]["page"]["totalCount"], 2);
+    assert_eq!(mcp["data"]["page"]["edges"][0]["node"]["id"], "task-a");
+    assert_eq!(mcp["data"]["page"]["pageInfo"]["hasNextPage"], true);
+    assert_eq!(mcp["data"]["related"]["totalCount"], 1);
+    assert_eq!(
+        mcp["data"]["related"]["groups"][0]["edges"][0]["node"]["id"],
+        "task-a"
+    );
+
+    let after = gql["data"]["page"]["pageInfo"]["endCursor"]
+        .as_str()
+        .expect("first page should include endCursor");
+    let second_page_query = format!(
+        r#"{{
+            page: entities(collection: "policy_task", limit: 1, after: "{after}") {{
+                totalCount
+                edges {{ node {{ id data }} }}
+                pageInfo {{ hasNextPage hasPreviousPage startCursor endCursor }}
+            }}
+        }}"#
+    );
+    let gql = gql_as(&server, "requester", &second_page_query).await;
+    let mcp = mcp_query_as(&server, "requester", &second_page_query).await;
+    assert!(gql["errors"].is_null(), "unexpected GraphQL errors: {gql}");
+    assert!(
+        mcp["errors"].is_null(),
+        "unexpected MCP GraphQL errors: {mcp}"
+    );
+    assert_eq!(mcp["data"], gql["data"]);
+    assert_eq!(mcp["data"]["page"]["totalCount"], 2);
+    assert_eq!(mcp["data"]["page"]["edges"][0]["node"]["id"], "task-c");
+    assert_eq!(mcp["data"]["page"]["pageInfo"]["hasPreviousPage"], true);
+
+    let redaction_query = r#"{
+        redacted: entity(collection: "policy_task", id: "task-contractor") {
+            id
+            data
+        }
+    }"#;
+    let gql = gql_as(&server, "contractor", redaction_query).await;
+    let mcp = mcp_query_as(&server, "contractor", redaction_query).await;
+    assert!(gql["errors"].is_null(), "unexpected GraphQL errors: {gql}");
+    assert!(
+        mcp["errors"].is_null(),
+        "unexpected MCP GraphQL errors: {mcp}"
+    );
+    assert_eq!(mcp["data"], gql["data"]);
+    assert_eq!(mcp["data"]["redacted"]["data"]["secret"], Value::Null);
 }
 
 // ── tools/call: CRUD ──────────────────────────────────────────────────────────

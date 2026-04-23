@@ -334,7 +334,7 @@ fn build_tool_registry<S: StorageAdapter + 'static>(
         .map_err(map_axon_error)?;
     }
 
-    registry.register(build_query_tool_tokio(handler));
+    registry.register(build_query_tool_tokio(handler, caller.clone()));
     Ok(registry)
 }
 
