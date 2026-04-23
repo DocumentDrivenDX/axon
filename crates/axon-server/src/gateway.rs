@@ -1955,10 +1955,13 @@ async fn query_audit_by_entity(
                         "entity_id": e.entity_id.to_string(),
                         "version": e.version,
                         "mutation": e.mutation.to_string(),
+                        "operation": e.mutation.to_string(),
                         "data_before": e.data_before,
                         "data_after": e.data_after,
                         "actor": e.actor,
+                        "metadata": &e.metadata,
                         "transaction_id": e.transaction_id,
+                        "intent_lineage": &e.intent_lineage,
                     })
                 })
                 .collect();
@@ -2007,6 +2010,8 @@ async fn query_audit(
                         "entity_id",
                         "actor",
                         "operation",
+                        "intent_id",
+                        "approval_id",
                         "since_ns",
                         "until_ns",
                         "after_id",
@@ -2027,6 +2032,8 @@ async fn query_audit(
         entity_id: params.get("entity_id").map(EntityId::new),
         actor: params.get("actor").cloned(),
         operation: params.get("operation").cloned(),
+        intent_id: params.get("intent_id").cloned(),
+        approval_id: params.get("approval_id").cloned(),
         since_ns: params.get("since_ns").and_then(|s| s.parse().ok()),
         until_ns: params.get("until_ns").and_then(|s| s.parse().ok()),
         after_id: params.get("after_id").and_then(|s| s.parse().ok()),
@@ -2051,10 +2058,13 @@ async fn query_audit(
                         "entity_id": e.entity_id.to_string(),
                         "version": e.version,
                         "mutation": e.mutation.to_string(),
+                        "operation": e.mutation.to_string(),
                         "data_before": e.data_before,
                         "data_after": e.data_after,
                         "actor": e.actor,
+                        "metadata": &e.metadata,
                         "transaction_id": e.transaction_id,
+                        "intent_lineage": &e.intent_lineage,
                     })
                 })
                 .collect();

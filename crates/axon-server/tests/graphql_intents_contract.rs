@@ -171,6 +171,19 @@ async fn budget_cents(server: &axum_test::TestServer) -> Value {
     body["data"]["entity"]["data"]["budget_cents"].clone()
 }
 
+async fn audit_by_intent(
+    server: &axum_test::TestServer,
+    intent_id: &str,
+    operation: &str,
+) -> Value {
+    server
+        .get(&format!(
+            "/tenants/default/databases/default/audit/query?intent_id={intent_id}&operation={operation}"
+        ))
+        .await
+        .json::<Value>()
+}
+
 fn assert_no_errors(body: &Value, context: &str) {
     assert!(
         body["errors"].is_null(),
@@ -236,6 +249,16 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
         approved["data"]["approveMutationIntent"]["approvalState"],
         "approved"
     );
+    let approval_audit = audit_by_intent(&server, &intent_id, "intent.approve").await;
+    let approval_entries = approval_audit["entries"].as_array().unwrap();
+    assert_eq!(approval_entries.len(), 1);
+    assert_eq!(approval_entries[0]["actor"], "finance-approver");
+    assert_eq!(approval_entries[0]["metadata"]["reason"], "approved");
+    assert_eq!(
+        approval_entries[0]["intent_lineage"]["intent_id"],
+        intent_id
+    );
+    assert_eq!(approval_entries[0]["intent_lineage"]["policy_version"], 1);
 
     let committed = commit_token(&server, "finance-agent", &token).await;
     assert_no_errors(&committed, "commit");
@@ -274,6 +297,15 @@ async fn rejected_intent_cannot_commit() {
     assert_eq!(
         rejected["data"]["rejectMutationIntent"]["approvalState"],
         "rejected"
+    );
+    let rejection_audit = audit_by_intent(&server, &intent_id, "intent.reject").await;
+    let rejection_entries = rejection_audit["entries"].as_array().unwrap();
+    assert_eq!(rejection_entries.len(), 1);
+    assert_eq!(rejection_entries[0]["actor"], "finance-approver");
+    assert_eq!(rejection_entries[0]["metadata"]["reason"], "rejected");
+    assert_eq!(
+        rejection_entries[0]["intent_lineage"]["intent_id"],
+        intent_id
     );
 
     let committed = commit_token(&server, "finance-agent", &token).await;

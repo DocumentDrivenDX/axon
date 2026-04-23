@@ -236,6 +236,10 @@ pub struct QueryAuditRequest {
     pub actor: Option<String>,
     /// Restrict to entries of this operation type (e.g. `"entity.create"`).
     pub operation: Option<String>,
+    /// Restrict to entries carrying this mutation intent ID.
+    pub intent_id: Option<String>,
+    /// Restrict to entries carrying this approval record ID.
+    pub approval_id: Option<String>,
     /// Inclusive start of the time range (nanoseconds since Unix epoch).
     pub since_ns: Option<u64>,
     /// Inclusive end of the time range (nanoseconds since Unix epoch).

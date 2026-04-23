@@ -1,9 +1,10 @@
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 
 use axon_audit::entry::{
-    AuditAttribution, AuditEntry, MutationIntentAuditMetadata, MutationIntentAuditOrigin,
-    MutationIntentAuditOriginSurface, MutationType,
+    AuditAttribution, AuditEntry, MutationIntentApproverMetadata, MutationIntentAuditMetadata,
+    MutationIntentAuditOrigin, MutationIntentAuditOriginSurface, MutationType,
 };
 use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
@@ -702,6 +703,20 @@ pub struct MutationIntentCommitValidationContext {
     pub caller_authorized: bool,
 }
 
+/// Inputs for audited commit binding validation.
+pub struct MutationIntentCommitValidationAuditRequest<'a> {
+    /// Tenant/database scope expected by the intent token.
+    pub scope: &'a MutationIntentScopeBinding,
+    /// Executable token issued by preview.
+    pub token: &'a MutationIntentToken,
+    /// Current request-time binding snapshot.
+    pub current: &'a MutationIntentCommitValidationContext,
+    /// Current time in nanoseconds for TTL validation.
+    pub now_ns: u64,
+    /// Actor recorded on validation-failure audit entries.
+    pub actor: Option<&'a str>,
+}
+
 /// A stale binding dimension detected while validating intent commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MutationIntentStaleDimension {
@@ -920,6 +935,21 @@ impl MutationIntentLifecycleService {
         )
     }
 
+    /// Approve a pending approval-routed intent and append a lineage audit record.
+    pub fn approve_with_audit<S: StorageAdapter, A: AuditLog>(
+        &self,
+        storage: &mut S,
+        audit: &mut A,
+        scope: &MutationIntentScopeBinding,
+        intent_id: &str,
+        metadata: MutationIntentReviewMetadata,
+        now_ns: u64,
+    ) -> Result<MutationIntent, MutationIntentLifecycleError> {
+        let approved = self.approve(storage, scope, intent_id, metadata.clone(), now_ns)?;
+        append_intent_review_audit(audit, &approved, MutationType::IntentApprove, &metadata)?;
+        Ok(approved)
+    }
+
     /// Reject a pending approval-routed intent.
     pub fn reject<S: StorageAdapter>(
         &self,
@@ -956,6 +986,21 @@ impl MutationIntentLifecycleService {
             ApprovalState::Pending,
             ApprovalState::Rejected,
         )
+    }
+
+    /// Reject a pending approval-routed intent and append a lineage audit record.
+    pub fn reject_with_audit<S: StorageAdapter, A: AuditLog>(
+        &self,
+        storage: &mut S,
+        audit: &mut A,
+        scope: &MutationIntentScopeBinding,
+        intent_id: &str,
+        metadata: MutationIntentReviewMetadata,
+        now_ns: u64,
+    ) -> Result<MutationIntent, MutationIntentLifecycleError> {
+        let rejected = self.reject(storage, scope, intent_id, metadata.clone(), now_ns)?;
+        append_intent_review_audit(audit, &rejected, MutationType::IntentReject, &metadata)?;
+        Ok(rejected)
     }
 
     /// Expire an uncommitted intent whose deadline has passed.
@@ -1141,6 +1186,34 @@ impl MutationIntentLifecycleService {
         Ok(intent)
     }
 
+    /// Validate commit bindings and append audit records for stale/mismatch attempts.
+    pub fn validate_commit_bindings_with_audit<S: StorageAdapter, A: AuditLog>(
+        &self,
+        storage: &S,
+        audit: &mut A,
+        request: MutationIntentCommitValidationAuditRequest<'_>,
+    ) -> Result<MutationIntent, MutationIntentCommitValidationError> {
+        match self.validate_commit_bindings(
+            storage,
+            request.scope,
+            request.token,
+            request.current,
+            request.now_ns,
+        ) {
+            Ok(intent) => Ok(intent),
+            Err(error) => {
+                append_commit_validation_failure_audit(
+                    audit,
+                    storage,
+                    request.scope,
+                    &error,
+                    request.actor,
+                )?;
+                Err(error)
+            }
+        }
+    }
+
     /// Validate and execute a transaction intent through the normal atomic transaction path.
     pub fn commit_transaction_intent<S: StorageAdapter, L: AuditLog>(
         &self,
@@ -1162,7 +1235,17 @@ impl MutationIntentLifecycleService {
             .unwrap_or_else(|| canonical_staged_transaction_operation(&transaction));
         let mut current = current;
         current.operation_hash = operation.operation_hash.clone();
-        let intent = self.validate_commit_bindings(storage, &scope, &token, &current, now_ns)?;
+        let intent = self.validate_commit_bindings_with_audit(
+            storage,
+            audit,
+            MutationIntentCommitValidationAuditRequest {
+                scope: &scope,
+                token: &token,
+                current: &current,
+                now_ns,
+                actor: actor.as_deref(),
+            },
+        )?;
         let expected_state = commit_expected_state(&intent).map_err(|error| {
             MutationIntentCommitValidationError::CommitFailed {
                 intent_id: intent.intent_id.clone(),
@@ -1596,6 +1679,49 @@ fn append_intent_lifecycle_audit<A: AuditLog>(
 ) -> Result<AuditEntry, MutationIntentLifecycleError> {
     let data_after = serde_json::to_value(intent)
         .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
+    append_intent_lifecycle_audit_entry(
+        audit,
+        intent,
+        mutation,
+        actor,
+        intent_lifecycle_lineage(intent, reason),
+        data_after,
+        HashMap::new(),
+    )
+}
+
+fn append_intent_review_audit<A: AuditLog>(
+    audit: &mut A,
+    intent: &MutationIntent,
+    mutation: MutationType,
+    metadata: &MutationIntentReviewMetadata,
+) -> Result<AuditEntry, MutationIntentLifecycleError> {
+    let data_after = serde_json::to_value(intent)
+        .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
+    let mut entry_metadata = HashMap::new();
+    if let Some(reason) = &metadata.reason {
+        entry_metadata.insert("reason".into(), reason.clone());
+    }
+    append_intent_lifecycle_audit_entry(
+        audit,
+        intent,
+        mutation,
+        metadata.actor.as_deref().unwrap_or("anonymous"),
+        intent_review_lineage(intent, metadata),
+        data_after,
+        entry_metadata,
+    )
+}
+
+fn append_intent_lifecycle_audit_entry<A: AuditLog>(
+    audit: &mut A,
+    intent: &MutationIntent,
+    mutation: MutationType,
+    actor: &str,
+    lineage: MutationIntentAuditMetadata,
+    data_after: Value,
+    metadata: HashMap<String, String>,
+) -> Result<AuditEntry, MutationIntentLifecycleError> {
     let entry = AuditEntry::new(
         CollectionId::new(INTENT_AUDIT_COLLECTION),
         EntityId::new(intent.intent_id.clone()),
@@ -1605,7 +1731,8 @@ fn append_intent_lifecycle_audit<A: AuditLog>(
         Some(data_after),
         Some(actor.to_string()),
     )
-    .with_intent_lineage(intent_lifecycle_lineage(intent, reason));
+    .with_metadata(metadata)
+    .with_intent_lineage(lineage);
     audit
         .append(entry)
         .map_err(MutationIntentLifecycleError::from)
@@ -1632,6 +1759,106 @@ fn intent_lifecycle_lineage(
         }),
         lineage_links: Vec::new(),
     }
+}
+
+fn intent_review_lineage(
+    intent: &MutationIntent,
+    metadata: &MutationIntentReviewMetadata,
+) -> MutationIntentAuditMetadata {
+    let mut lineage = intent_lifecycle_lineage(intent, metadata.reason.clone());
+    lineage.approver = metadata
+        .actor
+        .as_ref()
+        .map(|actor| MutationIntentApproverMetadata {
+            user_id: Some(actor.clone()),
+            actor: Some(actor.clone()),
+            tenant_role: None,
+            credential_id: None,
+        });
+    lineage
+}
+
+fn append_commit_validation_failure_audit<S: StorageAdapter, A: AuditLog>(
+    audit: &mut A,
+    storage: &S,
+    scope: &MutationIntentScopeBinding,
+    error: &MutationIntentCommitValidationError,
+    actor: Option<&str>,
+) -> Result<(), MutationIntentCommitValidationError> {
+    let Some(intent_id) = commit_validation_failure_intent_id(error) else {
+        return Ok(());
+    };
+    let intent = load_intent(storage, scope, intent_id)
+        .map_err(|error| MutationIntentCommitValidationError::Storage(error.to_string()))?;
+    let data_after = commit_validation_failure_payload(&intent, error)?;
+    let mut metadata = HashMap::new();
+    metadata.insert("event".into(), "commit_validation_failed".into());
+    metadata.insert("error_code".into(), error.error_code().into());
+
+    append_intent_lifecycle_audit_entry(
+        audit,
+        &intent,
+        MutationType::IntentCommit,
+        actor.unwrap_or("anonymous"),
+        intent_lifecycle_lineage(&intent, None),
+        data_after,
+        metadata,
+    )
+    .map_err(|error| MutationIntentCommitValidationError::Storage(error.to_string()))?;
+    Ok(())
+}
+
+fn commit_validation_failure_intent_id(
+    error: &MutationIntentCommitValidationError,
+) -> Option<&str> {
+    match error {
+        MutationIntentCommitValidationError::IntentMismatch { intent_id, .. }
+        | MutationIntentCommitValidationError::IntentStale { intent_id, .. } => Some(intent_id),
+        MutationIntentCommitValidationError::Token(_)
+        | MutationIntentCommitValidationError::Storage(_)
+        | MutationIntentCommitValidationError::AuthorizationFailed { .. }
+        | MutationIntentCommitValidationError::CommitFailed { .. } => None,
+    }
+}
+
+fn commit_validation_failure_payload(
+    intent: &MutationIntent,
+    error: &MutationIntentCommitValidationError,
+) -> Result<Value, MutationIntentCommitValidationError> {
+    let intent_value = serde_json::to_value(intent)
+        .map_err(|error| MutationIntentCommitValidationError::Storage(error.to_string()))?;
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "event".into(),
+        Value::String("commit_validation_failed".into()),
+    );
+    payload.insert(
+        "error_code".into(),
+        Value::String(error.error_code().into()),
+    );
+    payload.insert("intent".into(), intent_value);
+
+    match error {
+        MutationIntentCommitValidationError::IntentMismatch {
+            expected_hash,
+            actual_hash,
+            ..
+        } => {
+            payload.insert("expected_hash".into(), Value::String(expected_hash.clone()));
+            payload.insert("actual_hash".into(), Value::String(actual_hash.clone()));
+        }
+        MutationIntentCommitValidationError::IntentStale { dimensions, .. } => {
+            let stale = serde_json::to_value(dimensions)
+                .map_err(|error| MutationIntentCommitValidationError::Storage(error.to_string()))?;
+            payload.insert("stale".into(), stale);
+        }
+        MutationIntentCommitValidationError::Token(_)
+        | MutationIntentCommitValidationError::Storage(_)
+        | MutationIntentCommitValidationError::AuthorizationFailed { .. }
+        | MutationIntentCommitValidationError::CommitFailed { .. } => {}
+    }
+
+    Ok(Value::Object(payload))
 }
 
 #[cfg(test)]
@@ -1926,7 +2153,7 @@ mod tests {
     }
 
     #[test]
-    fn transaction_intent_rejects_stale_entity_before_any_write_or_audit() {
+    fn transaction_intent_rejects_stale_entity_before_any_write_or_mutation_audit() {
         let mut storage = MemoryStorageAdapter::default();
         let mut audit = MemoryAuditLog::default();
         let svc = service();
@@ -2006,7 +2233,22 @@ mod tests {
                 .data["balance"],
             55
         );
-        assert_eq!(audit.len(), 0);
+        assert!(audit
+            .query_by_operation(&MutationType::EntityUpdate)
+            .expect("entity update audit query should pass")
+            .is_empty());
+        let stale_audit = audit
+            .query_paginated(AuditQuery {
+                operation: Some(MutationType::IntentCommit),
+                intent_id: Some("mint_tx_stale".into()),
+                ..AuditQuery::default()
+            })
+            .expect("stale operational audit should be queryable");
+        assert_eq!(stale_audit.entries.len(), 1);
+        assert_eq!(
+            stale_audit.entries[0].metadata["error_code"],
+            "intent_stale"
+        );
         assert_eq!(
             storage
                 .get_mutation_intent("acme", "finance", "mint_tx_stale")
@@ -2018,7 +2260,7 @@ mod tests {
     }
 
     #[test]
-    fn transaction_intent_rejects_operation_mismatch_before_any_write_or_audit() {
+    fn transaction_intent_rejects_operation_mismatch_before_any_write_or_mutation_audit() {
         let mut storage = MemoryStorageAdapter::default();
         let mut audit = MemoryAuditLog::default();
         let svc = service();
@@ -2076,7 +2318,22 @@ mod tests {
                 .data["balance"],
             100
         );
-        assert_eq!(audit.len(), 0);
+        assert!(audit
+            .query_by_operation(&MutationType::EntityUpdate)
+            .expect("entity update audit query should pass")
+            .is_empty());
+        let mismatch_audit = audit
+            .query_paginated(AuditQuery {
+                operation: Some(MutationType::IntentCommit),
+                intent_id: Some("mint_tx_mismatch".into()),
+                ..AuditQuery::default()
+            })
+            .expect("mismatch operational audit should be queryable");
+        assert_eq!(mismatch_audit.entries.len(), 1);
+        assert_eq!(
+            mismatch_audit.entries[0].metadata["error_code"],
+            "intent_mismatch"
+        );
     }
 
     #[test]
@@ -2727,6 +2984,114 @@ mod tests {
     }
 
     #[test]
+    fn approve_and_reject_with_audit_record_actor_reason_policy_and_intent() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        let svc = service();
+        svc.create_preview_record(
+            &mut storage,
+            intent(
+                "mint_approve_audit",
+                MutationIntentDecision::NeedsApproval,
+                ApprovalState::Pending,
+                100,
+                true,
+            ),
+        )
+        .expect("approval preview should persist");
+
+        let approved = svc
+            .approve_with_audit(
+                &mut storage,
+                &mut audit,
+                &scope(),
+                "mint_approve_audit",
+                metadata(Some("approved after review")),
+                1,
+            )
+            .expect("approval should pass");
+        assert_eq!(approved.approval_state, ApprovalState::Approved);
+
+        let approve_page = audit
+            .query_paginated(AuditQuery {
+                operation: Some(MutationType::IntentApprove),
+                intent_id: Some("mint_approve_audit".into()),
+                ..AuditQuery::default()
+            })
+            .expect("approval audit should be queryable");
+        assert_eq!(approve_page.entries.len(), 1);
+        let approve_entry = &approve_page.entries[0];
+        assert_eq!(approve_entry.actor, "usr_approver");
+        assert_eq!(approve_entry.metadata["reason"], "approved after review");
+        assert_eq!(
+            approve_entry
+                .data_after
+                .as_ref()
+                .expect("approval audit should include intent snapshot")["approval_state"],
+            json!("approved")
+        );
+        let approve_lineage = approve_entry
+            .intent_lineage
+            .as_deref()
+            .expect("approval audit should include lineage");
+        assert_eq!(approve_lineage.intent_id, "mint_approve_audit");
+        assert_eq!(approve_lineage.policy_version, 7);
+        assert_eq!(
+            approve_lineage.reason.as_deref(),
+            Some("approved after review")
+        );
+        assert_eq!(
+            approve_lineage
+                .approver
+                .as_ref()
+                .and_then(|approver| approver.actor.as_deref()),
+            Some("usr_approver")
+        );
+
+        svc.create_preview_record(
+            &mut storage,
+            intent(
+                "mint_reject_audit",
+                MutationIntentDecision::NeedsApproval,
+                ApprovalState::Pending,
+                100,
+                true,
+            ),
+        )
+        .expect("rejection preview should persist");
+        let rejected = svc
+            .reject_with_audit(
+                &mut storage,
+                &mut audit,
+                &scope(),
+                "mint_reject_audit",
+                metadata(Some("risk too high")),
+                1,
+            )
+            .expect("rejection should pass");
+        assert_eq!(rejected.approval_state, ApprovalState::Rejected);
+
+        let reject_page = audit
+            .query_paginated(AuditQuery {
+                operation: Some(MutationType::IntentReject),
+                intent_id: Some("mint_reject_audit".into()),
+                ..AuditQuery::default()
+            })
+            .expect("rejection audit should be queryable");
+        assert_eq!(reject_page.entries.len(), 1);
+        let reject_entry = &reject_page.entries[0];
+        assert_eq!(reject_entry.actor, "usr_approver");
+        assert_eq!(reject_entry.metadata["reason"], "risk too high");
+        let reject_lineage = reject_entry
+            .intent_lineage
+            .as_deref()
+            .expect("rejection audit should include lineage");
+        assert_eq!(reject_lineage.intent_id, "mint_reject_audit");
+        assert_eq!(reject_lineage.policy_version, 7);
+        assert_eq!(reject_lineage.reason.as_deref(), Some("risk too high"));
+    }
+
+    #[test]
     fn pending_intent_can_expire_only_after_deadline() {
         let mut storage = MemoryStorageAdapter::default();
         let svc = service();
@@ -2960,6 +3325,144 @@ mod tests {
             origin.operation_hash.as_deref(),
             Some("sha256:mint_due_audited")
         );
+    }
+
+    #[test]
+    fn commit_stale_and_mismatch_attempts_are_audited_and_queryable() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        let svc = service();
+
+        let stale_intent = intent(
+            "mint_stale_audit",
+            MutationIntentDecision::Allow,
+            ApprovalState::None,
+            100,
+            false,
+        );
+        seed_pre_image_entity(&mut storage, 4);
+        let stale_token = seed_preview(&mut storage, &svc, stale_intent.clone());
+        let mut stale_current = current_commit_context(&stale_intent);
+        stale_current.policy_version = 8;
+
+        let stale_error = svc
+            .validate_commit_bindings_with_audit(
+                &storage,
+                &mut audit,
+                MutationIntentCommitValidationAuditRequest {
+                    scope: &scope(),
+                    token: &stale_token,
+                    current: &stale_current,
+                    now_ns: 1,
+                    actor: Some("commit-agent"),
+                },
+            )
+            .expect_err("stale bindings should reject commit");
+        assert_eq!(stale_error.error_code(), "intent_stale");
+
+        let stale_page = audit
+            .query_paginated(AuditQuery {
+                operation: Some(MutationType::IntentCommit),
+                intent_id: Some("mint_stale_audit".into()),
+                ..AuditQuery::default()
+            })
+            .expect("stale commit audit should be queryable");
+        assert_eq!(stale_page.entries.len(), 1);
+        let stale_entry = &stale_page.entries[0];
+        assert_eq!(stale_entry.actor, "commit-agent");
+        assert_eq!(stale_entry.metadata["error_code"], "intent_stale");
+        let stale_payload = stale_entry
+            .data_after
+            .as_ref()
+            .expect("stale audit should include failure payload");
+        assert_eq!(stale_payload["error_code"], "intent_stale");
+        assert!(stale_payload["stale"]
+            .as_array()
+            .is_some_and(|dimensions| !dimensions.is_empty()));
+        let stale_lineage = stale_entry
+            .intent_lineage
+            .as_deref()
+            .expect("stale audit should include lineage");
+        assert_eq!(stale_lineage.intent_id, "mint_stale_audit");
+        assert_eq!(stale_lineage.policy_version, 7);
+
+        let mismatch_intent = intent(
+            "mint_mismatch_audit",
+            MutationIntentDecision::Allow,
+            ApprovalState::None,
+            100,
+            false,
+        );
+        let mismatch_token = seed_preview(&mut storage, &svc, mismatch_intent.clone());
+        let mut mismatch_current = current_commit_context(&mismatch_intent);
+        mismatch_current.operation_hash = "sha256:drifted".into();
+
+        let mismatch_error = svc
+            .validate_commit_bindings_with_audit(
+                &storage,
+                &mut audit,
+                MutationIntentCommitValidationAuditRequest {
+                    scope: &scope(),
+                    token: &mismatch_token,
+                    current: &mismatch_current,
+                    now_ns: 1,
+                    actor: Some("commit-agent"),
+                },
+            )
+            .expect_err("operation mismatch should reject commit");
+        assert_eq!(mismatch_error.error_code(), "intent_mismatch");
+
+        let mismatch_page = audit
+            .query_paginated(AuditQuery {
+                operation: Some(MutationType::IntentCommit),
+                intent_id: Some("mint_mismatch_audit".into()),
+                ..AuditQuery::default()
+            })
+            .expect("mismatch commit audit should be queryable");
+        assert_eq!(mismatch_page.entries.len(), 1);
+        let mismatch_payload = mismatch_page.entries[0]
+            .data_after
+            .as_ref()
+            .expect("mismatch audit should include failure payload");
+        assert_eq!(mismatch_payload["error_code"], "intent_mismatch");
+        assert_eq!(
+            mismatch_payload["expected_hash"],
+            mismatch_intent.operation.operation_hash
+        );
+        assert_eq!(mismatch_payload["actual_hash"], "sha256:drifted");
+    }
+
+    #[test]
+    fn preview_record_does_not_create_entity_or_link_audit_entries() {
+        let mut storage = MemoryStorageAdapter::default();
+        let audit = MemoryAuditLog::default();
+        let svc = service();
+
+        svc.create_preview_record(
+            &mut storage,
+            intent(
+                "mint_preview_no_mutation_audit",
+                MutationIntentDecision::Allow,
+                ApprovalState::None,
+                100,
+                false,
+            ),
+        )
+        .expect("preview should persist");
+
+        assert_eq!(audit.len(), 0);
+        assert!(audit
+            .query_by_operation(&MutationType::EntityCreate)
+            .expect("entity create audit query should pass")
+            .is_empty());
+        assert!(audit
+            .query_by_operation(&MutationType::EntityUpdate)
+            .expect("entity update audit query should pass")
+            .is_empty());
+        assert!(audit
+            .query_by_operation(&MutationType::LinkCreate)
+            .expect("link create audit query should pass")
+            .is_empty());
     }
 
     #[test]

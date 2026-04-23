@@ -28,10 +28,11 @@ use crate::subscriptions::BroadcastBroker;
 use axon_api::handler::AxonHandler;
 use axon_api::intent::{
     canonicalize_intent_operation, ApprovalState, CanonicalOperationMetadata,
-    MutationApprovalRoute, MutationIntent, MutationIntentCommitValidationContext,
-    MutationIntentCommitValidationError, MutationIntentDecision, MutationIntentLifecycleService,
-    MutationIntentReviewMetadata, MutationIntentScopeBinding, MutationIntentSubjectBinding,
-    MutationIntentToken, MutationIntentTokenLookupError, MutationIntentTokenSigner,
+    MutationApprovalRoute, MutationIntent, MutationIntentCommitValidationAuditRequest,
+    MutationIntentCommitValidationContext, MutationIntentCommitValidationError,
+    MutationIntentDecision, MutationIntentLifecycleService, MutationIntentReviewMetadata,
+    MutationIntentScopeBinding, MutationIntentSubjectBinding, MutationIntentToken,
+    MutationIntentTokenLookupError, MutationIntentTokenSigner,
     MutationIntentTransactionCommitRequest, MutationOperationKind, MutationReviewSummary,
     PreImageBinding,
 };
@@ -3434,6 +3435,8 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                             entity_id,
                             actor,
                             operation,
+                            intent_id: None,
+                            approval_id: None,
                             since_ns,
                             until_ns,
                             after_id,
@@ -4331,10 +4334,11 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
+    let (storage, audit) = guard.storage_and_audit_mut();
     let intent = if approve {
-        service.approve(guard.storage_mut(), &scope, &intent_id, metadata, now_ns)
+        service.approve_with_audit(storage, audit, &scope, &intent_id, metadata, now_ns)
     } else {
-        service.reject(guard.storage_mut(), &scope, &intent_id, metadata, now_ns)
+        service.reject_with_audit(storage, audit, &scope, &intent_id, metadata, now_ns)
     }
     .map_err(mutation_intent_lifecycle_error_to_gql)?;
 
@@ -4395,9 +4399,22 @@ async fn commit_mutation_intent_resolver<S: StorageAdapter + 'static>(
         operation_hash: operation.operation_hash.clone(),
         caller_authorized: caller.check(Operation::Write).is_ok(),
     };
-    service
-        .validate_commit_bindings(guard.storage_ref(), &scope, &token, &current, now_ns)
-        .map_err(mutation_intent_commit_error_to_gql)?;
+    {
+        let (storage, audit) = guard.storage_and_audit_mut();
+        service
+            .validate_commit_bindings_with_audit(
+                storage,
+                audit,
+                MutationIntentCommitValidationAuditRequest {
+                    scope: &scope,
+                    token: &token,
+                    current: &current,
+                    now_ns,
+                    actor: Some(&caller.actor),
+                },
+            )
+            .map_err(mutation_intent_commit_error_to_gql)?;
+    }
     let transaction = transaction_from_intent_operation(&guard, &operation)?;
     let (storage, audit) = guard.storage_and_audit_mut();
     let result = service

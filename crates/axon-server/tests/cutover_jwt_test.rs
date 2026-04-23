@@ -267,6 +267,8 @@ async fn cutover_audit_entry_has_attribution_after_jwt_write() {
             entity_id: None,
             actor: None,
             operation: Some("entity.create".to_string()),
+            intent_id: None,
+            approval_id: None,
             since_ns: None,
             until_ns: None,
             after_id: None,

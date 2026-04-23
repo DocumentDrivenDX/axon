@@ -468,6 +468,8 @@ pub fn read_resource_from_handler<S: StorageAdapter>(
                     entity_id: Some(EntityId::new(&id)),
                     actor: None,
                     operation: None,
+                    intent_id: None,
+                    approval_id: None,
                     since_ns: None,
                     until_ns: None,
                     after_id: None,

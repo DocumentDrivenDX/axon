@@ -279,6 +279,8 @@ pub fn get_prompt_from_handler<S: StorageAdapter>(
                     entity_id: optional_string(arguments, "id").map(|id| EntityId::new(&id)),
                     actor: None,
                     operation: None,
+                    intent_id: None,
+                    approval_id: None,
                     since_ns: None,
                     until_ns: None,
                     after_id: None,
