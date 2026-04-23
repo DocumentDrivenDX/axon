@@ -39,6 +39,7 @@ use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::{Entity, Link};
+use axon_schema::policy::{compile_policy_catalog, PolicyPlan};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use axon_storage::adapter::StorageAdapter;
 
@@ -422,6 +423,7 @@ fn typed_entity_payload_object(
     name: &str,
     entity_type: &str,
     fields: &[(String, String, bool)],
+    policy_nullable_fields: &HashSet<String>,
 ) -> Object {
     let mut obj = Object::new(name)
         .field(json_object_field("entity", TypeRef::named(entity_type)))
@@ -438,8 +440,13 @@ fn typed_entity_payload_object(
             "updatedAt",
             TypeRef::named(TypeRef::STRING),
         ));
-    for (field_name, gql_type, _) in fields {
-        obj = obj.field(json_object_field(field_name, parse_type_ref(gql_type)));
+    for (field_name, gql_type, required) in fields {
+        let type_ref = output_type_ref_for_field(
+            gql_type,
+            *required,
+            policy_nullable_fields.contains(field_name),
+        );
+        obj = obj.field(json_object_field(field_name, type_ref));
     }
     add_entity_lifecycle_fields(obj)
 }
@@ -478,6 +485,15 @@ fn filter_input_name_for_type(gql_type: &str) -> &'static str {
 fn input_type_ref_for_field(gql_type: &str, required: bool) -> TypeRef {
     let base = gql_type.trim_end_matches('!');
     if required {
+        TypeRef::named_nn(base)
+    } else {
+        TypeRef::named(base)
+    }
+}
+
+fn output_type_ref_for_field(gql_type: &str, required: bool, policy_nullable: bool) -> TypeRef {
+    let base = gql_type.trim_end_matches('!');
+    if required && !policy_nullable {
         TypeRef::named_nn(base)
     } else {
         TypeRef::named(base)
@@ -3619,6 +3635,26 @@ async fn put_schema_resolver<S: StorageAdapter + 'static>(
 
 // ── Schema builders ─────────────────────────────────────────────────────────
 
+fn policy_plans_by_collection(
+    collections: &[CollectionSchema],
+) -> Result<HashMap<String, PolicyPlan>, String> {
+    compile_policy_catalog(collections)
+        .map(|catalog| catalog.plans)
+        .map_err(|e| format!("failed to compile access_control policies for GraphQL schema: {e}"))
+}
+
+fn policy_nullable_field_names(plan: Option<&PolicyPlan>) -> HashSet<String> {
+    plan.map(|plan| {
+        plan.report
+            .nullable_fields
+            .iter()
+            .filter(|field| field.graphql_nullable)
+            .map(|field| field.field.clone())
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 /// Build a dynamic GraphQL schema from the given collection schemas, wired
 /// to a live `AxonHandler` for real CRUD operations.
 ///
@@ -3656,6 +3692,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
 ) -> Result<AxonSchema, String> {
     let subscription_scope =
         subscription_scope.map(|(tenant, database)| SubscriptionScope { tenant, database });
+    let policy_plans = policy_plans_by_collection(collections)?;
     let mut query = Object::new("Query");
     let mut mutation = Object::new("Mutation");
     let mut type_objects = Vec::new();
@@ -3708,6 +3745,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
         let get_field_name = collection_field_name(collection_name);
         let list_field_name = collection_list_field_name(collection_name);
         let fields = extract_fields(schema);
+        let policy_nullable_fields = policy_nullable_field_names(policy_plans.get(collection_name));
         let data_fields: Vec<(String, String, bool)> = fields
             .iter()
             .filter(|(field_name, _, _)| !is_system_entity_field(field_name))
@@ -3739,9 +3777,13 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
         // ── Build the GraphQL object type ────────────────────────────────
         let mut obj = Object::new(&type_name);
         let mut object_field_names: HashSet<String> = HashSet::new();
-        for (field_name, gql_type, _required) in &fields {
+        for (field_name, gql_type, required) in &fields {
             object_field_names.insert(field_name.clone());
-            let type_ref = parse_type_ref(gql_type);
+            let type_ref = output_type_ref_for_field(
+                gql_type,
+                *required,
+                policy_nullable_fields.contains(field_name),
+            );
             let fname = field_name.clone();
             obj = obj.field(Field::new(field_name, type_ref, move |ctx| {
                 let fname = fname.clone();
@@ -3853,16 +3895,19 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
             &create_payload_name,
             &type_name,
             &data_fields,
+            &policy_nullable_fields,
         ));
         type_objects.push(typed_entity_payload_object(
             &update_payload_name,
             &type_name,
             &data_fields,
+            &policy_nullable_fields,
         ));
         type_objects.push(typed_entity_payload_object(
             &patch_payload_name,
             &type_name,
             &data_fields,
+            &policy_nullable_fields,
         ));
         type_objects.push(delete_entity_payload_object(
             &delete_payload_name,
@@ -4724,6 +4769,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
 /// Resolvers return `NULL` / empty lists — useful for SDL introspection and
 /// tests that only need the schema shape, not live data.
 pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, String> {
+    let policy_plans = policy_plans_by_collection(collections)?;
     let mut query = Object::new("Query");
     let mut mutation = Object::new("Mutation");
     let mut type_objects = Vec::new();
@@ -4738,11 +4784,16 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         let get_field_name = collection_field_name(collection_name);
         let list_field_name = collection_list_field_name(collection_name);
         let fields = extract_fields(schema);
+        let policy_nullable_fields = policy_nullable_field_names(policy_plans.get(collection_name));
 
         // Build the GraphQL object type for this collection.
         let mut obj = Object::new(&type_name);
-        for (field_name, gql_type, _required) in &fields {
-            let type_ref = parse_type_ref(gql_type);
+        for (field_name, gql_type, required) in &fields {
+            let type_ref = output_type_ref_for_field(
+                gql_type,
+                *required,
+                policy_nullable_fields.contains(field_name),
+            );
             obj = obj.field(Field::new(field_name, type_ref, |_ctx| {
                 FieldFuture::new(async move { Ok(Some(FieldValue::NULL)) })
             }));
@@ -5471,19 +5522,11 @@ fn is_reserved_graphql_type_name(name: &str) -> bool {
     )
 }
 
-/// Parse a simplified GraphQL type reference string.
-fn parse_type_ref(type_str: &str) -> TypeRef {
-    if let Some(inner) = type_str.strip_suffix('!') {
-        TypeRef::named_nn(inner)
-    } else {
-        TypeRef::named(type_str)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axon_core::id::CollectionId;
+    use axon_schema::access_control::AccessControlPolicy;
     use axon_storage::MemoryStorageAdapter;
     use serde_json::json;
 
@@ -5509,6 +5552,95 @@ mod tests {
             compound_indexes: Default::default(),
             lifecycles: Default::default(),
         }
+    }
+
+    fn policy_nullable_schema() -> CollectionSchema {
+        CollectionSchema {
+            collection: CollectionId::new("purchase_orders"),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["status", "amount_cents", "restricted_notes"],
+                "properties": {
+                    "status": { "type": "string" },
+                    "amount_cents": { "type": "integer" },
+                    "restricted_notes": { "type": "string" },
+                    "memo": { "type": "string" }
+                }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value::<AccessControlPolicy>(json!({
+                    "fields": {
+                        "restricted_notes": {
+                            "read": {
+                                "deny": [
+                                    {
+                                        "name": "redact-restricted-notes",
+                                        "redact_as": null
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }))
+                .expect("access_control should deserialize"),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        }
+    }
+
+    async fn introspected_type_fields(schema: &AxonSchema, type_name: &str) -> Value {
+        let result = schema
+            .schema
+            .execute(format!(
+                r#"{{
+                    __type(name: "{type_name}") {{
+                        fields {{
+                            name
+                            type {{
+                                kind
+                                name
+                                ofType {{ kind name }}
+                            }}
+                        }}
+                    }}
+                }}"#
+            ))
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        result.data.into_json().expect("introspection data is JSON")["__type"]["fields"].clone()
+    }
+
+    fn introspected_field_type<'a>(fields: &'a Value, field_name: &str) -> &'a Value {
+        fields
+            .as_array()
+            .expect("fields should be a list")
+            .iter()
+            .find(|field| field["name"] == field_name)
+            .unwrap_or_else(|| panic!("field {field_name} should be introspectable"))
+            .get("type")
+            .expect("field should include type")
+    }
+
+    fn assert_nullable_scalar(fields: &Value, field_name: &str, scalar: &str) {
+        let ty = introspected_field_type(fields, field_name);
+        assert_eq!(ty["kind"], "SCALAR");
+        assert_eq!(ty["name"], scalar);
+        assert!(ty["ofType"].is_null(), "{field_name} should not be wrapped");
+    }
+
+    fn assert_non_null_scalar(fields: &Value, field_name: &str, scalar: &str) {
+        let ty = introspected_field_type(fields, field_name);
+        assert_eq!(ty["kind"], "NON_NULL");
+        assert!(ty["name"].is_null());
+        assert_eq!(ty["ofType"]["kind"], "SCALAR");
+        assert_eq!(ty["ofType"]["name"], scalar);
     }
 
     /// Create a shared handler with the given collection schemas registered.
@@ -5930,6 +6062,27 @@ mod tests {
             .execute("{ __schema { types { name } } }")
             .await;
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn policy_redactable_required_fields_are_nullable_in_introspection() {
+        let schema = build_schema(&[policy_nullable_schema()]).expect("schema should build");
+        let fields = introspected_type_fields(&schema, "PurchaseOrders").await;
+
+        assert_nullable_scalar(&fields, "restricted_notes", "String");
+        assert_non_null_scalar(&fields, "amount_cents", "Int");
+        assert_non_null_scalar(&fields, "status", "String");
+        assert_nullable_scalar(&fields, "memo", "String");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn collection_without_policy_preserves_required_output_fields() {
+        let schema = build_schema(&[test_schema()]).expect("schema should build");
+        let fields = introspected_type_fields(&schema, "Tasks").await;
+
+        assert_non_null_scalar(&fields, "title", "String");
+        assert_nullable_scalar(&fields, "status", "String");
+        assert_nullable_scalar(&fields, "priority", "Int");
     }
 
     #[tokio::test(flavor = "multi_thread")]
