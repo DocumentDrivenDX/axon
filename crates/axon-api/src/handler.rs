@@ -910,6 +910,61 @@ impl<S: StorageAdapter> AxonHandler<S> {
         )
     }
 
+    fn entity_visible_for_read_with_context(
+        &self,
+        collection: &CollectionId,
+        entity: &Entity,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<bool, AxonError> {
+        let schema = self.storage.get_schema(collection)?;
+        let policy_snapshot = self.policy_snapshot_for_request(
+            collection,
+            schema.as_ref(),
+            None,
+            caller,
+            attribution,
+        )?;
+        let compiled_policy = match schema.as_ref() {
+            Some(schema) if policy_snapshot.is_some() => {
+                self.compile_policy_plan_for_schema(schema)?
+            }
+            _ => None,
+        };
+
+        match (&compiled_policy, &policy_snapshot) {
+            (Some(plan), Some(snapshot)) => {
+                self.read_policy_allows_entity(collection, plan, snapshot, entity)
+            }
+            _ => Ok(true),
+        }
+    }
+
+    fn get_visible_entity_for_read(
+        &self,
+        collection: &CollectionId,
+        id: &EntityId,
+    ) -> Result<Option<Entity>, AxonError> {
+        self.get_visible_entity_for_read_with_context(collection, id, None, None)
+    }
+
+    fn get_visible_entity_for_read_with_context(
+        &self,
+        collection: &CollectionId,
+        id: &EntityId,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<Option<Entity>, AxonError> {
+        let Some(entity) = self.storage.get(collection, id)? else {
+            return Ok(None);
+        };
+        if self.entity_visible_for_read_with_context(collection, &entity, caller, attribution)? {
+            Ok(Some(entity))
+        } else {
+            Ok(None)
+        }
+    }
+
     fn plan_read_policy_storage_filters(
         &self,
         collection: &CollectionId,
@@ -1768,7 +1823,30 @@ impl<S: StorageAdapter> AxonHandler<S> {
     }
 
     pub fn get_entity(&self, req: GetEntityRequest) -> Result<GetEntityResponse, AxonError> {
-        match self.storage.get(&req.collection, &req.id)? {
+        self.get_entity_with_read_context(req, None, None)
+    }
+
+    pub fn get_entity_with_caller(
+        &self,
+        req: GetEntityRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<GetEntityResponse, AxonError> {
+        self.get_entity_with_read_context(req, Some(caller), attribution.as_ref())
+    }
+
+    fn get_entity_with_read_context(
+        &self,
+        req: GetEntityRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<GetEntityResponse, AxonError> {
+        match self.get_visible_entity_for_read_with_context(
+            &req.collection,
+            &req.id,
+            caller,
+            attribution,
+        )? {
             Some(entity) => Ok(GetEntityResponse {
                 entity: Self::present_entity(&req.collection, entity),
             }),
@@ -1787,8 +1865,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         id: &EntityId,
     ) -> Result<GetEntityMarkdownResponse, AxonError> {
         let entity = self
-            .storage
-            .get(collection, id)?
+            .get_visible_entity_for_read(collection, id)?
             .ok_or_else(|| AxonError::NotFound(id.to_string()))?;
         let view = self
             .storage
@@ -2289,6 +2366,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: QueryEntitiesRequest,
     ) -> Result<QueryEntitiesResponse, AxonError> {
+        self.query_entities_with_read_context(req, None, None)
+    }
+
+    pub fn query_entities_with_caller(
+        &self,
+        req: QueryEntitiesRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<QueryEntitiesResponse, AxonError> {
+        self.query_entities_with_read_context(req, Some(caller), attribution.as_ref())
+    }
+
+    fn query_entities_with_read_context(
+        &self,
+        req: QueryEntitiesRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<QueryEntitiesResponse, AxonError> {
         // Reject excessively deep filter trees before any evaluation to prevent
         // stack overflows from client-controlled recursion.
         if let Some(ref f) = req.filter {
@@ -2308,8 +2403,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
             req.filter.as_ref(),
             schema.as_ref(),
         );
-        let policy_snapshot =
-            self.policy_snapshot_for_request(&req.collection, schema.as_ref(), None, None, None)?;
+        let policy_snapshot = self.policy_snapshot_for_request(
+            &req.collection,
+            schema.as_ref(),
+            None,
+            caller,
+            attribution,
+        )?;
         let compiled_policy = match schema.as_ref() {
             Some(schema) if policy_snapshot.is_some() => {
                 self.compile_policy_plan_for_schema(schema)?
@@ -4654,10 +4754,39 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// in BFS order. Supports forward (outbound) and reverse (inbound) traversal,
     /// per-hop entity filtering, and path/link metadata reporting.
     pub fn traverse(&self, req: TraverseRequest) -> Result<TraverseResponse, AxonError> {
+        self.traverse_with_read_context(req, None, None)
+    }
+
+    pub fn traverse_with_caller(
+        &self,
+        req: TraverseRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<TraverseResponse, AxonError> {
+        self.traverse_with_read_context(req, Some(caller), attribution.as_ref())
+    }
+
+    fn traverse_with_read_context(
+        &self,
+        req: TraverseRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<TraverseResponse, AxonError> {
         let max_depth = req
             .max_depth
             .unwrap_or(DEFAULT_MAX_DEPTH)
             .min(MAX_DEPTH_CAP);
+
+        if let Some(start) = self.storage.get(&req.collection, &req.id)? {
+            if !self.entity_visible_for_read_with_context(
+                &req.collection,
+                &start,
+                caller,
+                attribution,
+            )? {
+                return Err(AxonError::NotFound(req.id.to_string()));
+            }
+        }
 
         let all_links = self.load_all_links()?;
         let reverse = req.direction == TraverseDirection::Reverse;
@@ -4718,29 +4847,37 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     continue;
                 }
 
-                if let Some(entity) = self.storage.get(next_col, next_id)? {
-                    // Apply hop filter if present.
-                    if let Some(ref filter) = req.hop_filter {
-                        if !apply_filter(filter, &entity.data) {
-                            continue;
-                        }
+                let Some(entity) = self.get_visible_entity_for_read_with_context(
+                    next_col,
+                    next_id,
+                    caller,
+                    attribution,
+                )?
+                else {
+                    continue;
+                };
+
+                // Apply hop filter if present.
+                if let Some(ref filter) = req.hop_filter {
+                    if !apply_filter(filter, &entity.data) {
+                        continue;
                     }
-
-                    visited.insert(neighbor_key);
-                    links_traversed.push(link.clone());
-
-                    let mut hop_path = path.clone();
-                    hop_path.push(TraverseHop {
-                        link: link.clone(),
-                        entity: entity.clone(),
-                    });
-
-                    paths.push(TraversePath {
-                        hops: hop_path.clone(),
-                    });
-                    entities.push(entity);
-                    queue.push_back((next_col.clone(), next_id.clone(), depth + 1, hop_path));
                 }
+
+                visited.insert(neighbor_key);
+                links_traversed.push(link.clone());
+
+                let mut hop_path = path.clone();
+                hop_path.push(TraverseHop {
+                    link: link.clone(),
+                    entity: entity.clone(),
+                });
+
+                paths.push(TraversePath {
+                    hops: hop_path.clone(),
+                });
+                entities.push(entity);
+                queue.push_back((next_col.clone(), next_id.clone(), depth + 1, hop_path));
             }
         }
 
@@ -4757,6 +4894,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// and the hop depth. More efficient than a full `traverse()` when only
     /// connectivity matters.
     pub fn reachable(&self, req: ReachableRequest) -> Result<ReachableResponse, AxonError> {
+        self.reachable_with_read_context(req, None, None)
+    }
+
+    pub fn reachable_with_caller(
+        &self,
+        req: ReachableRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<ReachableResponse, AxonError> {
+        self.reachable_with_read_context(req, Some(caller), attribution.as_ref())
+    }
+
+    fn reachable_with_read_context(
+        &self,
+        req: ReachableRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<ReachableResponse, AxonError> {
         let max_depth = req
             .max_depth
             .unwrap_or(DEFAULT_MAX_DEPTH)
@@ -4768,6 +4923,21 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         let mut visited: HashSet<(String, String)> = HashSet::new();
         let start_key = (req.source_collection.to_string(), req.source_id.to_string());
+
+        if self
+            .get_visible_entity_for_read_with_context(
+                &req.source_collection,
+                &req.source_id,
+                caller,
+                attribution,
+            )?
+            .is_none()
+        {
+            return Ok(ReachableResponse {
+                reachable: false,
+                depth: None,
+            });
+        }
 
         // Check trivial case: source == target.
         if start_key == target_key {
@@ -4825,7 +4995,19 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     continue;
                 }
 
-                // Short-circuit: found the target (check before consuming the key).
+                if self
+                    .get_visible_entity_for_read_with_context(
+                        next_col,
+                        next_id,
+                        caller,
+                        attribution,
+                    )?
+                    .is_none()
+                {
+                    continue;
+                }
+
+                // Short-circuit: found the target after read-policy visibility.
                 if neighbor_key == target_key {
                     return Ok(ReachableResponse {
                         reachable: true,
@@ -4853,10 +5035,32 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: crate::request::FindLinkCandidatesRequest,
     ) -> Result<crate::response::FindLinkCandidatesResponse, AxonError> {
+        self.find_link_candidates_with_read_context(req, None, None)
+    }
+
+    pub fn find_link_candidates_with_caller(
+        &self,
+        req: crate::request::FindLinkCandidatesRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<crate::response::FindLinkCandidatesResponse, AxonError> {
+        self.find_link_candidates_with_read_context(req, Some(caller), attribution.as_ref())
+    }
+
+    fn find_link_candidates_with_read_context(
+        &self,
+        req: crate::request::FindLinkCandidatesRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<crate::response::FindLinkCandidatesResponse, AxonError> {
         // Verify source entity exists.
         if self
-            .storage
-            .get(&req.source_collection, &req.source_id)?
+            .get_visible_entity_for_read_with_context(
+                &req.source_collection,
+                &req.source_id,
+                caller,
+                attribution,
+            )?
             .is_none()
         {
             return Err(AxonError::NotFound(format!(
@@ -4885,15 +5089,25 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // Get all existing links of this type from the source.
         let all_links = self.load_all_links()?;
-        let existing_targets: HashSet<String> = all_links
-            .iter()
-            .filter(|l| {
-                l.source_collection == req.source_collection
-                    && l.source_id == req.source_id
-                    && l.link_type == req.link_type
-            })
-            .map(|l| l.target_id.to_string())
-            .collect();
+        let mut existing_targets = HashSet::new();
+        for link in all_links.iter().filter(|link| {
+            link.source_collection == req.source_collection
+                && link.source_id == req.source_id
+                && link.target_collection == target_collection
+                && link.link_type == req.link_type
+        }) {
+            if self
+                .get_visible_entity_for_read_with_context(
+                    &link.target_collection,
+                    &link.target_id,
+                    caller,
+                    attribution,
+                )?
+                .is_some()
+            {
+                existing_targets.insert(link.target_id.to_string());
+            }
+        }
         let existing_link_count = existing_targets.len();
 
         // Fetch candidate entities from the target collection (FEAT-013 index acceleration).
@@ -4917,24 +5131,35 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 .range_scan(&target_collection, None, None, None)?
         };
 
-        // Filter and collect candidates.
+        // Filter, apply read visibility, then collect candidates.
         let limit = req.limit.unwrap_or(50);
-        let candidates: Vec<crate::response::LinkCandidate> = all_targets
-            .into_iter()
-            .filter(|e| {
-                req.filter
-                    .as_ref()
-                    .map_or(true, |f| apply_filter(f, &e.data))
-            })
-            .take(limit)
-            .map(|e| {
-                let already_linked = existing_targets.contains(e.id.as_str());
-                crate::response::LinkCandidate {
-                    entity: e,
-                    already_linked,
-                }
-            })
-            .collect();
+        let mut candidates = Vec::new();
+        for entity in all_targets {
+            if !req
+                .filter
+                .as_ref()
+                .map_or(true, |filter| apply_filter(filter, &entity.data))
+            {
+                continue;
+            }
+            if !self.entity_visible_for_read_with_context(
+                &target_collection,
+                &entity,
+                caller,
+                attribution,
+            )? {
+                continue;
+            }
+
+            let already_linked = existing_targets.contains(entity.id.as_str());
+            candidates.push(crate::response::LinkCandidate {
+                entity,
+                already_linked,
+            });
+            if candidates.len() >= limit {
+                break;
+            }
+        }
 
         Ok(crate::response::FindLinkCandidatesResponse {
             target_collection: target_collection.to_string(),
@@ -4951,10 +5176,36 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &self,
         req: crate::request::ListNeighborsRequest,
     ) -> Result<crate::response::ListNeighborsResponse, AxonError> {
+        self.list_neighbors_with_read_context(req, None, None)
+    }
+
+    pub fn list_neighbors_with_caller(
+        &self,
+        req: crate::request::ListNeighborsRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<crate::response::ListNeighborsResponse, AxonError> {
+        self.list_neighbors_with_read_context(req, Some(caller), attribution.as_ref())
+    }
+
+    fn list_neighbors_with_read_context(
+        &self,
+        req: crate::request::ListNeighborsRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<crate::response::ListNeighborsResponse, AxonError> {
         use std::collections::BTreeMap;
 
         // Verify entity exists.
-        if self.storage.get(&req.collection, &req.id)?.is_none() {
+        if self
+            .get_visible_entity_for_read_with_context(
+                &req.collection,
+                &req.id,
+                caller,
+                attribution,
+            )?
+            .is_none()
+        {
             return Err(AxonError::NotFound(format!(
                 "{}/{}",
                 req.collection, req.id
@@ -4990,7 +5241,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 && link.source_id == req.id
             {
                 let key = (link.link_type.clone(), "outbound".to_string());
-                if let Some(target) = self.storage.get(&link.target_collection, &link.target_id)? {
+                if let Some(target) = self.get_visible_entity_for_read_with_context(
+                    &link.target_collection,
+                    &link.target_id,
+                    caller,
+                    attribution,
+                )? {
                     groups.entry(key).or_default().push(target);
                 }
             }
@@ -5001,7 +5257,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 && link.target_id == req.id
             {
                 let key = (link.link_type.clone(), "inbound".to_string());
-                if let Some(source) = self.storage.get(&link.source_collection, &link.source_id)? {
+                if let Some(source) = self.get_visible_entity_for_read_with_context(
+                    &link.source_collection,
+                    &link.source_id,
+                    caller,
+                    attribution,
+                )? {
                     groups.entry(key).or_default().push(source);
                 }
             }
@@ -6472,6 +6733,63 @@ mod tests {
         }
     }
 
+    fn policy_visibility_graph_schema(collection: &CollectionId) -> CollectionSchema {
+        let mut schema = policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                read: Some(owner_read_policy()),
+                ..Default::default()
+            },
+        );
+        schema.link_types.insert(
+            "edge".into(),
+            LinkTypeDef {
+                target_collection: collection.to_string(),
+                cardinality: Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: None,
+            },
+        );
+        schema
+    }
+
+    fn seed_policy_node(
+        h: &mut AxonHandler<MemoryStorageAdapter>,
+        collection: &CollectionId,
+        id: &str,
+        owner_id: &str,
+        title: &str,
+    ) {
+        h.create_entity(CreateEntityRequest {
+            collection: collection.clone(),
+            id: EntityId::new(id),
+            data: json!({"owner_id": owner_id, "title": title}),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("seed policy node");
+    }
+
+    fn link_policy_nodes(
+        h: &mut AxonHandler<MemoryStorageAdapter>,
+        collection: &CollectionId,
+        source_id: &str,
+        target_id: &str,
+    ) {
+        h.create_link(CreateLinkRequest {
+            source_collection: collection.clone(),
+            source_id: EntityId::new(source_id),
+            target_collection: collection.clone(),
+            target_id: EntityId::new(target_id),
+            link_type: "edge".into(),
+            metadata: json!({}),
+            actor: None,
+            attribution: None,
+        })
+        .expect("seed policy link");
+    }
+
     fn denied_field_policy(field: &str) -> FieldPolicy {
         FieldPolicy {
             read: None,
@@ -6541,12 +6859,10 @@ mod tests {
         assert_policy_forbidden(err, "row_write_denied", None);
         assert_eq!(h.audit_log().entries().len(), audit_before);
         let stored = h
-            .get_entity(GetEntityRequest {
-                collection,
-                id: EntityId::new("doc-1"),
-            })
-            .expect("stored row")
-            .entity;
+            .storage_ref()
+            .get(&collection, &EntityId::new("doc-1"))
+            .expect("storage read")
+            .expect("stored row");
         assert_eq!(stored.data["title"], "private");
     }
 
@@ -6784,6 +7100,172 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("policy_filter_unindexed"), "{text}");
         assert!(text.contains("missing_index=owner_id"), "{text}");
+    }
+
+    #[test]
+    fn policy_read_visibility_applies_to_point_reads_and_pagination() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_visibility_docs");
+        h.put_schema(policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                read: Some(owner_read_policy()),
+                ..Default::default()
+            },
+        ))
+        .expect("policy schema");
+
+        for (id, owner_id) in [
+            ("a-hidden", "alice"),
+            ("b-visible", "anonymous"),
+            ("c-hidden", "alice"),
+            ("d-visible", "anonymous"),
+            ("e-visible", "anonymous"),
+        ] {
+            seed_policy_node(&mut h, &collection, id, owner_id, id);
+        }
+
+        let visible = h
+            .get_entity(GetEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("b-visible"),
+            })
+            .expect("visible point read");
+        assert_eq!(visible.entity.id, EntityId::new("b-visible"));
+
+        let hidden = h
+            .get_entity(GetEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("a-hidden"),
+            })
+            .expect_err("hidden point read should look absent");
+        assert!(matches!(hidden, AxonError::NotFound(_)));
+
+        let first_page = h
+            .query_entities(QueryEntitiesRequest {
+                collection: collection.clone(),
+                limit: Some(2),
+                ..Default::default()
+            })
+            .expect("first visible page");
+        assert_eq!(first_page.total_count, 3);
+        assert_eq!(
+            first_page
+                .entities
+                .iter()
+                .map(|entity| entity.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b-visible", "d-visible"]
+        );
+        assert_eq!(first_page.next_cursor.as_deref(), Some("d-visible"));
+
+        let second_page = h
+            .query_entities(QueryEntitiesRequest {
+                collection,
+                after_id: first_page.next_cursor.map(EntityId::new),
+                limit: Some(2),
+                ..Default::default()
+            })
+            .expect("second visible page");
+        assert_eq!(second_page.total_count, 3);
+        assert_eq!(second_page.entities.len(), 1);
+        assert_eq!(second_page.entities[0].id, EntityId::new("e-visible"));
+    }
+
+    #[test]
+    fn policy_read_visibility_omits_hidden_traversal_targets() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_visibility_graph");
+        h.put_schema(policy_visibility_graph_schema(&collection))
+            .expect("policy graph schema");
+        seed_policy_node(&mut h, &collection, "source", "anonymous", "source");
+        seed_policy_node(&mut h, &collection, "hidden", "alice", "hidden");
+        seed_policy_node(&mut h, &collection, "visible", "anonymous", "visible");
+        link_policy_nodes(&mut h, &collection, "source", "hidden");
+        link_policy_nodes(&mut h, &collection, "source", "visible");
+
+        let traverse = h
+            .traverse(TraverseRequest {
+                collection: collection.clone(),
+                id: EntityId::new("source"),
+                max_depth: Some(1),
+                direction: TraverseDirection::Forward,
+                link_type: Some("edge".into()),
+                hop_filter: None,
+            })
+            .expect("policy-filtered traversal");
+        assert_eq!(traverse.entities.len(), 1);
+        assert_eq!(traverse.entities[0].id, EntityId::new("visible"));
+        assert_eq!(traverse.links.len(), 1);
+
+        let hidden_reachable = h
+            .reachable(ReachableRequest {
+                source_collection: collection.clone(),
+                source_id: EntityId::new("source"),
+                target_collection: collection.clone(),
+                target_id: EntityId::new("hidden"),
+                max_depth: Some(1),
+                direction: TraverseDirection::Forward,
+                link_type: Some("edge".into()),
+            })
+            .expect("hidden reachable check");
+        assert!(!hidden_reachable.reachable);
+
+        let visible_reachable = h
+            .reachable(ReachableRequest {
+                source_collection: collection.clone(),
+                source_id: EntityId::new("source"),
+                target_collection: collection.clone(),
+                target_id: EntityId::new("visible"),
+                max_depth: Some(1),
+                direction: TraverseDirection::Forward,
+                link_type: Some("edge".into()),
+            })
+            .expect("visible reachable check");
+        assert!(visible_reachable.reachable);
+
+        let neighbors = h
+            .list_neighbors(crate::request::ListNeighborsRequest {
+                collection,
+                id: EntityId::new("source"),
+                link_type: Some("edge".into()),
+                direction: Some(TraverseDirection::Forward),
+            })
+            .expect("visible neighbors");
+        assert_eq!(neighbors.total_count, 1);
+        assert_eq!(neighbors.groups[0].entities[0].id, EntityId::new("visible"));
+    }
+
+    #[test]
+    fn policy_read_visibility_applies_before_link_candidate_limit_and_count() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_visibility_candidates");
+        h.put_schema(policy_visibility_graph_schema(&collection))
+            .expect("policy graph schema");
+        seed_policy_node(&mut h, &collection, "source", "anonymous", "source");
+        seed_policy_node(&mut h, &collection, "a-hidden", "alice", "candidate");
+        seed_policy_node(&mut h, &collection, "b-visible", "anonymous", "candidate");
+        link_policy_nodes(&mut h, &collection, "source", "a-hidden");
+        link_policy_nodes(&mut h, &collection, "source", "b-visible");
+
+        let resp = h
+            .find_link_candidates(crate::request::FindLinkCandidatesRequest {
+                source_collection: collection,
+                source_id: EntityId::new("source"),
+                link_type: "edge".into(),
+                filter: Some(FilterNode::Field(FieldFilter {
+                    field: "title".into(),
+                    op: FilterOp::Eq,
+                    value: json!("candidate"),
+                })),
+                limit: Some(1),
+            })
+            .expect("visible link candidates");
+
+        assert_eq!(resp.existing_link_count, 1);
+        assert_eq!(resp.candidates.len(), 1);
+        assert_eq!(resp.candidates[0].entity.id, EntityId::new("b-visible"));
+        assert!(resp.candidates[0].already_linked);
     }
 
     #[test]

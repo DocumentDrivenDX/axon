@@ -1427,28 +1427,21 @@ mod tests {
             seed_procurement_fixture(&mut guard).expect("procurement fixture should seed")
         };
 
-        let tools = build_crud_tools(fixture.collections.invoices.as_str(), Arc::clone(&handler));
+        let tools = build_crud_tools(fixture.collections.users.as_str(), Arc::clone(&handler));
         let get_tool = &tools[1];
-        assert_eq!(get_tool.name, "invoices.get");
+        assert_eq!(get_tool.name, "users.get");
 
         let result = invoke_tool(
             get_tool,
-            json!({ "id": fixture.ids.over_threshold_invoice.as_str() }),
+            json!({ "id": fixture.ids.finance_agent.as_str() }),
         );
-        let invoice = parse_tool_payload(&result);
+        let user = parse_tool_payload(&result);
         let expected = fixture
-            .entity(
-                &fixture.collections.invoices,
-                &fixture.ids.over_threshold_invoice,
-            )
-            .expect("over-threshold invoice should be fixture data");
+            .entity(&fixture.collections.users, &fixture.ids.finance_agent)
+            .expect("finance agent should be fixture data");
 
-        assert_eq!(invoice["data"]["number"], expected.data["number"]);
-        assert_eq!(
-            invoice["data"]["amount_cents"],
-            expected.data["amount_cents"]
-        );
-        assert_eq!(invoice["data"]["amount_cents"], json!(1_250_000));
+        assert_eq!(user["data"]["user_id"], expected.data["user_id"]);
+        assert_eq!(user["data"]["procurement_role"], json!("finance_agent"));
     }
 
     #[test]

@@ -1583,6 +1583,7 @@ fn relationship_field<S: StorageAdapter + 'static>(
         move |ctx| {
             let handler = Arc::clone(&handler);
             let spec = spec.clone();
+            let caller = caller_from_ctx(&ctx);
             FieldFuture::new(async move {
                 let parent_id = parent_id_arg(&ctx)?;
                 let limit = parse_relationship_limit(&ctx)?;
@@ -1595,14 +1596,18 @@ fn relationship_field<S: StorageAdapter + 'static>(
                     .transpose()?;
 
                 let guard = handler.lock().await;
-                let response = guard.traverse(TraverseRequest {
-                    collection: CollectionId::new(spec.collection.clone()),
-                    id: EntityId::new(parent_id),
-                    link_type: Some(spec.link_type.clone()),
-                    max_depth: Some(1),
-                    direction: spec.direction.clone(),
-                    hop_filter,
-                });
+                let response = guard.traverse_with_caller(
+                    TraverseRequest {
+                        collection: CollectionId::new(spec.collection.clone()),
+                        id: EntityId::new(parent_id),
+                        link_type: Some(spec.link_type.clone()),
+                        max_depth: Some(1),
+                        direction: spec.direction.clone(),
+                        hop_filter,
+                    },
+                    &caller,
+                    None,
+                );
                 drop(guard);
 
                 let response = response.map_err(axon_error_to_gql)?;
@@ -2160,6 +2165,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
     query = query.field(
         Field::new("entity", TypeRef::named(ENTITY_TYPE), move |ctx| {
             let handler = Arc::clone(&handler_get);
+            let caller = caller_from_ctx(&ctx);
             FieldFuture::new(async move {
                 let collection = ctx.args.try_get("collection")?.string()?.to_owned();
                 let id = ctx.args.try_get("id")?.string()?.to_owned();
@@ -2168,10 +2174,14 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                 let schema = guard
                     .get_schema(&collection_id)
                     .map_err(axon_error_to_gql)?;
-                match guard.get_entity(GetEntityRequest {
-                    collection: collection_id,
-                    id: EntityId::new(id),
-                }) {
+                match guard.get_entity_with_caller(
+                    GetEntityRequest {
+                        collection: collection_id,
+                        id: EntityId::new(id),
+                    },
+                    &caller,
+                    None,
+                ) {
                     Ok(resp) => Ok(Some(json_to_field_value(
                         entity_to_generic_json_with_schema(&resp.entity, schema.as_ref()),
                     ))),
@@ -2194,6 +2204,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             TypeRef::named_nn(ENTITY_CONNECTION_TYPE),
             move |ctx| {
                 let handler = Arc::clone(&handler_entities);
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let collection = ctx.args.try_get("collection")?.string()?.to_owned();
                     let limit = ctx
@@ -2228,14 +2239,18 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                     let schema = guard
                         .get_schema(&collection_id)
                         .map_err(axon_error_to_gql)?;
-                    match guard.query_entities(QueryEntitiesRequest {
-                        collection: collection_id,
-                        filter,
-                        sort,
-                        limit,
-                        after_id,
-                        count_only: false,
-                    }) {
+                    match guard.query_entities_with_caller(
+                        QueryEntitiesRequest {
+                            collection: collection_id,
+                            filter,
+                            sort,
+                            limit,
+                            after_id,
+                            count_only: false,
+                        },
+                        &caller,
+                        None,
+                    ) {
                         Ok(resp) => Ok(Some(entity_connection_value(
                             &resp.entities,
                             resp.total_count,
@@ -2266,6 +2281,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             TypeRef::named_nn(LINK_CANDIDATES_PAYLOAD_TYPE),
             move |ctx| {
                 let handler = Arc::clone(&handler_link_candidates);
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let source_collection =
                         ctx.args.try_get("sourceCollection")?.string()?.to_owned();
@@ -2292,13 +2308,17 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
 
                     let guard = handler.lock().await;
                     let response = guard
-                        .find_link_candidates(FindLinkCandidatesRequest {
-                            source_collection: CollectionId::new(source_collection),
-                            source_id: EntityId::new(source_id),
-                            link_type,
-                            filter,
-                            limit: request_limit,
-                        })
+                        .find_link_candidates_with_caller(
+                            FindLinkCandidatesRequest {
+                                source_collection: CollectionId::new(source_collection),
+                                source_id: EntityId::new(source_id),
+                                link_type,
+                                filter,
+                                limit: request_limit,
+                            },
+                            &caller,
+                            None,
+                        )
                         .map_err(axon_error_to_gql)?;
                     let target_collection = CollectionId::new(&response.target_collection);
                     let schema = guard
@@ -2334,6 +2354,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             TypeRef::named_nn(NEIGHBORS_CONNECTION_TYPE),
             move |ctx| {
                 let handler = Arc::clone(&handler_neighbors);
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let collection = ctx.args.try_get("collection")?.string()?.to_owned();
                     let id = ctx.args.try_get("id")?.string()?.to_owned();
@@ -2361,23 +2382,31 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
 
                     let guard = handler.lock().await;
                     guard
-                        .get_entity(GetEntityRequest {
-                            collection: collection_id.clone(),
-                            id: entity_id.clone(),
-                        })
+                        .get_entity_with_caller(
+                            GetEntityRequest {
+                                collection: collection_id.clone(),
+                                id: entity_id.clone(),
+                            },
+                            &caller,
+                            None,
+                        )
                         .map_err(axon_error_to_gql)?;
 
                     let mut edges = Vec::new();
                     for (direction, label) in directions {
                         let response = guard
-                            .traverse(TraverseRequest {
-                                collection: collection_id.clone(),
-                                id: entity_id.clone(),
-                                link_type: link_type.clone(),
-                                max_depth: Some(1),
-                                direction,
-                                hop_filter: None,
-                            })
+                            .traverse_with_caller(
+                                TraverseRequest {
+                                    collection: collection_id.clone(),
+                                    id: entity_id.clone(),
+                                    link_type: link_type.clone(),
+                                    max_depth: Some(1),
+                                    direction,
+                                    hop_filter: None,
+                                },
+                                &caller,
+                                None,
+                            )
                             .map_err(axon_error_to_gql)?;
                         edges.extend(response.entities.into_iter().zip(response.links).map(
                             |(entity, link)| NeighborEdgePayload {
@@ -3923,14 +3952,19 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
             let handler = Arc::clone(&handler_get);
             let col = col_for_get.clone();
             let schema = schema_for_get.clone();
+            let caller = caller_from_ctx(&ctx);
             FieldFuture::new(async move {
                 let id_str = ctx.args.try_get("id")?.string()?;
 
                 let guard = handler.lock().await;
-                match guard.get_entity(GetEntityRequest {
-                    collection: col.clone(),
-                    id: EntityId::new(id_str),
-                }) {
+                match guard.get_entity_with_caller(
+                    GetEntityRequest {
+                        collection: col.clone(),
+                        id: EntityId::new(id_str),
+                    },
+                    &caller,
+                    None,
+                ) {
                     Ok(resp) => Ok(Some(entity_to_field_value_with_schema(
                         &resp.entity,
                         Some(&schema),
@@ -3955,6 +3989,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
                 let handler = Arc::clone(&handler_list);
                 let col = col_for_list.clone();
                 let schema = schema_for_list.clone();
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let limit = ctx
                         .args
@@ -3986,14 +4021,18 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
                         .unwrap_or_default();
 
                     let guard = handler.lock().await;
-                    match guard.query_entities(QueryEntitiesRequest {
-                        collection: col.clone(),
-                        filter,
-                        sort,
-                        limit,
-                        after_id,
-                        count_only: false,
-                    }) {
+                    match guard.query_entities_with_caller(
+                        QueryEntitiesRequest {
+                            collection: col.clone(),
+                            filter,
+                            sort,
+                            limit,
+                            after_id,
+                            count_only: false,
+                        },
+                        &caller,
+                        None,
+                    ) {
                         Ok(resp) => {
                             let items: Vec<FieldValue> = resp
                                 .entities
@@ -4031,6 +4070,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
                 let handler = Arc::clone(&handler_list_connection);
                 let col = col_for_list_connection.clone();
                 let schema = schema_for_list_connection.clone();
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let limit = ctx
                         .args
@@ -4063,14 +4103,18 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
                     let has_previous_page = after_id.is_some();
 
                     let guard = handler.lock().await;
-                    match guard.query_entities(QueryEntitiesRequest {
-                        collection: col.clone(),
-                        filter,
-                        sort,
-                        limit,
-                        after_id,
-                        count_only: false,
-                    }) {
+                    match guard.query_entities_with_caller(
+                        QueryEntitiesRequest {
+                            collection: col.clone(),
+                            filter,
+                            sort,
+                            limit,
+                            after_id,
+                            count_only: false,
+                        },
+                        &caller,
+                        None,
+                    ) {
                         Ok(resp) => Ok(Some(entity_connection_value(
                             &resp.entities,
                             resp.total_count,
@@ -4110,6 +4154,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
             move |ctx| {
                 let handler = Arc::clone(&handler_aggregate);
                 let col = col_for_aggregate.clone();
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     let filter = match ctx.args.try_get("filter") {
                         Ok(value) => Some(parse_graphql_filter_arg(value.as_value())?),
@@ -4124,14 +4169,18 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
                     )?;
 
                     let guard = handler.lock().await;
-                    let response = guard.query_entities(QueryEntitiesRequest {
-                        collection: col.clone(),
-                        filter,
-                        sort: Vec::new(),
-                        limit: None,
-                        after_id: None,
-                        count_only: false,
-                    })?;
+                    let response = guard.query_entities_with_caller(
+                        QueryEntitiesRequest {
+                            collection: col.clone(),
+                            filter,
+                            sort: Vec::new(),
+                            limit: None,
+                            after_id: None,
+                            count_only: false,
+                        },
+                        &caller,
+                        None,
+                    )?;
                     let payload = graphql_aggregate_response(
                         &response.entities,
                         response.total_count,
@@ -6100,10 +6149,8 @@ mod tests {
         assert_nullable_scalar(&fields, "commercial_terms", "String");
         assert_non_null_scalar(&fields, "number", "String");
 
-        let result = schema
-            .schema
-            .execute(format!(
-                r#"{{
+        let query = async_graphql::Request::new(format!(
+            r#"{{
                     invoices(id: "{}") {{
                         id
                         number
@@ -6115,9 +6162,13 @@ mod tests {
                         }}
                     }}
                 }}"#,
-                fixture.ids.under_threshold_invoice.as_str()
-            ))
-            .await;
+            fixture.ids.under_threshold_invoice.as_str()
+        ))
+        .data(CallerIdentity::new(
+            fixture.subjects.finance_agent,
+            axon_core::auth::Role::Read,
+        ));
+        let result = schema.schema.execute(query).await;
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
 
         let data = result.data.into_json().expect("result data should be JSON");
