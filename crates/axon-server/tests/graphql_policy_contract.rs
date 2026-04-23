@@ -9,6 +9,11 @@
 use std::sync::Arc;
 
 use axon_api::handler::AxonHandler;
+use axon_api::intent::{
+    canonicalize_intent_operation, ApprovalState, MutationIntent, MutationIntentDecision,
+    MutationIntentScopeBinding, MutationIntentSubjectBinding, MutationOperationKind,
+    MutationReviewSummary,
+};
 use axon_server::gateway::build_router;
 use axon_server::tenant_router::TenantRouter;
 use axon_storage::adapter::StorageAdapter;
@@ -17,22 +22,91 @@ use axum::http::StatusCode;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
+type TestStorage = Box<dyn StorageAdapter + Send + Sync>;
+type TestHandler = Arc<Mutex<AxonHandler<TestStorage>>>;
+
 fn test_server() -> axum_test::TestServer {
-    let storage: Box<dyn StorageAdapter + Send + Sync> =
+    test_server_with_handler().0
+}
+
+fn test_server_with_handler() -> (axum_test::TestServer, TestHandler) {
+    let storage: TestStorage =
         Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
     let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
-    let tenant_router = Arc::new(TenantRouter::single(handler));
+    let tenant_router = Arc::new(TenantRouter::single(Arc::clone(&handler)));
     let app = build_router(tenant_router, "memory", None);
-    axum_test::TestServer::new(app)
+    let server = axum_test::TestServer::new(app);
+    (server, handler)
 }
 
 async fn gql_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Value {
+    gql_path_as(
+        server,
+        "/tenants/default/databases/default/graphql",
+        actor,
+        query,
+    )
+    .await
+}
+
+async fn gql_path_as(
+    server: &axum_test::TestServer,
+    path: &str,
+    actor: &str,
+    query: &str,
+) -> Value {
     server
-        .post("/tenants/default/databases/default/graphql")
+        .post(path)
         .add_header("x-axon-actor", actor)
         .json(&json!({ "query": query }))
         .await
         .json::<Value>()
+}
+
+async fn insert_test_intent(
+    handler: &TestHandler,
+    tenant_id: &str,
+    database_id: &str,
+    intent_id: &str,
+    approval_state: ApprovalState,
+    expires_at: u64,
+) {
+    let decision = if approval_state == ApprovalState::None {
+        MutationIntentDecision::Allow
+    } else {
+        MutationIntentDecision::NeedsApproval
+    };
+    let intent = MutationIntent {
+        intent_id: intent_id.to_string(),
+        scope: MutationIntentScopeBinding {
+            tenant_id: tenant_id.to_string(),
+            database_id: database_id.to_string(),
+        },
+        subject: MutationIntentSubjectBinding::default(),
+        schema_version: 1,
+        policy_version: 1,
+        operation: canonicalize_intent_operation(
+            MutationOperationKind::PatchEntity,
+            json!({
+                "collection": "task",
+                "id": intent_id,
+                "expected_version": 1,
+                "patch": { "budget_cents": 6000 },
+            }),
+        ),
+        pre_images: Vec::new(),
+        decision,
+        approval_state,
+        approval_route: None,
+        expires_at,
+        review_summary: MutationReviewSummary::default(),
+    };
+    handler
+        .lock()
+        .await
+        .storage_mut()
+        .create_mutation_intent(&intent)
+        .expect("test intent should insert");
 }
 
 async fn effective_policy_as(
@@ -804,6 +878,293 @@ async fn graphql_preview_mutation_records_policy_diff_and_never_writes_entity_st
             .len(),
         0,
         "preview must not append entity mutation audit entries"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_approval_inbox_lists_reviews_and_scopes_mutation_intents() {
+    let (server, handler) = test_server_with_handler();
+    seed_policy_fixture(&server).await;
+
+    insert_test_intent(
+        &handler,
+        "default",
+        "default",
+        "mint_committed_manual",
+        ApprovalState::Committed,
+        4_000_000_000_000_000_000,
+    )
+    .await;
+    insert_test_intent(
+        &handler,
+        "default",
+        "default",
+        "mint_expired_manual",
+        ApprovalState::Pending,
+        0,
+    )
+    .await;
+    insert_test_intent(
+        &handler,
+        "tenant-b",
+        "default",
+        "mint_tenant_b",
+        ApprovalState::Pending,
+        4_000_000_000_000_000_000,
+    )
+    .await;
+
+    let approval_preview = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "patch_entity"
+                    operation: {
+                        collection: "task"
+                        id: "task-a"
+                        expected_version: 1
+                        patch: { budget_cents: 21000 }
+                    }
+                }
+                subject: { userId: "requester" }
+                expiresInSeconds: 600
+            }) {
+                intent { id approvalState decision approvalRoute { role reasonRequired } }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        approval_preview["errors"].is_null(),
+        "unexpected approval preview errors: {approval_preview}"
+    );
+    let approval_id = approval_preview["data"]["previewMutation"]["intent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let pending = gql_as(
+        &server,
+        "finance-approver",
+        r#"{
+            pendingMutationIntents(filter: { decision: "needs_approval" }, limit: 10) {
+                totalCount
+                edges { cursor node { id approvalState decision approvalRoute { role reasonRequired } } }
+                pageInfo { hasNextPage hasPreviousPage startCursor endCursor }
+            }
+        }"#,
+    )
+    .await;
+    assert!(pending["errors"].is_null(), "pending errors: {pending}");
+    let pending_ids: Vec<_> = pending["data"]["pendingMutationIntents"]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|edge| edge["node"]["id"].as_str().unwrap())
+        .collect();
+    assert!(pending_ids.contains(&approval_id.as_str()));
+    assert_eq!(
+        pending["data"]["pendingMutationIntents"]["pageInfo"]["hasNextPage"],
+        false
+    );
+
+    let detail = gql_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"{{
+                mutationIntent(id: "{approval_id}") {{
+                    id
+                    approvalState
+                    decision
+                    approvalRoute {{ role reasonRequired }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert!(detail["errors"].is_null(), "detail errors: {detail}");
+    assert_eq!(detail["data"]["mutationIntent"]["id"], approval_id);
+    assert_eq!(
+        detail["data"]["mutationIntent"]["approvalRoute"]["role"],
+        "finance_approver"
+    );
+
+    let missing_reason = gql_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"mutation {{
+                approveMutationIntent(input: {{ intentId: "{approval_id}" }}) {{ id }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_eq!(
+        missing_reason["errors"][0]["extensions"]["code"],
+        "intent_reason_required"
+    );
+
+    let approved = gql_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"mutation {{
+                approveMutationIntent(input: {{
+                    intentId: "{approval_id}"
+                    reason: "budget approved"
+                }}) {{ id approvalState decision }}
+            }}"#
+        ),
+    )
+    .await;
+    assert!(approved["errors"].is_null(), "approve errors: {approved}");
+    assert_eq!(
+        approved["data"]["approveMutationIntent"]["approvalState"],
+        "approved"
+    );
+
+    let rejection_preview = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "patch_entity"
+                    operation: {
+                        collection: "task"
+                        id: "task-a"
+                        expected_version: 1
+                        patch: { budget_cents: 22000 }
+                    }
+                }
+                expiresInSeconds: 600
+            }) { intent { id approvalState decision } }
+        }"#,
+    )
+    .await;
+    assert!(
+        rejection_preview["errors"].is_null(),
+        "unexpected rejection preview errors: {rejection_preview}"
+    );
+    let rejection_id = rejection_preview["data"]["previewMutation"]["intent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rejected = gql_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"mutation {{
+                rejectMutationIntent(input: {{
+                    intentId: "{rejection_id}"
+                    reason: "insufficient justification"
+                }}) {{ id approvalState decision }}
+            }}"#
+        ),
+    )
+    .await;
+    assert!(rejected["errors"].is_null(), "reject errors: {rejected}");
+    assert_eq!(
+        rejected["data"]["rejectMutationIntent"]["approvalState"],
+        "rejected"
+    );
+
+    let expired_rejection = gql_as(
+        &server,
+        "finance-approver",
+        r#"mutation {
+            approveMutationIntent(input: {
+                intentId: "mint_expired_manual"
+                reason: "too late"
+            }) { id }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        expired_rejection["errors"][0]["extensions"]["code"],
+        "intent_expired"
+    );
+
+    let approved_only = gql_as(
+        &server,
+        "finance-approver",
+        r#"{
+            pendingMutationIntents(filter: { status: "approved" }) {
+                edges { node { id approvalState } }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        approved_only["errors"].is_null(),
+        "approved filter errors: {approved_only}"
+    );
+    assert_eq!(
+        approved_only["data"]["pendingMutationIntents"]["edges"][0]["node"]["id"],
+        approval_id
+    );
+
+    let history = gql_as(
+        &server,
+        "finance-approver",
+        r#"{
+            pendingMutationIntents(filter: {
+                statuses: ["approved", "rejected", "expired", "committed"]
+            }) {
+                totalCount
+                edges { node { id approvalState } }
+            }
+        }"#,
+    )
+    .await;
+    assert!(history["errors"].is_null(), "history errors: {history}");
+    let history_ids: Vec<_> = history["data"]["pendingMutationIntents"]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|edge| edge["node"]["id"].as_str().unwrap())
+        .collect();
+    for expected in [
+        approval_id.as_str(),
+        rejection_id.as_str(),
+        "mint_expired_manual",
+        "mint_committed_manual",
+    ] {
+        assert!(
+            history_ids.contains(&expected),
+            "history missing {expected}: {history}"
+        );
+    }
+
+    let isolated_default = gql_as(
+        &server,
+        "finance-approver",
+        r#"{ mutationIntent(id: "mint_tenant_b") { id } }"#,
+    )
+    .await;
+    assert!(
+        isolated_default["errors"].is_null(),
+        "default isolation errors: {isolated_default}"
+    );
+    assert!(isolated_default["data"]["mutationIntent"].is_null());
+
+    let isolated_tenant = gql_path_as(
+        &server,
+        "/tenants/tenant-b/databases/default/graphql",
+        "finance-approver",
+        r#"{ mutationIntent(id: "mint_tenant_b") { id approvalState } }"#,
+    )
+    .await;
+    assert!(
+        isolated_tenant["errors"].is_null(),
+        "tenant isolation errors: {isolated_tenant}"
+    );
+    assert_eq!(
+        isolated_tenant["data"]["mutationIntent"]["id"],
+        "mint_tenant_b"
     );
 }
 

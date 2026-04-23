@@ -29,8 +29,8 @@ use axon_api::handler::AxonHandler;
 use axon_api::intent::{
     canonicalize_intent_operation, ApprovalState, CanonicalOperationMetadata,
     MutationApprovalRoute, MutationIntent, MutationIntentDecision, MutationIntentLifecycleService,
-    MutationIntentScopeBinding, MutationIntentSubjectBinding, MutationIntentTokenSigner,
-    MutationOperationKind, MutationReviewSummary, PreImageBinding,
+    MutationIntentReviewMetadata, MutationIntentScopeBinding, MutationIntentSubjectBinding,
+    MutationIntentTokenSigner, MutationOperationKind, MutationReviewSummary, PreImageBinding,
 };
 use axon_api::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest,
@@ -2656,6 +2656,48 @@ fn add_intent_root_query_fields(mut query: Object) -> Object {
     query
 }
 
+fn add_handler_intent_root_query_fields<S: StorageAdapter + 'static>(
+    mut query: Object,
+    handler: SharedHandler<S>,
+) -> Object {
+    let lookup_handler = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "mutationIntent",
+            TypeRef::named(MUTATION_INTENT_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&lookup_handler);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(
+                    async move { mutation_intent_resolver(ctx, handler, caller).await },
+                )
+            },
+        )
+        .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID))),
+    );
+    let inbox_handler = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "pendingMutationIntents",
+            TypeRef::named_nn(MUTATION_INTENT_CONNECTION_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&inbox_handler);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(async move {
+                    pending_mutation_intents_resolver(ctx, handler, caller).await
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "filter",
+            TypeRef::named(MUTATION_INTENT_FILTER_INPUT),
+        ))
+        .argument(InputValue::new("limit", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING))),
+    );
+    query
+}
+
 fn add_intent_root_mutation_fields(mut mutation: Object) -> Object {
     mutation = mutation.field(
         Field::new(
@@ -2746,10 +2788,15 @@ fn add_handler_intent_root_mutation_fields<S: StorageAdapter + 'static>(
         Field::new(
             "approveMutationIntent",
             TypeRef::named_nn(MUTATION_INTENT_TYPE),
-            |_ctx| {
-                FieldFuture::new(async move {
-                    Err::<Option<FieldValue<'static>>, GqlError>(mutation_intents_not_implemented())
-                })
+            {
+                let handler = Arc::clone(&handler);
+                move |ctx| {
+                    let handler = Arc::clone(&handler);
+                    let caller = caller_from_ctx(&ctx);
+                    FieldFuture::new(async move {
+                        approve_mutation_intent_resolver(ctx, handler, caller).await
+                    })
+                }
             },
         )
         .argument(InputValue::new(
@@ -2761,10 +2808,15 @@ fn add_handler_intent_root_mutation_fields<S: StorageAdapter + 'static>(
         Field::new(
             "rejectMutationIntent",
             TypeRef::named_nn(MUTATION_INTENT_TYPE),
-            |_ctx| {
-                FieldFuture::new(async move {
-                    Err::<Option<FieldValue<'static>>, GqlError>(mutation_intents_not_implemented())
-                })
+            {
+                let handler = Arc::clone(&handler);
+                move |ctx| {
+                    let handler = Arc::clone(&handler);
+                    let caller = caller_from_ctx(&ctx);
+                    FieldFuture::new(async move {
+                        reject_mutation_intent_resolver(ctx, handler, caller).await
+                    })
+                }
             },
         )
         .argument(InputValue::new(
@@ -4145,6 +4197,141 @@ struct MutationPreviewComputation {
     schema_version: u32,
 }
 
+#[derive(Debug, Clone)]
+struct MutationIntentQueryFilter {
+    states: Vec<ApprovalState>,
+    decision: Option<MutationIntentDecision>,
+    include_expired: bool,
+}
+
+async fn mutation_intent_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    caller.check(Operation::Read).map_err(axon_error_to_gql)?;
+    let intent_id = ctx.args.try_get("id")?.string()?.to_owned();
+    let scope = graphql_intent_scope(&ctx);
+    let now_ns = current_time_ns();
+    let service = graphql_intent_lifecycle_service();
+
+    let mut guard = handler.lock().await;
+    service
+        .expire_due(guard.storage_mut(), &scope, now_ns, None)
+        .map_err(mutation_intent_lifecycle_error_to_gql)?;
+    let intent = guard
+        .storage_ref()
+        .get_mutation_intent(&scope.tenant_id, &scope.database_id, &intent_id)
+        .map_err(axon_error_to_gql)?;
+
+    Ok(intent.map(|intent| json_to_field_value(mutation_intent_json(&intent))))
+}
+
+async fn pending_mutation_intents_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    caller.check(Operation::Read).map_err(axon_error_to_gql)?;
+    let filter = mutation_intent_query_filter(&ctx)?;
+    let limit = parse_optional_limit_arg(&ctx, "limit")?;
+    let after = parse_optional_string_arg(&ctx, "after")?;
+    let scope = graphql_intent_scope(&ctx);
+    let now_ns = current_time_ns();
+    let service = graphql_intent_lifecycle_service();
+
+    let mut guard = handler.lock().await;
+    let mut intents = if filter.states.is_empty() {
+        let mut pending = service
+            .list_pending(guard.storage_mut(), &scope, now_ns, None)
+            .map_err(mutation_intent_lifecycle_error_to_gql)?;
+        if filter.include_expired {
+            pending.extend(
+                service
+                    .list_by_state(
+                        guard.storage_mut(),
+                        &scope,
+                        ApprovalState::Expired,
+                        now_ns,
+                        None,
+                    )
+                    .map_err(mutation_intent_lifecycle_error_to_gql)?,
+            );
+        }
+        pending
+    } else {
+        let mut by_state = Vec::new();
+        for state in &filter.states {
+            by_state.extend(
+                service
+                    .list_by_state(guard.storage_mut(), &scope, state.clone(), now_ns, None)
+                    .map_err(mutation_intent_lifecycle_error_to_gql)?,
+            );
+        }
+        by_state
+    };
+
+    if let Some(decision) = filter.decision {
+        intents.retain(|intent| intent.decision == decision);
+    }
+    sort_mutation_intents(&mut intents);
+    let total_count = intents.len();
+    let (page, has_previous_page, has_next_page) =
+        paginate_mutation_intents(intents, after.as_deref(), limit)?;
+
+    Ok(Some(mutation_intent_connection_value(
+        &page,
+        total_count,
+        has_next_page,
+        has_previous_page,
+    )))
+}
+
+async fn approve_mutation_intent_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    review_mutation_intent(ctx, handler, caller, true).await
+}
+
+async fn reject_mutation_intent_resolver<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    review_mutation_intent(ctx, handler, caller, false).await
+}
+
+async fn review_mutation_intent<S: StorageAdapter + 'static>(
+    ctx: async_graphql::dynamic::ResolverContext<'_>,
+    handler: SharedHandler<S>,
+    caller: CallerIdentity,
+    approve: bool,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    caller.check(Operation::Write).map_err(axon_error_to_gql)?;
+    let input = gql_input_to_json(ctx.args.try_get("input")?.as_value())?;
+    let input_obj = input_object(&input, "input")?;
+    let intent_id = input_string(input_obj, "intentId")?;
+    let metadata = MutationIntentReviewMetadata {
+        actor: Some(caller.actor.clone()),
+        reason: string_member(Some(input_obj), "reason"),
+    };
+    let scope = graphql_intent_scope(&ctx);
+    let now_ns = current_time_ns();
+    let service = graphql_intent_lifecycle_service();
+
+    let mut guard = handler.lock().await;
+    let intent = if approve {
+        service.approve(guard.storage_mut(), &scope, &intent_id, metadata, now_ns)
+    } else {
+        service.reject(guard.storage_mut(), &scope, &intent_id, metadata, now_ns)
+    }
+    .map_err(mutation_intent_lifecycle_error_to_gql)?;
+
+    Ok(Some(json_to_field_value(mutation_intent_json(&intent))))
+}
+
 async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
     ctx: async_graphql::dynamic::ResolverContext<'_>,
     handler: SharedHandler<S>,
@@ -4229,9 +4416,7 @@ async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
         expires_at,
         review_summary,
     };
-    let service = MutationIntentLifecycleService::new(MutationIntentTokenSigner::new(
-        GRAPHQL_INTENT_TOKEN_SECRET.to_vec(),
-    ));
+    let service = graphql_intent_lifecycle_service();
     let record = service
         .create_preview_record(guard.storage_mut(), intent)
         .map_err(mutation_intent_lifecycle_error_to_gql)?;
@@ -4902,6 +5087,202 @@ fn string_member(obj: Option<&serde_json::Map<String, Value>>, key: &str) -> Opt
     obj.and_then(|obj| obj.get(key))
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
+}
+
+fn mutation_intent_query_filter(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+) -> Result<MutationIntentQueryFilter, GqlError> {
+    let filter = match ctx.args.try_get("filter") {
+        Ok(value) if value.is_null() => Value::Object(serde_json::Map::new()),
+        Ok(value) => gql_input_to_json(value.as_value())?,
+        Err(_) => Value::Object(serde_json::Map::new()),
+    };
+    let obj = input_object(&filter, "filter")?;
+    let mut states = Vec::new();
+    if let Some(status) = obj.get("status").and_then(Value::as_str) {
+        push_intent_state_filter(&mut states, status)?;
+    }
+    if let Some(statuses) = obj.get("statuses") {
+        let statuses = statuses.as_array().ok_or_else(|| {
+            GqlError::new("statuses must be a list").extend_with(|_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+            })
+        })?;
+        for status_value in statuses {
+            let status_name = status_value.as_str().ok_or_else(|| {
+                GqlError::new("statuses entries must be strings").extend_with(|_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                })
+            })?;
+            push_intent_state_filter(&mut states, status_name)?;
+        }
+    }
+    let decision = obj
+        .get("decision")
+        .and_then(Value::as_str)
+        .map(parse_mutation_intent_decision_filter)
+        .transpose()?;
+    Ok(MutationIntentQueryFilter {
+        states,
+        decision,
+        include_expired: obj
+            .get("includeExpired")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    })
+}
+
+fn push_intent_state_filter(states: &mut Vec<ApprovalState>, value: &str) -> Result<(), GqlError> {
+    let expanded = match value.trim() {
+        "history" => vec![
+            ApprovalState::Approved,
+            ApprovalState::Rejected,
+            ApprovalState::Expired,
+            ApprovalState::Committed,
+        ],
+        "all" => vec![
+            ApprovalState::None,
+            ApprovalState::Pending,
+            ApprovalState::Approved,
+            ApprovalState::Rejected,
+            ApprovalState::Expired,
+            ApprovalState::Committed,
+        ],
+        other => vec![parse_approval_state_filter(other)?],
+    };
+    for state in expanded {
+        if !states.iter().any(|existing| existing == &state) {
+            states.push(state);
+        }
+    }
+    Ok(())
+}
+
+fn parse_approval_state_filter(value: &str) -> Result<ApprovalState, GqlError> {
+    match value.trim() {
+        "none" | "allowed" | "allow" => Ok(ApprovalState::None),
+        "pending" => Ok(ApprovalState::Pending),
+        "approved" => Ok(ApprovalState::Approved),
+        "rejected" => Ok(ApprovalState::Rejected),
+        "expired" => Ok(ApprovalState::Expired),
+        "committed" => Ok(ApprovalState::Committed),
+        other => Err(
+            GqlError::new(format!("unsupported mutation intent status '{other}'")).extend_with(
+                |_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                },
+            ),
+        ),
+    }
+}
+
+fn parse_mutation_intent_decision_filter(value: &str) -> Result<MutationIntentDecision, GqlError> {
+    match value.trim() {
+        "allow" | "allowed" => Ok(MutationIntentDecision::Allow),
+        "needs_approval" | "needsApproval" => Ok(MutationIntentDecision::NeedsApproval),
+        "deny" | "denied" => Ok(MutationIntentDecision::Deny),
+        other => Err(
+            GqlError::new(format!("unsupported mutation intent decision '{other}'")).extend_with(
+                |_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                },
+            ),
+        ),
+    }
+}
+
+fn parse_optional_limit_arg(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+    name: &str,
+) -> Result<Option<usize>, GqlError> {
+    match ctx.args.try_get(name) {
+        Ok(value) if value.is_null() => Ok(None),
+        Ok(value) => {
+            let limit = value.i64()?;
+            if limit < 0 {
+                return Err(
+                    GqlError::new(format!("{name} must be non-negative")).extend_with(
+                        |_err, ext| {
+                            ext.set("code", "INVALID_ARGUMENT");
+                        },
+                    ),
+                );
+            }
+            Ok(Some(limit as usize))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn sort_mutation_intents(intents: &mut [MutationIntent]) {
+    intents.sort_by(|left, right| {
+        left.expires_at
+            .cmp(&right.expires_at)
+            .then_with(|| left.intent_id.cmp(&right.intent_id))
+    });
+}
+
+fn paginate_mutation_intents(
+    intents: Vec<MutationIntent>,
+    after: Option<&str>,
+    limit: Option<usize>,
+) -> Result<(Vec<MutationIntent>, bool, bool), GqlError> {
+    let start_index = match after {
+        Some(cursor) => intents
+            .iter()
+            .position(|intent| intent.intent_id == cursor)
+            .map(|index| index + 1)
+            .ok_or_else(|| {
+                GqlError::new("after cursor was not found").extend_with(|_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                })
+            })?,
+        None => 0,
+    };
+    let end_index = limit
+        .map(|limit| start_index.saturating_add(limit))
+        .unwrap_or(intents.len())
+        .min(intents.len());
+    let has_previous_page = start_index > 0;
+    let has_next_page = end_index < intents.len();
+    Ok((
+        intents[start_index..end_index].to_vec(),
+        has_previous_page,
+        has_next_page,
+    ))
+}
+
+fn mutation_intent_connection_value(
+    intents: &[MutationIntent],
+    total_count: usize,
+    has_next_page: bool,
+    has_previous_page: bool,
+) -> FieldValue<'static> {
+    let edges: Vec<Value> = intents
+        .iter()
+        .map(|intent| {
+            json!({
+                "cursor": intent.intent_id,
+                "node": mutation_intent_json(intent),
+            })
+        })
+        .collect();
+    json_to_field_value(json!({
+        "edges": edges,
+        "pageInfo": page_info_json(
+            intents.first().map(|intent| intent.intent_id.clone()),
+            intents.last().map(|intent| intent.intent_id.clone()),
+            has_next_page,
+            has_previous_page,
+        ),
+        "totalCount": total_count,
+    }))
+}
+
+fn graphql_intent_lifecycle_service() -> MutationIntentLifecycleService {
+    MutationIntentLifecycleService::new(MutationIntentTokenSigner::new(
+        GRAPHQL_INTENT_TOKEN_SECRET.to_vec(),
+    ))
 }
 
 fn graphql_intent_scope(
@@ -5576,7 +5957,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
     }
 
     query = add_handler_root_query_fields(query, Arc::clone(&handler));
-    query = add_intent_root_query_fields(query);
+    query = add_handler_intent_root_query_fields(query, Arc::clone(&handler));
     mutation = add_handler_intent_root_mutation_fields(mutation, Arc::clone(&handler));
 
     for schema in collections {
