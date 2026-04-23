@@ -224,7 +224,9 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                 "entity_schema": {
                     "type": "object",
                     "properties": {
-                        "name": { "type": "string" }
+                        "name": { "type": "string" },
+                        "user_id": { "type": "string" },
+                        "approval_role": { "type": "string" }
                     }
                 },
                 "link_types": {
@@ -275,6 +277,19 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                     { "field": "assigned_contractor_id", "type": "string" }
                 ],
                 "access_control": {
+                    "identity": {
+                        "user_id": "subject.user_id",
+                        "role": "subject.attributes.approval_role",
+                        "attributes": {
+                            "approval_role": {
+                                "from": "collection",
+                                "collection": "user",
+                                "key_field": "user_id",
+                                "key_subject": "user_id",
+                                "value_field": "approval_role"
+                            }
+                        }
+                    },
                     "read": {
                         "allow": [
                             {
@@ -358,7 +373,20 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
         .assert_status(StatusCode::CREATED);
 
     for (collection, id, data) in [
-        ("user", "u1", json!({ "name": "Ada" })),
+        (
+            "user",
+            "u1",
+            json!({ "name": "Ada", "user_id": "u1", "approval_role": "operator" }),
+        ),
+        (
+            "user",
+            "finance-approver",
+            json!({
+                "name": "Finance Approver",
+                "user_id": "finance-approver",
+                "approval_role": "finance_approver"
+            }),
+        ),
         (
             "task",
             "task-a",
@@ -1543,6 +1571,22 @@ async fn graphql_approval_inbox_lists_reviews_and_scopes_mutation_intents() {
         "default isolation errors: {isolated_default}"
     );
     assert!(isolated_default["data"]["mutationIntent"].is_null());
+
+    let isolated_approval_default = gql_as(
+        &server,
+        "finance-approver",
+        r#"mutation {
+            approveMutationIntent(input: {
+                intentId: "mint_tenant_b"
+                reason: "wrong tenant"
+            }) { id }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        isolated_approval_default["errors"][0]["extensions"]["code"],
+        "intent_not_found"
+    );
 
     let isolated_tenant = gql_path_as(
         &server,

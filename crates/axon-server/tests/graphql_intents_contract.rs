@@ -36,6 +36,28 @@ async fn gql_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Val
 
 async fn seed_intent_fixture(server: &axum_test::TestServer) {
     server
+        .post("/tenants/default/databases/default/collections/users")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "required": ["user_id", "approval_role"],
+                    "properties": {
+                        "user_id": { "type": "string" },
+                        "approval_role": { "type": "string" }
+                    }
+                },
+                "indexes": [
+                    { "field": "user_id", "type": "string", "unique": true }
+                ]
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    server
         .post("/tenants/default/databases/default/collections/task")
         .json(&json!({
             "schema": {
@@ -50,6 +72,19 @@ async fn seed_intent_fixture(server: &axum_test::TestServer) {
                     }
                 },
                 "access_control": {
+                    "identity": {
+                        "user_id": "subject.user_id",
+                        "role": "subject.attributes.approval_role",
+                        "attributes": {
+                            "approval_role": {
+                                "from": "collection",
+                                "collection": "users",
+                                "key_field": "user_id",
+                                "key_subject": "user_id",
+                                "value_field": "approval_role"
+                            }
+                        }
+                    },
                     "read": {
                         "allow": [{ "name": "fixture-read" }]
                     },
@@ -57,7 +92,13 @@ async fn seed_intent_fixture(server: &axum_test::TestServer) {
                         "allow": [{ "name": "fixture-create" }]
                     },
                     "update": {
-                        "allow": [{ "name": "fixture-update" }]
+                        "allow": [{
+                            "name": "fixture-update",
+                            "when": {
+                                "subject": "user_id",
+                                "in": ["finance-agent", "finance-approver"]
+                            }
+                        }]
                     },
                     "fields": {
                         "secret": {
@@ -93,6 +134,27 @@ async fn seed_intent_fixture(server: &axum_test::TestServer) {
         }))
         .await
         .assert_status(StatusCode::CREATED);
+
+    for (id, approval_role) in [
+        ("finance-agent", "finance_agent"),
+        ("finance-approver", "finance_approver"),
+        ("contractor", "contractor"),
+    ] {
+        server
+            .post(&format!(
+                "/tenants/default/databases/default/entities/users/{id}"
+            ))
+            .add_header("x-axon-actor", "admin")
+            .json(&json!({
+                "data": {
+                    "user_id": id,
+                    "approval_role": approval_role
+                },
+                "actor": "setup"
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+    }
 
     server
         .post("/tenants/default/databases/default/entities/task/task-a")
@@ -159,6 +221,40 @@ async fn commit_token(server: &axum_test::TestServer, actor: &str, token: &str) 
         ),
     )
     .await
+}
+
+async fn approve_intent(server: &axum_test::TestServer, actor: &str, intent_id: &str) -> Value {
+    gql_as(
+        server,
+        actor,
+        &format!(
+            r#"mutation {{
+                approveMutationIntent(input: {{
+                    intentId: "{intent_id}"
+                    reason: "approved"
+                }}) {{ id approvalState decision }}
+            }}"#
+        ),
+    )
+    .await
+}
+
+async fn update_approval_role(server: &axum_test::TestServer, user_id: &str, approval_role: &str) {
+    server
+        .put(&format!(
+            "/tenants/default/databases/default/entities/users/{user_id}"
+        ))
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({
+            "data": {
+                "user_id": user_id,
+                "approval_role": approval_role
+            },
+            "expected_version": 1,
+            "actor": "admin"
+        }))
+        .await
+        .assert_status_ok();
 }
 
 async fn budget_cents(server: &axum_test::TestServer) -> Value {
@@ -311,6 +407,94 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
         .expect("entity audit should carry committed intent lineage");
     assert_eq!(entity_update["diff"]["budget_cents"]["before"], 5000);
     assert_eq!(entity_update["diff"]["budget_cents"]["after"], 20_000);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approval_requires_current_approver_role() {
+    let server = test_server();
+    seed_intent_fixture(&server).await;
+
+    let preview = preview_budget_patch(&server, 20_500, 600).await;
+    assert_no_errors(&preview, "preview");
+    let intent_id = preview["data"]["previewMutation"]["intent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let denied = approve_intent(&server, "finance-agent", &intent_id).await;
+    assert_error_code(&denied, "intent_authorization_failed");
+    assert_eq!(budget_cents(&server).await, json!(5000));
+
+    let approved = approve_intent(&server, "finance-approver", &intent_id).await;
+    assert_no_errors(&approved, "approval after denied actor");
+    assert_eq!(
+        approved["data"]["approveMutationIntent"]["approvalState"],
+        "approved"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approval_rechecks_role_after_preview() {
+    let server = test_server();
+    seed_intent_fixture(&server).await;
+
+    let preview = preview_budget_patch(&server, 21_500, 600).await;
+    assert_no_errors(&preview, "preview");
+    let intent_id = preview["data"]["previewMutation"]["intent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    update_approval_role(&server, "finance-approver", "contractor").await;
+    let denied = approve_intent(&server, "finance-approver", &intent_id).await;
+    assert_error_code(&denied, "intent_authorization_failed");
+    assert_eq!(budget_cents(&server).await, json!(5000));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn separation_of_duties_blocks_self_approval() {
+    let server = test_server();
+    seed_intent_fixture(&server).await;
+
+    let preview = gql_as(
+        &server,
+        "finance-approver",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "patch_entity"
+                    operation: {
+                        collection: "task"
+                        id: "task-a"
+                        expected_version: 1
+                        patch: { budget_cents: 22500 }
+                    }
+                }
+                expiresInSeconds: 600
+            }) {
+                decision
+                intent { id approvalState decision subject approvalRoute { role separationOfDuties } }
+            }
+        }"#,
+    )
+    .await;
+    assert_no_errors(&preview, "self preview");
+    assert_eq!(
+        preview["data"]["previewMutation"]["decision"],
+        "needs_approval"
+    );
+    assert_eq!(
+        preview["data"]["previewMutation"]["intent"]["approvalRoute"]["role"],
+        "finance_approver"
+    );
+    let intent_id = preview["data"]["previewMutation"]["intent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let denied = approve_intent(&server, "finance-approver", &intent_id).await;
+    assert_error_code(&denied, "intent_authorization_failed");
+    assert_eq!(budget_cents(&server).await, json!(5000));
 }
 
 #[tokio::test(flavor = "multi_thread")]

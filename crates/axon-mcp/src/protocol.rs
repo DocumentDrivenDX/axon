@@ -127,6 +127,7 @@ pub enum McpMutationIntentErrorCode {
     IntentStale,
     IntentMismatch,
     DeniedPolicy,
+    IntentAuthorizationFailed,
     ExpiredToken,
     RejectedIntent,
     AlreadyCommitted,
@@ -142,6 +143,7 @@ impl McpMutationIntentErrorCode {
             Self::IntentStale => "intent_stale",
             Self::IntentMismatch => "intent_mismatch",
             Self::DeniedPolicy => "denied_policy",
+            Self::IntentAuthorizationFailed => "intent_authorization_failed",
             Self::ExpiredToken => "expired_token",
             Self::RejectedIntent => "rejected_intent",
             Self::AlreadyCommitted => "already_committed",
@@ -308,9 +310,12 @@ impl McpMutationIntentOutcome {
                     detail: Some("operation hash mismatch".into()),
                 }],
             },
-            MutationIntentTokenLookupError::Unauthorized => {
-                Self::denied_policy("mutation denied by policy", None, Vec::new())
-            }
+            MutationIntentTokenLookupError::Unauthorized => Self::Denied {
+                error_code: McpMutationIntentErrorCode::IntentAuthorizationFailed,
+                message: "mutation denied by policy".into(),
+                intent_id: None,
+                policy_explanation: Vec::new(),
+            },
             MutationIntentTokenLookupError::Expired => Self::Conflict {
                 error_code: McpMutationIntentErrorCode::ExpiredToken,
                 message: "mutation intent token is expired".into(),
@@ -427,7 +432,7 @@ impl McpMutationIntentOutcome {
             },
             MutationIntentCommitValidationError::AuthorizationFailed { intent_id, reason } => {
                 Self::Denied {
-                    error_code: McpMutationIntentErrorCode::DeniedPolicy,
+                    error_code: McpMutationIntentErrorCode::IntentAuthorizationFailed,
                     message: reason,
                     intent_id: Some(intent_id),
                     policy_explanation: Vec::new(),
@@ -1278,7 +1283,7 @@ mod tests {
             (
                 MutationIntentTokenLookupError::Unauthorized,
                 "denied",
-                "denied_policy",
+                "intent_authorization_failed",
             ),
             (
                 MutationIntentTokenLookupError::Expired,
@@ -1299,6 +1304,21 @@ mod tests {
             assert_eq!(value["outcome"], outcome);
             assert_eq!(value["error_code"], code);
         }
+    }
+
+    #[test]
+    fn commit_authorization_failure_uses_stable_intent_code() {
+        let value = serde_json::to_value(McpMutationIntentOutcome::from_commit_validation_error(
+            MutationIntentCommitValidationError::AuthorizationFailed {
+                intent_id: "mint_auth".into(),
+                reason: "current grants do not authorize intent commit".into(),
+            },
+        ))
+        .expect("outcome should serialize");
+
+        assert_eq!(value["outcome"], "denied");
+        assert_eq!(value["error_code"], "intent_authorization_failed");
+        assert_eq!(value["intent_id"], "mint_auth");
     }
 
     // ── Resource subscription tests (US-055) ───────────────────────────

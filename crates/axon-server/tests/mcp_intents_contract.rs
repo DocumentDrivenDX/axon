@@ -5,6 +5,8 @@
 use std::sync::Arc;
 
 use axon_api::handler::AxonHandler;
+use axon_api::intent::MutationIntentCommitValidationError;
+use axon_mcp::McpMutationIntentOutcome;
 use axon_server::gateway::build_router;
 use axon_server::tenant_router::TenantRouter;
 use axon_storage::adapter::StorageAdapter;
@@ -262,4 +264,19 @@ async fn generated_mcp_tools_preview_commit_and_block_approval_bypass() {
     let after_denied = get_task(&server).await;
     assert_eq!(after_denied["data"]["secret"], "alpha");
     assert_eq!(after_denied["version"], 2);
+}
+
+#[test]
+fn mcp_intent_authorization_denial_uses_graphql_stable_code() {
+    let outcome = McpMutationIntentOutcome::from_commit_validation_error(
+        MutationIntentCommitValidationError::AuthorizationFailed {
+            intent_id: "mint_authz".into(),
+            reason: "current grants do not authorize intent commit".into(),
+        },
+    );
+    let value = serde_json::to_value(outcome).expect("MCP outcome should serialize");
+
+    assert_eq!(value["outcome"], "denied");
+    assert_eq!(value["error_code"], "intent_authorization_failed");
+    assert_eq!(value["intent_id"], "mint_authz");
 }

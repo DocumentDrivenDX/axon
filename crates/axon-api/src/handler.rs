@@ -1158,6 +1158,32 @@ impl<S: StorageAdapter> AxonHandler<S> {
         })
     }
 
+    /// Resolve the current policy subject for a caller against a collection.
+    ///
+    /// Mutation-intent review authorization uses this to verify approver roles
+    /// from the same request-time identity mappings that FEAT-029 policies use.
+    pub fn policy_subject_snapshot_with_caller(
+        &self,
+        collection: &CollectionId,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<Option<PolicySubjectSnapshot>, AxonError> {
+        let Some(schema) = self.storage.get_schema(collection)? else {
+            return Ok(None);
+        };
+        let Some(snapshot) = self.policy_snapshot_for_request(
+            collection,
+            Some(&schema),
+            None,
+            Some(caller),
+            attribution.as_ref(),
+        )?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(snapshot.subject))
+    }
+
     fn effective_operation_allows(
         &self,
         collection: &CollectionId,

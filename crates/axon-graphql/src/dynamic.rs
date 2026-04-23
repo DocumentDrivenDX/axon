@@ -47,6 +47,7 @@ use axon_api::request::{
     TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::transaction::Transaction;
+use axon_api::PolicySubjectSnapshot;
 use axon_audit::entry::compute_diff;
 use axon_audit::log::AuditLog;
 use axon_core::auth::{CallerIdentity, Operation};
@@ -142,6 +143,7 @@ static GRAPHQL_IDEMPOTENCY_CACHE: OnceLock<StdMutex<HashMap<(String, String), Id
     OnceLock::new();
 static GRAPHQL_INTENT_COUNTER: AtomicU64 = AtomicU64::new(1);
 const GRAPHQL_INTENT_TOKEN_SECRET: &[u8] = b"axon-graphql-mutation-intents-v1";
+const INTENT_AUTHORIZATION_FAILED_CODE: &str = "intent_authorization_failed";
 
 #[derive(Clone, Debug)]
 pub struct GraphqlIdempotencyScope(pub String);
@@ -4334,7 +4336,9 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
     caller: CallerIdentity,
     approve: bool,
 ) -> Result<Option<FieldValue<'static>>, GqlError> {
-    caller.check(Operation::Write).map_err(axon_error_to_gql)?;
+    caller
+        .check(Operation::Write)
+        .map_err(|error| mutation_intent_authorization_error(error.to_string()))?;
     let input = gql_input_to_json(ctx.args.try_get("input")?.as_value())?;
     let input_obj = input_object(&input, "input")?;
     let intent_id = input_string(input_obj, "intentId")?;
@@ -4347,6 +4351,22 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
+    service
+        .expire_due(guard.storage_mut(), &scope, now_ns, None)
+        .map_err(mutation_intent_lifecycle_error_to_gql)?;
+    let intent = guard
+        .storage_ref()
+        .get_mutation_intent(&scope.tenant_id, &scope.database_id, &intent_id)
+        .map_err(axon_error_to_gql)?
+        .ok_or_else(|| {
+            mutation_intent_lifecycle_error_to_gql(
+                axon_api::intent::MutationIntentLifecycleError::NotFound {
+                    intent_id: intent_id.clone(),
+                },
+            )
+        })?;
+    authorize_mutation_intent_review(&guard, &caller, &intent)?;
+
     let (storage, audit) = guard.storage_and_audit_mut();
     let intent = if approve {
         service.approve_with_audit(storage, audit, &scope, &intent_id, metadata, now_ns)
@@ -4356,6 +4376,260 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
     .map_err(mutation_intent_lifecycle_error_to_gql)?;
 
     Ok(Some(json_to_field_value(mutation_intent_json(&intent))))
+}
+
+fn authorize_mutation_intent_review<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    caller: &CallerIdentity,
+    intent: &MutationIntent,
+) -> Result<(), GqlError> {
+    if intent.decision != MutationIntentDecision::NeedsApproval
+        || intent.approval_state != ApprovalState::Pending
+    {
+        return Ok(());
+    }
+
+    let route = intent.approval_route.as_ref().ok_or_else(|| {
+        mutation_intent_authorization_error(format!(
+            "mutation intent '{}' does not include an approval route",
+            intent.intent_id
+        ))
+    })?;
+    let required_role = route
+        .role
+        .as_deref()
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+        .ok_or_else(|| {
+            mutation_intent_authorization_error(format!(
+                "mutation intent '{}' does not include a required approver role",
+                intent.intent_id
+            ))
+        })?;
+
+    if !caller_has_required_approval_role(handler, caller, intent, required_role)? {
+        return Err(mutation_intent_authorization_error(format!(
+            "caller '{}' does not satisfy required approver role '{}'",
+            caller.actor, required_role
+        )));
+    }
+
+    if route.separation_of_duties && caller_matches_intent_subject(caller, &intent.subject) {
+        return Err(mutation_intent_authorization_error(format!(
+            "caller '{}' cannot review their own mutation intent",
+            caller.actor
+        )));
+    }
+
+    Ok(())
+}
+
+fn caller_has_required_approval_role<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    caller: &CallerIdentity,
+    intent: &MutationIntent,
+    required_role: &str,
+) -> Result<bool, GqlError> {
+    let mut saw_policy_role = false;
+    for collection in mutation_intent_policy_collections(intent) {
+        let Some(subject) = handler
+            .policy_subject_snapshot_with_caller(&collection, caller, None)
+            .map_err(axon_error_to_gql)?
+        else {
+            continue;
+        };
+        let roles = policy_subject_role_values(&subject);
+        if roles.is_empty() {
+            continue;
+        }
+        saw_policy_role = true;
+        if roles.iter().any(|role| role == required_role) {
+            return Ok(true);
+        }
+    }
+
+    if saw_policy_role {
+        return Ok(false);
+    }
+
+    Ok(caller.role.to_string() == required_role)
+}
+
+fn policy_subject_role_values(subject: &PolicySubjectSnapshot) -> Vec<String> {
+    let mut roles = Vec::new();
+    if let Some(value) = subject.bindings.get("role") {
+        push_role_values(&mut roles, value);
+    }
+    for (name, value) in &subject.attributes {
+        if name == "role" || name.ends_with("_role") {
+            push_role_values(&mut roles, value);
+        }
+    }
+    roles.sort();
+    roles.dedup();
+    roles
+}
+
+fn push_role_values(roles: &mut Vec<String>, value: &Value) {
+    match value {
+        Value::String(role) if !role.trim().is_empty() => roles.push(role.trim().to_string()),
+        Value::Array(values) => {
+            for value in values {
+                push_role_values(roles, value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn caller_matches_intent_subject(
+    caller: &CallerIdentity,
+    subject: &MutationIntentSubjectBinding,
+) -> bool {
+    [
+        subject.user_id.as_deref(),
+        subject.delegated_by.as_deref(),
+        subject.agent_id.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|principal| principal == caller.actor)
+}
+
+fn mutation_intent_authorization_error(message: impl Into<String>) -> GqlError {
+    GqlError::new(message.into()).extend_with(|_err, ext| {
+        ext.set("code", INTENT_AUTHORIZATION_FAILED_CODE);
+    })
+}
+
+fn mutation_intent_policy_collections(intent: &MutationIntent) -> Vec<CollectionId> {
+    let mut collections = Vec::new();
+    let mut seen = HashSet::new();
+    if let Some(payload) = intent.operation.canonical_operation.as_ref() {
+        append_operation_collections(
+            &mut collections,
+            &mut seen,
+            &intent.operation.operation_kind,
+            payload,
+        );
+    }
+    for pre_image in &intent.pre_images {
+        if let PreImageBinding::Entity { collection, .. } = pre_image {
+            push_unique_collection(&mut collections, &mut seen, collection.as_str());
+        }
+    }
+    collections
+}
+
+fn append_operation_collections(
+    collections: &mut Vec<CollectionId>,
+    seen: &mut HashSet<String>,
+    operation_kind: &MutationOperationKind,
+    payload: &Value,
+) {
+    match operation_kind {
+        MutationOperationKind::CreateEntity
+        | MutationOperationKind::UpdateEntity
+        | MutationOperationKind::PatchEntity
+        | MutationOperationKind::DeleteEntity
+        | MutationOperationKind::Transition
+        | MutationOperationKind::Rollback => {
+            push_unique_collection(
+                collections,
+                seen,
+                payload
+                    .get("collection")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            );
+        }
+        MutationOperationKind::CreateLink | MutationOperationKind::DeleteLink => {
+            push_unique_collection(
+                collections,
+                seen,
+                payload
+                    .get("source_collection")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            );
+            push_unique_collection(
+                collections,
+                seen,
+                payload
+                    .get("target_collection")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+            );
+        }
+        MutationOperationKind::Transaction => {
+            if let Some(operations) = payload.get("operations").and_then(Value::as_array) {
+                for operation in operations {
+                    append_transaction_operation_collections(collections, seen, operation);
+                }
+            }
+        }
+        MutationOperationKind::Revert => {}
+    }
+}
+
+fn append_transaction_operation_collections(
+    collections: &mut Vec<CollectionId>,
+    seen: &mut HashSet<String>,
+    operation: &Value,
+) {
+    let Some(obj) = operation.as_object() else {
+        return;
+    };
+    for (variant, payload) in obj {
+        if payload.is_null() {
+            continue;
+        }
+        match variant.as_str() {
+            "createEntity" | "updateEntity" | "patchEntity" | "deleteEntity" => {
+                push_unique_collection(
+                    collections,
+                    seen,
+                    payload
+                        .get("collection")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                );
+            }
+            "createLink" | "deleteLink" => {
+                push_unique_collection(
+                    collections,
+                    seen,
+                    payload
+                        .get("sourceCollection")
+                        .or_else(|| payload.get("source_collection"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                );
+                push_unique_collection(
+                    collections,
+                    seen,
+                    payload
+                        .get("targetCollection")
+                        .or_else(|| payload.get("target_collection"))
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+fn push_unique_collection(
+    collections: &mut Vec<CollectionId>,
+    seen: &mut HashSet<String>,
+    collection: &str,
+) {
+    let collection = collection.trim();
+    if collection.is_empty() || !seen.insert(collection.to_string()) {
+        return;
+    }
+    collections.push(CollectionId::new(collection));
 }
 
 async fn commit_mutation_intent_resolver<S: StorageAdapter + 'static>(
