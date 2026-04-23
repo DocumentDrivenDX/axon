@@ -255,6 +255,28 @@ impl McpHttpSessions {
         }
     }
 
+    fn publish_tool_list_changed(&self, current_database: &CurrentDatabase) {
+        let sessions: Vec<Arc<McpHttpSession>> = self
+            .sessions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|(key, _)| key.database == current_database.as_str())
+            .map(|(_, session)| Arc::clone(session))
+            .collect();
+
+        let payload = tools_list_changed_notification();
+        for session in sessions {
+            let mut listeners = session
+                .listeners
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            listeners
+                .senders
+                .retain(|listener| listener.send(payload.clone()).is_ok());
+        }
+    }
+
     fn session_is_stale(session: &McpHttpSession) -> bool {
         let mut listeners = session
             .listeners
@@ -510,6 +532,15 @@ fn resource_updated_notification(uri: &str) -> String {
     .to_string()
 }
 
+fn tools_list_changed_notification() -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "tools/list_changed",
+        "params": {}
+    })
+    .to_string()
+}
+
 pub fn notify_entity_change(
     sessions: &McpHttpSessions,
     current_database: &CurrentDatabase,
@@ -532,6 +563,10 @@ pub fn notify_entity_change_by_parts(
         )),
         &EntityId::new(entity_id),
     );
+}
+
+pub fn notify_tool_list_changed(sessions: &McpHttpSessions, current_database: &CurrentDatabase) {
+    sessions.publish_tool_list_changed(current_database);
 }
 
 fn json_rpc_response(status: StatusCode, payload: serde_json::Value) -> Response {
@@ -668,7 +703,6 @@ mod tests {
     use serde_json::{json, Value};
 
     struct SseEventFrame {
-        event: Option<String>,
         data: String,
     }
 
@@ -686,7 +720,27 @@ mod tests {
         TestServer::new(build_router(tenant_router, "memory", None))
     }
 
+    fn test_http_transport_server() -> TestServer {
+        use axon_storage::adapter::StorageAdapter;
+        let storage: Box<dyn StorageAdapter + Send + Sync> =
+            Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite should open"));
+        let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+        let tenant_router = Arc::new(TenantRouter::single(handler));
+        TestServer::builder()
+            .http_transport()
+            .build(build_router(tenant_router, "memory", None))
+    }
+
     fn issued_session_id(response: &Response) -> String {
+        response
+            .headers()
+            .get(MCP_SESSION_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .expect("response should expose an MCP session id")
+    }
+
+    fn issued_session_id_from_reqwest(response: &ReqwestResponse) -> String {
         response
             .headers()
             .get(MCP_SESSION_HEADER)
@@ -740,14 +794,10 @@ mod tests {
             "SSE response should declare event-stream"
         );
 
-        let mut connection = LiveSseConnection {
+        LiveSseConnection {
             response,
             buffer: Vec::new(),
-        };
-        let ready = read_sse_event(&mut connection).await;
-        assert_eq!(ready.event.as_deref(), Some("ready"));
-        assert_eq!(ready.data, "{}");
-        connection
+        }
     }
 
     fn find_sse_frame_end(buffer: &[u8]) -> Option<(usize, usize)> {
@@ -773,19 +823,16 @@ mod tests {
                 let frame = String::from_utf8(frame_bytes[..frame_end].to_vec())
                     .expect("SSE frame should be valid UTF-8")
                     .replace("\r\n", "\n");
-                let mut event = None;
                 let mut data_lines = Vec::new();
                 for line in frame.lines() {
-                    if let Some(value) = line.strip_prefix("event: ") {
-                        event = Some(value.to_string());
-                        continue;
-                    }
-                    if let Some(value) = line.strip_prefix("data: ") {
+                    if let Some(value) = line
+                        .strip_prefix("data: ")
+                        .or_else(|| line.strip_prefix("data:"))
+                    {
                         data_lines.push(value.to_string());
                     }
                 }
                 return SseEventFrame {
-                    event,
                     data: data_lines.join("\n"),
                 };
             }
@@ -798,6 +845,22 @@ mod tests {
                 .expect("SSE stream ended before the next frame");
             connection.buffer.extend_from_slice(&chunk);
         }
+    }
+
+    async fn read_sse_json_method(connection: &mut LiveSseConnection, method: &str) -> Value {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let frame = read_sse_event(connection).await;
+                let Ok(payload) = serde_json::from_str::<Value>(&frame.data) else {
+                    continue;
+                };
+                if payload["method"] == method {
+                    return payload;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("expected SSE notification `{method}`"))
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -957,6 +1020,74 @@ mod tests {
         bad_read.assert_status_ok();
         let bad_read_body: Value = bad_read.json();
         assert_eq!(bad_read_body["error"]["code"], -32602);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_mcp_schema_policy_changes_emit_tools_list_changed() {
+        let server = test_http_transport_server();
+        let mut listener = connect_sse(&server, "/mcp/sse").await;
+        let session_id = issued_session_id_from_reqwest(&listener.response);
+
+        server
+            .post("/tenants/default/databases/default/collections/policy_notify")
+            .json(&json!({
+                "schema": {
+                    "version": 1,
+                    "entity_schema": {
+                        "type": "object",
+                        "properties": {
+                            "label": { "type": "string" }
+                        }
+                    },
+                    "access_control": {
+                        "read": { "allow": [{ "name": "all-read" }] }
+                    }
+                },
+                "actor": "schema-admin"
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let created_payload = read_sse_json_method(&mut listener, "tools/list_changed").await;
+        assert_eq!(created_payload["method"], "tools/list_changed");
+
+        let list = server
+            .post(&format!("/mcp?session={session_id}"))
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list"
+            }))
+            .await;
+        list.assert_status_ok();
+        let list_body: Value = list.json();
+        assert!(list_body["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "policy_notify.patch"));
+
+        server
+            .put("/tenants/default/databases/default/collections/policy_notify/schema")
+            .json(&json!({
+                "version": 2,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "label": { "type": "string" }
+                    }
+                },
+                "access_control": {
+                    "read": { "allow": [{ "name": "all-read" }] },
+                    "create": { "allow": [{ "name": "all-create" }] }
+                },
+                "actor": "schema-admin"
+            }))
+            .await
+            .assert_status_ok();
+
+        let updated_payload = read_sse_json_method(&mut listener, "tools/list_changed").await;
+        assert_eq!(updated_payload["method"], "tools/list_changed");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1199,17 +1330,9 @@ mod tests {
             "t-001",
         );
 
-        let first_payload =
-            tokio::time::timeout(Duration::from_secs(1), read_sse_event(&mut first_listener))
-                .await
-                .expect("original listener should receive updates while still connected");
-        let second_payload =
-            tokio::time::timeout(Duration::from_secs(1), read_sse_event(&mut second_listener))
-                .await
-                .expect("overlapping reconnect should preserve subscriptions");
+        let first_payload = read_sse_json_method(&mut first_listener, "resource_updated").await;
+        let second_payload = read_sse_json_method(&mut second_listener, "resource_updated").await;
         for payload in [first_payload, second_payload] {
-            let payload: Value =
-                serde_json::from_str(&payload.data).expect("notification payload should be JSON");
             assert_eq!(payload["method"], "resource_updated");
             assert_eq!(payload["params"]["uri"], "axon://tasks/t-001");
         }
@@ -1224,12 +1347,7 @@ mod tests {
             "t-001",
         );
 
-        let payload =
-            tokio::time::timeout(Duration::from_secs(1), read_sse_event(&mut second_listener))
-                .await
-                .expect("replacement listener should stay subscribed after old listener closes");
-        let payload: Value =
-            serde_json::from_str(&payload.data).expect("notification payload should be JSON");
+        let payload = read_sse_json_method(&mut second_listener, "resource_updated").await;
         assert_eq!(payload["method"], "resource_updated");
         assert_eq!(payload["params"]["uri"], "axon://tasks/t-001");
     }

@@ -84,6 +84,21 @@ async fn mcp_as(server: &axum_test::TestServer, actor: &str, request: &Value) ->
         .json::<Value>()
 }
 
+async fn mcp_as_with_session(
+    server: &axum_test::TestServer,
+    actor: &str,
+    session_id: &str,
+    request: &Value,
+) -> Value {
+    server
+        .post("/mcp")
+        .add_header("x-axon-actor", actor)
+        .add_header("x-axon-mcp-session", session_id)
+        .json(request)
+        .await
+        .json::<Value>()
+}
+
 async fn gql_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Value {
     server
         .post("/tenants/default/databases/default/graphql")
@@ -549,6 +564,140 @@ async fn mcp_tools_list_exposes_policy_metadata_matching_graphql_effective_polic
     assert!(description.contains("redactedFields=secret"));
     assert!(description.contains("deniedFields=secret"));
     assert!(description.contains("envelopes=large-amount-needs-approval"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_tools_list_refreshes_policy_metadata_after_schema_update() {
+    let server = test_server();
+    seed_policy_collection(&server).await;
+
+    let first_response = server
+        .post("/mcp")
+        .add_header("x-axon-actor", "contractor")
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}))
+        .await;
+    first_response.assert_status_ok();
+    let session_id = first_response
+        .headers()
+        .get("x-axon-mcp-session")
+        .and_then(|value| value.to_str().ok())
+        .expect("tools/list should issue a session id")
+        .to_string();
+    let first = first_response.json::<Value>();
+    let first_tools = first["result"]["tools"].as_array().unwrap();
+    let first_patch = first_tools
+        .iter()
+        .find(|tool| tool["name"] == "policy_item.patch")
+        .expect("policy_item.patch should be listed before schema update");
+    assert_eq!(first_patch["policy"]["policyVersion"], 1);
+    assert_eq!(first_patch["policy"]["capabilities"]["canCreate"], false);
+
+    server
+        .put("/tenants/default/databases/default/collections/policy_item/schema")
+        .json(&json!({
+            "version": 2,
+            "entity_schema": {
+                "type": "object",
+                "properties": {
+                    "label": { "type": "string" },
+                    "secret": { "type": "string" },
+                    "amount_cents": { "type": "integer" }
+                }
+            },
+            "access_control": {
+                "read": {
+                    "allow": [{ "name": "all-read" }]
+                },
+                "create": {
+                    "allow": [{ "name": "all-create" }]
+                },
+                "update": {
+                    "allow": [{ "name": "all-update" }]
+                },
+                "delete": {
+                    "allow": [{
+                        "name": "admins-delete",
+                        "when": { "subject": "user_id", "eq": "admin" }
+                    }]
+                },
+                "fields": {
+                    "secret": {
+                        "read": {
+                            "deny": [{
+                                "name": "contractors-cannot-read-secret",
+                                "when": { "subject": "user_id", "eq": "contractor" },
+                                "redact_as": null
+                            }]
+                        },
+                        "write": {
+                            "deny": [{
+                                "name": "contractors-cannot-write-secret",
+                                "when": { "subject": "user_id", "eq": "contractor" }
+                            }]
+                        }
+                    }
+                },
+                "envelopes": {
+                    "write": [{
+                        "name": "large-amount-needs-approval-v2",
+                        "when": { "field": "amount_cents", "gt": 5000 },
+                        "decision": "needs_approval",
+                        "approval": {
+                            "role": "finance_approver",
+                            "reason_required": true
+                        }
+                    }]
+                }
+            },
+            "actor": "schema-admin"
+        }))
+        .await
+        .assert_status_ok();
+
+    let effective = gql_as(
+        &server,
+        "contractor",
+        r#"{
+            effectivePolicy(collection: "policy_item") {
+                canCreate
+                policyVersion
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        effective["errors"].is_null(),
+        "unexpected GraphQL effectivePolicy error: {effective}"
+    );
+    let effective = &effective["data"]["effectivePolicy"];
+
+    let refreshed = mcp_as_with_session(
+        &server,
+        "contractor",
+        &session_id,
+        &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    )
+    .await;
+    assert!(
+        refreshed["error"].is_null(),
+        "unexpected MCP tools/list error after schema update: {refreshed}"
+    );
+    let refreshed_tools = refreshed["result"]["tools"].as_array().unwrap();
+    let refreshed_patch = refreshed_tools
+        .iter()
+        .find(|tool| tool["name"] == "policy_item.patch")
+        .expect("policy_item.patch should still be listed after schema update");
+    let policy = &refreshed_patch["policy"];
+
+    assert_eq!(policy["policyVersion"], effective["policyVersion"]);
+    assert_eq!(policy["capabilities"]["canCreate"], effective["canCreate"]);
+    assert_eq!(policy["policyVersion"], 2);
+    assert_eq!(policy["capabilities"]["canCreate"], true);
+    assert_eq!(
+        policy["envelopes"][0]["name"],
+        "large-amount-needs-approval-v2"
+    );
+    assert_eq!(&refreshed_patch["inputSchema"]["x-axon-policy"], policy);
 }
 
 #[tokio::test(flavor = "multi_thread")]

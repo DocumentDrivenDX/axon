@@ -31,7 +31,9 @@ use crate::auth::{AuthContext, AuthError, Identity};
 use crate::collection_listing::{filter_audit_entries_to_database, list_collections_for_database};
 use crate::cors_config::CorsStore;
 use crate::idempotency::{IdempotencyStore, ReservationResult};
-use crate::mcp_http::{notify_entity_change, notify_entity_change_by_parts, McpHttpSessions};
+use crate::mcp_http::{
+    notify_entity_change, notify_entity_change_by_parts, notify_tool_list_changed, McpHttpSessions,
+};
 use crate::rate_limit::{RateLimited, WriteRateLimiter};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
@@ -2422,6 +2424,7 @@ async fn rollback_transaction_handler(
 
 async fn create_collection(
     Extension(handler): Extension<TenantHandler>,
+    Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(NamePath { name }): Path<NamePath>,
@@ -2460,13 +2463,17 @@ async fn create_collection(
             schema,
             actor: Some(identity.actor),
         }) {
-        Ok(resp) => (StatusCode::CREATED, Json(json!({ "name": resp.name }))).into_response(),
+        Ok(resp) => {
+            notify_tool_list_changed(&mcp_sessions, &current_database);
+            (StatusCode::CREATED, Json(json!({ "name": resp.name }))).into_response()
+        }
         Err(e) => axon_error_response(e),
     }
 }
 
 async fn drop_collection(
     Extension(handler): Extension<TenantHandler>,
+    Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(NamePath { name }): Path<NamePath>,
@@ -2480,11 +2487,14 @@ async fn drop_collection(
         actor: Some(identity.actor),
         confirm: true,
     }) {
-        Ok(resp) => Json(json!({
-            "name": resp.name,
-            "entities_removed": resp.entities_removed,
-        }))
-        .into_response(),
+        Ok(resp) => {
+            notify_tool_list_changed(&mcp_sessions, &current_database);
+            Json(json!({
+                "name": resp.name,
+                "entities_removed": resp.entities_removed,
+            }))
+            .into_response()
+        }
         Err(e) => axon_error_response(e),
     }
 }
@@ -2620,6 +2630,7 @@ async fn delete_collection_template(
 
 async fn put_schema(
     Extension(handler): Extension<TenantHandler>,
+    Extension(mcp_sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(identity): Extension<Identity>,
     Path(NamePath { name: collection }): Path<NamePath>,
@@ -2649,6 +2660,9 @@ async fn put_schema(
         dry_run: body.dry_run,
     }) {
         Ok(resp) => {
+            if !resp.dry_run {
+                notify_tool_list_changed(&mcp_sessions, &current_database);
+            }
             let mut result = json!({ "schema": resp.schema });
             if let Some(compat) = &resp.compatibility {
                 result["compatibility"] = json!(compat);
