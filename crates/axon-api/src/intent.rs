@@ -2,14 +2,14 @@ use std::error::Error;
 use std::fmt;
 
 use axon_audit::entry::{
-    AuditEntry, MutationIntentAuditMetadata, MutationIntentAuditOrigin,
+    AuditAttribution, AuditEntry, MutationIntentAuditMetadata, MutationIntentAuditOrigin,
     MutationIntentAuditOriginSurface, MutationType,
 };
 use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 pub use axon_core::intent::*;
-use axon_core::types::Link;
+use axon_core::types::{Entity, Link};
 use axon_storage::adapter::StorageAdapter;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -718,6 +718,35 @@ pub struct MutationIntentStaleDimension {
     pub path: Option<String>,
 }
 
+/// Inputs for consuming a mutation intent by committing its bound transaction.
+pub struct MutationIntentTransactionCommitRequest {
+    /// Tenant/database scope expected by the intent token.
+    pub scope: MutationIntentScopeBinding,
+    /// Executable token issued by preview.
+    pub token: MutationIntentToken,
+    /// Staged transaction to validate and commit.
+    pub transaction: Transaction,
+    /// Current request-time binding snapshot.
+    pub current: MutationIntentCommitValidationContext,
+    /// Current time in nanoseconds for TTL validation.
+    pub now_ns: u64,
+    /// Actor recorded on mutation audit entries.
+    pub actor: Option<String>,
+    /// Optional authenticated attribution recorded on mutation audit entries.
+    pub attribution: Option<AuditAttribution>,
+}
+
+/// Result of consuming a mutation intent by committing its bound transaction.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MutationIntentCommitResult {
+    /// Intent after it has been marked committed.
+    pub intent: MutationIntent,
+    /// Entity/link records written by the transaction commit path.
+    pub written: Vec<Entity>,
+    /// Transaction ID shared by mutation audit entries.
+    pub transaction_id: String,
+}
+
 /// Commit-time intent validation failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MutationIntentCommitValidationError {
@@ -738,6 +767,8 @@ pub enum MutationIntentCommitValidationError {
     },
     /// The caller no longer has the current grants/authorization envelope required to commit.
     AuthorizationFailed { intent_id: String, reason: String },
+    /// The validated transaction failed while executing.
+    CommitFailed { intent_id: String, source: String },
 }
 
 impl MutationIntentCommitValidationError {
@@ -749,6 +780,7 @@ impl MutationIntentCommitValidationError {
             Self::IntentMismatch { .. } => "intent_mismatch",
             Self::IntentStale { .. } => "intent_stale",
             Self::AuthorizationFailed { .. } => "intent_authorization_failed",
+            Self::CommitFailed { .. } => "intent_commit_failed",
         }
     }
 }
@@ -777,6 +809,9 @@ impl fmt::Display for MutationIntentCommitValidationError {
                 f,
                 "mutation intent '{intent_id}' authorization failed before commit: {reason}"
             ),
+            Self::CommitFailed { intent_id, source } => {
+                write!(f, "mutation intent '{intent_id}' commit failed: {source}")
+            }
         }
     }
 }
@@ -1104,6 +1139,63 @@ impl MutationIntentLifecycleService {
         Ok(intent)
     }
 
+    /// Validate and execute a transaction intent through the normal atomic transaction path.
+    pub fn commit_transaction_intent<S: StorageAdapter, L: AuditLog>(
+        &self,
+        storage: &mut S,
+        audit: &mut L,
+        request: MutationIntentTransactionCommitRequest,
+    ) -> Result<MutationIntentCommitResult, MutationIntentCommitValidationError> {
+        let MutationIntentTransactionCommitRequest {
+            scope,
+            token,
+            transaction,
+            current,
+            now_ns,
+            actor,
+            attribution,
+        } = request;
+        let operation = canonical_staged_transaction_operation(&transaction);
+        let mut current = current;
+        current.operation_hash = operation.operation_hash.clone();
+        let intent = self.validate_commit_bindings(storage, &scope, &token, &current, now_ns)?;
+        let expected_state = commit_expected_state(&intent).map_err(|error| {
+            MutationIntentCommitValidationError::CommitFailed {
+                intent_id: intent.intent_id.clone(),
+                source: error.to_string(),
+            }
+        })?;
+        let intent_id = intent.intent_id.clone();
+        let transaction_id = transaction.id.clone();
+        let lineage = intent_lifecycle_lineage(&intent, None);
+
+        let (written, committed) = transaction
+            .commit_with_storage_hook(
+                storage,
+                audit,
+                actor,
+                attribution,
+                Some(lineage),
+                |storage| {
+                    update_state(
+                        storage,
+                        &scope,
+                        &intent_id,
+                        expected_state,
+                        ApprovalState::Committed,
+                    )
+                    .map_err(|error| AxonError::InvalidOperation(error.to_string()))
+                },
+            )
+            .map_err(|error| commit_execution_error(&intent.intent_id, error))?;
+
+        Ok(MutationIntentCommitResult {
+            intent: committed,
+            written,
+            transaction_id,
+        })
+    }
+
     /// Mark an allowed or approved intent as committed.
     pub fn mark_committed<S: StorageAdapter>(
         &self,
@@ -1144,17 +1236,7 @@ impl MutationIntentLifecycleService {
         )?;
         require_operation_hash(&intent, operation_hash)?;
 
-        let expected = match intent.decision {
-            MutationIntentDecision::Allow => ApprovalState::None,
-            MutationIntentDecision::NeedsApproval => ApprovalState::Approved,
-            MutationIntentDecision::Deny => {
-                return Err(MutationIntentLifecycleError::InvalidDecisionTransition {
-                    intent_id: intent.intent_id,
-                    operation: MutationIntentLifecycleOperation::Commit,
-                    decision: MutationIntentDecision::Deny,
-                })
-            }
-        };
+        let expected = commit_expected_state(&intent)?;
         require_state(
             &intent,
             expected.clone(),
@@ -1168,6 +1250,22 @@ impl MutationIntentLifecycleService {
             expected,
             ApprovalState::Committed,
         )
+    }
+}
+
+fn commit_expected_state(
+    intent: &MutationIntent,
+) -> Result<ApprovalState, MutationIntentLifecycleError> {
+    match intent.decision {
+        MutationIntentDecision::Allow => Ok(ApprovalState::None),
+        MutationIntentDecision::NeedsApproval => Ok(ApprovalState::Approved),
+        MutationIntentDecision::Deny => {
+            Err(MutationIntentLifecycleError::InvalidDecisionTransition {
+                intent_id: intent.intent_id.clone(),
+                operation: MutationIntentLifecycleOperation::Commit,
+                decision: MutationIntentDecision::Deny,
+            })
+        }
     }
 }
 
@@ -1280,6 +1378,33 @@ fn stale_dimension(
         expected,
         actual,
         path,
+    }
+}
+
+fn commit_execution_error(
+    intent_id: &str,
+    error: AxonError,
+) -> MutationIntentCommitValidationError {
+    match error {
+        AxonError::ConflictingVersion {
+            expected,
+            actual,
+            current_entity,
+        } => MutationIntentCommitValidationError::IntentStale {
+            intent_id: intent_id.to_string(),
+            dimensions: vec![stale_dimension(
+                "pre_image",
+                Some(expected.to_string()),
+                Some(actual.to_string()),
+                current_entity
+                    .as_ref()
+                    .map(|entity| format!("entity:{}/{}", entity.collection, entity.id)),
+            )],
+        },
+        other => MutationIntentCommitValidationError::CommitFailed {
+            intent_id: intent_id.to_string(),
+            source: other.to_string(),
+        },
     }
 }
 
@@ -1513,7 +1638,6 @@ mod tests {
     use super::*;
     use axon_audit::log::{AuditLog, AuditQuery, MemoryAuditLog};
     use axon_core::id::{CollectionId, EntityId};
-    use axon_core::types::Entity;
     use axon_storage::memory::MemoryStorageAdapter;
 
     fn scope() -> MutationIntentScopeBinding {
@@ -1622,6 +1746,47 @@ mod tests {
             .expect("preview record")
             .intent_token
             .expect("executable token")
+    }
+
+    fn accounts() -> CollectionId {
+        CollectionId::new("accounts")
+    }
+
+    fn vendors() -> CollectionId {
+        CollectionId::new("vendors")
+    }
+
+    fn account(id: &str, balance: i64) -> Entity {
+        Entity::new(accounts(), EntityId::new(id), json!({"balance": balance}))
+    }
+
+    fn vendor(id: &str) -> Entity {
+        Entity::new(vendors(), EntityId::new(id), json!({"name": id}))
+    }
+
+    fn entity_pre_image(entity: &Entity) -> PreImageBinding {
+        PreImageBinding::Entity {
+            collection: entity.collection.clone(),
+            id: entity.id.clone(),
+            version: entity.version,
+        }
+    }
+
+    fn transaction_intent(
+        intent_id: &str,
+        transaction: &Transaction,
+        pre_images: Vec<PreImageBinding>,
+    ) -> MutationIntent {
+        let mut intent = intent(
+            intent_id,
+            MutationIntentDecision::Allow,
+            ApprovalState::None,
+            100,
+            false,
+        );
+        intent.operation = canonical_staged_transaction_operation(transaction);
+        intent.pre_images = pre_images;
+        intent
     }
 
     #[test]
@@ -1754,6 +1919,329 @@ mod tests {
             .expect_err("lost grants should reject commit");
 
         assert_eq!(err.error_code(), "intent_authorization_failed");
+    }
+
+    #[test]
+    fn transaction_intent_rejects_stale_entity_before_any_write_or_audit() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        let svc = service();
+        storage.put(account("A", 100)).expect("seed A");
+        storage.put(account("B", 50)).expect("seed B");
+        let a_before = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .expect("read A")
+            .expect("A exists");
+        let b_before = storage
+            .get(&accounts(), &EntityId::new("B"))
+            .expect("read B")
+            .expect("B exists");
+        let mut tx = Transaction::new();
+        tx.update(
+            account("A", 70),
+            a_before.version,
+            Some(a_before.data.clone()),
+        )
+        .expect("stage A");
+        tx.update(
+            account("B", 80),
+            b_before.version,
+            Some(b_before.data.clone()),
+        )
+        .expect("stage B");
+        let intent = transaction_intent(
+            "mint_tx_stale",
+            &tx,
+            vec![entity_pre_image(&a_before), entity_pre_image(&b_before)],
+        );
+        let token = seed_preview(&mut storage, &svc, intent.clone());
+        storage
+            .compare_and_swap(account("B", 55), b_before.version)
+            .expect("make B stale");
+
+        let err = svc
+            .commit_transaction_intent(
+                &mut storage,
+                &mut audit,
+                MutationIntentTransactionCommitRequest {
+                    scope: scope(),
+                    token,
+                    transaction: tx,
+                    current: current_commit_context(&intent),
+                    now_ns: 1,
+                    actor: Some("system".into()),
+                    attribution: None,
+                },
+            )
+            .expect_err("stale pre-image should reject commit");
+
+        assert_eq!(err.error_code(), "intent_stale");
+        let MutationIntentCommitValidationError::IntentStale { dimensions, .. } = err else {
+            panic!("expected stale error");
+        };
+        assert!(dimensions.iter().any(|dimension| {
+            dimension.dimension == "pre_image"
+                && dimension.expected.as_deref() == Some("1")
+                && dimension.actual.as_deref() == Some("2")
+                && dimension.path.as_deref() == Some("entity:accounts/B")
+        }));
+        assert_eq!(
+            storage
+                .get(&accounts(), &EntityId::new("A"))
+                .expect("read A")
+                .expect("A exists")
+                .data["balance"],
+            100
+        );
+        assert_eq!(
+            storage
+                .get(&accounts(), &EntityId::new("B"))
+                .expect("read B")
+                .expect("B exists")
+                .data["balance"],
+            55
+        );
+        assert_eq!(audit.len(), 0);
+        assert_eq!(
+            storage
+                .get_mutation_intent("acme", "finance", "mint_tx_stale")
+                .expect("read intent")
+                .expect("intent exists")
+                .approval_state,
+            ApprovalState::None
+        );
+    }
+
+    #[test]
+    fn transaction_intent_rejects_operation_mismatch_before_any_write_or_audit() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        let svc = service();
+        storage.put(account("A", 100)).expect("seed A");
+        let a_before = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .expect("read A")
+            .expect("A exists");
+        let mut previewed_tx = Transaction::new();
+        previewed_tx
+            .update(
+                account("A", 70),
+                a_before.version,
+                Some(a_before.data.clone()),
+            )
+            .expect("stage preview");
+        let intent = transaction_intent(
+            "mint_tx_mismatch",
+            &previewed_tx,
+            vec![entity_pre_image(&a_before)],
+        );
+        let token = seed_preview(&mut storage, &svc, intent.clone());
+        let mut drifted_tx = Transaction::new();
+        drifted_tx
+            .update(
+                account("A", 71),
+                a_before.version,
+                Some(a_before.data.clone()),
+            )
+            .expect("stage drift");
+
+        let err = svc
+            .commit_transaction_intent(
+                &mut storage,
+                &mut audit,
+                MutationIntentTransactionCommitRequest {
+                    scope: scope(),
+                    token,
+                    transaction: drifted_tx,
+                    current: current_commit_context(&intent),
+                    now_ns: 1,
+                    actor: Some("system".into()),
+                    attribution: None,
+                },
+            )
+            .expect_err("drifted transaction should reject commit");
+
+        assert_eq!(err.error_code(), "intent_mismatch");
+        assert_eq!(
+            storage
+                .get(&accounts(), &EntityId::new("A"))
+                .expect("read A")
+                .expect("A exists")
+                .data["balance"],
+            100
+        );
+        assert_eq!(audit.len(), 0);
+    }
+
+    #[test]
+    fn transaction_intent_commits_entity_and_link_operations_atomically() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        let svc = service();
+        storage.put(account("inv-001", 100)).expect("seed invoice");
+        storage.put(vendor("ven-001")).expect("seed vendor");
+        let invoice_before = storage
+            .get(&accounts(), &EntityId::new("inv-001"))
+            .expect("read invoice")
+            .expect("invoice exists");
+        let vendor_before = storage
+            .get(&vendors(), &EntityId::new("ven-001"))
+            .expect("read vendor")
+            .expect("vendor exists");
+        let link = Link {
+            source_collection: vendors(),
+            source_id: EntityId::new("ven-001"),
+            target_collection: accounts(),
+            target_id: EntityId::new("inv-001"),
+            link_type: "approves".into(),
+            metadata: json!({"route": "finance"}),
+        };
+        let mut tx = Transaction::new();
+        tx.update(
+            account("inv-001", 125),
+            invoice_before.version,
+            Some(invoice_before.data.clone()),
+        )
+        .expect("stage invoice");
+        tx.create_link(link.clone()).expect("stage link");
+        let intent = transaction_intent(
+            "mint_tx_mixed",
+            &tx,
+            vec![
+                entity_pre_image(&invoice_before),
+                entity_pre_image(&vendor_before),
+            ],
+        );
+        let token = seed_preview(&mut storage, &svc, intent.clone());
+        let expected_tx_id = tx.id.clone();
+
+        let result = svc
+            .commit_transaction_intent(
+                &mut storage,
+                &mut audit,
+                MutationIntentTransactionCommitRequest {
+                    scope: scope(),
+                    token,
+                    transaction: tx,
+                    current: current_commit_context(&intent),
+                    now_ns: 1,
+                    actor: Some("system".into()),
+                    attribution: None,
+                },
+            )
+            .expect("mixed transaction intent should commit");
+
+        assert_eq!(result.intent.approval_state, ApprovalState::Committed);
+        assert_eq!(result.transaction_id, expected_tx_id);
+        assert_eq!(result.written.len(), 2);
+        assert_eq!(
+            storage
+                .get(&accounts(), &EntityId::new("inv-001"))
+                .expect("read invoice")
+                .expect("invoice exists")
+                .data["balance"],
+            125
+        );
+        let link_id = Link::storage_id(
+            &vendors(),
+            &EntityId::new("ven-001"),
+            "approves",
+            &accounts(),
+            &EntityId::new("inv-001"),
+        );
+        assert!(storage
+            .get(&Link::links_collection(), &link_id)
+            .expect("read link")
+            .is_some());
+        assert_eq!(audit.len(), 2);
+        for entry in audit.entries() {
+            assert_eq!(
+                entry.transaction_id.as_deref(),
+                Some(expected_tx_id.as_str())
+            );
+            assert_eq!(
+                entry
+                    .intent_lineage
+                    .as_deref()
+                    .map(|lineage| lineage.intent_id.as_str()),
+                Some("mint_tx_mixed")
+            );
+        }
+    }
+
+    #[test]
+    fn transaction_intent_version_conflict_aborts_without_partial_audit_or_state_change() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        let svc = service();
+        storage.put(account("A", 100)).expect("seed A");
+        storage.put(account("B", 50)).expect("seed B");
+        let a_before = storage
+            .get(&accounts(), &EntityId::new("A"))
+            .expect("read A")
+            .expect("A exists");
+        let b_before = storage
+            .get(&accounts(), &EntityId::new("B"))
+            .expect("read B")
+            .expect("B exists");
+        let mut tx = Transaction::new();
+        tx.update(
+            account("A", 70),
+            a_before.version,
+            Some(a_before.data.clone()),
+        )
+        .expect("stage A");
+        tx.update(account("B", 80), 99, Some(b_before.data.clone()))
+            .expect("stage conflicting B");
+        let intent = transaction_intent(
+            "mint_tx_conflict",
+            &tx,
+            vec![entity_pre_image(&a_before), entity_pre_image(&b_before)],
+        );
+        let token = seed_preview(&mut storage, &svc, intent.clone());
+
+        let err = svc
+            .commit_transaction_intent(
+                &mut storage,
+                &mut audit,
+                MutationIntentTransactionCommitRequest {
+                    scope: scope(),
+                    token,
+                    transaction: tx,
+                    current: current_commit_context(&intent),
+                    now_ns: 1,
+                    actor: Some("system".into()),
+                    attribution: None,
+                },
+            )
+            .expect_err("transaction conflict should reject commit");
+
+        assert_eq!(err.error_code(), "intent_stale");
+        assert_eq!(
+            storage
+                .get(&accounts(), &EntityId::new("A"))
+                .expect("read A")
+                .expect("A exists")
+                .data["balance"],
+            100
+        );
+        assert_eq!(
+            storage
+                .get(&accounts(), &EntityId::new("B"))
+                .expect("read B")
+                .expect("B exists")
+                .data["balance"],
+            50
+        );
+        assert_eq!(audit.len(), 0);
+        assert_eq!(
+            storage
+                .get_mutation_intent("acme", "finance", "mint_tx_conflict")
+                .expect("read intent")
+                .expect("intent exists")
+                .approval_state,
+            ApprovalState::None
+        );
     }
 
     #[test]

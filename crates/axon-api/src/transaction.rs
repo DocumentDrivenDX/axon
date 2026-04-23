@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use axon_audit::entry::{AuditAttribution, AuditEntry, MutationType};
+use axon_audit::entry::{AuditAttribution, AuditEntry, MutationIntentAuditMetadata, MutationType};
 use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
@@ -221,6 +221,25 @@ impl Transaction {
         actor: Option<String>,
         attribution: Option<AuditAttribution>,
     ) -> Result<Vec<Entity>, AxonError> {
+        let (written, ()) =
+            self.commit_with_storage_hook(storage, audit, actor, attribution, None, |_| Ok(()))?;
+        Ok(written)
+    }
+
+    pub(crate) fn commit_with_storage_hook<S, L, F, T>(
+        self,
+        storage: &mut S,
+        audit: &mut L,
+        actor: Option<String>,
+        attribution: Option<AuditAttribution>,
+        intent_lineage: Option<MutationIntentAuditMetadata>,
+        before_commit: F,
+    ) -> Result<(Vec<Entity>, T), AxonError>
+    where
+        S: StorageAdapter,
+        L: AuditLog,
+        F: FnOnce(&mut S) -> Result<T, AxonError>,
+    {
         // Check timeout before entering the commit path (FEAT-008).
         let elapsed = self.created_at.elapsed();
         if elapsed > self.timeout {
@@ -233,7 +252,7 @@ impl Transaction {
 
         storage.begin_tx()?;
 
-        match self.execute(storage, actor, attribution) {
+        match self.execute(storage, actor, attribution, intent_lineage) {
             Ok((written, pending_entries)) => {
                 // ── Phase 3: co-located audit writes ────────────────────────
                 // Write audit entries inside the storage transaction so that
@@ -249,6 +268,14 @@ impl Transaction {
                     }
                 }
 
+                let hook_result = match before_commit(storage) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        let _ = storage.abort_tx();
+                        return Err(e);
+                    }
+                };
+
                 match storage.commit_tx() {
                     Ok(()) => {
                         // Storage committed (entities + co-located audit entries
@@ -257,7 +284,7 @@ impl Transaction {
                         for entry in pending_entries {
                             audit.append(entry)?;
                         }
-                        Ok(written)
+                        Ok((written, hook_result))
                     }
                     Err(e) => {
                         // commit_tx failed — best-effort abort. Pending audit
@@ -287,6 +314,7 @@ impl Transaction {
         storage: &mut S,
         actor: Option<String>,
         attribution: Option<AuditAttribution>,
+        intent_lineage: Option<MutationIntentAuditMetadata>,
     ) -> Result<(Vec<Entity>, Vec<AuditEntry>), AxonError> {
         let tx_id = self.id.clone();
         let actor_str = actor.as_deref().unwrap_or("anonymous");
@@ -402,6 +430,7 @@ impl Transaction {
 
         // Attribution is shared across all entries in a single transaction commit.
         let tx_attribution = attribution;
+        let tx_intent_lineage = intent_lineage;
 
         for op in self.ops {
             match op {
@@ -419,9 +448,11 @@ impl Transaction {
                             Some(actor_str.into()),
                         );
                         entry.transaction_id = Some(tx_id.clone());
-                        if let Some(ref attr) = tx_attribution {
-                            entry = entry.with_attribution(attr.clone());
-                        }
+                        entry = attach_audit_context(
+                            entry,
+                            tx_attribution.as_ref(),
+                            tx_intent_lineage.as_ref(),
+                        );
                         pending_entries.push(entry);
                         written.push(op.entity);
                     }
@@ -439,9 +470,11 @@ impl Transaction {
                             Some(actor_str.into()),
                         );
                         entry.transaction_id = Some(tx_id.clone());
-                        if let Some(ref attr) = tx_attribution {
-                            entry = entry.with_attribution(attr.clone());
-                        }
+                        entry = attach_audit_context(
+                            entry,
+                            tx_attribution.as_ref(),
+                            tx_intent_lineage.as_ref(),
+                        );
                         pending_entries.push(entry);
                         written.push(updated);
                     }
@@ -457,9 +490,11 @@ impl Transaction {
                             Some(actor_str.into()),
                         );
                         entry.transaction_id = Some(tx_id.clone());
-                        if let Some(ref attr) = tx_attribution {
-                            entry = entry.with_attribution(attr.clone());
-                        }
+                        entry = attach_audit_context(
+                            entry,
+                            tx_attribution.as_ref(),
+                            tx_intent_lineage.as_ref(),
+                        );
                         pending_entries.push(entry);
                         written.push(op.entity);
                     }
@@ -492,9 +527,11 @@ impl Transaction {
                         Some(actor_str.into()),
                     );
                     entry.transaction_id = Some(tx_id.clone());
-                    if let Some(ref attr) = tx_attribution {
-                        entry = entry.with_attribution(attr.clone());
-                    }
+                    entry = attach_audit_context(
+                        entry,
+                        tx_attribution.as_ref(),
+                        tx_intent_lineage.as_ref(),
+                    );
                     pending_entries.push(entry);
                     written.push(link_entity);
                 }
@@ -526,9 +563,11 @@ impl Transaction {
                         Some(actor_str.into()),
                     );
                     entry.transaction_id = Some(tx_id.clone());
-                    if let Some(ref attr) = tx_attribution {
-                        entry = entry.with_attribution(attr.clone());
-                    }
+                    entry = attach_audit_context(
+                        entry,
+                        tx_attribution.as_ref(),
+                        tx_intent_lineage.as_ref(),
+                    );
                     pending_entries.push(entry);
                     written.push(link_entity);
                 }
@@ -537,6 +576,20 @@ impl Transaction {
 
         Ok((written, pending_entries))
     }
+}
+
+fn attach_audit_context(
+    mut entry: AuditEntry,
+    attribution: Option<&AuditAttribution>,
+    intent_lineage: Option<&MutationIntentAuditMetadata>,
+) -> AuditEntry {
+    if let Some(attr) = attribution {
+        entry = entry.with_attribution(attr.clone());
+    }
+    if let Some(lineage) = intent_lineage {
+        entry = entry.with_intent_lineage(lineage.clone());
+    }
+    entry
 }
 
 impl Default for Transaction {

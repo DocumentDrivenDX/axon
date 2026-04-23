@@ -24,11 +24,14 @@ pub use intent::{
     canonical_transaction_operation, canonical_transition_lifecycle_operation,
     canonical_update_entity_operation, canonicalize_intent_operation, ApprovalState,
     CanonicalOperationMetadata, CanonicalTransactionOperation, ExecutableMutationIntent,
-    MutationApprovalRoute, MutationIntent, MutationIntentDecision, MutationIntentLifecycleError,
-    MutationIntentLifecycleOperation, MutationIntentLifecycleService, MutationIntentModelError,
-    MutationIntentPreviewRecord, MutationIntentReviewMetadata, MutationIntentScopeBinding,
+    MutationApprovalRoute, MutationIntent, MutationIntentCommitResult,
+    MutationIntentCommitValidationContext, MutationIntentCommitValidationError,
+    MutationIntentDecision, MutationIntentLifecycleError, MutationIntentLifecycleOperation,
+    MutationIntentLifecycleService, MutationIntentModelError, MutationIntentPreviewRecord,
+    MutationIntentReviewMetadata, MutationIntentScopeBinding, MutationIntentStaleDimension,
     MutationIntentSubjectBinding, MutationIntentToken, MutationIntentTokenLookupError,
-    MutationIntentTokenSigner, MutationOperationKind, MutationReviewSummary, PreImageBinding,
+    MutationIntentTokenSigner, MutationIntentTransactionCommitRequest, MutationOperationKind,
+    MutationReviewSummary, PreImageBinding,
 };
 pub use policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
 pub use transaction::Transaction;
