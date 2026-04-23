@@ -47,7 +47,7 @@ fn build_registry<S: StorageAdapter + 'static>(
     let collection_names = collection_names_for_mcp(&handler, collections)?;
 
     for col in &collection_names {
-        let tools = build_crud_tools(col, Arc::clone(&handler));
+        let tools = build_crud_tools(col, Arc::clone(&handler), CallerIdentity::anonymous());
         for tool in tools {
             registry.register(tool);
         }

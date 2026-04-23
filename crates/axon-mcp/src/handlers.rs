@@ -17,14 +17,14 @@ use async_graphql::{
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateEntityRequest,
-    DeleteEntityRequest, FilterNode, FindLinkCandidatesRequest, GetEntityRequest,
-    ListCollectionsRequest, ListNamespaceCollectionsRequest, ListNamespacesRequest,
-    ListNeighborsRequest, QueryEntitiesRequest, TransitionLifecycleRequest, TraverseDirection,
-    TraverseRequest, UpdateEntityRequest,
+    DeleteEntityRequest, ExplainPolicyRequest, FilterNode, FindLinkCandidatesRequest,
+    GetEntityRequest, ListCollectionsRequest, ListNamespaceCollectionsRequest,
+    ListNamespacesRequest, ListNeighborsRequest, PatchEntityRequest, QueryEntitiesRequest,
+    TransitionLifecycleRequest, TraverseDirection, TraverseRequest,
 };
-use axon_api::response::EffectivePolicyResponse;
+use axon_api::response::{EffectivePolicyResponse, PolicyExplanationResponse};
 use axon_core::auth::CallerIdentity;
-use axon_core::error::AxonError;
+use axon_core::error::{AxonError, PolicyDenial};
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
 use axon_core::types::Entity;
 use axon_schema::{
@@ -45,13 +45,14 @@ use crate::tools::{
 pub fn build_crud_tools<S: StorageAdapter + 'static>(
     collection: &str,
     handler: Arc<Mutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
 ) -> Vec<ToolDef> {
     let col = collection.to_string();
     vec![
-        build_create_tool(&col, Arc::clone(&handler)),
+        build_create_tool(&col, Arc::clone(&handler), caller.clone()),
         build_get_tool(&col, Arc::clone(&handler)),
-        build_patch_tool(&col, Arc::clone(&handler)),
-        build_delete_tool(&col, handler),
+        build_patch_tool(&col, Arc::clone(&handler), caller.clone()),
+        build_delete_tool(&col, handler, caller),
     ]
 }
 
@@ -203,6 +204,108 @@ fn text_tool_response<T: Serialize>(payload: &T) -> Result<Value, ToolError> {
             "text": text
         }]
     }))
+}
+
+fn policy_denial_tool_response(
+    operation: &str,
+    denial: &PolicyDenial,
+    explanation: Option<PolicyExplanationResponse>,
+) -> Result<Value, ToolError> {
+    let explanation_json = explanation
+        .as_ref()
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|e| ToolError::Internal(e.to_string()))?;
+    let decision = explanation
+        .as_ref()
+        .map(|explanation| explanation.decision.as_str())
+        .unwrap_or("deny");
+    let outcome = if decision == "needs_approval" || denial.reason == "needs_approval" {
+        "needs_approval"
+    } else {
+        "denied"
+    };
+    let error_code = if outcome == "needs_approval" {
+        "approval_required"
+    } else {
+        "denied_policy"
+    };
+    let mut structured = serde_json::json!({
+        "outcome": outcome,
+        "errorCode": error_code,
+        "operation": operation,
+        "reason": denial.reason,
+        "collection": denial.collection,
+        "message": denial.to_string()
+    });
+    if let Some(entity_id) = &denial.entity_id {
+        structured["entityId"] = serde_json::json!(entity_id);
+    }
+    if let Some(field_path) = &denial.field_path {
+        structured["fieldPath"] = serde_json::json!(field_path);
+    }
+    if let Some(policy) = &denial.policy {
+        structured["ruleId"] = serde_json::json!(policy);
+        structured["policy"] = serde_json::json!(policy);
+    }
+    if let Some(operation_index) = denial.operation_index {
+        structured["operationIndex"] = serde_json::json!(operation_index);
+    }
+    if let Some(explanation) = explanation_json {
+        if let Some(rule_ids) = explanation.get("rule_ids") {
+            structured["ruleIds"] = rule_ids.clone();
+        }
+        if let Some(rules) = explanation.get("rules") {
+            structured["rules"] = rules.clone();
+        }
+        if let Some(field_paths) = explanation.get("field_paths") {
+            structured["fieldPaths"] = field_paths.clone();
+        }
+        if let Some(denied_fields) = explanation.get("denied_fields") {
+            structured["deniedFields"] = denied_fields.clone();
+        }
+        if let Some(policy_version) = explanation.get("policy_version") {
+            structured["policyVersion"] = policy_version.clone();
+        }
+        if let Some(approval) = explanation.get("approval") {
+            if !approval.is_null() {
+                structured["approval"] = approval.clone();
+            }
+        }
+        structured["explanation"] = explanation;
+    }
+
+    Ok(serde_json::json!({
+        "content": [{
+            "type": "text",
+            "text": denial.to_string()
+        }],
+        "structuredContent": structured,
+        "isError": true
+    }))
+}
+
+fn policy_denial_result(
+    operation: &str,
+    error: AxonError,
+    explanation: Option<PolicyExplanationResponse>,
+) -> Result<Value, ToolError> {
+    match error {
+        AxonError::PolicyDenied(denial) => {
+            policy_denial_tool_response(operation, &denial, explanation)
+        }
+        other => Err(to_tool_error(other)),
+    }
+}
+
+fn explain_write_policy<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    caller: &CallerIdentity,
+    request: ExplainPolicyRequest,
+) -> Option<PolicyExplanationResponse> {
+    handler
+        .explain_policy_with_caller(request, caller, None)
+        .ok()
 }
 
 fn parse_optional_filter(value: Option<Value>) -> Result<Option<FilterNode>, ToolError> {
@@ -917,6 +1020,7 @@ fn execute_create<S: StorageAdapter>(
     handler: &mut AxonHandler<S>,
     collection: &str,
     args: &Value,
+    caller: &CallerIdentity,
 ) -> Result<Value, ToolError> {
     let id = args
         .get("id")
@@ -927,17 +1031,34 @@ fn execute_create<S: StorageAdapter>(
         .get("data")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let response = handler
-        .create_entity(CreateEntityRequest {
-            collection: CollectionId::new(collection),
-            id,
-            data,
-            actor: Some("mcp".into()),
-            audit_metadata: None,
-            attribution: None,
-        })
-        .map_err(to_tool_error)?;
-    text_tool_response(&response.entity)
+    let request = CreateEntityRequest {
+        collection: CollectionId::new(collection),
+        id,
+        data,
+        actor: Some("mcp".into()),
+        audit_metadata: None,
+        attribution: None,
+    };
+    let explanation = explain_write_policy(
+        handler,
+        caller,
+        ExplainPolicyRequest {
+            operation: "create".into(),
+            collection: Some(request.collection.clone()),
+            entity_id: Some(request.id.clone()),
+            expected_version: None,
+            data: Some(request.data.clone()),
+            patch: None,
+            lifecycle_name: None,
+            target_state: None,
+            to_version: None,
+            operations: Vec::new(),
+        },
+    );
+    match handler.create_entity_with_caller(request, caller, None) {
+        Ok(response) => text_tool_response(&response.entity),
+        Err(error) => policy_denial_result("create", error, explanation),
+    }
 }
 
 fn execute_get<S: StorageAdapter>(
@@ -959,6 +1080,7 @@ fn execute_patch<S: StorageAdapter>(
     handler: &mut AxonHandler<S>,
     collection: &str,
     args: &Value,
+    caller: &CallerIdentity,
 ) -> Result<Value, ToolError> {
     let id = get_required_string(args, "id")?;
     let data = args
@@ -970,41 +1092,76 @@ fn execute_patch<S: StorageAdapter>(
         .and_then(Value::as_u64)
         .ok_or_else(|| ToolError::InvalidArgument("missing 'expected_version'".into()))?;
 
-    let response = handler
-        .update_entity(UpdateEntityRequest {
-            collection: CollectionId::new(collection),
-            id: EntityId::new(&id),
-            data,
-            expected_version,
-            actor: Some("mcp".into()),
-            audit_metadata: None,
-            attribution: None,
-        })
-        .map_err(to_tool_error)?;
-    text_tool_response(&response.entity)
+    let request = PatchEntityRequest {
+        collection: CollectionId::new(collection),
+        id: EntityId::new(&id),
+        patch: data,
+        expected_version,
+        actor: Some("mcp".into()),
+        audit_metadata: None,
+        attribution: None,
+    };
+    let explanation = explain_write_policy(
+        handler,
+        caller,
+        ExplainPolicyRequest {
+            operation: "patch".into(),
+            collection: Some(request.collection.clone()),
+            entity_id: Some(request.id.clone()),
+            expected_version: Some(request.expected_version),
+            data: None,
+            patch: Some(request.patch.clone()),
+            lifecycle_name: None,
+            target_state: None,
+            to_version: None,
+            operations: Vec::new(),
+        },
+    );
+    match handler.patch_entity_with_caller(request, caller, None) {
+        Ok(response) => text_tool_response(&response.entity),
+        Err(error) => policy_denial_result("patch", error, explanation),
+    }
 }
 
 fn execute_delete<S: StorageAdapter>(
     handler: &mut AxonHandler<S>,
     collection: &str,
     args: &Value,
+    caller: &CallerIdentity,
 ) -> Result<Value, ToolError> {
     let id = get_required_string(args, "id")?;
-    let response = handler
-        .delete_entity(DeleteEntityRequest {
-            collection: CollectionId::new(collection),
-            id: EntityId::new(&id),
-            actor: Some("mcp".into()),
-            audit_metadata: None,
-            force: false,
-            attribution: None,
-        })
-        .map_err(to_tool_error)?;
-    text_tool_response(&serde_json::json!({
-        "collection": response.collection,
-        "id": response.id,
-        "status": "deleted",
-    }))
+    let request = DeleteEntityRequest {
+        collection: CollectionId::new(collection),
+        id: EntityId::new(&id),
+        actor: Some("mcp".into()),
+        audit_metadata: None,
+        force: false,
+        attribution: None,
+    };
+    let explanation = explain_write_policy(
+        handler,
+        caller,
+        ExplainPolicyRequest {
+            operation: "delete".into(),
+            collection: Some(request.collection.clone()),
+            entity_id: Some(request.id.clone()),
+            expected_version: None,
+            data: None,
+            patch: None,
+            lifecycle_name: None,
+            target_state: None,
+            to_version: None,
+            operations: Vec::new(),
+        },
+    );
+    match handler.delete_entity_with_caller(request, caller, None) {
+        Ok(response) => text_tool_response(&serde_json::json!({
+            "collection": response.collection,
+            "id": response.id,
+            "status": "deleted",
+        })),
+        Err(error) => policy_denial_result("delete", error, explanation),
+    }
 }
 
 fn execute_query<S: StorageAdapter>(
@@ -1126,6 +1283,7 @@ fn execute_neighbors<S: StorageAdapter>(
 fn build_create_tool<S: StorageAdapter + 'static>(
     collection: &str,
     handler: Arc<Mutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
 ) -> ToolDef {
     let col = collection.to_string();
     ToolDef {
@@ -1141,7 +1299,7 @@ fn build_create_tool<S: StorageAdapter + 'static>(
         }),
         handler: Box::new(move |args| {
             let mut guard = lock_handler(&handler)?;
-            execute_create(&mut guard, &col, args)
+            execute_create(&mut guard, &col, args, &caller)
         }),
     }
 }
@@ -1171,6 +1329,7 @@ fn build_get_tool<S: StorageAdapter + 'static>(
 fn build_patch_tool<S: StorageAdapter + 'static>(
     collection: &str,
     handler: Arc<Mutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
 ) -> ToolDef {
     let col = collection.to_string();
     ToolDef {
@@ -1187,7 +1346,7 @@ fn build_patch_tool<S: StorageAdapter + 'static>(
         }),
         handler: Box::new(move |args| {
             let mut guard = lock_handler(&handler)?;
-            execute_patch(&mut guard, &col, args)
+            execute_patch(&mut guard, &col, args, &caller)
         }),
     }
 }
@@ -1195,6 +1354,7 @@ fn build_patch_tool<S: StorageAdapter + 'static>(
 fn build_delete_tool<S: StorageAdapter + 'static>(
     collection: &str,
     handler: Arc<Mutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
 ) -> ToolDef {
     let col = collection.to_string();
     ToolDef {
@@ -1209,7 +1369,7 @@ fn build_delete_tool<S: StorageAdapter + 'static>(
         }),
         handler: Box::new(move |args| {
             let mut guard = lock_handler(&handler)?;
-            execute_delete(&mut guard, &col, args)
+            execute_delete(&mut guard, &col, args, &caller)
         }),
     }
 }
@@ -1442,6 +1602,7 @@ pub fn build_neighbors_tool<S: StorageAdapter + 'static>(
 pub fn build_crud_tools_tokio<S: StorageAdapter + 'static>(
     collection: &str,
     handler: Arc<TokioMutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
 ) -> Vec<ToolDef> {
     let col = collection.to_string();
     vec![
@@ -1459,9 +1620,10 @@ pub fn build_crud_tools_tokio<S: StorageAdapter + 'static>(
             handler: {
                 let handler = Arc::clone(&handler);
                 let col = col.clone();
+                let caller = caller.clone();
                 Box::new(move |args| {
                     let mut guard = handler.blocking_lock();
-                    execute_create(&mut guard, &col, args)
+                    execute_create(&mut guard, &col, args, &caller)
                 })
             },
         },
@@ -1499,9 +1661,10 @@ pub fn build_crud_tools_tokio<S: StorageAdapter + 'static>(
             handler: {
                 let handler = Arc::clone(&handler);
                 let col = col.clone();
+                let caller = caller.clone();
                 Box::new(move |args| {
                     let mut guard = handler.blocking_lock();
-                    execute_patch(&mut guard, &col, args)
+                    execute_patch(&mut guard, &col, args, &caller)
                 })
             },
         },
@@ -1517,9 +1680,10 @@ pub fn build_crud_tools_tokio<S: StorageAdapter + 'static>(
             }),
             handler: {
                 let handler = Arc::clone(&handler);
+                let caller = caller.clone();
                 Box::new(move |args| {
                     let mut guard = handler.blocking_lock();
-                    execute_delete(&mut guard, &col, args)
+                    execute_delete(&mut guard, &col, args, &caller)
                 })
             },
         },
@@ -1837,7 +2001,7 @@ mod tests {
     #[test]
     fn create_and_get_via_mcp_tools() {
         let handler = make_handler();
-        let tools = build_crud_tools("tasks", Arc::clone(&handler));
+        let tools = build_crud_tools("tasks", Arc::clone(&handler), CallerIdentity::anonymous());
 
         // Create
         let create_tool = &tools[0];
@@ -1871,7 +2035,11 @@ mod tests {
             seed_procurement_fixture(&mut guard).expect("procurement fixture should seed")
         };
 
-        let tools = build_crud_tools(fixture.collections.users.as_str(), Arc::clone(&handler));
+        let tools = build_crud_tools(
+            fixture.collections.users.as_str(),
+            Arc::clone(&handler),
+            CallerIdentity::anonymous(),
+        );
         let get_tool = &tools[1];
         assert_eq!(get_tool.name, "users.get");
 
@@ -1891,7 +2059,7 @@ mod tests {
     #[test]
     fn patch_via_mcp_tools() {
         let handler = make_handler();
-        let tools = build_crud_tools("tasks", Arc::clone(&handler));
+        let tools = build_crud_tools("tasks", Arc::clone(&handler), CallerIdentity::anonymous());
 
         // Create first
         invoke_tool(
@@ -1920,7 +2088,7 @@ mod tests {
     #[test]
     fn delete_via_mcp_tools() {
         let handler = make_handler();
-        let tools = build_crud_tools("tasks", Arc::clone(&handler));
+        let tools = build_crud_tools("tasks", Arc::clone(&handler), CallerIdentity::anonymous());
 
         // Create
         invoke_tool(
@@ -1947,7 +2115,7 @@ mod tests {
     #[test]
     fn version_conflict_returns_current_entity() {
         let handler = make_handler();
-        let tools = build_crud_tools("tasks", Arc::clone(&handler));
+        let tools = build_crud_tools("tasks", Arc::clone(&handler), CallerIdentity::anonymous());
 
         // Create
         invoke_tool(
@@ -1980,7 +2148,7 @@ mod tests {
     #[test]
     fn missing_id_returns_invalid_argument() {
         let handler = make_handler();
-        let tools = build_crud_tools("tasks", Arc::clone(&handler));
+        let tools = build_crud_tools("tasks", Arc::clone(&handler), CallerIdentity::anonymous());
 
         let err = invoke_tool_err(&tools[1], serde_json::json!({}));
         assert!(matches!(err, ToolError::InvalidArgument(_)));

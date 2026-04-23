@@ -311,7 +311,7 @@ fn build_tool_registry<S: StorageAdapter + 'static>(
     let collection_names = collection_names_for_mcp(&handler, current_database, collections)?;
 
     for collection in &collection_names {
-        for tool in build_crud_tools_tokio(collection, Arc::clone(&handler)) {
+        for tool in build_crud_tools_tokio(collection, Arc::clone(&handler), caller.clone()) {
             registry.register(tool);
         }
         registry.register(build_aggregate_tool_tokio(collection, Arc::clone(&handler)));

@@ -118,10 +118,7 @@ async fn seed_policy_collection(server: &axum_test::TestServer) {
                         }]
                     },
                     "update": {
-                        "allow": [{
-                            "name": "admins-update",
-                            "when": { "subject": "user_id", "eq": "admin" }
-                        }]
+                        "allow": [{ "name": "all-update" }]
                     },
                     "delete": {
                         "allow": [{
@@ -552,6 +549,142 @@ async fn mcp_tools_list_exposes_policy_metadata_matching_graphql_effective_polic
     assert!(description.contains("redactedFields=secret"));
     assert!(description.contains("deniedFields=secret"));
     assert!(description.contains("envelopes=large-amount-needs-approval"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_crud_policy_denials_return_structured_outcomes() {
+    let server = test_server();
+    seed_policy_collection(&server).await;
+    server
+        .post("/tenants/default/databases/default/entities/policy_item/p1")
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({
+            "data": {
+                "label": "policy target",
+                "secret": "classified",
+                "amount_cents": 100
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    let denied = mcp_as(
+        &server,
+        "contractor",
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "denied",
+            "method": "tools/call",
+            "params": {
+                "name": "policy_item.patch",
+                "arguments": {
+                    "id": "p1",
+                    "data": { "secret": "leaked" },
+                    "expected_version": 1
+                }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        denied["error"].is_null(),
+        "unexpected MCP protocol error: {denied}"
+    );
+    assert_eq!(denied["result"]["isError"], true);
+    let structured = &denied["result"]["structuredContent"];
+    assert_eq!(structured["outcome"], "denied");
+    assert_eq!(structured["errorCode"], "denied_policy");
+    assert_eq!(structured["operation"], "patch");
+    assert_eq!(structured["reason"], "field_write_denied");
+    assert_eq!(structured["collection"], "policy_item");
+    assert_eq!(structured["entityId"], "p1");
+    assert_eq!(structured["fieldPath"], "secret");
+    assert_eq!(structured["ruleId"], "contractors-cannot-write-secret");
+    assert_eq!(structured["deniedFields"], json!(["secret"]));
+    assert_eq!(structured["fieldPaths"], json!(["secret"]));
+    let rule_names: Vec<_> = structured["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|rule| rule["name"].as_str())
+        .collect();
+    assert!(
+        rule_names.contains(&"contractors-cannot-write-secret"),
+        "structured denial should name the matching rule: {denied}"
+    );
+
+    let approval = mcp_as(
+        &server,
+        "admin",
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "approval",
+            "method": "tools/call",
+            "params": {
+                "name": "policy_item.patch",
+                "arguments": {
+                    "id": "p1",
+                    "data": { "amount_cents": 20000 },
+                    "expected_version": 1
+                }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        approval["error"].is_null(),
+        "unexpected MCP protocol error: {approval}"
+    );
+    assert_eq!(approval["result"]["isError"], true);
+    let structured = &approval["result"]["structuredContent"];
+    assert_eq!(structured["outcome"], "needs_approval");
+    assert_eq!(structured["errorCode"], "approval_required");
+    assert_eq!(structured["reason"], "needs_approval");
+    assert_eq!(structured["collection"], "policy_item");
+    assert_eq!(structured["entityId"], "p1");
+    assert_eq!(
+        structured["approval"]["name"],
+        "large-amount-needs-approval"
+    );
+    assert_eq!(structured["approval"]["role"], "finance_approver");
+    assert_eq!(structured["approval"]["reason_required"], true);
+    assert!(
+        structured.get("intentToken").is_none(),
+        "approval-routed direct CRUD must not mint FEAT-030 tokens: {approval}"
+    );
+
+    let allowed = mcp_as(
+        &server,
+        "admin",
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "allowed",
+            "method": "tools/call",
+            "params": {
+                "name": "policy_item.patch",
+                "arguments": {
+                    "id": "p1",
+                    "data": { "label": "updated" },
+                    "expected_version": 1
+                }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        allowed["error"].is_null(),
+        "unexpected MCP protocol error: {allowed}"
+    );
+    assert!(allowed["result"]["isError"].is_null() || allowed["result"]["isError"] == false);
+    assert!(
+        allowed["result"]["structuredContent"].is_null(),
+        "allowed CRUD should keep the normal payload shape: {allowed}"
+    );
+    let text = allowed["result"]["content"][0]["text"].as_str().unwrap();
+    let entity: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(entity["data"]["label"], "updated");
+    assert_eq!(entity["version"], 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]
