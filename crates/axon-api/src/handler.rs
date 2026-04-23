@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,9 +21,9 @@ use axon_core::id::{
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
 use axon_schema::policy::{
-    compile_policy_catalog, CompiledCompareOp, CompiledComparison, CompiledFieldPolicyRule,
-    CompiledOperationPolicy, CompiledPolicyEnvelope, CompiledPolicyRule, CompiledPredicate,
-    PredicateTarget,
+    compile_policy_catalog, CompiledCompareOp, CompiledComparison, CompiledFieldAccessPolicy,
+    CompiledFieldPolicyRule, CompiledOperationPolicy, CompiledPolicyEnvelope, CompiledPolicyRule,
+    CompiledPredicate, PredicateTarget,
 };
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use axon_schema::validation::{compile_entity_schema, validate, validate_link_metadata};
@@ -55,15 +55,16 @@ use crate::response::{
     CreateCollectionResponse, CreateDatabaseResponse, CreateEntityResponse, CreateLinkResponse,
     CreateNamespaceResponse, DeleteCollectionTemplateResponse, DeleteEntityResponse,
     DeleteLinkResponse, DescribeCollectionResponse, DiffSchemaResponse, DropCollectionResponse,
-    DropDatabaseResponse, DropNamespaceResponse, GetCollectionTemplateResponse,
-    GetEntityMarkdownResponse, GetEntityResponse, GetSchemaResponse, InvalidEntity,
-    ListCollectionsResponse, ListDatabasesResponse, ListNamespaceCollectionsResponse,
-    ListNamespacesResponse, PatchEntityResponse, PolicyQueryPlanDiagnostics,
-    PutCollectionTemplateResponse, PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse,
-    ReachableResponse, RevalidateResponse, RevertEntityResponse, RollbackCollectionEntityResult,
-    RollbackCollectionResponse, RollbackEntityResponse, RollbackTransactionEntityResult,
-    RollbackTransactionResponse, SnapshotResponse, TransitionLifecycleResponse, TraverseHop,
-    TraversePath, TraverseResponse, UpdateEntityResponse,
+    DropDatabaseResponse, DropNamespaceResponse, EffectivePolicyResponse,
+    GetCollectionTemplateResponse, GetEntityMarkdownResponse, GetEntityResponse, GetSchemaResponse,
+    InvalidEntity, ListCollectionsResponse, ListDatabasesResponse,
+    ListNamespaceCollectionsResponse, ListNamespacesResponse, PatchEntityResponse,
+    PolicyQueryPlanDiagnostics, PutCollectionTemplateResponse, PutSchemaResponse,
+    QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevalidateResponse,
+    RevertEntityResponse, RollbackCollectionEntityResult, RollbackCollectionResponse,
+    RollbackEntityResponse, RollbackTransactionEntityResult, RollbackTransactionResponse,
+    SnapshotResponse, TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse,
+    UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -1026,6 +1027,199 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
             _ => Ok(true),
         }
+    }
+
+    pub fn effective_policy_with_caller(
+        &self,
+        collection: CollectionId,
+        entity_id: Option<EntityId>,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<EffectivePolicyResponse, AxonError> {
+        let Some(schema) = self.storage.get_schema(&collection)? else {
+            return Err(AxonError::NotFound(collection.to_string()));
+        };
+        let policy_version = schema.version;
+        let Some(snapshot) = self.policy_snapshot_for_request(
+            &collection,
+            Some(&schema),
+            None,
+            Some(caller),
+            attribution.as_ref(),
+        )?
+        else {
+            return Ok(EffectivePolicyResponse {
+                collection: collection.to_string(),
+                can_read: true,
+                can_create: true,
+                can_update: true,
+                can_delete: true,
+                redacted_fields: Vec::new(),
+                denied_fields: Vec::new(),
+                policy_version,
+            });
+        };
+        let Some(plan) = self.compile_policy_plan_for_schema(&schema)? else {
+            return Ok(EffectivePolicyResponse {
+                collection: collection.to_string(),
+                can_read: true,
+                can_create: true,
+                can_update: true,
+                can_delete: true,
+                redacted_fields: Vec::new(),
+                denied_fields: Vec::new(),
+                policy_version,
+            });
+        };
+
+        let entity = match entity_id {
+            Some(id) => Some(
+                self.storage
+                    .get(&collection, &id)?
+                    .ok_or_else(|| AxonError::NotFound(id.to_string()))?,
+            ),
+            None => None,
+        };
+        let entity_data = entity.as_ref().map(entity_policy_data);
+        let can_read = match entity_data.as_ref() {
+            Some(data) => self.policy_operation_allows(
+                &plan,
+                &snapshot,
+                PolicyOperationCheck {
+                    collection: &collection,
+                    entity_id: entity.as_ref().map(|entity| &entity.id),
+                    operation: PolicyOperation::Read,
+                    data,
+                    operation_index: None,
+                },
+            )?,
+            None => effective_operation_allows_static(&plan, &snapshot, PolicyOperation::Read),
+        };
+        let can_create = self.effective_operation_allows(
+            &collection,
+            &plan,
+            &snapshot,
+            PolicyOperation::Create,
+            entity_data.as_ref(),
+        )?;
+        let can_update = can_read
+            && self.effective_operation_allows(
+                &collection,
+                &plan,
+                &snapshot,
+                PolicyOperation::Update,
+                entity_data.as_ref(),
+            )?;
+        let can_delete = can_read
+            && self.effective_operation_allows(
+                &collection,
+                &plan,
+                &snapshot,
+                PolicyOperation::Delete,
+                entity_data.as_ref(),
+            )?;
+        let redacted_fields =
+            self.effective_redacted_fields(&plan, &snapshot, entity_data.as_ref())?;
+        let denied_fields = self.effective_denied_fields(&plan, &snapshot, entity_data.as_ref())?;
+
+        Ok(EffectivePolicyResponse {
+            collection: collection.to_string(),
+            can_read,
+            can_create,
+            can_update,
+            can_delete,
+            redacted_fields,
+            denied_fields,
+            policy_version,
+        })
+    }
+
+    fn effective_operation_allows(
+        &self,
+        collection: &CollectionId,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        operation: PolicyOperation,
+        data: Option<&Value>,
+    ) -> Result<bool, AxonError> {
+        match data {
+            Some(data) => self.policy_operation_allows(
+                plan,
+                snapshot,
+                PolicyOperationCheck {
+                    collection,
+                    entity_id: None,
+                    operation,
+                    data,
+                    operation_index: None,
+                },
+            ),
+            None => Ok(effective_operation_allows_static(plan, snapshot, operation)),
+        }
+    }
+
+    fn effective_redacted_fields(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        data: Option<&Value>,
+    ) -> Result<Vec<String>, AxonError> {
+        if let Some(data) = data {
+            let mut fields: Vec<String> = self
+                .field_read_redactions(plan, snapshot, data)?
+                .into_iter()
+                .map(|(field, _)| field)
+                .collect();
+            fields.sort();
+            fields.dedup();
+            return Ok(fields);
+        }
+
+        Ok(plan
+            .fields
+            .iter()
+            .filter_map(|(field_path, field_policy)| {
+                field_policy.read.as_ref().and_then(|read_policy| {
+                    effective_field_read_redacted_static(read_policy, snapshot)
+                        .then(|| field_path.clone())
+                })
+            })
+            .collect())
+    }
+
+    fn effective_denied_fields(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        data: Option<&Value>,
+    ) -> Result<Vec<String>, AxonError> {
+        let mut fields = BTreeSet::new();
+        for (field_path, field_policy) in &plan.fields {
+            let Some(write_policy) = field_policy.write.as_ref() else {
+                continue;
+            };
+            for operation in [
+                PolicyOperation::Create,
+                PolicyOperation::Update,
+                PolicyOperation::Delete,
+            ] {
+                let denied = match data {
+                    Some(data) => effective_field_write_denied_for_data(
+                        self,
+                        write_policy,
+                        snapshot,
+                        &operation,
+                        data,
+                    )?,
+                    None => effective_field_write_denied_static(write_policy, snapshot, &operation),
+                };
+                if denied {
+                    fields.insert(field_path.clone());
+                    break;
+                }
+            }
+        }
+        Ok(fields.into_iter().collect())
     }
 
     fn get_visible_entity_for_read_with_context(
@@ -6358,6 +6552,135 @@ fn policy_static_predicate_matches(
         }
         _ => None,
     }
+}
+
+fn optional_policy_static_predicate_matches(
+    predicate: Option<&CompiledPredicate>,
+    snapshot: &PolicyRequestSnapshot,
+    operation: &PolicyOperation,
+) -> Option<bool> {
+    predicate.map_or(Some(true), |predicate| {
+        policy_static_predicate_matches(predicate, snapshot, operation)
+    })
+}
+
+fn combine_static_and(left: Option<bool>, right: Option<bool>) -> Option<bool> {
+    match (left, right) {
+        (Some(false), _) | (_, Some(false)) => Some(false),
+        (Some(true), Some(true)) => Some(true),
+        _ => None,
+    }
+}
+
+fn policy_rule_static_matches(
+    rule: &CompiledPolicyRule,
+    snapshot: &PolicyRequestSnapshot,
+    operation: &PolicyOperation,
+) -> Option<bool> {
+    combine_static_and(
+        optional_policy_static_predicate_matches(rule.when.as_ref(), snapshot, operation),
+        optional_policy_static_predicate_matches(rule.where_clause.as_ref(), snapshot, operation),
+    )
+}
+
+fn field_policy_rule_static_matches(
+    rule: &CompiledFieldPolicyRule,
+    snapshot: &PolicyRequestSnapshot,
+    operation: &PolicyOperation,
+) -> Option<bool> {
+    combine_static_and(
+        optional_policy_static_predicate_matches(rule.when.as_ref(), snapshot, operation),
+        optional_policy_static_predicate_matches(rule.where_clause.as_ref(), snapshot, operation),
+    )
+}
+
+fn effective_operation_allows_static(
+    plan: &PolicyPlan,
+    snapshot: &PolicyRequestSnapshot,
+    operation: PolicyOperation,
+) -> bool {
+    let policies = applicable_operation_policies(plan, &operation);
+    let mut allow_rules_present = false;
+
+    for policy in &policies {
+        for rule in &policy.deny {
+            if policy_rule_static_matches(rule, snapshot, &operation) == Some(true) {
+                return false;
+            }
+        }
+        allow_rules_present |= !policy.allow.is_empty();
+    }
+
+    !allow_rules_present
+        || policies.iter().any(|policy| {
+            policy
+                .allow
+                .iter()
+                .any(|rule| policy_rule_static_matches(rule, snapshot, &operation) != Some(false))
+        })
+}
+
+fn effective_field_read_redacted_static(
+    policy: &CompiledFieldAccessPolicy,
+    snapshot: &PolicyRequestSnapshot,
+) -> bool {
+    for rule in &policy.deny {
+        if field_policy_rule_static_matches(rule, snapshot, &PolicyOperation::Read) != Some(false) {
+            return true;
+        }
+    }
+
+    !policy.allow.is_empty()
+        && !policy.allow.iter().any(|rule| {
+            field_policy_rule_static_matches(rule, snapshot, &PolicyOperation::Read) != Some(false)
+        })
+}
+
+fn effective_field_write_denied_static(
+    policy: &CompiledFieldAccessPolicy,
+    snapshot: &PolicyRequestSnapshot,
+    operation: &PolicyOperation,
+) -> bool {
+    for rule in &policy.deny {
+        if field_policy_rule_static_matches(rule, snapshot, operation) != Some(false) {
+            return true;
+        }
+    }
+
+    !policy.allow.is_empty()
+        && !policy
+            .allow
+            .iter()
+            .any(|rule| field_policy_rule_static_matches(rule, snapshot, operation) != Some(false))
+}
+
+fn effective_field_write_denied_for_data<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    policy: &CompiledFieldAccessPolicy,
+    snapshot: &PolicyRequestSnapshot,
+    operation: &PolicyOperation,
+    data: &Value,
+) -> Result<bool, AxonError> {
+    for rule in &policy.deny {
+        if handler.field_policy_rule_matches(rule, snapshot, operation, data)? {
+            return Ok(true);
+        }
+    }
+
+    if !policy.allow.is_empty() {
+        let mut matched = false;
+        for rule in &policy.allow {
+            if handler.field_policy_rule_matches(rule, snapshot, operation, data)? {
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn applicable_operation_policies<'a>(

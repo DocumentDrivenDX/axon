@@ -35,6 +35,40 @@ async fn gql_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Val
         .json::<Value>()
 }
 
+async fn effective_policy_as(
+    server: &axum_test::TestServer,
+    actor: &str,
+    entity_id: Option<&str>,
+) -> Value {
+    let entity_arg = entity_id
+        .map(|id| format!(r#", entityId: "{id}""#))
+        .unwrap_or_default();
+    let body = gql_as(
+        server,
+        actor,
+        &format!(
+            r#"{{
+                effectivePolicy(collection: "task"{entity_arg}) {{
+                    collection
+                    canRead
+                    canCreate
+                    canUpdate
+                    canDelete
+                    redactedFields
+                    deniedFields
+                    policyVersion
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert!(
+        body["errors"].is_null(),
+        "unexpected effectivePolicy errors for {actor}: {body}"
+    );
+    body["data"]["effectivePolicy"].clone()
+}
+
 async fn seed_policy_fixture(server: &axum_test::TestServer) {
     server
         .post("/tenants/default/databases/default/collections/user")
@@ -72,21 +106,50 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                     "type": "object",
                     "properties": {
                         "title": { "type": "string" },
-                        "owner_id": { "type": "string" },
+                        "requester_id": { "type": "string" },
+                        "assigned_contractor_id": { "type": "string" },
                         "secret": { "type": "string" }
                     }
                 },
                 "indexes": [
-                    { "field": "owner_id", "type": "string" }
+                    { "field": "requester_id", "type": "string" },
+                    { "field": "assigned_contractor_id", "type": "string" }
                 ],
                 "access_control": {
                     "read": {
+                        "allow": [
+                            {
+                                "name": "admins-and-finance-read-tasks",
+                                "when": { "subject": "user_id", "in": ["admin", "finance-agent"] }
+                            },
+                            {
+                                "name": "requesters-read-own-tasks",
+                                "where": { "field": "requester_id", "eq_subject": "user_id" }
+                            },
+                            {
+                                "name": "contractors-read-assigned-tasks",
+                                "where": { "field": "assigned_contractor_id", "eq_subject": "user_id" }
+                            }
+                        ]
+                    },
+                    "create": {
                         "allow": [{
-                            "name": "owners-read-tasks",
-                            "where": { "field": "owner_id", "eq_subject": "user_id" }
+                            "name": "admins-and-finance-create-tasks",
+                            "when": { "subject": "user_id", "in": ["admin", "finance-agent"] }
                         }]
                     },
-                    "create": { "allow": [{ "name": "seed-tasks" }] },
+                    "update": {
+                        "allow": [{
+                            "name": "admins-and-finance-update-tasks",
+                            "when": { "subject": "user_id", "in": ["admin", "finance-agent"] }
+                        }]
+                    },
+                    "delete": {
+                        "allow": [{
+                            "name": "admins-delete-tasks",
+                            "when": { "subject": "user_id", "eq": "admin" }
+                        }]
+                    },
                     "fields": {
                         "secret": {
                             "read": {
@@ -94,6 +157,12 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                                     "name": "contractors-cannot-read-secret",
                                     "when": { "subject": "user_id", "eq": "contractor" },
                                     "redact_as": null
+                                }]
+                            },
+                            "write": {
+                                "deny": [{
+                                    "name": "contractors-cannot-write-secret",
+                                    "when": { "subject": "user_id", "eq": "contractor" }
                                 }]
                             }
                         }
@@ -110,28 +179,49 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
         (
             "task",
             "task-a",
-            json!({ "title": "Visible A", "owner_id": "alice", "secret": "alpha" }),
+            json!({
+                "title": "Visible A",
+                "requester_id": "requester",
+                "assigned_contractor_id": "contractor",
+                "secret": "alpha"
+            }),
         ),
         (
             "task",
             "task-b",
-            json!({ "title": "Hidden B", "owner_id": "bob", "secret": "beta" }),
+            json!({
+                "title": "Hidden B",
+                "requester_id": "other-requester",
+                "assigned_contractor_id": "other-contractor",
+                "secret": "beta"
+            }),
         ),
         (
             "task",
             "task-c",
-            json!({ "title": "Visible C", "owner_id": "alice", "secret": "gamma" }),
+            json!({
+                "title": "Visible C",
+                "requester_id": "requester",
+                "assigned_contractor_id": "other-contractor",
+                "secret": "gamma"
+            }),
         ),
         (
             "task",
             "task-contractor",
-            json!({ "title": "Contractor visible", "owner_id": "contractor", "secret": "classified" }),
+            json!({
+                "title": "Contractor visible",
+                "requester_id": "other-requester",
+                "assigned_contractor_id": "contractor",
+                "secret": "classified"
+            }),
         ),
     ] {
         server
             .post(&format!(
                 "/tenants/default/databases/default/entities/{collection}/{id}"
             ))
+            .add_header("x-axon-actor", "admin")
             .json(&json!({ "data": data, "actor": "setup" }))
             .await
             .assert_status(StatusCode::CREATED);
@@ -140,6 +230,7 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
     for target in ["task-a", "task-b"] {
         server
             .post("/tenants/default/databases/default/links")
+            .add_header("x-axon-actor", "admin")
             .json(&json!({
                 "source_collection": "user",
                 "source_id": "u1",
@@ -159,7 +250,7 @@ async fn graphql_policy_read_semantics_are_safe() {
 
     let point = gql_as(
         &server,
-        "alice",
+        "requester",
         r#"{
             hiddenTyped: task(id: "task-b") { id title }
             hiddenGeneric: entity(collection: "task", id: "task-b") { id data }
@@ -178,7 +269,7 @@ async fn graphql_policy_read_semantics_are_safe() {
 
     let first_page = gql_as(
         &server,
-        "alice",
+        "requester",
         r#"{
             tasksConnection(limit: 1) {
                 totalCount
@@ -202,7 +293,7 @@ async fn graphql_policy_read_semantics_are_safe() {
     let after = connection["pageInfo"]["endCursor"].as_str().unwrap();
     let second_page = gql_as(
         &server,
-        "alice",
+        "requester",
         &format!(
             r#"{{
                 tasksConnection(limit: 1, afterId: "{after}") {{
@@ -227,7 +318,7 @@ async fn graphql_policy_read_semantics_are_safe() {
 
     let related = gql_as(
         &server,
-        "alice",
+        "requester",
         r#"{
             user(id: "u1") {
                 assignedTo {
@@ -267,4 +358,70 @@ async fn graphql_policy_read_semantics_are_safe() {
         Value::Null,
         "generic entity payloads must use the same field redaction"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_effective_policy_reports_subject_capabilities() {
+    let server = test_server();
+    seed_policy_fixture(&server).await;
+
+    let admin = effective_policy_as(&server, "admin", None).await;
+    assert_eq!(admin["collection"], "task");
+    assert_eq!(admin["canRead"], true);
+    assert_eq!(admin["canCreate"], true);
+    assert_eq!(admin["canUpdate"], true);
+    assert_eq!(admin["canDelete"], true);
+    assert_eq!(admin["redactedFields"], json!([]));
+    assert_eq!(admin["deniedFields"], json!([]));
+    assert_eq!(admin["policyVersion"], 1);
+
+    let admin_entity = effective_policy_as(&server, "admin", Some("task-b")).await;
+    assert_eq!(admin_entity["canRead"], true);
+    assert_eq!(admin_entity["canCreate"], true);
+    assert_eq!(admin_entity["canUpdate"], true);
+    assert_eq!(admin_entity["canDelete"], true);
+
+    let finance = effective_policy_as(&server, "finance-agent", None).await;
+    assert_eq!(finance["canRead"], true);
+    assert_eq!(finance["canCreate"], true);
+    assert_eq!(finance["canUpdate"], true);
+    assert_eq!(finance["canDelete"], false);
+    assert_eq!(finance["redactedFields"], json!([]));
+    assert_eq!(finance["deniedFields"], json!([]));
+
+    let finance_entity = effective_policy_as(&server, "finance-agent", Some("task-b")).await;
+    assert_eq!(finance_entity["canRead"], true);
+    assert_eq!(finance_entity["canCreate"], true);
+    assert_eq!(finance_entity["canUpdate"], true);
+    assert_eq!(finance_entity["canDelete"], false);
+
+    let requester_collection = effective_policy_as(&server, "requester", None).await;
+    assert_eq!(requester_collection["canRead"], true);
+    assert_eq!(requester_collection["canCreate"], false);
+    assert_eq!(requester_collection["canUpdate"], false);
+    assert_eq!(requester_collection["canDelete"], false);
+    assert_eq!(requester_collection["redactedFields"], json!([]));
+    assert_eq!(requester_collection["deniedFields"], json!([]));
+
+    let requester_entity = effective_policy_as(&server, "requester", Some("task-a")).await;
+    assert_eq!(requester_entity["canRead"], true);
+    assert_eq!(requester_entity["canCreate"], false);
+    assert_eq!(requester_entity["canUpdate"], false);
+    assert_eq!(requester_entity["canDelete"], false);
+
+    let contractor_collection = effective_policy_as(&server, "contractor", None).await;
+    assert_eq!(contractor_collection["canRead"], true);
+    assert_eq!(contractor_collection["canCreate"], false);
+    assert_eq!(contractor_collection["canUpdate"], false);
+    assert_eq!(contractor_collection["canDelete"], false);
+    assert_eq!(contractor_collection["redactedFields"], json!(["secret"]));
+    assert_eq!(contractor_collection["deniedFields"], json!(["secret"]));
+
+    let contractor = effective_policy_as(&server, "contractor", Some("task-contractor")).await;
+    assert_eq!(contractor["canRead"], true);
+    assert_eq!(contractor["canCreate"], false);
+    assert_eq!(contractor["canUpdate"], false);
+    assert_eq!(contractor["canDelete"], false);
+    assert_eq!(contractor["redactedFields"], json!(["secret"]));
+    assert_eq!(contractor["deniedFields"], json!(["secret"]));
 }

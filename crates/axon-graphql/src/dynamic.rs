@@ -68,6 +68,7 @@ const ENTITY_CONNECTION_TYPE: &str = "EntityConnection";
 const PAGE_INFO_TYPE: &str = "PageInfo";
 const COLLECTION_META_TYPE: &str = "CollectionMeta";
 const COLLECTION_TEMPLATE_TYPE: &str = "CollectionTemplate";
+const EFFECTIVE_POLICY_TYPE: &str = "EffectiveCollectionPolicy";
 const RENDERED_ENTITY_TYPE: &str = "RenderedEntity";
 const AUDIT_ENTRY_TYPE: &str = "AuditEntry";
 const AUDIT_EDGE_TYPE: &str = "AuditEdge";
@@ -391,6 +392,42 @@ fn aggregate_result_object(name: &str, group_type: &str) -> Object {
         .field(json_object_field(
             "groups",
             TypeRef::named_nn_list(group_type),
+        ))
+}
+
+fn effective_policy_object() -> Object {
+    Object::new(EFFECTIVE_POLICY_TYPE)
+        .field(json_object_field(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "canRead",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "canCreate",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "canUpdate",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "canDelete",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+        .field(json_object_field(
+            "redactedFields",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "deniedFields",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "policyVersion",
+            TypeRef::named_nn(TypeRef::INT),
         ))
 }
 
@@ -2138,6 +2175,7 @@ fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
         .register(entity_connection_object())
         .register(collection_meta_object())
         .register(collection_template_object())
+        .register(effective_policy_object())
         .register(rendered_entity_object())
         .register(audit_entry_object())
         .register(audit_edge_object())
@@ -2195,6 +2233,51 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             TypeRef::named_nn(TypeRef::STRING),
         ))
         .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID))),
+    );
+
+    let handler_effective_policy = Arc::clone(&handler);
+    query = query.field(
+        Field::new(
+            "effectivePolicy",
+            TypeRef::named_nn(EFFECTIVE_POLICY_TYPE),
+            move |ctx| {
+                let handler = Arc::clone(&handler_effective_policy);
+                let caller = caller_from_ctx(&ctx);
+                FieldFuture::new(async move {
+                    let collection = ctx.args.try_get("collection")?.string()?.to_owned();
+                    let entity_id = ctx
+                        .args
+                        .try_get("entityId")
+                        .ok()
+                        .and_then(|value| value.string().ok())
+                        .map(EntityId::new);
+                    let guard = handler.lock().await;
+                    let policy = guard
+                        .effective_policy_with_caller(
+                            CollectionId::new(collection),
+                            entity_id,
+                            &caller,
+                            None,
+                        )
+                        .map_err(axon_error_to_gql)?;
+                    Ok(Some(json_to_field_value(json!({
+                        "collection": policy.collection,
+                        "canRead": policy.can_read,
+                        "canCreate": policy.can_create,
+                        "canUpdate": policy.can_update,
+                        "canDelete": policy.can_delete,
+                        "redactedFields": policy.redacted_fields,
+                        "deniedFields": policy.denied_fields,
+                        "policyVersion": policy.policy_version,
+                    }))))
+                })
+            },
+        )
+        .argument(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .argument(InputValue::new("entityId", TypeRef::named(TypeRef::ID))),
     );
 
     let handler_entities = Arc::clone(&handler);

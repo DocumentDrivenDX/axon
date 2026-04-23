@@ -28,6 +28,24 @@ pub enum GetEntityMarkdownResponse {
     RenderFailed { entity: Entity, detail: String },
 }
 
+/// Caller-specific policy affordances for a collection or entity.
+///
+/// This is advisory metadata for clients. Mutations and reads always enforce
+/// policy again on execution.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EffectivePolicyResponse {
+    pub collection: String,
+    pub can_read: bool,
+    pub can_create: bool,
+    pub can_update: bool,
+    pub can_delete: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub redacted_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub denied_fields: Vec<String>,
+    pub policy_version: u32,
+}
+
 /// Response after successfully creating an entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntityResponse {
