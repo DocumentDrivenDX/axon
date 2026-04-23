@@ -14,6 +14,8 @@ use axon_api::intent::{
     MutationIntentScopeBinding, MutationIntentSubjectBinding, MutationOperationKind,
     MutationReviewSummary,
 };
+use axon_core::id::{CollectionId, EntityId};
+use axon_core::types::Link;
 use axon_server::gateway::build_router;
 use axon_server::tenant_router::TenantRouter;
 use axon_storage::adapter::StorageAdapter;
@@ -61,6 +63,19 @@ async fn gql_path_as(
         .json(&json!({ "query": query }))
         .await
         .json::<Value>()
+}
+
+fn assert_pre_image(records: &Value, kind: &str, collection: &str, id: &str, version: u64) {
+    let records = records.as_array().expect("pre-image array");
+    assert!(
+        records.iter().any(|record| {
+            record["kind"] == kind
+                && record["collection"] == collection
+                && record["id"] == id
+                && record["version"] == version
+        }),
+        "missing {kind} pre-image {collection}/{id}@{version}: {records:?}"
+    );
 }
 
 async fn insert_test_intent(
@@ -240,7 +255,19 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                         "requester_id": { "type": "string" },
                         "assigned_contractor_id": { "type": "string" },
                         "budget_cents": { "type": "integer" },
-                        "secret": { "type": "string" }
+                        "secret": { "type": "string" },
+                        "status": { "type": "string" }
+                    }
+                },
+                "lifecycles": {
+                    "approval": {
+                        "field": "status",
+                        "initial": "draft",
+                        "transitions": {
+                            "draft": ["submitted"],
+                            "submitted": ["approved"],
+                            "approved": []
+                        }
                     }
                 },
                 "indexes": [
@@ -340,7 +367,8 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                 "requester_id": "requester",
                 "assigned_contractor_id": "contractor",
                 "budget_cents": 5000,
-                "secret": "alpha"
+                "secret": "alpha",
+                "status": "draft"
             }),
         ),
         (
@@ -351,7 +379,8 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                 "requester_id": "other-requester",
                 "assigned_contractor_id": "other-contractor",
                 "budget_cents": 4000,
-                "secret": "beta"
+                "secret": "beta",
+                "status": "draft"
             }),
         ),
         (
@@ -362,7 +391,8 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                 "requester_id": "requester",
                 "assigned_contractor_id": "other-contractor",
                 "budget_cents": 3000,
-                "secret": "gamma"
+                "secret": "gamma",
+                "status": "draft"
             }),
         ),
         (
@@ -373,7 +403,8 @@ async fn seed_policy_fixture(server: &axum_test::TestServer) {
                 "requester_id": "other-requester",
                 "assigned_contractor_id": "contractor",
                 "budget_cents": 2500,
-                "secret": "classified"
+                "secret": "classified",
+                "status": "draft"
             }),
         ),
     ] {
@@ -624,7 +655,8 @@ async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
                 requester_id: "requester",
                 assigned_contractor_id: "contractor",
                 budget_cents: 5000,
-                secret: "changed"
+                secret: "changed",
+                status: "draft"
             }
         }"#,
     )
@@ -655,7 +687,8 @@ async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
                 title: "Large budget",
                 requester_id: "requester",
                 assigned_contractor_id: "contractor",
-                budget_cents: 20000
+                budget_cents: 20000,
+                status: "draft"
             }
         }"#,
     )
@@ -686,7 +719,8 @@ async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
                         title: "Bulk budget",
                         requester_id: "requester",
                         assigned_contractor_id: "contractor",
-                        budget_cents: 20000
+                        budget_cents: 20000,
+                        status: "draft"
                     }
                 }
             }]
@@ -712,7 +746,8 @@ async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
                     title: "Large budget",
                     requester_id: "requester",
                     assigned_contractor_id: "contractor",
-                    budget_cents: 20000
+                    budget_cents: 20000,
+                    status: "draft"
                 }
             ) { id version title }
         }"#,
@@ -767,7 +802,12 @@ async fn graphql_preview_mutation_records_policy_diff_and_never_writes_entity_st
                         patch: { budget_cents: 20000 }
                     }
                 }
-                subject: { userId: "finance-agent" }
+                subject: {
+                    userId: "finance-agent"
+                    credentialId: "cred-preview-1"
+                    grantVersion: 9
+                    tenantRole: "write"
+                }
                 expiresInSeconds: 600
             }) {
                 decision
@@ -784,6 +824,9 @@ async fn graphql_preview_mutation_records_policy_diff_and_never_writes_entity_st
                     databaseId
                     decision
                     approvalState
+                    subject
+                    schemaVersion
+                    policyVersion
                     operationHash
                     preImages { kind collection id version }
                 }
@@ -801,6 +844,14 @@ async fn graphql_preview_mutation_records_policy_diff_and_never_writes_entity_st
     assert_eq!(result["intent"]["tenantId"], "default");
     assert_eq!(result["intent"]["databaseId"], "default");
     assert_eq!(result["intent"]["approvalState"], "pending");
+    assert_eq!(result["intent"]["subject"]["user_id"], "finance-agent");
+    assert_eq!(
+        result["intent"]["subject"]["credential_id"],
+        "cred-preview-1"
+    );
+    assert_eq!(result["intent"]["subject"]["grant_version"], 9);
+    assert_eq!(result["intent"]["schemaVersion"], 1);
+    assert_eq!(result["intent"]["policyVersion"], 1);
     assert_eq!(result["approvalRoute"]["role"], json!("finance_approver"));
     assert_eq!(result["approvalRoute"]["reasonRequired"], true);
     assert_eq!(result["affectedRecords"][0]["kind"], "entity");
@@ -879,6 +930,348 @@ async fn graphql_preview_mutation_records_policy_diff_and_never_writes_entity_st
         0,
         "preview must not append entity mutation audit entries"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_preview_mutation_binds_versions_for_all_operation_shapes() {
+    let server = test_server();
+    seed_policy_fixture(&server).await;
+
+    let update = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "update_entity"
+                    operation: {
+                        collection: "task"
+                        id: "task-c"
+                        expected_version: 1
+                        data: {
+                            title: "Visible C updated"
+                            requester_id: "requester"
+                            assigned_contractor_id: "other-contractor"
+                            budget_cents: 3500
+                            secret: "gamma"
+                            status: "draft"
+                        }
+                    }
+                }
+                subject: {
+                    userId: "admin"
+                    credentialId: "cred-bindings"
+                    grantVersion: 11
+                }
+            }) {
+                intent {
+                    subject
+                    schemaVersion
+                    policyVersion
+                    operationHash
+                    preImages { kind collection id version }
+                }
+                canonicalOperation { operationHash }
+                affectedRecords { kind collection id version }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        update["errors"].is_null(),
+        "unexpected update preview errors: {update}"
+    );
+    let update_result = &update["data"]["previewMutation"];
+    assert_eq!(
+        update_result["intent"]["subject"]["credential_id"],
+        "cred-bindings"
+    );
+    assert_eq!(update_result["intent"]["subject"]["grant_version"], 11);
+    assert_eq!(update_result["intent"]["schemaVersion"], 1);
+    assert_eq!(update_result["intent"]["policyVersion"], 1);
+    assert_eq!(
+        update_result["intent"]["operationHash"],
+        update_result["canonicalOperation"]["operationHash"]
+    );
+    assert_pre_image(
+        &update_result["intent"]["preImages"],
+        "entity",
+        "task",
+        "task-c",
+        1,
+    );
+    assert_pre_image(
+        &update_result["affectedRecords"],
+        "entity",
+        "task",
+        "task-c",
+        1,
+    );
+
+    let create_link = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "create_link"
+                    operation: {
+                        source_collection: "user"
+                        source_id: "u1"
+                        target_collection: "task"
+                        target_id: "task-c"
+                        link_type: "assigned-to"
+                    }
+                }
+            }) {
+                intent {
+                    schemaVersion
+                    policyVersion
+                    preImages { kind collection id version }
+                }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        create_link["errors"].is_null(),
+        "unexpected create-link preview errors: {create_link}"
+    );
+    let create_link_intent = &create_link["data"]["previewMutation"]["intent"];
+    assert_eq!(create_link_intent["schemaVersion"], 1);
+    assert_eq!(create_link_intent["policyVersion"], 1);
+    assert_pre_image(&create_link_intent["preImages"], "entity", "user", "u1", 1);
+    assert_pre_image(
+        &create_link_intent["preImages"],
+        "entity",
+        "task",
+        "task-c",
+        1,
+    );
+
+    let link_id = Link::storage_id(
+        &CollectionId::new("user"),
+        &EntityId::new("u1"),
+        "assigned-to",
+        &CollectionId::new("task"),
+        &EntityId::new("task-b"),
+    )
+    .to_string();
+    let delete_link = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "delete_link"
+                    operation: {
+                        source_collection: "user"
+                        source_id: "u1"
+                        target_collection: "task"
+                        target_id: "task-b"
+                        link_type: "assigned-to"
+                    }
+                }
+            }) {
+                intent {
+                    schemaVersion
+                    policyVersion
+                    preImages { kind collection id version }
+                }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        delete_link["errors"].is_null(),
+        "unexpected delete-link preview errors: {delete_link}"
+    );
+    let delete_link_intent = &delete_link["data"]["previewMutation"]["intent"];
+    assert_eq!(delete_link_intent["schemaVersion"], 1);
+    assert_pre_image(
+        &delete_link_intent["preImages"],
+        "link",
+        "__axon_links__",
+        &link_id,
+        1,
+    );
+    assert_pre_image(&delete_link_intent["preImages"], "entity", "user", "u1", 1);
+    assert_pre_image(
+        &delete_link_intent["preImages"],
+        "entity",
+        "task",
+        "task-b",
+        1,
+    );
+
+    let transition = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "transition"
+                    operation: {
+                        collection: "task"
+                        id: "task-a"
+                        lifecycle_name: "approval"
+                        target_state: "submitted"
+                        expected_version: 1
+                    }
+                }
+            }) {
+                affectedFields
+                intent {
+                    schemaVersion
+                    policyVersion
+                    preImages { kind collection id version }
+                }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        transition["errors"].is_null(),
+        "unexpected transition preview errors: {transition}"
+    );
+    let transition_result = &transition["data"]["previewMutation"];
+    assert_eq!(transition_result["intent"]["schemaVersion"], 1);
+    assert!(
+        transition_result["affectedFields"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("status")),
+        "transition preview should report lifecycle field diff: {transition_result}"
+    );
+    assert_pre_image(
+        &transition_result["intent"]["preImages"],
+        "entity",
+        "task",
+        "task-a",
+        1,
+    );
+
+    server
+        .put("/tenants/default/databases/default/entities/task/task-a")
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({
+            "data": {
+                "title": "Visible A v2",
+                "requester_id": "requester",
+                "assigned_contractor_id": "contractor",
+                "budget_cents": 5000,
+                "secret": "alpha",
+                "status": "draft"
+            },
+            "expected_version": 1,
+            "actor": "admin"
+        }))
+        .await
+        .assert_status_ok();
+
+    let rollback = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "rollback"
+                    operation: {
+                        rollback_scope: "entity"
+                        collection: "task"
+                        id: "task-a"
+                        target: { version: 1 }
+                        expected_version: 2
+                    }
+                }
+            }) {
+                intent {
+                    schemaVersion
+                    policyVersion
+                    preImages { kind collection id version }
+                }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        rollback["errors"].is_null(),
+        "unexpected rollback preview errors: {rollback}"
+    );
+    let rollback_intent = &rollback["data"]["previewMutation"]["intent"];
+    assert_eq!(rollback_intent["schemaVersion"], 1);
+    assert_pre_image(&rollback_intent["preImages"], "entity", "task", "task-a", 2);
+
+    let transaction = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "transaction"
+                    operation: {
+                        operations: [
+                            {
+                                updateEntity: {
+                                    collection: "task"
+                                    id: "task-c"
+                                    expectedVersion: 1
+                                    data: {
+                                        title: "Visible C transaction"
+                                        requester_id: "requester"
+                                        assigned_contractor_id: "other-contractor"
+                                        budget_cents: 3600
+                                        secret: "gamma"
+                                        status: "draft"
+                                    }
+                                }
+                            }
+                            {
+                                deleteLink: {
+                                    sourceCollection: "user"
+                                    sourceId: "u1"
+                                    targetCollection: "task"
+                                    targetId: "task-b"
+                                    linkType: "assigned-to"
+                                }
+                            }
+                        ]
+                    }
+                }
+            }) {
+                intent {
+                    schemaVersion
+                    policyVersion
+                    operationHash
+                    preImages { kind collection id version }
+                }
+                canonicalOperation { operationHash }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        transaction["errors"].is_null(),
+        "unexpected transaction preview errors: {transaction}"
+    );
+    let transaction_result = &transaction["data"]["previewMutation"];
+    assert_eq!(
+        transaction_result["intent"]["operationHash"],
+        transaction_result["canonicalOperation"]["operationHash"]
+    );
+    assert_eq!(transaction_result["intent"]["schemaVersion"], 1);
+    assert_eq!(transaction_result["intent"]["policyVersion"], 1);
+    let transaction_pre_images = &transaction_result["intent"]["preImages"];
+    assert_pre_image(transaction_pre_images, "entity", "task", "task-c", 1);
+    assert_pre_image(
+        transaction_pre_images,
+        "link",
+        "__axon_links__",
+        &link_id,
+        1,
+    );
+    assert_pre_image(transaction_pre_images, "entity", "user", "u1", 1);
+    assert_pre_image(transaction_pre_images, "entity", "task", "task-b", 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]

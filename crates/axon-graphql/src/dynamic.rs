@@ -4389,6 +4389,7 @@ async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
         .approval
         .as_ref()
         .map(mutation_approval_route_from_policy);
+    let policy_version = policy.policy_version.max(preview.schema_version);
     let policy_explanation = mutation_preview_policy_lines(&policy);
     let review_summary = MutationReviewSummary {
         title: Some(format!(
@@ -4406,8 +4407,8 @@ async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
         intent_id: next_graphql_intent_id(now_ns),
         scope: scope.clone(),
         subject,
-        schema_version: preview.schema_version.max(policy.policy_version),
-        policy_version: policy.policy_version,
+        schema_version: preview.schema_version.max(policy_version),
+        policy_version,
         operation: canonical_operation.clone(),
         pre_images: preview.pre_images.clone(),
         decision: decision.clone(),
@@ -4604,6 +4605,7 @@ fn preview_create_link<S: StorageAdapter>(
     let link = link_from_operation(operation)?;
     let source = required_entity(handler, &link.source_collection, &link.source_id)?;
     let target = required_entity(handler, &link.target_collection, &link.target_id)?;
+    let schema_version = max_schema_version_for_entities(handler, &[&source, &target])?;
     let link_id = Link::storage_id(
         &link.source_collection,
         &link.source_id,
@@ -4628,7 +4630,7 @@ fn preview_create_link<S: StorageAdapter>(
         request,
         vec![entity_pre_image(&source), entity_pre_image(&target)],
         diff_value(&Value::Null, &link.to_entity().data),
-        0,
+        schema_version,
     ))
 }
 
@@ -4649,18 +4651,26 @@ fn preview_delete_link<S: StorageAdapter>(
         .get(&Link::links_collection(), &link_id)
         .map_err(axon_error_to_gql)?
         .ok_or_else(|| axon_error_to_gql(AxonError::NotFound(format!("link {link_id}"))))?;
+    let source = required_entity(handler, &link.source_collection, &link.source_id)?;
+    let target = required_entity(handler, &link.target_collection, &link.target_id)?;
+    let schema_version = max_schema_version_for_entities(handler, &[&source, &target])?;
     let mut request = empty_explain_policy_request("delete_link");
     request.collection = Some(link.source_collection);
     request.entity_id = Some(link.source_id);
-    Ok(preview_result(
-        request,
-        vec![PreImageBinding::Link {
+    let pre_images = vec![
+        PreImageBinding::Link {
             collection: Link::links_collection(),
             id: LinkId::new(link_id.to_string()),
             version: link_entity.version,
-        }],
+        },
+        entity_pre_image(&source),
+        entity_pre_image(&target),
+    ];
+    Ok(preview_result(
+        request,
+        pre_images,
         diff_value(&link_entity.data, &Value::Null),
-        0,
+        schema_version,
     ))
 }
 
@@ -4901,6 +4911,17 @@ fn required_schema<S: StorageAdapter>(
         .get_schema(collection)
         .map_err(axon_error_to_gql)?
         .ok_or_else(|| axon_error_to_gql(AxonError::NotFound(collection.to_string())))
+}
+
+fn max_schema_version_for_entities<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    entities: &[&Entity],
+) -> Result<u32, GqlError> {
+    let mut schema_version = 0;
+    for entity in entities {
+        schema_version = schema_version.max(required_schema(handler, &entity.collection)?.version);
+    }
+    Ok(schema_version)
 }
 
 fn required_entity<S: StorageAdapter>(
