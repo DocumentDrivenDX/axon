@@ -2198,6 +2198,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
             Some("template.update") => Some(MT::TemplateUpdate),
             Some("template.delete") => Some(MT::TemplateDelete),
             Some("schema.update") => Some(MT::SchemaUpdate),
+            Some("intent.preview") => Some(MT::IntentPreview),
+            Some("intent.approve") => Some(MT::IntentApprove),
+            Some("intent.reject") => Some(MT::IntentReject),
+            Some("intent.expire") => Some(MT::IntentExpire),
+            Some("intent.commit") => Some(MT::IntentCommit),
             Some(unknown) => {
                 return Err(AxonError::InvalidOperation(format!(
                     "unknown operation type: {unknown}"
@@ -2212,6 +2217,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entity_id: req.entity_id,
             actor: req.actor,
             operation,
+            intent_id: None,
+            approval_id: None,
             since_ns: req.since_ns,
             until_ns: req.until_ns,
             after_id: req.after_id,

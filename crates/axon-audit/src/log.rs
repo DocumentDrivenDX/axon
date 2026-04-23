@@ -32,6 +32,10 @@ pub struct AuditQuery {
     pub actor: Option<String>,
     /// Restrict to entries of this mutation type.
     pub operation: Option<MutationType>,
+    /// Restrict to entries carrying this mutation intent ID.
+    pub intent_id: Option<String>,
+    /// Restrict to entries carrying this approval record ID.
+    pub approval_id: Option<String>,
     /// Inclusive start of the timestamp range (nanoseconds since Unix epoch).
     pub since_ns: Option<u64>,
     /// Inclusive end of the timestamp range (nanoseconds since Unix epoch).
@@ -312,6 +316,24 @@ impl AuditLog for MemoryAuditLog {
                         return false;
                     }
                 }
+                if let Some(intent_id) = &query.intent_id {
+                    if !matches!(
+                        e.intent_lineage.as_ref(),
+                        Some(lineage) if &lineage.intent_id == intent_id
+                    ) {
+                        return false;
+                    }
+                }
+                if let Some(approval_id) = &query.approval_id {
+                    if !matches!(
+                        e.intent_lineage
+                            .as_ref()
+                            .and_then(|lineage| lineage.approval_id.as_ref()),
+                        Some(entry_approval_id) if entry_approval_id == approval_id
+                    ) {
+                        return false;
+                    }
+                }
                 if let Some(since) = query.since_ns {
                     if e.timestamp_ns < since {
                         return false;
@@ -350,8 +372,9 @@ impl AuditLog for MemoryAuditLog {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::MutationType;
+    use crate::entry::{MutationIntentAuditMetadata, MutationType};
     use axon_core::id::{CollectionId, EntityId};
+    use axon_core::intent::{MutationIntentDecision, MutationIntentSubjectBinding};
     use serde_json::json;
 
     fn must_ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {
@@ -382,6 +405,24 @@ mod tests {
             Some(json!({"title": id})),
             None,
         )
+    }
+
+    fn intent_lineage(intent_id: &str, approval_id: Option<&str>) -> MutationIntentAuditMetadata {
+        MutationIntentAuditMetadata {
+            intent_id: intent_id.into(),
+            decision: MutationIntentDecision::NeedsApproval,
+            approval_id: approval_id.map(String::from),
+            policy_version: 3,
+            schema_version: 5,
+            subject_snapshot: MutationIntentSubjectBinding {
+                user_id: Some("user-1".into()),
+                ..Default::default()
+            },
+            approver: None,
+            reason: None,
+            origin: None,
+            lineage_links: Vec::new(),
+        }
     }
 
     #[test]
@@ -635,6 +676,58 @@ mod tests {
         );
         assert_eq!(alice_page.entries.len(), 2);
         assert!(alice_page.entries.iter().all(|e| e.actor == "alice"));
+    }
+
+    #[test]
+    fn query_paginated_filters_by_intent_lineage_metadata() {
+        let mut log = MemoryAuditLog::default();
+        must_ok(
+            log.append(
+                sample_entry("t-001", MutationType::IntentPreview)
+                    .with_intent_lineage(intent_lineage("intent-a", Some("approval-a"))),
+            ),
+            "append intent-a preview should succeed",
+        );
+        must_ok(
+            log.append(
+                sample_entry("t-002", MutationType::IntentApprove)
+                    .with_intent_lineage(intent_lineage("intent-b", Some("approval-b"))),
+            ),
+            "append intent-b approval should succeed",
+        );
+        must_ok(
+            log.append(sample_entry("t-003", MutationType::EntityUpdate)),
+            "append plain entity update should succeed",
+        );
+
+        let by_intent = must_ok(
+            log.query_paginated(AuditQuery {
+                intent_id: Some("intent-b".into()),
+                ..Default::default()
+            }),
+            "intent-lineage query should succeed",
+        );
+        assert_eq!(by_intent.entries.len(), 1);
+        assert_eq!(by_intent.entries[0].entity_id.as_str(), "t-002");
+
+        let by_approval = must_ok(
+            log.query_paginated(AuditQuery {
+                approval_id: Some("approval-a".into()),
+                ..Default::default()
+            }),
+            "approval-lineage query should succeed",
+        );
+        assert_eq!(by_approval.entries.len(), 1);
+        assert_eq!(by_approval.entries[0].entity_id.as_str(), "t-001");
+
+        let missing = must_ok(
+            log.query_paginated(AuditQuery {
+                intent_id: Some("missing".into()),
+                ..Default::default()
+            }),
+            "missing intent-lineage query should succeed",
+        );
+        assert!(missing.entries.is_empty());
     }
 
     #[test]

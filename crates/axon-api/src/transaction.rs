@@ -312,7 +312,12 @@ impl Transaction {
                         | MutationType::EntityRevert
                         | MutationType::LinkCreate
                         | MutationType::LinkDelete
-                        | MutationType::GuardrailRejection => true,
+                        | MutationType::GuardrailRejection
+                        | MutationType::IntentPreview
+                        | MutationType::IntentApprove
+                        | MutationType::IntentReject
+                        | MutationType::IntentExpire
+                        | MutationType::IntentCommit => true,
                     };
 
                     if !ok {
@@ -467,7 +472,12 @@ impl Transaction {
                     | MutationType::EntityRevert
                     | MutationType::LinkCreate
                     | MutationType::LinkDelete
-                    | MutationType::GuardrailRejection => {}
+                    | MutationType::GuardrailRejection
+                    | MutationType::IntentPreview
+                    | MutationType::IntentApprove
+                    | MutationType::IntentReject
+                    | MutationType::IntentExpire
+                    | MutationType::IntentCommit => {}
                 },
                 StagedOp::LinkCreate(link) => {
                     storage.put_link(&link)?;

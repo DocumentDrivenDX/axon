@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use axon_core::id::{CollectionId, EntityId};
+use axon_core::intent::{MutationIntentDecision, MutationIntentSubjectBinding};
 
 /// The type of mutation recorded in an audit entry.
 ///
@@ -38,6 +39,17 @@ pub enum MutationType {
     /// scope violation). Distinct from regular mutations — no entity state
     /// changed, but operators need to see the rejection in the audit trail.
     GuardrailRejection,
+    // ── Mutation intent lifecycle (FEAT-030) ────────────────────────────────
+    /// A mutation intent preview was evaluated and recorded.
+    IntentPreview,
+    /// A pending mutation intent was approved.
+    IntentApprove,
+    /// A pending mutation intent was rejected.
+    IntentReject,
+    /// A pending or executable mutation intent expired.
+    IntentExpire,
+    /// An executable mutation intent was consumed by a committed write.
+    IntentCommit,
 }
 
 impl std::fmt::Display for MutationType {
@@ -56,6 +68,11 @@ impl std::fmt::Display for MutationType {
             MutationType::TemplateDelete => "template.delete",
             MutationType::SchemaUpdate => "schema.update",
             MutationType::GuardrailRejection => "guardrail_rejection",
+            MutationType::IntentPreview => "intent.preview",
+            MutationType::IntentApprove => "intent.approve",
+            MutationType::IntentReject => "intent.reject",
+            MutationType::IntentExpire => "intent.expire",
+            MutationType::IntentCommit => "intent.commit",
         };
         f.write_str(s)
     }
@@ -130,6 +147,114 @@ pub struct AuditAttribution {
     pub auth_method: String,
 }
 
+/// Structured lineage metadata for FEAT-030 mutation-intent audit events.
+///
+/// The legacy `metadata` map remains available for caller-defined tags. This
+/// structure carries the stable intent fields operators need for replayable
+/// approvals, policy explanations, and lineage queries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MutationIntentAuditMetadata {
+    /// Stable mutation intent identifier.
+    pub intent_id: String,
+    /// Policy decision captured at preview time.
+    pub decision: MutationIntentDecision,
+    /// Stable approval record identifier, when a human review exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+    /// Policy version active when the decision was produced.
+    pub policy_version: u32,
+    /// Collection schema version active when the preview was produced.
+    pub schema_version: u32,
+    /// Subject and grant snapshot bound to the preview request.
+    #[serde(default)]
+    pub subject_snapshot: MutationIntentSubjectBinding,
+    /// Approver identity snapshot, present for approval/rejection decisions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approver: Option<MutationIntentApproverMetadata>,
+    /// Human-readable approval or rejection reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// API/tool surface that produced the intent lifecycle event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<MutationIntentAuditOrigin>,
+    /// Links to related audit entries, intents, or approval records.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lineage_links: Vec<MutationIntentLineageLink>,
+}
+
+/// Approver identity snapshot stored on intent-lineage audit metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct MutationIntentApproverMetadata {
+    /// Stable user ID for the approver, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
+    /// Human-readable actor label captured when the decision occurred.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// Tenant role resolved for the approver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_role: Option<String>,
+    /// Credential used for the approval decision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
+}
+
+/// Request surface that originated a mutation-intent lifecycle audit event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutationIntentAuditOrigin {
+    /// Protocol or application surface that produced the event.
+    pub surface: MutationIntentAuditOriginSurface,
+    /// MCP or API tool name, when the event came from a tool call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    /// Request correlation ID, when supplied by the gateway/tool host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// Canonical operation hash associated with the intent, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_hash: Option<String>,
+}
+
+/// Origin surface for mutation-intent audit events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationIntentAuditOriginSurface {
+    Graphql,
+    Rest,
+    Mcp,
+    Cli,
+    System,
+}
+
+/// Typed relationship from one intent audit event to another lineage object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MutationIntentLineageLink {
+    /// Relationship represented by this link.
+    pub relation: MutationIntentLineageRelation,
+    /// Related audit entry ID, when the target is already durable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audit_id: Option<u64>,
+    /// Related mutation intent ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_id: Option<String>,
+    /// Related approval record ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approval_id: Option<String>,
+}
+
+/// Relationship kind for intent-lineage links.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationIntentLineageRelation {
+    PreviewedBy,
+    ApprovedBy,
+    RejectedBy,
+    ExpiredBy,
+    CommittedBy,
+    Supersedes,
+    RelatedTo,
+}
+
 /// A single immutable record in the audit log.
 ///
 /// Fields follow the FEAT-003 specification:
@@ -171,6 +296,10 @@ pub struct AuditEntry {
     /// may drift over time (e.g. after a rename).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attribution: Option<AuditAttribution>,
+    /// Structured mutation-intent lineage metadata. Optional so existing
+    /// entity/link audit entries keep their stable serialized shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_lineage: Option<Box<MutationIntentAuditMetadata>>,
 }
 
 impl AuditEntry {
@@ -214,6 +343,7 @@ impl AuditEntry {
             metadata: HashMap::new(),
             transaction_id: None,
             attribution: None,
+            intent_lineage: None,
         }
     }
 
@@ -229,6 +359,12 @@ impl AuditEntry {
     /// via the middleware pipeline and a [`AuditAttribution`] is available.
     pub fn with_attribution(mut self, attribution: AuditAttribution) -> Self {
         self.attribution = Some(attribution);
+        self
+    }
+
+    /// Attach structured FEAT-030 mutation-intent lineage metadata.
+    pub fn with_intent_lineage(mut self, lineage: MutationIntentAuditMetadata) -> Self {
+        self.intent_lineage = Some(Box::new(lineage));
         self
     }
 }
@@ -252,6 +388,51 @@ mod tests {
         }
     }
 
+    fn must_ok<T, E: std::fmt::Debug>(result: Result<T, E>, context: &str) -> T {
+        match result {
+            Ok(value) => value,
+            Err(error) => panic!("{context}: {error:?}"),
+        }
+    }
+
+    fn sample_intent_lineage() -> MutationIntentAuditMetadata {
+        MutationIntentAuditMetadata {
+            intent_id: "intent-123".into(),
+            decision: MutationIntentDecision::NeedsApproval,
+            approval_id: Some("approval-456".into()),
+            policy_version: 12,
+            schema_version: 7,
+            subject_snapshot: MutationIntentSubjectBinding {
+                user_id: Some("user-1".into()),
+                agent_id: Some("agent-9".into()),
+                delegated_by: Some("delegate-1".into()),
+                tenant_role: Some("maintainer".into()),
+                credential_id: Some("cred-1".into()),
+                grant_version: Some(3),
+                attributes: HashMap::from([("risk".into(), json!("high"))]),
+            },
+            approver: Some(MutationIntentApproverMetadata {
+                user_id: Some("approver-1".into()),
+                actor: Some("ops-admin".into()),
+                tenant_role: Some("admin".into()),
+                credential_id: Some("approval-cred".into()),
+            }),
+            reason: Some("break-glass maintenance".into()),
+            origin: Some(MutationIntentAuditOrigin {
+                surface: MutationIntentAuditOriginSurface::Mcp,
+                tool_name: Some("axon.mutate".into()),
+                request_id: Some("req-789".into()),
+                operation_hash: Some("sha256:abc".into()),
+            }),
+            lineage_links: vec![MutationIntentLineageLink {
+                relation: MutationIntentLineageRelation::PreviewedBy,
+                audit_id: Some(41),
+                intent_id: Some("intent-123".into()),
+                approval_id: None,
+            }],
+        }
+    }
+
     #[test]
     fn mutation_type_display_dot_notation() {
         assert_eq!(MutationType::EntityCreate.to_string(), "entity.create");
@@ -269,6 +450,15 @@ mod tests {
         assert_eq!(MutationType::TemplateUpdate.to_string(), "template.update");
         assert_eq!(MutationType::TemplateDelete.to_string(), "template.delete");
         assert_eq!(MutationType::SchemaUpdate.to_string(), "schema.update");
+        assert_eq!(
+            MutationType::GuardrailRejection.to_string(),
+            "guardrail_rejection"
+        );
+        assert_eq!(MutationType::IntentPreview.to_string(), "intent.preview");
+        assert_eq!(MutationType::IntentApprove.to_string(), "intent.approve");
+        assert_eq!(MutationType::IntentReject.to_string(), "intent.reject");
+        assert_eq!(MutationType::IntentExpire.to_string(), "intent.expire");
+        assert_eq!(MutationType::IntentCommit.to_string(), "intent.commit");
     }
 
     #[test]
@@ -408,5 +598,69 @@ mod tests {
         )
         .with_metadata(meta);
         assert_eq!(entry.metadata["reason"], "scheduled-cleanup");
+    }
+
+    #[test]
+    fn intent_lineage_round_trips_through_json() {
+        let lineage = sample_intent_lineage();
+        let entry = AuditEntry::new(
+            CollectionId::new("tasks"),
+            EntityId::new("t-001"),
+            4,
+            MutationType::IntentApprove,
+            None,
+            None,
+            Some("ops-admin".into()),
+        )
+        .with_intent_lineage(lineage.clone());
+
+        let value = must_ok(
+            serde_json::to_value(&entry),
+            "intent-lineage entry should serialize",
+        );
+        assert_eq!(value["mutation"], "intent_approve");
+        assert_eq!(value["intent_lineage"]["intent_id"], "intent-123");
+        assert_eq!(value["intent_lineage"]["decision"], "needs_approval");
+        assert_eq!(value["intent_lineage"]["origin"]["surface"], "mcp");
+        assert_eq!(
+            value["intent_lineage"]["subject_snapshot"]["tenant_role"],
+            "maintainer"
+        );
+
+        let decoded: AuditEntry = must_ok(
+            serde_json::from_value(value),
+            "intent-lineage entry should deserialize",
+        );
+        assert_eq!(decoded.intent_lineage.as_deref(), Some(&lineage));
+        assert_eq!(decoded.mutation, MutationType::IntentApprove);
+    }
+
+    #[test]
+    fn entity_and_link_entries_omit_intent_lineage_by_default() {
+        let entry = AuditEntry::new(
+            CollectionId::new("links"),
+            EntityId::new("l-001"),
+            1,
+            MutationType::LinkCreate,
+            None,
+            Some(json!({"source": "a", "target": "b"})),
+            None,
+        );
+
+        let value = must_ok(
+            serde_json::to_value(&entry),
+            "plain link entry should serialize",
+        );
+        assert!(
+            value.get("intent_lineage").is_none(),
+            "plain link audit JSON should keep the existing shape"
+        );
+
+        let decoded: AuditEntry = must_ok(
+            serde_json::from_value(value),
+            "plain link entry should deserialize without lineage",
+        );
+        assert!(decoded.intent_lineage.is_none());
+        assert_eq!(decoded.mutation, MutationType::LinkCreate);
     }
 }
