@@ -1,5 +1,9 @@
 //! MCP JSON-RPC 2.0 protocol implementation.
 
+use axon_core::intent::{
+    MutationApprovalRoute, MutationIntent, MutationIntentToken, MutationIntentTokenLookupError,
+    MutationReviewSummary,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -94,6 +98,336 @@ pub struct JsonRpcError {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<Value>,
+}
+
+/// MCP text content block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpTextContent {
+    /// Content block type.
+    #[serde(rename = "type")]
+    pub content_type: String,
+    /// Text payload.
+    pub text: String,
+}
+
+impl McpTextContent {
+    fn new(text: impl Into<String>) -> Self {
+        Self {
+            content_type: "text".into(),
+            text: text.into(),
+        }
+    }
+}
+
+/// Stable MCP error code for mutation intent outcomes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpMutationIntentErrorCode {
+    IntentStale,
+    IntentMismatch,
+    DeniedPolicy,
+    ExpiredToken,
+    RejectedIntent,
+    AlreadyCommitted,
+    ApprovalRequired,
+    InvalidToken,
+    IntentNotFound,
+    TenantDatabaseMismatch,
+}
+
+impl McpMutationIntentErrorCode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::IntentStale => "intent_stale",
+            Self::IntentMismatch => "intent_mismatch",
+            Self::DeniedPolicy => "denied_policy",
+            Self::ExpiredToken => "expired_token",
+            Self::RejectedIntent => "rejected_intent",
+            Self::AlreadyCommitted => "already_committed",
+            Self::ApprovalRequired => "approval_required",
+            Self::InvalidToken => "invalid_token",
+            Self::IntentNotFound => "intent_not_found",
+            Self::TenantDatabaseMismatch => "tenant_database_mismatch",
+        }
+    }
+}
+
+/// Dimension that made a mutation intent stale or mismatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpMutationIntentConflictDimension {
+    GrantVersion,
+    SchemaVersion,
+    PolicyVersion,
+    PreImage,
+    OperationHash,
+    Token,
+    ApprovalState,
+    TenantDatabase,
+}
+
+/// Detail for stale or mismatched mutation intent execution.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpMutationIntentConflictDetail {
+    /// Stale or mismatched binding dimension.
+    pub dimension: McpMutationIntentConflictDimension,
+    /// Expected value, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected: Option<Value>,
+    /// Actual value, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual: Option<Value>,
+    /// Human-readable detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Structured MCP mutation intent outcome payload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum McpMutationIntentOutcome {
+    /// Mutation can commit without human approval.
+    Allowed {
+        intent_id: String,
+        intent_token: String,
+        approval_summary: MutationReviewSummary,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        policy_explanation: Vec<String>,
+    },
+    /// Mutation is valid but requires approval before commit.
+    NeedsApproval {
+        intent_id: String,
+        intent_token: String,
+        approval_summary: MutationReviewSummary,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        approval_route: Option<MutationApprovalRoute>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        policy_explanation: Vec<String>,
+    },
+    /// Mutation is denied by policy.
+    Denied {
+        error_code: McpMutationIntentErrorCode,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        policy_explanation: Vec<String>,
+    },
+    /// Mutation intent cannot commit because the reviewed binding is stale,
+    /// mismatched, expired, rejected, or otherwise not currently executable.
+    Conflict {
+        error_code: McpMutationIntentErrorCode,
+        message: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intent_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        details: Vec<McpMutationIntentConflictDetail>,
+    },
+}
+
+impl McpMutationIntentOutcome {
+    /// Build an `allowed` result from a stored mutation intent and token.
+    pub fn allowed(intent: &MutationIntent, token: &MutationIntentToken) -> Self {
+        Self::Allowed {
+            intent_id: intent.intent_id.clone(),
+            intent_token: token.as_str().to_string(),
+            approval_summary: intent.review_summary.clone(),
+            policy_explanation: intent.review_summary.policy_explanation.clone(),
+        }
+    }
+
+    /// Build a `needs_approval` result from a stored mutation intent and token.
+    pub fn needs_approval(intent: &MutationIntent, token: &MutationIntentToken) -> Self {
+        Self::NeedsApproval {
+            intent_id: intent.intent_id.clone(),
+            intent_token: token.as_str().to_string(),
+            approval_summary: intent.review_summary.clone(),
+            approval_route: intent.approval_route.clone(),
+            policy_explanation: intent.review_summary.policy_explanation.clone(),
+        }
+    }
+
+    /// Build a denied policy result.
+    pub fn denied_policy(
+        message: impl Into<String>,
+        intent_id: Option<String>,
+        policy_explanation: Vec<String>,
+    ) -> Self {
+        Self::Denied {
+            error_code: McpMutationIntentErrorCode::DeniedPolicy,
+            message: message.into(),
+            intent_id,
+            policy_explanation,
+        }
+    }
+
+    /// Map a core token/commit validation failure into a stable MCP outcome.
+    pub fn from_token_lookup_error(error: MutationIntentTokenLookupError) -> Self {
+        match error {
+            MutationIntentTokenLookupError::GrantVersionStale => stale_conflict(
+                McpMutationIntentConflictDimension::GrantVersion,
+                "grant version changed since preview",
+            ),
+            MutationIntentTokenLookupError::SchemaVersionStale => stale_conflict(
+                McpMutationIntentConflictDimension::SchemaVersion,
+                "schema version changed since preview",
+            ),
+            MutationIntentTokenLookupError::PolicyVersionStale => stale_conflict(
+                McpMutationIntentConflictDimension::PolicyVersion,
+                "policy version changed since preview",
+            ),
+            MutationIntentTokenLookupError::PreImageStale => stale_conflict(
+                McpMutationIntentConflictDimension::PreImage,
+                "reviewed entity or link version changed since preview",
+            ),
+            MutationIntentTokenLookupError::OperationMismatch => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::IntentMismatch,
+                message: "mutation intent operation hash does not match reviewed operation".into(),
+                intent_id: None,
+                details: vec![McpMutationIntentConflictDetail {
+                    dimension: McpMutationIntentConflictDimension::OperationHash,
+                    expected: None,
+                    actual: None,
+                    detail: Some("operation hash mismatch".into()),
+                }],
+            },
+            MutationIntentTokenLookupError::Unauthorized => {
+                Self::denied_policy("mutation denied by policy", None, Vec::new())
+            }
+            MutationIntentTokenLookupError::Expired => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::ExpiredToken,
+                message: "mutation intent token is expired".into(),
+                intent_id: None,
+                details: vec![McpMutationIntentConflictDetail {
+                    dimension: McpMutationIntentConflictDimension::Token,
+                    expected: None,
+                    actual: None,
+                    detail: Some("token expired".into()),
+                }],
+            },
+            MutationIntentTokenLookupError::Rejected => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::RejectedIntent,
+                message: "mutation intent was rejected".into(),
+                intent_id: None,
+                details: vec![McpMutationIntentConflictDetail {
+                    dimension: McpMutationIntentConflictDimension::ApprovalState,
+                    expected: None,
+                    actual: Some(serde_json::json!("rejected")),
+                    detail: Some("approval state is rejected".into()),
+                }],
+            },
+            MutationIntentTokenLookupError::AlreadyCommitted => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::AlreadyCommitted,
+                message: "mutation intent was already committed".into(),
+                intent_id: None,
+                details: vec![McpMutationIntentConflictDetail {
+                    dimension: McpMutationIntentConflictDimension::ApprovalState,
+                    expected: None,
+                    actual: Some(serde_json::json!("committed")),
+                    detail: Some("approval state is committed".into()),
+                }],
+            },
+            MutationIntentTokenLookupError::ApprovalRequired => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::ApprovalRequired,
+                message: "mutation intent requires approval before commit".into(),
+                intent_id: None,
+                details: vec![McpMutationIntentConflictDetail {
+                    dimension: McpMutationIntentConflictDimension::ApprovalState,
+                    expected: Some(serde_json::json!("approved")),
+                    actual: None,
+                    detail: Some("approval state is not approved".into()),
+                }],
+            },
+            MutationIntentTokenLookupError::MalformedToken
+            | MutationIntentTokenLookupError::InvalidSignature => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::InvalidToken,
+                message: "mutation intent token is invalid".into(),
+                intent_id: None,
+                details: vec![McpMutationIntentConflictDetail {
+                    dimension: McpMutationIntentConflictDimension::Token,
+                    expected: None,
+                    actual: None,
+                    detail: Some("token is malformed or has an invalid signature".into()),
+                }],
+            },
+            MutationIntentTokenLookupError::NotFound => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::IntentNotFound,
+                message: "mutation intent was not found".into(),
+                intent_id: None,
+                details: Vec::new(),
+            },
+            MutationIntentTokenLookupError::TenantDatabaseMismatch => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::TenantDatabaseMismatch,
+                message: "mutation intent tenant/database scope does not match request".into(),
+                intent_id: None,
+                details: vec![McpMutationIntentConflictDetail {
+                    dimension: McpMutationIntentConflictDimension::TenantDatabase,
+                    expected: None,
+                    actual: None,
+                    detail: Some("tenant/database scope mismatch".into()),
+                }],
+            },
+        }
+    }
+
+    fn summary_text(&self) -> String {
+        match self {
+            Self::Allowed { intent_id, .. } => {
+                format!("Mutation intent {intent_id} is allowed.")
+            }
+            Self::NeedsApproval { intent_id, .. } => {
+                format!("Mutation intent {intent_id} needs approval.")
+            }
+            Self::Denied {
+                error_code,
+                message,
+                ..
+            }
+            | Self::Conflict {
+                error_code,
+                message,
+                ..
+            } => {
+                format!("{}: {message}", error_code.as_str())
+            }
+        }
+    }
+}
+
+/// MCP tool result wrapper for mutation intent outcomes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct McpMutationIntentToolResult {
+    /// Human-readable MCP content block.
+    pub content: Vec<McpTextContent>,
+    /// Machine-readable outcome payload.
+    #[serde(rename = "structuredContent")]
+    pub structured_content: McpMutationIntentOutcome,
+}
+
+impl From<McpMutationIntentOutcome> for McpMutationIntentToolResult {
+    fn from(outcome: McpMutationIntentOutcome) -> Self {
+        Self {
+            content: vec![McpTextContent::new(outcome.summary_text())],
+            structured_content: outcome,
+        }
+    }
+}
+
+fn stale_conflict(
+    dimension: McpMutationIntentConflictDimension,
+    detail: &'static str,
+) -> McpMutationIntentOutcome {
+    McpMutationIntentOutcome::Conflict {
+        error_code: McpMutationIntentErrorCode::IntentStale,
+        message: "mutation intent is stale".into(),
+        intent_id: None,
+        details: vec![McpMutationIntentConflictDetail {
+            dimension,
+            expected: None,
+            actual: None,
+            detail: Some(detail.into()),
+        }],
+    }
 }
 
 impl JsonRpcResponse {
@@ -507,6 +841,12 @@ mod tests {
     use crate::prompts::PromptRegistry;
     use crate::resources::ResourceRegistry;
     use crate::tools::ToolDef;
+    use axon_core::id::{CollectionId, EntityId};
+    use axon_core::intent::{
+        ApprovalState, CanonicalOperationMetadata, MutationIntentDecision,
+        MutationIntentScopeBinding, MutationIntentSubjectBinding, MutationOperationKind,
+        PreImageBinding,
+    };
 
     fn empty_server() -> McpServer {
         McpServer::new(
@@ -521,6 +861,60 @@ mod tests {
             .handle_message(&request.to_string())
             .expect("request should produce a protocol response");
         serde_json::from_str(&response).expect("protocol response should be valid JSON")
+    }
+
+    fn sample_intent(decision: MutationIntentDecision) -> MutationIntent {
+        let approval_route =
+            (decision == MutationIntentDecision::NeedsApproval).then_some(MutationApprovalRoute {
+                role: Some("finance_approver".into()),
+                reason_required: true,
+                deadline_seconds: Some(3600),
+                separation_of_duties: true,
+            });
+        let approval_state = match decision {
+            MutationIntentDecision::Allow | MutationIntentDecision::Deny => ApprovalState::None,
+            MutationIntentDecision::NeedsApproval => ApprovalState::Pending,
+        };
+
+        MutationIntent {
+            intent_id: "mint_01H".into(),
+            scope: MutationIntentScopeBinding {
+                tenant_id: "acme".into(),
+                database_id: "finance".into(),
+            },
+            subject: MutationIntentSubjectBinding::default(),
+            schema_version: 12,
+            policy_version: 12,
+            operation: CanonicalOperationMetadata {
+                operation_kind: MutationOperationKind::UpdateEntity,
+                operation_hash: "sha256:abc123".into(),
+                canonical_operation: Some(serde_json::json!({
+                    "collection": "invoices",
+                    "id": "inv-001",
+                    "patch": {"amount_cents": 1250000}
+                })),
+            },
+            pre_images: vec![PreImageBinding::Entity {
+                collection: CollectionId::new("invoices"),
+                id: EntityId::new("inv-001"),
+                version: 5,
+            }],
+            decision,
+            approval_state,
+            approval_route,
+            expires_at: 1000,
+            review_summary: MutationReviewSummary {
+                title: Some("Invoice amount update".into()),
+                summary: "Review invoice amount before commit.".into(),
+                risk: Some("amount_above_autonomous_limit".into()),
+                affected_records: Vec::new(),
+                affected_fields: vec!["amount_cents".into()],
+                diff: serde_json::json!({
+                    "amount_cents": {"before": 900000, "after": 1250000}
+                }),
+                policy_explanation: vec!["require-approval-large-invoice matched".into()],
+            },
+        }
     }
 
     #[test]
@@ -679,6 +1073,128 @@ mod tests {
         )
         .expect("parse error response should be valid JSON");
         assert_eq!(resp["error"]["code"], -32700);
+    }
+
+    #[test]
+    fn intent_allowed_outcome_serializes_structured_tool_result() {
+        let intent = sample_intent(MutationIntentDecision::Allow);
+        let token = MutationIntentToken::new("token.allowed");
+        let result =
+            McpMutationIntentToolResult::from(McpMutationIntentOutcome::allowed(&intent, &token));
+        let value = serde_json::to_value(result).expect("tool result should serialize");
+
+        assert_eq!(value["content"][0]["type"], "text");
+        assert_eq!(value["structuredContent"]["outcome"], "allowed");
+        assert_eq!(value["structuredContent"]["intent_id"], "mint_01H");
+        assert_eq!(value["structuredContent"]["intent_token"], "token.allowed");
+        assert_eq!(
+            value["structuredContent"]["approval_summary"]["summary"],
+            "Review invoice amount before commit."
+        );
+        assert_eq!(
+            value["structuredContent"]["policy_explanation"][0],
+            "require-approval-large-invoice matched"
+        );
+    }
+
+    #[test]
+    fn intent_needs_approval_outcome_serializes_approval_route() {
+        let intent = sample_intent(MutationIntentDecision::NeedsApproval);
+        let token = MutationIntentToken::new("token.pending");
+        let value = serde_json::to_value(McpMutationIntentToolResult::from(
+            McpMutationIntentOutcome::needs_approval(&intent, &token),
+        ))
+        .expect("tool result should serialize");
+
+        assert_eq!(value["structuredContent"]["outcome"], "needs_approval");
+        assert_eq!(value["structuredContent"]["intent_id"], "mint_01H");
+        assert_eq!(value["structuredContent"]["intent_token"], "token.pending");
+        assert_eq!(
+            value["structuredContent"]["approval_route"]["role"],
+            "finance_approver"
+        );
+        assert_eq!(
+            value["structuredContent"]["approval_route"]["reason_required"],
+            true
+        );
+    }
+
+    #[test]
+    fn intent_denied_outcome_serializes_policy_explanation() {
+        let outcome = McpMutationIntentOutcome::denied_policy(
+            "amount exceeds limit",
+            Some("mint_denied".into()),
+            vec!["deny-large-write matched".into()],
+        );
+        let value = serde_json::to_value(McpMutationIntentToolResult::from(outcome))
+            .expect("tool result should serialize");
+
+        assert_eq!(value["structuredContent"]["outcome"], "denied");
+        assert_eq!(value["structuredContent"]["error_code"], "denied_policy");
+        assert_eq!(value["structuredContent"]["intent_id"], "mint_denied");
+        assert_eq!(
+            value["structuredContent"]["policy_explanation"][0],
+            "deny-large-write matched"
+        );
+    }
+
+    #[test]
+    fn intent_conflict_outcome_serializes_stale_details() {
+        let outcome = McpMutationIntentOutcome::from_token_lookup_error(
+            MutationIntentTokenLookupError::PolicyVersionStale,
+        );
+        let value = serde_json::to_value(McpMutationIntentToolResult::from(outcome))
+            .expect("tool result should serialize");
+
+        assert_eq!(value["structuredContent"]["outcome"], "conflict");
+        assert_eq!(value["structuredContent"]["error_code"], "intent_stale");
+        assert_eq!(
+            value["structuredContent"]["details"][0]["dimension"],
+            "policy_version"
+        );
+        assert_eq!(
+            value["structuredContent"]["details"][0]["detail"],
+            "policy version changed since preview"
+        );
+    }
+
+    #[test]
+    fn intent_error_mapping_uses_stable_codes() {
+        let cases = [
+            (
+                MutationIntentTokenLookupError::SchemaVersionStale,
+                "conflict",
+                "intent_stale",
+            ),
+            (
+                MutationIntentTokenLookupError::OperationMismatch,
+                "conflict",
+                "intent_mismatch",
+            ),
+            (
+                MutationIntentTokenLookupError::Unauthorized,
+                "denied",
+                "denied_policy",
+            ),
+            (
+                MutationIntentTokenLookupError::Expired,
+                "conflict",
+                "expired_token",
+            ),
+            (
+                MutationIntentTokenLookupError::Rejected,
+                "conflict",
+                "rejected_intent",
+            ),
+        ];
+
+        for (error, outcome, code) in cases {
+            let value =
+                serde_json::to_value(McpMutationIntentOutcome::from_token_lookup_error(error))
+                    .expect("outcome should serialize");
+            assert_eq!(value["outcome"], outcome);
+            assert_eq!(value["error_code"], code);
+        }
     }
 
     // ── Resource subscription tests (US-055) ───────────────────────────

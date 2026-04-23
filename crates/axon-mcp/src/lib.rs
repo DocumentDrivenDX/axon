@@ -28,7 +28,11 @@ pub use handlers::{
     build_transition_lifecycle_tool,
 };
 pub use prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
-pub use protocol::{McpError, McpServer};
+pub use protocol::{
+    McpError, McpMutationIntentConflictDetail, McpMutationIntentConflictDimension,
+    McpMutationIntentErrorCode, McpMutationIntentOutcome, McpMutationIntentToolResult, McpServer,
+    McpTextContent,
+};
 pub use resources::{
     discover_collections, read_resource_from_handler, resource_infos, resource_template_infos,
     ResourceRegistry,
