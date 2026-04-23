@@ -32,7 +32,78 @@ async fn mcp_as(server: &axum_test::TestServer, actor: &str, request: &Value) ->
         .json::<Value>()
 }
 
+async fn gql_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Value {
+    server
+        .post("/tenants/default/databases/default/graphql")
+        .add_header("x-axon-actor", actor)
+        .json(&json!({ "query": query }))
+        .await
+        .json::<Value>()
+}
+
+async fn mcp_query_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Value {
+    let response = mcp_as(
+        server,
+        actor,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": "query",
+            "method": "tools/call",
+            "params": {
+                "name": "axon.query",
+                "arguments": {
+                    "query": query
+                }
+            }
+        }),
+    )
+    .await;
+    assert!(
+        response["error"].is_null(),
+        "unexpected MCP JSON-RPC error: {response}"
+    );
+    assert!(
+        response["result"]["isError"].is_null(),
+        "unexpected MCP tool error: {response}"
+    );
+    serde_json::from_str(
+        response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("axon.query should return text content"),
+    )
+    .expect("axon.query text should be a GraphQL JSON response")
+}
+
+fn assert_no_graphql_errors(body: &Value, context: &str) {
+    assert!(
+        body["errors"].is_null(),
+        "unexpected {context} GraphQL errors: {body}"
+    );
+}
+
 async fn seed_intent_collection(server: &axum_test::TestServer) {
+    server
+        .post("/tenants/default/databases/default/collections/intent_users")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "required": ["user_id", "approval_role"],
+                    "properties": {
+                        "user_id": { "type": "string" },
+                        "approval_role": { "type": "string" }
+                    }
+                },
+                "indexes": [
+                    { "field": "user_id", "type": "string", "unique": true }
+                ]
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
     server
         .post("/tenants/default/databases/default/collections/intent_task")
         .json(&json!({
@@ -47,6 +118,19 @@ async fn seed_intent_collection(server: &axum_test::TestServer) {
                     }
                 },
                 "access_control": {
+                    "identity": {
+                        "user_id": "subject.user_id",
+                        "role": "subject.attributes.approval_role",
+                        "attributes": {
+                            "approval_role": {
+                                "from": "collection",
+                                "collection": "intent_users",
+                                "key_field": "user_id",
+                                "key_subject": "user_id",
+                                "value_field": "approval_role"
+                            }
+                        }
+                    },
                     "read": { "allow": [{ "name": "all-read" }] },
                     "create": { "allow": [{ "name": "all-create" }] },
                     "update": { "allow": [{ "name": "all-update" }] },
@@ -78,6 +162,26 @@ async fn seed_intent_collection(server: &axum_test::TestServer) {
         .await
         .assert_status(StatusCode::CREATED);
 
+    for (id, approval_role) in [
+        ("finance-agent", "finance_agent"),
+        ("finance-approver", "finance_approver"),
+    ] {
+        server
+            .post(&format!(
+                "/tenants/default/databases/default/entities/intent_users/{id}"
+            ))
+            .add_header("x-axon-actor", "admin")
+            .json(&json!({
+                "data": {
+                    "user_id": id,
+                    "approval_role": approval_role
+                },
+                "actor": "setup"
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+    }
+
     server
         .post("/tenants/default/databases/default/entities/intent_task/task-a")
         .add_header("x-axon-actor", "admin")
@@ -99,6 +203,23 @@ async fn get_task(server: &axum_test::TestServer) -> Value {
         .await
         .json::<Value>()["entity"]
         .clone()
+}
+
+async fn update_task_amount(server: &axum_test::TestServer, expected_version: u64, amount: u64) {
+    server
+        .put("/tenants/default/databases/default/entities/intent_task/task-a")
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({
+            "data": {
+                "title": "Tracked task",
+                "amount_cents": amount,
+                "secret": "alpha"
+            },
+            "expected_version": expected_version,
+            "actor": "setup"
+        }))
+        .await
+        .assert_status_ok();
 }
 
 async fn patch_tool(server: &axum_test::TestServer, id: &str, arguments: Value) -> Value {
@@ -264,6 +385,353 @@ async fn generated_mcp_tools_preview_commit_and_block_approval_bypass() {
     let after_denied = get_task(&server).await;
     assert_eq!(after_denied["data"]["secret"], "alpha");
     assert_eq!(after_denied["version"], 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn axon_query_intent_mutations_match_graphql_review_flow() {
+    let server = test_server();
+    seed_intent_collection(&server).await;
+
+    let preview = mcp_query_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "patch_entity"
+                    operation: {
+                        collection: "intent_task"
+                        id: "task-a"
+                        expected_version: 1
+                        patch: { amount_cents: 20000 }
+                    }
+                }
+                expiresInSeconds: 600
+            }) {
+                decision
+                intentToken
+                intent {
+                    id
+                    approvalState
+                    decision
+                    approvalRoute { role }
+                    reviewSummary
+                }
+            }
+        }"#,
+    )
+    .await;
+    assert_no_graphql_errors(&preview, "MCP preview");
+    let preview_result = &preview["data"]["previewMutation"];
+    assert_eq!(preview_result["decision"], "needs_approval");
+    let intent_id = preview_result["intent"]["id"].as_str().unwrap().to_string();
+    let intent_token = preview_result["intentToken"].as_str().unwrap().to_string();
+    assert_eq!(preview_result["intent"]["approvalState"], "pending");
+    assert_eq!(
+        preview_result["intent"]["approvalRoute"]["role"],
+        "finance_approver"
+    );
+    assert!(
+        !preview_result["intent"]["reviewSummary"]["policy_explanation"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "preview should expose a policy explanation: {preview_result}"
+    );
+
+    let lookup = gql_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"{{
+                mutationIntent(id: "{intent_id}") {{
+                    id
+                    approvalState
+                    decision
+                    approvalRoute {{ role }}
+                    reviewSummary
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_no_graphql_errors(&lookup, "GraphQL lookup after MCP preview");
+    assert_eq!(lookup["data"]["mutationIntent"]["id"], intent_id);
+    assert_eq!(
+        lookup["data"]["mutationIntent"]["decision"],
+        preview_result["intent"]["decision"]
+    );
+    assert_eq!(
+        lookup["data"]["mutationIntent"]["reviewSummary"]["policy_explanation"],
+        preview_result["intent"]["reviewSummary"]["policy_explanation"]
+    );
+
+    let approved = mcp_query_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"mutation {{
+                approveMutationIntent(input: {{
+                    intentId: "{intent_id}"
+                    reason: "approved through MCP"
+                }}) {{
+                    id
+                    approvalState
+                    decision
+                    reviewSummary
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_no_graphql_errors(&approved, "MCP approval");
+    assert_eq!(approved["data"]["approveMutationIntent"]["id"], intent_id);
+    assert_eq!(
+        approved["data"]["approveMutationIntent"]["approvalState"],
+        "approved"
+    );
+
+    let committed = mcp_query_as(
+        &server,
+        "finance-agent",
+        &format!(
+            r#"mutation {{
+                commitMutationIntent(input: {{
+                    intentToken: "{intent_token}"
+                    intentId: "{intent_id}"
+                }}) {{
+                    committed
+                    errorCode
+                    stale {{ dimension expected actual path }}
+                    intent {{ id approvalState decision }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_no_graphql_errors(&committed, "MCP commit");
+    assert_eq!(committed["data"]["commitMutationIntent"]["committed"], true);
+    assert_eq!(
+        committed["data"]["commitMutationIntent"]["errorCode"],
+        Value::Null
+    );
+    assert_eq!(
+        committed["data"]["commitMutationIntent"]["intent"]["id"],
+        intent_id
+    );
+    assert_eq!(
+        committed["data"]["commitMutationIntent"]["intent"]["approvalState"],
+        "committed"
+    );
+    assert_eq!(get_task(&server).await["data"]["amount_cents"], 20000);
+
+    let reject_preview = mcp_query_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "patch_entity"
+                    operation: {
+                        collection: "intent_task"
+                        id: "task-a"
+                        expected_version: 2
+                        patch: { amount_cents: 30000 }
+                    }
+                }
+                expiresInSeconds: 600
+            }) {
+                decision
+                intent { id approvalState decision }
+            }
+        }"#,
+    )
+    .await;
+    assert_no_graphql_errors(&reject_preview, "MCP reject preview");
+    let reject_intent_id = reject_preview["data"]["previewMutation"]["intent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let rejected = mcp_query_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"mutation {{
+                rejectMutationIntent(input: {{
+                    intentId: "{reject_intent_id}"
+                    reason: "not approved"
+                }}) {{
+                    id
+                    approvalState
+                    decision
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_no_graphql_errors(&rejected, "MCP rejection");
+    assert_eq!(
+        rejected["data"]["rejectMutationIntent"]["id"],
+        reject_intent_id
+    );
+    assert_eq!(
+        rejected["data"]["rejectMutationIntent"]["approvalState"],
+        "rejected"
+    );
+
+    let rejected_lookup = gql_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"{{
+                mutationIntent(id: "{reject_intent_id}") {{ id approvalState decision }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_no_graphql_errors(&rejected_lookup, "GraphQL lookup after MCP rejection");
+    assert_eq!(
+        rejected_lookup["data"]["mutationIntent"]["approvalState"],
+        "rejected"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn axon_query_intent_commit_conflict_matches_graphql_error_extensions() {
+    let graph_server = test_server();
+    seed_intent_collection(&graph_server).await;
+    let mcp_server = test_server();
+    seed_intent_collection(&mcp_server).await;
+
+    let graph_preview = gql_as(
+        &graph_server,
+        "finance-agent",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "patch_entity"
+                    operation: {
+                        collection: "intent_task"
+                        id: "task-a"
+                        expected_version: 1
+                        patch: { amount_cents: 9000 }
+                    }
+                }
+                expiresInSeconds: 600
+            }) {
+                decision
+                intentToken
+                intent { id reviewSummary }
+            }
+        }"#,
+    )
+    .await;
+    assert_no_graphql_errors(&graph_preview, "GraphQL stale preview");
+    let graph_token = graph_preview["data"]["previewMutation"]["intentToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let graph_intent_id = graph_preview["data"]["previewMutation"]["intent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mcp_preview = mcp_query_as(
+        &mcp_server,
+        "finance-agent",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "patch_entity"
+                    operation: {
+                        collection: "intent_task"
+                        id: "task-a"
+                        expected_version: 1
+                        patch: { amount_cents: 9000 }
+                    }
+                }
+                expiresInSeconds: 600
+            }) {
+                decision
+                intentToken
+                intent { id reviewSummary }
+            }
+        }"#,
+    )
+    .await;
+    assert_no_graphql_errors(&mcp_preview, "MCP stale preview");
+    let mcp_token = mcp_preview["data"]["previewMutation"]["intentToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mcp_intent_id = mcp_preview["data"]["previewMutation"]["intent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(
+        mcp_preview["data"]["previewMutation"]["decision"],
+        graph_preview["data"]["previewMutation"]["decision"]
+    );
+    assert_eq!(
+        mcp_preview["data"]["previewMutation"]["intent"]["reviewSummary"]["policy_explanation"],
+        graph_preview["data"]["previewMutation"]["intent"]["reviewSummary"]["policy_explanation"]
+    );
+
+    update_task_amount(&graph_server, 1, 7000).await;
+    update_task_amount(&mcp_server, 1, 7000).await;
+
+    let graph_commit = gql_as(
+        &graph_server,
+        "finance-agent",
+        &format!(
+            r#"mutation {{
+                commitMutationIntent(input: {{
+                    intentToken: "{graph_token}"
+                    intentId: "{graph_intent_id}"
+                }}) {{
+                    committed
+                    stale {{ dimension expected actual path }}
+                    errorCode
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    let mcp_commit = mcp_query_as(
+        &mcp_server,
+        "finance-agent",
+        &format!(
+            r#"mutation {{
+                commitMutationIntent(input: {{
+                    intentToken: "{mcp_token}"
+                    intentId: "{mcp_intent_id}"
+                }}) {{
+                    committed
+                    stale {{ dimension expected actual path }}
+                    errorCode
+                }}
+            }}"#
+        ),
+    )
+    .await;
+
+    assert_eq!(
+        mcp_commit["errors"][0]["extensions"]["code"],
+        graph_commit["errors"][0]["extensions"]["code"]
+    );
+    assert_eq!(
+        mcp_commit["errors"][0]["extensions"]["code"],
+        "intent_stale"
+    );
+    assert_eq!(
+        mcp_commit["errors"][0]["extensions"]["stale"],
+        graph_commit["errors"][0]["extensions"]["stale"]
+    );
+    assert_eq!(
+        mcp_commit["errors"][0]["extensions"]["stale"][0]["dimension"],
+        "pre_image"
+    );
 }
 
 #[test]

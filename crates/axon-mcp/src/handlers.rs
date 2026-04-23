@@ -1283,7 +1283,7 @@ fn graph_query_schemas<S: StorageAdapter>(
         .collect())
 }
 
-fn validate_graphql_read_document(query: &str) -> Result<(), ToolError> {
+fn validate_dynamic_graphql_document(query: &str) -> Result<(), ToolError> {
     if query.trim().is_empty() {
         return Err(ToolError::InvalidArgument("empty query string".into()));
     }
@@ -1291,11 +1291,35 @@ fn validate_graphql_read_document(query: &str) -> Result<(), ToolError> {
     let document = parse_query(query)
         .map_err(|e| ToolError::InvalidArgument(format!("GraphQL syntax error: {e}")))?;
     for (_, operation) in document.operations.iter() {
-        if operation.node.ty != OperationType::Query {
-            return Err(ToolError::InvalidArgument(format!(
-                "unsupported GraphQL operation: {}",
-                operation.node.ty
-            )));
+        match operation.node.ty {
+            OperationType::Query => {}
+            OperationType::Mutation => {
+                for selection in &operation.node.selection_set.node.items {
+                    let Selection::Field(field) = &selection.node else {
+                        return Err(ToolError::InvalidArgument(
+                            "GraphQL fragments are not supported by axon.query".into(),
+                        ));
+                    };
+                    let field_name = field.node.name.node.as_str();
+                    if !matches!(
+                        field_name,
+                        "previewMutation"
+                            | "approveMutationIntent"
+                            | "rejectMutationIntent"
+                            | "commitMutationIntent"
+                    ) {
+                        return Err(ToolError::InvalidArgument(format!(
+                            "unsupported GraphQL mutation root field for axon.query: {field_name}"
+                        )));
+                    }
+                }
+            }
+            OperationType::Subscription => {
+                return Err(ToolError::InvalidArgument(format!(
+                    "unsupported GraphQL operation: {}",
+                    OperationType::Subscription
+                )));
+            }
         }
     }
     Ok(())
@@ -1316,7 +1340,7 @@ fn execute_dynamic_graphql_query<S: StorageAdapter + 'static>(
     variables: Value,
     caller: &CallerIdentity,
 ) -> Result<Value, ToolError> {
-    validate_graphql_read_document(query)?;
+    validate_dynamic_graphql_document(query)?;
 
     let schemas = {
         let guard = handler.blocking_lock();
