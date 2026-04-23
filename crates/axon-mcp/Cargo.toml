@@ -11,6 +11,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+axon-audit.path = "../axon-audit"
 axon-core.path = "../axon-core"
 axon-schema.path = "../axon-schema"
 axon-api.path = "../axon-api"

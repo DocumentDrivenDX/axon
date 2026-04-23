@@ -5,7 +5,9 @@
 //!
 //! Uses `std::sync::Mutex` since all `AxonHandler` methods are synchronous.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_graphql::parser::{
     parse_query,
@@ -15,6 +17,16 @@ use async_graphql::{
     Request as GraphQlRequest, Value as GraphQlConstValue, Variables as GraphQlVariables,
 };
 use axon_api::handler::AxonHandler;
+use axon_api::intent::{
+    canonical_create_entity_operation, canonical_delete_entity_operation,
+    canonical_patch_entity_operation, canonical_transition_lifecycle_operation,
+    canonicalize_intent_operation, ApprovalState, CanonicalOperationMetadata,
+    MutationApprovalRoute, MutationIntent, MutationIntentCommitValidationContext,
+    MutationIntentDecision, MutationIntentLifecycleService, MutationIntentScopeBinding,
+    MutationIntentSubjectBinding, MutationIntentToken, MutationIntentTokenLookupError,
+    MutationIntentTokenSigner, MutationIntentTransactionCommitRequest, MutationOperationKind,
+    MutationReviewSummary, PreImageBinding,
+};
 use axon_api::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateEntityRequest,
     DeleteEntityRequest, ExplainPolicyRequest, FilterNode, FindLinkCandidatesRequest,
@@ -23,10 +35,13 @@ use axon_api::request::{
     TransitionLifecycleRequest, TraverseDirection, TraverseRequest,
 };
 use axon_api::response::{EffectivePolicyResponse, PolicyExplanationResponse};
-use axon_core::auth::CallerIdentity;
+use axon_api::transaction::Transaction;
+use axon_audit::entry::compute_diff;
+use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::{AxonError, PolicyDenial};
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
-use axon_core::types::Entity;
+use axon_core::types::{Entity, Link};
+use axon_schema::validation::validate;
 use axon_schema::{
     compile_policy_catalog, CollectionSchema, PolicyCompileReport, PolicyEnvelopeSummary,
 };
@@ -35,9 +50,28 @@ use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::Mutex as TokioMutex;
 
+use crate::protocol::{McpMutationIntentOutcome, McpMutationIntentToolResult};
 use crate::tools::{
     ToolDef, ToolError, ToolPolicyCapabilities, ToolPolicyEnvelopeSummary, ToolPolicyMetadata,
 };
+
+static MCP_INTENT_COUNTER: AtomicU64 = AtomicU64::new(1);
+const MCP_INTENT_TOKEN_SECRET: &[u8] = b"axon-graphql-mutation-intents-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntentToolMode {
+    Direct,
+    Preview,
+    Commit,
+}
+
+struct MutationPreviewComputation {
+    explain_request: ExplainPolicyRequest,
+    pre_images: Vec<PreImageBinding>,
+    diff: Value,
+    affected_fields: Vec<String>,
+    schema_version: u32,
+}
 
 /// Build CRUD tools for a collection, wired to a shared handler.
 ///
@@ -309,6 +343,795 @@ fn explain_write_policy<S: StorageAdapter>(
     handler
         .explain_policy_with_caller(request, caller, None)
         .ok()
+}
+
+fn intent_mode(args: &Value) -> Result<IntentToolMode, ToolError> {
+    if args
+        .get("preview")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(IntentToolMode::Preview);
+    }
+
+    let raw = args
+        .get("intent_mode")
+        .or_else(|| args.get("intentMode"))
+        .or_else(|| args.get("mode"))
+        .and_then(Value::as_str)
+        .unwrap_or("direct");
+    match raw {
+        "direct" | "execute" | "mutation" => Ok(IntentToolMode::Direct),
+        "preview" => Ok(IntentToolMode::Preview),
+        "commit" => Ok(IntentToolMode::Commit),
+        other => Err(ToolError::InvalidArgument(format!(
+            "unsupported intent mode: {other}"
+        ))),
+    }
+}
+
+fn intent_token_arg(args: &Value) -> Result<MutationIntentToken, ToolError> {
+    args.get("intent_token")
+        .or_else(|| args.get("intentToken"))
+        .and_then(Value::as_str)
+        .map(MutationIntentToken::new)
+        .ok_or_else(|| ToolError::InvalidArgument("missing 'intent_token'".into()))
+}
+
+fn expires_in_seconds(args: &Value) -> u64 {
+    args.get("expires_in_seconds")
+        .or_else(|| args.get("expiresInSeconds"))
+        .and_then(Value::as_u64)
+        .unwrap_or(3600)
+}
+
+fn intent_tool_result(outcome: McpMutationIntentOutcome) -> Result<Value, ToolError> {
+    serde_json::to_value(McpMutationIntentToolResult::from(outcome))
+        .map_err(|error| ToolError::Internal(error.to_string()))
+}
+
+fn default_intent_scope() -> MutationIntentScopeBinding {
+    MutationIntentScopeBinding {
+        tenant_id: "default".into(),
+        database_id: "default".into(),
+    }
+}
+
+fn mcp_intent_token_signer() -> MutationIntentTokenSigner {
+    MutationIntentTokenSigner::new(MCP_INTENT_TOKEN_SECRET.to_vec())
+}
+
+fn mcp_intent_lifecycle_service() -> MutationIntentLifecycleService {
+    MutationIntentLifecycleService::new(mcp_intent_token_signer())
+}
+
+fn current_time_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+fn next_mcp_intent_id(now_ns: u64) -> String {
+    let sequence = MCP_INTENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("mint_mcp_{now_ns}_{sequence}")
+}
+
+fn operation_kind_label(kind: &MutationOperationKind) -> &'static str {
+    match kind {
+        MutationOperationKind::CreateEntity => "create_entity",
+        MutationOperationKind::UpdateEntity => "update_entity",
+        MutationOperationKind::PatchEntity => "patch_entity",
+        MutationOperationKind::DeleteEntity => "delete_entity",
+        MutationOperationKind::CreateLink => "create_link",
+        MutationOperationKind::DeleteLink => "delete_link",
+        MutationOperationKind::Transaction => "transaction",
+        MutationOperationKind::Transition => "transition",
+        MutationOperationKind::Rollback => "rollback",
+        MutationOperationKind::Revert => "revert",
+    }
+}
+
+fn mutation_intent_decision(decision: &str) -> MutationIntentDecision {
+    match decision {
+        "needs_approval" => MutationIntentDecision::NeedsApproval,
+        "deny" | "denied" => MutationIntentDecision::Deny,
+        _ => MutationIntentDecision::Allow,
+    }
+}
+
+fn preview_state_for_decision(decision: &MutationIntentDecision) -> ApprovalState {
+    match decision {
+        MutationIntentDecision::NeedsApproval => ApprovalState::Pending,
+        MutationIntentDecision::Allow | MutationIntentDecision::Deny => ApprovalState::None,
+    }
+}
+
+fn mutation_approval_route_from_policy(
+    approval: &axon_api::response::PolicyApprovalEnvelopeSummary,
+) -> MutationApprovalRoute {
+    MutationApprovalRoute {
+        role: approval.role.clone(),
+        reason_required: approval.reason_required,
+        deadline_seconds: approval.deadline_seconds,
+        separation_of_duties: approval.separation_of_duties,
+    }
+}
+
+fn mutation_preview_policy_lines(policy: &PolicyExplanationResponse) -> Vec<String> {
+    let mut lines = vec![format!("{}: {}", policy.decision, policy.reason)];
+    lines.extend(policy.policy_ids.iter().map(|id| format!("policy:{id}")));
+    lines.extend(policy.rule_ids.iter().map(|id| format!("rule:{id}")));
+    for child in &policy.operations {
+        lines.push(format!(
+            "operation[{}]: {}: {}",
+            child.operation_index.unwrap_or(0),
+            child.decision,
+            child.reason
+        ));
+    }
+    lines
+}
+
+fn subject_binding(caller: &CallerIdentity) -> MutationIntentSubjectBinding {
+    MutationIntentSubjectBinding {
+        user_id: Some(caller.actor.clone()),
+        agent_id: None,
+        delegated_by: None,
+        tenant_role: Some(caller.role.to_string()),
+        credential_id: None,
+        grant_version: None,
+        attributes: Default::default(),
+    }
+}
+
+fn required_schema<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    collection: &CollectionId,
+) -> Result<CollectionSchema, ToolError> {
+    handler
+        .get_schema(collection)
+        .map_err(to_tool_error)?
+        .ok_or_else(|| ToolError::NotFound(collection.to_string()))
+}
+
+fn required_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    collection: &CollectionId,
+    id: &EntityId,
+) -> Result<Entity, ToolError> {
+    handler
+        .storage_ref()
+        .get(collection, id)
+        .map_err(to_tool_error)?
+        .ok_or_else(|| ToolError::NotFound(id.to_string()))
+}
+
+fn check_expected_version(entity: &Entity, expected_version: Option<u64>) -> Result<(), ToolError> {
+    if let Some(expected) = expected_version {
+        if entity.version != expected {
+            return Err(to_tool_error(AxonError::ConflictingVersion {
+                expected,
+                actual: entity.version,
+                current_entity: Some(Box::new(entity.clone())),
+            }));
+        }
+    }
+    Ok(())
+}
+
+fn entity_pre_image(entity: &Entity) -> PreImageBinding {
+    PreImageBinding::Entity {
+        collection: entity.collection.clone(),
+        id: entity.id.clone(),
+        version: entity.version,
+    }
+}
+
+fn diff_value(before: &Value, after: &Value) -> Value {
+    serde_json::to_value(compute_diff(before, after)).unwrap_or_else(|_| serde_json::json!({}))
+}
+
+fn affected_fields_from_diff(diff: &Value) -> Vec<String> {
+    let mut fields = match diff {
+        Value::Object(map) => map.keys().cloned().collect(),
+        Value::Array(items) => items
+            .iter()
+            .flat_map(|item| {
+                item.get("diff")
+                    .and_then(Value::as_object)
+                    .into_iter()
+                    .flat_map(|map| map.keys().cloned())
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    fields.sort();
+    fields.dedup();
+    fields
+}
+
+fn preview_result(
+    explain_request: ExplainPolicyRequest,
+    pre_images: Vec<PreImageBinding>,
+    diff: Value,
+    schema_version: u32,
+) -> MutationPreviewComputation {
+    let affected_fields = affected_fields_from_diff(&diff);
+    MutationPreviewComputation {
+        explain_request,
+        pre_images,
+        diff,
+        affected_fields,
+        schema_version,
+    }
+}
+
+fn preview_create_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    request: &CreateEntityRequest,
+) -> Result<MutationPreviewComputation, ToolError> {
+    let schema = required_schema(handler, &request.collection)?;
+    validate(&schema, &request.data).map_err(to_tool_error)?;
+    if handler
+        .storage_ref()
+        .get(&request.collection, &request.id)
+        .map_err(to_tool_error)?
+        .is_some()
+    {
+        return Err(to_tool_error(AxonError::AlreadyExists(format!(
+            "{}/{}",
+            request.collection, request.id
+        ))));
+    }
+    let mut explain_request = empty_explain_policy_request("create");
+    explain_request.collection = Some(request.collection.clone());
+    explain_request.entity_id = Some(request.id.clone());
+    explain_request.data = Some(request.data.clone());
+    Ok(preview_result(
+        explain_request,
+        Vec::new(),
+        diff_value(&serde_json::json!({}), &request.data),
+        schema.version,
+    ))
+}
+
+fn preview_patch_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    request: &PatchEntityRequest,
+) -> Result<MutationPreviewComputation, ToolError> {
+    let schema = required_schema(handler, &request.collection)?;
+    let current = required_entity(handler, &request.collection, &request.id)?;
+    check_expected_version(&current, Some(request.expected_version))?;
+    let mut merged = current.data.clone();
+    json_merge_patch(&mut merged, &request.patch);
+    validate(&schema, &merged).map_err(to_tool_error)?;
+    let mut explain_request = empty_explain_policy_request("patch");
+    explain_request.collection = Some(request.collection.clone());
+    explain_request.entity_id = Some(request.id.clone());
+    explain_request.expected_version = Some(request.expected_version);
+    explain_request.patch = Some(request.patch.clone());
+    Ok(preview_result(
+        explain_request,
+        vec![entity_pre_image(&current)],
+        diff_value(&current.data, &merged),
+        schema.version,
+    ))
+}
+
+fn preview_delete_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    request: &DeleteEntityRequest,
+    expected_version: Option<u64>,
+) -> Result<MutationPreviewComputation, ToolError> {
+    let schema = required_schema(handler, &request.collection)?;
+    let current = required_entity(handler, &request.collection, &request.id)?;
+    check_expected_version(&current, expected_version)?;
+    let mut explain_request = empty_explain_policy_request("delete");
+    explain_request.collection = Some(request.collection.clone());
+    explain_request.entity_id = Some(request.id.clone());
+    explain_request.expected_version = expected_version;
+    Ok(preview_result(
+        explain_request,
+        vec![entity_pre_image(&current)],
+        diff_value(&current.data, &serde_json::json!({})),
+        schema.version,
+    ))
+}
+
+fn preview_transition_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    request: &TransitionLifecycleRequest,
+) -> Result<MutationPreviewComputation, ToolError> {
+    let schema = required_schema(handler, &request.collection_id)?;
+    let lifecycle = schema
+        .lifecycles
+        .get(&request.lifecycle_name)
+        .ok_or_else(|| {
+            to_tool_error(AxonError::LifecycleNotFound {
+                lifecycle_name: request.lifecycle_name.clone(),
+            })
+        })?;
+    let current = required_entity(handler, &request.collection_id, &request.entity_id)?;
+    check_expected_version(&current, Some(request.expected_version))?;
+    let mut candidate = current.data.clone();
+    candidate[&lifecycle.field] = Value::String(request.target_state.clone());
+    validate(&schema, &candidate).map_err(to_tool_error)?;
+    let mut explain_request = empty_explain_policy_request("transition");
+    explain_request.collection = Some(request.collection_id.clone());
+    explain_request.entity_id = Some(request.entity_id.clone());
+    explain_request.expected_version = Some(request.expected_version);
+    explain_request.lifecycle_name = Some(request.lifecycle_name.clone());
+    explain_request.target_state = Some(request.target_state.clone());
+    Ok(preview_result(
+        explain_request,
+        vec![entity_pre_image(&current)],
+        diff_value(&current.data, &candidate),
+        schema.version,
+    ))
+}
+
+fn execute_intent_preview<S: StorageAdapter>(
+    handler: &mut AxonHandler<S>,
+    caller: &CallerIdentity,
+    scope: MutationIntentScopeBinding,
+    operation: CanonicalOperationMetadata,
+    preview: MutationPreviewComputation,
+    expires_in_seconds: u64,
+) -> Result<Value, ToolError> {
+    let policy = handler
+        .explain_policy_with_caller(preview.explain_request, caller, None)
+        .map_err(to_tool_error)?;
+    let decision = mutation_intent_decision(&policy.decision);
+    let approval_route = policy
+        .approval
+        .as_ref()
+        .map(mutation_approval_route_from_policy);
+    let policy_version = policy.policy_version.max(preview.schema_version);
+    let policy_explanation = mutation_preview_policy_lines(&policy);
+    let now_ns = current_time_ns();
+    let intent = MutationIntent {
+        intent_id: next_mcp_intent_id(now_ns),
+        scope,
+        subject: subject_binding(caller),
+        schema_version: preview.schema_version.max(policy_version),
+        policy_version,
+        operation: operation.clone(),
+        pre_images: preview.pre_images.clone(),
+        decision: decision.clone(),
+        approval_state: preview_state_for_decision(&decision),
+        approval_route,
+        expires_at: now_ns.saturating_add(expires_in_seconds.saturating_mul(1_000_000_000)),
+        review_summary: MutationReviewSummary {
+            title: Some(format!(
+                "{} preview",
+                operation_kind_label(&operation.operation_kind)
+            )),
+            summary: policy.reason.clone(),
+            risk: (decision == MutationIntentDecision::NeedsApproval)
+                .then(|| "needs_approval".into()),
+            affected_records: preview.pre_images,
+            affected_fields: preview.affected_fields,
+            diff: preview.diff,
+            policy_explanation,
+        },
+    };
+
+    let service = mcp_intent_lifecycle_service();
+    let record = service
+        .create_preview_record(handler.storage_mut(), intent)
+        .map_err(|error| ToolError::Internal(error.to_string()))?;
+    match (&record.intent.decision, record.intent_token.as_ref()) {
+        (MutationIntentDecision::Allow, Some(token)) => {
+            intent_tool_result(McpMutationIntentOutcome::allowed(&record.intent, token))
+        }
+        (MutationIntentDecision::NeedsApproval, Some(token)) => intent_tool_result(
+            McpMutationIntentOutcome::needs_approval(&record.intent, token),
+        ),
+        (MutationIntentDecision::Deny, _) => {
+            intent_tool_result(McpMutationIntentOutcome::denied_policy(
+                record.intent.review_summary.summary.clone(),
+                Some(record.intent.intent_id.clone()),
+                record.intent.review_summary.policy_explanation.clone(),
+            ))
+        }
+        (_, None) => intent_tool_result(McpMutationIntentOutcome::from_token_lookup_error(
+            MutationIntentTokenLookupError::Unauthorized,
+        )),
+    }
+}
+
+fn execute_intent_commit<S: StorageAdapter>(
+    handler: &mut AxonHandler<S>,
+    caller: &CallerIdentity,
+    scope: MutationIntentScopeBinding,
+    token: MutationIntentToken,
+) -> Result<Value, ToolError> {
+    let service = mcp_intent_lifecycle_service();
+    let token_intent_id = match mcp_intent_token_signer().verify(&token) {
+        Ok(intent_id) => intent_id,
+        Err(error) => {
+            return intent_tool_result(McpMutationIntentOutcome::from_token_lookup_error(error))
+        }
+    };
+    let stored_intent = match handler.storage_ref().get_mutation_intent(
+        &scope.tenant_id,
+        &scope.database_id,
+        &token_intent_id,
+    ) {
+        Ok(Some(intent)) => intent,
+        Ok(None) => {
+            return intent_tool_result(McpMutationIntentOutcome::from_token_lookup_error(
+                MutationIntentTokenLookupError::NotFound,
+            ))
+        }
+        Err(error) => return Err(to_tool_error(error)),
+    };
+    let operation = stored_intent.operation.clone();
+    let operation_payload = canonical_operation_payload(&operation)?;
+    let schema_version =
+        schema_version_for_intent_operation(handler, &operation.operation_kind, operation_payload)?;
+    let current = MutationIntentCommitValidationContext {
+        subject: stored_intent.subject,
+        schema_version,
+        policy_version: schema_version,
+        operation_hash: operation.operation_hash.clone(),
+        caller_authorized: caller.check(Operation::Write).is_ok(),
+    };
+    let transaction = transaction_from_intent_operation(handler, &operation)?;
+    let now_ns = current_time_ns();
+    let (storage, audit) = handler.storage_and_audit_mut();
+    match service.commit_transaction_intent(
+        storage,
+        audit,
+        MutationIntentTransactionCommitRequest {
+            scope,
+            token,
+            transaction,
+            canonical_operation: Some(operation),
+            current,
+            now_ns,
+            actor: Some(caller.actor.clone()),
+            attribution: None,
+        },
+    ) {
+        Ok(result) => intent_tool_result(McpMutationIntentOutcome::committed(
+            &result.intent,
+            result.transaction_id,
+            result
+                .written
+                .into_iter()
+                .map(|entity| serde_json::to_value(entity).unwrap_or(Value::Null))
+                .collect(),
+        )),
+        Err(error) => intent_tool_result(McpMutationIntentOutcome::from_commit_validation_error(
+            error,
+        )),
+    }
+}
+
+fn empty_explain_policy_request(operation: &str) -> ExplainPolicyRequest {
+    ExplainPolicyRequest {
+        operation: operation.into(),
+        collection: None,
+        entity_id: None,
+        expected_version: None,
+        data: None,
+        patch: None,
+        lifecycle_name: None,
+        target_state: None,
+        to_version: None,
+        operations: Vec::new(),
+    }
+}
+
+fn canonical_operation_payload(
+    operation: &CanonicalOperationMetadata,
+) -> Result<&Value, ToolError> {
+    operation
+        .canonical_operation
+        .as_ref()
+        .ok_or_else(|| ToolError::InvalidArgument("canonical operation payload is required".into()))
+}
+
+fn required_object<'a>(
+    value: &'a Value,
+    name: &str,
+) -> Result<&'a serde_json::Map<String, Value>, ToolError> {
+    value
+        .as_object()
+        .ok_or_else(|| ToolError::InvalidArgument(format!("{name} must be an object")))
+}
+
+fn required_str<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<&'a str, ToolError> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::InvalidArgument(format!("{key} is required")))
+}
+
+fn schema_version_for_intent_operation<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    kind: &MutationOperationKind,
+    operation: &Value,
+) -> Result<u32, ToolError> {
+    let obj = required_object(operation, "operation")?;
+    match kind {
+        MutationOperationKind::CreateEntity
+        | MutationOperationKind::UpdateEntity
+        | MutationOperationKind::PatchEntity
+        | MutationOperationKind::DeleteEntity
+        | MutationOperationKind::Transition => {
+            let collection = CollectionId::new(required_str(obj, "collection")?);
+            Ok(required_schema(handler, &collection)?.version)
+        }
+        MutationOperationKind::CreateLink | MutationOperationKind::DeleteLink => {
+            let link = link_from_operation(obj)?;
+            let source_version = required_schema(handler, &link.source_collection)?.version;
+            let target_version = required_schema(handler, &link.target_collection)?.version;
+            Ok(source_version.max(target_version))
+        }
+        MutationOperationKind::Transaction => {
+            let operations = obj
+                .get("operations")
+                .and_then(Value::as_array)
+                .ok_or_else(|| ToolError::InvalidArgument("operations must be a list".into()))?;
+            let mut schema_version = 0;
+            for child in operations {
+                let child_obj = required_object(child, "operation")?;
+                let op = required_str(child_obj, "op")?;
+                let kind = parse_mutation_operation_kind(op)?;
+                schema_version =
+                    schema_version.max(schema_version_for_intent_operation(handler, &kind, child)?);
+            }
+            Ok(schema_version)
+        }
+        MutationOperationKind::Rollback | MutationOperationKind::Revert => {
+            Err(ToolError::InvalidArgument(format!(
+                "MCP commit does not support {} operations",
+                operation_kind_label(kind)
+            )))
+        }
+    }
+}
+
+fn parse_mutation_operation_kind(value: &str) -> Result<MutationOperationKind, ToolError> {
+    match value {
+        "create_entity" => Ok(MutationOperationKind::CreateEntity),
+        "update_entity" => Ok(MutationOperationKind::UpdateEntity),
+        "patch_entity" => Ok(MutationOperationKind::PatchEntity),
+        "delete_entity" => Ok(MutationOperationKind::DeleteEntity),
+        "create_link" => Ok(MutationOperationKind::CreateLink),
+        "delete_link" => Ok(MutationOperationKind::DeleteLink),
+        "transaction" => Ok(MutationOperationKind::Transaction),
+        "transition" => Ok(MutationOperationKind::Transition),
+        "rollback" => Ok(MutationOperationKind::Rollback),
+        "revert" => Ok(MutationOperationKind::Revert),
+        other => Err(ToolError::InvalidArgument(format!(
+            "unsupported mutation operation kind: {other}"
+        ))),
+    }
+}
+
+fn transaction_from_intent_operation<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    operation: &CanonicalOperationMetadata,
+) -> Result<Transaction, ToolError> {
+    let mut transaction = Transaction::new();
+    let payload = canonical_operation_payload(operation)?;
+    stage_intent_operation(
+        handler,
+        &mut transaction,
+        &operation.operation_kind,
+        payload,
+    )?;
+    Ok(transaction)
+}
+
+fn stage_intent_operation<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    kind: &MutationOperationKind,
+    operation: &Value,
+) -> Result<(), ToolError> {
+    let obj = required_object(operation, "operation")?;
+    match kind {
+        MutationOperationKind::CreateEntity => stage_create_entity(transaction, obj),
+        MutationOperationKind::UpdateEntity => stage_update_entity(handler, transaction, obj),
+        MutationOperationKind::PatchEntity => stage_patch_entity(handler, transaction, obj),
+        MutationOperationKind::DeleteEntity => stage_delete_entity(handler, transaction, obj),
+        MutationOperationKind::CreateLink => stage_create_link(transaction, obj),
+        MutationOperationKind::DeleteLink => stage_delete_link(transaction, obj),
+        MutationOperationKind::Transition => stage_transition_entity(handler, transaction, obj),
+        MutationOperationKind::Transaction => stage_transaction(handler, transaction, obj),
+        MutationOperationKind::Rollback | MutationOperationKind::Revert => {
+            Err(ToolError::InvalidArgument(format!(
+                "MCP commit does not support {} operations",
+                operation_kind_label(kind)
+            )))
+        }
+    }
+}
+
+fn stage_create_entity(
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<(), ToolError> {
+    let collection = CollectionId::new(required_str(operation, "collection")?);
+    let id = EntityId::new(required_str(operation, "id")?);
+    let data = operation.get("data").cloned().unwrap_or(Value::Null);
+    transaction
+        .create(Entity::new(collection, id, data))
+        .map_err(to_tool_error)
+}
+
+fn stage_update_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<(), ToolError> {
+    let collection = CollectionId::new(required_str(operation, "collection")?);
+    let id = EntityId::new(required_str(operation, "id")?);
+    let data = operation.get("data").cloned().unwrap_or(Value::Null);
+    let schema = required_schema(handler, &collection)?;
+    validate(&schema, &data).map_err(to_tool_error)?;
+    let current = required_entity(handler, &collection, &id)?;
+    let expected_version = operation
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(current.version);
+    transaction
+        .update(
+            Entity::new(collection, id, data),
+            expected_version,
+            Some(current.data),
+        )
+        .map_err(to_tool_error)
+}
+
+fn stage_patch_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<(), ToolError> {
+    let collection = CollectionId::new(required_str(operation, "collection")?);
+    let id = EntityId::new(required_str(operation, "id")?);
+    let patch = operation.get("patch").cloned().unwrap_or(Value::Null);
+    let schema = required_schema(handler, &collection)?;
+    let current = required_entity(handler, &collection, &id)?;
+    let expected_version = operation
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(current.version);
+    let mut merged = current.data.clone();
+    json_merge_patch(&mut merged, &patch);
+    validate(&schema, &merged).map_err(to_tool_error)?;
+    transaction
+        .update(
+            Entity::new(collection, id, merged),
+            expected_version,
+            Some(current.data),
+        )
+        .map_err(to_tool_error)
+}
+
+fn stage_delete_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<(), ToolError> {
+    let collection = CollectionId::new(required_str(operation, "collection")?);
+    let id = EntityId::new(required_str(operation, "id")?);
+    let current = required_entity(handler, &collection, &id)?;
+    let expected_version = operation
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(current.version);
+    transaction
+        .delete(collection, id, expected_version, Some(current.data))
+        .map_err(to_tool_error)
+}
+
+fn stage_transition_entity<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<(), ToolError> {
+    let collection = CollectionId::new(required_str(operation, "collection")?);
+    let id = EntityId::new(required_str(operation, "id")?);
+    let lifecycle_name = required_str(operation, "lifecycle_name")?.to_string();
+    let target_state = required_str(operation, "target_state")?.to_string();
+    let schema = required_schema(handler, &collection)?;
+    let lifecycle = schema.lifecycles.get(&lifecycle_name).ok_or_else(|| {
+        to_tool_error(AxonError::LifecycleNotFound {
+            lifecycle_name: lifecycle_name.clone(),
+        })
+    })?;
+    let current = required_entity(handler, &collection, &id)?;
+    let expected_version = operation
+        .get("expected_version")
+        .and_then(Value::as_u64)
+        .unwrap_or(current.version);
+    let mut candidate = current.data.clone();
+    candidate[&lifecycle.field] = Value::String(target_state);
+    validate(&schema, &candidate).map_err(to_tool_error)?;
+    transaction
+        .update(
+            Entity::new(collection, id, candidate),
+            expected_version,
+            Some(current.data),
+        )
+        .map_err(to_tool_error)
+}
+
+fn stage_create_link(
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<(), ToolError> {
+    transaction
+        .create_link(link_from_operation(operation)?)
+        .map_err(to_tool_error)
+}
+
+fn stage_delete_link(
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<(), ToolError> {
+    transaction
+        .delete_link(link_from_operation(operation)?)
+        .map_err(to_tool_error)
+}
+
+fn stage_transaction<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    transaction: &mut Transaction,
+    operation: &serde_json::Map<String, Value>,
+) -> Result<(), ToolError> {
+    let operations = operation
+        .get("operations")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ToolError::InvalidArgument("operations must be a list".into()))?;
+    for child in operations {
+        let obj = required_object(child, "operation")?;
+        let kind = parse_mutation_operation_kind(required_str(obj, "op")?)?;
+        stage_intent_operation(handler, transaction, &kind, child)?;
+    }
+    Ok(())
+}
+
+fn link_from_operation(operation: &serde_json::Map<String, Value>) -> Result<Link, ToolError> {
+    Ok(Link {
+        source_collection: CollectionId::new(required_str(operation, "source_collection")?),
+        source_id: EntityId::new(required_str(operation, "source_id")?),
+        target_collection: CollectionId::new(required_str(operation, "target_collection")?),
+        target_id: EntityId::new(required_str(operation, "target_id")?),
+        link_type: required_str(operation, "link_type")?.to_string(),
+        metadata: operation.get("metadata").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn json_merge_patch(target: &mut Value, patch: &Value) {
+    match patch {
+        Value::Object(patch_obj) => {
+            if !target.is_object() {
+                *target = serde_json::json!({});
+            }
+            if let Some(target_obj) = target.as_object_mut() {
+                for (key, value) in patch_obj {
+                    if value.is_null() {
+                        target_obj.remove(key);
+                    } else {
+                        let entry = target_obj.entry(key.clone()).or_insert(Value::Null);
+                        json_merge_patch(entry, value);
+                    }
+                }
+            }
+        }
+        value => *target = value.clone(),
+    }
 }
 
 fn parse_optional_filter(value: Option<Value>) -> Result<Option<FilterNode>, ToolError> {
@@ -1025,6 +1848,15 @@ fn execute_create<S: StorageAdapter>(
     args: &Value,
     caller: &CallerIdentity,
 ) -> Result<Value, ToolError> {
+    if intent_mode(args)? == IntentToolMode::Commit {
+        return execute_intent_commit(
+            handler,
+            caller,
+            default_intent_scope(),
+            intent_token_arg(args)?,
+        );
+    }
+
     let id = args
         .get("id")
         .and_then(|value| value.as_str())
@@ -1042,6 +1874,19 @@ fn execute_create<S: StorageAdapter>(
         audit_metadata: None,
         attribution: None,
     };
+    if intent_mode(args)? == IntentToolMode::Preview {
+        let operation = canonical_create_entity_operation(&request);
+        let preview = preview_create_entity(handler, &request)?;
+        return execute_intent_preview(
+            handler,
+            caller,
+            default_intent_scope(),
+            operation,
+            preview,
+            expires_in_seconds(args),
+        );
+    }
+
     let explanation = explain_write_policy(
         handler,
         caller,
@@ -1085,6 +1930,15 @@ fn execute_patch<S: StorageAdapter>(
     args: &Value,
     caller: &CallerIdentity,
 ) -> Result<Value, ToolError> {
+    if intent_mode(args)? == IntentToolMode::Commit {
+        return execute_intent_commit(
+            handler,
+            caller,
+            default_intent_scope(),
+            intent_token_arg(args)?,
+        );
+    }
+
     let id = get_required_string(args, "id")?;
     let data = args
         .get("data")
@@ -1104,6 +1958,19 @@ fn execute_patch<S: StorageAdapter>(
         audit_metadata: None,
         attribution: None,
     };
+    if intent_mode(args)? == IntentToolMode::Preview {
+        let operation = canonical_patch_entity_operation(&request);
+        let preview = preview_patch_entity(handler, &request)?;
+        return execute_intent_preview(
+            handler,
+            caller,
+            default_intent_scope(),
+            operation,
+            preview,
+            expires_in_seconds(args),
+        );
+    }
+
     let explanation = explain_write_policy(
         handler,
         caller,
@@ -1132,6 +1999,15 @@ fn execute_delete<S: StorageAdapter>(
     args: &Value,
     caller: &CallerIdentity,
 ) -> Result<Value, ToolError> {
+    if intent_mode(args)? == IntentToolMode::Commit {
+        return execute_intent_commit(
+            handler,
+            caller,
+            default_intent_scope(),
+            intent_token_arg(args)?,
+        );
+    }
+
     let id = get_required_string(args, "id")?;
     let request = DeleteEntityRequest {
         collection: CollectionId::new(collection),
@@ -1141,6 +2017,31 @@ fn execute_delete<S: StorageAdapter>(
         force: false,
         attribution: None,
     };
+    if intent_mode(args)? == IntentToolMode::Preview {
+        let expected_version = args.get("expected_version").and_then(Value::as_u64);
+        let operation = if expected_version.is_some() {
+            canonicalize_intent_operation(
+                MutationOperationKind::DeleteEntity,
+                serde_json::json!({
+                    "collection": &request.collection,
+                    "id": &request.id,
+                    "expected_version": expected_version,
+                }),
+            )
+        } else {
+            canonical_delete_entity_operation(&request)
+        };
+        let preview = preview_delete_entity(handler, &request, expected_version)?;
+        return execute_intent_preview(
+            handler,
+            caller,
+            default_intent_scope(),
+            operation,
+            preview,
+            expires_in_seconds(args),
+        );
+    }
+
     let explanation = explain_write_policy(
         handler,
         caller,
@@ -1283,6 +2184,43 @@ fn execute_neighbors<S: StorageAdapter>(
     text_tool_response(&response)
 }
 
+fn with_intent_mode_schema(mut schema: Value) -> Value {
+    if let Value::Object(map) = &mut schema {
+        if let Some(Value::Object(properties)) = map.get_mut("properties") {
+            properties.insert(
+                "preview".into(),
+                serde_json::json!({
+                    "type": "boolean",
+                    "description": "Preview the mutation and return a mutation intent outcome without committing"
+                }),
+            );
+            properties.insert(
+                "intent_mode".into(),
+                serde_json::json!({
+                    "type": "string",
+                    "enum": ["direct", "preview", "commit"],
+                    "description": "Mutation intent mode"
+                }),
+            );
+            properties.insert(
+                "intent_token".into(),
+                serde_json::json!({
+                    "type": "string",
+                    "description": "Opaque mutation intent token for commit mode"
+                }),
+            );
+            properties.insert(
+                "expires_in_seconds".into(),
+                serde_json::json!({
+                    "type": "integer",
+                    "description": "Preview token TTL in seconds"
+                }),
+            );
+        }
+    }
+    schema
+}
+
 fn build_create_tool<S: StorageAdapter + 'static>(
     collection: &str,
     handler: Arc<Mutex<AxonHandler<S>>>,
@@ -1292,14 +2230,14 @@ fn build_create_tool<S: StorageAdapter + 'static>(
     ToolDef {
         name: format!("{col}.create"),
         description: format!("Create a new entity in the {col} collection"),
-        input_schema: serde_json::json!({
+        input_schema: with_intent_mode_schema(serde_json::json!({
             "type": "object",
             "properties": {
                 "id": { "type": "string", "description": "Entity ID (optional, auto-generated UUIDv7 if omitted)" },
                 "data": { "type": "object", "description": "Entity data" }
             },
             "required": ["data"]
-        }),
+        })),
         handler: Box::new(move |args| {
             let mut guard = lock_handler(&handler)?;
             execute_create(&mut guard, &col, args, &caller)
@@ -1338,7 +2276,7 @@ fn build_patch_tool<S: StorageAdapter + 'static>(
     ToolDef {
         name: format!("{col}.patch"),
         description: format!("Merge-patch an entity in the {col} collection"),
-        input_schema: serde_json::json!({
+        input_schema: with_intent_mode_schema(serde_json::json!({
             "type": "object",
             "properties": {
                 "id": { "type": "string", "description": "Entity ID" },
@@ -1346,7 +2284,7 @@ fn build_patch_tool<S: StorageAdapter + 'static>(
                 "expected_version": { "type": "integer", "description": "Expected version for OCC" }
             },
             "required": ["id", "data", "expected_version"]
-        }),
+        })),
         handler: Box::new(move |args| {
             let mut guard = lock_handler(&handler)?;
             execute_patch(&mut guard, &col, args, &caller)
@@ -1363,13 +2301,14 @@ fn build_delete_tool<S: StorageAdapter + 'static>(
     ToolDef {
         name: format!("{col}.delete"),
         description: format!("Delete an entity from the {col} collection"),
-        input_schema: serde_json::json!({
+        input_schema: with_intent_mode_schema(serde_json::json!({
             "type": "object",
             "properties": {
-                "id": { "type": "string", "description": "Entity ID" }
+                "id": { "type": "string", "description": "Entity ID" },
+                "expected_version": { "type": "integer", "description": "Optional expected version for intent previews" }
             },
             "required": ["id"]
-        }),
+        })),
         handler: Box::new(move |args| {
             let mut guard = lock_handler(&handler)?;
             execute_delete(&mut guard, &col, args, &caller)
@@ -1430,7 +2369,7 @@ pub fn build_transition_lifecycle_tool<S: StorageAdapter + 'static>(
             Returns the updated entity on success, or a structured error listing the \
             valid transitions if the requested target state is not reachable."
             .into(),
-        input_schema: serde_json::json!({
+        input_schema: with_intent_mode_schema(serde_json::json!({
             "type": "object",
             "properties": {
                 "collection_id": {
@@ -1455,8 +2394,19 @@ pub fn build_transition_lifecycle_tool<S: StorageAdapter + 'static>(
                 }
             },
             "required": ["collection_id", "entity_id", "lifecycle_name", "target_state"]
-        }),
+        })),
         handler: Box::new(move |args| {
+            let caller = CallerIdentity::anonymous();
+            if intent_mode(args)? == IntentToolMode::Commit {
+                let mut guard = lock_handler(&handler)?;
+                return execute_intent_commit(
+                    &mut guard,
+                    &caller,
+                    default_intent_scope(),
+                    intent_token_arg(args)?,
+                );
+            }
+
             let collection_id = get_required_string(args, "collection_id")?;
             let entity_id = get_required_string(args, "entity_id")?;
             let lifecycle_name = get_required_string(args, "lifecycle_name")?;
@@ -1483,18 +2433,30 @@ pub fn build_transition_lifecycle_tool<S: StorageAdapter + 'static>(
             };
 
             let mut guard = lock_handler(&handler)?;
-            let resp = guard
-                .transition_lifecycle(TransitionLifecycleRequest {
-                    collection_id: cid,
-                    entity_id: eid,
-                    lifecycle_name,
-                    target_state,
-                    expected_version,
-                    actor: Some("mcp".into()),
-                    audit_metadata: None,
-                    attribution: None,
-                })
-                .map_err(to_tool_error)?;
+            let request = TransitionLifecycleRequest {
+                collection_id: cid,
+                entity_id: eid,
+                lifecycle_name,
+                target_state,
+                expected_version,
+                actor: Some("mcp".into()),
+                audit_metadata: None,
+                attribution: None,
+            };
+            if intent_mode(args)? == IntentToolMode::Preview {
+                let operation = canonical_transition_lifecycle_operation(&request);
+                let preview = preview_transition_entity(&guard, &request)?;
+                return execute_intent_preview(
+                    &mut guard,
+                    &caller,
+                    default_intent_scope(),
+                    operation,
+                    preview,
+                    expires_in_seconds(args),
+                );
+            }
+
+            let resp = guard.transition_lifecycle(request).map_err(to_tool_error)?;
 
             text_tool_response(&resp.entity)
         }),
@@ -1612,14 +2574,14 @@ pub fn build_crud_tools_tokio<S: StorageAdapter + 'static>(
         ToolDef {
             name: format!("{col}.create"),
             description: format!("Create a new entity in the {col} collection"),
-            input_schema: serde_json::json!({
+            input_schema: with_intent_mode_schema(serde_json::json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "string", "description": "Entity ID (optional, auto-generated UUIDv7 if omitted)" },
                     "data": { "type": "object", "description": "Entity data" }
                 },
                 "required": ["data"]
-            }),
+            })),
             handler: {
                 let handler = Arc::clone(&handler);
                 let col = col.clone();
@@ -1652,7 +2614,7 @@ pub fn build_crud_tools_tokio<S: StorageAdapter + 'static>(
         ToolDef {
             name: format!("{col}.patch"),
             description: format!("Merge-patch an entity in the {col} collection"),
-            input_schema: serde_json::json!({
+            input_schema: with_intent_mode_schema(serde_json::json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "string", "description": "Entity ID" },
@@ -1660,7 +2622,7 @@ pub fn build_crud_tools_tokio<S: StorageAdapter + 'static>(
                     "expected_version": { "type": "integer", "description": "Expected version for OCC" }
                 },
                 "required": ["id", "data", "expected_version"]
-            }),
+            })),
             handler: {
                 let handler = Arc::clone(&handler);
                 let col = col.clone();
@@ -1674,13 +2636,14 @@ pub fn build_crud_tools_tokio<S: StorageAdapter + 'static>(
         ToolDef {
             name: format!("{col}.delete"),
             description: format!("Delete an entity from the {col} collection"),
-            input_schema: serde_json::json!({
+            input_schema: with_intent_mode_schema(serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Entity ID" }
+                    "id": { "type": "string", "description": "Entity ID" },
+                    "expected_version": { "type": "integer", "description": "Optional expected version for intent previews" }
                 },
                 "required": ["id"]
-            }),
+            })),
             handler: {
                 let handler = Arc::clone(&handler);
                 let caller = caller.clone();

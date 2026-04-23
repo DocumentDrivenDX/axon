@@ -1,5 +1,6 @@
 //! MCP JSON-RPC 2.0 protocol implementation.
 
+use axon_api::intent::MutationIntentCommitValidationError;
 use axon_core::intent::{
     MutationApprovalRoute, MutationIntent, MutationIntentToken, MutationIntentTokenLookupError,
     MutationReviewSummary,
@@ -204,6 +205,13 @@ pub enum McpMutationIntentOutcome {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         policy_explanation: Vec<String>,
     },
+    /// Mutation intent was committed successfully.
+    Committed {
+        intent_id: String,
+        transaction_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        written: Vec<Value>,
+    },
     /// Mutation is denied by policy.
     Denied {
         error_code: McpMutationIntentErrorCode,
@@ -258,6 +266,15 @@ impl McpMutationIntentOutcome {
             message: message.into(),
             intent_id,
             policy_explanation,
+        }
+    }
+
+    /// Build a committed result.
+    pub fn committed(intent: &MutationIntent, transaction_id: String, written: Vec<Value>) -> Self {
+        Self::Committed {
+            intent_id: intent.intent_id.clone(),
+            transaction_id,
+            written,
         }
     }
 
@@ -370,6 +387,68 @@ impl McpMutationIntentOutcome {
         }
     }
 
+    /// Map a core commit validation failure into a stable MCP outcome.
+    pub fn from_commit_validation_error(error: MutationIntentCommitValidationError) -> Self {
+        match error {
+            MutationIntentCommitValidationError::Token(error) => {
+                Self::from_token_lookup_error(error)
+            }
+            MutationIntentCommitValidationError::IntentMismatch {
+                intent_id,
+                expected_hash,
+                actual_hash,
+            } => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::IntentMismatch,
+                message: "mutation intent operation hash does not match reviewed operation".into(),
+                intent_id: Some(intent_id),
+                details: vec![McpMutationIntentConflictDetail {
+                    dimension: McpMutationIntentConflictDimension::OperationHash,
+                    expected: Some(Value::String(expected_hash)),
+                    actual: Some(Value::String(actual_hash)),
+                    detail: Some("operation hash mismatch".into()),
+                }],
+            },
+            MutationIntentCommitValidationError::IntentStale {
+                intent_id,
+                dimensions,
+            } => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::IntentStale,
+                message: "mutation intent is stale".into(),
+                intent_id: Some(intent_id),
+                details: dimensions
+                    .into_iter()
+                    .map(|dimension| McpMutationIntentConflictDetail {
+                        dimension: stale_dimension_name(&dimension.dimension),
+                        expected: dimension.expected.map(Value::String),
+                        actual: dimension.actual.map(Value::String),
+                        detail: dimension.path,
+                    })
+                    .collect(),
+            },
+            MutationIntentCommitValidationError::AuthorizationFailed { intent_id, reason } => {
+                Self::Denied {
+                    error_code: McpMutationIntentErrorCode::DeniedPolicy,
+                    message: reason,
+                    intent_id: Some(intent_id),
+                    policy_explanation: Vec::new(),
+                }
+            }
+            MutationIntentCommitValidationError::Storage(message)
+            | MutationIntentCommitValidationError::CommitFailed {
+                source: message, ..
+            } => Self::Conflict {
+                error_code: McpMutationIntentErrorCode::IntentStale,
+                message,
+                intent_id: None,
+                details: Vec::new(),
+            },
+        }
+    }
+
+    fn is_error(&self) -> bool {
+        matches!(self, Self::Denied { .. } | Self::Conflict { .. })
+    }
+
     fn summary_text(&self) -> String {
         match self {
             Self::Allowed { intent_id, .. } => {
@@ -377,6 +456,13 @@ impl McpMutationIntentOutcome {
             }
             Self::NeedsApproval { intent_id, .. } => {
                 format!("Mutation intent {intent_id} needs approval.")
+            }
+            Self::Committed {
+                intent_id,
+                transaction_id,
+                ..
+            } => {
+                format!("Mutation intent {intent_id} committed in transaction {transaction_id}.")
             }
             Self::Denied {
                 error_code,
@@ -402,14 +488,32 @@ pub struct McpMutationIntentToolResult {
     /// Machine-readable outcome payload.
     #[serde(rename = "structuredContent")]
     pub structured_content: McpMutationIntentOutcome,
+    /// Marks denied and conflict outcomes as MCP tool errors while preserving structured details.
+    #[serde(rename = "isError", skip_serializing_if = "Option::is_none")]
+    pub is_error: Option<bool>,
 }
 
 impl From<McpMutationIntentOutcome> for McpMutationIntentToolResult {
     fn from(outcome: McpMutationIntentOutcome) -> Self {
+        let is_error = outcome.is_error().then_some(true);
         Self {
             content: vec![McpTextContent::new(outcome.summary_text())],
             structured_content: outcome,
+            is_error,
         }
+    }
+}
+
+fn stale_dimension_name(dimension: &str) -> McpMutationIntentConflictDimension {
+    match dimension {
+        "grant_version" => McpMutationIntentConflictDimension::GrantVersion,
+        "schema_version" => McpMutationIntentConflictDimension::SchemaVersion,
+        "policy_version" => McpMutationIntentConflictDimension::PolicyVersion,
+        "pre_image" => McpMutationIntentConflictDimension::PreImage,
+        "operation_hash" => McpMutationIntentConflictDimension::OperationHash,
+        "tenant_database" => McpMutationIntentConflictDimension::TenantDatabase,
+        "approval_state" => McpMutationIntentConflictDimension::ApprovalState,
+        _ => McpMutationIntentConflictDimension::Token,
     }
 }
 
