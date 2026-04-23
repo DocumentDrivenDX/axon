@@ -388,6 +388,61 @@ async fn generated_mcp_tools_preview_commit_and_block_approval_bypass() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn generated_mcp_tools_report_stale_commit_conflict() {
+    let server = test_server();
+    seed_intent_collection(&server).await;
+
+    let preview = patch_tool(
+        &server,
+        "stale-preview",
+        json!({
+            "intent_mode": "preview",
+            "id": "task-a",
+            "data": { "amount_cents": 9000 },
+            "expected_version": 1,
+            "expires_in_seconds": 600
+        }),
+    )
+    .await;
+    assert!(
+        preview["error"].is_null(),
+        "unexpected stale preview protocol error: {preview}"
+    );
+    let allowed = &preview["result"]["structuredContent"];
+    assert_eq!(allowed["outcome"], "allowed");
+    let token = allowed["intent_token"].as_str().unwrap().to_string();
+    let intent_id = allowed["intent_id"].as_str().unwrap().to_string();
+
+    update_task_amount(&server, 1, 7000).await;
+
+    let stale = patch_tool(
+        &server,
+        "stale-commit",
+        json!({
+            "intent_mode": "commit",
+            "intent_token": token
+        }),
+    )
+    .await;
+    assert!(
+        stale["error"].is_null(),
+        "unexpected stale commit protocol error: {stale}"
+    );
+    assert_eq!(stale["result"]["isError"], true);
+    let conflict = &stale["result"]["structuredContent"];
+    assert_eq!(conflict["outcome"], "conflict");
+    assert_eq!(conflict["error_code"], "intent_stale");
+    assert_eq!(conflict["intent_id"], intent_id);
+    assert_eq!(conflict["details"][0]["dimension"], "pre_image");
+    assert_eq!(conflict["details"][0]["expected"], "1");
+    assert_eq!(conflict["details"][0]["actual"], "2");
+    assert_eq!(
+        conflict["details"][0]["detail"],
+        "entity:intent_task/task-a"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn axon_query_intent_mutations_match_graphql_review_flow() {
     let server = test_server();
     seed_intent_collection(&server).await;
