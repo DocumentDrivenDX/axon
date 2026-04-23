@@ -194,3 +194,1020 @@ export async function addTestTenantMember(
 	);
 	await expectOkResponse(response, `add member ${user.id} to ${tenant.id}`);
 }
+
+export type GraphqlMock = (
+	postData: string,
+) => Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
+
+export function graphqlPath(db: TestDatabase): string {
+	return `/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/graphql`;
+}
+
+export async function gqlAs(
+	request: APIRequestContext,
+	db: TestDatabase,
+	actor: string,
+	query: string,
+): Promise<Record<string, unknown>> {
+	const response = await request.post(graphqlPath(db), {
+		headers: { 'x-axon-actor': actor },
+		data: { query },
+	});
+	const body = (await response.json()) as {
+		data?: Record<string, unknown>;
+		errors?: unknown;
+	};
+	expect(response.ok(), `${response.status()} ${JSON.stringify(body)}`).toBe(true);
+	expect(body.errors ?? null, JSON.stringify(body.errors)).toBeNull();
+	return body.data ?? {};
+}
+
+export async function routeGraphqlAs(page: Page, actor: string, mock?: GraphqlMock) {
+	await page.route('**/graphql', async (route) => {
+		const postData = route.request().postData() ?? '';
+		const mocked = mock ? await mock(postData) : null;
+		if (mocked) {
+			await route.fulfill({
+				status: 200,
+				contentType: 'application/json',
+				body: JSON.stringify(mocked),
+			});
+			return;
+		}
+
+		await route.continue({
+			headers: {
+				...route.request().headers(),
+				'x-axon-actor': actor,
+			},
+		});
+	});
+}
+
+export function captureDataPlaneRequests(page: Page, db: TestDatabase): string[] {
+	const requests: string[] = [];
+	page.on('request', (request) => {
+		const path = new URL(request.url()).pathname;
+		if (
+			path.startsWith(
+				`/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/`,
+			)
+		) {
+			requests.push(path);
+		}
+	});
+	return requests;
+}
+
+export function expectGraphqlPrimaryDataPlane(requests: string[], message: string): void {
+	expect(requests.some((path) => path.endsWith('/graphql'))).toBe(true);
+	expect(
+		requests.filter((path) => !path.endsWith('/graphql')),
+		message,
+	).toEqual([]);
+}
+
+export const SCN017_COLLECTIONS = {
+	users: 'users',
+	vendors: 'vendors',
+	invoices: 'invoices',
+	task: 'task',
+	expense: 'expense',
+	policyFilterUnindexed: 'policy_filter_unindexed',
+} as const;
+
+export const TASK_COLLECTION = SCN017_COLLECTIONS.task;
+export const EXPENSE_COLLECTION = SCN017_COLLECTIONS.expense;
+
+export const SCN017_SUBJECTS = {
+	financeAgent: 'finance-agent',
+	financeApprover: 'finance-approver',
+	requester: 'requester',
+	operator: 'operator',
+	contractor: 'contractor',
+} as const;
+
+export const SCN017_ROLES = {
+	financeAgent: 'finance_agent',
+	financeApprover: 'finance_approver',
+	requester: 'requester',
+	operator: 'operator',
+	contractor: 'contractor',
+} as const;
+
+export const SCN017_STORY_TAGS = {
+	policyAuthoring: 'policy-authoring',
+	policyEnforcement: 'policy-enforcement',
+	graphqlPolicyConsole: 'graphql-policy-console',
+	mutationIntents: 'mutation-intents',
+	approvalInbox: 'approval-inbox',
+	intentAuditLineage: 'intent-audit-lineage',
+	mcpEnvelopePreview: 'mcp-envelope-preview',
+} as const;
+
+export const SCN017_WORKFLOW_TAGS = {
+	smallInvoice: 'small-invoice-autonomous',
+	largeInvoice: 'large-invoice-needs-approval',
+	staleIntent: 'stale-intent',
+	expiredIntent: 'expired-intent',
+	policyFilterUnindexed: 'policy-filter-unindexed',
+} as const;
+
+export type PreviewedIntent = {
+	intentId: string;
+	token: string;
+};
+
+type Scn017IntentFixture = PreviewedIntent & {
+	actor: string;
+	collection: string;
+	entityId: string;
+	budgetCents: number;
+	state: 'pending' | 'approved' | 'rejected' | 'expired' | 'committed';
+	workflowTag: string;
+};
+
+type Scn017IntentFixtures = {
+	pending: Scn017IntentFixture;
+	approved: Scn017IntentFixture;
+	rejected: Scn017IntentFixture;
+	expired: Scn017IntentFixture;
+	committed: Scn017IntentFixture;
+	approveTarget: Scn017IntentFixture;
+	rejectTarget: Scn017IntentFixture;
+	stale: Scn017IntentFixture;
+};
+
+export type SeededIntentIds = {
+	pending: string;
+	approved: string;
+	rejected: string;
+	expired: string;
+	committed: string;
+	approveTarget: string;
+	rejectTarget: string;
+};
+
+export type Scn017PolicyUiFixture = {
+	tenant: TestTenant;
+	db: TestDatabase;
+	collections: typeof SCN017_COLLECTIONS;
+	subjects: typeof SCN017_SUBJECTS;
+	roles: typeof SCN017_ROLES;
+	users: Record<
+		keyof typeof SCN017_SUBJECTS,
+		{
+			id: string;
+			displayName: string;
+			approvalRole: string;
+			procurementRole: string;
+		}
+	>;
+	vendors: {
+		primary: { id: string; name: string };
+		secondary: { id: string; name: string };
+	};
+	invoices: {
+		small: {
+			id: string;
+			number: string;
+			amountCents: number;
+			vendorId: string;
+			requesterId: string;
+			assignedContractorId: string;
+			workflowTag: string;
+		};
+		large: {
+			id: string;
+			number: string;
+			amountCents: number;
+			vendorId: string;
+			requesterId: string;
+			assignedContractorId: string;
+			workflowTag: string;
+		};
+	};
+	policyVariants: {
+		smallInvoice: { collection: string; entityId: string; workflowTag: string };
+		largeInvoice: { collection: string; entityId: string; workflowTag: string };
+	};
+	intentFixtures: Partial<Scn017IntentFixtures>;
+	policyFilterUnindexed: {
+		collection: string;
+		entityId: string;
+		sampleRow: Record<string, unknown>;
+		draftSchema: Record<string, unknown>;
+		workflowTag: string;
+	};
+	storyTags: typeof SCN017_STORY_TAGS;
+	workflowTags: typeof SCN017_WORKFLOW_TAGS;
+};
+
+type SeedScn017Options = {
+	seedIntentFixtures?: boolean;
+	includeTaskSecret?: boolean;
+};
+
+function scn017UserSchema() {
+	return {
+		type: 'object',
+		required: ['user_id', 'display_name', 'approval_role', 'procurement_role'],
+		properties: {
+			user_id: { type: 'string' },
+			display_name: { type: 'string' },
+			approval_role: { type: 'string' },
+			procurement_role: { type: 'string' },
+		},
+	};
+}
+
+function scn017VendorSchema() {
+	return {
+		type: 'object',
+		required: ['name', 'risk_rating'],
+		properties: {
+			name: { type: 'string' },
+			risk_rating: { type: 'string' },
+		},
+	};
+}
+
+function scn017InvoiceSchema() {
+	return {
+		type: 'object',
+		required: [
+			'number',
+			'vendor_id',
+			'requester_id',
+			'assigned_contractor_id',
+			'status',
+			'amount_cents',
+			'currency',
+			'commercial_terms',
+		],
+		properties: {
+			number: { type: 'string' },
+			vendor_id: { type: 'string' },
+			requester_id: { type: 'string' },
+			assigned_contractor_id: { type: 'string' },
+			status: { type: 'string' },
+			amount_cents: { type: 'integer' },
+			currency: { type: 'string' },
+			commercial_terms: { type: 'string' },
+		},
+	};
+}
+
+function scn017BudgetSchema() {
+	return {
+		type: 'object',
+		properties: {
+			title: { type: 'string' },
+			budget_cents: { type: 'integer' },
+			secret: { type: 'string' },
+			status: { type: 'string' },
+		},
+	};
+}
+
+function scn017Identity() {
+	return {
+		user_id: 'subject.user_id',
+		role: 'subject.attributes.approval_role',
+		attributes: {
+			approval_role: {
+				from: 'collection',
+				collection: SCN017_COLLECTIONS.users,
+				key_field: 'user_id',
+				key_subject: 'user_id',
+				value_field: 'approval_role',
+			},
+			procurement_role: {
+				from: 'collection',
+				collection: SCN017_COLLECTIONS.users,
+				key_field: 'user_id',
+				key_subject: 'user_id',
+				value_field: 'procurement_role',
+			},
+		},
+	};
+}
+
+function approvalPolicy() {
+	return {
+		identity: scn017Identity(),
+		read: { allow: [{ name: 'fixture-read' }] },
+		create: { allow: [{ name: 'fixture-create' }] },
+		update: {
+			allow: [
+				{
+					name: 'finance-update',
+					when: {
+						subject: 'user_id',
+						in: [SCN017_SUBJECTS.financeAgent, SCN017_SUBJECTS.financeApprover, 'finance-bot'],
+					},
+				},
+			],
+		},
+		fields: {
+			secret: {
+				write: {
+					deny: [
+						{
+							name: 'finance-agent-cannot-write-secret',
+							when: { subject: 'user_id', eq: SCN017_SUBJECTS.financeAgent },
+						},
+					],
+				},
+			},
+		},
+		envelopes: {
+			write: [
+				{
+					name: 'large-budget-needs-finance-approval',
+					when: {
+						all: [{ operation: 'update' }, { field: 'budget_cents', gt: 10000 }],
+					},
+					decision: 'needs_approval',
+					approval: {
+						role: SCN017_ROLES.financeApprover,
+						reason_required: true,
+						deadline_seconds: 86400,
+						separation_of_duties: true,
+					},
+				},
+			],
+		},
+	};
+}
+
+function procurementInvoicePolicy() {
+	return {
+		identity: scn017Identity(),
+		read: {
+			allow: [
+				{
+					name: 'finance-and-operators-read-invoices',
+					when: {
+						subject: 'procurement_role',
+						in: [SCN017_ROLES.financeAgent, SCN017_ROLES.financeApprover, SCN017_ROLES.operator],
+					},
+				},
+				{
+					name: 'requester-reads-own-invoices',
+					where: { field: 'requester_id', eq_subject: 'user_id' },
+				},
+				{
+					name: 'contractor-reads-assigned-invoices',
+					when: { subject: 'procurement_role', eq: SCN017_ROLES.contractor },
+					where: { field: 'assigned_contractor_id', eq_subject: 'user_id' },
+				},
+			],
+		},
+		create: { allow: [{ name: 'fixture-create' }] },
+		update: {
+			allow: [
+				{
+					name: 'finance-agent-updates-invoice-metadata',
+					when: { subject: 'procurement_role', eq: SCN017_ROLES.financeAgent },
+				},
+			],
+		},
+		fields: {
+			amount_cents: {
+				read: {
+					deny: [
+						{
+							name: 'contractors-do-not-see-invoice-amounts',
+							when: { subject: 'procurement_role', eq: SCN017_ROLES.contractor },
+							redact_as: null,
+						},
+					],
+				},
+			},
+			commercial_terms: {
+				read: {
+					deny: [
+						{
+							name: 'contractors-do-not-see-commercial-terms',
+							when: { subject: 'procurement_role', eq: SCN017_ROLES.contractor },
+							redact_as: null,
+						},
+					],
+				},
+			},
+		},
+		envelopes: {
+			write: [
+				{
+					name: 'auto-approve-small-invoice-update',
+					when: {
+						all: [{ operation: 'update' }, { field: 'amount_cents', lt: 1_000_000 }],
+					},
+					decision: 'allow',
+				},
+				{
+					name: 'require-approval-large-invoice-update',
+					when: {
+						all: [{ operation: 'update' }, { field: 'amount_cents', gt: 1_000_000 }],
+					},
+					decision: 'needs_approval',
+					approval: {
+						role: SCN017_ROLES.financeApprover,
+						reason_required: true,
+						deadline_seconds: 86400,
+						separation_of_duties: true,
+					},
+				},
+			],
+		},
+	};
+}
+
+function policyFilterUnindexedDraft() {
+	return {
+		version: 1,
+		entity_schema: {
+			type: 'object',
+			required: ['title', 'reviewer_email', 'status'],
+			properties: {
+				title: { type: 'string' },
+				reviewer_email: { type: 'string' },
+				status: { type: 'string' },
+			},
+		},
+		access_control: {
+			identity: {
+				user_id: 'subject.user_id',
+				email: 'subject.attributes.email',
+			},
+			read: {
+				allow: [
+					{
+						name: 'reviewers-read-own-items',
+						where: { field: 'reviewer_email', eq_subject: 'email' },
+					},
+				],
+			},
+			create: { allow: [{ name: 'fixture-create' }] },
+		},
+		indexes: [{ field: 'status', type: 'string', unique: false }],
+	};
+}
+
+function scn017UserSeeds() {
+	return {
+		financeAgent: {
+			id: SCN017_SUBJECTS.financeAgent,
+			displayName: 'Finance Agent',
+			approvalRole: SCN017_ROLES.financeAgent,
+			procurementRole: SCN017_ROLES.financeAgent,
+		},
+		financeApprover: {
+			id: SCN017_SUBJECTS.financeApprover,
+			displayName: 'Finance Approver',
+			approvalRole: SCN017_ROLES.financeApprover,
+			procurementRole: SCN017_ROLES.financeApprover,
+		},
+		requester: {
+			id: SCN017_SUBJECTS.requester,
+			displayName: 'Requester',
+			approvalRole: SCN017_ROLES.requester,
+			procurementRole: SCN017_ROLES.requester,
+		},
+		operator: {
+			id: SCN017_SUBJECTS.operator,
+			displayName: 'Operator',
+			approvalRole: SCN017_ROLES.operator,
+			procurementRole: SCN017_ROLES.operator,
+		},
+		contractor: {
+			id: SCN017_SUBJECTS.contractor,
+			displayName: 'Contractor',
+			approvalRole: SCN017_ROLES.contractor,
+			procurementRole: SCN017_ROLES.contractor,
+		},
+	};
+}
+
+export function dbIntentsUrl(db: TestDatabase): string {
+	return `/ui/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/intents`;
+}
+
+export function dbIntentUrl(db: TestDatabase, intentId: string): string {
+	return `${dbIntentsUrl(db)}/${encodeURIComponent(intentId)}`;
+}
+
+export async function createBudgetRecord(
+	request: APIRequestContext,
+	db: TestDatabase,
+	collection: string,
+	id: string,
+	data: Record<string, unknown> = {},
+) {
+	await createTestEntity(request, db, collection, id, {
+		title: id,
+		budget_cents: 5000,
+		status: 'draft',
+		secret: 'alpha',
+		...data,
+	});
+}
+
+export async function updateApprovalRole(
+	request: APIRequestContext,
+	db: TestDatabase,
+	actor: string,
+	role: string,
+	expectedVersion = 1,
+) {
+	await updateTestEntity(
+		request,
+		db,
+		SCN017_COLLECTIONS.users,
+		actor,
+		{
+			user_id: actor,
+			display_name: actor,
+			approval_role: role,
+			procurement_role:
+				actor === SCN017_SUBJECTS.contractor ? SCN017_ROLES.contractor : SCN017_ROLES.operator,
+		},
+		expectedVersion,
+	);
+}
+
+export async function previewBudgetIntent(
+	request: APIRequestContext,
+	db: TestDatabase,
+	entityId: string,
+	budgetCents: number,
+	options: {
+		collection?: string;
+		actor?: string;
+		agentId?: string;
+		credentialId?: string;
+		delegatedBy?: string;
+		grantVersion?: number;
+		tenantRole?: string;
+		expiresInSeconds?: number;
+	} = {},
+): Promise<PreviewedIntent> {
+	const {
+		collection = TASK_COLLECTION,
+		actor = SCN017_SUBJECTS.financeAgent,
+		agentId,
+		credentialId = `cred-${actor}`,
+		delegatedBy,
+		grantVersion = 7,
+		tenantRole = actor === SCN017_SUBJECTS.financeApprover
+			? SCN017_ROLES.financeApprover
+			: SCN017_ROLES.financeAgent,
+		expiresInSeconds = 600,
+	} = options;
+	const subjectBlock = [`userId: "${actor}"`, ...(agentId ? [`agentId: "${agentId}"`] : [])].join(
+		'\n\t\t\t\t\t',
+	);
+	const fullSubjectBlock = [
+		subjectBlock,
+		`tenantRole: "${tenantRole}"`,
+		`credentialId: "${credentialId}"`,
+		`grantVersion: ${grantVersion}`,
+		...(delegatedBy ? [`delegatedBy: "${delegatedBy}"`] : []),
+	].join('\n\t\t\t\t\t');
+	const data = await gqlAs(
+		request,
+		db,
+		actor,
+		`mutation {
+			previewMutation(input: {
+				operation: {
+					operationKind: "patch_entity"
+					operation: {
+						collection: "${collection}"
+						id: "${entityId}"
+						expected_version: 1
+						patch: { budget_cents: ${budgetCents} }
+					}
+				}
+				subject: {
+					${fullSubjectBlock}
+				}
+				expiresInSeconds: ${expiresInSeconds}
+			}) {
+				intentToken
+				intent { id approvalState decision }
+			}
+		}`,
+	);
+	const preview = data.previewMutation as {
+		intentToken: string;
+		intent: { id: string };
+	};
+	return { intentId: preview.intent.id, token: preview.intentToken };
+}
+
+export async function approveIntent(
+	request: APIRequestContext,
+	db: TestDatabase,
+	intentId: string,
+) {
+	await gqlAs(
+		request,
+		db,
+		SCN017_SUBJECTS.financeApprover,
+		`mutation {
+			approveMutationIntent(input: {
+				intentId: "${intentId}"
+				reason: "approved"
+			}) { id approvalState }
+		}`,
+	);
+}
+
+export async function rejectIntent(request: APIRequestContext, db: TestDatabase, intentId: string) {
+	await gqlAs(
+		request,
+		db,
+		SCN017_SUBJECTS.financeApprover,
+		`mutation {
+			rejectMutationIntent(input: {
+				intentId: "${intentId}"
+				reason: "rejected"
+			}) { id approvalState }
+		}`,
+	);
+}
+
+export async function commitIntent(
+	request: APIRequestContext,
+	db: TestDatabase,
+	intent: PreviewedIntent,
+) {
+	await gqlAs(
+		request,
+		db,
+		SCN017_SUBJECTS.financeAgent,
+		`mutation {
+			commitMutationIntent(input: {
+				intentToken: "${intent.token}"
+				intentId: "${intent.intentId}"
+			}) { committed intent { id approvalState } }
+		}`,
+	);
+}
+
+export async function patchBudgetRecordAs(
+	request: APIRequestContext,
+	db: TestDatabase,
+	actor: string,
+	collection: string,
+	id: string,
+	budgetCents: number,
+	expectedVersion = 1,
+) {
+	await gqlAs(
+		request,
+		db,
+		actor,
+		`mutation {
+			update${collection === TASK_COLLECTION ? 'Task' : 'Expense'}(
+				id: "${id}"
+				version: ${expectedVersion}
+				input: {
+					title: "${id}"
+					budget_cents: ${budgetCents}
+					status: "changed-after-preview"
+				}
+			) { id version }
+		}`,
+	);
+}
+
+async function seedScn017IntentFixtures(
+	request: APIRequestContext,
+	db: TestDatabase,
+): Promise<Scn017IntentFixtures> {
+	for (const id of [
+		'task-pending',
+		'task-approved',
+		'task-rejected',
+		'task-expired',
+		'task-committed',
+		'task-ui-approve',
+		'task-stale',
+	]) {
+		await createBudgetRecord(request, db, TASK_COLLECTION, id);
+	}
+	await createBudgetRecord(request, db, EXPENSE_COLLECTION, 'expense-ui-reject');
+
+	const pendingIntent = await previewBudgetIntent(request, db, 'task-pending', 20_000, {
+		agentId: 'mcp.finance-cli',
+		grantVersion: 9,
+	});
+	const approvedIntent = await previewBudgetIntent(request, db, 'task-approved', 21_000, {
+		agentId: 'mcp.finance-cli',
+		grantVersion: 11,
+	});
+	await approveIntent(request, db, approvedIntent.intentId);
+	const rejectedIntent = await previewBudgetIntent(request, db, 'task-rejected', 22_000, {
+		agentId: 'tool.bulk-review',
+	});
+	await rejectIntent(request, db, rejectedIntent.intentId);
+	const expiredIntent = await previewBudgetIntent(request, db, 'task-expired', 6000, {
+		agentId: 'tool.expiring',
+		expiresInSeconds: 0,
+	});
+	const committedIntent = await previewBudgetIntent(request, db, 'task-committed', 6000, {
+		agentId: 'tool.commit',
+	});
+	await commitIntent(request, db, committedIntent);
+	const approveTargetIntent = await previewBudgetIntent(request, db, 'task-ui-approve', 23_000, {
+		actor: 'finance-bot',
+		agentId: 'tool.review-console',
+		delegatedBy: SCN017_SUBJECTS.financeAgent,
+		grantVersion: 13,
+	});
+	const rejectTargetIntent = await previewBudgetIntent(request, db, 'expense-ui-reject', 24_000, {
+		collection: EXPENSE_COLLECTION,
+		agentId: 'mcp.gateway',
+		grantVersion: 15,
+	});
+	const staleIntent = await previewBudgetIntent(request, db, 'task-stale', 27_000, {
+		grantVersion: 21,
+	});
+	await approveIntent(request, db, staleIntent.intentId);
+	await patchBudgetRecordAs(
+		request,
+		db,
+		SCN017_SUBJECTS.financeAgent,
+		TASK_COLLECTION,
+		'task-stale',
+		5100,
+	);
+
+	await new Promise((resolve) => setTimeout(resolve, 5));
+
+	return {
+		pending: {
+			...pendingIntent,
+			actor: SCN017_SUBJECTS.financeAgent,
+			collection: TASK_COLLECTION,
+			entityId: 'task-pending',
+			budgetCents: 20_000,
+			state: 'pending',
+			workflowTag: SCN017_WORKFLOW_TAGS.largeInvoice,
+		},
+		approved: {
+			...approvedIntent,
+			actor: SCN017_SUBJECTS.financeAgent,
+			collection: TASK_COLLECTION,
+			entityId: 'task-approved',
+			budgetCents: 21_000,
+			state: 'approved',
+			workflowTag: SCN017_WORKFLOW_TAGS.largeInvoice,
+		},
+		rejected: {
+			...rejectedIntent,
+			actor: SCN017_SUBJECTS.financeAgent,
+			collection: TASK_COLLECTION,
+			entityId: 'task-rejected',
+			budgetCents: 22_000,
+			state: 'rejected',
+			workflowTag: SCN017_WORKFLOW_TAGS.largeInvoice,
+		},
+		expired: {
+			...expiredIntent,
+			actor: SCN017_SUBJECTS.financeAgent,
+			collection: TASK_COLLECTION,
+			entityId: 'task-expired',
+			budgetCents: 6000,
+			state: 'expired',
+			workflowTag: SCN017_WORKFLOW_TAGS.expiredIntent,
+		},
+		committed: {
+			...committedIntent,
+			actor: SCN017_SUBJECTS.financeAgent,
+			collection: TASK_COLLECTION,
+			entityId: 'task-committed',
+			budgetCents: 6000,
+			state: 'committed',
+			workflowTag: SCN017_WORKFLOW_TAGS.smallInvoice,
+		},
+		approveTarget: {
+			...approveTargetIntent,
+			actor: 'finance-bot',
+			collection: TASK_COLLECTION,
+			entityId: 'task-ui-approve',
+			budgetCents: 23_000,
+			state: 'pending',
+			workflowTag: SCN017_WORKFLOW_TAGS.largeInvoice,
+		},
+		rejectTarget: {
+			...rejectTargetIntent,
+			actor: SCN017_SUBJECTS.financeAgent,
+			collection: EXPENSE_COLLECTION,
+			entityId: 'expense-ui-reject',
+			budgetCents: 24_000,
+			state: 'pending',
+			workflowTag: SCN017_WORKFLOW_TAGS.largeInvoice,
+		},
+		stale: {
+			...staleIntent,
+			actor: SCN017_SUBJECTS.financeAgent,
+			collection: TASK_COLLECTION,
+			entityId: 'task-stale',
+			budgetCents: 27_000,
+			state: 'approved',
+			workflowTag: SCN017_WORKFLOW_TAGS.staleIntent,
+		},
+	};
+}
+
+export async function seedScn017PolicyUiFixture(
+	request: APIRequestContext,
+	prefix: string,
+	options: SeedScn017Options = {},
+): Promise<Scn017PolicyUiFixture> {
+	const tenant = await createTestTenant(request, prefix);
+	const db = await createTestDatabase(request, tenant);
+
+	await createTestCollection(request, db, SCN017_COLLECTIONS.users, {
+		entity_schema: scn017UserSchema(),
+	});
+	await createTestCollection(request, db, SCN017_COLLECTIONS.vendors, {
+		entity_schema: scn017VendorSchema(),
+	});
+	await createTestCollection(request, db, SCN017_COLLECTIONS.invoices, {
+		entity_schema: scn017InvoiceSchema(),
+		access_control: procurementInvoicePolicy(),
+	});
+	await createTestCollection(request, db, TASK_COLLECTION, {
+		entity_schema: scn017BudgetSchema(),
+		access_control: approvalPolicy(),
+	});
+	await createTestCollection(request, db, EXPENSE_COLLECTION, {
+		entity_schema: scn017BudgetSchema(),
+		access_control: approvalPolicy(),
+	});
+	await createTestCollection(request, db, SCN017_COLLECTIONS.policyFilterUnindexed, {
+		entity_schema: policyFilterUnindexedDraft().entity_schema as Record<string, unknown>,
+	});
+
+	const users = scn017UserSeeds();
+	for (const user of Object.values(users)) {
+		await createTestEntity(request, db, SCN017_COLLECTIONS.users, user.id, {
+			user_id: user.id,
+			display_name: user.displayName,
+			approval_role: user.approvalRole,
+			procurement_role: user.procurementRole,
+		});
+	}
+
+	const vendors = {
+		primary: { id: 'vendor-acme', name: 'Acme Office Supply' },
+		secondary: { id: 'vendor-zenith', name: 'Zenith Infrastructure' },
+	};
+	await createTestEntity(request, db, SCN017_COLLECTIONS.vendors, vendors.primary.id, {
+		name: vendors.primary.name,
+		risk_rating: 'low',
+	});
+	await createTestEntity(request, db, SCN017_COLLECTIONS.vendors, vendors.secondary.id, {
+		name: vendors.secondary.name,
+		risk_rating: 'medium',
+	});
+
+	const invoices = {
+		small: {
+			id: 'inv-under-threshold',
+			number: 'INV-1001',
+			amountCents: 750_000,
+			vendorId: vendors.primary.id,
+			requesterId: SCN017_SUBJECTS.requester,
+			assignedContractorId: SCN017_SUBJECTS.contractor,
+			workflowTag: SCN017_WORKFLOW_TAGS.smallInvoice,
+		},
+		large: {
+			id: 'inv-over-threshold',
+			number: 'INV-2001',
+			amountCents: 1_250_000,
+			vendorId: vendors.secondary.id,
+			requesterId: SCN017_SUBJECTS.requester,
+			assignedContractorId: SCN017_SUBJECTS.contractor,
+			workflowTag: SCN017_WORKFLOW_TAGS.largeInvoice,
+		},
+	};
+	await createTestEntity(request, db, SCN017_COLLECTIONS.invoices, invoices.small.id, {
+		number: invoices.small.number,
+		vendor_id: invoices.small.vendorId,
+		requester_id: invoices.small.requesterId,
+		assigned_contractor_id: invoices.small.assignedContractorId,
+		status: 'submitted',
+		amount_cents: invoices.small.amountCents,
+		currency: 'USD',
+		commercial_terms: 'net-30 standard procurement terms',
+	});
+	await createTestEntity(request, db, SCN017_COLLECTIONS.invoices, invoices.large.id, {
+		number: invoices.large.number,
+		vendor_id: invoices.large.vendorId,
+		requester_id: invoices.large.requesterId,
+		assigned_contractor_id: invoices.large.assignedContractorId,
+		status: 'submitted',
+		amount_cents: invoices.large.amountCents,
+		currency: 'USD',
+		commercial_terms: 'net-15 expedited infrastructure terms',
+	});
+
+	const taskA: Record<string, unknown> = {
+		title: 'Budget request',
+		budget_cents: 5000,
+		status: 'draft',
+	};
+	if (options.includeTaskSecret) {
+		taskA.secret = 'alpha';
+	}
+	await createTestEntity(request, db, TASK_COLLECTION, 'task-a', taskA);
+	await createTestEntity(request, db, SCN017_COLLECTIONS.policyFilterUnindexed, 'policy-shadow', {
+		title: 'Shadow policy row',
+		reviewer_email: 'reviewer@example.com',
+		status: 'pending',
+	});
+
+	const fixture: Scn017PolicyUiFixture = {
+		tenant,
+		db,
+		collections: SCN017_COLLECTIONS,
+		subjects: SCN017_SUBJECTS,
+		roles: SCN017_ROLES,
+		users,
+		vendors,
+		invoices,
+		policyVariants: {
+			smallInvoice: {
+				collection: SCN017_COLLECTIONS.invoices,
+				entityId: invoices.small.id,
+				workflowTag: invoices.small.workflowTag,
+			},
+			largeInvoice: {
+				collection: SCN017_COLLECTIONS.invoices,
+				entityId: invoices.large.id,
+				workflowTag: invoices.large.workflowTag,
+			},
+		},
+		intentFixtures: {},
+		policyFilterUnindexed: {
+			collection: SCN017_COLLECTIONS.policyFilterUnindexed,
+			entityId: 'policy-shadow',
+			sampleRow: {
+				title: 'Shadow policy row',
+				reviewer_email: 'reviewer@example.com',
+				status: 'pending',
+			},
+			draftSchema: policyFilterUnindexedDraft(),
+			workflowTag: SCN017_WORKFLOW_TAGS.policyFilterUnindexed,
+		},
+		storyTags: SCN017_STORY_TAGS,
+		workflowTags: SCN017_WORKFLOW_TAGS,
+	};
+
+	if (options.seedIntentFixtures) {
+		fixture.intentFixtures = await seedScn017IntentFixtures(request, db);
+	}
+
+	return fixture;
+}
+
+export async function seedApprovalCollections(
+	request: APIRequestContext,
+	prefix: string,
+): Promise<TestDatabase> {
+	const fixture = await seedScn017PolicyUiFixture(request, prefix);
+	return fixture.db;
+}
+
+export async function seedIntentCollection(
+	request: APIRequestContext,
+	prefix: string,
+	includeSecret = false,
+): Promise<TestDatabase> {
+	const fixture = await seedScn017PolicyUiFixture(request, prefix, {
+		includeTaskSecret: includeSecret,
+	});
+	return fixture.db;
+}
+
+export async function seedIntentStates(
+	request: APIRequestContext,
+	db: TestDatabase,
+): Promise<SeededIntentIds> {
+	const intents = await seedScn017IntentFixtures(request, db);
+	return {
+		pending: intents.pending.intentId,
+		approved: intents.approved.intentId,
+		rejected: intents.rejected.intentId,
+		expired: intents.expired.intentId,
+		committed: intents.committed.intentId,
+		approveTarget: intents.approveTarget.intentId,
+		rejectTarget: intents.rejectTarget.intentId,
+	};
+}
