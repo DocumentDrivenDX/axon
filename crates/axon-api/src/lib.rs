@@ -16,8 +16,15 @@ pub mod test_fixtures;
 pub mod transaction;
 
 pub use intent::{
-    ApprovalState, CanonicalOperationMetadata, ExecutableMutationIntent, MutationApprovalRoute,
-    MutationIntent, MutationIntentDecision, MutationIntentLifecycleError,
+    canonical_create_entity_operation, canonical_create_link_operation,
+    canonical_delete_entity_operation, canonical_delete_link_operation,
+    canonical_patch_entity_operation, canonical_revert_entity_operation,
+    canonical_rollback_collection_operation, canonical_rollback_entity_operation,
+    canonical_rollback_transaction_operation, canonical_staged_transaction_operation,
+    canonical_transaction_operation, canonical_transition_lifecycle_operation,
+    canonical_update_entity_operation, canonicalize_intent_operation, ApprovalState,
+    CanonicalOperationMetadata, CanonicalTransactionOperation, ExecutableMutationIntent,
+    MutationApprovalRoute, MutationIntent, MutationIntentDecision, MutationIntentLifecycleError,
     MutationIntentLifecycleOperation, MutationIntentLifecycleService, MutationIntentModelError,
     MutationIntentPreviewRecord, MutationIntentReviewMetadata, MutationIntentScopeBinding,
     MutationIntentSubjectBinding, MutationIntentToken, MutationIntentTokenLookupError,

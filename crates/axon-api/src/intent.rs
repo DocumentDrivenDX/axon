@@ -9,7 +9,19 @@ use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId};
 pub use axon_core::intent::*;
+use axon_core::types::Link;
 use axon_storage::adapter::StorageAdapter;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+use crate::request::{
+    CreateEntityRequest, CreateLinkRequest, DeleteEntityRequest, DeleteLinkRequest,
+    PatchEntityRequest, RevertEntityRequest, RollbackCollectionRequest, RollbackEntityRequest,
+    RollbackEntityTarget, RollbackTransactionRequest, TransitionLifecycleRequest,
+    UpdateEntityRequest,
+};
+use crate::transaction::{StagedOp, Transaction};
 
 const INTENT_AUDIT_COLLECTION: &str = "_mutation_intents";
 
@@ -27,6 +39,460 @@ impl MutationIntentReviewMetadata {
         self.reason
             .as_deref()
             .is_some_and(|reason| !reason.trim().is_empty())
+    }
+}
+
+/// Caller-supplied operation captured inside a transaction intent preview.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum CanonicalTransactionOperation {
+    /// Create an entity inside a transaction.
+    CreateEntity {
+        collection: CollectionId,
+        id: EntityId,
+        data: Value,
+    },
+    /// Replace an entity inside a transaction.
+    UpdateEntity {
+        collection: CollectionId,
+        id: EntityId,
+        data: Value,
+        expected_version: u64,
+    },
+    /// Apply an RFC 7396 merge patch inside a transaction.
+    PatchEntity {
+        collection: CollectionId,
+        id: EntityId,
+        patch: Value,
+        expected_version: u64,
+    },
+    /// Delete an entity inside a transaction.
+    DeleteEntity {
+        collection: CollectionId,
+        id: EntityId,
+        expected_version: u64,
+    },
+    /// Create a typed link inside a transaction.
+    CreateLink {
+        source_collection: CollectionId,
+        source_id: EntityId,
+        target_collection: CollectionId,
+        target_id: EntityId,
+        link_type: String,
+        metadata: Value,
+    },
+    /// Delete a typed link inside a transaction.
+    DeleteLink {
+        source_collection: CollectionId,
+        source_id: EntityId,
+        target_collection: CollectionId,
+        target_id: EntityId,
+        link_type: String,
+    },
+}
+
+/// Canonicalize a mutation operation payload and bind it to a stable SHA-256 hash.
+pub fn canonicalize_intent_operation(
+    operation_kind: MutationOperationKind,
+    operation: Value,
+) -> CanonicalOperationMetadata {
+    let canonical_operation = canonicalize_json_value(operation);
+    let mut hash_envelope = serde_json::Map::new();
+    hash_envelope.insert(
+        "operation_kind".into(),
+        Value::String(operation_kind_wire_name(&operation_kind).into()),
+    );
+    hash_envelope.insert("operation".into(), canonical_operation.clone());
+
+    let canonical_input = Value::Object(hash_envelope);
+    let hash_input = canonical_json_string(&canonical_input);
+    let mut hasher = Sha256::new();
+    hasher.update(hash_input.as_bytes());
+    let digest = hasher.finalize();
+
+    CanonicalOperationMetadata {
+        operation_kind,
+        operation_hash: format!("sha256:{digest:x}"),
+        canonical_operation: Some(canonical_operation),
+    }
+}
+
+/// Canonical operation metadata for an entity create request.
+pub fn canonical_create_entity_operation(
+    request: &CreateEntityRequest,
+) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::CreateEntity,
+        json!({
+            "collection": &request.collection,
+            "id": &request.id,
+            "data": &request.data,
+        }),
+    )
+}
+
+/// Canonical operation metadata for an entity update request.
+pub fn canonical_update_entity_operation(
+    request: &UpdateEntityRequest,
+) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::UpdateEntity,
+        json!({
+            "collection": &request.collection,
+            "id": &request.id,
+            "data": &request.data,
+            "expected_version": request.expected_version,
+        }),
+    )
+}
+
+/// Canonical operation metadata for an entity patch request.
+pub fn canonical_patch_entity_operation(
+    request: &PatchEntityRequest,
+) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::PatchEntity,
+        json!({
+            "collection": &request.collection,
+            "id": &request.id,
+            "patch": &request.patch,
+            "expected_version": request.expected_version,
+        }),
+    )
+}
+
+/// Canonical operation metadata for an entity delete request.
+pub fn canonical_delete_entity_operation(
+    request: &DeleteEntityRequest,
+) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::DeleteEntity,
+        json!({
+            "collection": &request.collection,
+            "id": &request.id,
+            "force": request.force,
+        }),
+    )
+}
+
+/// Canonical operation metadata for a link create request.
+pub fn canonical_create_link_operation(request: &CreateLinkRequest) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::CreateLink,
+        json!({
+            "source_collection": &request.source_collection,
+            "source_id": &request.source_id,
+            "target_collection": &request.target_collection,
+            "target_id": &request.target_id,
+            "link_type": &request.link_type,
+            "metadata": &request.metadata,
+        }),
+    )
+}
+
+/// Canonical operation metadata for a link delete request.
+pub fn canonical_delete_link_operation(request: &DeleteLinkRequest) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::DeleteLink,
+        json!({
+            "source_collection": &request.source_collection,
+            "source_id": &request.source_id,
+            "target_collection": &request.target_collection,
+            "target_id": &request.target_id,
+            "link_type": &request.link_type,
+        }),
+    )
+}
+
+/// Canonical operation metadata for a lifecycle state transition request.
+pub fn canonical_transition_lifecycle_operation(
+    request: &TransitionLifecycleRequest,
+) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::Transition,
+        json!({
+            "collection": &request.collection_id,
+            "id": &request.entity_id,
+            "lifecycle_name": &request.lifecycle_name,
+            "target_state": &request.target_state,
+            "expected_version": request.expected_version,
+        }),
+    )
+}
+
+/// Canonical operation metadata for an entity rollback request.
+pub fn canonical_rollback_entity_operation(
+    request: &RollbackEntityRequest,
+) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::Rollback,
+        json!({
+            "rollback_scope": "entity",
+            "collection": &request.collection,
+            "id": &request.id,
+            "target": rollback_target_value(&request.target),
+            "expected_version": request.expected_version,
+            "dry_run": request.dry_run,
+        }),
+    )
+}
+
+/// Canonical operation metadata for a collection rollback request.
+pub fn canonical_rollback_collection_operation(
+    request: &RollbackCollectionRequest,
+) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::Rollback,
+        json!({
+            "rollback_scope": "collection",
+            "collection": &request.collection,
+            "timestamp_ns": request.timestamp_ns,
+            "dry_run": request.dry_run,
+        }),
+    )
+}
+
+/// Canonical operation metadata for a transaction rollback request.
+pub fn canonical_rollback_transaction_operation(
+    request: &RollbackTransactionRequest,
+) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::Rollback,
+        json!({
+            "rollback_scope": "transaction",
+            "transaction_id": &request.transaction_id,
+            "dry_run": request.dry_run,
+        }),
+    )
+}
+
+/// Canonical operation metadata for an entity revert request.
+pub fn canonical_revert_entity_operation(
+    request: &RevertEntityRequest,
+) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::Revert,
+        json!({
+            "audit_entry_id": request.audit_entry_id,
+            "force": request.force,
+        }),
+    )
+}
+
+/// Canonical operation metadata for an ordered transaction operation list.
+pub fn canonical_transaction_operation(
+    operations: &[CanonicalTransactionOperation],
+) -> CanonicalOperationMetadata {
+    canonicalize_intent_operation(
+        MutationOperationKind::Transaction,
+        json!({
+            "operations": operations,
+        }),
+    )
+}
+
+/// Canonical operation metadata for an in-memory transaction's staged writes.
+pub fn canonical_staged_transaction_operation(
+    transaction: &Transaction,
+) -> CanonicalOperationMetadata {
+    let operations: Vec<_> = transaction
+        .staged_ops()
+        .iter()
+        .map(canonical_staged_operation_value)
+        .collect();
+    canonicalize_intent_operation(
+        MutationOperationKind::Transaction,
+        json!({
+            "operations": operations,
+        }),
+    )
+}
+
+fn canonical_staged_operation_value(operation: &StagedOp) -> Value {
+    match operation {
+        StagedOp::Entity(operation) => match &operation.mutation {
+            MutationType::EntityCreate => json!({
+                "op": "create_entity",
+                "collection": &operation.entity.collection,
+                "id": &operation.entity.id,
+                "data": &operation.entity.data,
+            }),
+            MutationType::EntityUpdate => json!({
+                "op": "update_entity",
+                "collection": &operation.entity.collection,
+                "id": &operation.entity.id,
+                "data": &operation.entity.data,
+                "expected_version": operation.expected_version,
+            }),
+            MutationType::EntityDelete => json!({
+                "op": "delete_entity",
+                "collection": &operation.entity.collection,
+                "id": &operation.entity.id,
+                "expected_version": operation.expected_version,
+            }),
+            MutationType::CollectionCreate
+            | MutationType::CollectionDrop
+            | MutationType::TemplateCreate
+            | MutationType::TemplateUpdate
+            | MutationType::TemplateDelete
+            | MutationType::SchemaUpdate
+            | MutationType::EntityRevert
+            | MutationType::LinkCreate
+            | MutationType::LinkDelete
+            | MutationType::GuardrailRejection
+            | MutationType::IntentPreview
+            | MutationType::IntentApprove
+            | MutationType::IntentReject
+            | MutationType::IntentExpire
+            | MutationType::IntentCommit => json!({
+                "op": "unsupported_entity_mutation",
+                "mutation": format!("{:?}", operation.mutation),
+                "collection": &operation.entity.collection,
+                "id": &operation.entity.id,
+            }),
+        },
+        StagedOp::LinkCreate(link) => canonical_link_operation_value("create_link", link, true),
+        StagedOp::LinkDelete(link) => canonical_link_operation_value("delete_link", link, false),
+    }
+}
+
+fn canonical_link_operation_value(op: &str, link: &Link, include_metadata: bool) -> Value {
+    let mut operation = serde_json::Map::new();
+    operation.insert("op".into(), Value::String(op.into()));
+    operation.insert(
+        "source_collection".into(),
+        Value::String(link.source_collection.to_string()),
+    );
+    operation.insert(
+        "source_id".into(),
+        Value::String(link.source_id.to_string()),
+    );
+    operation.insert(
+        "target_collection".into(),
+        Value::String(link.target_collection.to_string()),
+    );
+    operation.insert(
+        "target_id".into(),
+        Value::String(link.target_id.to_string()),
+    );
+    operation.insert("link_type".into(), Value::String(link.link_type.clone()));
+    if include_metadata {
+        operation.insert("metadata".into(), link.metadata.clone());
+    }
+    Value::Object(operation)
+}
+
+fn rollback_target_value(target: &RollbackEntityTarget) -> Value {
+    match target {
+        RollbackEntityTarget::Version(version) => json!({
+            "kind": "version",
+            "version": version,
+        }),
+        RollbackEntityTarget::AuditEntryId(audit_entry_id) => json!({
+            "kind": "audit_entry_id",
+            "audit_entry_id": audit_entry_id,
+        }),
+    }
+}
+
+fn canonicalize_json_value(value: Value) -> Value {
+    match value {
+        Value::Array(items) => {
+            Value::Array(items.into_iter().map(canonicalize_json_value).collect())
+        }
+        Value::Object(map) => {
+            let mut entries: Vec<_> = map.into_iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            let mut sorted = serde_json::Map::new();
+            for (key, value) in entries {
+                sorted.insert(key, canonicalize_json_value(value));
+            }
+            Value::Object(sorted)
+        }
+        primitive => primitive,
+    }
+}
+
+fn canonical_json_string(value: &Value) -> String {
+    let mut output = String::new();
+    push_canonical_json(value, &mut output);
+    output
+}
+
+fn push_canonical_json(value: &Value, output: &mut String) {
+    match value {
+        Value::Null => output.push_str("null"),
+        Value::Bool(true) => output.push_str("true"),
+        Value::Bool(false) => output.push_str("false"),
+        Value::Number(number) => output.push_str(&number.to_string()),
+        Value::String(value) => push_json_string(value, output),
+        Value::Array(items) => {
+            output.push('[');
+            for (index, item) in items.iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                push_canonical_json(item, output);
+            }
+            output.push(']');
+        }
+        Value::Object(map) => {
+            let mut keys: Vec<_> = map.keys().collect();
+            keys.sort();
+            output.push('{');
+            for (index, key) in keys.into_iter().enumerate() {
+                if index > 0 {
+                    output.push(',');
+                }
+                push_json_string(key, output);
+                output.push(':');
+                if let Some(item) = map.get(key) {
+                    push_canonical_json(item, output);
+                }
+            }
+            output.push('}');
+        }
+    }
+}
+
+fn push_json_string(value: &str, output: &mut String) {
+    output.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => output.push_str("\\\""),
+            '\\' => output.push_str("\\\\"),
+            '\u{08}' => output.push_str("\\b"),
+            '\t' => output.push_str("\\t"),
+            '\n' => output.push_str("\\n"),
+            '\u{0c}' => output.push_str("\\f"),
+            '\r' => output.push_str("\\r"),
+            '\u{00}'..='\u{1f}' => push_json_control_escape(ch, output),
+            ch => output.push(ch),
+        }
+    }
+    output.push('"');
+}
+
+fn push_json_control_escape(ch: char, output: &mut String) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let code = ch as usize;
+    output.push_str("\\u00");
+    output.push(HEX[(code >> 4) & 0x0f] as char);
+    output.push(HEX[code & 0x0f] as char);
+}
+
+fn operation_kind_wire_name(kind: &MutationOperationKind) -> &'static str {
+    match kind {
+        MutationOperationKind::CreateEntity => "create_entity",
+        MutationOperationKind::UpdateEntity => "update_entity",
+        MutationOperationKind::PatchEntity => "patch_entity",
+        MutationOperationKind::DeleteEntity => "delete_entity",
+        MutationOperationKind::CreateLink => "create_link",
+        MutationOperationKind::DeleteLink => "delete_link",
+        MutationOperationKind::Transaction => "transaction",
+        MutationOperationKind::Transition => "transition",
+        MutationOperationKind::Rollback => "rollback",
+        MutationOperationKind::Revert => "revert",
     }
 }
 
@@ -111,6 +577,12 @@ pub enum MutationIntentLifecycleError {
         expires_at: u64,
         now_ns: u64,
     },
+    /// The operation supplied for commit no longer matches the previewed intent.
+    IntentMismatch {
+        intent_id: String,
+        expected_hash: String,
+        actual_hash: String,
+    },
 }
 
 impl fmt::Display for MutationIntentLifecycleError {
@@ -178,6 +650,14 @@ impl fmt::Display for MutationIntentLifecycleError {
                 f,
                 "mutation intent '{intent_id}' expires at {expires_at}, not expired at {now_ns}"
             ),
+            Self::IntentMismatch {
+                intent_id,
+                expected_hash,
+                actual_hash,
+            } => write!(
+                f,
+                "mutation intent '{intent_id}' operation mismatch: expected {expected_hash}, got {actual_hash}"
+            ),
         }
     }
 }
@@ -196,6 +676,7 @@ impl MutationIntentLifecycleError {
             Self::ReasonRequired { .. } => "intent_reason_required",
             Self::Expired { .. } => "intent_expired",
             Self::NotExpired { .. } => "intent_not_expired",
+            Self::IntentMismatch { .. } => "intent_mismatch",
         }
     }
 }
@@ -468,6 +949,28 @@ impl MutationIntentLifecycleService {
         intent_id: &str,
         now_ns: u64,
     ) -> Result<MutationIntent, MutationIntentLifecycleError> {
+        Self::mark_committed_internal(storage, scope, intent_id, None, now_ns)
+    }
+
+    /// Mark an allowed or approved intent as committed only if the operation hash still matches.
+    pub fn mark_committed_with_operation_hash<S: StorageAdapter>(
+        &self,
+        storage: &mut S,
+        scope: &MutationIntentScopeBinding,
+        intent_id: &str,
+        operation_hash: &str,
+        now_ns: u64,
+    ) -> Result<MutationIntent, MutationIntentLifecycleError> {
+        Self::mark_committed_internal(storage, scope, intent_id, Some(operation_hash), now_ns)
+    }
+
+    fn mark_committed_internal<S: StorageAdapter>(
+        storage: &mut S,
+        scope: &MutationIntentScopeBinding,
+        intent_id: &str,
+        operation_hash: Option<&str>,
+        now_ns: u64,
+    ) -> Result<MutationIntent, MutationIntentLifecycleError> {
         let intent = load_intent(storage, scope, intent_id)?;
         reject_if_expired_or_expire(
             storage,
@@ -476,6 +979,7 @@ impl MutationIntentLifecycleService {
             now_ns,
             MutationIntentLifecycleOperation::Commit,
         )?;
+        require_operation_hash(&intent, operation_hash)?;
 
         let expected = match intent.decision {
             MutationIntentDecision::Allow => ApprovalState::None,
@@ -605,6 +1109,23 @@ fn require_state(
             operation,
             from: intent.approval_state.clone(),
             to: new_state,
+        });
+    }
+    Ok(())
+}
+
+fn require_operation_hash(
+    intent: &MutationIntent,
+    operation_hash: Option<&str>,
+) -> Result<(), MutationIntentLifecycleError> {
+    let Some(operation_hash) = operation_hash else {
+        return Ok(());
+    };
+    if intent.operation.operation_hash != operation_hash {
+        return Err(MutationIntentLifecycleError::IntentMismatch {
+            intent_id: intent.intent_id.clone(),
+            expected_hash: intent.operation.operation_hash.clone(),
+            actual_hash: operation_hash.to_string(),
         });
     }
     Ok(())
@@ -761,6 +1282,319 @@ mod tests {
                 policy_explanation: vec!["large-invoice-update matched".into()],
             },
         }
+    }
+
+    #[test]
+    fn canonical_operation_hash_is_field_order_independent() {
+        let first = canonicalize_intent_operation(
+            MutationOperationKind::UpdateEntity,
+            json!({
+                "id": "inv-001",
+                "collection": "invoices",
+                "expected_version": 3,
+                "data": {
+                    "amount_cents": 125000,
+                    "currency": "USD"
+                }
+            }),
+        );
+        let second = canonicalize_intent_operation(
+            MutationOperationKind::UpdateEntity,
+            json!({
+                "data": {
+                    "currency": "USD",
+                    "amount_cents": 125000
+                },
+                "expected_version": 3,
+                "collection": "invoices",
+                "id": "inv-001"
+            }),
+        );
+
+        assert_eq!(first.operation_hash, second.operation_hash);
+        assert_eq!(first.canonical_operation, second.canonical_operation);
+    }
+
+    #[test]
+    fn canonical_operation_hash_changes_with_payload_or_kind() {
+        let base = canonicalize_intent_operation(
+            MutationOperationKind::UpdateEntity,
+            json!({
+                "collection": "invoices",
+                "id": "inv-001",
+                "expected_version": 3,
+                "data": {"amount_cents": 125000}
+            }),
+        );
+        let changed_payload = canonicalize_intent_operation(
+            MutationOperationKind::UpdateEntity,
+            json!({
+                "collection": "invoices",
+                "id": "inv-001",
+                "expected_version": 3,
+                "data": {"amount_cents": 125001}
+            }),
+        );
+        let changed_kind = canonicalize_intent_operation(
+            MutationOperationKind::PatchEntity,
+            json!({
+                "collection": "invoices",
+                "id": "inv-001",
+                "expected_version": 3,
+                "data": {"amount_cents": 125000}
+            }),
+        );
+
+        assert_ne!(base.operation_hash, changed_payload.operation_hash);
+        assert_ne!(base.operation_hash, changed_kind.operation_hash);
+    }
+
+    #[test]
+    fn canonical_operation_helpers_cover_supported_operation_kinds() {
+        let create = canonical_create_entity_operation(&CreateEntityRequest {
+            collection: CollectionId::new("invoices"),
+            id: EntityId::new("inv-001"),
+            data: json!({"amount_cents": 125000}),
+            actor: Some("usr_finance".into()),
+            audit_metadata: None,
+            attribution: None,
+        });
+        let update = canonical_update_entity_operation(&UpdateEntityRequest {
+            collection: CollectionId::new("invoices"),
+            id: EntityId::new("inv-001"),
+            data: json!({"amount_cents": 125500}),
+            expected_version: 3,
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        });
+        let patch = canonical_patch_entity_operation(&PatchEntityRequest {
+            collection: CollectionId::new("invoices"),
+            id: EntityId::new("inv-001"),
+            patch: json!({"status": "approved"}),
+            expected_version: 4,
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        });
+        let delete = canonical_delete_entity_operation(&DeleteEntityRequest {
+            collection: CollectionId::new("invoices"),
+            id: EntityId::new("inv-001"),
+            actor: None,
+            force: true,
+            audit_metadata: None,
+            attribution: None,
+        });
+        let create_link = canonical_create_link_operation(&CreateLinkRequest {
+            source_collection: CollectionId::new("vendors"),
+            source_id: EntityId::new("ven-001"),
+            target_collection: CollectionId::new("invoices"),
+            target_id: EntityId::new("inv-001"),
+            link_type: "approves".into(),
+            metadata: json!({"route": "finance"}),
+            actor: None,
+            attribution: None,
+        });
+        let delete_link = canonical_delete_link_operation(&DeleteLinkRequest {
+            source_collection: CollectionId::new("vendors"),
+            source_id: EntityId::new("ven-001"),
+            target_collection: CollectionId::new("invoices"),
+            target_id: EntityId::new("inv-001"),
+            link_type: "approves".into(),
+            actor: None,
+            attribution: None,
+        });
+        let transition = canonical_transition_lifecycle_operation(&TransitionLifecycleRequest {
+            collection_id: CollectionId::new("invoices"),
+            entity_id: EntityId::new("inv-001"),
+            lifecycle_name: "approval".into(),
+            target_state: "approved".into(),
+            expected_version: 4,
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        });
+        let rollback_entity = canonical_rollback_entity_operation(&RollbackEntityRequest {
+            collection: CollectionId::new("invoices"),
+            id: EntityId::new("inv-001"),
+            target: RollbackEntityTarget::Version(2),
+            expected_version: Some(5),
+            actor: None,
+            dry_run: true,
+        });
+        let rollback_collection =
+            canonical_rollback_collection_operation(&RollbackCollectionRequest {
+                collection: CollectionId::new("invoices"),
+                timestamp_ns: 12_345,
+                actor: None,
+                dry_run: true,
+            });
+        let rollback_transaction =
+            canonical_rollback_transaction_operation(&RollbackTransactionRequest {
+                transaction_id: "tx-001".into(),
+                actor: None,
+                dry_run: true,
+            });
+        let revert = canonical_revert_entity_operation(&RevertEntityRequest {
+            audit_entry_id: 42,
+            actor: None,
+            force: true,
+            attribution: None,
+        });
+        let transaction = canonical_transaction_operation(&[
+            CanonicalTransactionOperation::CreateEntity {
+                collection: CollectionId::new("invoices"),
+                id: EntityId::new("inv-002"),
+                data: json!({"amount_cents": 9000}),
+            },
+            CanonicalTransactionOperation::PatchEntity {
+                collection: CollectionId::new("invoices"),
+                id: EntityId::new("inv-001"),
+                patch: json!({"status": "paid"}),
+                expected_version: 5,
+            },
+        ]);
+
+        let operations = vec![
+            (create, MutationOperationKind::CreateEntity),
+            (update, MutationOperationKind::UpdateEntity),
+            (patch, MutationOperationKind::PatchEntity),
+            (delete, MutationOperationKind::DeleteEntity),
+            (create_link, MutationOperationKind::CreateLink),
+            (delete_link, MutationOperationKind::DeleteLink),
+            (transition, MutationOperationKind::Transition),
+            (rollback_entity, MutationOperationKind::Rollback),
+            (rollback_collection, MutationOperationKind::Rollback),
+            (rollback_transaction, MutationOperationKind::Rollback),
+            (revert, MutationOperationKind::Revert),
+            (transaction, MutationOperationKind::Transaction),
+        ];
+
+        for (operation, kind) in operations {
+            assert_eq!(operation.operation_kind, kind);
+            assert!(operation.operation_hash.starts_with("sha256:"));
+            assert_eq!(operation.operation_hash.len(), "sha256:".len() + 64);
+            assert!(operation.canonical_operation.is_some());
+        }
+    }
+
+    #[test]
+    fn staged_transaction_operation_canonicalizes_ordered_writes() {
+        let mut transaction = Transaction::new();
+        transaction
+            .create(axon_core::types::Entity::new(
+                CollectionId::new("invoices"),
+                EntityId::new("inv-001"),
+                json!({"amount_cents": 125000}),
+            ))
+            .expect("create should stage");
+        transaction
+            .create_link(Link {
+                source_collection: CollectionId::new("vendors"),
+                source_id: EntityId::new("ven-001"),
+                target_collection: CollectionId::new("invoices"),
+                target_id: EntityId::new("inv-001"),
+                link_type: "approves".into(),
+                metadata: json!({"route": "finance"}),
+            })
+            .expect("link create should stage");
+
+        let operation = canonical_staged_transaction_operation(&transaction);
+
+        assert_eq!(operation.operation_kind, MutationOperationKind::Transaction);
+        assert!(operation.operation_hash.starts_with("sha256:"));
+        assert_eq!(
+            operation.canonical_operation,
+            Some(json!({
+                "operations": [
+                    {
+                        "op": "create_entity",
+                        "collection": "invoices",
+                        "id": "inv-001",
+                        "data": {"amount_cents": 125000}
+                    },
+                    {
+                        "op": "create_link",
+                        "source_collection": "vendors",
+                        "source_id": "ven-001",
+                        "target_collection": "invoices",
+                        "target_id": "inv-001",
+                        "link_type": "approves",
+                        "metadata": {"route": "finance"}
+                    }
+                ]
+            }))
+        );
+    }
+
+    #[test]
+    fn commit_with_operation_hash_rejects_caller_supplied_operation_drift() {
+        let mut storage = MemoryStorageAdapter::default();
+        let svc = service();
+        let previewed_operation = canonical_update_entity_operation(&UpdateEntityRequest {
+            collection: CollectionId::new("invoices"),
+            id: EntityId::new("inv-001"),
+            data: json!({"amount_cents": 125000}),
+            expected_version: 3,
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        });
+        let drifted_operation = canonical_update_entity_operation(&UpdateEntityRequest {
+            collection: CollectionId::new("invoices"),
+            id: EntityId::new("inv-001"),
+            data: json!({"amount_cents": 125001}),
+            expected_version: 3,
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        });
+        let mut intent = intent(
+            "mint_drift",
+            MutationIntentDecision::Allow,
+            ApprovalState::None,
+            100,
+            false,
+        );
+        intent.operation = previewed_operation.clone();
+        svc.create_preview_record(&mut storage, intent)
+            .expect("preview should persist");
+
+        let err = svc
+            .mark_committed_with_operation_hash(
+                &mut storage,
+                &scope(),
+                "mint_drift",
+                &drifted_operation.operation_hash,
+                1,
+            )
+            .expect_err("drifted operation hash should fail");
+        assert_eq!(
+            err,
+            MutationIntentLifecycleError::IntentMismatch {
+                intent_id: "mint_drift".into(),
+                expected_hash: previewed_operation.operation_hash.clone(),
+                actual_hash: drifted_operation.operation_hash,
+            }
+        );
+        assert_eq!(err.error_code(), "intent_mismatch");
+
+        let stored = storage
+            .get_mutation_intent("acme", "finance", "mint_drift")
+            .expect("storage read should succeed")
+            .expect("intent should exist");
+        assert_eq!(stored.approval_state, ApprovalState::None);
+
+        let committed = svc
+            .mark_committed_with_operation_hash(
+                &mut storage,
+                &scope(),
+                "mint_drift",
+                &previewed_operation.operation_hash,
+                1,
+            )
+            .expect("matching operation hash should commit");
+        assert_eq!(committed.approval_state, ApprovalState::Committed);
     }
 
     #[test]
