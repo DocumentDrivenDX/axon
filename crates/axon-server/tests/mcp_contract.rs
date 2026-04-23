@@ -75,6 +75,96 @@ async fn mcp(server: &axum_test::TestServer, request: &Value) -> Value {
     server.post("/mcp").json(request).await.json::<Value>()
 }
 
+async fn mcp_as(server: &axum_test::TestServer, actor: &str, request: &Value) -> Value {
+    server
+        .post("/mcp")
+        .add_header("x-axon-actor", actor)
+        .json(request)
+        .await
+        .json::<Value>()
+}
+
+async fn gql_as(server: &axum_test::TestServer, actor: &str, query: &str) -> Value {
+    server
+        .post("/tenants/default/databases/default/graphql")
+        .add_header("x-axon-actor", actor)
+        .json(&json!({ "query": query }))
+        .await
+        .json::<Value>()
+}
+
+async fn seed_policy_collection(server: &axum_test::TestServer) {
+    server
+        .post("/tenants/default/databases/default/collections/policy_item")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "label": { "type": "string" },
+                        "secret": { "type": "string" },
+                        "amount_cents": { "type": "integer" }
+                    }
+                },
+                "access_control": {
+                    "read": {
+                        "allow": [{ "name": "all-read" }]
+                    },
+                    "create": {
+                        "allow": [{
+                            "name": "admins-create",
+                            "when": { "subject": "user_id", "eq": "admin" }
+                        }]
+                    },
+                    "update": {
+                        "allow": [{
+                            "name": "admins-update",
+                            "when": { "subject": "user_id", "eq": "admin" }
+                        }]
+                    },
+                    "delete": {
+                        "allow": [{
+                            "name": "admins-delete",
+                            "when": { "subject": "user_id", "eq": "admin" }
+                        }]
+                    },
+                    "fields": {
+                        "secret": {
+                            "read": {
+                                "deny": [{
+                                    "name": "contractors-cannot-read-secret",
+                                    "when": { "subject": "user_id", "eq": "contractor" },
+                                    "redact_as": null
+                                }]
+                            },
+                            "write": {
+                                "deny": [{
+                                    "name": "contractors-cannot-write-secret",
+                                    "when": { "subject": "user_id", "eq": "contractor" }
+                                }]
+                            }
+                        }
+                    },
+                    "envelopes": {
+                        "write": [{
+                            "name": "large-amount-needs-approval",
+                            "when": { "field": "amount_cents", "gt": 10000 },
+                            "decision": "needs_approval",
+                            "approval": {
+                                "role": "finance_approver",
+                                "reason_required": true
+                            }
+                        }]
+                    }
+                }
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+}
+
 // ── Protocol basics ───────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread")]
@@ -206,6 +296,77 @@ async fn mcp_tools_list_includes_crud_after_collection_created() {
             "expected {expected} in tools list: {names:?}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_tools_list_exposes_policy_metadata_matching_graphql_effective_policy() {
+    let server = test_server();
+    seed_policy_collection(&server).await;
+
+    let effective = gql_as(
+        &server,
+        "contractor",
+        r#"{
+            effectivePolicy(collection: "policy_item") {
+                canRead
+                canCreate
+                canUpdate
+                canDelete
+                redactedFields
+                deniedFields
+                policyVersion
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        effective["errors"].is_null(),
+        "unexpected GraphQL effectivePolicy error: {effective}"
+    );
+    let effective = &effective["data"]["effectivePolicy"];
+
+    let list = mcp_as(
+        &server,
+        "contractor",
+        &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+    )
+    .await;
+    assert!(
+        list["error"].is_null(),
+        "unexpected MCP tools/list error: {list}"
+    );
+    let tools = list["result"]["tools"].as_array().unwrap();
+    let patch_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "policy_item.patch")
+        .expect("policy_item.patch should be listed");
+    let policy = &patch_tool["policy"];
+    let capabilities = &policy["capabilities"];
+
+    assert_eq!(capabilities["canRead"], effective["canRead"]);
+    assert_eq!(capabilities["canCreate"], effective["canCreate"]);
+    assert_eq!(capabilities["canUpdate"], effective["canUpdate"]);
+    assert_eq!(capabilities["canDelete"], effective["canDelete"]);
+    assert_eq!(policy["redactedFields"], effective["redactedFields"]);
+    assert_eq!(policy["deniedFields"], effective["deniedFields"]);
+    assert_eq!(policy["policyVersion"], effective["policyVersion"]);
+    assert_eq!(
+        policy["envelopes"][0]["name"],
+        "large-amount-needs-approval"
+    );
+    assert_eq!(policy["envelopes"][0]["operation"], "write");
+    assert_eq!(policy["envelopes"][0]["decision"], "needs_approval");
+    assert_eq!(
+        policy["envelopes"][0]["approval"]["role"],
+        "finance_approver"
+    );
+    assert_eq!(policy["envelopes"][0]["approval"]["reasonRequired"], true);
+    assert_eq!(&patch_tool["inputSchema"]["x-axon-policy"], policy);
+    let description = patch_tool["description"].as_str().unwrap();
+    assert!(description.contains("Policy: canRead=true"));
+    assert!(description.contains("redactedFields=secret"));
+    assert!(description.contains("deniedFields=secret"));
+    assert!(description.contains("envelopes=large-amount-needs-approval"));
 }
 
 // ── tools/call: CRUD ──────────────────────────────────────────────────────────

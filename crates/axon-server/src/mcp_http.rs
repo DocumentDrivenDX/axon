@@ -8,12 +8,14 @@ use std::time::Duration;
 
 use crate::gateway::CurrentDatabase;
 use axon_api::handler::AxonHandler;
+use axon_core::auth::CallerIdentity as CoreCallerIdentity;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
 use axon_core::types::Entity;
 use axon_mcp::handlers::{
-    build_aggregate_tool_tokio, build_crud_tools_tokio, build_link_candidates_tool_tokio,
-    build_neighbors_tool_tokio, build_query_tool_tokio,
+    apply_policy_metadata_to_registry, build_aggregate_tool_tokio, build_crud_tools_tokio,
+    build_link_candidates_tool_tokio, build_neighbors_tool_tokio, build_query_tool_tokio,
 };
+use axon_mcp::map_axon_error;
 use axon_mcp::prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
 use axon_mcp::protocol::{McpError, McpServer};
 use axon_mcp::resources::{
@@ -83,8 +85,9 @@ impl McpHttpSessions {
     fn new_session<S: StorageAdapter + 'static>(
         session_key: &SessionKey,
         handler: SharedHandler<S>,
+        caller: &CoreCallerIdentity,
     ) -> Result<Arc<McpHttpSession>, McpError> {
-        let server = build_mcp_server(handler, &session_key.database)?;
+        let server = build_mcp_server(handler, &session_key.database, caller)?;
         Ok(Arc::new(McpHttpSession {
             server: StdMutex::new(server),
             listeners: StdMutex::new(SessionListeners::default()),
@@ -95,6 +98,7 @@ impl McpHttpSessions {
         &self,
         session_key: SessionKey,
         handler: SharedHandler<S>,
+        caller: &CoreCallerIdentity,
     ) -> Result<Arc<McpHttpSession>, McpError> {
         let mut sessions = self
             .sessions
@@ -108,7 +112,7 @@ impl McpHttpSessions {
             sessions.remove(&session_key);
         }
 
-        let session = Self::new_session(&session_key, handler)?;
+        let session = Self::new_session(&session_key, handler, caller)?;
         sessions.insert(session_key, Arc::clone(&session));
         Ok(session)
     }
@@ -117,6 +121,7 @@ impl McpHttpSessions {
         &self,
         session_key: SessionKey,
         handler: SharedHandler<S>,
+        caller: &CoreCallerIdentity,
     ) -> Result<Arc<McpHttpSession>, McpError> {
         let mut sessions = self
             .sessions
@@ -131,7 +136,7 @@ impl McpHttpSessions {
             }
         }
 
-        let session = Self::new_session(&session_key, handler)?;
+        let session = Self::new_session(&session_key, handler, caller)?;
         sessions.insert(session_key, Arc::clone(&session));
         Ok(session)
     }
@@ -140,14 +145,15 @@ impl McpHttpSessions {
         &self,
         session_key: SessionKey,
         handler: SharedHandler<S>,
+        caller: CoreCallerIdentity,
         input: &str,
     ) -> Result<Option<String>, McpError> {
-        let session = self.get_or_create(session_key.clone(), Arc::clone(&handler))?;
+        let session = self.get_or_create(session_key.clone(), Arc::clone(&handler), &caller)?;
         let mut server = session
             .server
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        refresh_mcp_server(&mut server, handler, &session_key.database)?;
+        refresh_mcp_server(&mut server, handler, &session_key.database, &caller)?;
         Ok(server.handle_message(input))
     }
 
@@ -155,8 +161,9 @@ impl McpHttpSessions {
         &self,
         session_key: SessionKey,
         handler: SharedHandler<S>,
+        caller: CoreCallerIdentity,
     ) -> Result<mpsc::UnboundedReceiver<String>, McpError> {
-        let session = self.connect_session(session_key.clone(), handler)?;
+        let session = self.connect_session(session_key.clone(), handler, &caller)?;
         let (sender, receiver) = mpsc::unbounded_channel();
         let mut listeners = session
             .listeners
@@ -298,6 +305,7 @@ fn build_tool_registry<S: StorageAdapter + 'static>(
     handler: SharedHandler<S>,
     current_database: &str,
     collections: &[String],
+    caller: &CoreCallerIdentity,
 ) -> Result<ToolRegistry, McpError> {
     let mut registry = ToolRegistry::new();
     let collection_names = collection_names_for_mcp(&handler, current_database, collections)?;
@@ -312,6 +320,18 @@ fn build_tool_registry<S: StorageAdapter + 'static>(
             Arc::clone(&handler),
         ));
         registry.register(build_neighbors_tool_tokio(collection, Arc::clone(&handler)));
+    }
+
+    {
+        let guard = handler.blocking_lock();
+        apply_policy_metadata_to_registry(
+            &mut registry,
+            &guard,
+            current_database,
+            &collection_names,
+            caller,
+        )
+        .map_err(map_axon_error)?;
     }
 
     registry.register(build_query_tool_tokio(handler));
@@ -352,8 +372,9 @@ fn build_prompt_registry<S: StorageAdapter + 'static>(
 fn build_mcp_server<S: StorageAdapter + 'static>(
     handler: SharedHandler<S>,
     current_database: &str,
+    caller: &CoreCallerIdentity,
 ) -> Result<McpServer, McpError> {
-    let tools = build_tool_registry(Arc::clone(&handler), current_database, &[])?;
+    let tools = build_tool_registry(Arc::clone(&handler), current_database, &[], caller)?;
     let resources = build_resource_registry(Arc::clone(&handler), current_database, &[])?;
     let prompts = build_prompt_registry(handler, current_database);
     Ok(McpServer::new(tools, resources, prompts))
@@ -363,8 +384,9 @@ fn refresh_mcp_server<S: StorageAdapter + 'static>(
     server: &mut McpServer,
     handler: SharedHandler<S>,
     current_database: &str,
+    caller: &CoreCallerIdentity,
 ) -> Result<(), McpError> {
-    let tools = build_tool_registry(Arc::clone(&handler), current_database, &[])?;
+    let tools = build_tool_registry(Arc::clone(&handler), current_database, &[], caller)?;
     let resources = build_resource_registry(Arc::clone(&handler), current_database, &[])?;
     let prompts = build_prompt_registry(handler, current_database);
     server.refresh_registries(tools, resources, prompts);
@@ -546,6 +568,7 @@ async fn handle_mcp<S: StorageAdapter + 'static>(
     State(handler): State<SharedHandler<S>>,
     Extension(sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Query(query): Query<McpSessionQuery>,
     headers: HeaderMap,
     body: Bytes,
@@ -562,7 +585,7 @@ async fn handle_mcp<S: StorageAdapter + 'static>(
     let session = resolve_session_from_request(&current_database, &headers, &query);
     let session_key = session.key.clone();
     let response = match tokio::task::spawn_blocking(move || {
-        sessions.handle_message(session_key, handler, &input)
+        sessions.handle_message(session_key, handler, caller, &input)
     })
     .await
     {
@@ -595,13 +618,16 @@ async fn handle_mcp_sse<S: StorageAdapter + 'static>(
     State(handler): State<SharedHandler<S>>,
     Extension(sessions): Extension<McpHttpSessions>,
     Extension(current_database): Extension<CurrentDatabase>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Query(query): Query<McpSessionQuery>,
     headers: HeaderMap,
 ) -> Response {
     let session = resolve_session_from_request(&current_database, &headers, &query);
     let session_key = session.key.clone();
     let receiver =
-        match tokio::task::spawn_blocking(move || sessions.connect(session_key, handler)).await {
+        match tokio::task::spawn_blocking(move || sessions.connect(session_key, handler, caller))
+            .await
+        {
             Ok(Ok(receiver)) => receiver,
             Ok(Err(error)) => return json_rpc_error_response(error),
             Err(error) => {
@@ -687,6 +713,7 @@ mod tests {
             .with_state(handler)
             .layer(Extension(sessions))
             .layer(Extension(CurrentDatabase::new(DEFAULT_DATABASE)))
+            .layer(Extension(CoreCallerIdentity::anonymous()))
             .layer(Extension(Identity::anonymous_admin()));
         TestServer::builder().http_transport().build(app)
     }
@@ -940,6 +967,7 @@ mod tests {
             State(handler),
             Extension(McpHttpSessions::default()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
+            Extension(CoreCallerIdentity::anonymous()),
             Query(McpSessionQuery::default()),
             HeaderMap::new(),
         )
@@ -962,6 +990,7 @@ mod tests {
             State(handler.clone()),
             Extension(sessions.clone()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
+            Extension(CoreCallerIdentity::anonymous()),
             Query(McpSessionQuery::default()),
             HeaderMap::new(),
             Bytes::from(
@@ -984,6 +1013,7 @@ mod tests {
             State(handler),
             Extension(sessions.clone()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
+            Extension(CoreCallerIdentity::anonymous()),
             Query(McpSessionQuery::default()),
             session_cookie_headers(&session_id),
             Bytes::from(
@@ -1010,6 +1040,7 @@ mod tests {
             State(handler.clone()),
             Extension(sessions.clone()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
+            Extension(CoreCallerIdentity::anonymous()),
             Query(McpSessionQuery::default()),
             HeaderMap::new(),
             Bytes::from(
@@ -1027,7 +1058,7 @@ mod tests {
             McpHttpSessions::test_session_key(DEFAULT_DATABASE, &issued_session_id(&subscribe));
 
         let mut receiver = sessions
-            .connect(session_key, handler)
+            .connect(session_key, handler, CoreCallerIdentity::anonymous())
             .expect("session should accept an SSE listener");
         notify_entity_change_by_parts(
             &sessions,
@@ -1071,7 +1102,7 @@ mod tests {
             let session_key = first_session.key.clone();
             move || {
                 sessions
-                    .connect(session_key, handler)
+                    .connect(session_key, handler, CoreCallerIdentity::anonymous())
                     .expect("first session should accept an SSE listener")
             }
         })
@@ -1083,7 +1114,7 @@ mod tests {
             let session_key = second_session.key.clone();
             move || {
                 sessions
-                    .connect(session_key, handler)
+                    .connect(session_key, handler, CoreCallerIdentity::anonymous())
                     .expect("second session should accept an SSE listener")
             }
         })
@@ -1094,6 +1125,7 @@ mod tests {
             State(handler.clone()),
             Extension(sessions.clone()),
             Extension(CurrentDatabase::new(DEFAULT_DATABASE)),
+            Extension(CoreCallerIdentity::anonymous()),
             Query(McpSessionQuery::default()),
             session_cookie_headers(&first_session.key.session_id),
             Bytes::from(

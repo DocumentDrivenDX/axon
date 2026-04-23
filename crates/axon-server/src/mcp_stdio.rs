@@ -8,10 +8,12 @@ use std::io::{self, BufRead, Write};
 use std::sync::{Arc, Mutex};
 
 use axon_api::handler::AxonHandler;
+use axon_core::auth::CallerIdentity;
 use axon_core::id::DEFAULT_DATABASE;
 use axon_mcp::handlers::{
-    build_aggregate_tool, build_crud_tools, build_link_candidates_tool, build_neighbors_tool,
-    build_query_tool, build_transition_lifecycle_tool,
+    apply_policy_metadata_to_registry, build_aggregate_tool, build_crud_tools,
+    build_link_candidates_tool, build_neighbors_tool, build_query_tool,
+    build_transition_lifecycle_tool,
 };
 use axon_mcp::prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
 use axon_mcp::protocol::McpServer;
@@ -52,6 +54,20 @@ fn build_registry<S: StorageAdapter + 'static>(
         registry.register(build_aggregate_tool(col, Arc::clone(&handler)));
         registry.register(build_link_candidates_tool(col, Arc::clone(&handler)));
         registry.register(build_neighbors_tool(col, Arc::clone(&handler)));
+    }
+
+    {
+        let guard = handler
+            .lock()
+            .map_err(|e| io::Error::other(format!("failed to lock handler: {e}")))?;
+        apply_policy_metadata_to_registry(
+            &mut registry,
+            &guard,
+            DEFAULT_DATABASE,
+            &collection_names,
+            &CallerIdentity::anonymous(),
+        )
+        .map_err(|e| io::Error::other(format!("failed to build policy metadata: {e}")))?;
     }
 
     registry.register(build_query_tool(Arc::clone(&handler)));

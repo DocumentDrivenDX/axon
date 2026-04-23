@@ -16,16 +16,25 @@ use axon_api::handler::AxonHandler;
 use axon_api::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateEntityRequest,
     DeleteEntityRequest, FilterNode, FindLinkCandidatesRequest, GetEntityRequest,
-    ListCollectionsRequest, ListNeighborsRequest, QueryEntitiesRequest, TransitionLifecycleRequest,
-    TraverseDirection, UpdateEntityRequest,
+    ListCollectionsRequest, ListNamespaceCollectionsRequest, ListNamespacesRequest,
+    ListNeighborsRequest, QueryEntitiesRequest, TransitionLifecycleRequest, TraverseDirection,
+    UpdateEntityRequest,
 };
-use axon_core::id::{CollectionId, EntityId};
+use axon_api::response::EffectivePolicyResponse;
+use axon_core::auth::CallerIdentity;
+use axon_core::error::AxonError;
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
+use axon_schema::{
+    compile_policy_catalog, CollectionSchema, PolicyCompileReport, PolicyEnvelopeSummary,
+};
 use axon_storage::adapter::StorageAdapter;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::{Map, Value};
 use tokio::sync::Mutex as TokioMutex;
 
-use crate::tools::{ToolDef, ToolError};
+use crate::tools::{
+    ToolDef, ToolError, ToolPolicyCapabilities, ToolPolicyEnvelopeSummary, ToolPolicyMetadata,
+};
 
 /// Build CRUD tools for a collection, wired to a shared handler.
 ///
@@ -41,6 +50,138 @@ pub fn build_crud_tools<S: StorageAdapter + 'static>(
         build_patch_tool(&col, Arc::clone(&handler)),
         build_delete_tool(&col, handler),
     ]
+}
+
+/// Attach FEAT-029 policy metadata to collection-specific tools.
+///
+/// The metadata is advisory and caller-specific. Handlers still enforce policy
+/// at execution time, but agents can inspect `tools/list` before choosing a
+/// tool or deciding whether a mutation requires a preview/approval route.
+pub fn apply_policy_metadata_to_registry<S: StorageAdapter>(
+    registry: &mut crate::tools::ToolRegistry,
+    handler: &AxonHandler<S>,
+    current_database: &str,
+    collections: &[String],
+    caller: &CallerIdentity,
+) -> Result<(), AxonError> {
+    let report = policy_compile_report_for_database(handler, current_database)?;
+    for collection in collections {
+        let collection_id = mcp_collection_id(collection, current_database);
+        if handler.get_schema(&collection_id)?.is_none() {
+            continue;
+        }
+        let effective =
+            handler.effective_policy_with_caller(collection_id.clone(), None, caller, None)?;
+        let envelopes = policy_envelopes_for_collection(
+            &report,
+            collection,
+            collection_id.as_str(),
+            effective.collection.as_str(),
+        );
+        registry.set_collection_policy(
+            collection.clone(),
+            tool_policy_metadata(effective, envelopes),
+        );
+    }
+    Ok(())
+}
+
+fn policy_compile_report_for_database<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    current_database: &str,
+) -> Result<PolicyCompileReport, AxonError> {
+    let schemas = policy_catalog_schemas_for_database(handler, current_database)?;
+    Ok(compile_policy_catalog(&schemas)?.report)
+}
+
+fn policy_catalog_schemas_for_database<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    current_database: &str,
+) -> Result<Vec<CollectionSchema>, AxonError> {
+    let namespaces = handler.list_namespaces(ListNamespacesRequest {
+        database: current_database.to_string(),
+    })?;
+    let mut schemas = Vec::new();
+
+    for schema in namespaces.schemas {
+        let namespace_collections =
+            handler.list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: current_database.to_string(),
+                schema: schema.clone(),
+            })?;
+        for collection in namespace_collections.collections {
+            let visible_collection = if schema == DEFAULT_SCHEMA {
+                collection
+            } else {
+                format!("{schema}.{collection}")
+            };
+            let collection_id = mcp_collection_id(&visible_collection, current_database);
+            if let Some(schema) = handler.get_schema(&collection_id)? {
+                schemas.push(schema);
+            }
+        }
+    }
+
+    Ok(schemas)
+}
+
+fn mcp_collection_id(collection: &str, current_database: &str) -> CollectionId {
+    CollectionId::new(Namespace::qualify_with_database(
+        collection,
+        current_database,
+    ))
+}
+
+fn policy_envelopes_for_collection(
+    report: &PolicyCompileReport,
+    visible_collection: &str,
+    storage_collection: &str,
+    effective_collection: &str,
+) -> Vec<ToolPolicyEnvelopeSummary> {
+    report
+        .envelope_summaries
+        .iter()
+        .filter(|summary| {
+            policy_summary_matches_collection(
+                summary,
+                visible_collection,
+                storage_collection,
+                effective_collection,
+            )
+        })
+        .cloned()
+        .map(ToolPolicyEnvelopeSummary::from)
+        .collect()
+}
+
+fn policy_summary_matches_collection(
+    summary: &PolicyEnvelopeSummary,
+    visible_collection: &str,
+    storage_collection: &str,
+    effective_collection: &str,
+) -> bool {
+    summary.collection == visible_collection
+        || summary.collection == storage_collection
+        || summary.collection == effective_collection
+}
+
+fn tool_policy_metadata(
+    effective: EffectivePolicyResponse,
+    envelopes: Vec<ToolPolicyEnvelopeSummary>,
+) -> ToolPolicyMetadata {
+    ToolPolicyMetadata {
+        collection: effective.collection,
+        policy_version: effective.policy_version,
+        capabilities: ToolPolicyCapabilities {
+            can_read: effective.can_read,
+            can_create: effective.can_create,
+            can_update: effective.can_update,
+            can_delete: effective.can_delete,
+        },
+        redacted_fields: effective.redacted_fields,
+        denied_fields: effective.denied_fields,
+        envelopes,
+    }
 }
 
 fn lock_handler<S: StorageAdapter>(
