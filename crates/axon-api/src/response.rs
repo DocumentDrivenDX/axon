@@ -8,6 +8,8 @@ use axon_schema::gates::GateResult;
 use axon_schema::rules::RuleViolation;
 use axon_schema::schema::CollectionSchema;
 
+use crate::policy::PolicyRequestSnapshot;
+
 /// Response containing a retrieved entity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetEntityResponse {
@@ -30,6 +32,10 @@ pub enum GetEntityMarkdownResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateEntityResponse {
     pub entity: Entity,
+    /// Request-local policy/schema snapshot used for this write, when the
+    /// collection has an `access_control` policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_snapshot: Option<PolicyRequestSnapshot>,
     /// Gate pass/fail status for all non-save gates. Empty when no validation rules.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub gates: HashMap<String, GateResult>,
@@ -48,6 +54,10 @@ pub struct CreateEntityResponse {
 pub struct UpdateEntityResponse {
     /// The entity at its new version.
     pub entity: Entity,
+    /// Request-local policy/schema snapshot used for this write, when the
+    /// collection has an `access_control` policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_snapshot: Option<PolicyRequestSnapshot>,
     /// Gate pass/fail status for all non-save gates. Empty when no validation rules.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub gates: HashMap<String, GateResult>,
@@ -65,6 +75,10 @@ pub struct UpdateEntityResponse {
 pub struct PatchEntityResponse {
     /// The entity at its new version.
     pub entity: Entity,
+    /// Request-local policy/schema snapshot used for this write, when the
+    /// collection has an `access_control` policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_snapshot: Option<PolicyRequestSnapshot>,
     /// Gate pass/fail status for all non-save gates. Empty when no validation rules.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub gates: HashMap<String, GateResult>,
@@ -82,6 +96,10 @@ pub struct PatchEntityResponse {
 pub struct DeleteEntityResponse {
     pub collection: String,
     pub id: String,
+    /// Request-local policy/schema snapshot used for this delete, when the
+    /// collection has an `access_control` policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_snapshot: Option<PolicyRequestSnapshot>,
     /// Audit entry ID produced by this delete. `None` when the delete was a
     /// no-op (entity did not exist), otherwise populated.
     #[serde(default, skip_serializing_if = "Option::is_none")]

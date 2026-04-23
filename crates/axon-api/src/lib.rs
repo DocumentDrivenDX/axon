@@ -7,10 +7,12 @@
 
 pub mod bead;
 pub mod handler;
+pub mod policy;
 pub mod request;
 pub mod response;
 pub mod transaction;
 
+pub use policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
 pub use transaction::Transaction;
 
 #[cfg(test)]

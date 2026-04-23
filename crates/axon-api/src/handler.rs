@@ -22,8 +22,10 @@ use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use axon_schema::validation::{compile_entity_schema, validate, validate_link_metadata};
+use axon_schema::{AccessControlIdentity, IdentityAttributeSource};
 use axon_storage::adapter::{extract_index_value, resolve_field_path, StorageAdapter};
 
+use crate::policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
     CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
@@ -337,6 +339,136 @@ impl<S: StorageAdapter> AxonHandler<S> {
         (&mut self.storage, &mut self.audit)
     }
 
+    fn policy_snapshot_for_request(
+        &self,
+        collection: &CollectionId,
+        schema: Option<&CollectionSchema>,
+        actor: Option<&str>,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<Option<PolicyRequestSnapshot>, AxonError> {
+        let Some(schema) = schema else {
+            return Ok(None);
+        };
+        let Some(policy) = &schema.access_control else {
+            return Ok(None);
+        };
+
+        let qualified = self.storage.resolve_collection_key(collection)?;
+        let database_id = qualified.namespace.database.clone();
+        let namespace = qualified.namespace.to_string();
+        let tenant_id = attribution.map(|attr| attr.tenant_id.clone());
+        let subject = self.policy_subject_for_request(
+            policy.identity.as_ref(),
+            actor,
+            caller,
+            attribution,
+            &database_id,
+        )?;
+
+        Ok(Some(PolicyRequestSnapshot {
+            collection: collection.clone(),
+            namespace,
+            database_id,
+            tenant_id,
+            schema_version: Some(schema.version),
+            policy_version: Some(schema.version),
+            subject,
+        }))
+    }
+
+    fn policy_subject_for_request(
+        &self,
+        identity: Option<&AccessControlIdentity>,
+        actor: Option<&str>,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+        database_id: &str,
+    ) -> Result<PolicySubjectSnapshot, AxonError> {
+        let actor = actor
+            .or_else(|| caller.map(|caller| caller.actor.as_str()))
+            .unwrap_or("anonymous")
+            .to_string();
+        let mut bindings =
+            default_policy_subject_bindings(actor.as_str(), caller, attribution, database_id);
+
+        if let Some(identity) = identity {
+            for (name, source) in &identity.subject {
+                if let Some(value) =
+                    resolve_policy_subject_expression(source, &bindings, &HashMap::new())
+                {
+                    bindings.insert(name.clone(), value);
+                }
+            }
+        }
+
+        let mut attributes = HashMap::new();
+        if let Some(identity) = identity {
+            for (name, source) in &identity.attributes {
+                if let Some(value) =
+                    self.resolve_policy_identity_attribute(name, source, &bindings, database_id)?
+                {
+                    attributes.insert(name.clone(), value.clone());
+                    bindings.insert(name.clone(), value);
+                }
+            }
+
+            for (name, source) in &identity.aliases {
+                if let Some(value) =
+                    resolve_policy_subject_expression(source, &bindings, &attributes)
+                {
+                    bindings.insert(name.clone(), value);
+                }
+            }
+        }
+
+        Ok(PolicySubjectSnapshot {
+            actor,
+            bindings,
+            attributes,
+        })
+    }
+
+    fn resolve_policy_identity_attribute(
+        &self,
+        name: &str,
+        source: &IdentityAttributeSource,
+        bindings: &HashMap<String, Value>,
+        database_id: &str,
+    ) -> Result<Option<Value>, AxonError> {
+        if source.from != "collection" {
+            return Err(AxonError::SchemaValidation(format!(
+                "unsupported access_control identity attribute source '{}' for '{}'",
+                source.from, name
+            )));
+        }
+
+        let collection =
+            required_identity_attribute_field(name, "collection", source.collection.as_deref())?;
+        let key_field =
+            required_identity_attribute_field(name, "key_field", source.key_field.as_deref())?;
+        let key_subject =
+            required_identity_attribute_field(name, "key_subject", source.key_subject.as_deref())?;
+        let value_field =
+            required_identity_attribute_field(name, "value_field", source.value_field.as_deref())?;
+
+        let Some(key_value) = bindings.get(key_subject) else {
+            return Ok(None);
+        };
+
+        let collection = request_scoped_collection_id(collection, database_id);
+        for entity in self.storage.range_scan(&collection, None, None, None)? {
+            let Some(candidate) = resolve_field_path(&entity.data, key_field) else {
+                continue;
+            };
+            if candidate == key_value {
+                return Ok(resolve_field_path(&entity.data, value_field).cloned());
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Consume this handler, returning the underlying storage adapter.
     ///
     /// Useful in tests that need to reconstruct a handler from the same storage
@@ -374,7 +506,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<CreateEntityResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
         req.attribution = attribution;
-        self.create_entity(req)
+        self.create_entity_inner(req, Some(caller))
     }
 
     /// Update an entity, overriding `req.actor` with the caller identity.
@@ -386,7 +518,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<UpdateEntityResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
         req.attribution = attribution;
-        self.update_entity(req)
+        self.update_entity_inner(req, Some(caller))
     }
 
     /// Merge-patch an entity, overriding `req.actor` with the caller identity.
@@ -398,7 +530,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<PatchEntityResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
         req.attribution = attribution;
-        self.patch_entity(req)
+        self.patch_entity_inner(req, Some(caller))
     }
 
     /// Delete an entity, overriding `req.actor` with the caller identity.
@@ -410,7 +542,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
     ) -> Result<DeleteEntityResponse, AxonError> {
         req.actor = Some(caller.actor.clone());
         req.attribution = attribution;
-        self.delete_entity(req)
+        self.delete_entity_inner(req, Some(caller))
     }
 
     /// Commit a transaction attributing the audit entries to the caller.
@@ -480,12 +612,27 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: CreateEntityRequest,
     ) -> Result<CreateEntityResponse, AxonError> {
+        self.create_entity_inner(req, None)
+    }
+
+    fn create_entity_inner(
+        &mut self,
+        req: CreateEntityRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<CreateEntityResponse, AxonError> {
         let mut req = req;
         // Lifecycle initial-state enforcement (FEAT-015).
         // Auto-populates the lifecycle field with `initial` on create and
         // rejects non-string/unknown-state values so downstream schema
         // validation and audit records see the canonical state.
         let schema = self.storage.get_schema(&req.collection)?;
+        let policy_snapshot = self.policy_snapshot_for_request(
+            &req.collection,
+            schema.as_ref(),
+            req.actor.as_deref(),
+            caller,
+            req.attribution.as_ref(),
+        )?;
         if let Some(schema) = &schema {
             enforce_lifecycle_initial_state(
                 schema,
@@ -591,6 +738,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         Ok(CreateEntityResponse {
             entity,
+            policy_snapshot,
             gates,
             advisories,
             audit_id,
@@ -657,12 +805,27 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: UpdateEntityRequest,
     ) -> Result<UpdateEntityResponse, AxonError> {
+        self.update_entity_inner(req, None)
+    }
+
+    fn update_entity_inner(
+        &mut self,
+        req: UpdateEntityRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<UpdateEntityResponse, AxonError> {
         let mut req = req;
         // Lifecycle state enforcement (FEAT-015).
         // Updates must already carry a known state at the lifecycle field;
         // unlike create we do not auto-populate so the caller cannot silently
         // elide a state change.
         let schema = self.storage.get_schema(&req.collection)?;
+        let policy_snapshot = self.policy_snapshot_for_request(
+            &req.collection,
+            schema.as_ref(),
+            req.actor.as_deref(),
+            caller,
+            req.attribution.as_ref(),
+        )?;
         if let Some(schema) = &schema {
             enforce_lifecycle_initial_state(
                 schema,
@@ -783,6 +946,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         Ok(UpdateEntityResponse {
             entity: updated,
+            policy_snapshot,
             gates,
             advisories,
             audit_id,
@@ -796,6 +960,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
     pub fn patch_entity(
         &mut self,
         req: PatchEntityRequest,
+    ) -> Result<PatchEntityResponse, AxonError> {
+        self.patch_entity_inner(req, None)
+    }
+
+    fn patch_entity_inner(
+        &mut self,
+        req: PatchEntityRequest,
+        caller: Option<&CallerIdentity>,
     ) -> Result<PatchEntityResponse, AxonError> {
         // Read current entity.
         let existing = self
@@ -811,6 +983,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // Patches run the update-mode check on the post-merge payload so
         // callers cannot null-out or corrupt the lifecycle field via patch.
         let schema = self.storage.get_schema(&req.collection)?;
+        let policy_snapshot = self.policy_snapshot_for_request(
+            &req.collection,
+            schema.as_ref(),
+            req.actor.as_deref(),
+            caller,
+            req.attribution.as_ref(),
+        )?;
         if let Some(schema) = &schema {
             enforce_lifecycle_initial_state(schema, &mut merged, LifecycleEnforcementMode::Update)?;
         }
@@ -924,6 +1103,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         Ok(PatchEntityResponse {
             entity: updated,
+            policy_snapshot,
             gates,
             advisories,
             audit_id,
@@ -934,6 +1114,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
         &mut self,
         req: DeleteEntityRequest,
     ) -> Result<DeleteEntityResponse, AxonError> {
+        self.delete_entity_inner(req, None)
+    }
+
+    fn delete_entity_inner(
+        &mut self,
+        req: DeleteEntityRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<DeleteEntityResponse, AxonError> {
+        let schema = self.storage.get_schema(&req.collection)?;
+        let policy_snapshot = self.policy_snapshot_for_request(
+            &req.collection,
+            schema.as_ref(),
+            req.actor.as_deref(),
+            caller,
+            req.attribution.as_ref(),
+        )?;
+
         // Referential integrity: reject delete when inbound links exist
         // (unless `force` is set).
         if !req.force {
@@ -968,7 +1165,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // Remove index entries before deleting (FEAT-013).
         if let Some(ref data) = before {
-            if let Ok(Some(schema)) = self.storage.get_schema(&req.collection) {
+            if let Some(schema) = &schema {
                 if !schema.indexes.is_empty() {
                     self.storage.remove_index_entries(
                         &req.collection,
@@ -1018,6 +1215,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(DeleteEntityResponse {
             collection: req.collection.to_string(),
             id: req.id.to_string(),
+            policy_snapshot,
             audit_id,
         })
     }
@@ -4164,14 +4362,80 @@ fn check_unique_constraints<S: StorageAdapter>(
     Ok(())
 }
 
+fn default_policy_subject_bindings(
+    actor: &str,
+    caller: Option<&CallerIdentity>,
+    attribution: Option<&AuditAttribution>,
+    database_id: &str,
+) -> HashMap<String, Value> {
+    let mut bindings = HashMap::new();
+    bindings.insert("actor".into(), Value::String(actor.to_string()));
+    bindings.insert("database_id".into(), Value::String(database_id.to_string()));
+
+    let user_id = attribution
+        .map(|attr| attr.user_id.clone())
+        .unwrap_or_else(|| actor.to_string());
+    bindings.insert("user_id".into(), Value::String(user_id));
+
+    if let Some(attr) = attribution {
+        bindings.insert("tenant_id".into(), Value::String(attr.tenant_id.clone()));
+        if let Some(jti) = &attr.jti {
+            bindings.insert("credential_id".into(), Value::String(jti.clone()));
+        }
+    }
+
+    if let Some(caller) = caller {
+        bindings.insert("tenant_role".into(), Value::String(caller.role.to_string()));
+    }
+
+    bindings
+}
+
+fn resolve_policy_subject_expression(
+    source: &str,
+    bindings: &HashMap<String, Value>,
+    attributes: &HashMap<String, Value>,
+) -> Option<Value> {
+    if let Some(attribute) = source.strip_prefix("subject.attributes.") {
+        return attributes.get(attribute).cloned();
+    }
+    if let Some(binding) = source.strip_prefix("subject.") {
+        return bindings.get(binding).cloned();
+    }
+    bindings.get(source).cloned()
+}
+
+fn required_identity_attribute_field<'a>(
+    attribute_name: &str,
+    field_name: &str,
+    value: Option<&'a str>,
+) -> Result<&'a str, AxonError> {
+    value.ok_or_else(|| {
+        AxonError::SchemaValidation(format!(
+            "access_control identity attribute '{attribute_name}' is missing {field_name}"
+        ))
+    })
+}
+
+fn request_scoped_collection_id(collection: &str, database_id: &str) -> CollectionId {
+    let parts = collection.split('.').count();
+    if database_id != DEFAULT_DATABASE && parts <= 2 {
+        CollectionId::new(Namespace::qualify_with_database(collection, database_id))
+    } else {
+        CollectionId::new(collection)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::manual_string_new, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use std::fmt::Display;
 
+    use axon_core::auth::Role;
     use axon_core::id::{CollectionId, EntityId, Namespace};
     use axon_schema::schema::{CollectionSchema, CollectionView, EsfDocument};
+    use axon_schema::{AccessControlPolicy, IdentityAttributeSource};
     use axon_storage::adapter::StorageAdapter;
     use axon_storage::memory::MemoryStorageAdapter;
     use serde_json::json;
@@ -4259,6 +4523,78 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct SchemaReadCountingAdapter {
+        inner: MemoryStorageAdapter,
+        schema_reads: Mutex<usize>,
+    }
+
+    impl SchemaReadCountingAdapter {
+        fn schema_reads(&self) -> usize {
+            *self.schema_reads.lock().expect("schema read counter")
+        }
+    }
+
+    impl StorageAdapter for SchemaReadCountingAdapter {
+        fn get(
+            &self,
+            collection: &CollectionId,
+            id: &EntityId,
+        ) -> Result<Option<Entity>, AxonError> {
+            self.inner.get(collection, id)
+        }
+
+        fn put(&mut self, entity: Entity) -> Result<(), AxonError> {
+            self.inner.put(entity)
+        }
+
+        fn delete(&mut self, collection: &CollectionId, id: &EntityId) -> Result<(), AxonError> {
+            self.inner.delete(collection, id)
+        }
+
+        fn count(&self, collection: &CollectionId) -> Result<usize, AxonError> {
+            self.inner.count(collection)
+        }
+
+        fn range_scan(
+            &self,
+            collection: &CollectionId,
+            start: Option<&EntityId>,
+            end: Option<&EntityId>,
+            limit: Option<usize>,
+        ) -> Result<Vec<Entity>, AxonError> {
+            self.inner.range_scan(collection, start, end, limit)
+        }
+
+        fn compare_and_swap(
+            &mut self,
+            entity: Entity,
+            expected_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.compare_and_swap(entity, expected_version)
+        }
+
+        fn create_if_absent(
+            &mut self,
+            entity: Entity,
+            expected_absent_version: u64,
+        ) -> Result<Entity, AxonError> {
+            self.inner.create_if_absent(entity, expected_absent_version)
+        }
+
+        fn put_schema(&mut self, schema: &CollectionSchema) -> Result<(), AxonError> {
+            self.inner.put_schema(schema)
+        }
+
+        fn get_schema(
+            &self,
+            collection: &CollectionId,
+        ) -> Result<Option<CollectionSchema>, AxonError> {
+            *self.schema_reads.lock().expect("schema read counter") += 1;
+            self.inner.get_schema(collection)
+        }
+    }
+
     fn register_prod_billing_and_engineering_collection(
         h: &mut AxonHandler<MemoryStorageAdapter>,
         collection: &str,
@@ -4314,6 +4650,176 @@ mod tests {
                 panic!("expected markdown render to succeed: {detail}")
             }
         }
+    }
+
+    fn policy_snapshot_schema(collection: &str) -> CollectionSchema {
+        CollectionSchema {
+            collection: CollectionId::new(collection),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"}
+                },
+                "required": ["title"]
+            })),
+            link_types: Default::default(),
+            access_control: Some(AccessControlPolicy {
+                identity: Some(AccessControlIdentity {
+                    subject: HashMap::from([
+                        ("user_id".into(), "subject.user_id".into()),
+                        ("tenant_role".into(), "subject.tenant_role".into()),
+                    ]),
+                    attributes: HashMap::from([(
+                        "app_role".into(),
+                        IdentityAttributeSource {
+                            from: "collection".into(),
+                            collection: Some("users".into()),
+                            key_field: Some("id".into()),
+                            key_subject: Some("user_id".into()),
+                            value_field: Some("role".into()),
+                        },
+                    )]),
+                    aliases: HashMap::new(),
+                }),
+                ..Default::default()
+            }),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        }
+    }
+
+    #[test]
+    fn policy_snapshot_resolves_collection_backed_attributes_per_request() {
+        let mut h = handler();
+        let users = CollectionId::new("users");
+        let orders = CollectionId::new("purchase_orders");
+
+        h.create_entity(CreateEntityRequest {
+            collection: users.clone(),
+            id: EntityId::new("user-alice"),
+            data: json!({"id": "user-alice", "role": "contractor"}),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("seed user");
+        h.put_schema(policy_snapshot_schema("purchase_orders"))
+            .expect("policy schema");
+
+        let caller = CallerIdentity::new("alice@example.test", Role::Write);
+        let attribution = AuditAttribution {
+            user_id: "user-alice".into(),
+            tenant_id: "tenant-acme".into(),
+            jti: Some("credential-1".into()),
+            auth_method: "jwt".into(),
+        };
+
+        let first = h
+            .create_entity_with_caller(
+                CreateEntityRequest {
+                    collection: orders.clone(),
+                    id: EntityId::new("po-1"),
+                    data: json!({"title": "first"}),
+                    actor: Some("spoofed".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                },
+                &caller,
+                Some(attribution.clone()),
+            )
+            .expect("first create");
+        let first_snapshot = first
+            .policy_snapshot
+            .expect("policy snapshot should be present");
+        assert_eq!(first_snapshot.schema_version, Some(1));
+        assert_eq!(first_snapshot.policy_version, Some(1));
+        assert_eq!(first_snapshot.database_id, "default");
+        assert_eq!(first_snapshot.tenant_id.as_deref(), Some("tenant-acme"));
+        assert_eq!(first_snapshot.subject.actor, "alice@example.test");
+        assert_eq!(
+            first_snapshot.subject.bindings.get("user_id"),
+            Some(&json!("user-alice"))
+        );
+        assert_eq!(
+            first_snapshot.subject.bindings.get("tenant_role"),
+            Some(&json!("write"))
+        );
+        assert_eq!(
+            first_snapshot.subject.bindings.get("credential_id"),
+            Some(&json!("credential-1"))
+        );
+        assert_eq!(
+            first_snapshot.subject.attributes.get("app_role"),
+            Some(&json!("contractor"))
+        );
+
+        h.update_entity(UpdateEntityRequest {
+            collection: users,
+            id: EntityId::new("user-alice"),
+            data: json!({"id": "user-alice", "role": "finance"}),
+            expected_version: 1,
+            actor: Some("admin".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("update user role");
+
+        let second = h
+            .create_entity_with_caller(
+                CreateEntityRequest {
+                    collection: orders,
+                    id: EntityId::new("po-2"),
+                    data: json!({"title": "second"}),
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                },
+                &caller,
+                Some(attribution),
+            )
+            .expect("second create");
+        let second_snapshot = second
+            .policy_snapshot
+            .expect("policy snapshot should be present");
+        assert_eq!(
+            first_snapshot.subject.attributes.get("app_role"),
+            Some(&json!("contractor"))
+        );
+        assert_eq!(
+            second_snapshot.subject.attributes.get("app_role"),
+            Some(&json!("finance"))
+        );
+    }
+
+    #[test]
+    fn policy_snapshot_reads_schema_once_and_reuses_version_for_create() {
+        let mut h = AxonHandler::new(SchemaReadCountingAdapter::default());
+        h.put_schema(policy_snapshot_schema("purchase_orders"))
+            .expect("policy schema");
+
+        let created = h
+            .create_entity(CreateEntityRequest {
+                collection: CollectionId::new("purchase_orders"),
+                id: EntityId::new("po-1"),
+                data: json!({"title": "first"}),
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("create entity");
+
+        assert_eq!(h.storage_ref().schema_reads(), 1);
+        assert_eq!(created.entity.schema_version, Some(1));
+        let snapshot = created
+            .policy_snapshot
+            .expect("policy snapshot should be present");
+        assert_eq!(snapshot.schema_version, Some(1));
+        assert_eq!(snapshot.policy_version, Some(1));
     }
 
     fn cache_len(handler: &AxonHandler<MemoryStorageAdapter>) -> usize {
