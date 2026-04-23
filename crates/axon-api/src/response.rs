@@ -325,6 +325,28 @@ pub struct QueryEntitiesResponse {
     pub total_count: usize,
     /// Cursor for the next page. `None` when the result set is exhausted.
     pub next_cursor: Option<String>,
+    /// Explain-style diagnostics for policy-filter planning, when access
+    /// control was active for the query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_plan: Option<PolicyQueryPlanDiagnostics>,
+}
+
+/// Explain-style diagnostics for a read-policy query plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyQueryPlanDiagnostics {
+    /// Policy operation planned for the query.
+    pub operation: String,
+    /// Storage-level filters generated from indexable policy predicates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storage_filters: Vec<String>,
+    /// Whether application-layer policy post-filtering was required.
+    pub post_filter: bool,
+    /// Missing index name that forced bounded post-filtering or an error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_index: Option<String>,
+    /// Human-readable plan steps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub explain: Vec<String>,
 }
 
 // ── Collection lifecycle responses ───────────────────────────────────────────

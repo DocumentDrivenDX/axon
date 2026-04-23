@@ -16,8 +16,7 @@ use axon_schema::schema::{CollectionSchema, CollectionView};
 use uuid::Uuid;
 
 use crate::adapter::{
-    extract_compound_key, extract_index_value, resolve_field_path, CompoundKey, IndexValue,
-    StorageAdapter,
+    extract_compound_key, extract_index_values, CompoundKey, IndexValue, StorageAdapter,
 };
 
 type CollectionMap = HashMap<EntityId, Entity>;
@@ -914,9 +913,7 @@ impl StorageAdapter for MemoryStorageAdapter {
         // Remove old entries.
         if let Some(old) = old_data {
             for idx in indexes {
-                if let Some(val) = resolve_field_path(old, &idx.field)
-                    .and_then(|v| extract_index_value(v, &idx.index_type))
-                {
+                for val in extract_index_values(old, &idx.field, &idx.index_type) {
                     let key = (collection_key.clone(), idx.field.clone(), val);
                     if let Some(set) = self.indexes.get_mut(&key) {
                         set.remove(entity_id);
@@ -930,9 +927,7 @@ impl StorageAdapter for MemoryStorageAdapter {
 
         // Insert new entries (and check unique constraints).
         for idx in indexes {
-            if let Some(val) = resolve_field_path(new_data, &idx.field)
-                .and_then(|v| extract_index_value(v, &idx.index_type))
-            {
+            for val in extract_index_values(new_data, &idx.field, &idx.index_type) {
                 if idx.unique {
                     let key = (collection_key.clone(), idx.field.clone(), val.clone());
                     if let Some(existing) = self.indexes.get(&key) {
@@ -963,9 +958,7 @@ impl StorageAdapter for MemoryStorageAdapter {
     ) -> Result<(), AxonError> {
         let collection_key = self.resolve_catalog_key(collection)?;
         for idx in indexes {
-            if let Some(val) = resolve_field_path(data, &idx.field)
-                .and_then(|v| extract_index_value(v, &idx.index_type))
-            {
+            for val in extract_index_values(data, &idx.field, &idx.index_type) {
                 let key = (collection_key.clone(), idx.field.clone(), val);
                 if let Some(set) = self.indexes.get_mut(&key) {
                     set.remove(entity_id);

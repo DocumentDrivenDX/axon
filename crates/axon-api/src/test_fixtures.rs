@@ -1038,7 +1038,7 @@ mod tests {
     use axon_storage::{MemoryStorageAdapter, StorageAdapter};
 
     use super::*;
-    use crate::request::{ListCollectionsRequest, QueryEntitiesRequest};
+    use crate::request::ListCollectionsRequest;
 
     #[test]
     fn procurement_fixture_seeds_backend_state() {
@@ -1114,13 +1114,9 @@ mod tests {
         collection: &CollectionId,
     ) -> usize {
         handler
-            .query_entities(QueryEntitiesRequest {
-                collection: collection.clone(),
-                count_only: true,
-                ..Default::default()
-            })
-            .expect("count query should succeed")
-            .total_count
+            .storage_ref()
+            .count(collection)
+            .expect("storage count should succeed")
     }
 
     trait ProcurementFixtureSubjectCount {

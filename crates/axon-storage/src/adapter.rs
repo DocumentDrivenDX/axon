@@ -109,6 +109,46 @@ pub fn extract_index_value(
     }
 }
 
+/// Extract all index values from a JSON field path.
+///
+/// Supports the policy/index array marker (`[]`) used by EAV membership
+/// indexes, e.g. `team_ids[]` indexes each scalar item in `team_ids`.
+pub fn extract_index_values(
+    data: &serde_json::Value,
+    field: &str,
+    index_type: &axon_schema::schema::IndexType,
+) -> Vec<IndexValue> {
+    let segments: Vec<&str> = field.split('.').collect();
+    let mut json_values = Vec::new();
+    collect_index_json_values(data, &segments, &mut json_values);
+    json_values
+        .into_iter()
+        .filter_map(|value| extract_index_value(value, index_type))
+        .collect()
+}
+
+fn collect_index_json_values<'a>(
+    value: &'a serde_json::Value,
+    segments: &[&str],
+    output: &mut Vec<&'a serde_json::Value>,
+) {
+    let Some((segment, rest)) = segments.split_first() else {
+        output.push(value);
+        return;
+    };
+
+    if let Some(field) = segment.strip_suffix("[]") {
+        let Some(items) = value.get(field).and_then(serde_json::Value::as_array) else {
+            return;
+        };
+        for item in items {
+            collect_index_json_values(item, rest, output);
+        }
+    } else if let Some(next) = value.get(*segment) {
+        collect_index_json_values(next, rest, output);
+    }
+}
+
 /// A compound index key: ordered list of field values for multi-field indexes.
 ///
 /// Implements `Ord` lexicographically, enabling prefix matching via

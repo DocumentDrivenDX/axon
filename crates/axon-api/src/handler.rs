@@ -21,17 +21,19 @@ use axon_core::id::{
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
 use axon_schema::policy::{
-    compile_policy_plan, CompiledCompareOp, CompiledComparison, CompiledFieldPolicyRule,
+    compile_policy_catalog, CompiledCompareOp, CompiledComparison, CompiledFieldPolicyRule,
     CompiledOperationPolicy, CompiledPolicyEnvelope, CompiledPolicyRule, CompiledPredicate,
     PredicateTarget,
 };
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use axon_schema::validation::{compile_entity_schema, validate, validate_link_metadata};
 use axon_schema::{
-    AccessControlIdentity, IdentityAttributeSource, LinkDirection, PolicyDecision, PolicyOperation,
-    PolicyPlan,
+    AccessControlIdentity, AccessControlPolicy, FieldAccessPolicy, IdentityAttributeSource,
+    LinkDirection, OperationPolicy, PolicyDecision, PolicyOperation, PolicyPlan, PolicyPredicate,
 };
-use axon_storage::adapter::{extract_index_value, resolve_field_path, StorageAdapter};
+use axon_storage::adapter::{
+    extract_index_value, extract_index_values, resolve_field_path, StorageAdapter,
+};
 
 use crate::policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
 use crate::request::{
@@ -56,17 +58,18 @@ use crate::response::{
     DropDatabaseResponse, DropNamespaceResponse, GetCollectionTemplateResponse,
     GetEntityMarkdownResponse, GetEntityResponse, GetSchemaResponse, InvalidEntity,
     ListCollectionsResponse, ListDatabasesResponse, ListNamespaceCollectionsResponse,
-    ListNamespacesResponse, PatchEntityResponse, PutCollectionTemplateResponse, PutSchemaResponse,
-    QueryAuditResponse, QueryEntitiesResponse, ReachableResponse, RevalidateResponse,
-    RevertEntityResponse, RollbackCollectionEntityResult, RollbackCollectionResponse,
-    RollbackEntityResponse, RollbackTransactionEntityResult, RollbackTransactionResponse,
-    SnapshotResponse, TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse,
-    UpdateEntityResponse,
+    ListNamespacesResponse, PatchEntityResponse, PolicyQueryPlanDiagnostics,
+    PutCollectionTemplateResponse, PutSchemaResponse, QueryAuditResponse, QueryEntitiesResponse,
+    ReachableResponse, RevalidateResponse, RevertEntityResponse, RollbackCollectionEntityResult,
+    RollbackCollectionResponse, RollbackEntityResponse, RollbackTransactionEntityResult,
+    RollbackTransactionResponse, SnapshotResponse, TransitionLifecycleResponse, TraverseHop,
+    TraversePath, TraverseResponse, UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
 const MAX_DEPTH_CAP: usize = 10;
 const DEFAULT_MARKDOWN_TEMPLATE_CACHE_CAPACITY: usize = 256;
+const POLICY_POST_FILTER_COST_LIMIT: usize = 128;
 
 #[derive(Debug, Clone, Copy)]
 enum FieldWriteScope<'a> {
@@ -99,6 +102,39 @@ struct PolicyPredicateContext<'a> {
     snapshot: &'a PolicyRequestSnapshot,
     operation: &'a PolicyOperation,
     data: &'a Value,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PolicyStoragePlan {
+    candidate_ids: Option<Vec<EntityId>>,
+    post_filter: bool,
+    missing_index: Option<String>,
+    storage_filters: Vec<String>,
+    explain: Vec<String>,
+}
+
+impl PolicyStoragePlan {
+    fn diagnostics(&self) -> PolicyQueryPlanDiagnostics {
+        PolicyQueryPlanDiagnostics {
+            operation: PolicyOperation::Read.as_str().to_string(),
+            storage_filters: self.storage_filters.clone(),
+            post_filter: self.post_filter,
+            missing_index: self.missing_index.clone(),
+            explain: self.explain.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum PolicyRuleCandidatePlan {
+    All,
+    Indexed {
+        entity_ids: Vec<EntityId>,
+        storage_filters: Vec<String>,
+    },
+    Unindexed {
+        missing_index: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -427,6 +463,43 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }))
     }
 
+    fn compile_policy_plan_for_schema(
+        &self,
+        schema: &CollectionSchema,
+    ) -> Result<Option<PolicyPlan>, AxonError> {
+        let schemas = self.policy_catalog_schemas(schema)?;
+        let mut catalog = compile_policy_catalog(&schemas)?;
+        Ok(catalog.plans.remove(schema.collection.as_str()))
+    }
+
+    fn policy_catalog_schemas(
+        &self,
+        root: &CollectionSchema,
+    ) -> Result<Vec<CollectionSchema>, AxonError> {
+        let mut schemas = Vec::new();
+        let mut seen = HashSet::new();
+        let mut queue = VecDeque::from([root.clone()]);
+
+        while let Some(schema) = queue.pop_front() {
+            if !seen.insert(schema.collection.to_string()) {
+                continue;
+            }
+
+            for target in policy_related_target_collections(schema.access_control.as_ref()) {
+                if seen.contains(&target) {
+                    continue;
+                }
+                if let Some(target_schema) = self.storage.get_schema(&CollectionId::new(&target))? {
+                    queue.push_back(target_schema);
+                }
+            }
+
+            schemas.push(schema);
+        }
+
+        Ok(schemas)
+    }
+
     fn enforce_write_policy(
         &self,
         schema: Option<&CollectionSchema>,
@@ -439,7 +512,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let Some(snapshot) = snapshot else {
             return Ok(());
         };
-        let Some(plan) = compile_policy_plan(schema)? else {
+        let Some(plan) = self.compile_policy_plan_for_schema(schema)? else {
             return Ok(());
         };
 
@@ -480,20 +553,45 @@ impl<S: StorageAdapter> AxonHandler<S> {
         snapshot: &PolicyRequestSnapshot,
         check: PolicyOperationCheck<'_>,
     ) -> Result<(), AxonError> {
+        let denial_label = self.policy_operation_denial_label(plan, snapshot, check.clone())?;
+        let Some(denial_label) = denial_label else {
+            return Ok(());
+        };
+
+        Err(policy_forbidden(
+            "row_write_denied",
+            check.collection,
+            check.entity_id,
+            None,
+            Some(denial_label),
+            check.operation_index,
+        ))
+    }
+
+    fn policy_operation_allows(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        check: PolicyOperationCheck<'_>,
+    ) -> Result<bool, AxonError> {
+        Ok(self
+            .policy_operation_denial_label(plan, snapshot, check)?
+            .is_none())
+    }
+
+    fn policy_operation_denial_label(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        check: PolicyOperationCheck<'_>,
+    ) -> Result<Option<String>, AxonError> {
         let mut allow_rules_present = false;
         let mut allow_matched = false;
 
         for policy in applicable_operation_policies(plan, &check.operation) {
             for rule in &policy.deny {
                 if self.policy_rule_matches(rule, snapshot, &check.operation, check.data)? {
-                    return Err(policy_forbidden(
-                        "row_write_denied",
-                        check.collection,
-                        check.entity_id,
-                        None,
-                        Some(policy_rule_label(rule)),
-                        check.operation_index,
-                    ));
+                    return Ok(Some(policy_rule_label(rule)));
                 }
             }
 
@@ -508,17 +606,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         if allow_rules_present && !allow_matched {
-            return Err(policy_forbidden(
-                "row_write_denied",
-                check.collection,
-                check.entity_id,
-                None,
-                Some(check.operation.as_str().to_string()),
-                check.operation_index,
-            ));
+            return Ok(Some(check.operation.as_str().to_string()));
         }
 
-        Ok(())
+        Ok(None)
     }
 
     fn enforce_field_write_policy(
@@ -641,7 +732,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let Some(snapshot) = snapshot else {
             return Ok(());
         };
-        let Some(plan) = compile_policy_plan(schema)? else {
+        let Some(plan) = self.compile_policy_plan_for_schema(schema)? else {
             return Ok(());
         };
         let Some(transitions) = plan.transitions.get(check.lifecycle_field) else {
@@ -796,6 +887,421 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         Ok(false)
+    }
+
+    fn read_policy_allows_entity(
+        &self,
+        collection: &CollectionId,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        entity: &Entity,
+    ) -> Result<bool, AxonError> {
+        let data = entity_policy_data(entity);
+        self.policy_operation_allows(
+            plan,
+            snapshot,
+            PolicyOperationCheck {
+                collection,
+                entity_id: Some(&entity.id),
+                operation: PolicyOperation::Read,
+                data: &data,
+                operation_index: None,
+            },
+        )
+    }
+
+    fn plan_read_policy_storage_filters(
+        &self,
+        collection: &CollectionId,
+        schema: Option<&CollectionSchema>,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+    ) -> Result<PolicyStoragePlan, AxonError> {
+        let Some(schema) = schema else {
+            return Ok(PolicyStoragePlan::default());
+        };
+        let policies = applicable_operation_policies(plan, &PolicyOperation::Read);
+        if policies.is_empty() {
+            return Ok(PolicyStoragePlan::default());
+        }
+
+        let mut output = PolicyStoragePlan {
+            explain: vec!["policy.read".into()],
+            ..Default::default()
+        };
+
+        for policy in policies {
+            if !policy.deny.is_empty() {
+                output.post_filter = true;
+                output.explain.push("deny rules require post_filter".into());
+                for rule in &policy.deny {
+                    if let PolicyRuleCandidatePlan::Unindexed {
+                        missing_index: Some(index),
+                    } = self.policy_rule_candidate_plan(collection, schema, rule, snapshot)?
+                    {
+                        output.missing_index.get_or_insert(index);
+                    }
+                }
+            }
+
+            if policy.allow.is_empty() {
+                continue;
+            }
+
+            let mut indexed_rule_ids = Vec::new();
+            let mut all_rules_indexed = true;
+            let mut allow_all = false;
+
+            for rule in &policy.allow {
+                match self.policy_rule_candidate_plan(collection, schema, rule, snapshot)? {
+                    PolicyRuleCandidatePlan::All => {
+                        allow_all = true;
+                    }
+                    PolicyRuleCandidatePlan::Indexed {
+                        entity_ids,
+                        storage_filters,
+                    } => {
+                        indexed_rule_ids.push(entity_ids);
+                        output.storage_filters.extend(storage_filters);
+                    }
+                    PolicyRuleCandidatePlan::Unindexed { missing_index } => {
+                        all_rules_indexed = false;
+                        output.post_filter = true;
+                        if let Some(index) = missing_index {
+                            output.missing_index.get_or_insert(index);
+                        }
+                    }
+                }
+            }
+
+            if allow_all {
+                output
+                    .explain
+                    .push("allow rule covers all rows; no policy storage filter".into());
+                output.candidate_ids = None;
+            } else if all_rules_indexed {
+                let ids = union_entity_id_sets(indexed_rule_ids);
+                output.explain.push(format!(
+                    "allow rules covered by {} storage filter(s)",
+                    output.storage_filters.len()
+                ));
+                output.candidate_ids = Some(ids);
+                output.post_filter = output.post_filter || !policy.deny.is_empty();
+            } else {
+                output
+                    .explain
+                    .push("allow rules require bounded post_filter".into());
+                output.candidate_ids = None;
+            }
+        }
+
+        Ok(output)
+    }
+
+    fn policy_rule_candidate_plan(
+        &self,
+        collection: &CollectionId,
+        schema: &CollectionSchema,
+        rule: &CompiledPolicyRule,
+        snapshot: &PolicyRequestSnapshot,
+    ) -> Result<PolicyRuleCandidatePlan, AxonError> {
+        match rule.when.as_ref().map(|predicate| {
+            policy_static_predicate_matches(predicate, snapshot, &PolicyOperation::Read)
+        }) {
+            Some(Some(false)) => {
+                return Ok(PolicyRuleCandidatePlan::Indexed {
+                    entity_ids: Vec::new(),
+                    storage_filters: vec![format!("rule:{}:static_false", policy_rule_label(rule))],
+                });
+            }
+            Some(None) => {
+                return Ok(PolicyRuleCandidatePlan::Unindexed {
+                    missing_index: None,
+                });
+            }
+            Some(Some(true)) | None => {}
+        }
+
+        match &rule.where_clause {
+            Some(predicate) => {
+                self.policy_predicate_candidate_plan(collection, schema, predicate, snapshot)
+            }
+            None => Ok(PolicyRuleCandidatePlan::All),
+        }
+    }
+
+    fn policy_predicate_candidate_plan(
+        &self,
+        collection: &CollectionId,
+        schema: &CollectionSchema,
+        predicate: &CompiledPredicate,
+        snapshot: &PolicyRequestSnapshot,
+    ) -> Result<PolicyRuleCandidatePlan, AxonError> {
+        match predicate {
+            CompiledPredicate::All(predicates) => {
+                let mut current: Option<Vec<EntityId>> = None;
+                let mut filters = Vec::new();
+                for predicate in predicates {
+                    match self
+                        .policy_predicate_candidate_plan(collection, schema, predicate, snapshot)?
+                    {
+                        PolicyRuleCandidatePlan::All => {}
+                        PolicyRuleCandidatePlan::Indexed {
+                            entity_ids,
+                            storage_filters,
+                        } => {
+                            current = Some(match current {
+                                Some(existing) => intersect_entity_ids(existing, entity_ids),
+                                None => entity_ids,
+                            });
+                            filters.extend(storage_filters);
+                        }
+                        PolicyRuleCandidatePlan::Unindexed { missing_index } => {
+                            return Ok(PolicyRuleCandidatePlan::Unindexed { missing_index });
+                        }
+                    }
+                }
+                Ok(current.map_or(PolicyRuleCandidatePlan::All, |entity_ids| {
+                    PolicyRuleCandidatePlan::Indexed {
+                        entity_ids,
+                        storage_filters: filters,
+                    }
+                }))
+            }
+            CompiledPredicate::Any(predicates) => {
+                let mut id_sets = Vec::new();
+                let mut filters = Vec::new();
+                for predicate in predicates {
+                    match self
+                        .policy_predicate_candidate_plan(collection, schema, predicate, snapshot)?
+                    {
+                        PolicyRuleCandidatePlan::All => return Ok(PolicyRuleCandidatePlan::All),
+                        PolicyRuleCandidatePlan::Indexed {
+                            entity_ids,
+                            storage_filters,
+                        } => {
+                            id_sets.push(entity_ids);
+                            filters.extend(storage_filters);
+                        }
+                        PolicyRuleCandidatePlan::Unindexed { missing_index } => {
+                            return Ok(PolicyRuleCandidatePlan::Unindexed { missing_index });
+                        }
+                    }
+                }
+                Ok(PolicyRuleCandidatePlan::Indexed {
+                    entity_ids: union_entity_id_sets(id_sets),
+                    storage_filters: filters,
+                })
+            }
+            CompiledPredicate::Compare(comparison) => {
+                self.policy_comparison_candidate_plan(collection, schema, comparison, snapshot)
+            }
+            CompiledPredicate::Related(related) => {
+                self.policy_related_candidate_plan(collection, related, snapshot)
+            }
+            CompiledPredicate::Operation(operation) if operation == &PolicyOperation::Read => {
+                Ok(PolicyRuleCandidatePlan::All)
+            }
+            _ => Ok(PolicyRuleCandidatePlan::Unindexed {
+                missing_index: None,
+            }),
+        }
+    }
+
+    fn policy_comparison_candidate_plan(
+        &self,
+        collection: &CollectionId,
+        schema: &CollectionSchema,
+        comparison: &CompiledComparison,
+        snapshot: &PolicyRequestSnapshot,
+    ) -> Result<PolicyRuleCandidatePlan, AxonError> {
+        let PredicateTarget::Field(field) = &comparison.target else {
+            return Ok(PolicyRuleCandidatePlan::Unindexed {
+                missing_index: None,
+            });
+        };
+        let Some(index) = schema.indexes.iter().find(|index| index.field == *field) else {
+            return Ok(PolicyRuleCandidatePlan::Unindexed {
+                missing_index: Some(field.clone()),
+            });
+        };
+
+        let lookup = |value: &Value| -> Result<Option<Vec<EntityId>>, AxonError> {
+            let Some(index_value) = extract_index_value(value, &index.index_type) else {
+                return Ok(Some(Vec::new()));
+            };
+            Ok(self
+                .storage
+                .index_lookup(collection, field, &index_value)
+                .ok())
+        };
+
+        let (entity_ids, label) = match &comparison.op {
+            CompiledCompareOp::Eq(value) => match lookup(value)? {
+                Some(ids) => (ids, format!("index:{field}:eq")),
+                None => {
+                    return Ok(PolicyRuleCandidatePlan::Unindexed {
+                        missing_index: Some(field.clone()),
+                    })
+                }
+            },
+            CompiledCompareOp::EqSubject(subject) | CompiledCompareOp::ContainsSubject(subject) => {
+                let Some(value) = policy_subject_value(snapshot, subject) else {
+                    return Ok(PolicyRuleCandidatePlan::Indexed {
+                        entity_ids: Vec::new(),
+                        storage_filters: vec![format!("index:{field}:subject_missing")],
+                    });
+                };
+                match lookup(value)? {
+                    Some(ids) => (ids, format!("index:{field}:subject:{subject}")),
+                    None => {
+                        return Ok(PolicyRuleCandidatePlan::Unindexed {
+                            missing_index: Some(field.clone()),
+                        })
+                    }
+                }
+            }
+            CompiledCompareOp::In(values) => {
+                let mut sets = Vec::new();
+                for value in values {
+                    match lookup(value)? {
+                        Some(ids) => sets.push(ids),
+                        None => {
+                            return Ok(PolicyRuleCandidatePlan::Unindexed {
+                                missing_index: Some(field.clone()),
+                            })
+                        }
+                    }
+                }
+                (union_entity_id_sets(sets), format!("index:{field}:in"))
+            }
+            CompiledCompareOp::Gt(value)
+            | CompiledCompareOp::Gte(value)
+            | CompiledCompareOp::Lt(value)
+            | CompiledCompareOp::Lte(value) => {
+                let Some(index_value) = extract_index_value(value, &index.index_type) else {
+                    return Ok(PolicyRuleCandidatePlan::Indexed {
+                        entity_ids: Vec::new(),
+                        storage_filters: vec![format!("index:{field}:type_mismatch")],
+                    });
+                };
+                let (lower, upper, op_label) = match &comparison.op {
+                    CompiledCompareOp::Gt(_) => (
+                        std::ops::Bound::Excluded(&index_value),
+                        std::ops::Bound::Unbounded,
+                        "gt",
+                    ),
+                    CompiledCompareOp::Gte(_) => (
+                        std::ops::Bound::Included(&index_value),
+                        std::ops::Bound::Unbounded,
+                        "gte",
+                    ),
+                    CompiledCompareOp::Lt(_) => (
+                        std::ops::Bound::Unbounded,
+                        std::ops::Bound::Excluded(&index_value),
+                        "lt",
+                    ),
+                    CompiledCompareOp::Lte(_) => (
+                        std::ops::Bound::Unbounded,
+                        std::ops::Bound::Included(&index_value),
+                        "lte",
+                    ),
+                    _ => unreachable!(),
+                };
+                let Some(ids) = self
+                    .storage
+                    .index_range(collection, field, lower, upper)
+                    .ok()
+                else {
+                    return Ok(PolicyRuleCandidatePlan::Unindexed {
+                        missing_index: Some(field.clone()),
+                    });
+                };
+                (ids, format!("index:{field}:{op_label}"))
+            }
+            _ => {
+                return Ok(PolicyRuleCandidatePlan::Unindexed {
+                    missing_index: Some(field.clone()),
+                })
+            }
+        };
+
+        Ok(PolicyRuleCandidatePlan::Indexed {
+            entity_ids,
+            storage_filters: vec![label],
+        })
+    }
+
+    fn policy_related_candidate_plan(
+        &self,
+        collection: &CollectionId,
+        related: &axon_schema::CompiledRelationshipPredicate,
+        snapshot: &PolicyRequestSnapshot,
+    ) -> Result<PolicyRuleCandidatePlan, AxonError> {
+        let links = self.load_all_links()?;
+        let mut entity_ids = std::collections::BTreeSet::new();
+
+        for link in links {
+            let (candidate_id, target_collection, target_id) = match related.direction {
+                LinkDirection::Outgoing => {
+                    if link.source_collection != *collection
+                        || link.link_type != related.link_type
+                        || link.target_collection.as_str() != related.target_collection
+                    {
+                        continue;
+                    }
+                    (&link.source_id, &link.target_collection, &link.target_id)
+                }
+                LinkDirection::Incoming => {
+                    if link.target_collection != *collection
+                        || link.link_type != related.link_type
+                        || link.source_collection.as_str() != related.target_collection
+                    {
+                        continue;
+                    }
+                    (&link.target_id, &link.source_collection, &link.source_id)
+                }
+            };
+
+            if let Some(operation) = &related.target_policy {
+                let Some(target) = self.storage.get(target_collection, target_id)? else {
+                    continue;
+                };
+                let Some(target_schema) = self.storage.get_schema(target_collection)? else {
+                    continue;
+                };
+                let Some(target_plan) = self.compile_policy_plan_for_schema(&target_schema)? else {
+                    continue;
+                };
+                let mut target_snapshot = snapshot.clone();
+                target_snapshot.collection = target_collection.clone();
+                let target_data = entity_policy_data(&target);
+                if !self.policy_operation_allows(
+                    &target_plan,
+                    &target_snapshot,
+                    PolicyOperationCheck {
+                        collection: target_collection,
+                        entity_id: Some(target_id),
+                        operation: operation.clone(),
+                        data: &target_data,
+                        operation_index: None,
+                    },
+                )? {
+                    continue;
+                }
+            }
+
+            entity_ids.insert(candidate_id.clone());
+        }
+
+        Ok(PolicyRuleCandidatePlan::Indexed {
+            entity_ids: entity_ids.into_iter().collect(),
+            storage_filters: vec![format!(
+                "link_index:{:?}:{}",
+                related.direction, related.link_type
+            )
+            .to_lowercase()],
+        })
     }
 
     fn policy_subject_for_request(
@@ -1796,12 +2302,50 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // Try index-accelerated lookup (FEAT-013) before falling back to scan.
         let schema = self.storage.get_schema(&req.collection)?;
-        let index_candidates = try_index_lookup(
+        let request_index_candidates = try_index_lookup(
             &self.storage,
             &req.collection,
             req.filter.as_ref(),
             schema.as_ref(),
         );
+        let policy_snapshot =
+            self.policy_snapshot_for_request(&req.collection, schema.as_ref(), None, None, None)?;
+        let compiled_policy = match schema.as_ref() {
+            Some(schema) if policy_snapshot.is_some() => {
+                self.compile_policy_plan_for_schema(schema)?
+            }
+            _ => None,
+        };
+        let policy_storage_plan = match (&compiled_policy, &policy_snapshot) {
+            (Some(plan), Some(snapshot)) => self.plan_read_policy_storage_filters(
+                &req.collection,
+                schema.as_ref(),
+                plan,
+                snapshot,
+            )?,
+            _ => PolicyStoragePlan::default(),
+        };
+
+        let index_candidates = combine_candidate_ids(
+            request_index_candidates,
+            policy_storage_plan.candidate_ids.clone(),
+        );
+
+        let post_filter_scope = index_candidates
+            .as_ref()
+            .map_or_else(|| self.storage.count(&req.collection), |ids| Ok(ids.len()))?;
+        if policy_storage_plan.post_filter
+            && policy_storage_plan.missing_index.is_some()
+            && post_filter_scope > POLICY_POST_FILTER_COST_LIMIT
+        {
+            let missing_index = policy_storage_plan
+                .missing_index
+                .clone()
+                .unwrap_or_else(|| "unknown".into());
+            return Err(AxonError::InvalidOperation(format!(
+                "policy_filter_unindexed missing_index={missing_index} cost_limit={POLICY_POST_FILTER_COST_LIMIT} candidate_count={post_filter_scope}"
+            )));
+        }
 
         let all = if let Some(entity_ids) = index_candidates {
             // Fetch entities by ID from the index results.
@@ -1822,23 +2366,35 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // Apply filter (even if we used an index, there may be additional
         // filter predicates or gate filters that need post-filtering).
-        let mut matched: Vec<Entity> = all
-            .into_iter()
-            .filter(|e| {
-                req.filter.as_ref().map_or(true, |f| {
-                    if needs_gates {
-                        if let Some(ref s) = schema {
-                            let eval = evaluate_gates(&s.validation_rules, &s.gates, &e.data);
-                            apply_filter_with_gates(f, &e.data, Some(&eval))
-                        } else {
-                            apply_filter(f, &e.data)
-                        }
+        let mut matched = Vec::new();
+        for entity in all {
+            let request_matches = req.filter.as_ref().map_or(true, |filter| {
+                if needs_gates {
+                    if let Some(ref schema) = schema {
+                        let eval =
+                            evaluate_gates(&schema.validation_rules, &schema.gates, &entity.data);
+                        apply_filter_with_gates(filter, &entity.data, Some(&eval))
                     } else {
-                        apply_filter(f, &e.data)
+                        apply_filter(filter, &entity.data)
                     }
-                })
-            })
-            .collect();
+                } else {
+                    apply_filter(filter, &entity.data)
+                }
+            });
+            if !request_matches {
+                continue;
+            }
+
+            let policy_matches = match (&compiled_policy, &policy_snapshot) {
+                (Some(plan), Some(snapshot)) => {
+                    self.read_policy_allows_entity(&req.collection, plan, snapshot, &entity)?
+                }
+                _ => true,
+            };
+            if policy_matches {
+                matched.push(entity);
+            }
+        }
 
         // Sort before pagination so cursors are stable.
         if !req.sort.is_empty() {
@@ -1898,6 +2454,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
             entities,
             total_count,
             next_cursor,
+            policy_plan: compiled_policy
+                .as_ref()
+                .map(|_| policy_storage_plan.diagnostics()),
         })
     }
 
@@ -4979,14 +5538,12 @@ fn check_unique_constraints<S: StorageAdapter>(
         if !idx.unique {
             continue;
         }
-        if let Some(json_val) = resolve_field_path(data, &idx.field) {
-            if let Some(val) = extract_index_value(json_val, &idx.index_type) {
-                if storage.index_unique_conflict(collection, &idx.field, &val, entity_id)? {
-                    return Err(AxonError::UniqueViolation {
-                        field: idx.field.clone(),
-                        value: json_val.to_string(),
-                    });
-                }
+        for val in extract_index_values(data, &idx.field, &idx.index_type) {
+            if storage.index_unique_conflict(collection, &idx.field, &val, entity_id)? {
+                return Err(AxonError::UniqueViolation {
+                    field: idx.field.clone(),
+                    value: val.to_string(),
+                });
             }
         }
     }
@@ -5054,6 +5611,182 @@ fn request_scoped_collection_id(collection: &str, database_id: &str) -> Collecti
         CollectionId::new(Namespace::qualify_with_database(collection, database_id))
     } else {
         CollectionId::new(collection)
+    }
+}
+
+fn policy_related_target_collections(policy: Option<&AccessControlPolicy>) -> Vec<String> {
+    let mut output = HashSet::new();
+    let Some(policy) = policy else {
+        return Vec::new();
+    };
+
+    for operation in [
+        policy.read.as_ref(),
+        policy.create.as_ref(),
+        policy.update.as_ref(),
+        policy.delete.as_ref(),
+        policy.write.as_ref(),
+        policy.admin.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        collect_operation_policy_targets(operation, &mut output);
+    }
+
+    for field_policy in policy.fields.values() {
+        collect_field_access_policy_targets(field_policy.read.as_ref(), &mut output);
+        collect_field_access_policy_targets(field_policy.write.as_ref(), &mut output);
+    }
+
+    for transitions in policy.transitions.values() {
+        for operation in transitions.values() {
+            collect_operation_policy_targets(operation, &mut output);
+        }
+    }
+
+    for envelopes in policy.envelopes.values() {
+        for envelope in envelopes {
+            collect_policy_predicate_targets(envelope.when.as_ref(), &mut output);
+        }
+    }
+
+    output.into_iter().collect()
+}
+
+fn collect_operation_policy_targets(policy: &OperationPolicy, output: &mut HashSet<String>) {
+    for rule in policy.allow.iter().chain(policy.deny.iter()) {
+        collect_policy_predicate_targets(rule.when.as_ref(), output);
+        collect_policy_predicate_targets(rule.where_clause.as_ref(), output);
+    }
+}
+
+fn collect_field_access_policy_targets(
+    policy: Option<&FieldAccessPolicy>,
+    output: &mut HashSet<String>,
+) {
+    let Some(policy) = policy else {
+        return;
+    };
+    for rule in policy.allow.iter().chain(policy.deny.iter()) {
+        collect_policy_predicate_targets(rule.when.as_ref(), output);
+        collect_policy_predicate_targets(rule.where_clause.as_ref(), output);
+    }
+}
+
+fn collect_policy_predicate_targets(
+    predicate: Option<&PolicyPredicate>,
+    output: &mut HashSet<String>,
+) {
+    let Some(predicate) = predicate else {
+        return;
+    };
+    match predicate {
+        PolicyPredicate::All { all } => {
+            for predicate in all {
+                collect_policy_predicate_targets(Some(predicate), output);
+            }
+        }
+        PolicyPredicate::Any { any } => {
+            for predicate in any {
+                collect_policy_predicate_targets(Some(predicate), output);
+            }
+        }
+        PolicyPredicate::Not { not } => {
+            collect_policy_predicate_targets(Some(not), output);
+        }
+        PolicyPredicate::Related { related } => {
+            output.insert(related.target_collection.clone());
+        }
+        PolicyPredicate::SharesRelation { shares_relation } => {
+            output.insert(shares_relation.collection.clone());
+        }
+        PolicyPredicate::Subject { .. }
+        | PolicyPredicate::Field { .. }
+        | PolicyPredicate::Operation { .. } => {}
+    }
+}
+
+fn combine_candidate_ids(
+    left: Option<Vec<EntityId>>,
+    right: Option<Vec<EntityId>>,
+) -> Option<Vec<EntityId>> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(intersect_entity_ids(left, right)),
+        (Some(ids), None) | (None, Some(ids)) => Some(ids),
+        (None, None) => None,
+    }
+}
+
+fn intersect_entity_ids(left: Vec<EntityId>, right: Vec<EntityId>) -> Vec<EntityId> {
+    let right: std::collections::BTreeSet<EntityId> = right.into_iter().collect();
+    left.into_iter()
+        .filter(|entity_id| right.contains(entity_id))
+        .collect()
+}
+
+fn union_entity_id_sets(sets: Vec<Vec<EntityId>>) -> Vec<EntityId> {
+    let mut output = std::collections::BTreeSet::new();
+    for set in sets {
+        output.extend(set);
+    }
+    output.into_iter().collect()
+}
+
+fn entity_policy_data(entity: &Entity) -> Value {
+    let mut data = entity.data.clone();
+    if let Some(object) = data.as_object_mut() {
+        object
+            .entry("_id")
+            .or_insert_with(|| Value::String(entity.id.to_string()));
+    }
+    data
+}
+
+fn policy_static_predicate_matches(
+    predicate: &CompiledPredicate,
+    snapshot: &PolicyRequestSnapshot,
+    operation: &PolicyOperation,
+) -> Option<bool> {
+    match predicate {
+        CompiledPredicate::All(items) => {
+            let mut saw_unknown = false;
+            for item in items {
+                match policy_static_predicate_matches(item, snapshot, operation) {
+                    Some(true) => {}
+                    Some(false) => return Some(false),
+                    None => saw_unknown = true,
+                }
+            }
+            (!saw_unknown).then_some(true)
+        }
+        CompiledPredicate::Any(items) => {
+            let mut saw_unknown = false;
+            for item in items {
+                match policy_static_predicate_matches(item, snapshot, operation) {
+                    Some(true) => return Some(true),
+                    Some(false) => {}
+                    None => saw_unknown = true,
+                }
+            }
+            (!saw_unknown).then_some(false)
+        }
+        CompiledPredicate::Not(item) => {
+            policy_static_predicate_matches(item, snapshot, operation).map(|value| !value)
+        }
+        CompiledPredicate::Operation(candidate) => Some(candidate == operation),
+        CompiledPredicate::Compare(comparison) => {
+            if !matches!(comparison.target, PredicateTarget::Subject(_)) {
+                return None;
+            }
+            let ctx = PolicyPredicateContext {
+                snapshot,
+                operation,
+                data: &Value::Null,
+            };
+            Some(policy_comparison_matches(comparison, ctx))
+        }
+        _ => None,
     }
 }
 
@@ -5287,7 +6020,10 @@ mod tests {
 
     use axon_core::auth::Role;
     use axon_core::id::{CollectionId, EntityId, Namespace};
-    use axon_schema::schema::{CollectionSchema, CollectionView, EsfDocument};
+    use axon_schema::schema::{
+        Cardinality, CollectionSchema, CollectionView, EsfDocument, IndexDef, IndexType,
+        LinkTypeDef,
+    };
     use axon_schema::{
         AccessControlPolicy, FieldAccessPolicy, FieldPolicy, FieldPolicyRule,
         IdentityAttributeSource, OperationPolicy, PolicyCompareOp, PolicyDecision, PolicyEnvelope,
@@ -5812,6 +6548,366 @@ mod tests {
             .expect("stored row")
             .entity;
         assert_eq!(stored.data["title"], "private");
+    }
+
+    #[test]
+    fn policy_read_eq_predicate_uses_declared_index() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_indexed_docs");
+        let mut schema = policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                read: Some(owner_read_policy()),
+                ..Default::default()
+            },
+        );
+        schema.indexes = vec![IndexDef {
+            field: "owner_id".into(),
+            index_type: IndexType::String,
+            unique: false,
+        }];
+        h.put_schema(schema).expect("policy schema");
+
+        for (id, owner_id) in [("doc-1", "anonymous"), ("doc-2", "alice")] {
+            h.create_entity(CreateEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new(id),
+                data: json!({"owner_id": owner_id, "title": id}),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("seed row");
+        }
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection,
+                ..Default::default()
+            })
+            .expect("policy-filtered query should use index");
+
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].id, EntityId::new("doc-1"));
+        let plan = resp.policy_plan.expect("policy diagnostics");
+        assert!(plan
+            .storage_filters
+            .contains(&"index:owner_id:subject:user_id".to_string()));
+        assert!(!plan.post_filter);
+    }
+
+    #[test]
+    fn policy_read_range_predicate_uses_declared_index() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_amount_docs");
+        let mut schema = policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                read: Some(OperationPolicy {
+                    allow: vec![PolicyRule {
+                        name: Some("large-amounts".into()),
+                        where_clause: Some(PolicyPredicate::Field {
+                            field: "amount".into(),
+                            op: PolicyCompareOp::Gte(json!(100)),
+                        }),
+                        ..Default::default()
+                    }],
+                    deny: vec![],
+                }),
+                ..Default::default()
+            },
+        );
+        schema.indexes = vec![IndexDef {
+            field: "amount".into(),
+            index_type: IndexType::Integer,
+            unique: false,
+        }];
+        h.put_schema(schema).expect("policy schema");
+
+        for (id, amount) in [("small", 50), ("large", 150)] {
+            h.create_entity(CreateEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new(id),
+                data: json!({"amount": amount, "title": id}),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("seed amount row");
+        }
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection,
+                ..Default::default()
+            })
+            .expect("range policy query should use index");
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].id, EntityId::new("large"));
+        assert!(resp
+            .policy_plan
+            .expect("policy diagnostics")
+            .storage_filters
+            .contains(&"index:amount:gte".to_string()));
+    }
+
+    #[test]
+    fn policy_read_array_membership_uses_eav_index() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_team_docs");
+        let mut schema = policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                read: Some(OperationPolicy {
+                    allow: vec![PolicyRule {
+                        name: Some("team-members".into()),
+                        where_clause: Some(PolicyPredicate::Field {
+                            field: "team_ids[]".into(),
+                            op: PolicyCompareOp::ContainsSubject("user_id".into()),
+                        }),
+                        ..Default::default()
+                    }],
+                    deny: vec![],
+                }),
+                ..Default::default()
+            },
+        );
+        schema.entity_schema = Some(json!({
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "team_ids": {"type": "array", "items": {"type": "string"}}
+            }
+        }));
+        schema.indexes = vec![IndexDef {
+            field: "team_ids[]".into(),
+            index_type: IndexType::String,
+            unique: false,
+        }];
+        h.put_schema(schema).expect("policy schema");
+
+        for (id, teams) in [
+            ("visible", json!(["anonymous", "ops"])),
+            ("hidden", json!(["alice"])),
+        ] {
+            h.create_entity(CreateEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new(id),
+                data: json!({"team_ids": teams, "title": id}),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("seed team row");
+        }
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection,
+                ..Default::default()
+            })
+            .expect("array policy query should use EAV index");
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].id, EntityId::new("visible"));
+        assert!(resp
+            .policy_plan
+            .expect("policy diagnostics")
+            .storage_filters
+            .contains(&"index:team_ids[]:subject:user_id".to_string()));
+    }
+
+    #[test]
+    fn policy_read_unindexed_predicate_is_bounded_or_errors() {
+        let mut small = handler();
+        let collection = CollectionId::new("policy_small_unindexed");
+        small
+            .put_schema(policy_test_schema(
+                collection.as_str(),
+                AccessControlPolicy {
+                    read: Some(owner_read_policy()),
+                    ..Default::default()
+                },
+            ))
+            .expect("small policy schema");
+        for (id, owner_id) in [("doc-1", "anonymous"), ("doc-2", "alice")] {
+            small
+                .create_entity(CreateEntityRequest {
+                    collection: collection.clone(),
+                    id: EntityId::new(id),
+                    data: json!({"owner_id": owner_id, "title": id}),
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("seed small row");
+        }
+        let small_resp = small
+            .query_entities(QueryEntitiesRequest {
+                collection: collection.clone(),
+                ..Default::default()
+            })
+            .expect("small unindexed policy may post-filter");
+        assert_eq!(small_resp.total_count, 1);
+        let small_plan = small_resp.policy_plan.expect("policy diagnostics");
+        assert_eq!(small_plan.missing_index.as_deref(), Some("owner_id"));
+        assert!(small_plan.post_filter);
+
+        let mut large = handler();
+        let large_collection = CollectionId::new("policy_large_unindexed");
+        large
+            .put_schema(policy_test_schema(
+                large_collection.as_str(),
+                AccessControlPolicy {
+                    read: Some(owner_read_policy()),
+                    ..Default::default()
+                },
+            ))
+            .expect("large policy schema");
+        for i in 0..=POLICY_POST_FILTER_COST_LIMIT {
+            large
+                .create_entity(CreateEntityRequest {
+                    collection: large_collection.clone(),
+                    id: EntityId::new(format!("doc-{i:03}")),
+                    data: json!({"owner_id": "alice", "title": format!("doc-{i:03}")}),
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("seed large row");
+        }
+        let err = large
+            .query_entities(QueryEntitiesRequest {
+                collection: large_collection,
+                ..Default::default()
+            })
+            .expect_err("large unindexed policy should be rejected");
+        let text = err.to_string();
+        assert!(text.contains("policy_filter_unindexed"), "{text}");
+        assert!(text.contains("missing_index=owner_id"), "{text}");
+    }
+
+    #[test]
+    fn policy_read_related_target_policy_uses_link_plan() {
+        let mut h = handler();
+        let users = CollectionId::new("policy_users");
+        let mut user_schema = policy_test_schema(
+            users.as_str(),
+            AccessControlPolicy {
+                read: Some(OperationPolicy {
+                    allow: vec![PolicyRule {
+                        name: Some("visible-users".into()),
+                        where_clause: Some(PolicyPredicate::Field {
+                            field: "visible".into(),
+                            op: PolicyCompareOp::Eq(json!(true)),
+                        }),
+                        ..Default::default()
+                    }],
+                    deny: vec![],
+                }),
+                ..Default::default()
+            },
+        );
+        user_schema.entity_schema = Some(json!({
+            "type": "object",
+            "properties": {
+                "owner_id": {"type": "string"},
+                "title": {"type": "string"},
+                "visible": {"type": "boolean"}
+            }
+        }));
+        h.put_schema(user_schema).expect("user policy schema");
+
+        let tasks = CollectionId::new("policy_tasks");
+        let mut task_schema = policy_test_schema(
+            tasks.as_str(),
+            AccessControlPolicy {
+                read: Some(OperationPolicy {
+                    allow: vec![PolicyRule {
+                        name: Some("assigned-visible-user".into()),
+                        where_clause: Some(PolicyPredicate::Related {
+                            related: axon_schema::RelationshipPredicate {
+                                link_type: "assigned".into(),
+                                direction: Some(LinkDirection::Outgoing),
+                                target_collection: users.to_string(),
+                                target_policy: Some(PolicyOperation::Read),
+                            },
+                        }),
+                        ..Default::default()
+                    }],
+                    deny: vec![],
+                }),
+                ..Default::default()
+            },
+        );
+        task_schema.link_types.insert(
+            "assigned".into(),
+            LinkTypeDef {
+                target_collection: users.to_string(),
+                cardinality: Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: None,
+            },
+        );
+        h.put_schema(task_schema).expect("task policy schema");
+
+        for (id, visible) in [("u-visible", true), ("u-hidden", false)] {
+            h.create_entity(CreateEntityRequest {
+                collection: users.clone(),
+                id: EntityId::new(id),
+                data: json!({"owner_id": "anonymous", "title": id, "visible": visible}),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("seed user");
+        }
+        for id in ["t-visible", "t-hidden"] {
+            h.create_entity(CreateEntityRequest {
+                collection: tasks.clone(),
+                id: EntityId::new(id),
+                data: json!({"owner_id": "anonymous", "title": id}),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("seed task");
+        }
+        h.create_link(CreateLinkRequest {
+            source_collection: tasks.clone(),
+            source_id: EntityId::new("t-visible"),
+            target_collection: users.clone(),
+            target_id: EntityId::new("u-visible"),
+            link_type: "assigned".into(),
+            metadata: json!({}),
+            actor: None,
+            attribution: None,
+        })
+        .expect("visible assignment link");
+        h.create_link(CreateLinkRequest {
+            source_collection: tasks.clone(),
+            source_id: EntityId::new("t-hidden"),
+            target_collection: users,
+            target_id: EntityId::new("u-hidden"),
+            link_type: "assigned".into(),
+            metadata: json!({}),
+            actor: None,
+            attribution: None,
+        })
+        .expect("hidden assignment link");
+
+        let resp = h
+            .query_entities(QueryEntitiesRequest {
+                collection: tasks,
+                ..Default::default()
+            })
+            .expect("relationship policy query");
+        assert_eq!(resp.total_count, 1);
+        assert_eq!(resp.entities[0].id, EntityId::new("t-visible"));
+        assert!(resp
+            .policy_plan
+            .expect("policy diagnostics")
+            .storage_filters
+            .contains(&"link_index:outgoing:assigned".to_string()));
     }
 
     #[test]

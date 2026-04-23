@@ -17,8 +17,8 @@ pub mod sqlite;
 mod proptest_storage;
 
 pub use adapter::{
-    extract_compound_key, extract_index_value, resolve_field_path, CompoundKey, IndexValue,
-    OrderedFloat, StorageAdapter,
+    extract_compound_key, extract_index_value, extract_index_values, resolve_field_path,
+    CompoundKey, IndexValue, OrderedFloat, StorageAdapter,
 };
 pub use auth_schema::{apply_auth_migrations_postgres, apply_auth_migrations_sqlite};
 pub use memory::MemoryStorageAdapter;

@@ -1541,6 +1541,7 @@ async fn query_entities(
                 "entities": entities,
                 "total_count": resp.total_count,
                 "next_cursor": resp.next_cursor,
+                "policy_plan": resp.policy_plan,
             }))
             .into_response()
         }
