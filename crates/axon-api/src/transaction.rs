@@ -25,18 +25,18 @@ fn next_tx_id() -> String {
 
 /// A buffered write within a transaction.
 #[derive(Debug)]
-struct WriteOp {
-    entity: Entity,
+pub(crate) struct WriteOp {
+    pub(crate) entity: Entity,
     /// Version that must be current in storage for the write to succeed.
     /// `0` means "entity must not exist" (create).
-    expected_version: u64,
+    pub(crate) expected_version: u64,
     /// State before this write (for audit).
-    data_before: Option<Value>,
-    mutation: MutationType,
+    pub(crate) data_before: Option<Value>,
+    pub(crate) mutation: MutationType,
 }
 
 #[derive(Debug)]
-enum StagedOp {
+pub(crate) enum StagedOp {
     Entity(WriteOp),
     LinkCreate(Link),
     LinkDelete(Link),
@@ -84,6 +84,10 @@ impl Transaction {
             )));
         }
         Ok(())
+    }
+
+    pub(crate) fn staged_ops(&self) -> &[StagedOp] {
+        &self.ops
     }
 
     /// Stage a create operation for `entity`.

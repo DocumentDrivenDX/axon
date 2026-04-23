@@ -20,9 +20,17 @@ use axon_core::id::{
 };
 use axon_core::types::{Entity, Link};
 use axon_schema::gates::evaluate_gates;
+use axon_schema::policy::{
+    compile_policy_plan, CompiledCompareOp, CompiledComparison, CompiledFieldPolicyRule,
+    CompiledOperationPolicy, CompiledPolicyEnvelope, CompiledPolicyRule, CompiledPredicate,
+    PredicateTarget,
+};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use axon_schema::validation::{compile_entity_schema, validate, validate_link_metadata};
-use axon_schema::{AccessControlIdentity, IdentityAttributeSource};
+use axon_schema::{
+    AccessControlIdentity, IdentityAttributeSource, LinkDirection, PolicyDecision, PolicyOperation,
+    PolicyPlan,
+};
 use axon_storage::adapter::{extract_index_value, resolve_field_path, StorageAdapter};
 
 use crate::policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
@@ -59,6 +67,48 @@ use crate::response::{
 const DEFAULT_MAX_DEPTH: usize = 3;
 const MAX_DEPTH_CAP: usize = 10;
 const DEFAULT_MARKDOWN_TEMPLATE_CACHE_CAPACITY: usize = 256;
+
+#[derive(Debug, Clone, Copy)]
+enum FieldWriteScope<'a> {
+    PresentFields(&'a Value),
+    Patch(&'a Value),
+}
+
+#[derive(Debug, Clone)]
+struct PolicyWriteCheck<'a> {
+    collection: &'a CollectionId,
+    entity_id: Option<&'a EntityId>,
+    operation: PolicyOperation,
+    current_data: Option<&'a Value>,
+    candidate_data: &'a Value,
+    field_scope: FieldWriteScope<'a>,
+    operation_index: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct PolicyOperationCheck<'a> {
+    collection: &'a CollectionId,
+    entity_id: Option<&'a EntityId>,
+    operation: PolicyOperation,
+    data: &'a Value,
+    operation_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PolicyPredicateContext<'a> {
+    snapshot: &'a PolicyRequestSnapshot,
+    operation: &'a PolicyOperation,
+    data: &'a Value,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TransitionPolicyCheck<'a> {
+    collection: &'a CollectionId,
+    entity_id: &'a EntityId,
+    lifecycle_field: &'a str,
+    target_state: &'a str,
+    data: &'a Value,
+}
 
 #[derive(Debug)]
 struct CachedMarkdownTemplate {
@@ -377,6 +427,377 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }))
     }
 
+    fn enforce_write_policy(
+        &self,
+        schema: Option<&CollectionSchema>,
+        snapshot: Option<&PolicyRequestSnapshot>,
+        check: PolicyWriteCheck<'_>,
+    ) -> Result<(), AxonError> {
+        let Some(schema) = schema else {
+            return Ok(());
+        };
+        let Some(snapshot) = snapshot else {
+            return Ok(());
+        };
+        let Some(plan) = compile_policy_plan(schema)? else {
+            return Ok(());
+        };
+
+        if let Some(current_data) = check.current_data {
+            self.enforce_policy_operation(
+                &plan,
+                snapshot,
+                PolicyOperationCheck {
+                    collection: check.collection,
+                    entity_id: check.entity_id,
+                    operation: PolicyOperation::Read,
+                    data: current_data,
+                    operation_index: check.operation_index,
+                },
+            )?;
+        }
+
+        self.enforce_policy_operation(
+            &plan,
+            snapshot,
+            PolicyOperationCheck {
+                collection: check.collection,
+                entity_id: check.entity_id,
+                operation: check.operation.clone(),
+                data: check.candidate_data,
+                operation_index: check.operation_index,
+            },
+        )?;
+        self.enforce_field_write_policy(&plan, snapshot, check.clone())?;
+        self.enforce_policy_envelopes(&plan, snapshot, check)?;
+
+        Ok(())
+    }
+
+    fn enforce_policy_operation(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        check: PolicyOperationCheck<'_>,
+    ) -> Result<(), AxonError> {
+        let mut allow_rules_present = false;
+        let mut allow_matched = false;
+
+        for policy in applicable_operation_policies(plan, &check.operation) {
+            for rule in &policy.deny {
+                if self.policy_rule_matches(rule, snapshot, &check.operation, check.data)? {
+                    return Err(policy_forbidden(
+                        "row_write_denied",
+                        check.collection,
+                        check.entity_id,
+                        None,
+                        Some(policy_rule_label(rule)),
+                        check.operation_index,
+                    ));
+                }
+            }
+
+            if !policy.allow.is_empty() {
+                allow_rules_present = true;
+            }
+            for rule in &policy.allow {
+                if self.policy_rule_matches(rule, snapshot, &check.operation, check.data)? {
+                    allow_matched = true;
+                }
+            }
+        }
+
+        if allow_rules_present && !allow_matched {
+            return Err(policy_forbidden(
+                "row_write_denied",
+                check.collection,
+                check.entity_id,
+                None,
+                Some(check.operation.as_str().to_string()),
+                check.operation_index,
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn enforce_field_write_policy(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        check: PolicyWriteCheck<'_>,
+    ) -> Result<(), AxonError> {
+        for (field_path, field_policy) in &plan.fields {
+            let Some(write_policy) = field_policy.write.as_ref() else {
+                continue;
+            };
+            if !field_write_scope_touches_path(check.field_scope, field_path) {
+                continue;
+            }
+
+            for rule in &write_policy.deny {
+                if self.field_policy_rule_matches(
+                    rule,
+                    snapshot,
+                    &check.operation,
+                    check.candidate_data,
+                )? {
+                    return Err(policy_forbidden(
+                        "field_write_denied",
+                        check.collection,
+                        check.entity_id,
+                        Some(field_path),
+                        Some(field_policy_rule_label(rule)),
+                        check.operation_index,
+                    ));
+                }
+            }
+
+            if !write_policy.allow.is_empty() {
+                let mut matched = false;
+                for rule in &write_policy.allow {
+                    if self.field_policy_rule_matches(
+                        rule,
+                        snapshot,
+                        &check.operation,
+                        check.candidate_data,
+                    )? {
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    return Err(policy_forbidden(
+                        "field_write_denied",
+                        check.collection,
+                        check.entity_id,
+                        Some(field_path),
+                        write_policy.allow.first().map(field_policy_rule_label),
+                        check.operation_index,
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn enforce_policy_envelopes(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        check: PolicyWriteCheck<'_>,
+    ) -> Result<(), AxonError> {
+        let mut needs_approval: Option<String> = None;
+
+        for envelope in applicable_policy_envelopes(plan, &check.operation) {
+            if self.policy_predicate_matches(
+                envelope.when.as_ref(),
+                PolicyPredicateContext {
+                    snapshot,
+                    operation: &check.operation,
+                    data: check.candidate_data,
+                },
+            )? {
+                match envelope.decision {
+                    PolicyDecision::Deny => {
+                        return Err(policy_forbidden(
+                            "row_write_denied",
+                            check.collection,
+                            check.entity_id,
+                            None,
+                            Some(policy_envelope_label(envelope)),
+                            check.operation_index,
+                        ))
+                    }
+                    PolicyDecision::NeedsApproval => {
+                        needs_approval = Some(policy_envelope_label(envelope));
+                    }
+                    PolicyDecision::Allow => {}
+                }
+            }
+        }
+
+        if let Some(policy) = needs_approval {
+            return Err(policy_forbidden(
+                "needs_approval",
+                check.collection,
+                check.entity_id,
+                None,
+                Some(policy),
+                check.operation_index,
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn enforce_transition_policy(
+        &self,
+        schema: &CollectionSchema,
+        snapshot: Option<&PolicyRequestSnapshot>,
+        check: TransitionPolicyCheck<'_>,
+    ) -> Result<(), AxonError> {
+        let Some(snapshot) = snapshot else {
+            return Ok(());
+        };
+        let Some(plan) = compile_policy_plan(schema)? else {
+            return Ok(());
+        };
+        let Some(transitions) = plan.transitions.get(check.lifecycle_field) else {
+            return Ok(());
+        };
+        let Some(policy) = transitions.get(check.target_state) else {
+            return Ok(());
+        };
+
+        for rule in &policy.deny {
+            if self.policy_rule_matches(rule, snapshot, &PolicyOperation::Update, check.data)? {
+                return Err(policy_forbidden(
+                    "row_write_denied",
+                    check.collection,
+                    Some(check.entity_id),
+                    Some(check.lifecycle_field),
+                    Some(policy_rule_label(rule)),
+                    None,
+                ));
+            }
+        }
+
+        if !policy.allow.is_empty() {
+            let mut matched = false;
+            for rule in &policy.allow {
+                if self.policy_rule_matches(rule, snapshot, &PolicyOperation::Update, check.data)? {
+                    matched = true;
+                    break;
+                }
+            }
+            if !matched {
+                return Err(policy_forbidden(
+                    "row_write_denied",
+                    check.collection,
+                    Some(check.entity_id),
+                    Some(check.lifecycle_field),
+                    Some(check.target_state.to_string()),
+                    None,
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn policy_rule_matches(
+        &self,
+        rule: &CompiledPolicyRule,
+        snapshot: &PolicyRequestSnapshot,
+        operation: &PolicyOperation,
+        data: &Value,
+    ) -> Result<bool, AxonError> {
+        let ctx = PolicyPredicateContext {
+            snapshot,
+            operation,
+            data,
+        };
+        Ok(self.policy_predicate_matches(rule.when.as_ref(), ctx)?
+            && self.policy_predicate_matches(rule.where_clause.as_ref(), ctx)?)
+    }
+
+    fn field_policy_rule_matches(
+        &self,
+        rule: &CompiledFieldPolicyRule,
+        snapshot: &PolicyRequestSnapshot,
+        operation: &PolicyOperation,
+        data: &Value,
+    ) -> Result<bool, AxonError> {
+        let ctx = PolicyPredicateContext {
+            snapshot,
+            operation,
+            data,
+        };
+        Ok(self.policy_predicate_matches(rule.when.as_ref(), ctx)?
+            && self.policy_predicate_matches(rule.where_clause.as_ref(), ctx)?)
+    }
+
+    fn policy_predicate_matches(
+        &self,
+        predicate: Option<&CompiledPredicate>,
+        ctx: PolicyPredicateContext<'_>,
+    ) -> Result<bool, AxonError> {
+        let Some(predicate) = predicate else {
+            return Ok(true);
+        };
+
+        match predicate {
+            CompiledPredicate::All(predicates) => {
+                for predicate in predicates {
+                    if !self.policy_predicate_matches(Some(predicate), ctx)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            CompiledPredicate::Any(predicates) => {
+                for predicate in predicates {
+                    if self.policy_predicate_matches(Some(predicate), ctx)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            CompiledPredicate::Not(predicate) => {
+                Ok(!self.policy_predicate_matches(Some(predicate), ctx)?)
+            }
+            CompiledPredicate::Compare(comparison) => {
+                Ok(policy_comparison_matches(comparison, ctx))
+            }
+            CompiledPredicate::Operation(operation) => Ok(operation == ctx.operation),
+            CompiledPredicate::Related(related) => self.policy_related_matches(related, ctx),
+            CompiledPredicate::SharesRelation(_) => Ok(false),
+        }
+    }
+
+    fn policy_related_matches(
+        &self,
+        related: &axon_schema::CompiledRelationshipPredicate,
+        ctx: PolicyPredicateContext<'_>,
+    ) -> Result<bool, AxonError> {
+        let source_collection = &ctx.snapshot.collection;
+        let Some(entity_id) = ctx
+            .data
+            .get("_id")
+            .and_then(Value::as_str)
+            .map(EntityId::new)
+        else {
+            return Ok(false);
+        };
+
+        let links = self
+            .storage
+            .range_scan(&Link::links_collection(), None, None, None)?;
+        for link in links.iter().filter_map(Link::from_entity) {
+            let matched = match related.direction {
+                LinkDirection::Outgoing => {
+                    &link.source_collection == source_collection
+                        && link.source_id == entity_id
+                        && link.link_type == related.link_type
+                        && link.target_collection.as_str() == related.target_collection
+                }
+                LinkDirection::Incoming => {
+                    &link.target_collection == source_collection
+                        && link.target_id == entity_id
+                        && link.link_type == related.link_type
+                        && link.source_collection.as_str() == related.target_collection
+                }
+            };
+            if matched {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
     fn policy_subject_for_request(
         &self,
         identity: Option<&AccessControlIdentity>,
@@ -484,7 +905,88 @@ impl<S: StorageAdapter> AxonHandler<S> {
         actor: Option<String>,
         attribution: Option<AuditAttribution>,
     ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
+        self.commit_transaction_inner(tx, actor, attribution, None)
+    }
+
+    fn commit_transaction_inner(
+        &mut self,
+        tx: crate::transaction::Transaction,
+        actor: Option<String>,
+        attribution: Option<AuditAttribution>,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
+        self.enforce_transaction_policy(&tx, actor.as_deref(), attribution.as_ref(), caller)?;
         tx.commit(&mut self.storage, &mut self.audit, actor, attribution)
+    }
+
+    fn enforce_transaction_policy(
+        &self,
+        tx: &crate::transaction::Transaction,
+        actor: Option<&str>,
+        attribution: Option<&AuditAttribution>,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<(), AxonError> {
+        for (operation_index, op) in tx.staged_ops().iter().enumerate() {
+            match op {
+                crate::transaction::StagedOp::Entity(op) => {
+                    let schema = self.storage.get_schema(&op.entity.collection)?;
+                    let policy_snapshot = self.policy_snapshot_for_request(
+                        &op.entity.collection,
+                        schema.as_ref(),
+                        actor,
+                        caller,
+                        attribution,
+                    )?;
+                    let current = self.storage.get(&op.entity.collection, &op.entity.id)?;
+                    let (operation, current_data, candidate_data, field_scope) = match op.mutation {
+                        MutationType::EntityCreate => (
+                            PolicyOperation::Create,
+                            None,
+                            &op.entity.data,
+                            FieldWriteScope::PresentFields(&op.entity.data),
+                        ),
+                        MutationType::EntityUpdate => (
+                            PolicyOperation::Update,
+                            current.as_ref().map(|entity| &entity.data),
+                            &op.entity.data,
+                            FieldWriteScope::PresentFields(&op.entity.data),
+                        ),
+                        MutationType::EntityDelete => {
+                            let data = current
+                                .as_ref()
+                                .map(|entity| &entity.data)
+                                .or(op.data_before.as_ref())
+                                .unwrap_or(&op.entity.data);
+                            (
+                                PolicyOperation::Delete,
+                                current.as_ref().map(|entity| &entity.data),
+                                data,
+                                FieldWriteScope::PresentFields(data),
+                            )
+                        }
+                        _ => continue,
+                    };
+
+                    self.enforce_write_policy(
+                        schema.as_ref(),
+                        policy_snapshot.as_ref(),
+                        PolicyWriteCheck {
+                            collection: &op.entity.collection,
+                            entity_id: Some(&op.entity.id),
+                            operation,
+                            current_data,
+                            candidate_data,
+                            field_scope,
+                            operation_index: Some(operation_index),
+                        },
+                    )?;
+                }
+                crate::transaction::StagedOp::LinkCreate(_)
+                | crate::transaction::StagedOp::LinkDelete(_) => {}
+            }
+        }
+
+        Ok(())
     }
 
     // ── Identity-propagating wrappers (FEAT-012) ────────────────────────────
@@ -555,7 +1057,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<AuditAttribution>,
     ) -> Result<Vec<axon_core::types::Entity>, AxonError> {
-        self.commit_transaction(tx, Some(caller.actor.clone()), attribution)
+        self.commit_transaction_inner(tx, Some(caller.actor.clone()), attribution, Some(caller))
     }
 
     /// Create a link, overriding `req.actor` with the caller identity.
@@ -640,6 +1142,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 LifecycleEnforcementMode::Create,
             )?;
         }
+
+        self.enforce_write_policy(
+            schema.as_ref(),
+            policy_snapshot.as_ref(),
+            PolicyWriteCheck {
+                collection: &req.collection,
+                entity_id: Some(&req.id),
+                operation: PolicyOperation::Create,
+                current_data: None,
+                candidate_data: &req.data,
+                field_scope: FieldWriteScope::PresentFields(&req.data),
+                operation_index: None,
+            },
+        )?;
 
         // Schema validation.
         if let Some(schema) = &schema {
@@ -870,6 +1386,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let existing = self.storage.get(&req.collection, &req.id)?;
         let before = existing.as_ref().map(|e| e.data.clone());
 
+        self.enforce_write_policy(
+            schema.as_ref(),
+            policy_snapshot.as_ref(),
+            PolicyWriteCheck {
+                collection: &req.collection,
+                entity_id: Some(&req.id),
+                operation: PolicyOperation::Update,
+                current_data: existing.as_ref().map(|entity| &entity.data),
+                candidate_data: &req.data,
+                field_scope: FieldWriteScope::PresentFields(&req.data),
+                operation_index: None,
+            },
+        )?;
+
         // Materialize gate results on the entity itself (FEAT-019).
         let materialized_gates = gate_eval
             .as_ref()
@@ -1026,6 +1556,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
             check_unique_constraints(&self.storage, &req.collection, &req.id, &merged, s)?;
         }
 
+        self.enforce_write_policy(
+            schema.as_ref(),
+            policy_snapshot.as_ref(),
+            PolicyWriteCheck {
+                collection: &req.collection,
+                entity_id: Some(&req.id),
+                operation: PolicyOperation::Update,
+                current_data: Some(&existing.data),
+                candidate_data: &merged,
+                field_scope: FieldWriteScope::Patch(&req.patch),
+                operation_index: None,
+            },
+        )?;
+
         let before = Some(existing.data.clone());
 
         // Materialize gate results on the entity itself (FEAT-019).
@@ -1152,16 +1696,25 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         // Read current state for the audit `before` snapshot.
-        let before = self
-            .storage
-            .get(&req.collection, &req.id)?
-            .map(|e| e.data.clone());
+        let existing = self.storage.get(&req.collection, &req.id)?;
+        let before = existing.as_ref().map(|e| e.data.clone());
+        let version = existing.as_ref().map(|e| e.version).unwrap_or(0);
 
-        let version = self
-            .storage
-            .get(&req.collection, &req.id)?
-            .map(|e| e.version)
-            .unwrap_or(0);
+        if let Some(current) = existing.as_ref() {
+            self.enforce_write_policy(
+                schema.as_ref(),
+                policy_snapshot.as_ref(),
+                PolicyWriteCheck {
+                    collection: &req.collection,
+                    entity_id: Some(&req.id),
+                    operation: PolicyOperation::Delete,
+                    current_data: Some(&current.data),
+                    candidate_data: &current.data,
+                    field_scope: FieldWriteScope::PresentFields(&current.data),
+                    operation_index: None,
+                },
+            )?;
+        }
 
         // Remove index entries before deleting (FEAT-013).
         if let Some(ref data) = before {
@@ -1708,6 +2261,31 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // Apply the revert: update if entity still exists, recreate if deleted.
         let current = self.storage.get(&source.collection, &source.entity_id)?;
         let data_before_revert = current.as_ref().map(|e| e.data.clone());
+        let policy_snapshot = self.policy_snapshot_for_request(
+            &source.collection,
+            schema.as_ref(),
+            req.actor.as_deref(),
+            None,
+            req.attribution.as_ref(),
+        )?;
+        let operation = if current.is_some() {
+            PolicyOperation::Update
+        } else {
+            PolicyOperation::Create
+        };
+        self.enforce_write_policy(
+            schema.as_ref(),
+            policy_snapshot.as_ref(),
+            PolicyWriteCheck {
+                collection: &source.collection,
+                entity_id: Some(&source.entity_id),
+                operation,
+                current_data: current.as_ref().map(|entity| &entity.data),
+                candidate_data: &before_data,
+                field_scope: FieldWriteScope::PresentFields(&before_data),
+                operation_index: None,
+            },
+        )?;
         let restored = match current {
             Some(existing) => {
                 let candidate = Entity {
@@ -1881,6 +2459,34 @@ impl<S: StorageAdapter> AxonHandler<S> {
             schema_version: schema.as_ref().map(|s| s.version),
             gate_results: materialized_gates.clone(),
         };
+
+        if !req.dry_run {
+            let policy_snapshot = self.policy_snapshot_for_request(
+                &req.collection,
+                schema.as_ref(),
+                req.actor.as_deref(),
+                None,
+                None,
+            )?;
+            let operation = if current.is_some() {
+                PolicyOperation::Update
+            } else {
+                PolicyOperation::Create
+            };
+            self.enforce_write_policy(
+                schema.as_ref(),
+                policy_snapshot.as_ref(),
+                PolicyWriteCheck {
+                    collection: &req.collection,
+                    entity_id: Some(&req.id),
+                    operation,
+                    current_data: current.as_ref().map(|entity| &entity.data),
+                    candidate_data: &target_data,
+                    field_scope: FieldWriteScope::PresentFields(&target_data),
+                    operation_index: None,
+                },
+            )?;
+        }
 
         if req.dry_run {
             return Ok(RollbackEntityResponse::DryRun {
@@ -3920,6 +4526,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
         // (5) Apply the transition via update_entity (OCC).
         let mut new_data = entity.data.clone();
         new_data[&lifecycle.field] = serde_json::Value::String(req.target_state.clone());
+        let policy_snapshot = self.policy_snapshot_for_request(
+            &req.collection_id,
+            Some(&schema),
+            req.actor.as_deref(),
+            None,
+            req.attribution.as_ref(),
+        )?;
+        self.enforce_transition_policy(
+            &schema,
+            policy_snapshot.as_ref(),
+            TransitionPolicyCheck {
+                collection: &req.collection_id,
+                entity_id: &req.entity_id,
+                lifecycle_field: &lifecycle.field,
+                target_state: &req.target_state,
+                data: &new_data,
+            },
+        )?;
 
         let update_resp = self.update_entity(crate::request::UpdateEntityRequest {
             collection: req.collection_id,
@@ -4426,6 +5050,228 @@ fn request_scoped_collection_id(collection: &str, database_id: &str) -> Collecti
     }
 }
 
+fn applicable_operation_policies<'a>(
+    plan: &'a PolicyPlan,
+    operation: &PolicyOperation,
+) -> Vec<&'a CompiledOperationPolicy> {
+    let mut policies = Vec::new();
+    if let Some(policy) = plan.operations.get(operation) {
+        policies.push(policy);
+    }
+    if matches!(
+        operation,
+        PolicyOperation::Create | PolicyOperation::Update | PolicyOperation::Delete
+    ) {
+        if let Some(policy) = plan.operations.get(&PolicyOperation::Write) {
+            policies.push(policy);
+        }
+    }
+    policies
+}
+
+fn applicable_policy_envelopes<'a>(
+    plan: &'a PolicyPlan,
+    operation: &PolicyOperation,
+) -> Vec<&'a CompiledPolicyEnvelope> {
+    let mut envelopes = Vec::new();
+    if let Some(items) = plan.envelopes.get(operation) {
+        envelopes.extend(items);
+    }
+    if matches!(
+        operation,
+        PolicyOperation::Create | PolicyOperation::Update | PolicyOperation::Delete
+    ) {
+        if let Some(items) = plan.envelopes.get(&PolicyOperation::Write) {
+            envelopes.extend(items);
+        }
+    }
+    envelopes
+}
+
+fn policy_rule_label(rule: &CompiledPolicyRule) -> String {
+    rule.name.clone().unwrap_or_else(|| rule.rule_id.clone())
+}
+
+fn field_policy_rule_label(rule: &CompiledFieldPolicyRule) -> String {
+    rule.name.clone().unwrap_or_else(|| rule.rule_id.clone())
+}
+
+fn policy_envelope_label(envelope: &CompiledPolicyEnvelope) -> String {
+    envelope
+        .name
+        .clone()
+        .unwrap_or_else(|| envelope.envelope_id.clone())
+}
+
+fn policy_forbidden(
+    reason: &str,
+    collection: &CollectionId,
+    entity_id: Option<&EntityId>,
+    field_path: Option<&str>,
+    policy: Option<String>,
+    operation_index: Option<usize>,
+) -> AxonError {
+    let mut parts = vec![
+        format!("reason={reason}"),
+        format!("collection={collection}"),
+    ];
+    if let Some(entity_id) = entity_id {
+        parts.push(format!("entity_id={entity_id}"));
+    }
+    if let Some(field_path) = field_path {
+        parts.push(format!("field_path={field_path}"));
+    }
+    if let Some(policy) = policy {
+        parts.push(format!("policy={policy}"));
+    }
+    if let Some(operation_index) = operation_index {
+        parts.push(format!("operation_index={operation_index}"));
+    }
+    AxonError::Forbidden(format!("policy denied: {}", parts.join(" ")))
+}
+
+fn field_write_scope_touches_path(scope: FieldWriteScope<'_>, field_path: &str) -> bool {
+    match scope {
+        FieldWriteScope::PresentFields(data) => !policy_values_at_path(data, field_path).is_empty(),
+        FieldWriteScope::Patch(patch) => patch_touches_field_path(patch, field_path),
+    }
+}
+
+fn patch_touches_field_path(patch: &Value, field_path: &str) -> bool {
+    let segments: Vec<&str> = field_path
+        .split('.')
+        .map(|segment| segment.strip_suffix("[]").unwrap_or(segment))
+        .collect();
+    patch_touches_segments(patch, &segments)
+}
+
+fn patch_touches_segments(patch: &Value, segments: &[&str]) -> bool {
+    if segments.is_empty() {
+        return true;
+    }
+    let Some(object) = patch.as_object() else {
+        return true;
+    };
+    let Some(child) = object.get(segments[0]) else {
+        return false;
+    };
+    if segments.len() == 1 || child.is_null() {
+        return true;
+    }
+    patch_touches_segments(child, &segments[1..])
+}
+
+fn policy_comparison_matches(
+    comparison: &CompiledComparison,
+    ctx: PolicyPredicateContext<'_>,
+) -> bool {
+    let field_values;
+    let mut subject_values = Vec::new();
+    let values: Vec<&Value> = match &comparison.target {
+        PredicateTarget::Field(path) => {
+            field_values = policy_values_at_path(ctx.data, path);
+            field_values
+        }
+        PredicateTarget::Subject(name) => {
+            if let Some(value) = policy_subject_value(ctx.snapshot, name) {
+                subject_values.push(value);
+            }
+            subject_values
+        }
+    };
+
+    match &comparison.op {
+        CompiledCompareOp::Eq(expected) => values.contains(&expected),
+        CompiledCompareOp::Ne(expected) => !values.contains(&expected),
+        CompiledCompareOp::In(expected) => values
+            .iter()
+            .any(|value| expected.iter().any(|candidate| candidate == *value)),
+        CompiledCompareOp::NotNull(expected) => {
+            let matched = values.iter().any(|value| !value.is_null());
+            matched == *expected
+        }
+        CompiledCompareOp::IsNull(expected) => {
+            let matched = values.is_empty() || values.iter().all(|value| value.is_null());
+            matched == *expected
+        }
+        CompiledCompareOp::Gt(expected) => values.iter().any(|value| {
+            compare_values(Some(*value), Some(expected)) == std::cmp::Ordering::Greater
+        }),
+        CompiledCompareOp::Gte(expected) => values.iter().any(|value| {
+            let ord = compare_values(Some(*value), Some(expected));
+            ord == std::cmp::Ordering::Greater || ord == std::cmp::Ordering::Equal
+        }),
+        CompiledCompareOp::Lt(expected) => values
+            .iter()
+            .any(|value| compare_values(Some(*value), Some(expected)) == std::cmp::Ordering::Less),
+        CompiledCompareOp::Lte(expected) => values.iter().any(|value| {
+            let ord = compare_values(Some(*value), Some(expected));
+            ord == std::cmp::Ordering::Less || ord == std::cmp::Ordering::Equal
+        }),
+        CompiledCompareOp::ContainsSubject(subject) => {
+            let Some(subject) = policy_subject_value(ctx.snapshot, subject) else {
+                return false;
+            };
+            values
+                .iter()
+                .any(|value| policy_value_contains_subject(value, subject))
+        }
+        CompiledCompareOp::EqSubject(subject) => {
+            let Some(subject) = policy_subject_value(ctx.snapshot, subject) else {
+                return false;
+            };
+            values.contains(&subject)
+        }
+    }
+}
+
+fn policy_subject_value<'a>(
+    snapshot: &'a PolicyRequestSnapshot,
+    subject: &str,
+) -> Option<&'a Value> {
+    snapshot
+        .subject
+        .bindings
+        .get(subject)
+        .or_else(|| snapshot.subject.attributes.get(subject))
+}
+
+fn policy_value_contains_subject(value: &Value, subject: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(|item| item == subject),
+        other => other == subject,
+    }
+}
+
+fn policy_values_at_path<'a>(data: &'a Value, path: &str) -> Vec<&'a Value> {
+    let segments: Vec<&str> = path.split('.').collect();
+    let mut values = Vec::new();
+    collect_policy_values_at_path(data, &segments, &mut values);
+    values
+}
+
+fn collect_policy_values_at_path<'a>(
+    value: &'a Value,
+    segments: &[&str],
+    values: &mut Vec<&'a Value>,
+) {
+    let Some((segment, rest)) = segments.split_first() else {
+        values.push(value);
+        return;
+    };
+
+    if let Some(field) = segment.strip_suffix("[]") {
+        let Some(array) = value.get(field).and_then(Value::as_array) else {
+            return;
+        };
+        for item in array {
+            collect_policy_values_at_path(item, rest, values);
+        }
+    } else if let Some(next) = value.get(*segment) {
+        collect_policy_values_at_path(next, rest, values);
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::manual_string_new, clippy::unwrap_used)]
 mod tests {
@@ -4435,7 +5281,11 @@ mod tests {
     use axon_core::auth::Role;
     use axon_core::id::{CollectionId, EntityId, Namespace};
     use axon_schema::schema::{CollectionSchema, CollectionView, EsfDocument};
-    use axon_schema::{AccessControlPolicy, IdentityAttributeSource};
+    use axon_schema::{
+        AccessControlPolicy, FieldAccessPolicy, FieldPolicy, FieldPolicyRule,
+        IdentityAttributeSource, OperationPolicy, PolicyCompareOp, PolicyDecision, PolicyEnvelope,
+        PolicyPredicate, PolicyRule,
+    };
     use axon_storage::adapter::StorageAdapter;
     use axon_storage::memory::MemoryStorageAdapter;
     use serde_json::json;
@@ -4820,6 +5670,441 @@ mod tests {
             .expect("policy snapshot should be present");
         assert_eq!(snapshot.schema_version, Some(1));
         assert_eq!(snapshot.policy_version, Some(1));
+    }
+
+    fn policy_test_schema(
+        collection: &str,
+        mut access_control: AccessControlPolicy,
+    ) -> CollectionSchema {
+        access_control.identity = Some(AccessControlIdentity {
+            subject: HashMap::from([("user_id".into(), "subject.user_id".into())]),
+            attributes: HashMap::new(),
+            aliases: HashMap::new(),
+        });
+        CollectionSchema {
+            collection: CollectionId::new(collection),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "owner_id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "status": {"type": "string", "enum": ["draft", "submitted", "approved"]},
+                    "secret": {"type": "string"},
+                    "amount": {"type": "integer"}
+                }
+            })),
+            link_types: Default::default(),
+            access_control: Some(access_control),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        }
+    }
+
+    fn allow_all_policy() -> OperationPolicy {
+        OperationPolicy {
+            allow: vec![PolicyRule {
+                name: Some("allow-all".into()),
+                ..Default::default()
+            }],
+            deny: vec![],
+        }
+    }
+
+    fn owner_read_policy() -> OperationPolicy {
+        OperationPolicy {
+            allow: vec![PolicyRule {
+                name: Some("owners-read".into()),
+                when: None,
+                where_clause: Some(PolicyPredicate::Field {
+                    field: "owner_id".into(),
+                    op: PolicyCompareOp::EqSubject("user_id".into()),
+                }),
+            }],
+            deny: vec![],
+        }
+    }
+
+    fn denied_field_policy(field: &str) -> FieldPolicy {
+        FieldPolicy {
+            read: None,
+            write: Some(FieldAccessPolicy {
+                allow: vec![],
+                deny: vec![FieldPolicyRule {
+                    name: Some(format!("blocked-cannot-write-{field}")),
+                    when: Some(PolicyPredicate::Subject {
+                        subject: "user_id".into(),
+                        op: PolicyCompareOp::Eq(json!("blocked")),
+                    }),
+                    where_clause: None,
+                    redact_as: None,
+                }],
+            }),
+        }
+    }
+
+    fn assert_policy_forbidden(err: AxonError, reason: &str, field_path: Option<&str>) {
+        let text = err.to_string();
+        assert!(text.contains("forbidden:"), "unexpected error: {text}");
+        assert!(text.contains(reason), "missing reason {reason}: {text}");
+        if let Some(field_path) = field_path {
+            assert!(
+                text.contains(&format!("field_path={field_path}")),
+                "missing field path {field_path}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn policy_denies_hidden_row_mutation_without_audit() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_docs");
+        h.put_schema(policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                read: Some(owner_read_policy()),
+                update: Some(allow_all_policy()),
+                ..Default::default()
+            },
+        ))
+        .expect("policy schema");
+        h.create_entity(CreateEntityRequest {
+            collection: collection.clone(),
+            id: EntityId::new("doc-1"),
+            data: json!({"owner_id": "alice", "title": "private"}),
+            actor: Some("alice".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("seed owner row");
+        let audit_before = h.audit_log().entries().len();
+
+        let err = h
+            .update_entity(UpdateEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("doc-1"),
+                data: json!({"owner_id": "alice", "title": "changed"}),
+                expected_version: 1,
+                actor: Some("bob".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("hidden row update should be denied");
+
+        assert_policy_forbidden(err, "row_write_denied", None);
+        assert_eq!(h.audit_log().entries().len(), audit_before);
+        let stored = h
+            .get_entity(GetEntityRequest {
+                collection,
+                id: EntityId::new("doc-1"),
+            })
+            .expect("stored row")
+            .entity;
+        assert_eq!(stored.data["title"], "private");
+    }
+
+    #[test]
+    fn policy_denies_field_create_update_patch_and_delete_without_audit() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_secrets");
+        h.put_schema(policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                create: Some(allow_all_policy()),
+                read: Some(allow_all_policy()),
+                update: Some(allow_all_policy()),
+                delete: Some(allow_all_policy()),
+                fields: HashMap::from([("secret".into(), denied_field_policy("secret"))]),
+                ..Default::default()
+            },
+        ))
+        .expect("policy schema");
+
+        let create_err = h
+            .create_entity(CreateEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("doc-denied-create"),
+                data: json!({"title": "new", "secret": "classified"}),
+                actor: Some("blocked".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("denied create should fail");
+        assert_policy_forbidden(create_err, "field_write_denied", Some("secret"));
+        assert!(h
+            .storage_ref()
+            .get(&collection, &EntityId::new("doc-denied-create"))
+            .expect("storage read")
+            .is_none());
+
+        h.create_entity(CreateEntityRequest {
+            collection: collection.clone(),
+            id: EntityId::new("doc-1"),
+            data: json!({"title": "seed", "secret": "classified"}),
+            actor: Some("admin".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("seed secret row");
+        let audit_before = h.audit_log().entries().len();
+
+        let update_err = h
+            .update_entity(UpdateEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("doc-1"),
+                data: json!({"title": "updated", "secret": "changed"}),
+                expected_version: 1,
+                actor: Some("blocked".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("denied update should fail");
+        assert_policy_forbidden(update_err, "field_write_denied", Some("secret"));
+
+        let patch_err = h
+            .patch_entity(PatchEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("doc-1"),
+                patch: json!({"secret": null}),
+                expected_version: 1,
+                actor: Some("blocked".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("denied patch delete should fail");
+        assert_policy_forbidden(patch_err, "field_write_denied", Some("secret"));
+
+        let delete_err = h
+            .delete_entity(DeleteEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("doc-1"),
+                actor: Some("blocked".into()),
+                force: false,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("denied delete should fail");
+        assert_policy_forbidden(delete_err, "field_write_denied", Some("secret"));
+        assert_eq!(h.audit_log().entries().len(), audit_before);
+        let stored = h
+            .storage_ref()
+            .get(&collection, &EntityId::new("doc-1"))
+            .expect("storage read")
+            .expect("row should remain");
+        assert_eq!(stored.data["secret"], "classified");
+        assert_eq!(stored.version, 1);
+    }
+
+    #[test]
+    fn policy_denies_lifecycle_field_mutation() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_lifecycle");
+        let mut schema = policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                create: Some(allow_all_policy()),
+                read: Some(allow_all_policy()),
+                update: Some(allow_all_policy()),
+                fields: HashMap::from([("status".into(), denied_field_policy("status"))]),
+                ..Default::default()
+            },
+        );
+        schema.lifecycles.insert(
+            "status_flow".into(),
+            axon_schema::schema::LifecycleDef {
+                field: "status".into(),
+                initial: "draft".into(),
+                transitions: HashMap::from([("draft".into(), vec!["submitted".into()])]),
+            },
+        );
+        h.put_schema(schema).expect("policy lifecycle schema");
+        h.create_entity(CreateEntityRequest {
+            collection: collection.clone(),
+            id: EntityId::new("doc-1"),
+            data: json!({"title": "seed"}),
+            actor: Some("admin".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("seed lifecycle row");
+        let audit_before = h.audit_log().entries().len();
+
+        let err = h
+            .transition_lifecycle(TransitionLifecycleRequest {
+                collection_id: collection,
+                entity_id: EntityId::new("doc-1"),
+                lifecycle_name: "status_flow".into(),
+                target_state: "submitted".into(),
+                expected_version: 1,
+                actor: Some("blocked".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("denied lifecycle transition should fail");
+
+        assert_policy_forbidden(err, "field_write_denied", Some("status"));
+        assert_eq!(h.audit_log().entries().len(), audit_before);
+    }
+
+    #[test]
+    fn policy_denies_rollback_that_writes_denied_field() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_rollback");
+        h.put_schema(policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                create: Some(allow_all_policy()),
+                read: Some(allow_all_policy()),
+                update: Some(allow_all_policy()),
+                fields: HashMap::from([("secret".into(), denied_field_policy("secret"))]),
+                ..Default::default()
+            },
+        ))
+        .expect("policy schema");
+        h.create_entity(CreateEntityRequest {
+            collection: collection.clone(),
+            id: EntityId::new("doc-1"),
+            data: json!({"title": "seed", "secret": "v1"}),
+            actor: Some("admin".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("seed rollback row");
+        h.update_entity(UpdateEntityRequest {
+            collection: collection.clone(),
+            id: EntityId::new("doc-1"),
+            data: json!({"title": "seed", "secret": "v2"}),
+            expected_version: 1,
+            actor: Some("admin".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("update rollback row");
+        let audit_before = h.audit_log().entries().len();
+
+        let err = h
+            .rollback_entity(RollbackEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("doc-1"),
+                target: RollbackEntityTarget::Version(1),
+                expected_version: Some(2),
+                actor: Some("blocked".into()),
+                dry_run: false,
+            })
+            .expect_err("denied rollback should fail");
+
+        assert_policy_forbidden(err, "field_write_denied", Some("secret"));
+        assert_eq!(h.audit_log().entries().len(), audit_before);
+        let stored = h
+            .get_entity(GetEntityRequest {
+                collection,
+                id: EntityId::new("doc-1"),
+            })
+            .expect("stored row")
+            .entity;
+        assert_eq!(stored.data["secret"], "v2");
+    }
+
+    #[test]
+    fn policy_refuses_approval_routed_direct_commit() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_approval");
+        h.put_schema(policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                create: Some(allow_all_policy()),
+                read: Some(allow_all_policy()),
+                envelopes: HashMap::from([(
+                    PolicyOperation::Write,
+                    vec![PolicyEnvelope {
+                        name: Some("large-write-needs-approval".into()),
+                        when: Some(PolicyPredicate::Field {
+                            field: "amount".into(),
+                            op: PolicyCompareOp::Gt(json!(100)),
+                        }),
+                        decision: PolicyDecision::NeedsApproval,
+                        approval: None,
+                    }],
+                )]),
+                ..Default::default()
+            },
+        ))
+        .expect("approval schema");
+
+        let err = h
+            .create_entity(CreateEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("doc-1"),
+                data: json!({"title": "large", "amount": 1000}),
+                actor: Some("alice".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("approval-routed write should not commit directly");
+
+        assert_policy_forbidden(err, "needs_approval", None);
+        assert!(h
+            .storage_ref()
+            .get(&collection, &EntityId::new("doc-1"))
+            .expect("storage read")
+            .is_none());
+    }
+
+    #[test]
+    fn policy_denied_transaction_aborts_by_operation_index_without_audit() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_tx");
+        h.put_schema(policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                create: Some(allow_all_policy()),
+                read: Some(allow_all_policy()),
+                fields: HashMap::from([("secret".into(), denied_field_policy("secret"))]),
+                ..Default::default()
+            },
+        ))
+        .expect("transaction policy schema");
+        let audit_before = h.audit_log().entries().len();
+
+        let mut tx = crate::transaction::Transaction::new();
+        tx.create(Entity::new(
+            collection.clone(),
+            EntityId::new("allowed"),
+            json!({"title": "allowed"}),
+        ))
+        .expect("stage allowed create");
+        tx.create(Entity::new(
+            collection.clone(),
+            EntityId::new("denied"),
+            json!({"title": "denied", "secret": "classified"}),
+        ))
+        .expect("stage denied create");
+
+        let err = h
+            .commit_transaction(tx, Some("blocked".into()), None)
+            .expect_err("transaction should fail before commit");
+
+        let err_text = err.to_string();
+        assert!(
+            err_text.contains("operation_index=1"),
+            "missing denied operation index: {err_text}"
+        );
+        assert_policy_forbidden(err, "field_write_denied", Some("secret"));
+        assert!(ok_or_panic(
+            h.storage_ref().get(&collection, &EntityId::new("allowed")),
+            "reading allowed entity after denied transaction"
+        )
+        .is_none());
+        assert!(ok_or_panic(
+            h.storage_ref().get(&collection, &EntityId::new("denied")),
+            "reading denied entity after denied transaction"
+        )
+        .is_none());
+        assert_eq!(h.audit_log().entries().len(), audit_before);
     }
 
     fn cache_len(handler: &AxonHandler<MemoryStorageAdapter>) -> usize {
