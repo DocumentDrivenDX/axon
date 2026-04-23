@@ -235,10 +235,11 @@ export async function routeGraphqlAs(page: Page, actor: string, mock?: GraphqlMo
 			return;
 		}
 
+		const headers = route.request().headers();
 		await route.continue({
 			headers: {
-				...route.request().headers(),
-				'x-axon-actor': actor,
+				...headers,
+				'x-axon-actor': headers['x-axon-actor'] ?? actor,
 			},
 		});
 	});

@@ -10,6 +10,7 @@ const dbHref = $derived(
 	`${base}/tenants/${encodeURIComponent(data.tenant.db_name)}/databases/${encodeURIComponent(data.database.name)}`,
 );
 const collectionsHref = $derived(`${dbHref}/collections`);
+const policiesHref = $derived(`${dbHref}/policies`);
 const schemasHref = $derived(`${dbHref}/schemas`);
 const intentsHref = $derived(`${dbHref}/intents`);
 const auditHref = $derived(`${dbHref}/audit`);
@@ -33,6 +34,9 @@ function isActive(href: string): boolean {
 	<nav class="subnav">
 		<a class="subnav-link" class:active={isActive(collectionsHref)} href={collectionsHref}>
 			Collections
+		</a>
+		<a class="subnav-link" class:active={isActive(policiesHref)} href={policiesHref}>
+			Policies
 		</a>
 		<a class="subnav-link" class:active={isActive(schemasHref)} href={schemasHref}>Schemas</a>
 		<a class="subnav-link" class:active={isActive(intentsHref)} href={intentsHref}>Intents</a>

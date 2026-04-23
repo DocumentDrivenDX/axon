@@ -8,6 +8,7 @@ const scope = $derived(
 	`${encodeURIComponent(data.tenant.db_name)}/databases/${encodeURIComponent(data.database.name)}`,
 );
 const collectionsHref = $derived(`${base}/tenants/${scope}/collections`);
+const policiesHref = $derived(`${base}/tenants/${scope}/policies`);
 const schemasHref = $derived(`${base}/tenants/${scope}/schemas`);
 const intentsHref = $derived(`${base}/tenants/${scope}/intents`);
 const auditHref = $derived(`${base}/tenants/${scope}/audit`);
@@ -32,6 +33,10 @@ const graphqlHref = $derived(`${base}/tenants/${scope}/graphql`);
 		<a class="section-card" href={collectionsHref}>
 			<h3>Collections</h3>
 			<p class="muted">Browse entities, drop collections, create new ones.</p>
+		</a>
+		<a class="section-card" href={policiesHref}>
+			<h3>Policies</h3>
+			<p class="muted">Inspect effective policy, redactions, denials, and rule matches.</p>
 		</a>
 		<a class="section-card" href={schemasHref}>
 			<h3>Schemas</h3>

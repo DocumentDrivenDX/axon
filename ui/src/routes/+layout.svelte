@@ -59,6 +59,7 @@ const databaseHref = $derived(
 		: null,
 );
 const collectionsHref = $derived(databaseHref ? `${databaseHref}/collections` : null);
+const policiesHref = $derived(databaseHref ? `${databaseHref}/policies` : null);
 const schemasHref = $derived(databaseHref ? `${databaseHref}/schemas` : null);
 const auditHref = $derived(databaseHref ? `${databaseHref}/audit` : null);
 const graphqlHref = $derived(databaseHref ? `${databaseHref}/graphql` : null);
@@ -159,6 +160,9 @@ onMount(() => {
 							</a>
 							<a class="side-link" class:active={isActive(collectionsHref)} href={collectionsHref}>
 								Collections
+							</a>
+							<a class="side-link" class:active={isActive(policiesHref)} href={policiesHref}>
+								Policies
 							</a>
 							<a class="side-link" class:active={isActive(schemasHref)} href={schemasHref}>Schemas</a>
 							<a class="side-link" class:active={isActive(auditHref)} href={auditHref}>Audit Log</a>

@@ -54,6 +54,64 @@ export type CollectionDetail = {
 	updated_at_ns?: number | null;
 };
 
+export type EffectiveCollectionPolicy = {
+	collection: string;
+	canRead: boolean;
+	canCreate: boolean;
+	canUpdate: boolean;
+	canDelete: boolean;
+	redactedFields: string[];
+	deniedFields: string[];
+	policyVersion: number;
+};
+
+export type PolicyRuleMatch = {
+	ruleId: string;
+	name: string;
+	kind: string;
+	fieldPath?: string | null;
+};
+
+export type PolicyApprovalSummary = {
+	policyId?: string | null;
+	name: string;
+	decision: string;
+	role?: string | null;
+	reasonRequired?: boolean;
+	deadlineSeconds?: number | null;
+	separationOfDuties?: boolean;
+};
+
+export type ExplainPolicyInput = {
+	operation: string;
+	collection?: string;
+	entityId?: string;
+	expectedVersion?: number;
+	data?: unknown;
+	patch?: unknown;
+	lifecycleName?: string;
+	targetState?: string;
+	toVersion?: number;
+	operations?: Record<string, unknown>[];
+};
+
+export type PolicyExplanation = {
+	operation: string;
+	collection?: string | null;
+	entityId?: string | null;
+	operationIndex?: number | null;
+	decision: string;
+	reason: string;
+	policyVersion: number;
+	ruleIds: string[];
+	policyIds: string[];
+	fieldPaths: string[];
+	deniedFields: string[];
+	rules: PolicyRuleMatch[];
+	approval?: PolicyApprovalSummary | null;
+	operations: PolicyExplanation[];
+};
+
 export type EntityRecord = {
 	collection: string;
 	id: string;
@@ -138,6 +196,51 @@ type GraphQLCollectionMeta = {
 	entityCount: number;
 	schemaVersion: number | null;
 	schema?: CollectionSchema | null;
+};
+
+type GraphQLEffectivePolicy = {
+	collection: string;
+	canRead: boolean;
+	canCreate: boolean;
+	canUpdate: boolean;
+	canDelete: boolean;
+	redactedFields: string[];
+	deniedFields: string[];
+	policyVersion: number;
+};
+
+type GraphQLPolicyRuleMatch = {
+	ruleId: string;
+	name: string;
+	kind: string;
+	fieldPath?: string | null;
+};
+
+type GraphQLPolicyApprovalSummary = {
+	policyId?: string | null;
+	name: string;
+	decision: string;
+	role?: string | null;
+	reasonRequired?: boolean;
+	deadlineSeconds?: number | null;
+	separationOfDuties?: boolean;
+};
+
+type GraphQLPolicyExplanation = {
+	operation: string;
+	collection?: string | null;
+	entityId?: string | null;
+	operationIndex?: number | null;
+	decision: string;
+	reason: string;
+	policyVersion: number;
+	ruleIds: string[];
+	policyIds: string[];
+	fieldPaths: string[];
+	deniedFields: string[];
+	rules: GraphQLPolicyRuleMatch[];
+	approval?: GraphQLPolicyApprovalSummary | null;
+	operations?: GraphQLPolicyExplanation[];
 };
 
 type GraphQLEntity = {
@@ -511,14 +614,21 @@ async function request<T>(path: string, init?: RequestInit, scope?: Scope): Prom
 	return payload as T;
 }
 
+type GraphqlRequestOptions = {
+	headers?: HeadersInit;
+};
+
 async function graphqlRequest<T>(
 	scope: ScopedTenantDatabase,
 	query: string,
 	variables: Record<string, unknown> = {},
+	options: GraphqlRequestOptions = {},
 ): Promise<T> {
+	const headers = new Headers(options.headers);
+	headers.set('Content-Type', 'application/json');
 	const response = await fetch(scopedPath('/graphql', scope), {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers,
 		body: JSON.stringify({ query, variables }),
 	});
 	const text = await response.text();
@@ -550,10 +660,13 @@ async function graphqlRawRequest<T>(
 	scope: ScopedTenantDatabase,
 	query: string,
 	variables: Record<string, unknown> = {},
+	options: GraphqlRequestOptions = {},
 ): Promise<GraphQLResult<T>> {
+	const headers = new Headers(options.headers);
+	headers.set('Content-Type', 'application/json');
 	const response = await fetch(scopedPath('/graphql', scope), {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers,
 		body: JSON.stringify({ query, variables }),
 	});
 	const text = await response.text();
@@ -613,6 +726,62 @@ function collectionDetailFromGraphql(collection: GraphQLCollectionMeta): Collect
 		name: collection.name,
 		entity_count: collection.entityCount,
 		schema: collection.schema ?? null,
+	};
+}
+
+function effectivePolicyFromGraphql(policy: GraphQLEffectivePolicy): EffectiveCollectionPolicy {
+	return {
+		collection: policy.collection,
+		canRead: policy.canRead,
+		canCreate: policy.canCreate,
+		canUpdate: policy.canUpdate,
+		canDelete: policy.canDelete,
+		redactedFields: policy.redactedFields ?? [],
+		deniedFields: policy.deniedFields ?? [],
+		policyVersion: policy.policyVersion,
+	};
+}
+
+function policyRuleMatchFromGraphql(rule: GraphQLPolicyRuleMatch): PolicyRuleMatch {
+	return {
+		ruleId: rule.ruleId,
+		name: rule.name,
+		kind: rule.kind,
+		fieldPath: rule.fieldPath ?? null,
+	};
+}
+
+function policyApprovalSummaryFromGraphql(
+	approval: GraphQLPolicyApprovalSummary | null | undefined,
+): PolicyApprovalSummary | null {
+	if (!approval) return null;
+	return {
+		policyId: approval.policyId ?? null,
+		name: approval.name,
+		decision: approval.decision,
+		role: approval.role ?? null,
+		reasonRequired: approval.reasonRequired ?? false,
+		deadlineSeconds: approval.deadlineSeconds ?? null,
+		separationOfDuties: approval.separationOfDuties ?? false,
+	};
+}
+
+function policyExplanationFromGraphql(explanation: GraphQLPolicyExplanation): PolicyExplanation {
+	return {
+		operation: explanation.operation,
+		collection: explanation.collection ?? null,
+		entityId: explanation.entityId ?? null,
+		operationIndex: explanation.operationIndex ?? null,
+		decision: explanation.decision,
+		reason: explanation.reason,
+		policyVersion: explanation.policyVersion,
+		ruleIds: explanation.ruleIds ?? [],
+		policyIds: explanation.policyIds ?? [],
+		fieldPaths: explanation.fieldPaths ?? [],
+		deniedFields: explanation.deniedFields ?? [],
+		rules: (explanation.rules ?? []).map(policyRuleMatchFromGraphql),
+		approval: policyApprovalSummaryFromGraphql(explanation.approval),
+		operations: (explanation.operations ?? []).map(policyExplanationFromGraphql),
 	};
 }
 
@@ -784,6 +953,7 @@ export async function fetchEntities(
 	collection: string,
 	options: QueryEntitiesInput = {},
 	scope?: Scope,
+	graphqlOptions: GraphqlRequestOptions = {},
 ): Promise<QueryEntitiesResult> {
 	if (scope) {
 		const data = await graphqlRequest<{ entities: GraphQLEntityConnection }>(
@@ -811,6 +981,7 @@ export async function fetchEntities(
 				limit: options.limit ?? 50,
 				after: options.afterId ?? null,
 			},
+			graphqlOptions,
 		);
 
 		return {
@@ -831,6 +1002,110 @@ export async function fetchEntities(
 		},
 		scope,
 	);
+}
+
+export async function fetchEffectivePolicy(
+	collection: string,
+	scope: { tenant: string; database: string },
+	options: {
+		entityId?: string | null;
+		actor?: string | null;
+	} = {},
+): Promise<EffectiveCollectionPolicy> {
+	const data = await graphqlRequest<{ effectivePolicy: GraphQLEffectivePolicy }>(
+		scope,
+		`query AxonUiEffectivePolicy($collection: String!, $entityId: ID) {
+			effectivePolicy(collection: $collection, entityId: $entityId) {
+				collection
+				canRead
+				canCreate
+				canUpdate
+				canDelete
+				redactedFields
+				deniedFields
+				policyVersion
+			}
+		}`,
+		{
+			collection,
+			entityId: options.entityId ?? null,
+		},
+		options.actor ? { headers: { 'x-axon-actor': options.actor } } : {},
+	);
+
+	return effectivePolicyFromGraphql(data.effectivePolicy);
+}
+
+export async function explainPolicy(
+	input: ExplainPolicyInput,
+	scope: { tenant: string; database: string },
+	options: { actor?: string | null } = {},
+): Promise<PolicyExplanation> {
+	const data = await graphqlRequest<{ explainPolicy: GraphQLPolicyExplanation }>(
+		scope,
+		`query AxonUiExplainPolicy($input: ExplainPolicyInput!) {
+			explainPolicy(input: $input) {
+				operation
+				collection
+				entityId
+				operationIndex
+				decision
+				reason
+				policyVersion
+				ruleIds
+				policyIds
+				fieldPaths
+				deniedFields
+				rules {
+					ruleId
+					name
+					kind
+					fieldPath
+				}
+				approval {
+					policyId
+					name
+					decision
+					role
+					reasonRequired
+					deadlineSeconds
+					separationOfDuties
+				}
+				operations {
+					operation
+					collection
+					entityId
+					operationIndex
+					decision
+					reason
+					policyVersion
+					ruleIds
+					policyIds
+					fieldPaths
+					deniedFields
+					rules {
+						ruleId
+						name
+						kind
+						fieldPath
+					}
+					approval {
+						policyId
+						name
+						decision
+						role
+						reasonRequired
+						deadlineSeconds
+						separationOfDuties
+					}
+				}
+			}
+		}`,
+		{ input },
+		options.actor ? { headers: { 'x-axon-actor': options.actor } } : {},
+	);
+
+	return policyExplanationFromGraphql(data.explainPolicy);
 }
 
 export async function fetchEntity(
@@ -2423,10 +2698,13 @@ export async function executeGraphql(
 	query: string,
 	variables: Record<string, unknown> | undefined,
 	scope: { tenant: string; database: string },
+	options: GraphqlRequestOptions = {},
 ): Promise<GraphQLResponse> {
+	const headers = new Headers(options.headers);
+	headers.set('Content-Type', 'application/json');
 	const response = await fetch(scopedPath('/graphql', scope), {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers,
 		body: JSON.stringify({ query, variables: variables ?? {} }),
 	});
 	const text = await response.text();
