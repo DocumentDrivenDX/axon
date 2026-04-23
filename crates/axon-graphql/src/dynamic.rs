@@ -4236,7 +4236,15 @@ async fn mutation_intent_resolver<S: StorageAdapter + 'static>(
         .get_mutation_intent(&scope.tenant_id, &scope.database_id, &intent_id)
         .map_err(axon_error_to_gql)?;
 
-    Ok(intent.map(|intent| json_to_field_value(mutation_intent_json(&intent))))
+    match intent {
+        Some(mut intent) => {
+            guard
+                .redact_mutation_intent_for_read(&mut intent, &caller, None)
+                .map_err(axon_error_to_gql)?;
+            Ok(Some(json_to_field_value(mutation_intent_json(&intent))))
+        }
+        None => Ok(None),
+    }
 }
 
 async fn pending_mutation_intents_resolver<S: StorageAdapter + 'static>(
@@ -4288,8 +4296,13 @@ async fn pending_mutation_intents_resolver<S: StorageAdapter + 'static>(
     }
     sort_mutation_intents(&mut intents);
     let total_count = intents.len();
-    let (page, has_previous_page, has_next_page) =
+    let (mut page, has_previous_page, has_next_page) =
         paginate_mutation_intents(intents, after.as_deref(), limit)?;
+    for intent in &mut page {
+        guard
+            .redact_mutation_intent_for_read(intent, &caller, None)
+            .map_err(axon_error_to_gql)?;
+    }
 
     Ok(Some(mutation_intent_connection_value(
         &page,

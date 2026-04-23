@@ -35,6 +35,7 @@ use axon_storage::adapter::{
     extract_index_value, extract_index_values, resolve_field_path, StorageAdapter,
 };
 
+use crate::intent::{MutationIntent, MutationOperationKind};
 use crate::policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
@@ -76,6 +77,21 @@ const POLICY_POST_FILTER_COST_LIMIT: usize = 128;
 enum FieldWriteScope<'a> {
     PresentFields(&'a Value),
     Patch(&'a Value),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct IntentReadContext<'a> {
+    caller: Option<&'a CallerIdentity>,
+    attribution: Option<&'a AuditAttribution>,
+}
+
+struct IntentEntityRedaction<'a> {
+    collection: &'a CollectionId,
+    id: &'a EntityId,
+    before: Option<&'a Value>,
+    after: Option<&'a Value>,
+    operation_data: Option<&'a mut Value>,
+    diff: Option<&'a mut Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -4120,12 +4136,326 @@ impl<S: StorageAdapter> AxonHandler<S> {
         })
     }
 
+    pub fn redact_mutation_intent_for_read(
+        &self,
+        intent: &mut MutationIntent,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<(), AxonError> {
+        self.redact_mutation_intent_for_read_with_context(
+            intent,
+            Some(caller),
+            attribution.as_ref(),
+        )
+    }
+
+    fn redact_mutation_intent_for_read_with_context(
+        &self,
+        intent: &mut MutationIntent,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<(), AxonError> {
+        let operation_kind = intent.operation.operation_kind.clone();
+        if let Some(operation) = intent.operation.canonical_operation.as_mut() {
+            self.redact_intent_operation_for_read(
+                &operation_kind,
+                operation,
+                Some(&mut intent.review_summary.diff),
+                caller,
+                attribution,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn redact_intent_audit_payload_for_read(
+        &self,
+        entry: &mut AuditEntry,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<(), AxonError> {
+        if !matches!(
+            entry.mutation,
+            MutationType::IntentPreview
+                | MutationType::IntentApprove
+                | MutationType::IntentReject
+                | MutationType::IntentExpire
+        ) {
+            return Ok(());
+        }
+
+        let Some(data_after) = entry.data_after.as_mut() else {
+            return Ok(());
+        };
+        let Ok(mut intent) = serde_json::from_value::<MutationIntent>(data_after.clone()) else {
+            return Ok(());
+        };
+        self.redact_mutation_intent_for_read_with_context(&mut intent, caller, attribution)?;
+        *data_after = serde_json::to_value(intent).map_err(|err| {
+            AxonError::InvalidOperation(format!("failed to serialize redacted intent: {err}"))
+        })?;
+        Ok(())
+    }
+
+    fn redact_intent_operation_for_read(
+        &self,
+        operation_kind: &MutationOperationKind,
+        operation: &mut Value,
+        diff: Option<&mut Value>,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<(), AxonError> {
+        if matches!(operation_kind, MutationOperationKind::Transaction) {
+            self.redact_transaction_intent_operation_for_read(
+                operation,
+                diff,
+                caller,
+                attribution,
+            )?;
+            return Ok(());
+        }
+
+        let Some((collection, id)) = intent_operation_entity_ref(operation) else {
+            return Ok(());
+        };
+        let read_context = IntentReadContext {
+            caller,
+            attribution,
+        };
+        match operation_kind {
+            MutationOperationKind::CreateEntity => {
+                let after = operation.get("data").cloned();
+                self.redact_entity_intent_values_for_read(
+                    IntentEntityRedaction {
+                        collection: &collection,
+                        id: &id,
+                        before: None,
+                        after: after.as_ref(),
+                        operation_data: operation.get_mut("data"),
+                        diff,
+                    },
+                    read_context,
+                )?;
+            }
+            MutationOperationKind::UpdateEntity => {
+                let before = self
+                    .storage
+                    .get(&collection, &id)?
+                    .map(|entity| entity.data);
+                let after = operation.get("data").cloned();
+                self.redact_entity_intent_values_for_read(
+                    IntentEntityRedaction {
+                        collection: &collection,
+                        id: &id,
+                        before: before.as_ref(),
+                        after: after.as_ref(),
+                        operation_data: operation.get_mut("data"),
+                        diff,
+                    },
+                    read_context,
+                )?;
+            }
+            MutationOperationKind::PatchEntity => {
+                let before = self
+                    .storage
+                    .get(&collection, &id)?
+                    .map(|entity| entity.data);
+                let after = before.as_ref().map(|before| {
+                    let mut after = before.clone();
+                    if let Some(patch) = operation.get("patch") {
+                        json_merge_patch(&mut after, patch);
+                    }
+                    after
+                });
+                self.redact_entity_intent_values_for_read(
+                    IntentEntityRedaction {
+                        collection: &collection,
+                        id: &id,
+                        before: before.as_ref(),
+                        after: after.as_ref(),
+                        operation_data: operation.get_mut("patch"),
+                        diff,
+                    },
+                    read_context,
+                )?;
+            }
+            MutationOperationKind::DeleteEntity => {
+                let before = self
+                    .storage
+                    .get(&collection, &id)?
+                    .map(|entity| entity.data);
+                self.redact_entity_intent_values_for_read(
+                    IntentEntityRedaction {
+                        collection: &collection,
+                        id: &id,
+                        before: before.as_ref(),
+                        after: None,
+                        operation_data: None,
+                        diff,
+                    },
+                    read_context,
+                )?;
+            }
+            MutationOperationKind::Transition => {
+                let before = self
+                    .storage
+                    .get(&collection, &id)?
+                    .map(|entity| entity.data);
+                let after = before.as_ref().map(|before| {
+                    let mut after = before.clone();
+                    if let (Some(lifecycle_name), Some(target_state)) = (
+                        operation.get("lifecycle_name").and_then(Value::as_str),
+                        operation.get("target_state").cloned(),
+                    ) {
+                        if let Ok(Some(schema)) = self.storage.get_schema(&collection) {
+                            if let Some(lifecycle) = schema.lifecycles.get(lifecycle_name) {
+                                after[&lifecycle.field] = target_state;
+                            }
+                        }
+                    }
+                    after
+                });
+                self.redact_entity_intent_values_for_read(
+                    IntentEntityRedaction {
+                        collection: &collection,
+                        id: &id,
+                        before: before.as_ref(),
+                        after: after.as_ref(),
+                        operation_data: None,
+                        diff,
+                    },
+                    read_context,
+                )?;
+            }
+            MutationOperationKind::Rollback | MutationOperationKind::Revert => {
+                self.redact_entity_intent_values_for_read(
+                    IntentEntityRedaction {
+                        collection: &collection,
+                        id: &id,
+                        before: None,
+                        after: None,
+                        operation_data: operation.get_mut("data"),
+                        diff,
+                    },
+                    read_context,
+                )?;
+            }
+            MutationOperationKind::CreateLink | MutationOperationKind::DeleteLink => {}
+            MutationOperationKind::Transaction => {}
+        }
+        Ok(())
+    }
+
+    fn redact_transaction_intent_operation_for_read(
+        &self,
+        operation: &mut Value,
+        diff: Option<&mut Value>,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<(), AxonError> {
+        let Some(operations) = operation
+            .get_mut("operations")
+            .and_then(Value::as_array_mut)
+        else {
+            return Ok(());
+        };
+        let mut diff = diff;
+        for (index, child) in operations.iter_mut().enumerate() {
+            let Some(child_kind) = transaction_child_operation_kind(child) else {
+                continue;
+            };
+            let child_diff = diff
+                .as_deref_mut()
+                .and_then(|diff| transaction_child_diff_mut(diff, index));
+            self.redact_intent_operation_for_read(
+                &child_kind,
+                child,
+                child_diff,
+                caller,
+                attribution,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn redact_entity_intent_values_for_read(
+        &self,
+        input: IntentEntityRedaction<'_>,
+        read_context: IntentReadContext<'_>,
+    ) -> Result<(), AxonError> {
+        let before_redactions = input
+            .before
+            .map(|data| {
+                self.field_read_redactions_for_data(
+                    input.collection,
+                    input.id,
+                    data,
+                    read_context.caller,
+                    read_context.attribution,
+                )
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let after_redactions = input
+            .after
+            .map(|data| {
+                self.field_read_redactions_for_data(
+                    input.collection,
+                    input.id,
+                    data,
+                    read_context.caller,
+                    read_context.attribution,
+                )
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        if let Some(operation_data) = input.operation_data {
+            apply_existing_field_redactions(operation_data, &after_redactions);
+        }
+        if let Some(diff) = input.diff {
+            apply_diff_value_redactions(diff, &before_redactions);
+            apply_diff_value_redactions(diff, &after_redactions);
+        }
+        Ok(())
+    }
+
+    fn field_read_redactions_for_data(
+        &self,
+        collection: &CollectionId,
+        id: &EntityId,
+        data: &Value,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<Vec<(String, Value)>, AxonError> {
+        let schema = self.storage.get_schema(collection)?;
+        let policy_snapshot = self.policy_snapshot_for_request(
+            collection,
+            schema.as_ref(),
+            None,
+            caller,
+            attribution,
+        )?;
+        let compiled_policy = match schema.as_ref() {
+            Some(schema) if policy_snapshot.is_some() => {
+                self.compile_policy_plan_for_schema(schema)?
+            }
+            _ => None,
+        };
+        let (Some(plan), Some(snapshot)) = (&compiled_policy, &policy_snapshot) else {
+            return Ok(Vec::new());
+        };
+        let policy_data = policy_data_with_entity_id(id, data);
+        self.field_read_redactions(plan, snapshot, &policy_data)
+    }
+
     fn redact_audit_entry_for_read_with_context(
         &self,
         entry: &mut AuditEntry,
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<(), AxonError> {
+        self.redact_intent_audit_payload_for_read(entry, caller, attribution)?;
         let schema = self.storage.get_schema(&entry.collection)?;
         let policy_snapshot = self.policy_snapshot_for_request(
             &entry.collection,
@@ -7366,9 +7696,20 @@ fn apply_field_redactions(data: &mut Value, redactions: &[(String, Value)]) {
     }
 }
 
+fn apply_existing_field_redactions(data: &mut Value, redactions: &[(String, Value)]) {
+    for (field_path, redaction) in redactions {
+        redact_existing_json_path(data, field_path, redaction);
+    }
+}
+
 fn redact_json_path(data: &mut Value, path: &str, redaction: &Value) {
     let segments: Vec<&str> = path.split('.').collect();
     redact_json_segments(data, &segments, redaction);
+}
+
+fn redact_existing_json_path(data: &mut Value, path: &str, redaction: &Value) {
+    let segments: Vec<&str> = path.split('.').collect();
+    redact_existing_json_segments(data, &segments, redaction);
 }
 
 fn redact_json_segments(data: &mut Value, segments: &[&str], redaction: &Value) {
@@ -7413,6 +7754,51 @@ fn redact_json_segments(data: &mut Value, segments: &[&str], redaction: &Value) 
     redact_json_segments(child, rest, redaction);
 }
 
+fn redact_existing_json_segments(data: &mut Value, segments: &[&str], redaction: &Value) {
+    let Some((segment, rest)) = segments.split_first() else {
+        return;
+    };
+
+    if let Some(array) = data.as_array_mut() {
+        for item in array {
+            redact_existing_json_segments(item, segments, redaction);
+        }
+        return;
+    }
+
+    if let Some(field) = segment.strip_suffix("[]") {
+        let Some(object) = data.as_object_mut() else {
+            return;
+        };
+        let Some(value) = object.get_mut(field) else {
+            return;
+        };
+        if rest.is_empty() {
+            *value = redaction.clone();
+            return;
+        }
+        let Some(array) = value.as_array_mut() else {
+            return;
+        };
+        for item in array {
+            redact_existing_json_segments(item, rest, redaction);
+        }
+        return;
+    }
+
+    let Some(object) = data.as_object_mut() else {
+        return;
+    };
+    let Some(value) = object.get_mut(*segment) else {
+        return;
+    };
+    if rest.is_empty() {
+        *value = redaction.clone();
+        return;
+    }
+    redact_existing_json_segments(value, rest, redaction);
+}
+
 fn apply_diff_redactions(diff: &mut HashMap<String, FieldDiff>, redactions: &[(String, Value)]) {
     for (field_path, redaction) in redactions {
         let mut segments = field_path.split('.');
@@ -7436,6 +7822,56 @@ fn apply_diff_redactions(diff: &mut HashMap<String, FieldDiff>, redactions: &[(S
             }
         }
     }
+}
+
+fn apply_diff_value_redactions(diff: &mut Value, redactions: &[(String, Value)]) {
+    if redactions.is_empty() {
+        return;
+    }
+    let Ok(mut diff_map) = serde_json::from_value::<HashMap<String, FieldDiff>>(diff.clone())
+    else {
+        return;
+    };
+    apply_diff_redactions(&mut diff_map, redactions);
+    if let Ok(redacted) = serde_json::to_value(diff_map) {
+        *diff = redacted;
+    }
+}
+
+fn intent_operation_entity_ref(operation: &Value) -> Option<(CollectionId, EntityId)> {
+    Some((
+        CollectionId::new(operation.get("collection")?.as_str()?),
+        EntityId::new(operation.get("id")?.as_str()?),
+    ))
+}
+
+fn transaction_child_operation_kind(operation: &Value) -> Option<MutationOperationKind> {
+    match operation.get("op")?.as_str()? {
+        "create_entity" => Some(MutationOperationKind::CreateEntity),
+        "update_entity" => Some(MutationOperationKind::UpdateEntity),
+        "delete_entity" => Some(MutationOperationKind::DeleteEntity),
+        "patch_entity" => Some(MutationOperationKind::PatchEntity),
+        "transition" => Some(MutationOperationKind::Transition),
+        "rollback" => Some(MutationOperationKind::Rollback),
+        "revert" => Some(MutationOperationKind::Revert),
+        "create_link" => Some(MutationOperationKind::CreateLink),
+        "delete_link" => Some(MutationOperationKind::DeleteLink),
+        "transaction" => Some(MutationOperationKind::Transaction),
+        _ => None,
+    }
+}
+
+fn transaction_child_diff_mut(diff: &mut Value, operation_index: usize) -> Option<&mut Value> {
+    diff.as_array_mut()?
+        .iter_mut()
+        .find(|entry| {
+            entry
+                .get("operationIndex")
+                .and_then(Value::as_u64)
+                .map(|index| index as usize == operation_index)
+                .unwrap_or(false)
+        })?
+        .get_mut("diff")
 }
 
 fn policy_static_predicate_matches(
@@ -7996,6 +8432,8 @@ mod tests {
     use axon_storage::adapter::StorageAdapter;
     use axon_storage::memory::MemoryStorageAdapter;
     use serde_json::json;
+
+    use crate::test_fixtures::seed_procurement_fixture;
 
     fn handler() -> AxonHandler<MemoryStorageAdapter> {
         AxonHandler::new(MemoryStorageAdapter::default())
@@ -9386,6 +9824,272 @@ mod tests {
         let audit_json = serde_json::to_string(&audit.entries).expect("serialize audit");
         assert!(!audit_json.contains("classified"));
         assert!(!audit_json.contains("changed-secret"));
+    }
+
+    #[test]
+    fn scn_017_intent_audit_reads_redact_commercial_fields_for_contractors() {
+        let mut h = handler();
+        let fixture = seed_procurement_fixture(&mut h).expect("SCN-017 fixture should seed");
+        let invoices = fixture.collections.invoices.clone();
+        let invoice_id = fixture.ids.under_threshold_invoice.clone();
+        let operator = CallerIdentity::new(fixture.subjects.operator, Role::Read);
+        let contractor = CallerIdentity::new(fixture.subjects.contractor, Role::Read);
+
+        let operator_invoice = h
+            .get_entity_with_caller(
+                GetEntityRequest {
+                    collection: invoices.clone(),
+                    id: invoice_id.clone(),
+                },
+                &operator,
+                None,
+            )
+            .expect("operator should read invoice");
+        assert_eq!(operator_invoice.entity.data["amount_cents"], 750_000);
+        assert_eq!(
+            operator_invoice.entity.data["commercial_terms"],
+            "net-30 standard procurement terms"
+        );
+
+        let contractor_invoice = h
+            .get_entity_with_caller(
+                GetEntityRequest {
+                    collection: invoices.clone(),
+                    id: invoice_id.clone(),
+                },
+                &contractor,
+                None,
+            )
+            .expect("contractor should read assigned invoice");
+        assert_eq!(contractor_invoice.entity.data["amount_cents"], Value::Null);
+        assert_eq!(
+            contractor_invoice.entity.data["commercial_terms"],
+            Value::Null
+        );
+
+        let before = h
+            .storage_ref()
+            .get(&invoices, &invoice_id)
+            .expect("read invoice before")
+            .expect("invoice exists");
+        let mut after_data = before.data.clone();
+        after_data["amount_cents"] = json!(1_200_000);
+        after_data["commercial_terms"] = json!("net-7 confidential override terms");
+        let mut after = before.clone();
+        after.data = after_data.clone();
+
+        let mut tx = crate::Transaction::new();
+        tx.update(after, before.version, Some(before.data.clone()))
+            .expect("stage invoice update");
+        let operation = crate::canonical_staged_transaction_operation(&tx);
+        let diff = serde_json::to_value(compute_diff(&before.data, &after_data))
+            .expect("diff should serialize");
+        let scope = crate::MutationIntentScopeBinding {
+            tenant_id: "default".into(),
+            database_id: "default".into(),
+        };
+        let subject = crate::MutationIntentSubjectBinding {
+            user_id: Some(fixture.subjects.finance_agent.into()),
+            agent_id: Some("finance-agent-tool".into()),
+            tenant_role: Some("finance_agent".into()),
+            credential_id: Some("cred-finance-agent".into()),
+            grant_version: Some(1),
+            ..Default::default()
+        };
+        let pre_images = vec![crate::PreImageBinding::Entity {
+            collection: invoices.clone(),
+            id: invoice_id.clone(),
+            version: before.version,
+        }];
+        let intent_id = "mint_scn_017_invoice_commercial_redaction";
+        let intent = crate::MutationIntent {
+            intent_id: intent_id.into(),
+            scope: scope.clone(),
+            subject: subject.clone(),
+            schema_version: 1,
+            policy_version: 1,
+            operation: operation.clone(),
+            pre_images: pre_images.clone(),
+            decision: crate::MutationIntentDecision::NeedsApproval,
+            approval_state: crate::ApprovalState::Pending,
+            approval_route: Some(crate::MutationApprovalRoute {
+                role: Some("finance_approver".into()),
+                reason_required: true,
+                deadline_seconds: Some(3600),
+                separation_of_duties: true,
+            }),
+            expires_at: 9_000_000_000_000_000_000,
+            review_summary: crate::MutationReviewSummary {
+                title: Some("invoice commercial update".into()),
+                summary: "needs_approval".into(),
+                risk: Some("needs_approval".into()),
+                affected_records: pre_images,
+                affected_fields: vec!["amount_cents".into(), "commercial_terms".into()],
+                diff: json!([{ "operationIndex": 0, "diff": diff }]),
+                policy_explanation: vec!["require-approval-large-invoice-update".into()],
+            },
+        };
+        let svc = crate::MutationIntentLifecycleService::new(
+            crate::MutationIntentTokenSigner::new(b"redaction-test-secret"),
+        );
+        let token = svc
+            .create_preview_record(h.storage_mut(), intent)
+            .expect("preview record should persist")
+            .intent_token
+            .expect("needs-approval intent should issue a token");
+        {
+            let (storage, audit) = h.storage_and_audit_mut();
+            svc.approve_with_audit(
+                storage,
+                audit,
+                &scope,
+                intent_id,
+                crate::MutationIntentReviewMetadata {
+                    actor: Some(fixture.subjects.finance_approver.into()),
+                    reason: Some("approved commercial update".into()),
+                },
+                1,
+            )
+            .expect("intent should approve");
+        }
+        {
+            let (storage, audit) = h.storage_and_audit_mut();
+            svc.commit_transaction_intent(
+                storage,
+                audit,
+                crate::MutationIntentTransactionCommitRequest {
+                    scope: scope.clone(),
+                    token,
+                    transaction: tx,
+                    canonical_operation: Some(operation.clone()),
+                    current: crate::MutationIntentCommitValidationContext {
+                        subject,
+                        schema_version: 1,
+                        policy_version: 1,
+                        operation_hash: operation.operation_hash.clone(),
+                        caller_authorized: true,
+                    },
+                    now_ns: 2,
+                    actor: Some(fixture.subjects.finance_agent.into()),
+                    attribution: None,
+                },
+            )
+            .expect("intent transaction should commit");
+        }
+
+        let operator_detail = h
+            .storage_ref()
+            .get_mutation_intent(&scope.tenant_id, &scope.database_id, intent_id)
+            .expect("intent lookup should succeed")
+            .expect("intent should exist");
+        let mut contractor_detail = operator_detail.clone();
+        h.redact_mutation_intent_for_read(&mut contractor_detail, &contractor, None)
+            .expect("intent detail redaction should succeed");
+        assert_eq!(
+            operator_detail.review_summary.diff[0]["diff"]["amount_cents"]["before"],
+            750_000
+        );
+        assert_eq!(
+            operator_detail.review_summary.diff[0]["diff"]["commercial_terms"]["after"],
+            "net-7 confidential override terms"
+        );
+        assert_eq!(
+            contractor_detail.review_summary.diff[0]["diff"]["amount_cents"]["before"],
+            Value::Null
+        );
+        assert_eq!(
+            contractor_detail.review_summary.diff[0]["diff"]["commercial_terms"]["after"],
+            Value::Null
+        );
+        let contractor_operation = contractor_detail
+            .operation
+            .canonical_operation
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            contractor_operation["operations"][0]["data"]["amount_cents"],
+            Value::Null
+        );
+        assert_eq!(
+            contractor_operation["operations"][0]["data"]["commercial_terms"],
+            Value::Null
+        );
+
+        let operator_audit = h
+            .query_audit_with_caller(
+                QueryAuditRequest {
+                    intent_id: Some(intent_id.into()),
+                    ..Default::default()
+                },
+                &operator,
+                None,
+            )
+            .expect("operator lineage audit should query");
+        let operator_update = operator_audit
+            .entries
+            .iter()
+            .find(|entry| entry.mutation == MutationType::EntityUpdate)
+            .expect("operator should see committed update audit");
+        assert_eq!(
+            operator_update.data_before.as_ref().unwrap()["commercial_terms"],
+            "net-30 standard procurement terms"
+        );
+        assert_eq!(
+            operator_update.diff.as_ref().unwrap()["amount_cents"].after,
+            Some(json!(1_200_000))
+        );
+
+        let contractor_audit = h
+            .query_audit_with_caller(
+                QueryAuditRequest {
+                    intent_id: Some(intent_id.into()),
+                    ..Default::default()
+                },
+                &contractor,
+                None,
+            )
+            .expect("contractor lineage audit should query");
+        let contractor_update = contractor_audit
+            .entries
+            .iter()
+            .find(|entry| entry.mutation == MutationType::EntityUpdate)
+            .expect("contractor should see committed update audit");
+        assert_eq!(
+            contractor_update.data_before.as_ref().unwrap()["amount_cents"],
+            Value::Null
+        );
+        assert_eq!(
+            contractor_update.data_after.as_ref().unwrap()["commercial_terms"],
+            Value::Null
+        );
+        assert_eq!(
+            contractor_update.diff.as_ref().unwrap()["amount_cents"].after,
+            Some(Value::Null)
+        );
+
+        let contractor_approval = contractor_audit
+            .entries
+            .iter()
+            .find(|entry| entry.mutation == MutationType::IntentApprove)
+            .expect("contractor lineage should include approval audit");
+        let approval_payload = contractor_approval.data_after.as_ref().unwrap();
+        assert_eq!(
+            approval_payload["review_summary"]["diff"][0]["diff"]["amount_cents"]["after"],
+            Value::Null
+        );
+        assert_eq!(
+            approval_payload["review_summary"]["diff"][0]["diff"]["commercial_terms"]["before"],
+            Value::Null
+        );
+        assert_eq!(
+            approval_payload["operation"]["canonical_operation"]["operations"][0]["data"]
+                ["amount_cents"],
+            Value::Null
+        );
+        let contractor_audit_json =
+            serde_json::to_string(&contractor_audit.entries).expect("serialize audit");
+        assert!(!contractor_audit_json.contains("net-30 standard procurement terms"));
+        assert!(!contractor_audit_json.contains("net-7 confidential override terms"));
     }
 
     #[test]
