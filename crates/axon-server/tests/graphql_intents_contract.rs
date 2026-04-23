@@ -410,6 +410,72 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pending_intent_queries_return_pending_reviews() {
+    let server = test_server();
+    seed_intent_fixture(&server).await;
+
+    let preview = preview_budget_patch(&server, 20_250, 600).await;
+    assert_no_errors(&preview, "preview");
+    let intent_id = preview["data"]["previewMutation"]["intent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let queried = gql_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"{{
+                mutationIntent(id: "{intent_id}") {{
+                    id
+                    approvalState
+                    decision
+                    approvalRoute {{ role separationOfDuties }}
+                }}
+                pendingMutationIntents(
+                    filter: {{ status: "pending", decision: "needs_approval" }}
+                    limit: 10
+                ) {{
+                    totalCount
+                    edges {{
+                        cursor
+                        node {{
+                            id
+                            approvalState
+                            decision
+                            approvalRoute {{ role separationOfDuties }}
+                        }}
+                    }}
+                    pageInfo {{ hasNextPage hasPreviousPage startCursor endCursor }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_no_errors(&queried, "pending intent queries");
+
+    let found = &queried["data"]["mutationIntent"];
+    assert_eq!(found["id"], intent_id);
+    assert_eq!(found["approvalState"], "pending");
+    assert_eq!(found["decision"], "needs_approval");
+    assert_eq!(found["approvalRoute"]["role"], "finance_approver");
+    assert_eq!(found["approvalRoute"]["separationOfDuties"], true);
+
+    let pending = &queried["data"]["pendingMutationIntents"];
+    assert_eq!(pending["totalCount"], 1);
+    assert_eq!(pending["edges"].as_array().unwrap().len(), 1);
+    let edge = &pending["edges"][0];
+    assert_eq!(edge["node"]["id"], intent_id);
+    assert_eq!(edge["node"]["approvalState"], "pending");
+    assert_eq!(edge["node"]["decision"], "needs_approval");
+    assert!(edge["cursor"].as_str().is_some());
+    assert_eq!(pending["pageInfo"]["hasNextPage"], false);
+    assert_eq!(pending["pageInfo"]["hasPreviousPage"], false);
+    assert!(pending["pageInfo"]["startCursor"].as_str().is_some());
+    assert!(pending["pageInfo"]["endCursor"].as_str().is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn approval_requires_current_approver_role() {
     let server = test_server();
     seed_intent_fixture(&server).await;
