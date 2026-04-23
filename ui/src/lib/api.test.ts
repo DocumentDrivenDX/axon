@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 
 import {
 	applyEntityRollback,
+	commitMutationIntent,
 	createCollection,
 	createEntity,
 	createLink,
@@ -32,6 +33,7 @@ import {
 	listCredentials,
 	listUsers,
 	previewEntityRollback,
+	previewMutationIntent,
 	previewSchemaChange,
 	putCollectionTemplate,
 	removeTenantMember,
@@ -217,6 +219,108 @@ test('fetchEntityAudit() uses tenant-scoped GraphQL auditLog entity filter', asy
 	expect(body.query).toContain('entityId');
 	expect(body.variables).toEqual({ collection: 'tasks', entityId: 'task-1' });
 	expect(result).toEqual({ entries: [], next_cursor: null });
+});
+
+test('previewMutationIntent() posts typed preview mutation input', async () => {
+	mockFetch({
+		data: {
+			previewMutation: {
+				decision: 'allow',
+				intentToken: 'token.allowed',
+				intent: {
+					id: 'mint_1',
+					tenantId: 'acme',
+					databaseId: 'orders',
+					subject: { user_id: 'ui' },
+					schemaVersion: 1,
+					policyVersion: 1,
+					operation: {
+						operationKind: 'update_entity',
+						operationHash: 'sha256:abc',
+						operation: { collection: 'tasks' },
+					},
+					operationHash: 'sha256:abc',
+					preImages: [{ kind: 'entity', collection: 'tasks', id: 'task-1', version: 1 }],
+					decision: 'allow',
+					approvalState: 'none',
+					approvalRoute: null,
+					expiresAtNs: '1000000000',
+					reviewSummary: { policy_explanation: ['allow: all-update'] },
+				},
+				canonicalOperation: {
+					operationKind: 'update_entity',
+					operationHash: 'sha256:abc',
+					operation: { collection: 'tasks' },
+				},
+				diff: { title: { before: 'old', after: 'new' } },
+				affectedRecords: [{ kind: 'entity', collection: 'tasks', id: 'task-1', version: 1 }],
+				affectedFields: ['title'],
+				approvalRoute: null,
+				policyExplanation: ['allow: all-update'],
+			},
+		},
+	});
+
+	const result = await previewMutationIntent(
+		{ tenant: 'acme', database: 'orders' },
+		{
+			operation: {
+				operationKind: 'update_entity',
+				operation: {
+					collection: 'tasks',
+					id: 'task-1',
+					expected_version: 1,
+					data: { title: 'new' },
+				},
+			},
+			expiresInSeconds: 600,
+		},
+	);
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('previewMutation');
+	expect(body.variables.input.operation.operationKind).toBe('update_entity');
+	expect(body.variables.input.operation.operation.expected_version).toBe(1);
+	expect(result.intentToken).toBe('token.allowed');
+	expect(result.affectedFields).toEqual(['title']);
+});
+
+test('commitMutationIntent() returns stale GraphQL errors without throwing', async () => {
+	mockFetch({
+		errors: [
+			{
+				message: 'mutation intent is stale',
+				extensions: {
+					code: 'intent_stale',
+					stale: [
+						{
+							dimension: 'pre_image',
+							expected: '1',
+							actual: '2',
+							path: 'entity:tasks/task-1',
+						},
+					],
+				},
+			},
+		],
+	});
+
+	const outcome = await commitMutationIntent(
+		{ tenant: 'acme', database: 'orders' },
+		{ intentToken: 'token.allowed', intentId: 'mint_1' },
+	);
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('commitMutationIntent');
+	expect(body.variables.input.intentId).toBe('mint_1');
+	expect(outcome.ok).toBe(false);
+	if (!outcome.ok) {
+		expect(outcome.error.code).toBe('intent_stale');
+		expect(outcome.error.stale).toHaveLength(1);
+		expect(outcome.error.stale[0]?.dimension).toBe('pre_image');
+	}
 });
 
 test('revertAuditEntry() uses tenant-scoped GraphQL mutation', async () => {

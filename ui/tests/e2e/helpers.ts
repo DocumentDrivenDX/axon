@@ -72,6 +72,7 @@ export async function createTestCollection(
 	collection: string,
 	schema: {
 		entity_schema?: Record<string, unknown> | null;
+		access_control?: Record<string, unknown>;
 		lifecycles?: Record<string, unknown>;
 		link_types?: Record<string, unknown>;
 	} = {},
@@ -83,6 +84,7 @@ export async function createTestCollection(
 				description: null,
 				version: 1,
 				entity_schema: schema.entity_schema ?? null,
+				access_control: schema.access_control,
 				link_types: schema.link_types ?? {},
 				lifecycles: schema.lifecycles ?? undefined,
 			},
@@ -144,7 +146,10 @@ export function dbAuditUrl(db: TestDatabase): string {
 	return `/ui/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/audit`;
 }
 
-export function tenantUrl(tenant: TestTenant, section: 'members' | 'credentials' | '' = ''): string {
+export function tenantUrl(
+	tenant: TestTenant,
+	section: 'members' | 'credentials' | '' = '',
+): string {
 	const base = `/ui/tenants/${encodeURIComponent(tenant.db_name)}`;
 	return section ? `${base}/${section}` : base;
 }

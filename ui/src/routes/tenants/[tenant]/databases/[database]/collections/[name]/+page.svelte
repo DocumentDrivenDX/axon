@@ -5,14 +5,17 @@ import {
 	type AuditEntry,
 	type CollectionDetail,
 	type CollectionView,
+	type CommitMutationIntentOutcome,
 	type EntityRecord,
 	// biome-ignore lint/correctness/noUnusedImports: Used in template type cast.
 	type FieldDiff,
 	type LifecycleDef,
 	type Link,
+	type MutationPreviewResult,
 	type RollbackPreview,
 	type TraverseResult,
 	applyEntityRollback,
+	commitMutationIntent,
 	createEntity,
 	createLink,
 	deleteCollectionTemplate,
@@ -27,6 +30,7 @@ import {
 	fetchRenderedEntity,
 	lifecyclesFromSchema,
 	previewEntityRollback,
+	previewMutationIntent,
 	putCollectionTemplate,
 	revertAuditEntry,
 	transitionLifecycle,
@@ -35,6 +39,8 @@ import {
 } from '$lib/api';
 // biome-ignore lint/correctness/noUnusedImports: Used in template for entity data tree.
 import JsonTree from '$lib/components/JsonTree.svelte';
+// biome-ignore lint/correctness/noUnusedImports: Used in template as the intent preview dialog.
+import MutationIntentPreviewModal from '$lib/components/MutationIntentPreviewModal.svelte';
 // biome-ignore lint/correctness/noUnusedImports: Used in template for casting entity data.
 import type { JsonValue } from '$lib/components/json-tree-types';
 import { validateEntityData } from '$lib/schema-validation';
@@ -76,6 +82,11 @@ let editData = $state<Record<string, unknown> | null>(null);
 let saveError = $state<string | null>(null);
 let saveMessage = $state<string | null>(null);
 let saving = $state(false);
+let intentPreview = $state<MutationPreviewResult | null>(null);
+let intentCommitOutcome = $state<CommitMutationIntentOutcome | null>(null);
+let intentModalOpen = $state(false);
+let previewingIntent = $state(false);
+let committingIntent = $state(false);
 
 // biome-ignore lint/style/useConst: Svelte template onclick handlers mutate this state.
 let confirmDelete = $state(false);
@@ -482,6 +493,9 @@ async function loadCollection(targetCollection: string, afterId: string | null) 
 			: null;
 		editMode = false;
 		editData = null;
+		intentModalOpen = false;
+		intentPreview = null;
+		intentCommitOutcome = null;
 		error = null;
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load collection';
@@ -499,6 +513,9 @@ async function openEntity(id: string) {
 		selectedEntity = await fetchEntity(collectionName, id, scope);
 		editMode = false;
 		editData = null;
+		intentModalOpen = false;
+		intentPreview = null;
+		intentCommitOutcome = null;
 		saveError = null;
 		saveMessage = null;
 	} catch (errorValue: unknown) {
@@ -513,6 +530,9 @@ function startEdit() {
 	// before editMode is set. Entity data is always plain JSON, so this is safe.
 	editData = JSON.parse(JSON.stringify(selectedEntity.data)) as Record<string, unknown>;
 	editMode = true;
+	intentModalOpen = false;
+	intentPreview = null;
+	intentCommitOutcome = null;
 	saveError = null;
 	saveMessage = null;
 }
@@ -520,7 +540,22 @@ function startEdit() {
 function cancelEdit() {
 	editMode = false;
 	editData = null;
+	intentModalOpen = false;
+	intentPreview = null;
+	intentCommitOutcome = null;
 	saveError = null;
+}
+
+function validateEditData(): boolean {
+	if (collection?.schema?.entity_schema && editData) {
+		const issues = validateEntityData(collection.schema.entity_schema, editData);
+		if (issues.length > 0) {
+			saveError = issues.join('; ');
+			return false;
+		}
+	}
+
+	return true;
 }
 
 async function saveEntity() {
@@ -529,13 +564,9 @@ async function saveEntity() {
 	saveError = null;
 	saveMessage = null;
 
-	if (collection?.schema?.entity_schema) {
-		const issues = validateEntityData(collection.schema.entity_schema, editData);
-		if (issues.length > 0) {
-			saveError = issues.join('; ');
-			saving = false;
-			return;
-		}
+	if (!validateEditData()) {
+		saving = false;
+		return;
 	}
 
 	try {
@@ -558,6 +589,70 @@ async function saveEntity() {
 		saveError = errorValue instanceof Error ? errorValue.message : 'Failed to save entity';
 	} finally {
 		saving = false;
+	}
+}
+
+async function previewEntityIntent() {
+	if (!selectedEntity || !editData || !collectionName) return;
+	previewingIntent = true;
+	saveError = null;
+	saveMessage = null;
+	intentCommitOutcome = null;
+
+	if (!validateEditData()) {
+		previewingIntent = false;
+		return;
+	}
+
+	try {
+		intentPreview = await previewMutationIntent(scope, {
+			operation: {
+				operationKind: 'update_entity',
+				operation: {
+					collection: collectionName,
+					id: selectedEntity.id,
+					expected_version: selectedEntity.version,
+					data: editData,
+				},
+			},
+			expiresInSeconds: 600,
+		});
+		intentModalOpen = true;
+	} catch (errorValue: unknown) {
+		saveError = errorValue instanceof Error ? errorValue.message : 'Failed to preview intent';
+	} finally {
+		previewingIntent = false;
+	}
+}
+
+async function commitPreviewIntent() {
+	if (!intentPreview?.intentToken || !intentPreview.intent || !selectedEntity || !collectionName) {
+		return;
+	}
+	committingIntent = true;
+	intentCommitOutcome = null;
+
+	try {
+		const outcome = await commitMutationIntent(scope, {
+			intentToken: intentPreview.intentToken,
+			intentId: intentPreview.intent.id,
+		});
+		intentCommitOutcome = outcome;
+		if (outcome.ok) {
+			const updated = await fetchEntity(collectionName, selectedEntity.id, scope);
+			selectedEntity = updated;
+			editMode = false;
+			editData = null;
+			saveMessage = `Saved v${updated.version}.`;
+			const idx = entities.findIndex((e) => e.id === updated.id);
+			if (idx >= 0) {
+				entities[idx] = updated;
+			}
+		}
+	} catch (errorValue: unknown) {
+		saveError = errorValue instanceof Error ? errorValue.message : 'Failed to commit intent';
+	} finally {
+		committingIntent = false;
 	}
 }
 
@@ -798,6 +893,9 @@ afterNavigate(() => {
 					<span class="pill">v{selectedEntity.version}</span>
 					{#if editMode}
 						<button onclick={cancelEdit}>Cancel</button>
+						<button disabled={previewingIntent || saving} onclick={previewEntityIntent}>
+							{previewingIntent ? 'Previewing...' : 'Preview'}
+						</button>
 						<button class="primary" disabled={saving} onclick={saveEntity}>
 							{saving ? 'Saving...' : 'Save'}
 						</button>
@@ -1305,6 +1403,17 @@ afterNavigate(() => {
 		{/if}
 	</div>
 </section>
+
+<MutationIntentPreviewModal
+	open={intentModalOpen}
+	preview={intentPreview}
+	commitOutcome={intentCommitOutcome}
+	committing={committingIntent}
+	onClose={() => {
+		intentModalOpen = false;
+	}}
+	onCommit={commitPreviewIntent}
+/>
 
 <style>
 	button.danger {

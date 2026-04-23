@@ -122,6 +122,8 @@ type GraphQLError = {
 	path?: Array<string | number>;
 	extensions?: {
 		code?: string;
+		stale?: MutationIntentStaleDimension[];
+		[key: string]: unknown;
 	};
 };
 
@@ -238,6 +240,113 @@ type GraphQLRevertAuditEntryPayload = {
 	entity: GraphQLEntity;
 	auditEntry: GraphQLAuditEntry;
 };
+
+export type MutationIntentDecision = 'allow' | 'needs_approval' | 'deny';
+
+export type MutationIntentApprovalState =
+	| 'none'
+	| 'pending'
+	| 'approved'
+	| 'rejected'
+	| 'expired'
+	| 'committed';
+
+export type MutationApprovalRoute = {
+	role: string;
+	reasonRequired?: boolean;
+	deadlineSeconds?: number | null;
+	separationOfDuties?: boolean;
+};
+
+export type MutationIntentPreImage = {
+	kind: 'entity' | 'link';
+	collection: string;
+	id?: string | null;
+	version?: number | null;
+};
+
+export type MutationIntentOperationInput = {
+	operationKind: string;
+	operationHash?: string;
+	operation: Record<string, unknown>;
+};
+
+export type MutationIntentCanonicalOperation = {
+	operationKind: string;
+	operationHash: string;
+	operation: unknown;
+};
+
+export type MutationReviewSummary = {
+	title?: string;
+	summary?: string;
+	risk?: string;
+	affected_records?: MutationIntentPreImage[];
+	affected_fields?: string[];
+	diff?: unknown;
+	policy_explanation?: string[];
+};
+
+export type MutationIntent = {
+	id: string;
+	tenantId: string;
+	databaseId: string;
+	subject: unknown;
+	schemaVersion: number;
+	policyVersion: number;
+	operation: MutationIntentCanonicalOperation;
+	operationHash: string;
+	preImages: MutationIntentPreImage[];
+	decision: MutationIntentDecision;
+	approvalState: MutationIntentApprovalState;
+	approvalRoute?: MutationApprovalRoute | null;
+	expiresAtNs: string;
+	reviewSummary: MutationReviewSummary;
+};
+
+export type MutationPreviewInput = {
+	operation: MutationIntentOperationInput;
+	subject?: unknown;
+	expiresInSeconds?: number;
+	reason?: string;
+};
+
+export type MutationPreviewResult = {
+	decision: MutationIntentDecision;
+	intent: MutationIntent | null;
+	intentToken: string | null;
+	canonicalOperation: MutationIntentCanonicalOperation;
+	diff: unknown;
+	affectedRecords: MutationIntentPreImage[];
+	affectedFields: string[];
+	approvalRoute?: MutationApprovalRoute | null;
+	policyExplanation: string[];
+};
+
+export type MutationIntentStaleDimension = {
+	dimension: string;
+	expected?: string | null;
+	actual?: string | null;
+	path?: string | null;
+};
+
+export type CommitMutationIntentResult = {
+	committed: boolean;
+	intent: MutationIntent | null;
+	transactionId?: string | null;
+	stale: MutationIntentStaleDimension[];
+	errorCode?: string | null;
+};
+
+export type MutationIntentError = {
+	message: string;
+	code?: string;
+	stale: MutationIntentStaleDimension[];
+};
+
+export type CommitMutationIntentOutcome =
+	| { ok: true; result: CommitMutationIntentResult }
+	| { ok: false; error: MutationIntentError };
 
 type AuditFilters = {
 	collection?: string;
@@ -367,6 +476,26 @@ async function graphqlRequest<T>(
 	}
 
 	return result.data;
+}
+
+async function graphqlRawRequest<T>(
+	scope: ScopedTenantDatabase,
+	query: string,
+	variables: Record<string, unknown> = {},
+): Promise<GraphQLResult<T>> {
+	const response = await fetch(scopedPath('/graphql', scope), {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ query, variables }),
+	});
+	const text = await response.text();
+	const payload = text ? (JSON.parse(text) as GraphQLResult<T> | ApiError) : null;
+
+	if (!response.ok) {
+		throw new Error(formatError((payload as ApiError | null) ?? {}, response.status));
+	}
+
+	return (payload as GraphQLResult<T> | null) ?? {};
 }
 
 async function controlGraphqlRequest<T>(
@@ -2047,11 +2176,99 @@ export async function applyEntityRollback(
 	);
 }
 
+const MUTATION_INTENT_FIELDS = `
+	id
+	tenantId
+	databaseId
+	subject
+	schemaVersion
+	policyVersion
+	operation { operationKind operationHash operation }
+	operationHash
+	preImages { kind collection id version }
+	decision
+	approvalState
+	approvalRoute { role reasonRequired deadlineSeconds separationOfDuties }
+	expiresAtNs
+	reviewSummary
+`;
+
+function mutationIntentErrorFromGraphql(error: GraphQLError | undefined): MutationIntentError {
+	const code = error?.extensions?.code;
+	return {
+		message: error?.message ?? 'Mutation intent operation failed',
+		stale: error?.extensions?.stale ?? [],
+		...(code ? { code } : {}),
+	};
+}
+
+export async function previewMutationIntent(
+	scope: ScopedTenantDatabase,
+	input: MutationPreviewInput,
+): Promise<MutationPreviewResult> {
+	const data = await graphqlRequest<{ previewMutation: MutationPreviewResult }>(
+		scope,
+		`mutation AxonUiPreviewMutationIntent($input: MutationPreviewInput!) {
+			previewMutation(input: $input) {
+				decision
+				intentToken
+				intent { ${MUTATION_INTENT_FIELDS} }
+				canonicalOperation { operationKind operationHash operation }
+				diff
+				affectedRecords { kind collection id version }
+				affectedFields
+				approvalRoute { role reasonRequired deadlineSeconds separationOfDuties }
+				policyExplanation
+			}
+		}`,
+		{ input },
+	);
+
+	return data.previewMutation;
+}
+
+export async function commitMutationIntent(
+	scope: ScopedTenantDatabase,
+	input: { intentToken: string; intentId?: string; operation?: MutationIntentOperationInput },
+): Promise<CommitMutationIntentOutcome> {
+	const result = await graphqlRawRequest<{ commitMutationIntent: CommitMutationIntentResult }>(
+		scope,
+		`mutation AxonUiCommitMutationIntent($input: CommitIntentInput!) {
+			commitMutationIntent(input: $input) {
+				committed
+				errorCode
+				stale { dimension expected actual path }
+				transactionId
+				intent { ${MUTATION_INTENT_FIELDS} }
+			}
+		}`,
+		{ input },
+	);
+
+	if (result.errors?.length) {
+		return { ok: false, error: mutationIntentErrorFromGraphql(result.errors[0]) };
+	}
+
+	const committed = result.data?.commitMutationIntent;
+	if (!committed) {
+		return {
+			ok: false,
+			error: { message: 'GraphQL response missing commitMutationIntent', stale: [] },
+		};
+	}
+
+	return { ok: true, result: committed };
+}
+
 // ── Raw GraphQL passthrough for the playground page ─────────────────────────
 
 export type GraphQLResponse<T = unknown> = {
 	data?: T;
-	errors?: Array<{ message: string; path?: (string | number)[] }>;
+	errors?: Array<{
+		message: string;
+		path?: (string | number)[];
+		extensions?: Record<string, unknown>;
+	}>;
 };
 
 export async function executeGraphql(
