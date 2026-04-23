@@ -2577,6 +2577,7 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             TypeRef::named_nn(AUDIT_CONNECTION_TYPE),
             move |ctx| {
                 let handler = Arc::clone(&handler_audit);
+                let caller = caller_from_ctx(&ctx);
                 FieldFuture::new(async move {
                     if let Some(filter) = unsupported_audit_filter_arg(&ctx) {
                         return Err(unsupported_audit_filter_error(filter));
@@ -2618,18 +2619,22 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                     let has_previous_page = after_id.is_some();
 
                     let guard = handler.lock().await;
-                    match guard.query_audit(QueryAuditRequest {
-                        database: None,
-                        collection,
-                        collection_ids: Vec::new(),
-                        entity_id,
-                        actor,
-                        operation,
-                        since_ns,
-                        until_ns,
-                        after_id,
-                        limit,
-                    }) {
+                    match guard.query_audit_with_caller(
+                        QueryAuditRequest {
+                            database: None,
+                            collection,
+                            collection_ids: Vec::new(),
+                            entity_id,
+                            actor,
+                            operation,
+                            since_ns,
+                            until_ns,
+                            after_id,
+                            limit,
+                        },
+                        &caller,
+                        None,
+                    ) {
                         Ok(resp) => Ok(Some(audit_connection_value(
                             &resp.entries,
                             resp.next_cursor,

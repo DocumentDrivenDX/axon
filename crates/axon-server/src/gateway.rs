@@ -1332,12 +1332,17 @@ async fn create_entity(
 async fn get_entity(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
 ) -> Response {
-    match handler.lock().await.get_entity(GetEntityRequest {
-        collection: qualify_collection_name(&collection, &current_database),
-        id: EntityId::new(&id),
-    }) {
+    match handler.lock().await.get_entity_with_caller(
+        GetEntityRequest {
+            collection: qualify_collection_name(&collection, &current_database),
+            id: EntityId::new(&id),
+        },
+        &caller,
+        None,
+    ) {
         Ok(resp) => Json(json!({
             "entity": entity_payload(&resp.entity)
         }))
@@ -1349,6 +1354,7 @@ async fn get_entity(
 async fn get_collection_entity(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Query(params): Query<GetEntityParams>,
 ) -> Response {
@@ -1356,11 +1362,12 @@ async fn get_collection_entity(
     let entity_id = EntityId::new(&id);
 
     match params.format.as_deref() {
-        Some("markdown") => match handler
-            .lock()
-            .await
-            .get_entity_markdown(&collection_id, &entity_id)
-        {
+        Some("markdown") => match handler.lock().await.get_entity_markdown_with_caller(
+            &collection_id,
+            &entity_id,
+            &caller,
+            None,
+        ) {
             Ok(GetEntityMarkdownResponse::Rendered {
                 rendered_markdown, ..
             }) => (
@@ -1383,10 +1390,14 @@ async fn get_collection_entity(
         Some(other) => axon_error_response(AxonError::InvalidArgument(format!(
             "unsupported format '{other}'; expected 'markdown'"
         ))),
-        None => match handler.lock().await.get_entity(GetEntityRequest {
-            collection: collection_id,
-            id: entity_id,
-        }) {
+        None => match handler.lock().await.get_entity_with_caller(
+            GetEntityRequest {
+                collection: collection_id,
+                id: entity_id,
+            },
+            &caller,
+            None,
+        ) {
             Ok(resp) => Json(json!({
                 "entity": entity_payload(&resp.entity)
             }))
@@ -1515,6 +1526,7 @@ async fn delete_entity(
 async fn query_entities(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Path(CollectionPath { collection }): Path<CollectionPath>,
     Json(body): Json<QueryEntitiesRequest>,
 ) -> Response {
@@ -1523,7 +1535,11 @@ async fn query_entities(
         collection: qualify_collection_name(&collection, &current_database),
         ..body
     };
-    match handler.lock().await.query_entities(req) {
+    match handler
+        .lock()
+        .await
+        .query_entities_with_caller(req, &caller, None)
+    {
         Ok(resp) => {
             let entities: Vec<Value> = resp
                 .entities
@@ -1787,6 +1803,7 @@ async fn delete_link(
 async fn traverse(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
@@ -1811,6 +1828,7 @@ async fn traverse(
     traverse_with_request(
         handler,
         current_database,
+        caller,
         collection,
         id,
         TraverseBody {
@@ -1826,27 +1844,33 @@ async fn traverse(
 async fn traverse_post(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Path(CollectionEntityPath { collection, id }): Path<CollectionEntityPath>,
     Json(body): Json<TraverseBody>,
 ) -> Response {
-    traverse_with_request(handler, current_database, collection, id, body).await
+    traverse_with_request(handler, current_database, caller, collection, id, body).await
 }
 
 async fn traverse_with_request(
     handler: TenantHandler,
     current_database: CurrentDatabase,
+    caller: CoreCallerIdentity,
     collection: String,
     id: String,
     body: TraverseBody,
 ) -> Response {
-    match handler.lock().await.traverse(TraverseRequest {
-        collection: qualify_collection_name(&collection, &current_database),
-        id: EntityId::new(&id),
-        link_type: body.link_type,
-        max_depth: body.max_depth,
-        direction: body.direction,
-        hop_filter: body.hop_filter,
-    }) {
+    match handler.lock().await.traverse_with_caller(
+        TraverseRequest {
+            collection: qualify_collection_name(&collection, &current_database),
+            id: EntityId::new(&id),
+            link_type: body.link_type,
+            max_depth: body.max_depth,
+            direction: body.direction,
+            hop_filter: body.hop_filter,
+        },
+        &caller,
+        None,
+    ) {
         Ok(resp) => {
             let entities: Vec<Value> = resp
                 .entities
@@ -1886,19 +1910,26 @@ async fn query_audit_by_entity(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     Path(CollectionEntityPath {
         collection,
         id: entity_id,
     }): Path<CollectionEntityPath>,
 ) -> Response {
     let handler = handler.lock().await;
-    match handler.audit_log().query_by_entity(
-        &qualify_collection_name(&collection, &current_database),
-        &EntityId::new(&entity_id),
+    match handler.query_audit_with_caller(
+        QueryAuditRequest {
+            database: requested_database_scope.database().map(str::to_string),
+            collection: Some(qualify_collection_name(&collection, &current_database)),
+            entity_id: Some(EntityId::new(&entity_id)),
+            ..Default::default()
+        },
+        &caller,
+        None,
     ) {
-        Ok(entries) => {
+        Ok(resp) => {
             let entries =
-                filter_audit_entries_to_database(entries, requested_database_scope.database());
+                filter_audit_entries_to_database(resp.entries, requested_database_scope.database());
             let proto: Vec<Value> = entries
                 .iter()
                 .map(|e: &axon_audit::AuditEntry| {
@@ -1945,6 +1976,7 @@ async fn query_audit(
     Extension(handler): Extension<TenantHandler>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
+    Extension(caller): Extension<CoreCallerIdentity>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if let Some(filter) = unsupported_audit_filter_param(&params) {
@@ -1985,7 +2017,11 @@ async fn query_audit(
         after_id: params.get("after_id").and_then(|s| s.parse().ok()),
         limit: params.get("limit").and_then(|s| s.parse().ok()),
     };
-    match handler.lock().await.query_audit(req) {
+    match handler
+        .lock()
+        .await
+        .query_audit_with_caller(req, &caller, None)
+    {
         Ok(resp) => {
             let next_cursor = resp.next_cursor;
             let entries =

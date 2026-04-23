@@ -11,7 +11,7 @@ fn now_ns() -> u64 {
         .unwrap_or(0)
 }
 
-use axon_audit::entry::{compute_diff, AuditAttribution, AuditEntry, MutationType};
+use axon_audit::entry::{compute_diff, AuditAttribution, AuditEntry, FieldDiff, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::auth::CallerIdentity;
 use axon_core::error::AxonError;
@@ -910,6 +910,94 @@ impl<S: StorageAdapter> AxonHandler<S> {
         )
     }
 
+    fn field_read_redactions(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        data: &Value,
+    ) -> Result<Vec<(String, Value)>, AxonError> {
+        let mut redactions = Vec::new();
+
+        for (field_path, field_policy) in &plan.fields {
+            let Some(read_policy) = field_policy.read.as_ref() else {
+                continue;
+            };
+
+            let mut redaction = None;
+            for rule in &read_policy.deny {
+                if self.field_policy_rule_matches(rule, snapshot, &PolicyOperation::Read, data)? {
+                    redaction = Some(rule.redact_as.clone().unwrap_or(Value::Null));
+                    break;
+                }
+            }
+
+            if redaction.is_none() && !read_policy.allow.is_empty() {
+                let mut matched = false;
+                for rule in &read_policy.allow {
+                    if self.field_policy_rule_matches(
+                        rule,
+                        snapshot,
+                        &PolicyOperation::Read,
+                        data,
+                    )? {
+                        matched = true;
+                        break;
+                    }
+                }
+                if !matched {
+                    redaction = Some(Value::Null);
+                }
+            }
+
+            if let Some(redaction) = redaction {
+                redactions.push((field_path.clone(), redaction));
+            }
+        }
+
+        Ok(redactions)
+    }
+
+    fn redact_entity_fields_for_read(
+        &self,
+        plan: &PolicyPlan,
+        snapshot: &PolicyRequestSnapshot,
+        entity: &mut Entity,
+    ) -> Result<(), AxonError> {
+        let policy_data = entity_policy_data(entity);
+        let redactions = self.field_read_redactions(plan, snapshot, &policy_data)?;
+        apply_field_redactions(&mut entity.data, &redactions);
+        Ok(())
+    }
+
+    fn redact_entity_for_read_with_context(
+        &self,
+        collection: &CollectionId,
+        mut entity: Entity,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<Entity, AxonError> {
+        let schema = self.storage.get_schema(collection)?;
+        let policy_snapshot = self.policy_snapshot_for_request(
+            collection,
+            schema.as_ref(),
+            None,
+            caller,
+            attribution,
+        )?;
+        let compiled_policy = match schema.as_ref() {
+            Some(schema) if policy_snapshot.is_some() => {
+                self.compile_policy_plan_for_schema(schema)?
+            }
+            _ => None,
+        };
+
+        if let (Some(plan), Some(snapshot)) = (&compiled_policy, &policy_snapshot) {
+            self.redact_entity_fields_for_read(plan, snapshot, &mut entity)?;
+        }
+
+        Ok(entity)
+    }
+
     fn entity_visible_for_read_with_context(
         &self,
         collection: &CollectionId,
@@ -938,14 +1026,6 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
             _ => Ok(true),
         }
-    }
-
-    fn get_visible_entity_for_read(
-        &self,
-        collection: &CollectionId,
-        id: &EntityId,
-    ) -> Result<Option<Entity>, AxonError> {
-        self.get_visible_entity_for_read_with_context(collection, id, None, None)
     }
 
     fn get_visible_entity_for_read_with_context(
@@ -1847,9 +1927,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
             caller,
             attribution,
         )? {
-            Some(entity) => Ok(GetEntityResponse {
-                entity: Self::present_entity(&req.collection, entity),
-            }),
+            Some(entity) => {
+                let entity = self.redact_entity_for_read_with_context(
+                    &req.collection,
+                    entity,
+                    caller,
+                    attribution,
+                )?;
+                Ok(GetEntityResponse {
+                    entity: Self::present_entity(&req.collection, entity),
+                })
+            }
             None => Err(AxonError::NotFound(req.id.to_string())),
         }
     }
@@ -1864,9 +1952,36 @@ impl<S: StorageAdapter> AxonHandler<S> {
         collection: &CollectionId,
         id: &EntityId,
     ) -> Result<GetEntityMarkdownResponse, AxonError> {
+        self.get_entity_markdown_with_read_context(collection, id, None, None)
+    }
+
+    pub fn get_entity_markdown_with_caller(
+        &self,
+        collection: &CollectionId,
+        id: &EntityId,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<GetEntityMarkdownResponse, AxonError> {
+        self.get_entity_markdown_with_read_context(
+            collection,
+            id,
+            Some(caller),
+            attribution.as_ref(),
+        )
+    }
+
+    fn get_entity_markdown_with_read_context(
+        &self,
+        collection: &CollectionId,
+        id: &EntityId,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<GetEntityMarkdownResponse, AxonError> {
         let entity = self
-            .get_visible_entity_for_read(collection, id)?
+            .get_visible_entity_for_read_with_context(collection, id, caller, attribution)?
             .ok_or_else(|| AxonError::NotFound(id.to_string()))?;
+        let entity =
+            self.redact_entity_for_read_with_context(collection, entity, caller, attribution)?;
         let view = self
             .storage
             .get_collection_view(collection)?
@@ -2547,7 +2662,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let entities = if req.count_only {
             vec![]
         } else {
-            Self::present_entities(&req.collection, matched)
+            let mut entities = matched;
+            if let (Some(plan), Some(snapshot)) = (&compiled_policy, &policy_snapshot) {
+                for entity in &mut entities {
+                    self.redact_entity_fields_for_read(plan, snapshot, entity)?;
+                }
+            }
+            Self::present_entities(&req.collection, entities)
         };
 
         Ok(QueryEntitiesResponse {
@@ -2841,6 +2962,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     /// Query the audit log with optional filters and cursor-based pagination.
     pub fn query_audit(&self, req: QueryAuditRequest) -> Result<QueryAuditResponse, AxonError> {
+        self.query_audit_with_read_context(req, None, None)
+    }
+
+    pub fn query_audit_with_caller(
+        &self,
+        req: QueryAuditRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<QueryAuditResponse, AxonError> {
+        self.query_audit_with_read_context(req, Some(caller), attribution.as_ref())
+    }
+
+    fn query_audit_with_read_context(
+        &self,
+        req: QueryAuditRequest,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<QueryAuditResponse, AxonError> {
         use axon_audit::entry::MutationType as MT;
 
         let operation: Option<MT> = match req.operation.as_deref() {
@@ -2885,10 +3024,71 @@ impl<S: StorageAdapter> AxonHandler<S> {
         };
 
         let page: AuditPage = self.audit.query_paginated(query)?;
+        let mut entries = page.entries;
+        for entry in &mut entries {
+            self.redact_audit_entry_for_read_with_context(entry, caller, attribution)?;
+        }
         Ok(QueryAuditResponse {
-            entries: page.entries,
+            entries,
             next_cursor: page.next_cursor,
         })
+    }
+
+    fn redact_audit_entry_for_read_with_context(
+        &self,
+        entry: &mut AuditEntry,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<(), AxonError> {
+        let schema = self.storage.get_schema(&entry.collection)?;
+        let policy_snapshot = self.policy_snapshot_for_request(
+            &entry.collection,
+            schema.as_ref(),
+            None,
+            caller,
+            attribution,
+        )?;
+        let compiled_policy = match schema.as_ref() {
+            Some(schema) if policy_snapshot.is_some() => {
+                self.compile_policy_plan_for_schema(schema)?
+            }
+            _ => None,
+        };
+        let (Some(plan), Some(snapshot)) = (&compiled_policy, &policy_snapshot) else {
+            return Ok(());
+        };
+
+        let before_redactions = entry
+            .data_before
+            .as_ref()
+            .map(|data| {
+                let policy_data = policy_data_with_entity_id(&entry.entity_id, data);
+                self.field_read_redactions(plan, snapshot, &policy_data)
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let after_redactions = entry
+            .data_after
+            .as_ref()
+            .map(|data| {
+                let policy_data = policy_data_with_entity_id(&entry.entity_id, data);
+                self.field_read_redactions(plan, snapshot, &policy_data)
+            })
+            .transpose()?
+            .unwrap_or_default();
+
+        if let Some(data_before) = entry.data_before.as_mut() {
+            apply_field_redactions(data_before, &before_redactions);
+        }
+        if let Some(data_after) = entry.data_after.as_mut() {
+            apply_field_redactions(data_after, &after_redactions);
+        }
+        if let Some(diff) = entry.diff.as_mut() {
+            apply_diff_redactions(diff, &before_redactions);
+            apply_diff_redactions(diff, &after_redactions);
+        }
+
+        Ok(())
     }
 
     /// Revert an entity to the `before` state recorded in the given audit entry.
@@ -4864,6 +5064,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     }
                 }
 
+                let entity = self.redact_entity_for_read_with_context(
+                    next_col,
+                    entity,
+                    caller,
+                    attribution,
+                )?;
                 visited.insert(neighbor_key);
                 links_traversed.push(link.clone());
 
@@ -5152,6 +5358,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
 
             let already_linked = existing_targets.contains(entity.id.as_str());
+            let entity = self.redact_entity_for_read_with_context(
+                &target_collection,
+                entity,
+                caller,
+                attribution,
+            )?;
             candidates.push(crate::response::LinkCandidate {
                 entity,
                 already_linked,
@@ -5247,6 +5459,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     caller,
                     attribution,
                 )? {
+                    let target = self.redact_entity_for_read_with_context(
+                        &link.target_collection,
+                        target,
+                        caller,
+                        attribution,
+                    )?;
                     groups.entry(key).or_default().push(target);
                 }
             }
@@ -5263,6 +5481,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     caller,
                     attribution,
                 )? {
+                    let source = self.redact_entity_for_read_with_context(
+                        &link.source_collection,
+                        source,
+                        caller,
+                        attribution,
+                    )?;
                     groups.entry(key).or_default().push(source);
                 }
             }
@@ -5995,13 +6219,95 @@ fn union_entity_id_sets(sets: Vec<Vec<EntityId>>) -> Vec<EntityId> {
 }
 
 fn entity_policy_data(entity: &Entity) -> Value {
-    let mut data = entity.data.clone();
+    policy_data_with_entity_id(&entity.id, &entity.data)
+}
+
+fn policy_data_with_entity_id(entity_id: &EntityId, source: &Value) -> Value {
+    let mut data = source.clone();
     if let Some(object) = data.as_object_mut() {
         object
             .entry("_id")
-            .or_insert_with(|| Value::String(entity.id.to_string()));
+            .or_insert_with(|| Value::String(entity_id.to_string()));
     }
     data
+}
+
+fn apply_field_redactions(data: &mut Value, redactions: &[(String, Value)]) {
+    for (field_path, redaction) in redactions {
+        redact_json_path(data, field_path, redaction);
+    }
+}
+
+fn redact_json_path(data: &mut Value, path: &str, redaction: &Value) {
+    let segments: Vec<&str> = path.split('.').collect();
+    redact_json_segments(data, &segments, redaction);
+}
+
+fn redact_json_segments(data: &mut Value, segments: &[&str], redaction: &Value) {
+    let Some((segment, rest)) = segments.split_first() else {
+        return;
+    };
+
+    if let Some(array) = data.as_array_mut() {
+        for item in array {
+            redact_json_segments(item, segments, redaction);
+        }
+        return;
+    }
+
+    if let Some(field) = segment.strip_suffix("[]") {
+        let Some(object) = data.as_object_mut() else {
+            return;
+        };
+        if rest.is_empty() {
+            object.insert(field.to_string(), redaction.clone());
+            return;
+        }
+        let Some(array) = object.get_mut(field).and_then(Value::as_array_mut) else {
+            return;
+        };
+        for item in array {
+            redact_json_segments(item, rest, redaction);
+        }
+        return;
+    }
+
+    let Some(object) = data.as_object_mut() else {
+        return;
+    };
+    if rest.is_empty() {
+        object.insert((*segment).to_string(), redaction.clone());
+        return;
+    }
+    let child = object
+        .entry((*segment).to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    redact_json_segments(child, rest, redaction);
+}
+
+fn apply_diff_redactions(diff: &mut HashMap<String, FieldDiff>, redactions: &[(String, Value)]) {
+    for (field_path, redaction) in redactions {
+        let mut segments = field_path.split('.');
+        let Some(first) = segments.next() else {
+            continue;
+        };
+        let first = first.strip_suffix("[]").unwrap_or(first);
+        let Some(field_diff) = diff.get_mut(first) else {
+            continue;
+        };
+        let rest: Vec<&str> = segments.collect();
+        if rest.is_empty() {
+            field_diff.before = Some(redaction.clone());
+            field_diff.after = Some(redaction.clone());
+        } else {
+            if let Some(before) = field_diff.before.as_mut() {
+                redact_json_segments(before, &rest, redaction);
+            }
+            if let Some(after) = field_diff.after.as_mut() {
+                redact_json_segments(after, &rest, redaction);
+            }
+        }
+    }
 }
 
 fn policy_static_predicate_matches(
@@ -6808,6 +7114,24 @@ mod tests {
         }
     }
 
+    fn redacted_field_policy(field: &str) -> FieldPolicy {
+        FieldPolicy {
+            read: Some(FieldAccessPolicy {
+                allow: vec![],
+                deny: vec![FieldPolicyRule {
+                    name: Some(format!("blocked-cannot-read-{field}")),
+                    when: Some(PolicyPredicate::Subject {
+                        subject: "user_id".into(),
+                        op: PolicyCompareOp::Eq(json!("blocked")),
+                    }),
+                    where_clause: None,
+                    redact_as: Some(Value::Null),
+                }],
+            }),
+            write: None,
+        }
+    }
+
     fn assert_policy_forbidden(err: AxonError, reason: &str, field_path: Option<&str>) {
         let text = err.to_string();
         assert!(text.contains("forbidden:"), "unexpected error: {text}");
@@ -7390,6 +7714,163 @@ mod tests {
             .expect("policy diagnostics")
             .storage_filters
             .contains(&"link_index:outgoing:assigned".to_string()));
+    }
+
+    #[test]
+    fn policy_read_redacts_entity_traverse_and_audit_payloads() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_redaction_docs");
+        let mut schema = policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                read: Some(allow_all_policy()),
+                fields: HashMap::from([("secret".into(), redacted_field_policy("secret"))]),
+                ..Default::default()
+            },
+        );
+        schema.entity_schema = Some(json!({
+            "type": "object",
+            "required": ["title", "secret"],
+            "properties": {
+                "title": {"type": "string"},
+                "secret": {"type": "string"}
+            }
+        }));
+        schema.link_types.insert(
+            "edge".into(),
+            LinkTypeDef {
+                target_collection: collection.to_string(),
+                cardinality: Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: None,
+            },
+        );
+        h.put_schema(schema).expect("redaction policy schema");
+
+        for (id, title, secret) in [
+            ("doc-1", "source", "classified"),
+            ("doc-2", "target", "target-secret"),
+        ] {
+            h.create_entity(CreateEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new(id),
+                data: json!({"title": title, "secret": secret}),
+                actor: Some("admin".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect("seed redaction row");
+        }
+        h.update_entity(UpdateEntityRequest {
+            collection: collection.clone(),
+            id: EntityId::new("doc-1"),
+            data: json!({"title": "source-updated", "secret": "changed-secret"}),
+            expected_version: 1,
+            actor: Some("admin".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("update redaction row");
+        h.create_link(CreateLinkRequest {
+            source_collection: collection.clone(),
+            source_id: EntityId::new("doc-1"),
+            target_collection: collection.clone(),
+            target_id: EntityId::new("doc-2"),
+            link_type: "edge".into(),
+            metadata: json!({}),
+            actor: Some("admin".into()),
+            attribution: None,
+        })
+        .expect("seed redaction link");
+
+        let caller = CallerIdentity::new("blocked", Role::Read);
+        let get = h
+            .get_entity_with_caller(
+                GetEntityRequest {
+                    collection: collection.clone(),
+                    id: EntityId::new("doc-1"),
+                },
+                &caller,
+                None,
+            )
+            .expect("redacted point read");
+        assert_eq!(get.entity.data["title"], "source-updated");
+        assert_eq!(get.entity.data["secret"], Value::Null);
+        let get_json = serde_json::to_string(&get.entity).expect("serialize get");
+        assert!(!get_json.contains("changed-secret"));
+
+        let list = h
+            .query_entities_with_caller(
+                QueryEntitiesRequest {
+                    collection: collection.clone(),
+                    ..Default::default()
+                },
+                &caller,
+                None,
+            )
+            .expect("redacted list read");
+        assert_eq!(list.total_count, 2);
+        assert!(list
+            .entities
+            .iter()
+            .all(|entity| entity.data["secret"] == Value::Null));
+        let list_json = serde_json::to_string(&list.entities).expect("serialize list");
+        assert!(!list_json.contains("target-secret"));
+
+        let traversal = h
+            .traverse_with_caller(
+                TraverseRequest {
+                    collection: collection.clone(),
+                    id: EntityId::new("doc-1"),
+                    link_type: Some("edge".into()),
+                    max_depth: Some(1),
+                    direction: TraverseDirection::Forward,
+                    hop_filter: None,
+                },
+                &caller,
+                None,
+            )
+            .expect("redacted traversal");
+        assert_eq!(traversal.entities.len(), 1);
+        assert_eq!(traversal.entities[0].data["secret"], Value::Null);
+        assert_eq!(
+            traversal.paths[0].hops[0].entity.data["secret"],
+            Value::Null
+        );
+        let traversal_json =
+            serde_json::to_string(&traversal.entities).expect("serialize traversal");
+        assert!(!traversal_json.contains("target-secret"));
+
+        let audit = h
+            .query_audit_with_caller(
+                QueryAuditRequest {
+                    collection: Some(collection),
+                    entity_id: Some(EntityId::new("doc-1")),
+                    ..Default::default()
+                },
+                &caller,
+                None,
+            )
+            .expect("redacted audit read");
+        let update_entry = audit
+            .entries
+            .iter()
+            .find(|entry| entry.mutation == MutationType::EntityUpdate)
+            .expect("update audit entry");
+        assert_eq!(
+            update_entry.data_before.as_ref().expect("before")["secret"],
+            Value::Null
+        );
+        assert_eq!(
+            update_entry.data_after.as_ref().expect("after")["secret"],
+            Value::Null
+        );
+        let diff = update_entry.diff.as_ref().expect("redacted diff");
+        assert_eq!(diff["secret"].before, Some(Value::Null));
+        assert_eq!(diff["secret"].after, Some(Value::Null));
+        let audit_json = serde_json::to_string(&audit.entries).expect("serialize audit");
+        assert!(!audit_json.contains("classified"));
+        assert!(!audit_json.contains("changed-secret"));
     }
 
     #[test]
