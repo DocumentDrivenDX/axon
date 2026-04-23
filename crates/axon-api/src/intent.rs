@@ -4,8 +4,11 @@ use std::fmt;
 
 use axon_core::id::{CollectionId, EntityId, LinkId};
 use axon_schema::access_control::{ApprovalRoute, PolicyDecision};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 /// Tenant/database scope bound into a mutation intent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -263,6 +266,171 @@ impl MutationIntentToken {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Signs and verifies opaque mutation intent tokens with a deployment secret.
+#[derive(Clone)]
+pub struct MutationIntentTokenSigner {
+    deployment_secret: Vec<u8>,
+}
+
+impl fmt::Debug for MutationIntentTokenSigner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MutationIntentTokenSigner")
+            .finish_non_exhaustive()
+    }
+}
+
+impl MutationIntentTokenSigner {
+    /// Creates a signer from deployment-local secret bytes.
+    pub fn new(deployment_secret: impl Into<Vec<u8>>) -> Self {
+        Self {
+            deployment_secret: deployment_secret.into(),
+        }
+    }
+
+    /// Issues an opaque token for the given intent ID.
+    pub fn issue_for_id(&self, intent_id: &str) -> MutationIntentToken {
+        let intent_id_part = URL_SAFE_NO_PAD.encode(intent_id.as_bytes());
+        let signature = hmac_sha256(&self.deployment_secret, intent_id.as_bytes());
+        let signature_part = URL_SAFE_NO_PAD.encode(signature);
+        MutationIntentToken::new(format!("{intent_id_part}.{signature_part}"))
+    }
+
+    /// Issues an opaque token for a stored mutation intent.
+    pub fn issue(&self, intent: &MutationIntent) -> MutationIntentToken {
+        self.issue_for_id(&intent.intent_id)
+    }
+
+    /// Verifies token shape and HMAC, returning the signed intent ID.
+    pub fn verify(
+        &self,
+        token: &MutationIntentToken,
+    ) -> Result<String, MutationIntentTokenLookupError> {
+        let (intent_id_part, signature_part) = split_token(token.as_str())?;
+        let intent_id_bytes = URL_SAFE_NO_PAD
+            .decode(intent_id_part)
+            .map_err(|_| MutationIntentTokenLookupError::MalformedToken)?;
+        if intent_id_bytes.is_empty() {
+            return Err(MutationIntentTokenLookupError::MalformedToken);
+        }
+        let intent_id = String::from_utf8(intent_id_bytes)
+            .map_err(|_| MutationIntentTokenLookupError::MalformedToken)?;
+
+        let signature = URL_SAFE_NO_PAD
+            .decode(signature_part)
+            .map_err(|_| MutationIntentTokenLookupError::MalformedToken)?;
+        let expected = hmac_sha256(&self.deployment_secret, intent_id.as_bytes());
+        if signature.len() != expected.len() || !constant_time_eq(&signature, &expected) {
+            return Err(MutationIntentTokenLookupError::InvalidSignature);
+        }
+
+        Ok(intent_id)
+    }
+
+    /// Verifies a token, performs a scope-bound lookup, and checks commit state.
+    pub fn resolve_for_commit<F>(
+        &self,
+        token: &MutationIntentToken,
+        expected_scope: &MutationIntentScopeBinding,
+        now_ns: u64,
+        lookup: F,
+    ) -> Result<MutationIntent, MutationIntentTokenLookupError>
+    where
+        F: FnOnce(&str, &MutationIntentScopeBinding) -> Option<MutationIntent>,
+    {
+        let intent_id = self.verify(token)?;
+        let intent =
+            lookup(&intent_id, expected_scope).ok_or(MutationIntentTokenLookupError::NotFound)?;
+        if &intent.scope != expected_scope {
+            return Err(MutationIntentTokenLookupError::TenantDatabaseMismatch);
+        }
+        validate_intent_commit_state(&intent, now_ns)?;
+        Ok(intent)
+    }
+}
+
+fn split_token(token: &str) -> Result<(&str, &str), MutationIntentTokenLookupError> {
+    let mut parts = token.split('.');
+    let Some(intent_id_part) = parts.next() else {
+        return Err(MutationIntentTokenLookupError::MalformedToken);
+    };
+    let Some(signature_part) = parts.next() else {
+        return Err(MutationIntentTokenLookupError::MalformedToken);
+    };
+    if parts.next().is_some() || intent_id_part.is_empty() || signature_part.is_empty() {
+        return Err(MutationIntentTokenLookupError::MalformedToken);
+    }
+    Ok((intent_id_part, signature_part))
+}
+
+fn validate_intent_commit_state(
+    intent: &MutationIntent,
+    now_ns: u64,
+) -> Result<(), MutationIntentTokenLookupError> {
+    if intent.expires_at <= now_ns || intent.approval_state == ApprovalState::Expired {
+        return Err(MutationIntentTokenLookupError::Expired);
+    }
+
+    match intent.approval_state {
+        ApprovalState::Rejected => return Err(MutationIntentTokenLookupError::Rejected),
+        ApprovalState::Committed => return Err(MutationIntentTokenLookupError::AlreadyCommitted),
+        _ => {}
+    }
+
+    match intent.decision {
+        MutationIntentDecision::Deny => Err(MutationIntentTokenLookupError::Unauthorized),
+        MutationIntentDecision::NeedsApproval
+            if intent.approval_state != ApprovalState::Approved =>
+        {
+            Err(MutationIntentTokenLookupError::ApprovalRequired)
+        }
+        MutationIntentDecision::Allow | MutationIntentDecision::NeedsApproval => Ok(()),
+    }
+}
+
+fn hmac_sha256(secret: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK_LEN: usize = 64;
+
+    let mut key_block = [0_u8; BLOCK_LEN];
+    if secret.len() > BLOCK_LEN {
+        let digest = Sha256::digest(secret);
+        key_block[..digest.len()].copy_from_slice(&digest);
+    } else {
+        key_block[..secret.len()].copy_from_slice(secret);
+    }
+
+    let mut inner_pad = [0x36_u8; BLOCK_LEN];
+    let mut outer_pad = [0x5c_u8; BLOCK_LEN];
+    for index in 0..BLOCK_LEN {
+        inner_pad[index] ^= key_block[index];
+        outer_pad[index] ^= key_block[index];
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(inner_pad);
+    hasher.update(message);
+    let inner = hasher.finalize();
+
+    let mut hasher = Sha256::new();
+    hasher.update(outer_pad);
+    hasher.update(inner);
+    let digest = hasher.finalize();
+
+    let mut output = [0_u8; 32];
+    output.copy_from_slice(&digest);
+    output
+}
+
+fn constant_time_eq(actual: &[u8], expected: &[u8; 32]) -> bool {
+    if actual.len() != expected.len() {
+        return false;
+    }
+    let mut diff = 0_u8;
+    for (actual_byte, expected_byte) in actual.iter().zip(expected.iter()) {
+        diff |= actual_byte ^ expected_byte;
+    }
+    diff == 0
 }
 
 /// Intent plus token for decisions that can legally be committed later.
@@ -614,6 +782,132 @@ mod tests {
             err.to_string().contains("cannot carry an executable token"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn intent_token_signing_uses_adr019_base64url_hmac_format() {
+        let signer = MutationIntentTokenSigner::new(b"deployment-secret".to_vec());
+        let intent_id = "mint_01H";
+        let token = signer.issue_for_id(intent_id);
+        let parts: Vec<&str> = token.as_str().split('.').collect();
+
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0], URL_SAFE_NO_PAD.encode(intent_id.as_bytes()));
+        assert!(!token.as_str().contains('='));
+        assert_eq!(signer.issue_for_id(intent_id), token);
+        assert_eq!(
+            signer.verify(&token).expect("token should verify"),
+            intent_id
+        );
+    }
+
+    #[test]
+    fn valid_token_lookup_returns_scope_bound_intent() {
+        let signer = MutationIntentTokenSigner::new(b"deployment-secret".to_vec());
+        let intent = sample_intent(MutationIntentDecision::Allow);
+        let token = signer.issue(&intent);
+        let expected_scope = intent.scope.clone();
+        let mut observed_scope = None;
+
+        let resolved = signer
+            .resolve_for_commit(&token, &expected_scope, 1, |intent_id, scope| {
+                observed_scope = Some(scope.clone());
+                assert_eq!(intent_id, intent.intent_id);
+                Some(intent.clone())
+            })
+            .expect("valid token should resolve");
+
+        assert_eq!(observed_scope, Some(expected_scope));
+        assert_eq!(resolved.intent_id, "mint_01H");
+    }
+
+    #[test]
+    fn bad_hmac_is_rejected() {
+        let signer = MutationIntentTokenSigner::new(b"deployment-secret".to_vec());
+        let verifier = MutationIntentTokenSigner::new(b"different-secret".to_vec());
+        let token = signer.issue_for_id("mint_01H");
+
+        assert_eq!(
+            verifier.verify(&token),
+            Err(MutationIntentTokenLookupError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn malformed_tokens_are_rejected_before_lookup() {
+        let signer = MutationIntentTokenSigner::new(b"deployment-secret".to_vec());
+        let malformed = [
+            "",
+            "one-part",
+            "too.many.parts",
+            ".signature",
+            "intent.",
+            "not base64.signature",
+            "a.not base64",
+        ];
+
+        for raw in malformed {
+            let token = MutationIntentToken::new(raw);
+            assert_eq!(
+                signer.verify(&token),
+                Err(MutationIntentTokenLookupError::MalformedToken),
+                "token should be malformed: {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrong_tenant_database_scope_is_rejected_after_lookup() {
+        let signer = MutationIntentTokenSigner::new(b"deployment-secret".to_vec());
+        let intent = sample_intent(MutationIntentDecision::Allow);
+        let token = signer.issue(&intent);
+        let wrong_scope = MutationIntentScopeBinding {
+            tenant_id: "other-tenant".into(),
+            database_id: intent.scope.database_id.clone(),
+        };
+
+        let err = signer
+            .resolve_for_commit(&token, &wrong_scope, 1, |_intent_id, _scope| {
+                Some(intent.clone())
+            })
+            .expect_err("scope mismatch should fail");
+
+        assert_eq!(err, MutationIntentTokenLookupError::TenantDatabaseMismatch);
+    }
+
+    #[test]
+    fn expired_token_lookup_is_rejected() {
+        let signer = MutationIntentTokenSigner::new(b"deployment-secret".to_vec());
+        let mut intent = sample_intent(MutationIntentDecision::Allow);
+        intent.expires_at = 99;
+        let token = signer.issue(&intent);
+
+        let err = signer
+            .resolve_for_commit(&token, &intent.scope, 99, |_intent_id, _scope| {
+                Some(intent.clone())
+            })
+            .expect_err("expired token should fail");
+
+        assert_eq!(err, MutationIntentTokenLookupError::Expired);
+    }
+
+    #[test]
+    fn token_verification_alone_does_not_authorize_commit() {
+        let signer = MutationIntentTokenSigner::new(b"deployment-secret".to_vec());
+        let intent = sample_intent(MutationIntentDecision::NeedsApproval);
+        let token = signer.issue(&intent);
+
+        assert_eq!(
+            signer.verify(&token).expect("signature should verify"),
+            intent.intent_id
+        );
+        let err = signer
+            .resolve_for_commit(&token, &intent.scope, 1, |_intent_id, _scope| {
+                Some(intent.clone())
+            })
+            .expect_err("pending approval should not commit");
+
+        assert_eq!(err, MutationIntentTokenLookupError::ApprovalRequired);
     }
 
     #[test]

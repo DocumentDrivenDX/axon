@@ -19,7 +19,7 @@ pub use intent::{
     ApprovalState, CanonicalOperationMetadata, ExecutableMutationIntent, MutationApprovalRoute,
     MutationIntent, MutationIntentDecision, MutationIntentModelError, MutationIntentScopeBinding,
     MutationIntentSubjectBinding, MutationIntentToken, MutationIntentTokenLookupError,
-    MutationOperationKind, MutationReviewSummary, PreImageBinding,
+    MutationIntentTokenSigner, MutationOperationKind, MutationReviewSummary, PreImageBinding,
 };
 pub use policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
 pub use transaction::Transaction;
