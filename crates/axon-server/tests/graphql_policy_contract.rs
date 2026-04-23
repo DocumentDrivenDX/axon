@@ -663,6 +663,151 @@ async fn graphql_explain_policy_reports_rules_denials_and_approval_envelopes() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn graphql_preview_mutation_records_policy_diff_and_never_writes_entity_state() {
+    let server = test_server();
+    seed_policy_fixture(&server).await;
+
+    let before_audit = server
+        .get("/tenants/default/databases/default/audit/query?collection=task&operation=entity.update")
+        .await;
+    before_audit.assert_status_ok();
+    assert_eq!(
+        before_audit.json::<Value>()["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+
+    let preview = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "patch_entity"
+                    operation: {
+                        collection: "task"
+                        id: "task-a"
+                        expected_version: 1
+                        patch: { budget_cents: 20000 }
+                    }
+                }
+                subject: { userId: "finance-agent" }
+                expiresInSeconds: 600
+            }) {
+                decision
+                intentToken
+                canonicalOperation { operationKind operationHash operation }
+                diff
+                affectedFields
+                affectedRecords { kind collection id version }
+                approvalRoute { role reasonRequired deadlineSeconds separationOfDuties }
+                policyExplanation
+                intent {
+                    id
+                    tenantId
+                    databaseId
+                    decision
+                    approvalState
+                    operationHash
+                    preImages { kind collection id version }
+                }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        preview["errors"].is_null(),
+        "unexpected preview errors: {preview}"
+    );
+    let result = &preview["data"]["previewMutation"];
+    assert_eq!(result["decision"], "needs_approval");
+    assert!(result["intentToken"].as_str().is_some());
+    assert_eq!(result["intent"]["tenantId"], "default");
+    assert_eq!(result["intent"]["databaseId"], "default");
+    assert_eq!(result["intent"]["approvalState"], "pending");
+    assert_eq!(result["approvalRoute"]["role"], json!("finance_approver"));
+    assert_eq!(result["approvalRoute"]["reasonRequired"], true);
+    assert_eq!(result["affectedRecords"][0]["kind"], "entity");
+    assert_eq!(result["affectedRecords"][0]["collection"], "task");
+    assert_eq!(result["affectedRecords"][0]["id"], "task-a");
+    assert_eq!(result["affectedRecords"][0]["version"], 1);
+    assert_eq!(
+        result["canonicalOperation"]["operationKind"],
+        "patch_entity"
+    );
+    assert!(result["canonicalOperation"]["operationHash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    assert_eq!(
+        result["canonicalOperation"]["operationHash"],
+        result["intent"]["operationHash"]
+    );
+    assert!(
+        result["affectedFields"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("budget_cents")),
+        "budget diff should be reported: {result}"
+    );
+    assert_eq!(result["diff"]["budget_cents"]["before"], 5000);
+    assert_eq!(result["diff"]["budget_cents"]["after"], 20000);
+    assert!(result["policyExplanation"][0]
+        .as_str()
+        .unwrap()
+        .contains("needs_approval"));
+
+    let denied = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "patch_entity"
+                    operation: {
+                        collection: "task"
+                        id: "task-a"
+                        expected_version: 1
+                        patch: { secret: "changed" }
+                    }
+                }
+            }) { decision intentToken policyExplanation }
+        }"#,
+    )
+    .await;
+    assert!(
+        denied["errors"].is_null(),
+        "unexpected denied preview errors: {denied}"
+    );
+    assert_eq!(denied["data"]["previewMutation"]["decision"], "deny");
+    assert!(denied["data"]["previewMutation"]["intentToken"].is_null());
+
+    let stored = gql_as(
+        &server,
+        "admin",
+        r#"{ entity(collection: "task", id: "task-a") { id data } }"#,
+    )
+    .await;
+    assert_eq!(stored["data"]["entity"]["data"]["budget_cents"], 5000);
+    assert_eq!(stored["data"]["entity"]["data"]["secret"], "alpha");
+
+    let after_audit = server
+        .get("/tenants/default/databases/default/audit/query?collection=task&operation=entity.update")
+        .await;
+    after_audit.assert_status_ok();
+    assert_eq!(
+        after_audit.json::<Value>()["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0,
+        "preview must not append entity mutation audit entries"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_put_schema_exposes_policy_compile_reports_and_errors() {
     let server = test_server();
 
