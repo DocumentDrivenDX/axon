@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 
 import {
 	applyEntityRollback,
+	approveMutationIntent,
 	commitMutationIntent,
 	createCollection,
 	createEntity,
@@ -22,6 +23,8 @@ import {
 	fetchEntities,
 	fetchEntity,
 	fetchEntityAudit,
+	fetchMutationIntent,
+	fetchMutationIntents,
 	fetchRenderedEntity,
 	fetchSchema,
 	fetchTenant,
@@ -36,6 +39,7 @@ import {
 	previewMutationIntent,
 	previewSchemaChange,
 	putCollectionTemplate,
+	rejectMutationIntent,
 	removeTenantMember,
 	removeUserRole,
 	revertAuditEntry,
@@ -94,6 +98,44 @@ beforeEach(() => {
 afterEach(() => {
 	globalThis.fetch = originalFetch;
 });
+
+function sampleMutationIntent(overrides: Record<string, unknown> = {}) {
+	return {
+		id: 'mint_1',
+		tenantId: 'acme',
+		databaseId: 'orders',
+		subject: { user_id: 'finance-agent' },
+		schemaVersion: 1,
+		policyVersion: 1,
+		operation: {
+			operationKind: 'patch_entity',
+			operationHash: 'sha256:abc',
+			operation: {
+				collection: 'tasks',
+				id: 'task-1',
+				expected_version: 1,
+				patch: { budget_cents: 20000 },
+			},
+		},
+		operationHash: 'sha256:abc',
+		preImages: [{ kind: 'entity', collection: 'tasks', id: 'task-1', version: 1 }],
+		decision: 'needs_approval',
+		approvalState: 'pending',
+		approvalRoute: {
+			role: 'finance_approver',
+			reasonRequired: true,
+			deadlineSeconds: 86400,
+			separationOfDuties: true,
+		},
+		expiresAtNs: '1000000000',
+		reviewSummary: {
+			summary: 'Budget update requires approval',
+			affected_fields: ['budget_cents'],
+			policy_explanation: ['large-budget-needs-finance-approval'],
+		},
+		...overrides,
+	};
+}
 
 test('request() prefixes URL with tenant/database path when scope is provided', async () => {
 	mockFetch({ data: { collections: [] } });
@@ -321,6 +363,106 @@ test('commitMutationIntent() returns stale GraphQL errors without throwing', asy
 		expect(outcome.error.stale).toHaveLength(1);
 		expect(outcome.error.stale[0]?.dimension).toBe('pre_image');
 	}
+});
+
+test('fetchMutationIntents() loads scoped intent connections', async () => {
+	mockFetch({
+		data: {
+			pendingMutationIntents: {
+				totalCount: 1,
+				edges: [
+					{
+						cursor: 'cursor-1',
+						node: sampleMutationIntent({ id: 'mint_pending' }),
+					},
+				],
+				pageInfo: {
+					hasNextPage: false,
+					hasPreviousPage: false,
+					startCursor: 'cursor-1',
+					endCursor: 'cursor-1',
+				},
+			},
+		},
+	});
+
+	const result = await fetchMutationIntents(
+		{ tenant: 'acme', database: 'orders' },
+		{
+			filter: { status: 'pending', decision: 'needs_approval' },
+			limit: 10,
+		},
+	);
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('pendingMutationIntents');
+	expect(body.variables.filter).toEqual({ status: 'pending', decision: 'needs_approval' });
+	expect(body.variables.limit).toBe(10);
+	expect(result.totalCount).toBe(1);
+	expect(result.edges[0]?.node.id).toBe('mint_pending');
+});
+
+test('fetchMutationIntent() loads a scoped intent detail', async () => {
+	mockFetch({
+		data: {
+			mutationIntent: sampleMutationIntent({ id: 'mint_detail', approvalState: 'approved' }),
+		},
+	});
+
+	const result = await fetchMutationIntent({ tenant: 'acme', database: 'orders' }, 'mint_detail');
+
+	const body = JSON.parse(String(lastRequest?.init?.body));
+	expect(lastRequest?.url).toBe('/tenants/acme/databases/orders/graphql');
+	expect(body.query).toContain('mutationIntent');
+	expect(body.variables).toEqual({ id: 'mint_detail' });
+	expect(result?.id).toBe('mint_detail');
+	expect(result?.approvalState).toBe('approved');
+});
+
+test('approveMutationIntent() and rejectMutationIntent() post review mutations', async () => {
+	mockFetchSequence([
+		{
+			data: {
+				approveMutationIntent: sampleMutationIntent({
+					id: 'mint_review',
+					approvalState: 'approved',
+				}),
+			},
+		},
+		{
+			data: {
+				rejectMutationIntent: sampleMutationIntent({
+					id: 'mint_review',
+					approvalState: 'rejected',
+				}),
+			},
+		},
+	]);
+
+	const approved = await approveMutationIntent(
+		{ tenant: 'acme', database: 'orders' },
+		{ intentId: 'mint_review', reason: 'approved' },
+	);
+	const rejected = await rejectMutationIntent(
+		{ tenant: 'acme', database: 'orders' },
+		{ intentId: 'mint_review', reason: 'rejected' },
+	);
+
+	const approveBody = JSON.parse(String(requests[0]?.init?.body));
+	const rejectBody = JSON.parse(String(requests[1]?.init?.body));
+	expect(approveBody.query).toContain('approveMutationIntent');
+	expect(approveBody.variables.input).toEqual({
+		intentId: 'mint_review',
+		reason: 'approved',
+	});
+	expect(rejectBody.query).toContain('rejectMutationIntent');
+	expect(rejectBody.variables.input).toEqual({
+		intentId: 'mint_review',
+		reason: 'rejected',
+	});
+	expect(approved.approvalState).toBe('approved');
+	expect(rejected.approvalState).toBe('rejected');
 });
 
 test('revertAuditEntry() uses tenant-scoped GraphQL mutation', async () => {

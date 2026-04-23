@@ -9,6 +9,7 @@ const scope = $derived(
 );
 const collectionsHref = $derived(`${base}/tenants/${scope}/collections`);
 const schemasHref = $derived(`${base}/tenants/${scope}/schemas`);
+const intentsHref = $derived(`${base}/tenants/${scope}/intents`);
 const auditHref = $derived(`${base}/tenants/${scope}/audit`);
 const graphqlHref = $derived(`${base}/tenants/${scope}/graphql`);
 </script>
@@ -35,6 +36,10 @@ const graphqlHref = $derived(`${base}/tenants/${scope}/graphql`);
 		<a class="section-card" href={schemasHref}>
 			<h3>Schemas</h3>
 			<p class="muted">Edit entity schemas, link types, gates, validation rules.</p>
+		</a>
+		<a class="section-card" href={intentsHref}>
+			<h3>Intents</h3>
+			<p class="muted">Review pending, approved, rejected, expired, and committed intents.</p>
 		</a>
 		<a class="section-card" href={auditHref}>
 			<h3>Audit Log</h3>

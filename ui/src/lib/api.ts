@@ -348,6 +348,37 @@ export type CommitMutationIntentOutcome =
 	| { ok: true; result: CommitMutationIntentResult }
 	| { ok: false; error: MutationIntentError };
 
+export type MutationIntentFilter = {
+	status?: MutationIntentApprovalState;
+	statuses?: MutationIntentApprovalState[];
+	decision?: MutationIntentDecision;
+	includeExpired?: boolean;
+};
+
+export type MutationIntentPageInfo = {
+	hasNextPage: boolean;
+	hasPreviousPage: boolean;
+	startCursor: string | null;
+	endCursor: string | null;
+};
+
+export type MutationIntentEdge = {
+	cursor: string;
+	node: MutationIntent;
+};
+
+export type MutationIntentConnection = {
+	totalCount: number;
+	edges: MutationIntentEdge[];
+	pageInfo: MutationIntentPageInfo;
+};
+
+export type MutationIntentListInput = {
+	filter?: MutationIntentFilter;
+	limit?: number;
+	after?: string | null;
+};
+
 type AuditFilters = {
 	collection?: string;
 	actor?: string;
@@ -2258,6 +2289,77 @@ export async function commitMutationIntent(
 	}
 
 	return { ok: true, result: committed };
+}
+
+export async function fetchMutationIntents(
+	scope: ScopedTenantDatabase,
+	input: MutationIntentListInput = {},
+): Promise<MutationIntentConnection> {
+	const data = await graphqlRequest<{ pendingMutationIntents: MutationIntentConnection }>(
+		scope,
+		`query AxonUiMutationIntents($filter: MutationIntentFilter, $limit: Int, $after: String) {
+			pendingMutationIntents(filter: $filter, limit: $limit, after: $after) {
+				totalCount
+				edges {
+					cursor
+					node { ${MUTATION_INTENT_FIELDS} }
+				}
+				pageInfo { hasNextPage hasPreviousPage startCursor endCursor }
+			}
+		}`,
+		{
+			filter: input.filter ?? {},
+			limit: input.limit ?? 25,
+			after: input.after ?? null,
+		},
+	);
+
+	return data.pendingMutationIntents;
+}
+
+export async function fetchMutationIntent(
+	scope: ScopedTenantDatabase,
+	id: string,
+): Promise<MutationIntent | null> {
+	const data = await graphqlRequest<{ mutationIntent: MutationIntent | null }>(
+		scope,
+		`query AxonUiMutationIntent($id: ID!) {
+			mutationIntent(id: $id) { ${MUTATION_INTENT_FIELDS} }
+		}`,
+		{ id },
+	);
+
+	return data.mutationIntent;
+}
+
+export async function approveMutationIntent(
+	scope: ScopedTenantDatabase,
+	input: { intentId: string; reason?: string },
+): Promise<MutationIntent> {
+	const data = await graphqlRequest<{ approveMutationIntent: MutationIntent }>(
+		scope,
+		`mutation AxonUiApproveMutationIntent($input: ApproveIntentInput!) {
+			approveMutationIntent(input: $input) { ${MUTATION_INTENT_FIELDS} }
+		}`,
+		{ input },
+	);
+
+	return data.approveMutationIntent;
+}
+
+export async function rejectMutationIntent(
+	scope: ScopedTenantDatabase,
+	input: { intentId: string; reason: string },
+): Promise<MutationIntent> {
+	const data = await graphqlRequest<{ rejectMutationIntent: MutationIntent }>(
+		scope,
+		`mutation AxonUiRejectMutationIntent($input: RejectIntentInput!) {
+			rejectMutationIntent(input: $input) { ${MUTATION_INTENT_FIELDS} }
+		}`,
+		{ input },
+	);
+
+	return data.rejectMutationIntent;
 }
 
 // ── Raw GraphQL passthrough for the playground page ─────────────────────────

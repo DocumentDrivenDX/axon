@@ -11,6 +11,7 @@ const dbHref = $derived(
 );
 const collectionsHref = $derived(`${dbHref}/collections`);
 const schemasHref = $derived(`${dbHref}/schemas`);
+const intentsHref = $derived(`${dbHref}/intents`);
 const auditHref = $derived(`${dbHref}/audit`);
 const graphqlHref = $derived(`${dbHref}/graphql`);
 
@@ -34,6 +35,7 @@ function isActive(href: string): boolean {
 			Collections
 		</a>
 		<a class="subnav-link" class:active={isActive(schemasHref)} href={schemasHref}>Schemas</a>
+		<a class="subnav-link" class:active={isActive(intentsHref)} href={intentsHref}>Intents</a>
 		<a class="subnav-link" class:active={isActive(auditHref)} href={auditHref}>Audit Log</a>
 		<a class="subnav-link" class:active={isActive(graphqlHref)} href={graphqlHref}>GraphQL</a>
 	</nav>
