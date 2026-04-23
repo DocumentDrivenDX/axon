@@ -642,6 +642,34 @@ impl StorageAdapter for MemoryStorageAdapter {
         Ok(intents)
     }
 
+    fn list_mutation_intents_by_state(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        approval_state: ApprovalState,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        let mut intents: Vec<_> = self
+            .mutation_intents
+            .values()
+            .filter(|intent| {
+                intent.scope.tenant_id == tenant_id
+                    && intent.scope.database_id == database_id
+                    && intent.approval_state == approval_state
+            })
+            .cloned()
+            .collect();
+        intents.sort_by(|a, b| {
+            a.expires_at
+                .cmp(&b.expires_at)
+                .then_with(|| a.intent_id.cmp(&b.intent_id))
+        });
+        if let Some(limit) = limit {
+            intents.truncate(limit);
+        }
+        Ok(intents)
+    }
+
     fn update_mutation_intent_state(
         &mut self,
         tenant_id: &str,

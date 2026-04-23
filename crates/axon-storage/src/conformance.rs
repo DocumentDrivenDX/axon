@@ -464,6 +464,41 @@ macro_rules! storage_conformance_tests {
                 assert_eq!(limited_ids, vec!["mint-approved", "mint-pending"]);
             }
 
+            #[test]
+            fn mutation_intent_state_history_lists_explicit_states_without_ttl_filtering() {
+                let mut s = store();
+                for intent in [
+                    intent("tenant-a", "finance", "mint-pending-expired-by-time", ApprovalState::Pending, 500),
+                    intent("tenant-a", "finance", "mint-pending-live", ApprovalState::Pending, 2_000),
+                    intent("tenant-a", "finance", "mint-expired", ApprovalState::Expired, 400),
+                    intent("tenant-a", "finance", "mint-rejected", ApprovalState::Rejected, 300),
+                    intent("tenant-b", "finance", "mint-other-tenant", ApprovalState::Expired, 100),
+                ] {
+                    s.create_mutation_intent(&intent)
+                        .expect("intent create should succeed");
+                }
+
+                let pending = s
+                    .list_mutation_intents_by_state("tenant-a", "finance", ApprovalState::Pending, None)
+                    .expect("pending history list should succeed");
+                let pending_ids: Vec<_> =
+                    pending.iter().map(|intent| intent.intent_id.as_str()).collect();
+                assert_eq!(pending_ids, vec!["mint-pending-expired-by-time", "mint-pending-live"]);
+
+                let expired = s
+                    .list_mutation_intents_by_state("tenant-a", "finance", ApprovalState::Expired, None)
+                    .expect("expired history list should succeed");
+                let expired_ids: Vec<_> =
+                    expired.iter().map(|intent| intent.intent_id.as_str()).collect();
+                assert_eq!(expired_ids, vec!["mint-expired"]);
+
+                let limited = s
+                    .list_mutation_intents_by_state("tenant-a", "finance", ApprovalState::Pending, Some(1))
+                    .expect("limited history list should succeed");
+                assert_eq!(limited.len(), 1);
+                assert_eq!(limited[0].intent_id, "mint-pending-expired-by-time");
+            }
+
             // ── Schema persistence ──────────────────────────────────────
 
             #[test]

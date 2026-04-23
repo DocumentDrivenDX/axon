@@ -960,6 +960,32 @@ impl StorageAdapter for PostgresStorageAdapter {
         rows.iter().map(Self::row_to_mutation_intent).collect()
     }
 
+    fn list_mutation_intents_by_state(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        approval_state: ApprovalState,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        let limit = limit.unwrap_or(i64::MAX as usize) as i64;
+        let rows = self.block_on(
+            sqlx::query(
+                "SELECT intent_json FROM mutation_intents
+                 WHERE tenant_id = $1
+                   AND database_id = $2
+                   AND approval_state = $3
+                 ORDER BY expires_at_ns ASC, intent_id ASC
+                 LIMIT $4",
+            )
+            .bind(tenant_id)
+            .bind(database_id)
+            .bind(approval_state.as_str())
+            .bind(limit)
+            .fetch_all(&self.pool),
+        )?;
+        rows.iter().map(Self::row_to_mutation_intent).collect()
+    }
+
     fn update_mutation_intent_state(
         &mut self,
         tenant_id: &str,

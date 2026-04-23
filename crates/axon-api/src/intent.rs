@@ -1,9 +1,17 @@
 use std::error::Error;
 use std::fmt;
 
+use axon_audit::entry::{
+    AuditEntry, MutationIntentAuditMetadata, MutationIntentAuditOrigin,
+    MutationIntentAuditOriginSurface, MutationType,
+};
+use axon_audit::log::AuditLog;
 use axon_core::error::AxonError;
+use axon_core::id::{CollectionId, EntityId};
 pub use axon_core::intent::*;
 use axon_storage::adapter::StorageAdapter;
+
+const INTENT_AUDIT_COLLECTION: &str = "_mutation_intents";
 
 /// Review decision metadata supplied by an approver or operator.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -90,6 +98,13 @@ pub enum MutationIntentLifecycleError {
         intent_id: String,
         operation: MutationIntentLifecycleOperation,
     },
+    /// The intent reached its TTL boundary before the requested transition.
+    Expired {
+        intent_id: String,
+        operation: MutationIntentLifecycleOperation,
+        expires_at: u64,
+        now_ns: u64,
+    },
     /// Expiry was requested before the intent's deadline.
     NotExpired {
         intent_id: String,
@@ -145,6 +160,16 @@ impl fmt::Display for MutationIntentLifecycleError {
                 "mutation intent '{intent_id}' requires a reason to {}",
                 operation.as_str()
             ),
+            Self::Expired {
+                intent_id,
+                operation,
+                expires_at,
+                now_ns,
+            } => write!(
+                f,
+                "mutation intent '{intent_id}' expired at {expires_at}; cannot {} at {now_ns}",
+                operation.as_str()
+            ),
             Self::NotExpired {
                 intent_id,
                 expires_at,
@@ -158,6 +183,22 @@ impl fmt::Display for MutationIntentLifecycleError {
 }
 
 impl Error for MutationIntentLifecycleError {}
+
+impl MutationIntentLifecycleError {
+    /// Stable machine-facing error code for GraphQL/MCP/SDK surfaces.
+    pub fn error_code(&self) -> &'static str {
+        match self {
+            Self::Storage(_) => "intent_storage_error",
+            Self::NotFound { .. } => "intent_not_found",
+            Self::InvalidPreviewState { .. } => "intent_invalid_preview_state",
+            Self::InvalidTransition { .. } => "intent_invalid_transition",
+            Self::InvalidDecisionTransition { .. } => "intent_invalid_decision_transition",
+            Self::ReasonRequired { .. } => "intent_reason_required",
+            Self::Expired { .. } => "intent_expired",
+            Self::NotExpired { .. } => "intent_not_expired",
+        }
+    }
+}
 
 impl From<AxonError> for MutationIntentLifecycleError {
     fn from(value: AxonError) -> Self {
@@ -214,7 +255,13 @@ impl MutationIntentLifecycleService {
         now_ns: u64,
     ) -> Result<MutationIntent, MutationIntentLifecycleError> {
         let intent = load_intent(storage, scope, intent_id)?;
-        reject_if_expired(&intent, now_ns, MutationIntentLifecycleOperation::Approve)?;
+        reject_if_expired_or_expire(
+            storage,
+            scope,
+            &intent,
+            now_ns,
+            MutationIntentLifecycleOperation::Approve,
+        )?;
         require_decision(
             &intent,
             MutationIntentDecision::NeedsApproval,
@@ -250,7 +297,13 @@ impl MutationIntentLifecycleService {
         now_ns: u64,
     ) -> Result<MutationIntent, MutationIntentLifecycleError> {
         let intent = load_intent(storage, scope, intent_id)?;
-        reject_if_expired(&intent, now_ns, MutationIntentLifecycleOperation::Reject)?;
+        reject_if_expired_or_expire(
+            storage,
+            scope,
+            &intent,
+            now_ns,
+            MutationIntentLifecycleOperation::Reject,
+        )?;
         require_decision(
             &intent,
             MutationIntentDecision::NeedsApproval,
@@ -329,6 +382,84 @@ impl MutationIntentLifecycleService {
         Ok(expired)
     }
 
+    /// Expire one due intent and append a lineage audit record for the transition.
+    pub fn expire_with_audit<S: StorageAdapter, A: AuditLog>(
+        &self,
+        storage: &mut S,
+        audit: &mut A,
+        scope: &MutationIntentScopeBinding,
+        intent_id: &str,
+        now_ns: u64,
+    ) -> Result<MutationIntent, MutationIntentLifecycleError> {
+        let expired = self.expire(storage, scope, intent_id, now_ns)?;
+        append_intent_lifecycle_audit(audit, &expired, MutationType::IntentExpire, "system", None)?;
+        Ok(expired)
+    }
+
+    /// Expire all due intents and append lineage audit records for each transition.
+    pub fn expire_due_with_audit<S: StorageAdapter, A: AuditLog>(
+        &self,
+        storage: &mut S,
+        audit: &mut A,
+        scope: &MutationIntentScopeBinding,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, MutationIntentLifecycleError> {
+        let due = storage.list_expired_mutation_intents(
+            &scope.tenant_id,
+            &scope.database_id,
+            now_ns,
+            limit,
+        )?;
+        let mut expired = Vec::with_capacity(due.len());
+        for intent in due {
+            let updated = self.expire(storage, scope, &intent.intent_id, now_ns)?;
+            append_intent_lifecycle_audit(
+                audit,
+                &updated,
+                MutationType::IntentExpire,
+                "system",
+                None,
+            )?;
+            expired.push(updated);
+        }
+        Ok(expired)
+    }
+
+    /// Materialize due expirations, then list currently pending review intents.
+    pub fn list_pending<S: StorageAdapter>(
+        &self,
+        storage: &mut S,
+        scope: &MutationIntentScopeBinding,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, MutationIntentLifecycleError> {
+        self.expire_due(storage, scope, now_ns, None)?;
+        storage
+            .list_pending_mutation_intents(&scope.tenant_id, &scope.database_id, now_ns, limit)
+            .map_err(MutationIntentLifecycleError::from)
+    }
+
+    /// Materialize due expirations, then list intents by an explicit lifecycle state.
+    pub fn list_by_state<S: StorageAdapter>(
+        &self,
+        storage: &mut S,
+        scope: &MutationIntentScopeBinding,
+        approval_state: ApprovalState,
+        now_ns: u64,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, MutationIntentLifecycleError> {
+        self.expire_due(storage, scope, now_ns, None)?;
+        storage
+            .list_mutation_intents_by_state(
+                &scope.tenant_id,
+                &scope.database_id,
+                approval_state,
+                limit,
+            )
+            .map_err(MutationIntentLifecycleError::from)
+    }
+
     /// Mark an allowed or approved intent as committed.
     pub fn mark_committed<S: StorageAdapter>(
         &self,
@@ -338,7 +469,13 @@ impl MutationIntentLifecycleService {
         now_ns: u64,
     ) -> Result<MutationIntent, MutationIntentLifecycleError> {
         let intent = load_intent(storage, scope, intent_id)?;
-        reject_if_expired(&intent, now_ns, MutationIntentLifecycleOperation::Commit)?;
+        reject_if_expired_or_expire(
+            storage,
+            scope,
+            &intent,
+            now_ns,
+            MutationIntentLifecycleOperation::Commit,
+        )?;
 
         let expected = match intent.decision {
             MutationIntentDecision::Allow => ApprovalState::None,
@@ -404,20 +541,41 @@ fn update_state<S: StorageAdapter>(
         .map_err(MutationIntentLifecycleError::from)
 }
 
-fn reject_if_expired(
+fn reject_if_expired_or_expire<S: StorageAdapter>(
+    storage: &mut S,
+    scope: &MutationIntentScopeBinding,
     intent: &MutationIntent,
     now_ns: u64,
     operation: MutationIntentLifecycleOperation,
 ) -> Result<(), MutationIntentLifecycleError> {
-    if intent.expires_at <= now_ns || intent.approval_state == ApprovalState::Expired {
-        return Err(MutationIntentLifecycleError::InvalidTransition {
+    let already_expired = intent.approval_state == ApprovalState::Expired;
+    let due = intent.expires_at <= now_ns;
+    if !already_expired && due && expirable_state(&intent.approval_state) {
+        update_state(
+            storage,
+            scope,
+            &intent.intent_id,
+            intent.approval_state.clone(),
+            ApprovalState::Expired,
+        )?;
+    }
+
+    if already_expired || due {
+        return Err(MutationIntentLifecycleError::Expired {
             intent_id: intent.intent_id.clone(),
             operation,
-            from: intent.approval_state.clone(),
-            to: transition_target(operation),
+            expires_at: intent.expires_at,
+            now_ns,
         });
     }
     Ok(())
+}
+
+fn expirable_state(state: &ApprovalState) -> bool {
+    matches!(
+        state,
+        ApprovalState::None | ApprovalState::Pending | ApprovalState::Approved
+    )
 }
 
 fn require_decision(
@@ -471,13 +629,50 @@ fn require_reason(
     Ok(())
 }
 
-fn transition_target(operation: MutationIntentLifecycleOperation) -> ApprovalState {
-    match operation {
-        MutationIntentLifecycleOperation::CreatePreview => ApprovalState::None,
-        MutationIntentLifecycleOperation::Approve => ApprovalState::Approved,
-        MutationIntentLifecycleOperation::Reject => ApprovalState::Rejected,
-        MutationIntentLifecycleOperation::Expire => ApprovalState::Expired,
-        MutationIntentLifecycleOperation::Commit => ApprovalState::Committed,
+fn append_intent_lifecycle_audit<A: AuditLog>(
+    audit: &mut A,
+    intent: &MutationIntent,
+    mutation: MutationType,
+    actor: &str,
+    reason: Option<String>,
+) -> Result<AuditEntry, MutationIntentLifecycleError> {
+    let data_after = serde_json::to_value(intent)
+        .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
+    let entry = AuditEntry::new(
+        CollectionId::new(INTENT_AUDIT_COLLECTION),
+        EntityId::new(intent.intent_id.clone()),
+        0,
+        mutation,
+        None,
+        Some(data_after),
+        Some(actor.to_string()),
+    )
+    .with_intent_lineage(intent_lifecycle_lineage(intent, reason));
+    audit
+        .append(entry)
+        .map_err(MutationIntentLifecycleError::from)
+}
+
+fn intent_lifecycle_lineage(
+    intent: &MutationIntent,
+    reason: Option<String>,
+) -> MutationIntentAuditMetadata {
+    MutationIntentAuditMetadata {
+        intent_id: intent.intent_id.clone(),
+        decision: intent.decision.clone(),
+        approval_id: None,
+        policy_version: intent.policy_version,
+        schema_version: intent.schema_version,
+        subject_snapshot: intent.subject.clone(),
+        approver: None,
+        reason,
+        origin: Some(MutationIntentAuditOrigin {
+            surface: MutationIntentAuditOriginSurface::System,
+            tool_name: None,
+            request_id: None,
+            operation_hash: Some(intent.operation.operation_hash.clone()),
+        }),
+        lineage_links: Vec::new(),
     }
 }
 
@@ -487,6 +682,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use axon_audit::log::{AuditLog, AuditQuery, MemoryAuditLog};
     use axon_core::id::{CollectionId, EntityId};
     use axon_storage::memory::MemoryStorageAdapter;
 
@@ -763,6 +959,208 @@ mod tests {
     }
 
     #[test]
+    fn due_intents_are_materialized_as_expired_before_review_or_commit() {
+        let mut storage = MemoryStorageAdapter::default();
+        let svc = service();
+        for (id, decision, state) in [
+            (
+                "mint_approve_expired",
+                MutationIntentDecision::NeedsApproval,
+                ApprovalState::Pending,
+            ),
+            (
+                "mint_reject_expired",
+                MutationIntentDecision::NeedsApproval,
+                ApprovalState::Pending,
+            ),
+            (
+                "mint_commit_expired",
+                MutationIntentDecision::Allow,
+                ApprovalState::None,
+            ),
+        ] {
+            svc.create_preview_record(&mut storage, intent(id, decision, state, 10, false))
+                .expect("preview should persist");
+        }
+
+        let approve = svc
+            .approve(
+                &mut storage,
+                &scope(),
+                "mint_approve_expired",
+                metadata(Some("too late")),
+                10,
+            )
+            .expect_err("expired approval should fail");
+        assert_eq!(
+            approve,
+            MutationIntentLifecycleError::Expired {
+                intent_id: "mint_approve_expired".into(),
+                operation: MutationIntentLifecycleOperation::Approve,
+                expires_at: 10,
+                now_ns: 10,
+            }
+        );
+        assert_eq!(approve.error_code(), "intent_expired");
+
+        let reject = svc
+            .reject(
+                &mut storage,
+                &scope(),
+                "mint_reject_expired",
+                metadata(Some("too late")),
+                11,
+            )
+            .expect_err("expired rejection should fail");
+        assert_eq!(
+            reject,
+            MutationIntentLifecycleError::Expired {
+                intent_id: "mint_reject_expired".into(),
+                operation: MutationIntentLifecycleOperation::Reject,
+                expires_at: 10,
+                now_ns: 11,
+            }
+        );
+        assert_eq!(reject.error_code(), "intent_expired");
+
+        let commit = svc
+            .mark_committed(&mut storage, &scope(), "mint_commit_expired", 12)
+            .expect_err("expired commit should fail");
+        assert_eq!(
+            commit,
+            MutationIntentLifecycleError::Expired {
+                intent_id: "mint_commit_expired".into(),
+                operation: MutationIntentLifecycleOperation::Commit,
+                expires_at: 10,
+                now_ns: 12,
+            }
+        );
+        assert_eq!(commit.error_code(), "intent_expired");
+
+        for id in [
+            "mint_approve_expired",
+            "mint_reject_expired",
+            "mint_commit_expired",
+        ] {
+            let stored = storage
+                .get_mutation_intent("acme", "finance", id)
+                .expect("storage read should succeed")
+                .expect("intent should exist");
+            assert_eq!(stored.approval_state, ApprovalState::Expired);
+        }
+    }
+
+    #[test]
+    fn pending_view_excludes_expired_intents_after_lazy_materialization() {
+        let mut storage = MemoryStorageAdapter::default();
+        let svc = service();
+        svc.create_preview_record(
+            &mut storage,
+            intent(
+                "mint_due_pending",
+                MutationIntentDecision::NeedsApproval,
+                ApprovalState::Pending,
+                10,
+                false,
+            ),
+        )
+        .expect("due preview should persist");
+        svc.create_preview_record(
+            &mut storage,
+            intent(
+                "mint_live_pending",
+                MutationIntentDecision::NeedsApproval,
+                ApprovalState::Pending,
+                100,
+                false,
+            ),
+        )
+        .expect("live preview should persist");
+
+        let pending = svc
+            .list_pending(&mut storage, &scope(), 10, None)
+            .expect("pending view should succeed");
+        let pending_ids: Vec<_> = pending
+            .iter()
+            .map(|intent| intent.intent_id.as_str())
+            .collect();
+        assert_eq!(pending_ids, vec!["mint_live_pending"]);
+
+        let expired = svc
+            .list_by_state(&mut storage, &scope(), ApprovalState::Expired, 10, None)
+            .expect("explicit expired history view should succeed");
+        let expired_ids: Vec<_> = expired
+            .iter()
+            .map(|intent| intent.intent_id.as_str())
+            .collect();
+        assert_eq!(expired_ids, vec!["mint_due_pending"]);
+    }
+
+    #[test]
+    fn expire_due_with_audit_records_intent_lineage() {
+        let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
+        let svc = service();
+        svc.create_preview_record(
+            &mut storage,
+            intent(
+                "mint_due_audited",
+                MutationIntentDecision::NeedsApproval,
+                ApprovalState::Pending,
+                10,
+                false,
+            ),
+        )
+        .expect("preview should persist");
+
+        let expired = svc
+            .expire_due_with_audit(&mut storage, &mut audit, &scope(), 10, None)
+            .expect("audited expiry scan should succeed");
+        assert_eq!(expired.len(), 1);
+        assert_eq!(expired[0].approval_state, ApprovalState::Expired);
+
+        let page = audit
+            .query_paginated(AuditQuery {
+                operation: Some(MutationType::IntentExpire),
+                intent_id: Some("mint_due_audited".into()),
+                ..AuditQuery::default()
+            })
+            .expect("intent expiry audit query should succeed");
+        assert_eq!(page.entries.len(), 1);
+
+        let entry = &page.entries[0];
+        assert_eq!(entry.collection, CollectionId::new(INTENT_AUDIT_COLLECTION));
+        assert_eq!(entry.entity_id, EntityId::new("mint_due_audited"));
+        assert_eq!(entry.mutation, MutationType::IntentExpire);
+        assert_eq!(
+            entry
+                .data_after
+                .as_ref()
+                .expect("expiry audit should include intent snapshot")["approval_state"],
+            json!("expired")
+        );
+
+        let lineage = entry
+            .intent_lineage
+            .as_deref()
+            .expect("expiry audit should include intent lineage");
+        assert_eq!(lineage.intent_id, "mint_due_audited");
+        assert_eq!(lineage.decision, MutationIntentDecision::NeedsApproval);
+        assert_eq!(lineage.policy_version, 7);
+        assert_eq!(lineage.schema_version, 7);
+        assert_eq!(lineage.reason, None);
+        let origin = lineage
+            .origin
+            .as_ref()
+            .expect("expiry lineage should include origin");
+        assert_eq!(origin.surface, MutationIntentAuditOriginSurface::System);
+        assert_eq!(
+            origin.operation_hash.as_deref(),
+            Some("sha256:mint_due_audited")
+        );
+    }
+
+    #[test]
     fn committed_intent_is_single_use_and_replay_is_rejected() {
         let mut storage = MemoryStorageAdapter::default();
         let svc = service();
@@ -853,13 +1251,14 @@ mod tests {
             .expect_err("expired intent should not commit");
         assert_eq!(
             err,
-            MutationIntentLifecycleError::InvalidTransition {
+            MutationIntentLifecycleError::Expired {
                 intent_id: "mint_expired".into(),
                 operation: MutationIntentLifecycleOperation::Commit,
-                from: ApprovalState::Expired,
-                to: ApprovalState::Committed,
+                expires_at: 1,
+                now_ns: 1,
             }
         );
+        assert_eq!(err.error_code(), "intent_expired");
     }
 
     #[test]

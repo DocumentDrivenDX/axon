@@ -347,6 +347,22 @@ pub trait StorageAdapter: Send + Sync {
         Ok(vec![])
     }
 
+    /// List intent records for an explicit approval lifecycle state.
+    ///
+    /// This is a history/status view and does not apply TTL filtering. Service
+    /// layers should run expiry first when they need TTL-bound state to be
+    /// materialized before querying for `expired`.
+    fn list_mutation_intents_by_state(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        approval_state: ApprovalState,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        let _ = (tenant_id, database_id, approval_state, limit);
+        Ok(vec![])
+    }
+
     /// Transition an intent approval state if it currently matches `expected`.
     ///
     /// Returns the updated intent record. This conditional transition prevents
@@ -1297,6 +1313,15 @@ impl StorageAdapter for Box<dyn StorageAdapter + Send + Sync> {
         limit: Option<usize>,
     ) -> Result<Vec<MutationIntent>, AxonError> {
         (**self).list_expired_mutation_intents(tenant_id, database_id, now_ns, limit)
+    }
+    fn list_mutation_intents_by_state(
+        &self,
+        tenant_id: &str,
+        database_id: &str,
+        approval_state: ApprovalState,
+        limit: Option<usize>,
+    ) -> Result<Vec<MutationIntent>, AxonError> {
+        (**self).list_mutation_intents_by_state(tenant_id, database_id, approval_state, limit)
     }
     fn update_mutation_intent_state(
         &mut self,
