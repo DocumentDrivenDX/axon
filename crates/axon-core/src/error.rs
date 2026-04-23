@@ -46,6 +46,101 @@ pub fn schema_validation_field_errors(detail: &str) -> Vec<Value> {
         .collect()
 }
 
+/// Structured policy denial detail returned to API clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicyDenial {
+    pub reason: String,
+    pub collection: String,
+    pub entity_id: Option<String>,
+    pub field_path: Option<String>,
+    pub policy: Option<String>,
+    pub operation_index: Option<usize>,
+    pub missing_index: Option<String>,
+    pub cost_limit: Option<usize>,
+    pub candidate_count: Option<usize>,
+}
+
+impl PolicyDenial {
+    pub fn new(reason: impl Into<String>, collection: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            collection: collection.into(),
+            entity_id: None,
+            field_path: None,
+            policy: None,
+            operation_index: None,
+            missing_index: None,
+            cost_limit: None,
+            candidate_count: None,
+        }
+    }
+
+    pub fn detail(&self) -> Value {
+        let mut detail = json!({
+            "reason": &self.reason,
+            "collection": &self.collection,
+        });
+        if let Some(entity_id) = &self.entity_id {
+            detail["entity_id"] = json!(entity_id);
+        }
+        if let Some(field_path) = &self.field_path {
+            detail["field_path"] = json!(field_path);
+        }
+        if let Some(policy) = &self.policy {
+            detail["policy"] = json!(policy);
+        }
+        if let Some(operation_index) = self.operation_index {
+            detail["operation_index"] = json!(operation_index);
+        }
+        if let Some(missing_index) = &self.missing_index {
+            detail["missing_index"] = json!(missing_index);
+        }
+        if let Some(cost_limit) = self.cost_limit {
+            detail["cost_limit"] = json!(cost_limit);
+        }
+        if let Some(candidate_count) = self.candidate_count {
+            detail["candidate_count"] = json!(candidate_count);
+        }
+        detail
+    }
+
+    pub fn is_policy_filter_unindexed(&self) -> bool {
+        self.reason == "policy_filter_unindexed"
+    }
+}
+
+impl std::fmt::Display for PolicyDenial {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "policy denied: reason={} collection={}",
+            self.reason, self.collection
+        )?;
+        if let Some(entity_id) = &self.entity_id {
+            write!(f, " entity_id={entity_id}")?;
+        }
+        if let Some(field_path) = &self.field_path {
+            write!(f, " field_path={field_path}")?;
+        }
+        if let Some(policy) = &self.policy {
+            write!(f, " policy={policy}")?;
+        }
+        if let Some(operation_index) = self.operation_index {
+            write!(f, " operation_index={operation_index}")?;
+        }
+        if let Some(missing_index) = &self.missing_index {
+            write!(f, " missing_index={missing_index}")?;
+        }
+        if let Some(cost_limit) = self.cost_limit {
+            write!(f, " cost_limit={cost_limit}")?;
+        }
+        if let Some(candidate_count) = self.candidate_count {
+            write!(f, " candidate_count={candidate_count}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Top-level error type for Axon operations.
 #[derive(Debug, Error)]
 pub enum AxonError {
@@ -144,6 +239,10 @@ pub enum AxonError {
     /// not hold the required deployment-admin or tenant-admin role.
     #[error("forbidden: {0}")]
     Forbidden(String),
+
+    /// Data-layer policy denied the operation or rejected an unsafe read plan.
+    #[error("forbidden: {0}")]
+    PolicyDenied(Box<PolicyDenial>),
 
     #[error("storage error: {0}")]
     Storage(String),

@@ -65,10 +65,15 @@ type SharedHandler<S> = Arc<Mutex<AxonHandler<S>>>;
 
 /// Idempotency store type used by the HTTP gateway.
 ///
-/// Caches the JSON body of a successful `POST /transactions` response,
-/// keyed by `(database_id, idempotency_key)`, for up to 5 minutes
-/// (FEAT-008 US-081).
-pub type HttpIdempotencyStore = Arc<IdempotencyStore<Value>>;
+/// Caches a terminal `POST /transactions` response, keyed by
+/// `(database_id, idempotency_key)`, for up to 5 minutes (FEAT-008 US-081).
+pub type HttpIdempotencyStore = Arc<IdempotencyStore<CachedHttpResponse>>;
+
+#[derive(Debug, Clone)]
+pub struct CachedHttpResponse {
+    status: StatusCode,
+    body: Value,
+}
 
 /// Header name for idempotency keys on `POST /transactions` (FEAT-008 US-081).
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
@@ -304,6 +309,14 @@ fn axon_error_response(err: AxonError) -> Response {
                 )),
             )
                 .into_response()
+        }
+        AxonError::PolicyDenied(denial) => {
+            let (status, code) = if denial.is_policy_filter_unindexed() {
+                (StatusCode::BAD_REQUEST, "policy_filter_unindexed")
+            } else {
+                (StatusCode::FORBIDDEN, "forbidden")
+            };
+            (status, Json(ApiError::new(code, denial.detail()))).into_response()
         }
         AxonError::Forbidden(msg) => {
             (StatusCode::FORBIDDEN, Json(ApiError::new("forbidden", msg))).into_response()
@@ -2921,7 +2934,7 @@ async fn commit_transaction(
     if let Some(ref key) = idem_key {
         match idempotency.try_reserve(&idem_scope, key) {
             ReservationResult::AlreadyCached(cached) => {
-                let mut response = (StatusCode::OK, Json(cached)).into_response();
+                let mut response = (cached.status, Json(cached.body)).into_response();
                 response.headers_mut().insert(
                     IDEMPOTENCY_CACHE_HEADER,
                     axum::http::HeaderValue::from_static("hit"),
@@ -2972,12 +2985,14 @@ async fn commit_transaction(
                 // Read current state for audit before-snapshot.
                 let h = handler.lock().await;
                 let data_before = h
-                    .get_entity(GetEntityRequest {
-                        collection: qualify_collection_name(&collection, &current_database),
-                        id: EntityId::new(&id),
-                    })
+                    .storage_ref()
+                    .get(
+                        &qualify_collection_name(&collection, &current_database),
+                        &EntityId::new(&id),
+                    )
                     .ok()
-                    .map(|r| r.entity.data);
+                    .flatten()
+                    .map(|entity| entity.data);
                 drop(h);
                 tx.update(
                     Entity::new(
@@ -2996,11 +3011,18 @@ async fn commit_transaction(
                 expected_version,
             } => {
                 let h = handler.lock().await;
-                let existing = match h.get_entity(GetEntityRequest {
-                    collection: qualify_collection_name(&collection, &current_database),
-                    id: EntityId::new(&id),
-                }) {
-                    Ok(resp) => resp.entity,
+                let existing = match h.storage_ref().get(
+                    &qualify_collection_name(&collection, &current_database),
+                    &EntityId::new(&id),
+                ) {
+                    Ok(Some(entity)) => entity,
+                    Ok(None) => {
+                        drop(h);
+                        if let Some(ref key) = idem_key {
+                            idempotency.release(&idem_scope, key);
+                        }
+                        return axon_error_response(AxonError::NotFound(id.clone()));
+                    }
                     Err(e) => {
                         drop(h);
                         if let Some(ref key) = idem_key {
@@ -3029,12 +3051,14 @@ async fn commit_transaction(
             } => {
                 let h = handler.lock().await;
                 let data_before = h
-                    .get_entity(GetEntityRequest {
-                        collection: qualify_collection_name(&collection, &current_database),
-                        id: EntityId::new(&id),
-                    })
+                    .storage_ref()
+                    .get(
+                        &qualify_collection_name(&collection, &current_database),
+                        &EntityId::new(&id),
+                    )
                     .ok()
-                    .map(|r| r.entity.data);
+                    .flatten()
+                    .map(|entity| entity.data);
                 drop(h);
                 tx.delete(
                     qualify_collection_name(&collection, &current_database),
@@ -3090,19 +3114,17 @@ async fn commit_transaction(
     // Commit atomically.
     let tx_id = tx.id.clone();
     let mut h = handler.lock().await;
-    let (storage, audit) = h.storage_and_audit_mut();
-    let commit_result = tx.commit(
-        storage,
-        audit,
-        Some(caller.actor.clone()),
-        attribution_from_jwt(jwt_identity),
-    );
+    let commit_result =
+        h.commit_transaction_with_caller(tx, &caller, attribution_from_jwt(jwt_identity));
     match commit_result {
         Ok(written) => {
             // Look up the audit entries produced by this transaction so we can
             // stamp each broadcast ChangeEvent with a resume cursor. All
             // entries share the tx_id; match each to its (collection, id) pair.
-            let tx_entries = audit.query_by_transaction_id(&tx_id).unwrap_or_default();
+            let tx_entries = h
+                .audit_log()
+                .query_by_transaction_id(&tx_id)
+                .unwrap_or_default();
             for entity in &written {
                 notify_entity_change(&mcp_sessions, &current_database, entity);
                 let entity_collection = &entity.collection;
@@ -3155,14 +3177,40 @@ async fn commit_transaction(
             // Cache the response body so a retry with the same key gets the
             // same result without re-executing (FEAT-008 US-081).
             if let Some(ref key) = idem_key {
-                idempotency.store_response(&idem_scope, key, body.clone());
+                idempotency.store_response(
+                    &idem_scope,
+                    key,
+                    CachedHttpResponse {
+                        status: StatusCode::OK,
+                        body: body.clone(),
+                    },
+                );
             }
             (StatusCode::OK, Json(body)).into_response()
         }
         Err(e) => {
-            // Failed transactions are NOT cached; release the reservation so
-            // the client can retry with the same key after correcting the
-            // payload (FEAT-008 US-081 AC4).
+            // Policy-forbidden transactions are terminal for this payload and
+            // cacheable; validation/conflict/storage failures remain retryable
+            // after correction and release their reservation.
+            if let AxonError::PolicyDenied(ref denial) = e {
+                if !denial.is_policy_filter_unindexed() {
+                    let body = ApiError::new("forbidden", denial.detail());
+                    let body = serde_json::to_value(body).unwrap_or_else(
+                        |_| json!({"code": "forbidden", "detail": denial.detail()}),
+                    );
+                    if let Some(ref key) = idem_key {
+                        idempotency.store_response(
+                            &idem_scope,
+                            key,
+                            CachedHttpResponse {
+                                status: StatusCode::FORBIDDEN,
+                                body: body.clone(),
+                            },
+                        );
+                    }
+                    return (StatusCode::FORBIDDEN, Json(body)).into_response();
+                }
+            }
             if let Some(ref key) = idem_key {
                 idempotency.release(&idem_scope, key);
             }
@@ -5468,6 +5516,104 @@ mod tests {
         // d-001 should be gone.
         server
             .get("/tenants/default/databases/default/entities/temp/d-001")
+            .await
+            .assert_status_not_found();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_transaction_replays_policy_forbidden_response() {
+        let (server, handler) = test_server_with_handler();
+        let collection = CollectionId::new("tx_policy_denials");
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .put_schema(CollectionSchema {
+                    collection: collection.clone(),
+                    description: None,
+                    version: 1,
+                    entity_schema: Some(json!({
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "secret": {"type": "string"}
+                        }
+                    })),
+                    link_types: Default::default(),
+                    access_control: Some(axon_schema::AccessControlPolicy {
+                        create: Some(axon_schema::OperationPolicy {
+                            allow: vec![axon_schema::PolicyRule {
+                                name: Some("allow-all".into()),
+                                ..Default::default()
+                            }],
+                            deny: vec![],
+                        }),
+                        fields: HashMap::from([(
+                            "secret".into(),
+                            axon_schema::FieldPolicy {
+                                read: None,
+                                write: Some(axon_schema::FieldAccessPolicy {
+                                    allow: vec![],
+                                    deny: vec![axon_schema::FieldPolicyRule {
+                                        name: Some("never-write-secret".into()),
+                                        when: None,
+                                        where_clause: None,
+                                        redact_as: None,
+                                    }],
+                                }),
+                            },
+                        )]),
+                        ..Default::default()
+                    }),
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    lifecycles: Default::default(),
+                })
+                .expect("policy schema");
+        }
+
+        let body = json!({
+            "idempotency_key": "denied-policy-replay-1",
+            "operations": [{
+                "op": "create",
+                "collection": collection.to_string(),
+                "id": "denied",
+                "data": {"title": "denied", "secret": "classified"}
+            }]
+        });
+
+        let first = server
+            .post("/tenants/default/databases/default/transactions")
+            .json(&body)
+            .await;
+        first.assert_status(StatusCode::FORBIDDEN);
+        let first_body: Value = first.json();
+        assert_eq!(first_body["code"], "forbidden");
+        assert_eq!(first_body["detail"]["reason"], "field_write_denied");
+        assert_eq!(first_body["detail"]["collection"], collection.to_string());
+        assert_eq!(first_body["detail"]["entity_id"], "denied");
+        assert_eq!(first_body["detail"]["field_path"], "secret");
+        assert_eq!(first_body["detail"]["policy"], "never-write-secret");
+        assert_eq!(first_body["detail"]["operation_index"], 0);
+
+        let replay = server
+            .post("/tenants/default/databases/default/transactions")
+            .json(&body)
+            .await;
+        replay.assert_status(StatusCode::FORBIDDEN);
+        assert_eq!(
+            replay
+                .headers()
+                .get(IDEMPOTENCY_CACHE_HEADER)
+                .map(|value| value.to_str().unwrap()),
+            Some("hit")
+        );
+        let replay_body: Value = replay.json();
+        assert_eq!(replay_body, first_body);
+
+        server
+            .get("/tenants/default/databases/default/entities/tx_policy_denials/denied")
             .await
             .assert_status_not_found();
     }

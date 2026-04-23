@@ -44,6 +44,7 @@ pub fn map_axon_error(error: AxonError) -> McpError {
         AxonError::Forbidden(message) => McpError::InvalidParams(format!(
             "forbidden: {message}"
         )),
+        AxonError::PolicyDenied(denial) => McpError::InvalidParams(denial.to_string()),
         AxonError::ScopeViolation {
             actor,
             entity_id,

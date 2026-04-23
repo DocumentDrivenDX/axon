@@ -174,6 +174,19 @@ fn axon_to_status(err: AxonError) -> Status {
         AxonError::RateLimitExceeded { actor, retry_after_ms } => Status::resource_exhausted(format!(
             "{{\"code\":\"rate_limit_exceeded\",\"actor\":{actor:?},\"retry_after_ms\":{retry_after_ms}}}"
         )),
+        AxonError::PolicyDenied(denial) => {
+            let detail = serde_json::to_string(&denial.detail())
+                .unwrap_or_else(|_| "{\"reason\":\"policy_denied\"}".to_string());
+            if denial.is_policy_filter_unindexed() {
+                Status::failed_precondition(format!(
+                    "{{\"code\":\"policy_filter_unindexed\",\"detail\":{detail}}}"
+                ))
+            } else {
+                Status::permission_denied(format!(
+                    "{{\"code\":\"forbidden\",\"detail\":{detail}}}"
+                ))
+            }
+        }
         AxonError::Forbidden(msg) => Status::permission_denied(format!(
             "{{\"code\":\"forbidden\",\"detail\":{msg:?}}}"
         )),

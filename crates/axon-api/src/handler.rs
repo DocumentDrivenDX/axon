@@ -14,7 +14,7 @@ fn now_ns() -> u64 {
 use axon_audit::entry::{compute_diff, AuditAttribution, AuditEntry, FieldDiff, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::auth::CallerIdentity;
-use axon_core::error::AxonError;
+use axon_core::error::{AxonError, PolicyDenial};
 use axon_core::id::{
     CollectionId, EntityId, Namespace, QualifiedCollectionId, DEFAULT_DATABASE, DEFAULT_SCHEMA,
 };
@@ -2557,9 +2557,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 .missing_index
                 .clone()
                 .unwrap_or_else(|| "unknown".into());
-            return Err(AxonError::InvalidOperation(format!(
-                "policy_filter_unindexed missing_index={missing_index} cost_limit={POLICY_POST_FILTER_COST_LIMIT} candidate_count={post_filter_scope}"
-            )));
+            let mut denial =
+                PolicyDenial::new("policy_filter_unindexed", req.collection.to_string());
+            denial.missing_index = Some(missing_index);
+            denial.cost_limit = Some(POLICY_POST_FILTER_COST_LIMIT);
+            denial.candidate_count = Some(post_filter_scope);
+            return Err(AxonError::PolicyDenied(Box::new(denial)));
         }
 
         let all = if let Some(entity_ids) = index_candidates {
@@ -6418,23 +6421,20 @@ fn policy_forbidden(
     policy: Option<String>,
     operation_index: Option<usize>,
 ) -> AxonError {
-    let mut parts = vec![
-        format!("reason={reason}"),
-        format!("collection={collection}"),
-    ];
+    let mut denial = PolicyDenial::new(reason, collection.to_string());
     if let Some(entity_id) = entity_id {
-        parts.push(format!("entity_id={entity_id}"));
+        denial.entity_id = Some(entity_id.to_string());
     }
     if let Some(field_path) = field_path {
-        parts.push(format!("field_path={field_path}"));
+        denial.field_path = Some(field_path.to_string());
     }
     if let Some(policy) = policy {
-        parts.push(format!("policy={policy}"));
+        denial.policy = Some(policy);
     }
     if let Some(operation_index) = operation_index {
-        parts.push(format!("operation_index={operation_index}"));
+        denial.operation_index = Some(operation_index);
     }
-    AxonError::Forbidden(format!("policy denied: {}", parts.join(" ")))
+    AxonError::PolicyDenied(Box::new(denial))
 }
 
 fn field_write_scope_touches_path(scope: FieldWriteScope<'_>, field_path: &str) -> bool {
@@ -7136,12 +7136,119 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("forbidden:"), "unexpected error: {text}");
         assert!(text.contains(reason), "missing reason {reason}: {text}");
+        if let AxonError::PolicyDenied(denial) = &err {
+            assert_eq!(denial.reason, reason);
+            assert!(
+                !denial.collection.is_empty(),
+                "policy denial should include collection"
+            );
+            if let Some(field_path) = field_path {
+                assert_eq!(denial.field_path.as_deref(), Some(field_path));
+            }
+        }
         if let Some(field_path) = field_path {
             assert!(
                 text.contains(&format!("field_path={field_path}")),
                 "missing field path {field_path}: {text}"
             );
         }
+    }
+
+    fn expect_policy_denial(err: AxonError) -> PolicyDenial {
+        match err {
+            AxonError::PolicyDenied(denial) => *denial,
+            other => panic!("expected structured policy denial, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn policy_denials_expose_stable_structured_details() {
+        let mut h = handler();
+        let collection = CollectionId::new("policy_denial_details");
+        h.put_schema(policy_test_schema(
+            collection.as_str(),
+            AccessControlPolicy {
+                create: Some(allow_all_policy()),
+                read: Some(owner_read_policy()),
+                update: Some(allow_all_policy()),
+                fields: HashMap::from([("secret".into(), denied_field_policy("secret"))]),
+                ..Default::default()
+            },
+        ))
+        .expect("policy schema");
+
+        let field_denial = expect_policy_denial(
+            h.create_entity(CreateEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("field-denied"),
+                data: json!({"owner_id": "blocked", "title": "new", "secret": "classified"}),
+                actor: Some("blocked".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("field write should be denied"),
+        );
+        assert_eq!(field_denial.reason, "field_write_denied");
+        assert_eq!(field_denial.collection, collection.to_string());
+        assert_eq!(field_denial.entity_id.as_deref(), Some("field-denied"));
+        assert_eq!(field_denial.field_path.as_deref(), Some("secret"));
+        assert_eq!(
+            field_denial.policy.as_deref(),
+            Some("blocked-cannot-write-secret")
+        );
+        assert_eq!(field_denial.operation_index, None);
+
+        h.create_entity(CreateEntityRequest {
+            collection: collection.clone(),
+            id: EntityId::new("doc-1"),
+            data: json!({"owner_id": "alice", "title": "seed", "secret": "v1"}),
+            actor: Some("alice".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("seed row");
+
+        let row_denial = expect_policy_denial(
+            h.update_entity(UpdateEntityRequest {
+                collection: collection.clone(),
+                id: EntityId::new("doc-1"),
+                data: json!({"owner_id": "alice", "title": "changed", "secret": "v1"}),
+                expected_version: 1,
+                actor: Some("bob".into()),
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("hidden row update should be denied"),
+        );
+        assert_eq!(row_denial.reason, "row_write_denied");
+        assert_eq!(row_denial.collection, collection.to_string());
+        assert_eq!(row_denial.entity_id.as_deref(), Some("doc-1"));
+        assert_eq!(row_denial.field_path, None);
+        assert_eq!(row_denial.policy.as_deref(), Some("read"));
+
+        let mut tx = crate::transaction::Transaction::new();
+        tx.create(Entity::new(
+            collection.clone(),
+            EntityId::new("tx-allowed"),
+            json!({"owner_id": "blocked", "title": "allowed"}),
+        ))
+        .expect("stage allowed create");
+        tx.create(Entity::new(
+            collection.clone(),
+            EntityId::new("tx-denied"),
+            json!({"owner_id": "blocked", "title": "denied", "secret": "classified"}),
+        ))
+        .expect("stage denied create");
+
+        let tx_denial = expect_policy_denial(
+            h.commit_transaction(tx, Some("blocked".into()), None)
+                .expect_err("transaction should be denied"),
+        );
+        assert_eq!(tx_denial.reason, "field_write_denied");
+        assert_eq!(tx_denial.collection, collection.to_string());
+        assert_eq!(tx_denial.entity_id.as_deref(), Some("tx-denied"));
+        assert_eq!(tx_denial.field_path.as_deref(), Some("secret"));
+        assert_eq!(tx_denial.operation_index, Some(1));
     }
 
     #[test]
@@ -7417,13 +7524,24 @@ mod tests {
         }
         let err = large
             .query_entities(QueryEntitiesRequest {
-                collection: large_collection,
+                collection: large_collection.clone(),
                 ..Default::default()
             })
             .expect_err("large unindexed policy should be rejected");
         let text = err.to_string();
         assert!(text.contains("policy_filter_unindexed"), "{text}");
         assert!(text.contains("missing_index=owner_id"), "{text}");
+        let AxonError::PolicyDenied(denial) = err else {
+            panic!("expected structured policy denial");
+        };
+        assert_eq!(denial.reason, "policy_filter_unindexed");
+        assert_eq!(denial.collection, large_collection.to_string());
+        assert_eq!(denial.missing_index.as_deref(), Some("owner_id"));
+        assert_eq!(denial.cost_limit, Some(POLICY_POST_FILTER_COST_LIMIT));
+        assert_eq!(
+            denial.candidate_count,
+            Some(POLICY_POST_FILTER_COST_LIMIT + 1)
+        );
     }
 
     #[test]

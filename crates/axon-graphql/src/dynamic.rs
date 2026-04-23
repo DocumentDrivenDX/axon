@@ -2949,6 +2949,20 @@ fn axon_error_to_gql(err: AxonError) -> GqlError {
             .extend_with(|_err, ext| {
                 ext.set("code", "INVALID_OPERATION");
             }),
+        AxonError::PolicyDenied(denial) => {
+            let code = if denial.is_policy_filter_unindexed() {
+                "POLICY_FILTER_UNINDEXED"
+            } else {
+                "FORBIDDEN"
+            };
+            let detail = denial.detail();
+            GqlError::new(denial.to_string()).extend_with(move |_err, ext| {
+                ext.set("code", code);
+                if let Ok(value) = GqlValue::from_json(detail.clone()) {
+                    ext.set("detail", value);
+                }
+            })
+        }
         other => GqlError::new(other.to_string()).extend_with(|_err, ext| {
             ext.set("code", "INTERNAL_ERROR");
         }),

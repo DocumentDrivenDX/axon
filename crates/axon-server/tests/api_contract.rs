@@ -1815,7 +1815,7 @@ async fn http_transactions_idempotent_different_databases_isolated() {
 #[tokio::test(flavor = "multi_thread")]
 async fn http_transactions_idempotent_expired_reexecutes() {
     use axon_core::clock::SystemClock;
-    use axon_server::gateway::build_router_with_idempotency;
+    use axon_server::gateway::{build_router_with_idempotency, CachedHttpResponse};
     use axon_server::idempotency::IdempotencyStore;
     use std::time::Duration;
 
@@ -1824,7 +1824,7 @@ async fn http_transactions_idempotent_expired_reexecutes() {
     let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
     let tenant_router = Arc::new(TenantRouter::single(http_handler));
 
-    let store = Arc::new(IdempotencyStore::<Value>::new(
+    let store = Arc::new(IdempotencyStore::<CachedHttpResponse>::new(
         Arc::new(SystemClock),
         Duration::from_millis(100),
     ));
