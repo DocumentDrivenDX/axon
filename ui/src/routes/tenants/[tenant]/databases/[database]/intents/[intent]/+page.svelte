@@ -13,8 +13,20 @@ import {
 } from '$lib/api';
 // biome-ignore lint/correctness/noUnusedImports: Used in template as a component.
 import JsonTree from '$lib/components/JsonTree.svelte';
-// biome-ignore lint/correctness/noUnusedImports: Used in template for JsonTree data casts.
 import type { JsonValue } from '$lib/components/json-tree-types';
+import {
+	agentIdentityLabel,
+	credentialLabel,
+	delegatedByLabel,
+	grantVersionLabel,
+	requesterLabel as intentRequesterLabel,
+	originBadge,
+	originMetadataSummary,
+	structuredOutcomeSummary,
+	tenantRoleLabel,
+	toolArgumentsSummary,
+	toolNameLabel,
+} from '$lib/intent-metadata';
 import { onMount } from 'svelte';
 import type { PageData } from './$types';
 
@@ -81,28 +93,66 @@ function stringMember(value: Record<string, unknown> | null, ...keys: string[]):
 	return null;
 }
 
-function numberMember(value: Record<string, unknown> | null, ...keys: string[]): number | null {
-	if (!value) return null;
-	for (const key of keys) {
-		const candidate = value[key];
-		if (typeof candidate === 'number' && Number.isFinite(candidate)) {
-			return candidate;
-		}
-	}
-	return null;
-}
-
 function subjectRecord(currentIntent: MutationIntent): Record<string, unknown> | null {
 	return asRecord(currentIntent.subject);
 }
 
 function subjectField(currentIntent: MutationIntent, ...keys: string[]): string {
+	if (keys.includes('user_id') || keys.includes('userId')) {
+		return intentRequesterLabel(currentIntent);
+	}
+	if (keys.includes('agent_id') || keys.includes('agentId')) {
+		return agentIdentityLabel(currentIntent);
+	}
+	if (keys.includes('delegated_by') || keys.includes('delegatedBy')) {
+		return delegatedByLabel(currentIntent);
+	}
+	if (keys.includes('tenant_role') || keys.includes('tenantRole')) {
+		return tenantRoleLabel(currentIntent);
+	}
+	if (keys.includes('credential_id') || keys.includes('credentialId')) {
+		return credentialLabel(currentIntent);
+	}
 	return stringMember(subjectRecord(currentIntent), ...keys) ?? '-';
 }
 
 function grantVersion(currentIntent: MutationIntent): string {
-	const value = numberMember(subjectRecord(currentIntent), 'grant_version', 'grantVersion');
-	return value === null ? '-' : String(value);
+	return grantVersionLabel(currentIntent);
+}
+
+function toolName(currentIntent: MutationIntent): string {
+	return toolNameLabel(currentIntent, auditEntries);
+}
+
+function originKind(currentIntent: MutationIntent): string {
+	return originBadge(currentIntent);
+}
+
+function credentialFor(currentIntent: MutationIntent): string {
+	return credentialLabel(currentIntent);
+}
+
+function delegatedAuthority(currentIntent: MutationIntent): string {
+	const delegatedBy = delegatedByLabel(currentIntent);
+	const tenantRole = tenantRoleLabel(currentIntent);
+	if (delegatedBy === '-' && tenantRole === '-') return '-';
+	const parts = [
+		delegatedBy !== '-' ? `delegated by ${delegatedBy}` : null,
+		tenantRole !== '-' ? `role ${tenantRole}` : null,
+	].filter((value): value is string => Boolean(value));
+	return parts.join(' · ');
+}
+
+function originMetadata(currentIntent: MutationIntent): JsonValue {
+	return originMetadataSummary(currentIntent, auditEntries) as JsonValue;
+}
+
+function toolArgumentSummary(currentIntent: MutationIntent): JsonValue {
+	return toolArgumentsSummary(currentIntent.operation) as JsonValue;
+}
+
+function structuredOutcome(currentIntent: MutationIntent): JsonValue {
+	return structuredOutcomeSummary(currentIntent, { auditEntries, commitOutcome }) as JsonValue;
 }
 
 function intentTitle(currentIntent: MutationIntent): string {
@@ -381,6 +431,7 @@ onMount(() => {
 				<div class="status-stack">
 					<span class="pill">{intent.decision}</span>
 					<span class="pill state">{intent.approvalState}</span>
+					<span class="pill state">{originKind(intent)}</span>
 				</div>
 			</div>
 			<div class="panel-body stack" data-testid="intent-overview">
@@ -454,6 +505,32 @@ onMount(() => {
 					<strong>{intent.approvalRoute?.separationOfDuties ? 'yes' : 'no'}</strong>
 					<span>Deadline</span>
 					<strong>{intent.approvalRoute?.deadlineSeconds ?? '-'}</strong>
+				</div>
+				<div data-testid="intent-origin-metadata">
+					<h3>Origin metadata</h3>
+					<div class="meta-grid">
+						<span>Origin</span>
+						<strong>{originKind(intent)}</strong>
+						<span>Agent identity</span>
+						<code>{agentIdentityLabel(intent)}</code>
+						<span>Delegated authority</span>
+						<code>{delegatedAuthority(intent)}</code>
+						<span>Credential</span>
+						<code>{credentialFor(intent)}</code>
+						<span>Grant version</span>
+						<strong>{grantVersion(intent)}</strong>
+						<span>Tool name</span>
+						<code>{toolName(intent)}</code>
+					</div>
+					<JsonTree data={originMetadata(intent)} />
+				</div>
+				<div data-testid="intent-tool-arguments">
+					<h3>Tool arguments summary</h3>
+					<JsonTree data={toolArgumentSummary(intent)} />
+				</div>
+				<div data-testid="intent-structured-outcome">
+					<h3>Structured outcome</h3>
+					<JsonTree data={structuredOutcome(intent)} />
 				</div>
 				<div>
 					<h3>Subject snapshot</h3>

@@ -9,6 +9,22 @@ import {
 	fetchMutationIntents,
 	rejectMutationIntent,
 } from '$lib/api';
+// biome-ignore lint/correctness/noUnusedImports: Used in template as a component.
+import JsonTree from '$lib/components/JsonTree.svelte';
+import type { JsonValue } from '$lib/components/json-tree-types';
+import {
+	agentIdentityLabel,
+	credentialLabel,
+	delegatedByLabel,
+	grantVersionLabel,
+	requesterLabel as intentRequesterLabel,
+	isMcpOriginated,
+	originBadge,
+	structuredOutcomeSummary,
+	tenantRoleLabel,
+	toolArgumentsSummary,
+	toolNameLabel,
+} from '$lib/intent-metadata';
 import { onMount } from 'svelte';
 import type { PageData } from './$types';
 
@@ -101,8 +117,7 @@ function fieldSummary(intent: MutationIntent): string {
 }
 
 function requesterLabel(intent: MutationIntent): string {
-	const subject = asRecord(intent.subject);
-	return stringMember(subject, 'user_id', 'userId') ?? '-';
+	return intentRequesterLabel(intent);
 }
 
 function originLabel(intent: MutationIntent): string {
@@ -116,6 +131,59 @@ function originLabel(intent: MutationIntent): string {
 
 function roleLabel(intent: MutationIntent): string {
 	return intent.approvalRoute?.role ?? '-';
+}
+
+function toolName(intent: MutationIntent): string {
+	return toolNameLabel(intent);
+}
+
+function credentialFor(intent: MutationIntent): string {
+	return credentialLabel(intent);
+}
+
+function grantVersionFor(intent: MutationIntent): string {
+	return grantVersionLabel(intent);
+}
+
+function originKind(intent: MutationIntent): string {
+	return originBadge(intent);
+}
+
+function displayOriginLabel(intent: MutationIntent): string {
+	if (!isMcpOriginated(intent)) return 'UI GraphQL';
+	return `${agentIdentityLabel(intent)} · ${toolName(intent)}`;
+}
+
+function delegatedAuthority(intent: MutationIntent): string {
+	const delegatedBy = delegatedByLabel(intent);
+	const tenantRole = tenantRoleLabel(intent);
+	if (delegatedBy === '-' && tenantRole === '-') return '-';
+	const parts = [
+		delegatedBy !== '-' ? `delegated by ${delegatedBy}` : null,
+		tenantRole !== '-' ? `role ${tenantRole}` : null,
+	].filter((value): value is string => Boolean(value));
+	return parts.join(' · ');
+}
+
+function outcomeRecord(intent: MutationIntent): Record<string, unknown> | null {
+	return asRecord(structuredOutcomeSummary(intent));
+}
+
+function outcomeLabel(intent: MutationIntent): string {
+	return stringMember(outcomeRecord(intent), 'outcome') ?? intent.decision;
+}
+
+function outcomeDetail(intent: MutationIntent): string {
+	const errorCode = stringMember(outcomeRecord(intent), 'error_code');
+	return errorCode ? `${intent.approvalState} · ${errorCode}` : intent.approvalState;
+}
+
+function toolArgumentSummary(intent: MutationIntent): JsonValue {
+	return toolArgumentsSummary(intent.operation) as JsonValue;
+}
+
+function structuredOutcome(intent: MutationIntent): JsonValue {
+	return structuredOutcomeSummary(intent) as JsonValue;
 }
 
 function collectionSummary(intent: MutationIntent): string {
@@ -566,6 +634,7 @@ onMount(() => {
 							<th>Role</th>
 							<th>Origin</th>
 							<th>Collection</th>
+							<th>Outcome</th>
 							<th>Fields</th>
 							<th>Age</th>
 							<th>Expires</th>
@@ -589,8 +658,24 @@ onMount(() => {
 								</td>
 								<td><code>{requesterLabel(intent)}</code></td>
 								<td><code>{roleLabel(intent)}</code></td>
-								<td><code>{originLabel(intent)}</code></td>
+								<td data-testid={`intent-origin-${intent.id}`}>
+									<div class="origin-stack">
+										<span class:ui-origin={!isMcpOriginated(intent)} class="origin-pill">
+											{originKind(intent)}
+										</span>
+										<code>{displayOriginLabel(intent)}</code>
+										{#if isMcpOriginated(intent)}
+											<span class="muted small-copy">{delegatedAuthority(intent)}</span>
+										{/if}
+									</div>
+								</td>
 								<td><code>{collectionSummary(intent)}</code></td>
+								<td data-testid={`intent-outcome-${intent.id}`}>
+									<div class="origin-stack">
+										<strong>{outcomeLabel(intent)}</strong>
+										<span class="muted small-copy">{outcomeDetail(intent)}</span>
+									</div>
+								</td>
 								<td>{fieldSummary(intent)}</td>
 								<td>{ageLabel(intent)}</td>
 								<td>{formatNs(intent.expiresAtNs)}</td>
@@ -645,10 +730,39 @@ onMount(() => {
 							<code>{roleLabel(selectedIntent)}</code>
 							<span>Origin</span>
 							<code>{originLabel(selectedIntent)}</code>
+							<span>Tool</span>
+							<code>{toolName(selectedIntent)}</code>
+							<span>Grant</span>
+							<code>{grantVersionFor(selectedIntent)}</code>
 							<span>Risk</span>
 							<strong>{selectedIntent.reviewSummary.risk ?? '-'}</strong>
 						</div>
 						<div class="stack">
+							<div data-testid="intent-inline-mcp">
+								<h3>MCP metadata</h3>
+								<div class="meta-grid compact-grid">
+									<span>Origin</span>
+									<strong>{originKind(selectedIntent)}</strong>
+									<span>Agent identity</span>
+									<code>{agentIdentityLabel(selectedIntent)}</code>
+									<span>Delegated authority</span>
+									<code>{delegatedAuthority(selectedIntent)}</code>
+									<span>Credential</span>
+									<code>{credentialFor(selectedIntent)}</code>
+									<span>Grant version</span>
+									<strong>{grantVersionFor(selectedIntent)}</strong>
+									<span>Tool name</span>
+									<code>{toolName(selectedIntent)}</code>
+								</div>
+							</div>
+							<div data-testid="intent-inline-tool-arguments">
+								<h3>Tool arguments summary</h3>
+								<JsonTree data={toolArgumentSummary(selectedIntent)} />
+							</div>
+							<div data-testid="intent-inline-structured-outcome">
+								<h3>Structured outcome</h3>
+								<JsonTree data={structuredOutcome(selectedIntent)} />
+							</div>
 							<div>
 								<h3>Policy explanation</h3>
 								{#if (selectedIntent.reviewSummary.policy_explanation ?? []).length === 0}
@@ -723,7 +837,8 @@ onMount(() => {
 	.inbox-grid,
 	.selection-header,
 	.compact-grid,
-	.filter-actions {
+	.filter-actions,
+	.origin-stack {
 		display: grid;
 		gap: 0.75rem;
 	}
@@ -745,6 +860,10 @@ onMount(() => {
 		color: var(--muted);
 	}
 
+	.small-copy {
+		font-size: 0.8rem;
+	}
+
 	.filter-actions {
 		align-items: end;
 	}
@@ -753,6 +872,24 @@ onMount(() => {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.5rem;
+	}
+
+	.origin-pill {
+		display: inline-flex;
+		width: fit-content;
+		padding: 0.15rem 0.5rem;
+		border-radius: 999px;
+		border: 1px solid rgba(125, 211, 252, 0.35);
+		font-size: 0.72rem;
+		font-weight: 600;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
+		color: var(--accent);
+	}
+
+	.origin-pill.ui-origin {
+		border-color: rgba(148, 163, 184, 0.35);
+		color: var(--muted);
 	}
 
 	.status-tabs button {

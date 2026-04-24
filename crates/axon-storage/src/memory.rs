@@ -1369,7 +1369,7 @@ impl StorageAdapter for MemoryStorageAdapter {
             .lock()
             .map_err(|e| AxonError::Storage(format!("users mutex poisoned: {e}")))?;
         let mut users: Vec<User> = map.values().cloned().collect();
-        users.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        users.sort_by_key(|user| std::cmp::Reverse(user.created_at_ms));
         Ok(users)
     }
 
@@ -1639,7 +1639,7 @@ impl StorageAdapter for MemoryStorageAdapter {
                 }
             }
         }
-        creds.sort_by(|a, b| a.issued_at_ms.cmp(&b.issued_at_ms));
+        creds.sort_by_key(|cred| cred.issued_at_ms);
         Ok(creds)
     }
 

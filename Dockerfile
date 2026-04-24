@@ -25,26 +25,81 @@ COPY ui ./ui
 
 RUN cd ui && bun install --frozen-lockfile && bun run build
 
-# ── Stage 3: Rust builder ─────────────────────────────────────────────────────
+# ── Stage 3: Rust dependency planner ──────────────────────────────────────────
 
-FROM rust:1.94-bookworm AS builder
+FROM rust:1.94-bookworm AS rust-base
 
 # protobuf-compiler is required by tonic-build for gRPC code generation.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
+RUN cargo install --locked cargo-chef
+
 WORKDIR /usr/src/axon
 
-# Copy the full workspace. The .dockerignore keeps out target/, node_modules/,
-# .git/, etc. to keep the build context small.
+FROM rust-base AS planner
+
+# Copy only Cargo metadata, the pinned toolchain, and build-time protobuf inputs so dependency
+# compilation stays cached when UI files or Rust sources change.
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates/axon-api/Cargo.toml crates/axon-api/Cargo.toml
+COPY crates/axon-audit/Cargo.toml crates/axon-audit/Cargo.toml
+COPY crates/axon-cli/Cargo.toml crates/axon-cli/Cargo.toml
+COPY crates/axon-config/Cargo.toml crates/axon-config/Cargo.toml
+COPY crates/axon-control-plane/Cargo.toml crates/axon-control-plane/Cargo.toml
+COPY crates/axon-core/Cargo.toml crates/axon-core/Cargo.toml
+COPY crates/axon-graphql/Cargo.toml crates/axon-graphql/Cargo.toml
+COPY crates/axon-mcp/Cargo.toml crates/axon-mcp/Cargo.toml
+COPY crates/axon-render/Cargo.toml crates/axon-render/Cargo.toml
+COPY crates/axon-schema/Cargo.toml crates/axon-schema/Cargo.toml
+COPY crates/axon-server/Cargo.toml crates/axon-server/Cargo.toml
+COPY crates/axon-server/build.rs crates/axon-server/build.rs
+COPY crates/axon-server/proto/axon.proto crates/axon-server/proto/axon.proto
+COPY crates/axon-sim/Cargo.toml crates/axon-sim/Cargo.toml
+COPY crates/axon-storage/Cargo.toml crates/axon-storage/Cargo.toml
+
+RUN mkdir -p crates/axon-cli/src \
+    && printf '%s\n' 'fn main() {}' > crates/axon-cli/src/main.rs \
+    && mkdir -p crates/axon-api/benches \
+    && printf '%s\n' 'fn main() {}' > crates/axon-api/benches/benchmarks.rs \
+    && for crate in \
+        axon-api \
+        axon-audit \
+        axon-config \
+        axon-control-plane \
+        axon-core \
+        axon-graphql \
+        axon-mcp \
+        axon-render \
+        axon-schema \
+        axon-server \
+        axon-sim \
+        axon-storage \
+    ; do \
+        mkdir -p "crates/${crate}/src"; \
+        printf '%s\n' 'pub fn cargo_chef_placeholder() {}' > "crates/${crate}/src/lib.rs"; \
+    done
+
+RUN cargo chef prepare --recipe-path recipe.json
+
+# ── Stage 4: Rust builder ─────────────────────────────────────────────────────
+
+FROM rust-base AS builder
+
+COPY rust-toolchain.toml ./
+COPY --from=planner /usr/src/axon/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Copy the full workspace after dependencies are cooked so source and UI-only
+# changes reuse the dependency layer.
 COPY . .
 COPY --from=ui-builder /usr/src/axon/ui/build ui/build
 
 # Build the unified binary in release mode.
 RUN cargo build --release -p axon-cli
 
-# ── Stage 4: Runtime ──────────────────────────────────────────────────────────
+# ── Stage 5: Runtime ──────────────────────────────────────────────────────────
 
 FROM debian:bookworm-slim AS runtime
 

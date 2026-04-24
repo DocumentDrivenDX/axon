@@ -24,12 +24,10 @@ pub fn check_version_monotonicity(entries: &[&AuditEntry]) -> bool {
                 }
                 expected += 1;
             }
-            MutationType::EntityDelete => {
+            MutationType::EntityDelete if expected == 1 || entry.version != expected - 1 => {
                 // Delete records the version at deletion — must equal the last
                 // non-delete version (expected - 1 after at least one write).
-                if expected == 1 || entry.version != expected - 1 {
-                    return false;
-                }
+                return false;
             }
             _ => {}
         }
