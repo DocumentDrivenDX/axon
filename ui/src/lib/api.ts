@@ -42,13 +42,79 @@ export type PolicyCompileDiagnostic = {
 	path?: string | null;
 };
 
+export type PolicyNullableField = {
+	collection: string;
+	field: string;
+	required_by_schema?: boolean;
+	graphql_nullable?: boolean;
+	rule_ids?: string[];
+};
+
+export type PolicyDeniedWriteField = {
+	collection: string;
+	field: string;
+	rule_ids?: string[];
+};
+
+export type PolicyEnvelopeSummary = {
+	collection: string;
+	operation: string;
+	envelope_id: string;
+	name?: string | null;
+	decision: string;
+	approval?: {
+		role?: string | null;
+		reason_required?: boolean;
+		deadline_seconds?: number | null;
+		separation_of_duties?: boolean;
+	} | null;
+};
+
+export type RequiredLinkIndex = {
+	name: string;
+	source_collection: string;
+	link_type: string;
+	target_collection: string;
+	direction: string;
+};
+
 export type PolicyCompileReport = {
 	errors?: PolicyCompileDiagnostic[];
 	warnings?: PolicyCompileDiagnostic[];
-	required_link_indexes?: unknown[];
-	nullable_fields?: unknown[];
-	denied_write_fields?: unknown[];
-	envelope_summaries?: unknown[];
+	required_link_indexes?: RequiredLinkIndex[];
+	nullable_fields?: PolicyNullableField[];
+	denied_write_fields?: PolicyDeniedWriteField[];
+	envelope_summaries?: PolicyEnvelopeSummary[];
+};
+
+export type DryRunExplanation = {
+	operation: string;
+	collection?: string | null;
+	entity_id?: string | null;
+	decision: string;
+	reason: string;
+	policy_version: number;
+	rule_ids?: string[];
+	policy_ids?: string[];
+	field_paths?: string[];
+	denied_fields?: string[];
+	approval?: {
+		role?: string | null;
+		reason_required?: boolean;
+		deadline_seconds?: number | null;
+		separation_of_duties?: boolean;
+	} | null;
+};
+
+export type SchemaDryRunExplainInput = {
+	operation: 'read' | 'create' | 'update' | 'patch' | 'delete' | 'transition' | 'rollback';
+	entityId?: string;
+	expectedVersion?: number;
+	data?: unknown;
+	patch?: unknown;
+	lifecycleName?: string;
+	targetState?: string;
+	toVersion?: number;
 };
 
 export type SchemaPreviewResult = {
@@ -300,6 +366,14 @@ type GraphQLPutSchemaPayload = {
 	diff: SchemaDiff | null;
 	dryRun: boolean;
 	policyCompileReport?: PolicyCompileReport | null;
+	dryRunExplanations?: DryRunExplanation[] | null;
+};
+
+export type SchemaPolicyDryRunResult = {
+	report: PolicyCompileReport | null;
+	explanations: DryRunExplanation[];
+	schema: CollectionSchema;
+	compatibility: SchemaPreviewResult['compatibility'];
 };
 
 type GraphQLTransactionPayload = {
@@ -1388,6 +1462,49 @@ export async function previewSchemaChange(
 		},
 		scope,
 	);
+}
+
+/**
+ * Run a putSchema dry-run that includes fixture explain inputs evaluated
+ * against the proposed policy plan. Returns the compile report plus one
+ * explanation per input. Tenant-scoped GraphQL is required.
+ */
+export async function previewSchemaWithExplain(
+	collection: string,
+	schema: CollectionSchema,
+	explainInputs: SchemaDryRunExplainInput[],
+	scope: NonNullable<Scope>,
+	options: { actor?: string } = {},
+): Promise<SchemaPolicyDryRunResult> {
+	const data = await graphqlRequest<{ putSchema: GraphQLPutSchemaPayload }>(
+		scope,
+		`mutation AxonUiPreviewSchemaPolicy(
+			$collection: String!
+			$schema: JSON!
+			$explainInputs: [ExplainPolicyInput!]
+		) {
+			putSchema(input: {
+				collection: $collection
+				schema: $schema
+				dryRun: true
+				explainInputs: $explainInputs
+			}) {
+				schema
+				compatibility
+				dryRun
+				policyCompileReport
+				dryRunExplanations
+			}
+		}`,
+		{ collection, schema, explainInputs },
+		options.actor ? { headers: { 'x-axon-actor': options.actor } } : {},
+	);
+	return {
+		schema: data.putSchema.schema,
+		compatibility: data.putSchema.compatibility,
+		report: data.putSchema.policyCompileReport ?? null,
+		explanations: data.putSchema.dryRunExplanations ?? [],
+	};
 }
 
 export async function createCollection(

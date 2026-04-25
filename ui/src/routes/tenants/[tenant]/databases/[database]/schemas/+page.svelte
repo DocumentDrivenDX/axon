@@ -4,13 +4,19 @@ import { page } from '$app/state';
 import {
 	type CollectionSchema,
 	type CollectionSummary,
+	type DryRunExplanation,
+	type PolicyCompileReport,
+	type SchemaDryRunExplainInput,
+	type SchemaPolicyDryRunResult,
 	type SchemaPreviewResult,
 	createCollection,
 	fetchCollections,
 	fetchSchema,
 	previewSchemaChange,
+	previewSchemaWithExplain,
 	updateSchema,
 } from '$lib/api';
+import { tick } from 'svelte';
 import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();
@@ -30,9 +36,38 @@ let statusMessage = $state<string | null>(null);
 let error = $state<string | null>(null);
 let createCollectionName = $state('');
 // biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
-let viewMode = $state<'structured' | 'raw'>('structured');
+let viewMode = $state<'structured' | 'raw' | 'policy'>('structured');
 let preview = $state<SchemaPreviewResult | null>(null);
 let previewLoading = $state(false);
+
+// ── Policy view state ─────────────────────────────────────────────
+let policyJson = $state('{}');
+let policyJsonError = $state<string | null>(null);
+let policyReport = $state<PolicyCompileReport | null>(null);
+let policyCompileLoading = $state(false);
+let policyActivateError = $state<string | null>(null);
+let policyActivateStatus = $state<string | null>(null);
+// biome-ignore lint/style/useConst: bind:value mutates this state.
+let fixtureSubject = $state('');
+type FixtureOperation = 'read' | 'create' | 'update' | 'patch' | 'delete';
+// biome-ignore lint/style/useConst: bind:value mutates this state.
+let fixtureOperation = $state<FixtureOperation>('read');
+let policyCompileGeneration = 0;
+let fixtureGeneration = 0;
+// biome-ignore lint/style/useConst: bind:value mutates this state.
+let fixtureEntityId = $state('');
+// biome-ignore lint/style/useConst: bind:value mutates this state.
+let fixtureDataJson = $state('{}');
+// biome-ignore lint/style/useConst: bind:value mutates this state.
+let fixturePatchJson = $state('{}');
+let fixtureResult = $state<DryRunExplanation | null>(null);
+let fixtureError = $state<string | null>(null);
+let fixtureLoading = $state(false);
+
+const policyHasErrors = $derived(policyReport != null && (policyReport.errors?.length ?? 0) > 0);
+const policyActivateDisabled = $derived(
+	!selectedSchema || policyReport == null || policyHasErrors || policyJsonError != null,
+);
 // biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
 let createSchemaJson = $state(`{
   "type": "object",
@@ -244,6 +279,162 @@ async function selectCollection(collectionName: string) {
 	error = null;
 	preview = null;
 	previewLoading = false;
+	resetPolicyView(selectedSchema);
+}
+
+function resetPolicyView(schema: CollectionSchema | null) {
+	policyJson = JSON.stringify(schema?.access_control ?? {}, null, 2);
+	policyJsonError = null;
+	policyReport = null;
+	policyActivateError = null;
+	policyActivateStatus = null;
+	fixtureResult = null;
+	fixtureError = null;
+}
+
+function parsePolicyJson(): unknown | null {
+	try {
+		const parsed = JSON.parse(policyJson);
+		policyJsonError = null;
+		return parsed;
+	} catch (err) {
+		policyJsonError = err instanceof Error ? err.message : 'Invalid JSON';
+		return null;
+	}
+}
+
+function buildProposedSchema(accessControl: unknown): CollectionSchema | null {
+	if (!selectedSchema) return null;
+	return { ...selectedSchema, access_control: accessControl };
+}
+
+async function runPolicyCompile() {
+	if (!selectedSchema) return;
+	const parsed = parsePolicyJson();
+	if (parsed == null) {
+		policyReport = null;
+		return;
+	}
+	const proposed = buildProposedSchema(parsed);
+	if (!proposed) return;
+	const compiledJsonSnapshot = policyJson;
+	policyCompileGeneration += 1;
+	const generation = policyCompileGeneration;
+	policyCompileLoading = true;
+	policyActivateError = null;
+	policyActivateStatus = null;
+	fixtureResult = null;
+	fixtureError = null;
+	try {
+		const result = await previewSchemaChange(selectedCollection, proposed, scope);
+		// Discard the response if the editor changed (or another compile started)
+		// while this request was in flight: otherwise a stale report could
+		// re-enable activation against a different policy than was compiled.
+		if (generation !== policyCompileGeneration || policyJson !== compiledJsonSnapshot) {
+			return;
+		}
+		policyReport = result.policy_compile_report ?? {
+			errors: [],
+			warnings: [],
+			required_link_indexes: [],
+			nullable_fields: [],
+			denied_write_fields: [],
+			envelope_summaries: [],
+		};
+		await tick();
+		const firstError = document.querySelector<HTMLElement>(
+			'[data-testid="schema-policy-error-row-0"]',
+		);
+		firstError?.focus();
+	} catch (err) {
+		if (generation !== policyCompileGeneration) return;
+		policyReport = null;
+		policyJsonError = err instanceof Error ? err.message : 'Compile preview failed';
+	} finally {
+		if (generation === policyCompileGeneration) policyCompileLoading = false;
+	}
+}
+
+async function runFixtureDryRun() {
+	if (!selectedSchema || policyHasErrors || !scope) return;
+	const parsed = parsePolicyJson();
+	if (parsed == null) return;
+	const proposed = buildProposedSchema(parsed);
+	if (!proposed) return;
+	let parsedData: unknown | undefined;
+	let parsedPatch: unknown | undefined;
+	try {
+		const trimmedData = fixtureDataJson.trim();
+		const trimmedPatch = fixturePatchJson.trim();
+		// `read` accepts either entity_id or an ad-hoc data payload; the
+		// other write ops require their own data/patch shapes.
+		const dataOpUsesPayload =
+			fixtureOperation === 'read' || fixtureOperation === 'create' || fixtureOperation === 'update';
+		if (dataOpUsesPayload && trimmedData) {
+			parsedData = JSON.parse(trimmedData);
+		}
+		if (fixtureOperation === 'patch' && trimmedPatch) {
+			parsedPatch = JSON.parse(trimmedPatch);
+		}
+	} catch (err) {
+		fixtureError = err instanceof Error ? err.message : 'Fixture JSON invalid';
+		fixtureResult = null;
+		return;
+	}
+	const input: SchemaDryRunExplainInput = { operation: fixtureOperation };
+	if (fixtureEntityId.trim()) input.entityId = fixtureEntityId.trim();
+	if (parsedData !== undefined) input.data = parsedData;
+	if (parsedPatch !== undefined) input.patch = parsedPatch;
+	fixtureGeneration += 1;
+	const generation = fixtureGeneration;
+	fixtureLoading = true;
+	fixtureError = null;
+	try {
+		const subjectActor = fixtureSubject.trim();
+		const result: SchemaPolicyDryRunResult = await previewSchemaWithExplain(
+			selectedCollection,
+			proposed,
+			[input],
+			scope,
+			subjectActor ? { actor: subjectActor } : undefined,
+		);
+		// Drop the result if the editor was changed (or another fixture run
+		// started) while this request was in flight.
+		if (generation !== fixtureGeneration) return;
+		fixtureResult = result.explanations[0] ?? null;
+		if (!fixtureResult) {
+			fixtureError = 'No explanation returned (proposed policy may be empty).';
+		}
+	} catch (err) {
+		if (generation !== fixtureGeneration) return;
+		fixtureResult = null;
+		fixtureError = err instanceof Error ? err.message : 'Dry-run failed';
+	} finally {
+		if (generation === fixtureGeneration) fixtureLoading = false;
+	}
+}
+
+async function activatePolicy() {
+	if (!selectedSchema || policyHasErrors) return;
+	const parsed = parsePolicyJson();
+	if (parsed == null) return;
+	const proposed = buildProposedSchema(parsed);
+	if (!proposed) return;
+	// Activation must advance the schema version so audit metadata and
+	// downstream policy_version consumers can distinguish the new policy
+	// from the previous one.
+	proposed.version = selectedSchema.version + 1;
+	policyActivateError = null;
+	policyActivateStatus = null;
+	try {
+		const activated = await updateSchema(selectedCollection, proposed, { force: false }, scope);
+		// Refresh the rail and the persisted schema. selectCollection() resets
+		// the policy view, so we re-apply the activation status afterwards.
+		await loadCollections(selectedCollection);
+		policyActivateStatus = `Activated policy version v${activated.version} for ${selectedCollection}. Audit entry recorded.`;
+	} catch (err) {
+		policyActivateError = err instanceof Error ? err.message : 'Activate failed';
+	}
 }
 
 function validateJson() {
@@ -415,6 +606,13 @@ $effect(() => {
 						<button class:active={viewMode === 'raw'} onclick={() => (viewMode = 'raw')}>
 							Raw JSON
 						</button>
+						<button
+							data-testid="schema-policy-view-toggle"
+							class:active={viewMode === 'policy'}
+							onclick={() => (viewMode = 'policy')}
+						>
+							Policy
+						</button>
 						<button onclick={() => (editMode = true)}>Edit</button>
 					{/if}
 				</div>
@@ -493,6 +691,309 @@ $effect(() => {
 					</div>
 				{:else if viewMode === 'raw'}
 					<pre>{JSON.stringify(selectedSchema, null, 2)}</pre>
+				{:else if viewMode === 'policy'}
+					<section class="policy-view" data-testid="schema-policy-view">
+						<header class="policy-header">
+							<h3>Access control policy</h3>
+							<span class="muted">Edit, compile, and dry-run before activation.</span>
+						</header>
+
+						<label class="policy-editor-label">
+							<span>access_control</span>
+							<textarea
+								data-testid="schema-policy-editor"
+								class="policy-editor"
+								bind:value={policyJson}
+								oninput={() => {
+									policyJsonError = null;
+									policyReport = null;
+									fixtureResult = null;
+									// Bump generations so any in-flight compile or fixture
+									// response for the previous JSON is dropped on arrival.
+									policyCompileGeneration += 1;
+									fixtureGeneration += 1;
+									// Clear the spinner — the in-flight request will be
+									// discarded, so its `finally` won't unset this state.
+									policyCompileLoading = false;
+									fixtureLoading = false;
+								}}
+								spellcheck="false"
+							></textarea>
+						</label>
+						{#if policyJsonError}
+							<p class="message error" data-testid="schema-policy-json-error">
+								{policyJsonError}
+							</p>
+						{/if}
+
+						<div class="policy-actions">
+							<button
+								class="primary"
+								data-testid="schema-policy-run-compile"
+								disabled={policyCompileLoading}
+								onclick={runPolicyCompile}
+							>
+								{policyCompileLoading ? 'Compiling…' : 'Run compile'}
+							</button>
+							<button
+								data-testid="schema-policy-cancel"
+								onclick={() => resetPolicyView(selectedSchema)}
+							>
+								Reset
+							</button>
+							<button
+								class="primary"
+								data-testid="schema-policy-activate"
+								disabled={policyActivateDisabled}
+								onclick={activatePolicy}
+							>
+								Activate policy
+							</button>
+						</div>
+
+						{#if policyActivateError}
+							<p class="message error" data-testid="schema-policy-activate-error">
+								{policyActivateError}
+							</p>
+						{/if}
+						{#if policyActivateStatus}
+							<p
+								class="message success"
+								data-testid="schema-policy-activation-status"
+							>
+								{policyActivateStatus}
+							</p>
+						{/if}
+
+						{#if policyReport}
+							{#if (policyReport.errors?.length ?? 0) > 0}
+								<div class="policy-panel policy-errors" data-testid="schema-policy-errors">
+									<strong>Compile errors</strong>
+									<ul>
+										{#each policyReport.errors ?? [] as diag, idx}
+											<!-- biome-ignore lint/a11y/noNoninteractiveTabindex: focus first error for keyboard users. -->
+											<li
+												data-testid={`schema-policy-error-row-${idx}`}
+												tabindex="-1"
+											>
+												<span class="pill error-code">{diag.code}</span>
+												{#if diag.path}<code>{diag.path}</code>{/if}
+												{#if diag.rule_id}
+													<span class="muted">· rule {diag.rule_id}</span>
+												{/if}
+												{#if diag.field}
+													<span class="muted">· field {diag.field}</span>
+												{/if}
+												<span>: {diag.message}</span>
+											</li>
+										{/each}
+									</ul>
+								</div>
+							{/if}
+
+							{#if (policyReport.warnings?.length ?? 0) > 0}
+								<div
+									class="policy-panel policy-warnings"
+									data-testid="schema-policy-warnings"
+								>
+									<strong>Warnings</strong>
+									<ul>
+										{#each policyReport.warnings ?? [] as diag}
+											<li>{diag.message}</li>
+										{/each}
+									</ul>
+								</div>
+							{/if}
+
+							{#if (policyReport.nullable_fields?.length ?? 0) > 0}
+								<div
+									class="policy-panel"
+									data-testid="schema-policy-nullable-fields"
+								>
+									<strong>GraphQL nullability changes</strong>
+									<ul>
+										{#each policyReport.nullable_fields ?? [] as nf}
+											<li>
+												<code>{nf.collection}.{nf.field}</code>
+												{#if nf.required_by_schema}
+													<span class="pill">was required</span>
+												{/if}
+											</li>
+										{/each}
+									</ul>
+								</div>
+							{/if}
+
+							{#if (policyReport.denied_write_fields?.length ?? 0) > 0}
+								<div
+									class="policy-panel"
+									data-testid="schema-policy-denied-writes"
+								>
+									<strong>Denied-write fields</strong>
+									<ul>
+										{#each policyReport.denied_write_fields ?? [] as df}
+											<li><code>{df.collection}.{df.field}</code></li>
+										{/each}
+									</ul>
+								</div>
+							{/if}
+
+							{#if (policyReport.envelope_summaries?.length ?? 0) > 0}
+								<div
+									class="policy-panel"
+									data-testid="schema-policy-envelopes"
+								>
+									<strong>MCP envelopes</strong>
+									<table>
+										<thead>
+											<tr>
+												<th>Collection</th>
+												<th>Operation</th>
+												<th>Decision</th>
+												<th>Approval role</th>
+											</tr>
+										</thead>
+										<tbody>
+											{#each policyReport.envelope_summaries ?? [] as env}
+												<tr>
+													<td><code>{env.collection}</code></td>
+													<td>{env.operation}</td>
+													<td>{env.decision}</td>
+													<td>{env.approval?.role ?? '—'}</td>
+												</tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+							{/if}
+
+							{#if (policyReport.required_link_indexes?.length ?? 0) > 0}
+								<div
+									class="policy-panel"
+									data-testid="schema-policy-required-indexes"
+								>
+									<strong>Required link indexes</strong>
+									<ul>
+										{#each policyReport.required_link_indexes ?? [] as idx}
+											<li>
+												<code>{idx.name}</code>
+												<span class="muted">
+													{idx.source_collection} → {idx.target_collection} ({idx.direction})
+												</span>
+											</li>
+										{/each}
+									</ul>
+								</div>
+							{/if}
+
+							{#if !policyHasErrors}
+								<section class="policy-fixture" data-testid="schema-policy-fixture">
+									<header><strong>Fixture dry-run</strong></header>
+									<p class="muted small">
+										Evaluates the proposed policy. Leaving Subject empty uses the current
+										GraphQL caller; setting it routes the dry-run as that actor via
+										<code>x-axon-actor</code>.
+									</p>
+									<div class="fixture-grid">
+										<label>
+											<span>Subject</span>
+											<input
+												data-testid="schema-policy-fixture-subject"
+												bind:value={fixtureSubject}
+												placeholder="finance-agent"
+											/>
+										</label>
+										<label>
+											<span>Operation</span>
+											<select
+												data-testid="schema-policy-fixture-operation"
+												bind:value={fixtureOperation}
+											>
+												<option value="read">read</option>
+												<option value="create">create</option>
+												<option value="update">update</option>
+												<option value="patch">patch</option>
+												<option value="delete">delete</option>
+											</select>
+										</label>
+										<label>
+											<span>Entity ID (optional)</span>
+											<input
+												data-testid="schema-policy-fixture-entity"
+												bind:value={fixtureEntityId}
+												placeholder="invoices/abc"
+											/>
+										</label>
+										{#if fixtureOperation === 'read' || fixtureOperation === 'create' || fixtureOperation === 'update'}
+											<label class="fixture-textarea">
+												<span>data (JSON)</span>
+												<textarea
+													data-testid="schema-policy-fixture-data"
+													bind:value={fixtureDataJson}
+													spellcheck="false"
+												></textarea>
+											</label>
+										{/if}
+										{#if fixtureOperation === 'patch'}
+											<label class="fixture-textarea">
+												<span>patch (JSON)</span>
+												<textarea
+													data-testid="schema-policy-fixture-patch"
+													bind:value={fixturePatchJson}
+													spellcheck="false"
+												></textarea>
+											</label>
+										{/if}
+									</div>
+									<button
+										data-testid="schema-policy-fixture-run"
+										class="primary"
+										disabled={fixtureLoading}
+										onclick={runFixtureDryRun}
+									>
+										{fixtureLoading ? 'Evaluating…' : 'Run fixture dry-run'}
+									</button>
+									{#if fixtureError}
+										<p class="message error" data-testid="schema-policy-fixture-error">
+											{fixtureError}
+										</p>
+									{/if}
+									{#if fixtureResult}
+										<div class="fixture-result">
+											<div>
+												<span class="muted">Decision:</span>
+												<strong data-testid="schema-policy-fixture-decision">
+													{fixtureResult.decision}
+												</strong>
+											</div>
+											<div>
+												<span class="muted">Reason:</span>
+												<code data-testid="schema-policy-fixture-reason-code">
+													{fixtureResult.reason}
+												</code>
+											</div>
+											{#if (fixtureResult.rule_ids?.length ?? 0) > 0}
+												<div>
+													<span class="muted">Rule IDs:</span>
+													<code data-testid="schema-policy-fixture-rule-ids">
+														{fixtureResult.rule_ids?.join(', ')}
+													</code>
+												</div>
+											{/if}
+											{#if fixtureResult.approval?.role}
+												<div>
+													<span class="muted">Approval role:</span>
+													<code data-testid="schema-policy-fixture-approval-role">
+														{fixtureResult.approval.role}
+													</code>
+												</div>
+											{/if}
+										</div>
+									{/if}
+								</section>
+							{/if}
+						{/if}
+					</section>
 				{:else}
 					{@const properties = extractProperties(selectedSchema)}
 					{@const linkTypes = extractLinkTypes(selectedSchema)}
@@ -1008,6 +1509,126 @@ $effect(() => {
 
 	button.danger:hover {
 		background: rgba(251, 113, 133, 0.25);
+	}
+
+	.policy-view {
+		display: flex;
+		flex-direction: column;
+		gap: 0.85rem;
+	}
+
+	.policy-header h3 {
+		margin: 0 0 0.25rem 0;
+		font-size: 1rem;
+		color: var(--accent);
+	}
+
+	.policy-editor-label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.policy-editor-label > span {
+		color: var(--muted);
+		font-size: 0.78rem;
+		font-weight: 700;
+		text-transform: uppercase;
+	}
+
+	.policy-editor {
+		min-height: 14rem;
+		font-family: monospace;
+	}
+
+	.policy-actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
+
+	.policy-panel {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+		padding: 0.85rem;
+		border: 1px solid var(--border);
+		border-radius: 0.6rem;
+		background: rgba(15, 23, 32, 0.5);
+	}
+
+	.policy-panel ul {
+		margin: 0;
+		padding-left: 1.1rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.policy-errors {
+		border-color: var(--danger);
+	}
+
+	.policy-errors li:focus {
+		outline: 2px solid var(--danger);
+		outline-offset: 2px;
+		background: rgba(251, 113, 133, 0.08);
+	}
+
+	.policy-warnings {
+		border-color: rgba(250, 204, 21, 0.4);
+	}
+
+	.error-code {
+		border-color: var(--danger);
+		color: var(--danger);
+	}
+
+	.policy-fixture {
+		display: flex;
+		flex-direction: column;
+		gap: 0.6rem;
+		padding: 0.85rem;
+		border: 1px solid var(--border);
+		border-radius: 0.6rem;
+		background: rgba(15, 23, 32, 0.55);
+	}
+
+	.fixture-grid {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 0.5rem;
+	}
+
+	.fixture-grid label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.fixture-grid label > span {
+		color: var(--muted);
+		font-size: 0.78rem;
+		font-weight: 700;
+		text-transform: uppercase;
+	}
+
+	.fixture-textarea {
+		grid-column: 1 / -1;
+	}
+
+	.fixture-textarea textarea {
+		min-height: 6rem;
+		font-family: monospace;
+	}
+
+	.fixture-result {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		padding: 0.6rem 0.85rem;
+		border-radius: 0.5rem;
+		background: rgba(15, 23, 32, 0.7);
 	}
 
 	@media (max-width: 1100px) {
