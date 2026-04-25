@@ -73,6 +73,7 @@ export async function createTestCollection(
 	schema: {
 		entity_schema?: Record<string, unknown> | null;
 		access_control?: Record<string, unknown>;
+		indexes?: Record<string, unknown>[];
 		lifecycles?: Record<string, unknown>;
 		link_types?: Record<string, unknown>;
 	} = {},
@@ -85,6 +86,7 @@ export async function createTestCollection(
 				version: 1,
 				entity_schema: schema.entity_schema ?? null,
 				access_control: schema.access_control,
+				indexes: schema.indexes ?? [],
 				link_types: schema.link_types ?? {},
 				lifecycles: schema.lifecycles ?? undefined,
 			},
@@ -1053,6 +1055,8 @@ export async function seedScn017PolicyUiFixture(
 	});
 	await createTestCollection(request, db, SCN017_COLLECTIONS.policyFilterUnindexed, {
 		entity_schema: policyFilterUnindexedDraft().entity_schema as Record<string, unknown>,
+		access_control: policyFilterUnindexedDraft().access_control as Record<string, unknown>,
+		indexes: policyFilterUnindexedDraft().indexes as Record<string, unknown>[],
 	});
 
 	const users = scn017UserSeeds();

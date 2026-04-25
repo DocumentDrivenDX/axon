@@ -1,10 +1,14 @@
 <script lang="ts">
 import {
+	type CollectionDetail,
 	type CollectionSummary,
 	type EffectiveCollectionPolicy,
 	type EntityRecord,
+	type ExplainPolicyInput,
+	type PolicyExplainDiagnostic,
 	type PolicyExplanation,
-	explainPolicy,
+	explainPolicyDetailed,
+	fetchCollection,
 	fetchCollections,
 	fetchEffectivePolicy,
 	fetchEntities,
@@ -18,24 +22,67 @@ type SubjectOption = {
 	detail: string | null;
 };
 
+type EvaluationOperation =
+	| 'read'
+	| 'create'
+	| 'update'
+	| 'patch'
+	| 'delete'
+	| 'transition'
+	| 'rollback'
+	| 'transaction';
+
+type WorkspaceDiagnostic = {
+	source: 'schema' | 'graphql';
+	code: string;
+	summary: string;
+	missingField: string | null;
+	remediation: string;
+};
+
+const operationOptions: Array<{ value: EvaluationOperation; label: string }> = [
+	{ value: 'read', label: 'Read' },
+	{ value: 'create', label: 'Create' },
+	{ value: 'update', label: 'Update' },
+	{ value: 'patch', label: 'Patch' },
+	{ value: 'delete', label: 'Delete' },
+	{ value: 'transition', label: 'Transition' },
+	{ value: 'rollback', label: 'Rollback' },
+	{ value: 'transaction', label: 'Transaction' },
+];
+
 const { data }: { data: PageData } = $props();
 const scope = $derived(data.scope);
 const scopeLabel = $derived(`${data.tenant.db_name} / ${data.database.name}`);
 
 let collections = $state<CollectionSummary[]>([]);
 let subjects = $state<SubjectOption[]>([]);
+let collectionDetail = $state<CollectionDetail | null>(null);
+let collectionEntities = $state<EntityRecord[]>([]);
 let selectedCollection = $state('');
 let selectedSubject = $state('');
-let sampleEntity = $state<EntityRecord | null>(null);
+let selectedEntityId = $state('');
+let selectedOperation = $state<EvaluationOperation>('read');
 let effectivePolicy = $state<EffectiveCollectionPolicy | null>(null);
 let explanation = $state<PolicyExplanation | null>(null);
+let explanationDiagnostics = $state<PolicyExplainDiagnostic[]>([]);
 let loadingShell = $state(true);
+let loadingCollectionContext = $state(false);
 let loadingEffectivePolicy = $state(false);
 let loadingExplanation = $state(false);
 let shellError = $state<string | null>(null);
+let collectionContextError = $state<string | null>(null);
 let policyError = $state<string | null>(null);
 let explanationError = $state<string | null>(null);
-let refreshToken = 0;
+let expectedVersionText = $state('');
+let rollbackVersionText = $state('');
+let lifecycleName = $state('status');
+let targetState = $state('approved');
+let dataFixtureText = $state('{}');
+let patchFixtureText = $state('{}');
+let transactionFixtureText = $state('[]');
+let collectionContextToken = 0;
+let evaluationToken = 0;
 
 const selectedCollectionSummary = $derived(
 	collections.find((collection) => collection.name === selectedCollection) ?? null,
@@ -43,17 +90,44 @@ const selectedCollectionSummary = $derived(
 const selectedSubjectOption = $derived(
 	subjects.find((subject) => subject.id === selectedSubject) ?? null,
 );
+const selectedEntity = $derived(
+	collectionEntities.find((entity) => entity.id === selectedEntityId) ?? null,
+);
 const schemaVersionLabel = $derived(
 	selectedCollectionSummary?.schema_version
 		? `v${selectedCollectionSummary.schema_version}`
 		: 'No schema',
 );
 const policyVersionLabel = $derived(
-	effectivePolicy ? `v${effectivePolicy.policyVersion}` : 'Not loaded',
+	effectivePolicy
+		? `v${effectivePolicy.policyVersion}`
+		: explanation
+			? `v${explanation.policyVersion}`
+			: 'Not loaded',
 );
 const sampleEntityLabel = $derived(
-	sampleEntity ? `${sampleEntity.collection}/${sampleEntity.id}` : 'No sample entity',
+	selectedEntity ? `${selectedEntity.collection}/${selectedEntity.id}` : 'No sample entity',
 );
+const sampleRowJson = $derived(prettyJson(selectedEntity?.data ?? {}));
+const requiresEntity = $derived(
+	['update', 'patch', 'delete', 'transition', 'rollback'].includes(selectedOperation),
+);
+const requiresExpectedVersion = $derived(
+	['update', 'patch', 'delete', 'transition'].includes(selectedOperation),
+);
+const schemaDiagnostics = $derived(buildSchemaDiagnostics(collectionDetail, selectedOperation));
+const graphqlDiagnostics = $derived(buildGraphqlDiagnostics(explanationDiagnostics));
+const evaluatorDiagnostics = $derived(
+	dedupeDiagnostics([...schemaDiagnostics, ...graphqlDiagnostics]),
+);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function prettyJson(value: unknown): string {
+	return JSON.stringify(value ?? {}, null, 2);
+}
 
 function defaultCollectionName(nextCollections: CollectionSummary[]): string {
 	for (const preferredName of ['invoices', 'task', 'expense']) {
@@ -117,48 +191,285 @@ function errorMessage(error: unknown, fallback: string): string {
 	return error instanceof Error ? error.message : fallback;
 }
 
-async function refreshPolicyView() {
+function parseOptionalInteger(value: string, label: string): number | null {
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	const parsed = Number(trimmed);
+	if (!Number.isInteger(parsed) || parsed < 0) {
+		throw new Error(`${label} must be a non-negative integer`);
+	}
+	return parsed;
+}
+
+function parseJsonFixture(text: string, label: string): unknown {
+	try {
+		return JSON.parse(text);
+	} catch {
+		throw new Error(`${label} must be valid JSON`);
+	}
+}
+
+function defaultPatchFixture(entity: EntityRecord | null): Record<string, unknown> {
+	const data = entity?.data ?? {};
+	if (typeof data.amount_cents === 'number') {
+		return { amount_cents: data.amount_cents + 500_000 };
+	}
+	if (typeof data.budget_cents === 'number') {
+		return { budget_cents: data.budget_cents + 15_000 };
+	}
+	if (typeof data.status === 'string') {
+		return { status: data.status === 'approved' ? 'draft' : 'approved' };
+	}
+	if (typeof data.title === 'string') {
+		return { title: `${data.title} (policy dry-run)` };
+	}
+	return {};
+}
+
+function defaultTransactionFixture(entity: EntityRecord | null): Array<Record<string, unknown>> {
+	if (!entity) return [];
+	return [
+		{
+			updateEntity: {
+				collection: entity.collection,
+				id: entity.id,
+				expectedVersion: entity.version,
+				data: entity.data,
+			},
+		},
+	];
+}
+
+function seedEditorFixtures(entity: EntityRecord | null) {
+	expectedVersionText = entity ? String(entity.version) : '';
+	rollbackVersionText = entity ? String(Math.max(0, entity.version - 1)) : '';
+	lifecycleName =
+		entity && typeof entity.data.status === 'string'
+			? 'status'
+			: entity && typeof entity.data.state === 'string'
+				? 'state'
+				: 'status';
+	targetState = 'approved';
+	dataFixtureText = prettyJson(entity?.data ?? {});
+	patchFixtureText = prettyJson(defaultPatchFixture(entity));
+	transactionFixtureText = prettyJson(defaultTransactionFixture(entity));
+}
+
+function actorHeaders() {
+	return selectedSubject ? { headers: { 'x-axon-actor': selectedSubject } } : {};
+}
+
+function actorOptions() {
+	return selectedSubject ? { actor: selectedSubject } : {};
+}
+
+function buildExplainInput(entity: EntityRecord | null): ExplainPolicyInput {
+	const input: ExplainPolicyInput = {
+		operation: selectedOperation,
+		...(selectedCollection ? { collection: selectedCollection } : {}),
+	};
+
+	if (selectedOperation === 'transaction') {
+		const operations = parseJsonFixture(transactionFixtureText, 'Transaction fixture');
+		if (!Array.isArray(operations)) {
+			throw new Error('Transaction fixture must be a JSON array');
+		}
+		return {
+			operation: 'transaction',
+			operations: operations as Record<string, unknown>[],
+		};
+	}
+
+	if (entity) {
+		input.entityId = entity.id;
+	}
+
+	if (requiresEntity && !entity) {
+		throw new Error('Select an entity before running this evaluator operation');
+	}
+
+	if (requiresExpectedVersion) {
+		const expectedVersion = parseOptionalInteger(expectedVersionText, 'Expected version');
+		if (expectedVersion !== null) {
+			input.expectedVersion = expectedVersion;
+		}
+	}
+
+	switch (selectedOperation) {
+		case 'read':
+		case 'delete':
+			return input;
+		case 'create':
+			return {
+				operation: 'create',
+				...(selectedCollection ? { collection: selectedCollection } : {}),
+				data: parseJsonFixture(dataFixtureText, 'JSON fixture'),
+			};
+		case 'update':
+			return {
+				...input,
+				data: parseJsonFixture(dataFixtureText, 'JSON fixture'),
+			};
+		case 'patch':
+			return {
+				...input,
+				patch: parseJsonFixture(patchFixtureText, 'Patch fixture'),
+			};
+		case 'transition':
+			if (!lifecycleName.trim()) {
+				throw new Error('Lifecycle name is required for transition evaluation');
+			}
+			if (!targetState.trim()) {
+				throw new Error('Target state is required for transition evaluation');
+			}
+			return {
+				...input,
+				lifecycleName: lifecycleName.trim(),
+				targetState: targetState.trim(),
+			};
+		case 'rollback': {
+			const toVersion = parseOptionalInteger(rollbackVersionText, 'Rollback version');
+			return {
+				...input,
+				...(toVersion !== null ? { toVersion } : {}),
+			};
+		}
+		default:
+			return input;
+	}
+}
+
+function collectWhereFields(value: unknown, fields: Set<string>) {
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			collectWhereFields(item, fields);
+		}
+		return;
+	}
+	if (!isRecord(value)) return;
+
+	for (const [key, candidate] of Object.entries(value)) {
+		if (key === 'where' && isRecord(candidate) && typeof candidate.field === 'string') {
+			fields.add(candidate.field);
+		}
+		collectWhereFields(candidate, fields);
+	}
+}
+
+function buildSchemaDiagnostics(
+	detail: CollectionDetail | null,
+	operation: EvaluationOperation,
+): WorkspaceDiagnostic[] {
+	if (operation !== 'read') return [];
+	const schema = detail?.schema;
+	if (!schema) return [];
+	const whereFields = new Set<string>();
+	collectWhereFields(schema.access_control, whereFields);
+	if (!whereFields.size) return [];
+
+	const indexedFields = new Set(
+		(schema.indexes ?? [])
+			.map((index) => (typeof index.field === 'string' ? index.field : null))
+			.filter((value): value is string => Boolean(value)),
+	);
+
+	return [...whereFields]
+		.filter((field) => !indexedFields.has(field))
+		.map((field) => ({
+			source: 'schema' as const,
+			code: 'policy_filter_unindexed',
+			summary: `Collection read filters depend on unindexed field "${field}".`,
+			missingField: field,
+			remediation: `Add an index on "${field}" or narrow the policy filter so collection reads do not fail with policy_filter_unindexed.`,
+		}));
+}
+
+function buildGraphqlDiagnostics(diagnostics: PolicyExplainDiagnostic[]): WorkspaceDiagnostic[] {
+	return diagnostics.flatMap((diagnostic) => {
+		const reason = typeof diagnostic.detail?.reason === 'string' ? diagnostic.detail.reason : null;
+		const missingField =
+			typeof diagnostic.detail?.missing_index === 'string' ? diagnostic.detail.missing_index : null;
+		const collection =
+			typeof diagnostic.detail?.collection === 'string' ? diagnostic.detail.collection : null;
+		const candidateCount =
+			typeof diagnostic.detail?.candidate_count === 'number'
+				? diagnostic.detail.candidate_count
+				: null;
+		const costLimit =
+			typeof diagnostic.detail?.cost_limit === 'number' ? diagnostic.detail.cost_limit : null;
+
+		if (reason !== 'policy_filter_unindexed' && diagnostic.code !== 'POLICY_FILTER_UNINDEXED') {
+			return [];
+		}
+
+		const saturation =
+			candidateCount !== null && costLimit !== null
+				? ` Candidate set ${candidateCount} exceeded the limit ${costLimit}.`
+				: '';
+		return [
+			{
+				source: 'graphql' as const,
+				code: 'policy_filter_unindexed',
+				summary: collection
+					? `GraphQL denied ${collection} because the policy filter needs an index${
+							missingField ? ` on "${missingField}"` : ''
+						}.${saturation}`
+					: `GraphQL policy evaluation needs a missing index${
+							missingField ? ` on "${missingField}"` : ''
+						}.${saturation}`,
+				missingField,
+				remediation: missingField
+					? `Add an index on "${missingField}" so the policy can evaluate without post-filter rejection.`
+					: 'Add the missing index or simplify the policy filter before retrying.',
+			},
+		];
+	});
+}
+
+function dedupeDiagnostics(diagnostics: WorkspaceDiagnostic[]): WorkspaceDiagnostic[] {
+	const seen = new Set<string>();
+	return diagnostics.filter((diagnostic) => {
+		const key = `${diagnostic.code}:${diagnostic.missingField ?? ''}:${diagnostic.source}`;
+		if (seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+}
+
+function formatDiagnosticError(diagnostic: PolicyExplainDiagnostic): string {
+	return diagnostic.code ? `${diagnostic.code}: ${diagnostic.message}` : diagnostic.message;
+}
+
+async function runPolicyEvaluation(entity: EntityRecord | null = selectedEntity) {
 	if (!selectedCollection) return;
 
-	const token = ++refreshToken;
+	const token = ++evaluationToken;
 	loadingEffectivePolicy = true;
 	loadingExplanation = true;
 	policyError = null;
 	explanationError = null;
 	effectivePolicy = null;
 	explanation = null;
-	sampleEntity = null;
+	explanationDiagnostics = [];
 
-	try {
-		const entities = await fetchEntities(
-			selectedCollection,
-			{ limit: 1 },
-			scope,
-			selectedSubject ? { headers: { 'x-axon-actor': selectedSubject } } : {},
-		);
-		if (token !== refreshToken) return;
-		sampleEntity = entities.entities[0] ?? null;
-	} catch {
-		if (token !== refreshToken) return;
-		sampleEntity = null;
-	}
-
-	const actorOptions = selectedSubject ? { actor: selectedSubject } : {};
-	const explainInput = {
-		operation: 'read',
-		collection: selectedCollection,
-		...(sampleEntity ? { entityId: sampleEntity.id } : {}),
-	};
+	const nextInput = (() => {
+		try {
+			return buildExplainInput(entity);
+		} catch (error) {
+			explanationError = errorMessage(error, 'Failed to build policy evaluation');
+			return null;
+		}
+	})();
 
 	const [effectiveResult, explanationResult] = await Promise.allSettled([
 		fetchEffectivePolicy(selectedCollection, scope, {
-			entityId: sampleEntity?.id ?? null,
-			...actorOptions,
+			entityId: entity?.id ?? null,
+			...actorOptions(),
 		}),
-		explainPolicy(explainInput, scope, actorOptions),
+		nextInput ? explainPolicyDetailed(nextInput, scope, actorOptions()) : Promise.resolve(null),
 	]);
 
-	if (token !== refreshToken) return;
+	if (token !== evaluationToken) return;
 
 	if (effectiveResult.status === 'fulfilled') {
 		effectivePolicy = effectiveResult.value;
@@ -166,14 +477,57 @@ async function refreshPolicyView() {
 		policyError = errorMessage(effectiveResult.reason, 'Failed to load effective policy');
 	}
 
-	if (explanationResult.status === 'fulfilled') {
-		explanation = explanationResult.value;
-	} else {
+	if (nextInput && explanationResult.status === 'fulfilled' && explanationResult.value) {
+		explanation = explanationResult.value.explanation;
+		explanationDiagnostics = explanationResult.value.diagnostics;
+		if (!explanation && explanationDiagnostics.length) {
+			explanationError = explanationDiagnostics.map(formatDiagnosticError).join(', ');
+		}
+	} else if (nextInput && explanationResult.status === 'rejected') {
 		explanationError = errorMessage(explanationResult.reason, 'Failed to explain policy');
 	}
 
 	loadingEffectivePolicy = false;
 	loadingExplanation = false;
+}
+
+async function loadCollectionContext(resetEditors = true) {
+	if (!selectedCollection) return;
+
+	const token = ++collectionContextToken;
+	loadingCollectionContext = true;
+	collectionContextError = null;
+
+	const [detailResult, entitiesResult] = await Promise.allSettled([
+		fetchCollection(selectedCollection, scope),
+		fetchEntities(selectedCollection, { limit: 25 }, scope, actorHeaders()),
+	]);
+
+	if (token !== collectionContextToken) return;
+
+	collectionDetail = detailResult.status === 'fulfilled' ? detailResult.value : null;
+	collectionEntities = entitiesResult.status === 'fulfilled' ? entitiesResult.value.entities : [];
+
+	if (detailResult.status === 'rejected') {
+		collectionContextError = errorMessage(detailResult.reason, 'Failed to load collection schema');
+	}
+	if (entitiesResult.status === 'rejected') {
+		collectionContextError = collectionContextError
+			? `${collectionContextError}; ${errorMessage(entitiesResult.reason, 'Failed to load entities')}`
+			: errorMessage(entitiesResult.reason, 'Failed to load entities');
+	}
+
+	const nextEntity =
+		collectionEntities.find((entity) => entity.id === selectedEntityId) ??
+		collectionEntities[0] ??
+		null;
+	selectedEntityId = nextEntity?.id ?? '';
+	if (resetEditors) {
+		seedEditorFixtures(nextEntity);
+	}
+
+	loadingCollectionContext = false;
+	await runPolicyEvaluation(nextEntity);
 }
 
 async function loadRouteShell() {
@@ -194,18 +548,34 @@ async function loadRouteShell() {
 	}
 
 	if (selectedCollection) {
-		await refreshPolicyView();
+		await loadCollectionContext(true);
 	}
 }
 
 function handleCollectionChange(event: Event) {
 	selectedCollection = (event.currentTarget as HTMLSelectElement).value;
-	void refreshPolicyView();
+	void loadCollectionContext(true);
 }
 
 function handleSubjectChange(event: Event) {
 	selectedSubject = (event.currentTarget as HTMLSelectElement).value;
-	void refreshPolicyView();
+	void loadCollectionContext(true);
+}
+
+function handleEntityChange(event: Event) {
+	selectedEntityId = (event.currentTarget as HTMLSelectElement).value;
+	seedEditorFixtures(selectedEntity);
+	void runPolicyEvaluation(selectedEntity);
+}
+
+function handleOperationChange(event: Event) {
+	selectedOperation = (event.currentTarget as HTMLSelectElement).value as EvaluationOperation;
+	void runPolicyEvaluation(selectedEntity);
+}
+
+function resetFixtureFromSampleRow() {
+	seedEditorFixtures(selectedEntity);
+	void runPolicyEvaluation(selectedEntity);
 }
 
 onMount(() => {
@@ -238,56 +608,223 @@ onMount(() => {
 	<section class="panel">
 		<div class="panel-header">
 			<h2>Scope</h2>
+			{#if loadingCollectionContext}
+				<span class="muted">Refreshing entity scope…</span>
+			{/if}
 		</div>
-		<div class="panel-body controls-grid">
-			<label class="control">
-				<span>Collection</span>
-				<select
-					id="policy-collection"
-					data-testid="policy-collection-picker"
-					bind:value={selectedCollection}
-					onchange={handleCollectionChange}
+		<div class="panel-body stack">
+			{#if collectionContextError}
+				<p class="message error">{collectionContextError}</p>
+			{/if}
+
+			<div class="controls-grid">
+				<label class="control">
+					<span>Collection</span>
+					<select
+						id="policy-collection"
+						data-testid="policy-collection-picker"
+						bind:value={selectedCollection}
+						onchange={handleCollectionChange}
+					>
+						{#each collections as collection}
+							<option value={collection.name}>{collection.name}</option>
+						{/each}
+					</select>
+				</label>
+
+				<label class="control">
+					<span>Subject</span>
+					<select
+						id="policy-subject"
+						data-testid="policy-subject-picker"
+						bind:value={selectedSubject}
+						onchange={handleSubjectChange}
+					>
+						{#each subjects as subject}
+							<option value={subject.id}>
+								{subject.label}{subject.detail ? ` · ${subject.detail}` : ''}
+							</option>
+						{/each}
+					</select>
+				</label>
+
+				<label class="control">
+					<span>Selected entity</span>
+					<select
+						id="policy-entity"
+						data-testid="policy-entity-picker"
+						bind:value={selectedEntityId}
+						onchange={handleEntityChange}
+					>
+						<option value="">Collection scope</option>
+						{#each collectionEntities as entity}
+							<option value={entity.id}>{entity.id} · v{entity.version}</option>
+						{/each}
+					</select>
+				</label>
+
+				<div class="control static">
+					<span>Sample entity</span>
+					<div class="value" data-testid="policy-sample-entity">{sampleEntityLabel}</div>
+				</div>
+
+				<div class="control static">
+					<span>Active schema version</span>
+					<div class="value" data-testid="policy-schema-version">{schemaVersionLabel}</div>
+				</div>
+
+				<div class="control static">
+					<span>Active policy version</span>
+					<div class="value" data-testid="policy-version">{policyVersionLabel}</div>
+				</div>
+
+				<div class="control static">
+					<span>Subject detail</span>
+					<div class="value">{selectedSubjectOption?.detail ?? 'Header-scoped actor'}</div>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<section class="panel">
+		<div class="panel-header">
+			<h2>Evaluator</h2>
+			<div class="actions">
+				<button type="button" data-testid="policy-reset-fixture" onclick={resetFixtureFromSampleRow}>
+					Reset from sample row
+				</button>
+				<button
+					type="button"
+					class="primary"
+					data-testid="policy-run-evaluator"
+					onclick={() => void runPolicyEvaluation(selectedEntity)}
 				>
-					{#each collections as collection}
-						<option value={collection.name}>{collection.name}</option>
-					{/each}
-				</select>
-			</label>
+					Run evaluator
+				</button>
+			</div>
+		</div>
+		<div class="panel-body stack">
+			<div class="controls-grid">
+				<label class="control">
+					<span>Operation</span>
+					<select
+						id="policy-operation"
+						data-testid="policy-operation-picker"
+						bind:value={selectedOperation}
+						onchange={handleOperationChange}
+					>
+						{#each operationOptions as option}
+							<option value={option.value}>{option.label}</option>
+						{/each}
+					</select>
+				</label>
 
-			<label class="control">
-				<span>Subject</span>
-				<select
-					id="policy-subject"
-					data-testid="policy-subject-picker"
-					bind:value={selectedSubject}
-					onchange={handleSubjectChange}
-				>
-					{#each subjects as subject}
-						<option value={subject.id}>
-							{subject.label}{subject.detail ? ` · ${subject.detail}` : ''}
-						</option>
-					{/each}
-				</select>
-			</label>
+				{#if requiresExpectedVersion}
+					<label class="control">
+						<span>Expected version</span>
+						<input
+							type="text"
+							inputmode="numeric"
+							data-testid="policy-expected-version"
+							bind:value={expectedVersionText}
+						/>
+					</label>
+				{/if}
 
-			<div class="control static">
-				<span>Sample entity</span>
-				<div class="value" data-testid="policy-sample-entity">{sampleEntityLabel}</div>
+				{#if selectedOperation === 'rollback'}
+					<label class="control">
+						<span>Rollback version</span>
+						<input
+							type="text"
+							inputmode="numeric"
+							data-testid="policy-rollback-version"
+							bind:value={rollbackVersionText}
+						/>
+					</label>
+				{/if}
+
+				{#if selectedOperation === 'transition'}
+					<label class="control">
+						<span>Lifecycle</span>
+						<input type="text" data-testid="policy-lifecycle-name" bind:value={lifecycleName} />
+					</label>
+
+					<label class="control">
+						<span>Target state</span>
+						<input type="text" data-testid="policy-target-state" bind:value={targetState} />
+					</label>
+				{/if}
+
+				<div class="control static">
+					<span>JSON fixture mode</span>
+					<div class="value">Selected entity + sample row editor</div>
+				</div>
 			</div>
 
-			<div class="control static">
-				<span>Active schema version</span>
-				<div class="value" data-testid="policy-schema-version">{schemaVersionLabel}</div>
-			</div>
+			<div class="fixture-grid">
+				<section class="fixture-card">
+					<div class="fixture-header">
+						<div>
+							<h3>Sample Row</h3>
+							<p class="muted">Live entity payload copied into the fixture editors.</p>
+						</div>
+					</div>
+					<pre data-testid="policy-sample-row">{sampleRowJson}</pre>
+				</section>
 
-			<div class="control static">
-				<span>Active policy version</span>
-				<div class="value" data-testid="policy-version">{policyVersionLabel}</div>
-			</div>
+				{#if selectedOperation === 'create' || selectedOperation === 'update'}
+					<section class="fixture-card">
+						<div class="fixture-header">
+							<div>
+								<h3>JSON Fixture</h3>
+								<p class="muted">Edit the full entity body used for create/update evaluation.</p>
+							</div>
+						</div>
+						<textarea
+							class="fixture-editor"
+							data-testid="policy-data-fixture"
+							rows="14"
+							spellcheck="false"
+							bind:value={dataFixtureText}
+						></textarea>
+					</section>
+				{/if}
 
-			<div class="control static">
-				<span>Subject detail</span>
-				<div class="value">{selectedSubjectOption?.detail ?? 'Header-scoped actor'}</div>
+				{#if selectedOperation === 'patch'}
+					<section class="fixture-card">
+						<div class="fixture-header">
+							<div>
+								<h3>Patch Fixture</h3>
+								<p class="muted">Edit the JSON patch applied to the selected entity.</p>
+							</div>
+						</div>
+						<textarea
+							class="fixture-editor"
+							data-testid="policy-patch-fixture"
+							rows="14"
+							spellcheck="false"
+							bind:value={patchFixtureText}
+						></textarea>
+					</section>
+				{/if}
+
+				{#if selectedOperation === 'transaction'}
+					<section class="fixture-card fixture-card-wide">
+						<div class="fixture-header">
+							<div>
+								<h3>Transaction Fixture</h3>
+								<p class="muted">Provide the operations array exactly as the GraphQL evaluator expects it.</p>
+							</div>
+						</div>
+						<textarea
+							class="fixture-editor"
+							data-testid="policy-transaction-fixture"
+							rows="16"
+							spellcheck="false"
+							bind:value={transactionFixtureText}
+						></textarea>
+					</section>
+				{/if}
 			</div>
 		</div>
 	</section>
@@ -325,15 +862,11 @@ onMount(() => {
 					<div class="field-list">
 						<div>
 							<span class="label">Redacted fields</span>
-							<p data-testid="policy-redacted-fields">
-								{formatFields(effectivePolicy.redactedFields)}
-							</p>
+							<p data-testid="policy-redacted-fields">{formatFields(effectivePolicy.redactedFields)}</p>
 						</div>
 						<div>
 							<span class="label">Denied fields</span>
-							<p data-testid="policy-denied-fields">
-								{formatFields(effectivePolicy.deniedFields)}
-							</p>
+							<p data-testid="policy-denied-fields">{formatFields(effectivePolicy.deniedFields)}</p>
 						</div>
 					</div>
 				{:else}
@@ -351,35 +884,94 @@ onMount(() => {
 					<p class="muted">Explaining policy for the selected subject…</p>
 				{:else if explanationError}
 					<p class="message error">{explanationError}</p>
-				{:else if explanation}
-					<div data-testid="policy-explanation">
+				{/if}
+
+				{#if explanation}
+					<div class="stack" data-testid="policy-explanation">
 						<div class="explanation-row">
 							<span class="label">Decision</span>
 							<strong>{explanation.decision}</strong>
 						</div>
 						<div class="explanation-row">
-							<span class="label">Reason</span>
-							<strong>{explanation.reason}</strong>
+							<span class="label">Reason Code</span>
+							<strong data-testid="policy-reason-code">{explanation.reason}</strong>
 						</div>
 						<div class="explanation-row">
-							<span class="label">Rules</span>
+							<span class="label">Stable Rule IDs</span>
+							<strong data-testid="policy-rule-ids">{formatFields(explanation.ruleIds)}</strong>
+						</div>
+						<div class="explanation-row">
+							<span class="label">Matching rules</span>
 							<strong>{explanation.rules.map((rule) => rule.name).join(', ') || 'None'}</strong>
+						</div>
+						<div class="explanation-row">
+							<span class="label">Field paths</span>
+							<strong data-testid="policy-field-paths">{formatFields(explanation.fieldPaths)}</strong>
 						</div>
 						<div class="explanation-row">
 							<span class="label">Denied fields</span>
 							<strong>{formatFields(explanation.deniedFields)}</strong>
 						</div>
-						{#if explanation.approval}
+						<div class="explanation-row">
+							<span class="label">Redacted fields</span>
+							<strong>{formatFields(effectivePolicy?.redactedFields ?? [])}</strong>
+						</div>
+						<div class="explanation-row">
+							<span class="label">Policy version</span>
+							<strong>v{explanation.policyVersion}</strong>
+						</div>
+						<div class="explanation-row">
+							<span class="label">Required approver role</span>
+							<strong data-testid="policy-approval-role">
+								{explanation.approval?.role ?? 'No approval route'}
+							</strong>
+						</div>
+
+						{#if explanation.operations.length}
 							<div class="explanation-row">
-								<span class="label">Approval route</span>
-								<strong>
-									{explanation.approval.name} · {explanation.approval.role ?? 'no role'}
-								</strong>
+								<span class="label">Transaction operations</span>
+								<div class="operation-list" data-testid="policy-transaction-operations">
+									{#each explanation.operations as child}
+										<div class="operation-card">
+											<strong>
+												{child.operation}#{child.operationIndex ?? 0} · {child.decision}
+											</strong>
+											<span>{child.reason}</span>
+											<span>{formatFields(child.ruleIds)}</span>
+										</div>
+									{/each}
+								</div>
 							</div>
 						{/if}
 					</div>
+				{:else if !loadingExplanation && !explanationError}
+					<p class="muted">Choose an operation and run the evaluator.</p>
+				{/if}
+			</div>
+		</section>
+
+		<section class="panel">
+			<div class="panel-header">
+				<h2>Diagnostics</h2>
+			</div>
+			<div class="panel-body stack">
+				{#if evaluatorDiagnostics.length}
+					<div class="stack" data-testid="policy-diagnostics">
+						{#each evaluatorDiagnostics as diagnostic}
+							<div class="diagnostic-card">
+								<div class="diagnostic-header">
+									<strong>{diagnostic.code}</strong>
+									<span class="pill">{diagnostic.source}</span>
+								</div>
+								<p>{diagnostic.summary}</p>
+								<p class="muted">{diagnostic.remediation}</p>
+							</div>
+						{/each}
+					</div>
 				{:else}
-					<p class="muted">Choose a subject to inspect explainPolicy output.</p>
+					<p class="muted" data-testid="policy-diagnostics-empty">
+						No missing-index or dry-run diagnostics for the current evaluator state.
+					</p>
 				{/if}
 			</div>
 		</section>
@@ -409,7 +1001,9 @@ onMount(() => {
 	}
 
 	.control select,
-	.control .value {
+	.control input,
+	.control .value,
+	.fixture-editor {
 		min-height: 2.5rem;
 		padding: 0.6rem 0.75rem;
 		border: 1px solid rgba(255, 255, 255, 0.1);
@@ -422,6 +1016,60 @@ onMount(() => {
 	.control.static .value {
 		display: flex;
 		align-items: center;
+	}
+
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.75rem;
+	}
+
+	.fixture-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+		gap: 1rem;
+	}
+
+	.fixture-card {
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		padding: 1rem;
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		border-radius: 0.75rem;
+		background: rgba(255, 255, 255, 0.02);
+	}
+
+	.fixture-card-wide {
+		grid-column: 1 / -1;
+	}
+
+	.fixture-header {
+		display: flex;
+		justify-content: space-between;
+		gap: 1rem;
+	}
+
+	.fixture-header h3,
+	.diagnostic-card p,
+	pre {
+		margin: 0;
+	}
+
+	.fixture-editor {
+		width: 100%;
+		min-height: 12rem;
+		font-family: 'SFMono-Regular', 'SF Mono', 'Consolas', monospace;
+		resize: vertical;
+	}
+
+	pre {
+		padding: 0.85rem;
+		border-radius: 0.5rem;
+		background: rgba(6, 10, 18, 0.8);
+		overflow-x: auto;
+		font-size: 0.82rem;
+		line-height: 1.45;
 	}
 
 	.policy-grid {
@@ -476,9 +1124,44 @@ onMount(() => {
 		border-top: 0;
 	}
 
+	.operation-list {
+		display: grid;
+		gap: 0.75rem;
+	}
+
+	.operation-card,
+	.diagnostic-card {
+		display: grid;
+		gap: 0.35rem;
+		padding: 0.85rem;
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		border-radius: 0.5rem;
+		background: rgba(255, 255, 255, 0.02);
+	}
+
+	.diagnostic-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		gap: 0.75rem;
+	}
+
+	.pill {
+		padding: 0.2rem 0.55rem;
+		border-radius: 999px;
+		background: rgba(255, 255, 255, 0.08);
+		font-size: 0.78rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
 	@media (max-width: 720px) {
 		.capability-grid {
 			grid-template-columns: 1fr;
+		}
+
+		.fixture-header {
+			flex-direction: column;
 		}
 	}
 </style>

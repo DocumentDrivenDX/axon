@@ -9,6 +9,8 @@ export type CollectionSchema = {
 	version: number;
 	entity_schema?: unknown;
 	link_types?: Record<string, unknown>;
+	access_control?: unknown;
+	indexes?: Array<Record<string, unknown>>;
 };
 
 export type FieldChange = {
@@ -110,6 +112,17 @@ export type PolicyExplanation = {
 	rules: PolicyRuleMatch[];
 	approval?: PolicyApprovalSummary | null;
 	operations: PolicyExplanation[];
+};
+
+export type PolicyExplainDiagnostic = {
+	code: string | null;
+	message: string;
+	detail: Record<string, unknown> | null;
+};
+
+export type PolicyExplainResult = {
+	explanation: PolicyExplanation | null;
+	diagnostics: PolicyExplainDiagnostic[];
 };
 
 export type EntityRecord = {
@@ -785,6 +798,77 @@ function policyExplanationFromGraphql(explanation: GraphQLPolicyExplanation): Po
 	};
 }
 
+function policyExplainDiagnosticFromGraphql(error: GraphQLError): PolicyExplainDiagnostic {
+	const detail = error.extensions?.detail;
+	return {
+		code: typeof error.extensions?.code === 'string' ? error.extensions.code : null,
+		message: error.message,
+		detail:
+			detail && typeof detail === 'object' && !Array.isArray(detail)
+				? (detail as Record<string, unknown>)
+				: null,
+	};
+}
+
+const EXPLAIN_POLICY_QUERY = `query AxonUiExplainPolicy($input: ExplainPolicyInput!) {
+	explainPolicy(input: $input) {
+		operation
+		collection
+		entityId
+		operationIndex
+		decision
+		reason
+		policyVersion
+		ruleIds
+		policyIds
+		fieldPaths
+		deniedFields
+		rules {
+			ruleId
+			name
+			kind
+			fieldPath
+		}
+		approval {
+			policyId
+			name
+			decision
+			role
+			reasonRequired
+			deadlineSeconds
+			separationOfDuties
+		}
+		operations {
+			operation
+			collection
+			entityId
+			operationIndex
+			decision
+			reason
+			policyVersion
+			ruleIds
+			policyIds
+			fieldPaths
+			deniedFields
+			rules {
+				ruleId
+				name
+				kind
+				fieldPath
+			}
+			approval {
+				policyId
+				name
+				decision
+				role
+				reasonRequired
+				deadlineSeconds
+				separationOfDuties
+			}
+		}
+	}
+}`;
+
 function entityFromGraphql(entity: GraphQLEntity): EntityRecord {
 	return {
 		collection: entity.collection,
@@ -1043,69 +1127,32 @@ export async function explainPolicy(
 ): Promise<PolicyExplanation> {
 	const data = await graphqlRequest<{ explainPolicy: GraphQLPolicyExplanation }>(
 		scope,
-		`query AxonUiExplainPolicy($input: ExplainPolicyInput!) {
-			explainPolicy(input: $input) {
-				operation
-				collection
-				entityId
-				operationIndex
-				decision
-				reason
-				policyVersion
-				ruleIds
-				policyIds
-				fieldPaths
-				deniedFields
-				rules {
-					ruleId
-					name
-					kind
-					fieldPath
-				}
-				approval {
-					policyId
-					name
-					decision
-					role
-					reasonRequired
-					deadlineSeconds
-					separationOfDuties
-				}
-				operations {
-					operation
-					collection
-					entityId
-					operationIndex
-					decision
-					reason
-					policyVersion
-					ruleIds
-					policyIds
-					fieldPaths
-					deniedFields
-					rules {
-						ruleId
-						name
-						kind
-						fieldPath
-					}
-					approval {
-						policyId
-						name
-						decision
-						role
-						reasonRequired
-						deadlineSeconds
-						separationOfDuties
-					}
-				}
-			}
-		}`,
+		EXPLAIN_POLICY_QUERY,
 		{ input },
 		options.actor ? { headers: { 'x-axon-actor': options.actor } } : {},
 	);
 
 	return policyExplanationFromGraphql(data.explainPolicy);
+}
+
+export async function explainPolicyDetailed(
+	input: ExplainPolicyInput,
+	scope: { tenant: string; database: string },
+	options: { actor?: string | null } = {},
+): Promise<PolicyExplainResult> {
+	const result = await graphqlRawRequest<{ explainPolicy: GraphQLPolicyExplanation | null }>(
+		scope,
+		EXPLAIN_POLICY_QUERY,
+		{ input },
+		options.actor ? { headers: { 'x-axon-actor': options.actor } } : {},
+	);
+
+	return {
+		explanation: result.data?.explainPolicy
+			? policyExplanationFromGraphql(result.data.explainPolicy)
+			: null,
+		diagnostics: (result.errors ?? []).map(policyExplainDiagnosticFromGraphql),
+	};
 }
 
 export async function fetchEntity(
