@@ -126,5 +126,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      # Cargo.lock is gitignored; the e2e Docker build COPYs it for layer
+      # caching, so generate one before docker build when the rust-cache
+      # restore did not provide it.
+      - name: Ensure Cargo.lock exists
+        run: test -f Cargo.lock || cargo generate-lockfile
       - run: cd ui && bun install
       - run: cd ui && bun run test:e2e:postgres

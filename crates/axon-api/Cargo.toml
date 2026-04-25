@@ -19,7 +19,6 @@ axon-schema = { path = "../axon-schema" }
 axon-audit = { path = "../axon-audit" }
 axon-storage = { path = "../axon-storage" }
 axon-render = { path = "../axon-render" }
-base64.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
