@@ -3,6 +3,13 @@
 //! The parser in `access_control` preserves the authoring AST. This module
 //! normalizes predicates into a plan shape that downstream policy evaluation,
 //! GraphQL generation, and MCP metadata can consume.
+//!
+//! `clippy::result_large_err` is allowed module-wide: `PolicyCompileError`
+//! intentionally carries structured fields (`code`, `path`, `collection`,
+//! `rule_id`, `field`) so admin-UI clients can focus the first actionable
+//! error. Compile-error paths are cold; the size penalty is irrelevant.
+
+#![allow(clippy::result_large_err)]
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -29,7 +36,14 @@ pub fn compile_policy_plan(schema: &CollectionSchema) -> Result<Option<PolicyPla
 /// Relationship predicates that reuse another collection's `target_policy`
 /// require the full schema set so target collections and recursive policy
 /// references can be validated before activation.
-pub fn compile_policy_catalog(schemas: &[CollectionSchema]) -> Result<PolicyCatalog, AxonError> {
+///
+/// Returns the typed [`PolicyCompileError`] so callers that want to capture
+/// the failure as a structured diagnostic (admin UI dry-run path) can do so;
+/// the existing `From<PolicyCompileError> for AxonError` keeps the wire
+/// format stable for callers that bubble via `?`.
+pub fn compile_policy_catalog(
+    schemas: &[CollectionSchema],
+) -> Result<PolicyCatalog, PolicyCompileError> {
     let schemas_by_collection = schemas_by_collection(schemas)?;
     let mut plans = HashMap::new();
     for schema in schemas {
@@ -44,33 +58,142 @@ pub fn compile_policy_catalog(schemas: &[CollectionSchema]) -> Result<PolicyCata
 }
 
 /// Stable policy compilation diagnostic.
+///
+/// Carries both the human-readable message and the structured fields the
+/// admin UI uses to focus the first actionable error: the JSON path within
+/// the `access_control` block, the owning collection, and (when known) the
+/// rule ID and entity-schema field path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PolicyCompileError {
+    code: String,
     message: String,
+    path: Option<String>,
+    collection: Option<String>,
+    rule_id: Option<String>,
+    field: Option<String>,
 }
 
+/// Default stable code for compile errors.
+///
+/// Matches the historical Display prefix so `From<PolicyCompileError> for
+/// AxonError` keeps the existing
+/// `schema validation failed: policy_expression_invalid: …` wire format.
+pub const POLICY_COMPILE_ERROR_DEFAULT_CODE: &str = "policy_expression_invalid";
+
 impl PolicyCompileError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
+            code: POLICY_COMPILE_ERROR_DEFAULT_CODE.to_string(),
             message: message.into(),
+            path: None,
+            collection: None,
+            rule_id: None,
+            field: None,
         }
     }
 
-    /// Stable error detail without the `SchemaValidation` wrapper.
+    pub(crate) fn with_path(mut self, path: impl Into<String>) -> Self {
+        self.path = Some(path.into());
+        self
+    }
+
+    pub(crate) fn with_collection(mut self, collection: impl Into<String>) -> Self {
+        self.collection = Some(collection.into());
+        self
+    }
+
+    pub(crate) fn with_rule_id_if_unset(mut self, rule_id: impl Into<String>) -> Self {
+        if self.rule_id.is_none() {
+            self.rule_id = Some(rule_id.into());
+        }
+        self
+    }
+
+    pub(crate) fn with_field_if_unset(mut self, field: impl Into<String>) -> Self {
+        if self.field.is_none() {
+            self.field = Some(field.into());
+        }
+        self
+    }
+
+    /// Stable code (defaults to `policy_expression_invalid`).
+    pub fn code(&self) -> &str {
+        &self.code
+    }
+
+    /// Human-readable detail without the `SchemaValidation` wrapper.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// JSON path within the `access_control` block where the error fired.
+    pub fn path(&self) -> Option<&str> {
+        self.path.as_deref()
+    }
+
+    /// Collection that owns the policy block.
+    pub fn collection(&self) -> Option<&str> {
+        self.collection.as_deref()
+    }
+
+    /// Stable rule identifier when the error originated inside a named rule.
+    pub fn rule_id(&self) -> Option<&str> {
+        self.rule_id.as_deref()
+    }
+
+    /// Entity-schema field path when the error references a field.
+    pub fn field(&self) -> Option<&str> {
+        self.field.as_deref()
     }
 }
 
 impl fmt::Display for PolicyCompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "policy_expression_invalid: {}", self.message)
+        write!(f, "{}: {}", self.code, self.message)
     }
 }
 
 impl From<PolicyCompileError> for AxonError {
     fn from(err: PolicyCompileError) -> Self {
         AxonError::SchemaValidation(err.to_string())
+    }
+}
+
+/// Serializable compile diagnostic surfaced to admin UI clients.
+///
+/// `PolicyCompileError` is the in-process error value; this is the wire
+/// shape carried inside `PolicyCompileReport.errors` and
+/// `PolicyCompileReport.warnings`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PolicyCompileDiagnostic {
+    pub code: String,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collection: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
+impl From<&PolicyCompileError> for PolicyCompileDiagnostic {
+    fn from(err: &PolicyCompileError) -> Self {
+        Self {
+            code: err.code.clone(),
+            message: err.message.clone(),
+            path: err.path.clone(),
+            collection: err.collection.clone(),
+            rule_id: err.rule_id.clone(),
+            field: err.field.clone(),
+        }
+    }
+}
+
+impl From<PolicyCompileError> for PolicyCompileDiagnostic {
+    fn from(err: PolicyCompileError) -> Self {
+        (&err).into()
     }
 }
 
@@ -89,6 +212,17 @@ pub struct PolicyCatalog {
 /// Stable policy compile report for activation dry-runs and admin UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PolicyCompileReport {
+    /// Compile errors. Non-empty means the report came from a failed compile
+    /// and the admin UI should focus the first entry. Activation paths must
+    /// refuse to persist when this is non-empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<PolicyCompileDiagnostic>,
+
+    /// Compile warnings. Reserved for forward compatibility; no producer
+    /// emits warnings yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<PolicyCompileDiagnostic>,
+
     /// Link-table indexes required to evaluate relationship predicates.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required_link_indexes: Vec<RequiredLinkIndex>,
@@ -108,10 +242,22 @@ pub struct PolicyCompileReport {
 
 impl PolicyCompileReport {
     pub fn is_empty(&self) -> bool {
-        self.required_link_indexes.is_empty()
+        self.errors.is_empty()
+            && self.warnings.is_empty()
+            && self.required_link_indexes.is_empty()
             && self.nullable_fields.is_empty()
             && self.denied_write_fields.is_empty()
             && self.envelope_summaries.is_empty()
+    }
+
+    /// Build a failure report carrying a single structured diagnostic. Used
+    /// by callers that want to surface a compile failure as part of a
+    /// dry-run response instead of bubbling the error.
+    pub fn from_compile_error(err: &PolicyCompileError) -> Self {
+        Self {
+            errors: vec![err.into()],
+            ..Self::default()
+        }
     }
 }
 
@@ -428,7 +574,7 @@ impl<'a> PolicyCompiler<'a> {
         }
     }
 
-    fn compile(&self) -> Result<PolicyPlan, AxonError> {
+    fn compile(&self) -> Result<PolicyPlan, PolicyCompileError> {
         let mut plan = PolicyPlan {
             policy_version: self.schema.version,
             ..PolicyPlan::default()
@@ -461,19 +607,25 @@ impl<'a> PolicyCompiler<'a> {
         )?;
 
         for (field, policy) in &self.policy.fields {
-            self.validate_field_path(field, &format!("fields.{field}"))?;
-            plan.fields
-                .insert(field.clone(), self.compile_field_policy(field, policy)?);
+            self.validate_field_path(field, &format!("fields.{field}"))
+                .map_err(|e| e.with_field_if_unset(field.clone()))?;
+            plan.fields.insert(
+                field.clone(),
+                self.compile_field_policy(field, policy)
+                    .map_err(|e| e.with_field_if_unset(field.clone()))?,
+            );
         }
 
         for (field, transitions) in &self.policy.transitions {
-            self.validate_field_path(field, &format!("transitions.{field}"))?;
+            self.validate_field_path(field, &format!("transitions.{field}"))
+                .map_err(|e| e.with_field_if_unset(field.clone()))?;
             let mut compiled_transitions = HashMap::new();
             for (transition, policy) in transitions {
                 let ctx = format!("transitions.{field}.{transition}");
                 compiled_transitions.insert(
                     transition.clone(),
-                    self.compile_operation_policy(policy, &ctx)?,
+                    self.compile_operation_policy(policy, &ctx)
+                        .map_err(|e| e.with_field_if_unset(field.clone()))?,
                 );
             }
             plan.transitions.insert(field.clone(), compiled_transitions);
@@ -495,12 +647,21 @@ impl<'a> PolicyCompiler<'a> {
         Ok(plan)
     }
 
+    /// Build a [`PolicyCompileError`] pre-populated with the access_control
+    /// JSON path and the owning collection. Used at every error site inside
+    /// the compiler so admin-UI clients can focus the failing rule.
+    fn err_at(&self, ctx: &str, message: impl Into<String>) -> PolicyCompileError {
+        PolicyCompileError::new(message)
+            .with_path(ctx.to_string())
+            .with_collection(self.schema.collection.to_string())
+    }
+
     fn compile_operation(
         &self,
         plan: &mut PolicyPlan,
         operation: PolicyOperation,
         policy: Option<&OperationPolicy>,
-    ) -> Result<(), AxonError> {
+    ) -> Result<(), PolicyCompileError> {
         if let Some(policy) = policy {
             plan.operations.insert(
                 operation.clone(),
@@ -514,7 +675,7 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         policy: &OperationPolicy,
         ctx: &str,
-    ) -> Result<CompiledOperationPolicy, AxonError> {
+    ) -> Result<CompiledOperationPolicy, PolicyCompileError> {
         Ok(CompiledOperationPolicy {
             allow: self.compile_policy_rules(&policy.allow, &format!("{ctx}.allow"))?,
             deny: self.compile_policy_rules(&policy.deny, &format!("{ctx}.deny"))?,
@@ -525,24 +686,28 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         rules: &[PolicyRule],
         ctx: &str,
-    ) -> Result<Vec<CompiledPolicyRule>, AxonError> {
+    ) -> Result<Vec<CompiledPolicyRule>, PolicyCompileError> {
         rules
             .iter()
             .enumerate()
             .map(|(idx, rule)| {
                 let rule_ctx = format!("{ctx}[{idx}]");
-                Ok(CompiledPolicyRule {
-                    rule_id: self.stable_policy_id("rule", &rule_ctx, rule.name.as_deref()),
-                    path: rule_ctx.clone(),
-                    name: rule.name.clone(),
-                    when: self.compile_optional_predicate(
-                        rule.when.as_ref(),
-                        &format!("{rule_ctx}.when"),
-                    )?,
-                    where_clause: self.compile_optional_predicate(
+                let rule_id = self.stable_policy_id("rule", &rule_ctx, rule.name.as_deref());
+                let when = self
+                    .compile_optional_predicate(rule.when.as_ref(), &format!("{rule_ctx}.when"))
+                    .map_err(|e| e.with_rule_id_if_unset(rule_id.clone()))?;
+                let where_clause = self
+                    .compile_optional_predicate(
                         rule.where_clause.as_ref(),
                         &format!("{rule_ctx}.where"),
-                    )?,
+                    )
+                    .map_err(|e| e.with_rule_id_if_unset(rule_id.clone()))?;
+                Ok(CompiledPolicyRule {
+                    rule_id,
+                    path: rule_ctx,
+                    name: rule.name.clone(),
+                    when,
+                    where_clause,
                 })
             })
             .collect()
@@ -552,7 +717,7 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         field: &str,
         policy: &FieldPolicy,
-    ) -> Result<CompiledFieldPolicy, AxonError> {
+    ) -> Result<CompiledFieldPolicy, PolicyCompileError> {
         Ok(CompiledFieldPolicy {
             read: policy
                 .read
@@ -575,7 +740,7 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         policy: &FieldAccessPolicy,
         ctx: &str,
-    ) -> Result<CompiledFieldAccessPolicy, AxonError> {
+    ) -> Result<CompiledFieldAccessPolicy, PolicyCompileError> {
         Ok(CompiledFieldAccessPolicy {
             allow: self.compile_field_rules(&policy.allow, &format!("{ctx}.allow"))?,
             deny: self.compile_field_rules(&policy.deny, &format!("{ctx}.deny"))?,
@@ -586,24 +751,28 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         rules: &[FieldPolicyRule],
         ctx: &str,
-    ) -> Result<Vec<CompiledFieldPolicyRule>, AxonError> {
+    ) -> Result<Vec<CompiledFieldPolicyRule>, PolicyCompileError> {
         rules
             .iter()
             .enumerate()
             .map(|(idx, rule)| {
                 let rule_ctx = format!("{ctx}[{idx}]");
-                Ok(CompiledFieldPolicyRule {
-                    rule_id: self.stable_policy_id("rule", &rule_ctx, rule.name.as_deref()),
-                    path: rule_ctx.clone(),
-                    name: rule.name.clone(),
-                    when: self.compile_optional_predicate(
-                        rule.when.as_ref(),
-                        &format!("{rule_ctx}.when"),
-                    )?,
-                    where_clause: self.compile_optional_predicate(
+                let rule_id = self.stable_policy_id("rule", &rule_ctx, rule.name.as_deref());
+                let when = self
+                    .compile_optional_predicate(rule.when.as_ref(), &format!("{rule_ctx}.when"))
+                    .map_err(|e| e.with_rule_id_if_unset(rule_id.clone()))?;
+                let where_clause = self
+                    .compile_optional_predicate(
                         rule.where_clause.as_ref(),
                         &format!("{rule_ctx}.where"),
-                    )?,
+                    )
+                    .map_err(|e| e.with_rule_id_if_unset(rule_id.clone()))?;
+                Ok(CompiledFieldPolicyRule {
+                    rule_id,
+                    path: rule_ctx,
+                    name: rule.name.clone(),
+                    when,
+                    where_clause,
                     redact_as: rule.redact_as.clone(),
                 })
             })
@@ -614,7 +783,7 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         envelope: &PolicyEnvelope,
         ctx: &str,
-    ) -> Result<CompiledPolicyEnvelope, AxonError> {
+    ) -> Result<CompiledPolicyEnvelope, PolicyCompileError> {
         Ok(CompiledPolicyEnvelope {
             envelope_id: self.stable_policy_id("envelope", ctx, envelope.name.as_deref()),
             path: ctx.to_string(),
@@ -628,6 +797,8 @@ impl<'a> PolicyCompiler<'a> {
 
     fn compile_report(&self, plan: &PolicyPlan) -> PolicyCompileReport {
         let mut report = PolicyCompileReport {
+            errors: Vec::new(),
+            warnings: Vec::new(),
             required_link_indexes: aggregate_required_link_indexes(std::iter::once(plan)),
             nullable_fields: nullable_fields_for_plan(self.schema, plan),
             denied_write_fields: denied_write_fields_for_plan(
@@ -648,7 +819,7 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         predicate: Option<&PolicyPredicate>,
         ctx: &str,
-    ) -> Result<Option<CompiledPredicate>, AxonError> {
+    ) -> Result<Option<CompiledPredicate>, PolicyCompileError> {
         predicate
             .map(|predicate| self.compile_predicate(predicate, ctx))
             .transpose()
@@ -658,7 +829,7 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         predicate: &PolicyPredicate,
         ctx: &str,
-    ) -> Result<CompiledPredicate, AxonError> {
+    ) -> Result<CompiledPredicate, PolicyCompileError> {
         match predicate {
             PolicyPredicate::All { all } => Ok(CompiledPredicate::All(
                 all.iter()
@@ -703,7 +874,7 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         op: &PolicyCompareOp,
         ctx: &str,
-    ) -> Result<CompiledCompareOp, AxonError> {
+    ) -> Result<CompiledCompareOp, PolicyCompileError> {
         Ok(match op {
             PolicyCompareOp::Eq(value) => CompiledCompareOp::Eq(value.clone()),
             PolicyCompareOp::Ne(value) => CompiledCompareOp::Ne(value.clone()),
@@ -729,16 +900,19 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         related: &RelationshipPredicate,
         ctx: &str,
-    ) -> Result<CompiledPredicate, AxonError> {
+    ) -> Result<CompiledPredicate, PolicyCompileError> {
         let direction = related.direction.clone().unwrap_or(LinkDirection::Outgoing);
         let related_schema = self
             .schemas
             .get(&related.target_collection)
             .ok_or_else(|| {
-                PolicyCompileError::new(format!(
-                    "unknown target_collection '{}' at {ctx}",
-                    related.target_collection
-                ))
+                self.err_at(
+                    ctx,
+                    format!(
+                        "unknown target_collection '{}' at {ctx}",
+                        related.target_collection
+                    ),
+                )
             })?;
         let current_collection = self.schema.collection.as_str();
 
@@ -749,17 +923,21 @@ impl<'a> PolicyCompiler<'a> {
                     .link_types
                     .get(&related.link_type)
                     .ok_or_else(|| {
-                        PolicyCompileError::new(format!(
-                            "unknown link_type '{}' at {ctx}",
-                            related.link_type
-                        ))
+                        self.err_at(
+                            ctx,
+                            format!("unknown link_type '{}' at {ctx}", related.link_type),
+                        )
                     })?;
                 if link_def.target_collection != related.target_collection {
-                    return Err(PolicyCompileError::new(format!(
-                        "link_type '{}' at {ctx} targets collection '{}', not '{}'",
-                        related.link_type, link_def.target_collection, related.target_collection
-                    ))
-                    .into());
+                    return Err(self.err_at(
+                        ctx,
+                        format!(
+                            "link_type '{}' at {ctx} targets collection '{}', not '{}'",
+                            related.link_type,
+                            link_def.target_collection,
+                            related.target_collection
+                        ),
+                    ));
                 }
                 (
                     current_collection.to_string(),
@@ -771,20 +949,25 @@ impl<'a> PolicyCompiler<'a> {
                     .link_types
                     .get(&related.link_type)
                     .ok_or_else(|| {
-                        PolicyCompileError::new(format!(
-                            "unknown incoming link_type '{}' on source collection '{}' at {ctx}",
-                            related.link_type, related.target_collection
-                        ))
+                        self.err_at(
+                            ctx,
+                            format!(
+                                "unknown incoming link_type '{}' on source collection '{}' at {ctx}",
+                                related.link_type, related.target_collection
+                            ),
+                        )
                     })?;
                 if link_def.target_collection != current_collection {
-                    return Err(PolicyCompileError::new(format!(
-                        "incoming link_type '{}' from collection '{}' at {ctx} targets collection '{}', not '{}'",
-                        related.link_type,
-                        related.target_collection,
-                        link_def.target_collection,
-                        current_collection
-                    ))
-                    .into());
+                    return Err(self.err_at(
+                        ctx,
+                        format!(
+                            "incoming link_type '{}' from collection '{}' at {ctx} targets collection '{}', not '{}'",
+                            related.link_type,
+                            related.target_collection,
+                            link_def.target_collection,
+                            current_collection
+                        ),
+                    ));
                 }
                 (
                     related.target_collection.clone(),
@@ -817,10 +1000,12 @@ impl<'a> PolicyCompiler<'a> {
         &self,
         relation: &SharesRelationPredicate,
         ctx: &str,
-    ) -> Result<CompiledPredicate, AxonError> {
-        self.validate_field_path(&relation.field, &format!("{ctx}.field"))?;
+    ) -> Result<CompiledPredicate, PolicyCompileError> {
+        self.validate_field_path(&relation.field, &format!("{ctx}.field"))
+            .map_err(|e| e.with_field_if_unset(relation.field.clone()))?;
         self.validate_subject_ref(&relation.subject_field, &format!("{ctx}.subject_field"))?;
-        self.validate_field_path(&relation.target_field, &format!("{ctx}.target_field"))?;
+        self.validate_field_path(&relation.target_field, &format!("{ctx}.target_field"))
+            .map_err(|e| e.with_field_if_unset(relation.target_field.clone()))?;
         Ok(CompiledPredicate::SharesRelation(
             CompiledSharesRelationPredicate {
                 collection: relation.collection.clone(),
@@ -831,51 +1016,58 @@ impl<'a> PolicyCompiler<'a> {
         ))
     }
 
-    fn validate_subject_ref(&self, subject: &str, ctx: &str) -> Result<(), AxonError> {
+    fn validate_subject_ref(&self, subject: &str, ctx: &str) -> Result<(), PolicyCompileError> {
         if self.subject_refs.contains(subject) {
             Ok(())
         } else {
-            Err(
-                PolicyCompileError::new(format!("unknown subject reference '{subject}' at {ctx}"))
-                    .into(),
-            )
+            Err(self.err_at(
+                ctx,
+                format!("unknown subject reference '{subject}' at {ctx}"),
+            ))
         }
     }
 
-    fn validate_field_path(&self, path: &str, ctx: &str) -> Result<(), AxonError> {
+    fn validate_field_path(&self, path: &str, ctx: &str) -> Result<(), PolicyCompileError> {
         let Some(entity_schema) = &self.schema.entity_schema else {
-            return Err(PolicyCompileError::new(format!(
-                "field path '{path}' at {ctx} cannot be validated without entity_schema"
-            ))
-            .into());
+            return Err(self
+                .err_at(
+                    ctx,
+                    format!("field path '{path}' at {ctx} cannot be validated without entity_schema"),
+                )
+                .with_field_if_unset(path.to_string()));
         };
         let mut current = entity_schema;
         for (idx, raw_segment) in path.split('.').enumerate() {
             if raw_segment.is_empty() {
-                return Err(PolicyCompileError::new(format!(
-                    "empty field path segment in '{path}' at {ctx}"
-                ))
-                .into());
+                return Err(self
+                    .err_at(ctx, format!("empty field path segment in '{path}' at {ctx}"))
+                    .with_field_if_unset(path.to_string()));
             }
             let expects_array = raw_segment.ends_with("[]");
             let segment = raw_segment.strip_suffix("[]").unwrap_or(raw_segment);
             current = object_property(current, segment).ok_or_else(|| {
-                PolicyCompileError::new(format!(
-                    "unknown field path '{path}' at {ctx}: missing segment '{segment}'"
-                ))
+                self.err_at(
+                    ctx,
+                    format!("unknown field path '{path}' at {ctx}: missing segment '{segment}'"),
+                )
+                .with_field_if_unset(path.to_string())
             })?;
 
             if expects_array {
                 current = array_items(current).ok_or_else(|| {
-                    PolicyCompileError::new(format!(
-                        "field path '{path}' at {ctx}: segment '{segment}' is not an array"
-                    ))
+                    self.err_at(
+                        ctx,
+                        format!("field path '{path}' at {ctx}: segment '{segment}' is not an array"),
+                    )
+                    .with_field_if_unset(path.to_string())
                 })?;
             } else if idx + 1 < path.split('.').count() && schema_type(current) == Some("array") {
-                return Err(PolicyCompileError::new(format!(
-                    "field path '{path}' at {ctx}: array segment '{segment}' must use []"
-                ))
-                .into());
+                return Err(self
+                    .err_at(
+                        ctx,
+                        format!("field path '{path}' at {ctx}: array segment '{segment}' must use []"),
+                    )
+                    .with_field_if_unset(path.to_string()));
             }
         }
         Ok(())
@@ -884,7 +1076,7 @@ impl<'a> PolicyCompiler<'a> {
 
 fn schemas_by_collection(
     schemas: &[CollectionSchema],
-) -> Result<HashMap<String, &CollectionSchema>, AxonError> {
+) -> Result<HashMap<String, &CollectionSchema>, PolicyCompileError> {
     let mut by_collection = HashMap::new();
     for schema in schemas {
         let collection = schema.collection.to_string();
@@ -892,7 +1084,7 @@ fn schemas_by_collection(
             return Err(PolicyCompileError::new(format!(
                 "duplicate collection schema '{collection}' in policy catalog"
             ))
-            .into());
+            .with_collection(collection));
         }
     }
     Ok(by_collection)
@@ -902,14 +1094,15 @@ fn validate_target_policy(
     schema: &CollectionSchema,
     operation: &PolicyOperation,
     ctx: &str,
-) -> Result<(), AxonError> {
+) -> Result<(), PolicyCompileError> {
     let Some(policy) = &schema.access_control else {
         return Err(PolicyCompileError::new(format!(
             "target_policy '{}' at {ctx} references collection '{}' without access_control",
             operation.as_str(),
             schema.collection
         ))
-        .into());
+        .with_path(ctx.to_string())
+        .with_collection(schema.collection.to_string()));
     };
     if operation_policy(policy, operation).is_some() {
         Ok(())
@@ -919,7 +1112,8 @@ fn validate_target_policy(
             operation.as_str(),
             schema.collection
         ))
-        .into())
+        .with_path(ctx.to_string())
+        .with_collection(schema.collection.to_string()))
     }
 }
 
@@ -1423,7 +1617,9 @@ struct PolicyNode {
     operation: PolicyOperation,
 }
 
-fn detect_relationship_policy_cycles(plans: &HashMap<String, PolicyPlan>) -> Result<(), AxonError> {
+fn detect_relationship_policy_cycles(
+    plans: &HashMap<String, PolicyPlan>,
+) -> Result<(), PolicyCompileError> {
     let mut adjacency: HashMap<PolicyNode, Vec<PolicyNode>> = HashMap::new();
     for (collection, plan) in plans {
         collect_relationship_policy_edges(collection, plan, &mut adjacency);
@@ -1446,10 +1642,14 @@ fn detect_relationship_policy_cycles(plans: &HashMap<String, PolicyPlan>) -> Res
                 .map(policy_node_label)
                 .collect::<Vec<_>>()
                 .join(" -> ");
+            let collection = cycle
+                .first()
+                .map(|node| node.collection.clone())
+                .unwrap_or_default();
             return Err(PolicyCompileError::new(format!(
                 "relationship target_policy cycle detected: {labels}"
             ))
-            .into());
+            .with_collection(collection));
         }
     }
     Ok(())
@@ -2166,6 +2366,15 @@ access_control:
         let err = compile_policy_catalog(&schemas).expect_err("missing link type should fail");
         assert_eq!(
             err.to_string(),
+            "policy_expression_invalid: unknown link_type 'missing_link' at operations.Read.allow[0].where"
+        );
+        assert_eq!(err.code(), POLICY_COMPILE_ERROR_DEFAULT_CODE);
+        assert_eq!(err.path(), Some("operations.Read.allow[0].where"));
+        assert_eq!(err.collection(), Some("contracts"));
+        // AxonError conversion preserves the historical wire format.
+        let axon_err: AxonError = err.into();
+        assert_eq!(
+            axon_err.to_string(),
             "schema validation failed: policy_expression_invalid: unknown link_type 'missing_link' at operations.Read.allow[0].where"
         );
     }
@@ -2176,8 +2385,10 @@ access_control:
         let err = compile_policy_catalog(&schemas).expect_err("missing collection should fail");
         assert_eq!(
             err.to_string(),
-            "schema validation failed: policy_expression_invalid: unknown target_collection 'engagements' at operations.Read.allow[0].where"
+            "policy_expression_invalid: unknown target_collection 'engagements' at operations.Read.allow[0].where"
         );
+        assert_eq!(err.path(), Some("operations.Read.allow[0].where"));
+        assert_eq!(err.collection(), Some("contracts"));
     }
 
     #[test]
@@ -2189,7 +2400,46 @@ access_control:
         let err = compile_policy_catalog(&schemas).expect_err("cycle should fail");
         assert_eq!(
             err.to_string(),
-            "schema validation failed: policy_expression_invalid: relationship target_policy cycle detected: a.read -> b.read -> a.read"
+            "policy_expression_invalid: relationship target_policy cycle detected: a.read -> b.read -> a.read"
         );
+        // Cycle errors carry a collection but no JSON path (the cycle spans
+        // multiple plans).
+        assert!(err.collection().is_some());
+        assert!(err.path().is_none());
+    }
+
+    #[test]
+    fn rule_compile_error_carries_rule_id_and_field() {
+        // Reuse an existing failing fixture and assert the rule-id and
+        // field annotations the admin UI relies on to focus the first
+        // actionable error.
+        let contracts = CONTRACTS_RELATED_POLICY_ESF.replace(
+            "link_type: belongs_to_engagement",
+            "link_type: missing_link",
+        );
+        let schemas = [
+            parse_schema(ENGAGEMENTS_POLICY_ESF),
+            parse_schema(&contracts),
+        ];
+        let err = compile_policy_catalog(&schemas).expect_err("compile should fail");
+        assert!(
+            err.rule_id().is_some(),
+            "rule-scoped errors should carry the stable rule id, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn from_compile_error_builds_failure_report() {
+        let err = compile_policy_catalog(&[parse_schema(CONTRACTS_RELATED_POLICY_ESF)])
+            .expect_err("missing collection should fail");
+        let report = PolicyCompileReport::from_compile_error(&err);
+        assert_eq!(report.errors.len(), 1);
+        let diag = &report.errors[0];
+        assert_eq!(diag.code, POLICY_COMPILE_ERROR_DEFAULT_CODE);
+        assert!(diag.message.contains("unknown target_collection"));
+        assert_eq!(diag.path.as_deref(), Some("operations.Read.allow[0].where"));
+        assert_eq!(diag.collection.as_deref(), Some("contracts"));
+        assert!(report.warnings.is_empty());
+        assert!(report.required_link_indexes.is_empty());
     }
 }

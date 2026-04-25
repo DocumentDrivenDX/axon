@@ -31,9 +31,10 @@ pub use policy::{
     CompiledFieldAccessPolicy, CompiledFieldPolicy, CompiledFieldPolicyRule,
     CompiledOperationPolicy, CompiledPolicyEnvelope, CompiledPolicyRule, CompiledPredicate,
     CompiledRelationshipPredicate, CompiledSharesRelationPredicate, PolicyCatalog,
-    PolicyCompileError, PolicyCompileReport, PolicyDeniedWriteField, PolicyEnvelopeSummary,
-    PolicyExplainEntry, PolicyExplainKind, PolicyExplainPlan, PolicyNullableField, PolicyPlan,
-    PredicateTarget, RequiredLinkIndex,
+    PolicyCompileDiagnostic, PolicyCompileError, PolicyCompileReport, PolicyDeniedWriteField,
+    PolicyEnvelopeSummary, PolicyExplainEntry, PolicyExplainKind, PolicyExplainPlan,
+    PolicyNullableField, PolicyPlan, PredicateTarget, RequiredLinkIndex,
+    POLICY_COMPILE_ERROR_DEFAULT_CODE,
 };
 pub use rules::validate_rule_definitions;
 pub use rules::ValidationRule;
