@@ -48,7 +48,9 @@ async function cleanupFixtures() {
 			const body = await usersResponse.json();
 			const users = (body.users ?? []) as User[];
 			for (const user of users.filter(userMatches)) {
-				const response = await context.delete(`/control/users/suspend/${encodeURIComponent(user.id)}`);
+				const response = await context.delete(
+					`/control/users/suspend/${encodeURIComponent(user.id)}`,
+				);
 				if (!response.ok()) {
 					throw new Error(
 						`failed to suspend E2E user ${user.id}: ${response.status()} ${await response.text()}`,

@@ -54,9 +54,7 @@ test.describe('Multi-tenant isolation', () => {
 		await page.goto(dbCollectionsUrl(dbA));
 
 		// Should see coll-A header.
-		await expect(
-			page.getByRole('heading', { name: 'Collections', level: 1 }),
-		).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Collections', level: 1 })).toBeVisible();
 
 		await expect(page.getByRole('link', { name: 'orders' })).toBeVisible({
 			timeout: 5_000,
@@ -67,9 +65,7 @@ test.describe('Multi-tenant isolation', () => {
 		await page.goto(dbCollectionsUrl(dbB));
 
 		// Should see coll-B header.
-		await expect(
-			page.getByRole('heading', { name: 'Collections', level: 1 }),
-		).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Collections', level: 1 })).toBeVisible();
 
 		await expect(page.getByRole('link', { name: 'orders' })).toBeVisible({
 			timeout: 5_000,
@@ -99,9 +95,7 @@ test.describe('Multi-tenant isolation', () => {
 
 		// Should land on the tenants list page.
 		await expect(page).toHaveURL(/\/ui\/tenants$/);
-		await expect(
-			page.getByRole('heading', { name: 'Tenants', level: 1 }),
-		).toBeVisible();
+		await expect(page.getByRole('heading', { name: 'Tenants', level: 1 })).toBeVisible();
 	});
 
 	test('both tenants appear in the tenant list', async ({ page }) => {
@@ -128,12 +122,8 @@ test.describe('Multi-tenant isolation', () => {
 		// Breadcrumb chain: Tenants / <tenantA.name> / <dbA.name>.
 		const breadcrumbs = page.locator('.db-header .crumbs');
 		await expect(breadcrumbs.getByRole('link', { name: 'Tenants' })).toBeVisible();
-		await expect(
-			breadcrumbs.getByRole('link', { name: tenantA.name }),
-		).toBeVisible();
-		await expect(
-			breadcrumbs.getByRole('link', { name: dbA.name }),
-		).toHaveCount(0); // db name is current, not a link.
+		await expect(breadcrumbs.getByRole('link', { name: tenantA.name })).toBeVisible();
+		await expect(breadcrumbs.getByRole('link', { name: dbA.name })).toHaveCount(0); // db name is current, not a link.
 	});
 
 	test('tenant-B database overview page', async ({ page }) => {

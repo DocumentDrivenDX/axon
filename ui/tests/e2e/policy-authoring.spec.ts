@@ -5,6 +5,9 @@ import {
 	SCN017_SUBJECTS,
 	captureDataPlaneRequests,
 	expectGraphqlPrimaryDataPlane,
+	fetchPersistedAccessControl,
+	proposedPolicyDraftBroken,
+	proposedPolicyDraftDenyHigh,
 	routeGraphqlAs,
 	seedScn017PolicyUiFixture,
 } from './helpers';
@@ -107,5 +110,106 @@ test.describe('Policy authoring', () => {
 		await expect(page.getByTestId('policy-diagnostics')).toContainText('policy_filter_unindexed');
 		await expect(page.getByTestId('policy-diagnostics')).toContainText('reviewer_email');
 		await expect(page.getByTestId('policy-diagnostics')).toContainText('Add an index');
+	});
+});
+
+test.describe('Policy authoring (schemas tab)', () => {
+	test('compile + fixture dry-run + activate updates the persisted policy', async ({
+		page,
+		request,
+	}) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'schemas-policy-happy');
+		const schemasUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/schemas?collection=${encodeURIComponent(SCN017_COLLECTIONS.invoices)}`;
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.financeAgent);
+		await page.goto(schemasUrl);
+
+		// Open the Policy view.
+		await page.getByTestId('schema-policy-view-toggle').click();
+		await expect(page.getByTestId('schema-policy-view')).toBeVisible();
+		await expect(page.getByTestId('schema-policy-editor')).toContainText(
+			'finance-and-operators-read-invoices',
+		);
+
+		// Replace the editor contents with the proposed (tightened) policy.
+		const proposed = proposedPolicyDraftDenyHigh();
+		await page.getByTestId('schema-policy-editor').fill(JSON.stringify(proposed, null, 2));
+
+		// Compile preview.
+		await page.getByTestId('schema-policy-run-compile').click();
+		await expect(page.getByTestId('schema-policy-errors')).toHaveCount(0);
+		await expect(page.getByTestId('schema-policy-nullable-fields')).toContainText('amount_cents');
+		await expect(page.getByTestId('schema-policy-envelopes')).toContainText('needs_approval');
+		await expect(page.getByTestId('schema-policy-envelopes')).toContainText(
+			SCN017_ROLES.financeApprover,
+		);
+
+		// Fixture dry-run as the finance approver: a large invoice patch routes
+		// through the `require-approval-large-invoice-update` envelope.
+		await page.getByTestId('schema-policy-fixture-subject').fill(SCN017_SUBJECTS.financeApprover);
+		await page.getByTestId('schema-policy-fixture-operation').selectOption('patch');
+		await page.getByTestId('schema-policy-fixture-entity').fill(fixture.invoices.large.id);
+		await page.getByTestId('schema-policy-fixture-run').click();
+		await expect(page.getByTestId('schema-policy-fixture-decision')).toContainText(
+			'needs_approval',
+		);
+		await expect(page.getByTestId('schema-policy-fixture-approval-role')).toContainText(
+			SCN017_ROLES.financeApprover,
+		);
+
+		// Activate. Audit metadata records old + new schema/policy versions
+		// (covered by axon-server contract test); here we verify the UI flow.
+		await page.getByTestId('schema-policy-activate').click();
+		await expect(page.getByTestId('schema-policy-activation-status')).toContainText(
+			'Activated policy version v2',
+		);
+
+		// Persisted access_control reflects the new policy.
+		const persisted = (await fetchPersistedAccessControl(
+			request,
+			fixture.db,
+			SCN017_COLLECTIONS.invoices,
+		)) as { fields?: { amount_cents?: { read?: { deny?: unknown[] } } } } | null;
+		expect(persisted, 'persisted access_control after activate').toBeTruthy();
+		expect(persisted?.fields?.amount_cents?.read?.deny?.length ?? 0).toBeGreaterThanOrEqual(2);
+	});
+
+	test('failed compile blocks activation and leaves the persisted policy unchanged', async ({
+		page,
+		request,
+	}) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'schemas-policy-broken');
+		const schemasUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/schemas?collection=${encodeURIComponent(SCN017_COLLECTIONS.invoices)}`;
+
+		const before = await fetchPersistedAccessControl(
+			request,
+			fixture.db,
+			SCN017_COLLECTIONS.invoices,
+		);
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.financeAgent);
+		await page.goto(schemasUrl);
+		await page.getByTestId('schema-policy-view-toggle').click();
+
+		const broken = proposedPolicyDraftBroken();
+		await page.getByTestId('schema-policy-editor').fill(JSON.stringify(broken, null, 2));
+		await page.getByTestId('schema-policy-run-compile').click();
+
+		const errorsPanel = page.getByTestId('schema-policy-errors');
+		await expect(errorsPanel).toBeVisible();
+		await expect(errorsPanel).toContainText('policy_expression_invalid');
+		await expect(errorsPanel).toContainText('unknown subject reference');
+		await expect(page.getByTestId('schema-policy-error-row-0')).toBeFocused();
+
+		// Activate must be disabled while errors are present.
+		await expect(page.getByTestId('schema-policy-activate')).toBeDisabled();
+
+		// Persisted access_control unchanged — no activation occurred.
+		const after = await fetchPersistedAccessControl(
+			request,
+			fixture.db,
+			SCN017_COLLECTIONS.invoices,
+		);
+		expect(after).toEqual(before);
 	});
 });

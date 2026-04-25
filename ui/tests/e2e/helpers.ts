@@ -1201,6 +1201,128 @@ export async function seedIntentCollection(
 	return fixture.db;
 }
 
+/**
+ * Build a proposed access_control draft based on the SCN-017 procurement
+ * invoice policy with the contractor read tightened to deny on a stricter
+ * threshold. Used by the schemas-tab happy-path test to prove an edited
+ * policy compiles cleanly and changes nothing structurally relevant the
+ * existing policy didn't already cover.
+ */
+export function proposedPolicyDraftDenyHigh(): Record<string, unknown> {
+	const policy = procurementInvoicePolicy() as Record<string, unknown>;
+	const fields = policy.fields as Record<string, Record<string, unknown> | undefined>;
+	const amountCents = fields.amount_cents as Record<string, unknown> | undefined;
+	if (!amountCents) {
+		throw new Error('procurementInvoicePolicy.fields.amount_cents missing');
+	}
+	const original = amountCents.read as { deny: Array<Record<string, unknown>> };
+	const tightenedDeny = [
+		...original.deny,
+		{
+			name: 'tightened-amount-deny-during-dry-run',
+			when: { subject: 'procurement_role', eq: SCN017_ROLES.requester },
+			redact_as: null,
+		},
+	];
+	amountCents.read = { deny: tightenedDeny };
+	return policy;
+}
+
+/**
+ * Build a proposed access_control draft with an unknown subject reference
+ * so the FEAT-029 compiler emits a `policy_expression_invalid` diagnostic.
+ * Used by the schemas-tab failed-compile gating test.
+ */
+export function proposedPolicyDraftBroken(): Record<string, unknown> {
+	const policy = procurementInvoicePolicy() as Record<string, unknown>;
+	const read = policy.read as { allow: Array<Record<string, unknown>> };
+	read.allow = [
+		...read.allow,
+		{
+			name: 'broken-unknown-subject',
+			when: { subject: 'unknown_role', eq: 'nope' },
+		},
+	];
+	return policy;
+}
+
+/**
+ * Probe the persisted `access_control` JSON for a collection over GraphQL
+ * to assert it is unchanged after a refused activation.
+ */
+export async function fetchPersistedAccessControl(
+	request: APIRequestContext,
+	db: TestDatabase,
+	collection: string,
+): Promise<unknown> {
+	const response = await request.post(graphqlPath(db), {
+		data: {
+			query: `query($name: String!) {
+				collection(name: $name) {
+					schema
+				}
+			}`,
+			variables: { name: collection },
+		},
+	});
+	const body = (await response.json()) as {
+		data?: { collection?: { schema?: { access_control?: unknown } } };
+		errors?: unknown;
+	};
+	expect(response.ok(), `${response.status()} ${JSON.stringify(body)}`).toBe(true);
+	expect(body.errors ?? null, JSON.stringify(body.errors)).toBeNull();
+	return body.data?.collection?.schema?.access_control ?? null;
+}
+
+/**
+ * Activate a proposed access_control via GraphQL `putSchema`. Used by the
+ * intent-audit-lineage spec to drive the audit-evidence assertion without
+ * relying on the UI.
+ */
+export async function activateProposedPolicy(
+	request: APIRequestContext,
+	db: TestDatabase,
+	collection: string,
+	proposedAccessControl: Record<string, unknown>,
+	options: { actor?: string } = {},
+): Promise<{ schema: { version: number } }> {
+	// Fetch the current schema so we can preserve everything except access_control.
+	const fetched = await request.post(graphqlPath(db), {
+		data: {
+			query: `query($name: String!) { collection(name: $name) { schema } }`,
+			variables: { name: collection },
+		},
+	});
+	const fetchedBody = (await fetched.json()) as {
+		data?: { collection?: { schema?: Record<string, unknown> } };
+	};
+	const current = fetchedBody.data?.collection?.schema;
+	expect(current, 'collection schema should exist').toBeTruthy();
+	const proposedSchema = {
+		...(current ?? {}),
+		access_control: proposedAccessControl,
+		version: ((current?.version as number | undefined) ?? 1) + 1,
+	};
+	const response = await request.post(graphqlPath(db), {
+		...(options.actor ? { headers: { 'x-axon-actor': options.actor } } : {}),
+		data: {
+			query: `mutation($collection: String!, $schema: JSON!) {
+				putSchema(input: { collection: $collection, schema: $schema }) {
+					schema
+				}
+			}`,
+			variables: { collection, schema: proposedSchema },
+		},
+	});
+	const body = (await response.json()) as {
+		data?: { putSchema?: { schema?: { version?: number } } };
+		errors?: unknown;
+	};
+	expect(response.ok(), `${response.status()} ${JSON.stringify(body)}`).toBe(true);
+	expect(body.errors ?? null, JSON.stringify(body.errors)).toBeNull();
+	return body.data?.putSchema as { schema: { version: number } };
+}
+
 export async function seedIntentStates(
 	request: APIRequestContext,
 	db: TestDatabase,

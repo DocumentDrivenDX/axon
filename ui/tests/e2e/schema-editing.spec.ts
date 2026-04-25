@@ -75,7 +75,10 @@ test.describe('Schema workspace', () => {
 
 		await page.getByRole('button', { name: new RegExp(collectionName) }).click();
 		await page.getByRole('button', { name: 'Edit' }).click();
-		await page.locator('textarea').nth(1).fill(`{
+		await page
+			.locator('textarea')
+			.nth(1)
+			.fill(`{
   "collection": "${collectionName}",
   "description": "Edited through E2E",
   "version": 1,

@@ -1,16 +1,21 @@
 import { expect, test } from '@playwright/test';
 
 import {
+	SCN017_COLLECTIONS,
 	TASK_COLLECTION,
+	activateProposedPolicy,
 	approveIntent,
 	createBudgetRecord,
 	dbIntentUrl,
 	dbIntentsUrl,
+	graphqlPath,
 	patchBudgetRecordAs,
 	previewBudgetIntent,
+	proposedPolicyDraftDenyHigh,
 	routeGraphqlAs,
 	seedApprovalCollections,
 	seedIntentStates,
+	seedScn017PolicyUiFixture,
 } from './helpers';
 
 test.describe('Intent audit lineage', () => {
@@ -90,5 +95,51 @@ test.describe('Intent audit lineage', () => {
 		await expect(page.getByTestId('intent-structured-outcome')).toContainText(
 			'commit_validation_failed',
 		);
+	});
+
+	test('records administrative audit evidence for policy activation', async ({ request }) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'schema-policy-audit');
+		const proposed = proposedPolicyDraftDenyHigh();
+		const result = await activateProposedPolicy(
+			request,
+			fixture.db,
+			SCN017_COLLECTIONS.invoices,
+			proposed,
+			{ actor: 'admin' },
+		);
+		expect(result.schema.version).toBe(2);
+
+		// Probe the audit log for the schema_update entry on the invoices
+		// collection. Activation must record old + new schema/policy versions.
+		const response = await request.post(graphqlPath(fixture.db), {
+			data: {
+				query: `query($collection: String!) {
+					auditLog(collection: $collection, operation: "schema.update") {
+						totalCount
+						edges { node { metadata } }
+					}
+				}`,
+				variables: { collection: SCN017_COLLECTIONS.invoices },
+			},
+		});
+		const body = (await response.json()) as {
+			data?: {
+				auditLog?: {
+					totalCount: number;
+					edges: Array<{ node: { metadata: Record<string, string> } }>;
+				};
+			};
+			errors?: unknown;
+		};
+		expect(response.ok(), `${response.status()} ${JSON.stringify(body)}`).toBe(true);
+		expect(body.errors ?? null).toBeNull();
+		const auditLog = body.data?.auditLog;
+		expect(auditLog?.totalCount ?? 0).toBeGreaterThanOrEqual(1);
+		// The most recent schema.update entry corresponds to our activation.
+		const metadata = auditLog?.edges.at(-1)?.node.metadata ?? {};
+		expect(metadata.old_schema_version).toBe('1');
+		expect(metadata.new_schema_version).toBe('2');
+		expect(metadata.old_policy_version).toBe('1');
+		expect(metadata.new_policy_version).toBe('2');
 	});
 });

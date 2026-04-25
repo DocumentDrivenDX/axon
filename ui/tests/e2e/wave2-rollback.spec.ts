@@ -23,8 +23,22 @@ test.describe('entity rollback', () => {
 		await createTestCollection(request, db, 'docs');
 		// Create entity at v1, then update twice → v1, v2, v3
 		await createTestEntity(request, db, 'docs', 'doc-001', { title: 'Version 1', note: 'first' });
-		await updateTestEntity(request, db, 'docs', 'doc-001', { title: 'Version 2', note: 'second' }, 1);
-		await updateTestEntity(request, db, 'docs', 'doc-001', { title: 'Version 3', note: 'third' }, 2);
+		await updateTestEntity(
+			request,
+			db,
+			'docs',
+			'doc-001',
+			{ title: 'Version 2', note: 'second' },
+			1,
+		);
+		await updateTestEntity(
+			request,
+			db,
+			'docs',
+			'doc-001',
+			{ title: 'Version 3', note: 'third' },
+			2,
+		);
 	});
 
 	test('rollback tab shows prior versions from audit history', async ({ page }) => {
