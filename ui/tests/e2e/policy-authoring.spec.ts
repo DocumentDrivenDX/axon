@@ -127,8 +127,9 @@ test.describe('Policy authoring (schemas tab)', () => {
 		// Open the Policy view.
 		await page.getByTestId('schema-policy-view-toggle').click();
 		await expect(page.getByTestId('schema-policy-view')).toBeVisible();
-		await expect(page.getByTestId('schema-policy-editor')).toContainText(
-			'finance-and-operators-read-invoices',
+		// Textareas surface their text via `value`, not innerText.
+		await expect(page.getByTestId('schema-policy-editor')).toHaveValue(
+			/finance-and-operators-read-invoices/,
 		);
 
 		// Replace the editor contents with the proposed (tightened) policy.
@@ -144,11 +145,22 @@ test.describe('Policy authoring (schemas tab)', () => {
 			SCN017_ROLES.financeApprover,
 		);
 
-		// Fixture dry-run as the finance approver: a large invoice patch routes
-		// through the `require-approval-large-invoice-update` envelope.
-		await page.getByTestId('schema-policy-fixture-subject').fill(SCN017_SUBJECTS.financeApprover);
+		// Fixture dry-run as the finance agent: a large invoice patch passes
+		// the update.allow rule and then routes through the
+		// require-approval-large-invoice-update envelope, requiring the
+		// finance-approver role.
+		await page.getByTestId('schema-policy-fixture-subject').fill(SCN017_SUBJECTS.financeAgent);
 		await page.getByTestId('schema-policy-fixture-operation').selectOption('patch');
 		await page.getByTestId('schema-policy-fixture-entity').fill(fixture.invoices.large.id);
+		await page
+			.getByTestId('schema-policy-fixture-patch')
+			.fill(
+				JSON.stringify(
+					{ amount_cents: fixture.invoices.large.amountCents + 500_000 },
+					null,
+					2,
+				),
+			);
 		await page.getByTestId('schema-policy-fixture-run').click();
 		await expect(page.getByTestId('schema-policy-fixture-decision')).toContainText(
 			'needs_approval',

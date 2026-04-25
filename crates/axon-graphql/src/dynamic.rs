@@ -6693,6 +6693,11 @@ async fn put_schema_resolver<S: StorageAdapter + 'static>(
 }
 
 /// Parse a list of `ExplainPolicyInput` values from `putSchema(input.explainInputs)`.
+///
+/// `ExplainPolicyInput` shares its shape with the active `explainPolicy`
+/// query input — the extractor expects the bare object (its `input_object`
+/// helper just casts to JSON object for an error label, it does not
+/// dereference an outer `input` field).
 fn explain_policy_dry_run_inputs_from_value(
     value: &Value,
 ) -> Result<Vec<ExplainPolicyRequest>, GqlError> {
@@ -6703,18 +6708,8 @@ fn explain_policy_dry_run_inputs_from_value(
     })?;
     entries
         .iter()
-        .map(explain_policy_dry_run_input_from_value)
+        .map(explain_policy_request_from_value)
         .collect()
-}
-
-fn explain_policy_dry_run_input_from_value(
-    value: &Value,
-) -> Result<ExplainPolicyRequest, GqlError> {
-    // ExplainPolicyInput uses the same shape as the active explainPolicy
-    // query; reuse the extractor by wrapping in a synthetic { input: ... }
-    // object so explain_policy_request_from_value's lookup works.
-    let wrapped = json!({ "input": value });
-    explain_policy_request_from_value(&wrapped)
 }
 
 // ── Schema builders ─────────────────────────────────────────────────────────
