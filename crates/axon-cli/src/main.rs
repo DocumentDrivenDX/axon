@@ -1862,6 +1862,7 @@ fn run_schema(
                     actor,
                     force,
                     dry_run,
+                    explain_inputs: Vec::new(),
                 })
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
 

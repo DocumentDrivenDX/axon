@@ -508,6 +508,12 @@ pub struct PutSchemaResponse {
     /// Policy compile report for the candidate schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_compile_report: Option<axon_schema::PolicyCompileReport>,
+    /// Fixture explain results evaluated against the proposed plan during a
+    /// dry-run. `Some(vec![])` when the request supplied no explain inputs
+    /// or the proposed schema has no `access_control`. `None` when the
+    /// proposed policy failed to compile (the report's errors describe why).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dry_run_explanations: Option<Vec<PolicyExplanationResponse>>,
     /// True if this was a dry-run (schema was not applied).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub dry_run: bool,

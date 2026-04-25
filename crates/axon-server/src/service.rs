@@ -765,6 +765,8 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
                 actor: Some(identity.actor),
                 force: req.force,
                 dry_run: req.dry_run,
+                // gRPC does not currently accept fixture explain inputs.
+                explain_inputs: Vec::new(),
             })
             .map_err(axon_to_status)?;
 

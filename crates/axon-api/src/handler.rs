@@ -121,6 +121,22 @@ struct PolicyPredicateContext<'a> {
     data: &'a Value,
 }
 
+/// Override pair used by the `putSchema` dry-run fixture path so explain
+/// resolution sees the proposed (in-memory) schema and plan for the root
+/// collection instead of the active stored ones.
+///
+/// Limitation: relationship `target_policy` recursion still queries storage
+/// for non-root collections — those plans are unaffected by the proposed
+/// change so storage is correct, but a self-referential `target_policy` on
+/// the root collection would resolve via the stored plan rather than the
+/// proposed one. Tracked as a follow-up; the current acceptance test uses
+/// non-self-referential predicates.
+#[derive(Debug, Clone, Copy)]
+struct PreviewedSchemaPlan<'a> {
+    schema: &'a CollectionSchema,
+    plan: &'a PolicyPlan,
+}
+
 #[derive(Debug, Clone, Default)]
 struct PolicyStoragePlan {
     candidate_ids: Option<Vec<EntityId>>,
@@ -1319,7 +1335,27 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<AuditAttribution>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
-        self.explain_policy_inner(req, caller, attribution.as_ref(), None)
+        self.explain_policy_inner(req, caller, attribution.as_ref(), None, None)
+    }
+
+    /// Run an explain against a proposed (in-memory) schema and plan instead
+    /// of the active stored ones.
+    ///
+    /// Used by the `putSchema` dry-run fixture path so the admin UI can
+    /// preview decisions for the policy version that *would* be activated.
+    /// The proposed schema/plan apply to the root collection only;
+    /// relationship `target_policy` recursion still resolves through storage
+    /// for non-root collections (their plans are not part of this preview).
+    pub fn explain_policy_with_plan(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        schema: &CollectionSchema,
+        plan: &PolicyPlan,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let preview = PreviewedSchemaPlan { schema, plan };
+        self.explain_policy_inner(req, caller, attribution, None, Some(&preview))
     }
 
     fn explain_policy_inner(
@@ -1328,20 +1364,31 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<&AuditAttribution>,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
         let operation = req.operation.trim().to_ascii_lowercase();
         match operation.as_str() {
-            "read" => self.explain_read_policy(req, caller, attribution, operation_index),
-            "create" => self.explain_create_policy(req, caller, attribution, operation_index),
-            "update" => self.explain_update_policy(req, caller, attribution, operation_index),
-            "patch" => self.explain_patch_policy(req, caller, attribution, operation_index),
-            "delete" => self.explain_delete_policy(req, caller, attribution, operation_index),
-            "transition" => {
-                self.explain_transition_policy(req, caller, attribution, operation_index)
+            "read" => self.explain_read_policy(req, caller, attribution, operation_index, preview),
+            "create" => {
+                self.explain_create_policy(req, caller, attribution, operation_index, preview)
             }
-            "rollback" => self.explain_rollback_policy(req, caller, attribution, operation_index),
+            "update" => {
+                self.explain_update_policy(req, caller, attribution, operation_index, preview)
+            }
+            "patch" => {
+                self.explain_patch_policy(req, caller, attribution, operation_index, preview)
+            }
+            "delete" => {
+                self.explain_delete_policy(req, caller, attribution, operation_index, preview)
+            }
+            "transition" => {
+                self.explain_transition_policy(req, caller, attribution, operation_index, preview)
+            }
+            "rollback" => {
+                self.explain_rollback_policy(req, caller, attribution, operation_index, preview)
+            }
             "transaction" => {
-                self.explain_transaction_policy(req, caller, attribution, operation_index)
+                self.explain_transaction_policy(req, caller, attribution, operation_index, preview)
             }
             "create_link" | "delete_link" => Ok(policy_explanation(
                 operation,
@@ -1364,6 +1411,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         schema: &CollectionSchema,
         caller: &CallerIdentity,
         attribution: Option<&AuditAttribution>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<Option<(PolicyRequestSnapshot, PolicyPlan)>, AxonError> {
         let Some(snapshot) = self.policy_snapshot_for_request(
             collection,
@@ -1375,6 +1423,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         else {
             return Ok(None);
         };
+        // Use the proposed plan when its collection matches the request.
+        // Recursion into related target_policies still goes through storage.
+        if let Some(p) = preview {
+            if &p.schema.collection == collection {
+                return Ok(Some((snapshot, p.plan.clone())));
+            }
+        }
         let Some(plan) = self.compile_policy_plan_for_schema(schema)? else {
             return Ok(None);
         };
@@ -1384,11 +1439,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
     fn explain_collection_schema(
         &self,
         req: &ExplainPolicyRequest,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<(CollectionId, CollectionSchema), AxonError> {
         let collection = req
             .collection
             .clone()
             .ok_or_else(|| AxonError::InvalidArgument("collection is required".into()))?;
+        if let Some(p) = preview {
+            if p.schema.collection == collection {
+                return Ok((collection, p.schema.clone()));
+            }
+        }
         let schema = self
             .storage
             .get_schema(&collection)?
@@ -1402,11 +1463,17 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<&AuditAttribution>,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
-        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
         let policy_version = schema.version;
-        let Some((snapshot, plan)) =
-            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
         else {
             return Ok(policy_explanation(
                 "read",
@@ -1451,16 +1518,22 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<&AuditAttribution>,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
-        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
         let policy_version = schema.version;
         let mut data = req
             .data
             .ok_or_else(|| AxonError::InvalidArgument("create explanation requires data".into()))?;
         enforce_lifecycle_initial_state(&schema, &mut data, LifecycleEnforcementMode::Create)?;
         let entity_id = req.entity_id.as_ref();
-        let Some((snapshot, plan)) =
-            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
         else {
             return Ok(policy_explanation(
                 "create",
@@ -1498,8 +1571,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<&AuditAttribution>,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
-        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
         let policy_version = schema.version;
         let entity_id = req.entity_id.as_ref().ok_or_else(|| {
             AxonError::InvalidArgument("update explanation requires entityId".into())
@@ -1512,8 +1586,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .storage
             .get(&collection, entity_id)?
             .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?;
-        let Some((snapshot, plan)) =
-            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
         else {
             return Ok(policy_explanation(
                 "update",
@@ -1551,8 +1630,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<&AuditAttribution>,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
-        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
         let policy_version = schema.version;
         let entity_id = req.entity_id.as_ref().ok_or_else(|| {
             AxonError::InvalidArgument("patch explanation requires entityId".into())
@@ -1567,8 +1647,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let mut merged = current.data.clone();
         json_merge_patch(&mut merged, &patch);
         enforce_lifecycle_initial_state(&schema, &mut merged, LifecycleEnforcementMode::Update)?;
-        let Some((snapshot, plan)) =
-            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
         else {
             return Ok(policy_explanation(
                 "patch",
@@ -1606,8 +1691,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<&AuditAttribution>,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
-        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
         let policy_version = schema.version;
         let entity_id = req.entity_id.as_ref().ok_or_else(|| {
             AxonError::InvalidArgument("delete explanation requires entityId".into())
@@ -1616,8 +1702,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .storage
             .get(&collection, entity_id)?
             .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?;
-        let Some((snapshot, plan)) =
-            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
         else {
             return Ok(policy_explanation(
                 "delete",
@@ -1655,8 +1746,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<&AuditAttribution>,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
-        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
         let policy_version = schema.version;
         let entity_id = req.entity_id.as_ref().ok_or_else(|| {
             AxonError::InvalidArgument("transition explanation requires entityId".into())
@@ -1699,8 +1791,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
         let mut data = entity.data.clone();
         data[&lifecycle.field] = Value::String(target_state.clone());
-        let Some((snapshot, plan)) =
-            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
         else {
             return Ok(policy_explanation(
                 "transition",
@@ -1755,8 +1852,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<&AuditAttribution>,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
-        let (collection, schema) = self.explain_collection_schema(&req)?;
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
         let policy_version = schema.version;
         let entity_id = req.entity_id.as_ref().ok_or_else(|| {
             AxonError::InvalidArgument("rollback explanation requires entityId".into())
@@ -1781,8 +1879,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         } else {
             PolicyOperation::Create
         };
-        let Some((snapshot, plan)) =
-            self.explain_policy_plan_for_request(&collection, &schema, caller, attribution)?
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
         else {
             return Ok(policy_explanation(
                 "rollback",
@@ -1820,6 +1923,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<&AuditAttribution>,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
         let mut response = policy_explanation(
             "transaction",
@@ -1832,7 +1936,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         );
         let mut saw_needs_approval = false;
         for (index, operation) in req.operations.into_iter().enumerate() {
-            let child = self.explain_policy_inner(operation, caller, attribution, Some(index))?;
+            let child =
+                self.explain_policy_inner(operation, caller, attribution, Some(index), preview)?;
             response.policy_version = response.policy_version.max(child.policy_version);
             if child.decision == "deny" {
                 response.decision = "deny".into();
@@ -5884,13 +5989,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         // Dry-run: return classification without applying. Policy compile
         // failures ride the report instead of bubbling so the admin UI can
-        // focus the first actionable error.
+        // focus the first actionable error. When the caller supplies fixture
+        // explain inputs and the proposed policy compiled, we evaluate them
+        // against the proposed plan and surface the explanations alongside
+        // the compile report.
         if req.dry_run {
+            let dry_run_explanations = self.dry_run_explanations_for_proposed(
+                &req.schema,
+                &policy_compile_report,
+                &req.explain_inputs,
+                req.actor.as_deref(),
+            )?;
             return Ok(PutSchemaResponse {
                 schema: req.schema,
                 compatibility: Some(compatibility),
                 diff: Some(diff),
                 policy_compile_report: Some(policy_compile_report),
+                dry_run_explanations,
                 dry_run: true,
             });
         }
@@ -6007,8 +6122,93 @@ impl<S: StorageAdapter> AxonHandler<S> {
             compatibility: Some(compatibility),
             diff: Some(diff),
             policy_compile_report: Some(policy_compile_report),
+            dry_run_explanations: None,
             dry_run: false,
         })
+    }
+
+    /// Run fixture explain inputs against the proposed schema/plan during a
+    /// putSchema dry-run. Returns:
+    ///
+    /// - `None` when the proposed policy failed to compile (the report's
+    ///   `errors` describe why).
+    /// - `Some(vec![])` when no explain inputs were supplied or the proposed
+    ///   schema has no `access_control` block.
+    /// - `Some(vec![..])` carrying one explanation per input, in order.
+    ///
+    /// Each explanation is evaluated as a synthetic admin caller derived
+    /// from `req.actor`. Subject-aware predicate evaluation that depends on
+    /// caller-supplied identity bindings is left to a follow-up that adds
+    /// `actor_override` plumbing.
+    fn dry_run_explanations_for_proposed(
+        &self,
+        proposed_schema: &CollectionSchema,
+        report: &axon_schema::PolicyCompileReport,
+        explain_inputs: &[ExplainPolicyRequest],
+        actor: Option<&str>,
+    ) -> Result<Option<Vec<PolicyExplanationResponse>>, AxonError> {
+        if !report.errors.is_empty() {
+            return Ok(None);
+        }
+        if explain_inputs.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        // Build the in-memory plan for the proposed schema.
+        let schemas = self.policy_catalog_schemas(proposed_schema)?;
+        let proposed_plan_opt = match compile_policy_catalog(&schemas) {
+            Ok(catalog) => catalog
+                .plans
+                .get(proposed_schema.collection.as_str())
+                .cloned(),
+            Err(_) => {
+                // Compile errors should already be in the report from the
+                // caller, but defensively return None instead of panicking.
+                return Ok(None);
+            }
+        };
+        let Some(proposed_plan) = proposed_plan_opt else {
+            // No access_control on the proposed schema -> empty result.
+            return Ok(Some(Vec::new()));
+        };
+        let synthetic_caller = axon_core::auth::CallerIdentity::new(
+            actor.unwrap_or("anonymous"),
+            axon_core::auth::Role::Admin,
+        );
+        let mut out = Vec::with_capacity(explain_inputs.len());
+        for input in explain_inputs {
+            // Reject explain inputs targeting a different collection: the
+            // proposed plan only covers the root collection. Cross-collection
+            // dry-runs are out of scope for this bead.
+            if let Some(target) = &input.collection {
+                if target.as_str() != proposed_schema.collection.as_str() {
+                    return Err(AxonError::InvalidArgument(format!(
+                        "putSchema dry-run explain_inputs must target the proposed collection '{}', got '{}'",
+                        proposed_schema.collection, target
+                    )));
+                }
+            }
+            // Reject transaction fixtures. Their child operations recurse
+            // into explain_policy_inner with their own (collection, plan) and
+            // would silently mix the proposed root plan with active storage
+            // plans for non-root children. Transaction-level fixture dry-run
+            // is out of scope for this bead.
+            if input.operation.trim().eq_ignore_ascii_case("transaction") {
+                return Err(AxonError::InvalidArgument(
+                    "putSchema dry-run does not yet support transaction explain_inputs".to_string(),
+                ));
+            }
+            let mut input_clone = input.clone();
+            input_clone.collection = Some(proposed_schema.collection.clone());
+            let response = self.explain_policy_with_plan(
+                input_clone,
+                &synthetic_caller,
+                None,
+                proposed_schema,
+                &proposed_plan,
+            )?;
+            out.push(response);
+        }
+        Ok(Some(out))
     }
 
     /// Retrieve the schema for a collection.
@@ -14992,6 +15192,7 @@ link_types:
             actor: Some("alice".into()),
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
 
@@ -15031,6 +15232,7 @@ link_types:
             actor: Some("setup".into()),
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
 
@@ -15068,6 +15270,7 @@ link_types:
                 actor: Some("alice".into()),
                 force: false,
                 dry_run: true,
+                explain_inputs: Vec::new(),
             })
             .expect("dry-run with invalid policy must not error");
         assert!(resp.dry_run);
@@ -15087,6 +15290,219 @@ link_types:
         // Persisted schema is still v1: dry-run never wrote.
         let retrieved = h.get_schema(&col).unwrap().expect("schema present");
         assert_eq!(retrieved.version, 1);
+    }
+
+    #[test]
+    fn handle_put_schema_dry_run_no_policy_returns_empty_explanations() {
+        let mut h = handler();
+        let col = CollectionId::new("policy_no_ac");
+        let schema = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "title": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: None,
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema,
+                actor: None,
+                force: false,
+                dry_run: true,
+                explain_inputs: vec![ExplainPolicyRequest {
+                    operation: "read".into(),
+                    collection: Some(col),
+                    entity_id: None,
+                    expected_version: None,
+                    data: Some(json!({"title": "hi"})),
+                    patch: None,
+                    lifecycle_name: None,
+                    target_state: None,
+                    to_version: None,
+                    operations: Vec::new(),
+                }],
+            })
+            .expect("dry-run with explain inputs but no access_control must succeed");
+        let explanations = resp
+            .dry_run_explanations
+            .expect("explanations should be Some(vec![]) when no policy");
+        assert!(explanations.is_empty());
+    }
+
+    #[test]
+    fn handle_put_schema_dry_run_explain_inputs_use_proposed_plan() {
+        let mut h = handler();
+        let col = CollectionId::new("policy_diff");
+
+        let active = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "status": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": {
+                        "allow": [{
+                            "name": "only-open",
+                            "where": { "field": "status", "eq": "open" }
+                        }]
+                    }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema: active,
+            actor: Some("setup".into()),
+            force: false,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+
+        let active_resp = h
+            .explain_policy_with_caller(
+                ExplainPolicyRequest {
+                    operation: "read".into(),
+                    collection: Some(col.clone()),
+                    entity_id: None,
+                    expected_version: None,
+                    data: Some(json!({"status": "archived"})),
+                    patch: None,
+                    lifecycle_name: None,
+                    target_state: None,
+                    to_version: None,
+                    operations: Vec::new(),
+                },
+                &axon_core::auth::CallerIdentity::new("admin", axon_core::auth::Role::Admin),
+                None,
+            )
+            .unwrap();
+        assert_eq!(active_resp.decision, "deny");
+
+        let proposed = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 2,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "status": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": {
+                        "allow": [
+                            { "name": "only-open", "where": { "field": "status", "eq": "open" } },
+                            { "name": "also-archived", "where": { "field": "status", "eq": "archived" } }
+                        ]
+                    }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: proposed,
+                actor: Some("alice".into()),
+                force: false,
+                dry_run: true,
+                explain_inputs: vec![ExplainPolicyRequest {
+                    operation: "read".into(),
+                    collection: Some(col.clone()),
+                    entity_id: None,
+                    expected_version: None,
+                    data: Some(json!({"status": "archived"})),
+                    patch: None,
+                    lifecycle_name: None,
+                    target_state: None,
+                    to_version: None,
+                    operations: Vec::new(),
+                }],
+            })
+            .expect("valid proposed policy must dry-run successfully");
+        let explanations = resp
+            .dry_run_explanations
+            .expect("dry-run should populate explanations on success");
+        assert_eq!(explanations.len(), 1);
+        assert_eq!(
+            explanations[0].decision, "allow",
+            "proposed plan must override active deny"
+        );
+        let stored = h.get_schema(&col).unwrap().expect("schema present");
+        assert_eq!(stored.version, 1);
+    }
+
+    #[test]
+    fn handle_put_schema_dry_run_rejects_cross_collection_explain_input() {
+        let mut h = handler();
+        let col = CollectionId::new("policy_root");
+        let schema = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "title": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": { "allow": [{ "name": "any" }] }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+        let err = h
+            .handle_put_schema(PutSchemaRequest {
+                schema,
+                actor: None,
+                force: false,
+                dry_run: true,
+                explain_inputs: vec![ExplainPolicyRequest {
+                    operation: "read".into(),
+                    collection: Some(CollectionId::new("other")),
+                    entity_id: None,
+                    expected_version: None,
+                    data: Some(json!({})),
+                    patch: None,
+                    lifecycle_name: None,
+                    target_state: None,
+                    to_version: None,
+                    operations: Vec::new(),
+                }],
+            })
+            .expect_err("cross-collection explain input must error");
+        assert!(matches!(err, AxonError::InvalidArgument(_)));
     }
 
     #[test]
@@ -15116,6 +15532,7 @@ link_types:
             actor: Some("setup".into()),
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
         let pre_audit_count = h
@@ -15157,6 +15574,7 @@ link_types:
                 actor: Some("alice".into()),
                 force: false,
                 dry_run: false,
+                explain_inputs: Vec::new(),
             })
             .expect_err("activation must refuse on compile errors");
         match err {
@@ -15268,6 +15686,7 @@ link_types:
                 actor: None,
                 force: false,
                 dry_run: false,
+                explain_inputs: Vec::new(),
             })
             .unwrap_err();
         assert!(
@@ -15301,6 +15720,7 @@ link_types:
             actor: None,
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
     }
@@ -15334,6 +15754,7 @@ link_types:
             actor: None,
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
 
@@ -15365,6 +15786,7 @@ link_types:
                 actor: None,
                 force: false,
                 dry_run: false,
+                explain_inputs: Vec::new(),
             })
             .unwrap_err();
         assert!(
@@ -15399,6 +15821,7 @@ link_types:
             actor: None,
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
 
@@ -15429,6 +15852,7 @@ link_types:
                 actor: Some("admin".into()),
                 force: true,
                 dry_run: false,
+                explain_inputs: Vec::new(),
             })
             .unwrap();
         assert_eq!(
@@ -15464,6 +15888,7 @@ link_types:
             actor: None,
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
 
@@ -15494,6 +15919,7 @@ link_types:
                 actor: None,
                 force: false,
                 dry_run: true,
+                explain_inputs: Vec::new(),
             })
             .unwrap();
         assert!(resp.dry_run);
@@ -15533,6 +15959,7 @@ link_types:
             actor: None,
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
 
@@ -15563,6 +15990,7 @@ link_types:
                 actor: None,
                 force: false,
                 dry_run: false,
+                explain_inputs: Vec::new(),
             })
             .unwrap();
         assert_eq!(
@@ -17105,6 +17533,7 @@ link_types:
             actor: None,
             force: true,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
 
@@ -17420,6 +17849,7 @@ link_types:
             actor: None,
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
 
@@ -17518,6 +17948,7 @@ link_types:
             actor: None,
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
 
@@ -17546,6 +17977,7 @@ link_types:
             actor: None,
             force: false,
             dry_run: false,
+            explain_inputs: Vec::new(),
         })
         .unwrap();
 

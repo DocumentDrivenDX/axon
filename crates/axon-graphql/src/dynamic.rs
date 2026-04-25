@@ -699,6 +699,10 @@ fn put_schema_input_object() -> InputObject {
         .field(InputValue::new("schema", TypeRef::named_nn("JSON")))
         .field(InputValue::new("force", TypeRef::named(TypeRef::BOOLEAN)))
         .field(InputValue::new("dryRun", TypeRef::named(TypeRef::BOOLEAN)))
+        .field(InputValue::new(
+            "explainInputs",
+            TypeRef::named_nn_list(EXPLAIN_POLICY_INPUT),
+        ))
 }
 
 fn put_collection_template_input_object() -> InputObject {
@@ -2389,6 +2393,10 @@ fn put_schema_payload_object() -> Object {
             TypeRef::named("JSON"),
         ))
         .field(json_object_field(
+            "dryRunExplanations",
+            TypeRef::named("JSON"),
+        ))
+        .field(json_object_field(
             "dryRun",
             TypeRef::named_nn(TypeRef::BOOLEAN),
         ))
@@ -4005,6 +4013,7 @@ fn put_schema_payload_value(resp: axon_api::response::PutSchemaResponse) -> Valu
         "compatibility": resp.compatibility,
         "diff": resp.diff,
         "policyCompileReport": resp.policy_compile_report,
+        "dryRunExplanations": resp.dry_run_explanations,
         "dryRun": resp.dry_run,
     })
 }
@@ -6663,6 +6672,10 @@ async fn put_schema_resolver<S: StorageAdapter + 'static>(
     let schema = collection_schema_from_json(&collection, schema_value)?;
     let force = input_bool(input, "force", false);
     let dry_run = input_bool(input, "dryRun", false);
+    let explain_inputs = match input.get("explainInputs") {
+        Some(value) if !value.is_null() => explain_policy_dry_run_inputs_from_value(value)?,
+        _ => Vec::new(),
+    };
 
     let resp = handler
         .lock()
@@ -6672,10 +6685,36 @@ async fn put_schema_resolver<S: StorageAdapter + 'static>(
             actor: Some(caller.actor),
             force,
             dry_run,
+            explain_inputs,
         })
         .map_err(axon_error_to_gql)?;
 
     Ok(Some(json_to_field_value(put_schema_payload_value(resp))))
+}
+
+/// Parse a list of `ExplainPolicyInput` values from `putSchema(input.explainInputs)`.
+fn explain_policy_dry_run_inputs_from_value(
+    value: &Value,
+) -> Result<Vec<ExplainPolicyRequest>, GqlError> {
+    let entries = value.as_array().ok_or_else(|| {
+        GqlError::new("explainInputs must be a list").extend_with(|_err, ext| {
+            ext.set("code", "INVALID_ARGUMENT");
+        })
+    })?;
+    entries
+        .iter()
+        .map(explain_policy_dry_run_input_from_value)
+        .collect()
+}
+
+fn explain_policy_dry_run_input_from_value(
+    value: &Value,
+) -> Result<ExplainPolicyRequest, GqlError> {
+    // ExplainPolicyInput uses the same shape as the active explainPolicy
+    // query; reuse the extractor by wrapping in a synthetic { input: ... }
+    // object so explain_policy_request_from_value's lookup works.
+    let wrapped = json!({ "input": value });
+    explain_policy_request_from_value(&wrapped)
 }
 
 // ── Schema builders ─────────────────────────────────────────────────────────

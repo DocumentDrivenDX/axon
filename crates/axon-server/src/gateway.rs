@@ -2670,6 +2670,8 @@ async fn put_schema(
         actor: Some(identity.actor),
         force: body.force,
         dry_run: body.dry_run,
+        // REST does not currently accept fixture explain inputs; leave empty.
+        explain_inputs: Vec::new(),
     }) {
         Ok(resp) => {
             if !resp.dry_run {

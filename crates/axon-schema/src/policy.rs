@@ -1032,7 +1032,9 @@ impl<'a> PolicyCompiler<'a> {
             return Err(self
                 .err_at(
                     ctx,
-                    format!("field path '{path}' at {ctx} cannot be validated without entity_schema"),
+                    format!(
+                        "field path '{path}' at {ctx} cannot be validated without entity_schema"
+                    ),
                 )
                 .with_field_if_unset(path.to_string()));
         };
@@ -1040,7 +1042,10 @@ impl<'a> PolicyCompiler<'a> {
         for (idx, raw_segment) in path.split('.').enumerate() {
             if raw_segment.is_empty() {
                 return Err(self
-                    .err_at(ctx, format!("empty field path segment in '{path}' at {ctx}"))
+                    .err_at(
+                        ctx,
+                        format!("empty field path segment in '{path}' at {ctx}"),
+                    )
                     .with_field_if_unset(path.to_string()));
             }
             let expects_array = raw_segment.ends_with("[]");
@@ -1057,7 +1062,9 @@ impl<'a> PolicyCompiler<'a> {
                 current = array_items(current).ok_or_else(|| {
                     self.err_at(
                         ctx,
-                        format!("field path '{path}' at {ctx}: segment '{segment}' is not an array"),
+                        format!(
+                            "field path '{path}' at {ctx}: segment '{segment}' is not an array"
+                        ),
                     )
                     .with_field_if_unset(path.to_string())
                 })?;
@@ -1065,7 +1072,9 @@ impl<'a> PolicyCompiler<'a> {
                 return Err(self
                     .err_at(
                         ctx,
-                        format!("field path '{path}' at {ctx}: array segment '{segment}' must use []"),
+                        format!(
+                            "field path '{path}' at {ctx}: array segment '{segment}' must use []"
+                        ),
                     )
                     .with_field_if_unset(path.to_string()));
             }

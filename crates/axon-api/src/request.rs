@@ -466,6 +466,12 @@ pub struct PutSchemaRequest {
     /// If true, check compatibility and return the diff without applying.
     #[serde(default)]
     pub dry_run: bool,
+    /// Fixture explain inputs evaluated against the proposed schema/policy
+    /// when `dry_run = true` and the proposed policy compiled successfully.
+    /// Each input mirrors the active `explainPolicy` request shape; results
+    /// land in `PutSchemaResponse.dry_run_explanations` in matching order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub explain_inputs: Vec<ExplainPolicyRequest>,
 }
 
 /// Request to retrieve the schema for a collection.
