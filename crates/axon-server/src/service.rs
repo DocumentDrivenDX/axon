@@ -774,11 +774,17 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
             .unwrap_or_default();
         let schema_json = serde_json::to_string(&resp.schema)
             .map_err(|e| Status::internal(format!("serialization error: {e}")))?;
+        let policy_compile_report_json = match &resp.policy_compile_report {
+            Some(report) => serde_json::to_string(report)
+                .map_err(|e| Status::internal(format!("serialization error: {e}")))?,
+            None => String::new(),
+        };
 
         Ok(Response::new(ProtoPutSchemaResp {
             schema_json,
             compatibility,
             dry_run: resp.dry_run,
+            policy_compile_report_json,
         }))
     }
 

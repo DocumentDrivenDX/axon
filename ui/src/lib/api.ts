@@ -33,11 +33,30 @@ export type SchemaDiff = {
 	changes: FieldChange[];
 };
 
+export type PolicyCompileDiagnostic = {
+	code: string;
+	message: string;
+	collection?: string | null;
+	rule_id?: string | null;
+	field?: string | null;
+	path?: string | null;
+};
+
+export type PolicyCompileReport = {
+	errors?: PolicyCompileDiagnostic[];
+	warnings?: PolicyCompileDiagnostic[];
+	required_link_indexes?: unknown[];
+	nullable_fields?: unknown[];
+	denied_write_fields?: unknown[];
+	envelope_summaries?: unknown[];
+};
+
 export type SchemaPreviewResult = {
 	schema: CollectionSchema;
 	compatibility: 'compatible' | 'breaking' | 'metadata_only' | null;
 	diff: SchemaDiff | null;
 	dry_run: boolean;
+	policy_compile_report?: PolicyCompileReport | null;
 };
 
 export type CollectionSummary = {
@@ -280,6 +299,7 @@ type GraphQLPutSchemaPayload = {
 	compatibility: SchemaPreviewResult['compatibility'];
 	diff: SchemaDiff | null;
 	dryRun: boolean;
+	policyCompileReport?: PolicyCompileReport | null;
 };
 
 type GraphQLTransactionPayload = {
@@ -1287,6 +1307,7 @@ export async function updateSchema(
 					compatibility
 					diff
 					dryRun
+					policyCompileReport
 				}
 			}`,
 			{
@@ -1335,16 +1356,21 @@ export async function previewSchemaChange(
 					compatibility
 					diff
 					dryRun
+					policyCompileReport
 				}
 			}`,
 			{ collection, schema },
 		);
-		return {
+		const result: SchemaPreviewResult = {
 			schema: data.putSchema.schema,
 			compatibility: data.putSchema.compatibility,
 			diff: data.putSchema.diff,
 			dry_run: data.putSchema.dryRun,
 		};
+		if (data.putSchema.policyCompileReport != null) {
+			result.policy_compile_report = data.putSchema.policyCompileReport;
+		}
+		return result;
 	}
 
 	return request<SchemaPreviewResult>(

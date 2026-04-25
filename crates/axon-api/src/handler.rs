@@ -517,12 +517,21 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(schemas)
     }
 
+    /// Build the policy compile report for a proposed schema.
+    ///
+    /// Storage / IO errors bubble as `AxonError`. A failed
+    /// [`PolicyCompileError`] is captured into
+    /// `PolicyCompileReport::errors` so the admin-UI dry-run path can
+    /// surface a structured diagnostic instead of bubbling the error.
     fn policy_compile_report_for_schema(
         &self,
         schema: &CollectionSchema,
     ) -> Result<axon_schema::PolicyCompileReport, AxonError> {
         let schemas = self.policy_catalog_schemas(schema)?;
-        Ok(compile_policy_catalog(&schemas)?.report)
+        match compile_policy_catalog(&schemas) {
+            Ok(catalog) => Ok(catalog.report),
+            Err(err) => Ok(axon_schema::PolicyCompileReport::from_compile_error(&err)),
+        }
     }
 
     fn enforce_write_policy(
@@ -5873,7 +5882,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let compatibility = axon_schema::classify(&diff);
         let policy_compile_report = self.policy_compile_report_for_schema(&req.schema)?;
 
-        // Dry-run: return classification without applying.
+        // Dry-run: return classification without applying. Policy compile
+        // failures ride the report instead of bubbling so the admin UI can
+        // focus the first actionable error.
         if req.dry_run {
             return Ok(PutSchemaResponse {
                 schema: req.schema,
@@ -5882,6 +5893,21 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 policy_compile_report: Some(policy_compile_report),
                 dry_run: true,
             });
+        }
+
+        // Activation gate: refuse to persist when the proposed access_control
+        // failed to compile. The active schema/policy version must remain
+        // unchanged; no audit entry is appended.
+        if !policy_compile_report.errors.is_empty() {
+            let summary = policy_compile_report
+                .errors
+                .iter()
+                .map(|d| d.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(AxonError::SchemaValidation(format!(
+                "policy_compile_failed: {summary}"
+            )));
         }
 
         // Breaking changes require force flag.
@@ -14976,6 +15002,184 @@ link_types:
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].collection, col);
         assert_eq!(entries[0].actor, "alice");
+    }
+
+    #[test]
+    fn handle_put_schema_dry_run_returns_compile_errors_in_report() {
+        let mut h = handler();
+        let col = CollectionId::new("policy_dry_run");
+
+        // Seed v1 with no access_control so we have a baseline collection.
+        let baseline = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "title": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: None,
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema: baseline,
+            actor: Some("setup".into()),
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+
+        // Dry-run with a broken policy must surface a structured diagnostic
+        // rather than bubbling AxonError::SchemaValidation.
+        let proposed = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 2,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "title": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": {
+                        "allow": [{
+                            "name": "broken",
+                            "where": { "field": "missing_field", "eq": "x" }
+                        }]
+                    }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: proposed,
+                actor: Some("alice".into()),
+                force: false,
+                dry_run: true,
+            })
+            .expect("dry-run with invalid policy must not error");
+        assert!(resp.dry_run);
+        let report = resp.policy_compile_report.expect("report present");
+        assert_eq!(
+            report.errors.len(),
+            1,
+            "expected one compile diagnostic, got {report:?}"
+        );
+        let diag = &report.errors[0];
+        assert_eq!(diag.code, axon_schema::POLICY_COMPILE_ERROR_DEFAULT_CODE);
+        assert!(diag.message.contains("missing_field"));
+        assert_eq!(diag.collection.as_deref(), Some("policy_dry_run"));
+        assert_eq!(diag.field.as_deref(), Some("missing_field"));
+        assert!(diag.path.is_some());
+
+        // Persisted schema is still v1: dry-run never wrote.
+        let retrieved = h.get_schema(&col).unwrap().expect("schema present");
+        assert_eq!(retrieved.version, 1);
+    }
+
+    #[test]
+    fn handle_put_schema_blocks_activation_on_compile_errors() {
+        let mut h = handler();
+        let col = CollectionId::new("policy_gate");
+
+        // Seed v1.
+        let baseline = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "title": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: None,
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema: baseline,
+            actor: Some("setup".into()),
+            force: false,
+            dry_run: false,
+        })
+        .unwrap();
+        let pre_audit_count = h
+            .audit_log()
+            .query_by_operation(&axon_audit::entry::MutationType::SchemaUpdate)
+            .unwrap()
+            .len();
+
+        // Activation with a broken predicate must error and not persist.
+        let proposed = axon_schema::schema::CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 2,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "title": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": {
+                        "allow": [{
+                            "name": "broken",
+                            "where": { "field": "missing_field", "eq": "x" }
+                        }]
+                    }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+        let err = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: proposed,
+                actor: Some("alice".into()),
+                force: false,
+                dry_run: false,
+            })
+            .expect_err("activation must refuse on compile errors");
+        match err {
+            AxonError::SchemaValidation(msg) => {
+                assert!(
+                    msg.starts_with("policy_compile_failed"),
+                    "expected policy_compile_failed prefix, got {msg}"
+                );
+            }
+            other => panic!("expected SchemaValidation, got {other:?}"),
+        }
+
+        // Persisted schema must still be v1.
+        let retrieved = h.get_schema(&col).unwrap().expect("schema present");
+        assert_eq!(retrieved.version, 1);
+
+        // No new audit entry from the failed activation.
+        let post_audit_count = h
+            .audit_log()
+            .query_by_operation(&axon_audit::entry::MutationType::SchemaUpdate)
+            .unwrap()
+            .len();
+        assert_eq!(post_audit_count, pre_audit_count);
     }
 
     #[test]

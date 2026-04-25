@@ -2023,16 +2023,36 @@ async fn graphql_put_schema_exposes_policy_compile_reports_and_errors() {
         }"#,
     )
     .await;
-    assert_eq!(
-        invalid_path["errors"][0]["extensions"]["code"],
-        "SCHEMA_VALIDATION"
-    );
+    // Dry-run with an invalid policy returns the structured compile report
+    // (no GraphQL error) so the admin UI can focus the failing rule.
     assert!(
-        invalid_path["errors"][0]["extensions"]["detail"]
+        invalid_path["errors"].is_null(),
+        "dry-run should not bubble compile errors: {invalid_path}"
+    );
+    let report = &invalid_path["data"]["putSchema"]["policyCompileReport"];
+    let errors = report["errors"]
+        .as_array()
+        .expect("dry-run report must include errors array");
+    assert_eq!(errors.len(), 1, "expected one compile diagnostic: {report}");
+    assert_eq!(errors[0]["code"], "policy_expression_invalid");
+    assert!(
+        errors[0]["message"]
             .as_str()
             .unwrap()
             .contains("unknown field path 'missing_field'"),
-        "invalid path error should report the bad path: {invalid_path}"
+        "invalid path diagnostic should reference the bad path: {report}"
+    );
+    assert_eq!(
+        errors[0]["collection"], "policy_report",
+        "collection should be populated: {report}"
+    );
+    assert!(
+        errors[0]["path"].is_string(),
+        "structured path should be populated: {report}"
+    );
+    assert_eq!(
+        errors[0]["field"], "missing_field",
+        "field hint should be populated: {report}"
     );
 
     server
@@ -2127,17 +2147,23 @@ async fn graphql_put_schema_exposes_policy_compile_reports_and_errors() {
         }"#,
     )
     .await;
-    assert_eq!(
-        cycle["errors"][0]["extensions"]["code"],
-        "SCHEMA_VALIDATION"
-    );
     assert!(
-        cycle["errors"][0]["extensions"]["detail"]
+        cycle["errors"].is_null(),
+        "dry-run cycle compile error should ride the report: {cycle}"
+    );
+    let cycle_report = &cycle["data"]["putSchema"]["policyCompileReport"];
+    let cycle_errors = cycle_report["errors"]
+        .as_array()
+        .expect("dry-run report must include errors array for cycles");
+    assert_eq!(cycle_errors.len(), 1, "expected one cycle diagnostic");
+    assert!(
+        cycle_errors[0]["message"]
             .as_str()
             .unwrap()
             .contains("relationship target_policy cycle detected"),
-        "cycle error should report the target_policy cycle: {cycle}"
+        "cycle diagnostic should describe the target_policy cycle: {cycle_report}"
     );
+    assert_eq!(cycle_errors[0]["code"], "policy_expression_invalid");
 
     let applied = gql_as(
         &server,
@@ -2199,4 +2225,98 @@ async fn graphql_put_schema_exposes_policy_compile_reports_and_errors() {
     assert_eq!(metadata["old_policy_version"], "none");
     assert_eq!(metadata["new_policy_version"], "2");
     assert_eq!(metadata["policy_envelopes"], "1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_put_schema_blocks_activation_on_policy_compile_errors() {
+    use axum::http::StatusCode;
+    use serde_json::json;
+
+    let server = test_server();
+
+    // Seed a v1 schema with a known-good access_control block.
+    server
+        .post("/tenants/default/databases/default/collections/policy_gate")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": { "title": { "type": "string" } }
+                },
+                "access_control": {
+                    "read": { "allow": [{ "name": "any-read" }] }
+                }
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    // Activation (dryRun: false) with a broken predicate must refuse.
+    let blocked = gql_as(
+        &server,
+        "admin",
+        r#"mutation {
+            putSchema(input: {
+                collection: "policy_gate",
+                schema: {
+                    version: 2,
+                    entitySchema: {
+                        type: "object",
+                        properties: { title: { type: "string" } }
+                    },
+                    accessControl: {
+                        read: {
+                            allow: [{
+                                name: "broken",
+                                where: { field: "missing_field", eq: "x" }
+                            }]
+                        }
+                    }
+                }
+            }) { dryRun schema policyCompileReport }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        blocked["errors"][0]["extensions"]["code"], "SCHEMA_VALIDATION",
+        "activation should refuse with SCHEMA_VALIDATION: {blocked}"
+    );
+    let detail = blocked["errors"][0]["extensions"]["detail"]
+        .as_str()
+        .expect("error detail should be a string");
+    assert!(
+        detail.contains("policy_compile_failed"),
+        "activation refusal must use policy_compile_failed prefix: {detail}"
+    );
+
+    // Active schema/policy version must remain at v1.
+    let still_v1 = gql_as(
+        &server,
+        "admin",
+        r#"{ collection(name: "policy_gate") { name schemaVersion } }"#,
+    )
+    .await;
+    assert_eq!(
+        still_v1["data"]["collection"]["schemaVersion"], 1,
+        "activation refusal must leave the persisted schema version unchanged: {still_v1}"
+    );
+
+    // No SchemaUpdate audit entry should be appended for the failed attempt.
+    let audit = gql_as(
+        &server,
+        "admin",
+        r#"{
+            auditLog(collection: "policy_gate", operation: "schema.update") {
+                totalCount
+                edges { node { metadata } }
+            }
+        }"#,
+    )
+    .await;
+    assert_eq!(
+        audit["data"]["auditLog"]["totalCount"], 0,
+        "activation refusal must not append an audit entry: {audit}"
+    );
 }

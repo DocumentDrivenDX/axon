@@ -2682,6 +2682,9 @@ async fn put_schema(
             if let Some(diff) = &resp.diff {
                 result["diff"] = json!(diff);
             }
+            if let Some(report) = &resp.policy_compile_report {
+                result["policy_compile_report"] = json!(report);
+            }
             if resp.dry_run {
                 result["dry_run"] = json!(true);
             }

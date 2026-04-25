@@ -204,6 +204,12 @@ message PutSchemaResponse {
   // Compatibility classification (e.g. "compatible", "breaking"). Empty if unknown.
   string compatibility = 2;
   bool dry_run = 3;
+  // JSON-encoded PolicyCompileReport (errors, warnings, nullable_fields,
+  // denied_write_fields, envelope_summaries, required_link_indexes). Empty
+  // when no policy compile was attempted. On dry-run, compile failures are
+  // surfaced as `errors` entries in the report rather than gRPC status
+  // errors so admin clients can focus the failing rule.
+  string policy_compile_report_json = 4;
 }
 
 message GetSchemaRequest {
