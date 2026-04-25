@@ -1,4 +1,5 @@
 <script lang="ts">
+import { page } from '$app/state';
 import { type GraphQLResponse, executeGraphql } from '$lib/api';
 import type { PageData } from './$types';
 
@@ -28,13 +29,40 @@ const DEFAULT_QUERY = `# Try a query against this database.
 }
 `;
 
-// biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
 let query = $state(DEFAULT_QUERY);
-// biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
 let variables = $state('{}');
+let actor = $state('');
 let result = $state<GraphQLResponse | null>(null);
 let running = $state(false);
 let error = $state<string | null>(null);
+let presetLabel = $state<string | null>(null);
+let appliedSearch = $state<string | null>(null);
+
+function applyPresetFromSearch() {
+	const search = page.url.searchParams.toString();
+	if (search === appliedSearch) return;
+
+	const nextQuery = page.url.searchParams.get('query');
+	const nextVariables = page.url.searchParams.get('variables');
+	const nextActor = page.url.searchParams.get('actor');
+	const nextPreset = page.url.searchParams.get('preset');
+
+	if (nextQuery !== null || nextVariables !== null || nextActor !== null || nextPreset !== null) {
+		query = nextQuery?.trim().length ? nextQuery : DEFAULT_QUERY;
+		variables = nextVariables?.trim().length ? nextVariables : '{}';
+		actor = nextActor ?? '';
+		presetLabel = nextPreset;
+		result = null;
+		error = null;
+	}
+
+	appliedSearch = search;
+}
+
+$effect(() => {
+	page.url.searchParams.toString();
+	applyPresetFromSearch();
+});
 
 async function run() {
 	running = true;
@@ -45,13 +73,23 @@ async function run() {
 		if (variables.trim()) {
 			try {
 				parsedVars = JSON.parse(variables) as Record<string, unknown>;
+				if (!parsedVars || typeof parsedVars !== 'object' || Array.isArray(parsedVars)) {
+					error = 'Variables must be a JSON object';
+					running = false;
+					return;
+				}
 			} catch (e) {
 				error = `Variables must be valid JSON: ${(e as Error).message}`;
 				running = false;
 				return;
 			}
 		}
-		result = await executeGraphql(query, parsedVars, scope);
+		result = await executeGraphql(
+			query,
+			parsedVars,
+			scope,
+			actor.trim() ? { headers: { 'x-axon-actor': actor.trim() } } : {},
+		);
 	} catch (e: unknown) {
 		error = e instanceof Error ? e.message : 'GraphQL request failed';
 	} finally {
@@ -73,6 +111,9 @@ function formatResult(r: GraphQLResponse): string {
 		</p>
 	</div>
 	<div class="actions">
+		{#if presetLabel}
+			<span class="pill" data-testid="graphql-preset">{presetLabel}</span>
+		{/if}
 		<button class="primary" disabled={running} onclick={run}>
 			{running ? 'Running…' : 'Run (⌘↵)'}
 		</button>
@@ -85,6 +126,15 @@ function formatResult(r: GraphQLResponse): string {
 			<h2>Query</h2>
 		</div>
 		<div class="panel-body stack">
+			<label class="field">
+				<span>Actor Header</span>
+				<input
+					type="text"
+					data-testid="graphql-actor"
+					placeholder="x-axon-actor"
+					bind:value={actor}
+				/>
+			</label>
 			<textarea
 				class="code"
 				data-testid="graphql-query"
@@ -142,6 +192,30 @@ function formatResult(r: GraphQLResponse): string {
 
 	textarea.code.small {
 		min-height: 6rem;
+	}
+
+	.field {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+
+	.field span {
+		font-size: 0.78rem;
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		color: var(--muted);
+	}
+
+	.field input {
+		min-height: 2.5rem;
+		padding: 0.6rem 0.75rem;
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 0.5rem;
+		background: rgba(6, 10, 18, 0.8);
+		color: var(--text);
+		font-size: 0.92rem;
 	}
 
 	pre {

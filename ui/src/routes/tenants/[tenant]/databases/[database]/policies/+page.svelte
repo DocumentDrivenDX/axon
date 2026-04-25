@@ -1,4 +1,5 @@
 <script lang="ts">
+import { base } from '$app/paths';
 import {
 	type CollectionDetail,
 	type CollectionSummary,
@@ -40,6 +41,11 @@ type WorkspaceDiagnostic = {
 	remediation: string;
 };
 
+type GraphqlConsolePreset = {
+	href: string;
+	preset: string;
+};
+
 const operationOptions: Array<{ value: EvaluationOperation; label: string }> = [
 	{ value: 'read', label: 'Read' },
 	{ value: 'create', label: 'Create' },
@@ -54,6 +60,9 @@ const operationOptions: Array<{ value: EvaluationOperation; label: string }> = [
 const { data }: { data: PageData } = $props();
 const scope = $derived(data.scope);
 const scopeLabel = $derived(`${data.tenant.db_name} / ${data.database.name}`);
+const graphqlConsoleBaseHref = $derived(
+	`${base}/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}/graphql`,
+);
 
 let collections = $state<CollectionSummary[]>([]);
 let subjects = $state<SubjectOption[]>([]);
@@ -120,6 +129,81 @@ const graphqlDiagnostics = $derived(buildGraphqlDiagnostics(explanationDiagnosti
 const evaluatorDiagnostics = $derived(
 	dedupeDiagnostics([...schemaDiagnostics, ...graphqlDiagnostics]),
 );
+const explainConsolePreview = $derived(tryBuildExplainInput(selectedEntity));
+const effectiveConsolePreset = $derived(buildEffectiveConsolePreset(selectedEntity));
+const explainConsolePreset = $derived(buildExplainConsolePreset(explainConsolePreview.input));
+
+const EFFECTIVE_POLICY_CONSOLE_QUERY = `query PolicyWorkspaceEffectivePolicy($collection: String!, $entityId: ID) {
+	effectivePolicy(collection: $collection, entityId: $entityId) {
+		collection
+		canRead
+		canCreate
+		canUpdate
+		canDelete
+		redactedFields
+		deniedFields
+		policyVersion
+	}
+}`;
+
+const EXPLAIN_POLICY_CONSOLE_QUERY = `query PolicyWorkspaceExplainPolicy($input: ExplainPolicyInput!) {
+	explainPolicy(input: $input) {
+		operation
+		collection
+		entityId
+		operationIndex
+		decision
+		reason
+		policyVersion
+		ruleIds
+		policyIds
+		fieldPaths
+		deniedFields
+		rules {
+			ruleId
+			name
+			kind
+			fieldPath
+		}
+		approval {
+			policyId
+			name
+			decision
+			role
+			reasonRequired
+			deadlineSeconds
+			separationOfDuties
+		}
+		operations {
+			operation
+			collection
+			entityId
+			operationIndex
+			decision
+			reason
+			policyVersion
+			ruleIds
+			policyIds
+			fieldPaths
+			deniedFields
+			rules {
+				ruleId
+				name
+				kind
+				fieldPath
+			}
+			approval {
+				policyId
+				name
+				decision
+				role
+				reasonRequired
+				deadlineSeconds
+				separationOfDuties
+			}
+		}
+	}
+}`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -207,6 +291,51 @@ function parseJsonFixture(text: string, label: string): unknown {
 	} catch {
 		throw new Error(`${label} must be valid JSON`);
 	}
+}
+
+function buildGraphqlConsolePreset(
+	preset: string,
+	query: string,
+	variables: Record<string, unknown>,
+): GraphqlConsolePreset {
+	const params = new URLSearchParams();
+	params.set('preset', preset);
+	params.set('query', query);
+	params.set('variables', JSON.stringify(variables, null, 2));
+	if (selectedSubject) {
+		params.set('actor', selectedSubject);
+	}
+	return {
+		preset,
+		href: `${graphqlConsoleBaseHref}?${params.toString()}`,
+	};
+}
+
+function buildEffectiveConsolePreset(entity: EntityRecord | null): GraphqlConsolePreset | null {
+	if (!selectedCollection) return null;
+	return buildGraphqlConsolePreset('effectivePolicy', EFFECTIVE_POLICY_CONSOLE_QUERY, {
+		collection: selectedCollection,
+		entityId: entity?.id ?? null,
+	});
+}
+
+function tryBuildExplainInput(entity: EntityRecord | null): {
+	input: ExplainPolicyInput | null;
+	error: string | null;
+} {
+	try {
+		return { input: buildExplainInput(entity), error: null };
+	} catch (error) {
+		return {
+			input: null,
+			error: errorMessage(error, 'Failed to build policy evaluation'),
+		};
+	}
+}
+
+function buildExplainConsolePreset(input: ExplainPolicyInput | null): GraphqlConsolePreset | null {
+	if (!input) return null;
+	return buildGraphqlConsolePreset('explainPolicy', EXPLAIN_POLICY_CONSOLE_QUERY, { input });
 }
 
 function defaultPatchFixture(entity: EntityRecord | null): Record<string, unknown> {
@@ -690,6 +819,24 @@ onMount(() => {
 		<div class="panel-header">
 			<h2>Evaluator</h2>
 			<div class="actions">
+				{#if effectiveConsolePreset}
+					<a
+						class="console-link"
+						data-testid="policy-open-effective-graphql"
+						href={effectiveConsolePreset.href}
+					>
+						Open effectivePolicy in GraphQL
+					</a>
+				{/if}
+				{#if explainConsolePreset}
+					<a
+						class="console-link"
+						data-testid="policy-open-explain-graphql"
+						href={explainConsolePreset.href}
+					>
+						Open explainPolicy in GraphQL
+					</a>
+				{/if}
 				<button type="button" data-testid="policy-reset-fixture" onclick={resetFixtureFromSampleRow}>
 					Reset from sample row
 				</button>
@@ -704,6 +851,11 @@ onMount(() => {
 			</div>
 		</div>
 		<div class="panel-body stack">
+			{#if !explainConsolePreset && explainConsolePreview.error}
+				<p class="muted" data-testid="policy-graphql-link-hint">
+					{explainConsolePreview.error}
+				</p>
+			{/if}
 			<div class="controls-grid">
 				<label class="control">
 					<span>Operation</span>
@@ -1022,6 +1174,18 @@ onMount(() => {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.75rem;
+	}
+
+	.console-link {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.55rem 0.8rem;
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 0.5rem;
+		background: rgba(255, 255, 255, 0.03);
+		color: var(--text);
+		text-decoration: none;
+		font-size: 0.9rem;
 	}
 
 	.fixture-grid {
