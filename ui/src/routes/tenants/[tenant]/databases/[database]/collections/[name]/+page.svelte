@@ -6,6 +6,7 @@ import {
 	type CollectionDetail,
 	type CollectionView,
 	type CommitMutationIntentOutcome,
+	type EffectiveCollectionPolicy,
 	type EntityRecord,
 	// biome-ignore lint/correctness/noUnusedImports: Used in template type cast.
 	type FieldDiff,
@@ -24,6 +25,7 @@ import {
 	deleteLink,
 	fetchCollection,
 	fetchCollectionTemplate,
+	fetchEffectivePolicy,
 	fetchEntities,
 	fetchEntity,
 	fetchEntityAudit,
@@ -43,6 +45,7 @@ import JsonTree from '$lib/components/JsonTree.svelte';
 import MutationIntentPreviewModal from '$lib/components/MutationIntentPreviewModal.svelte';
 // biome-ignore lint/correctness/noUnusedImports: Used in template for casting entity data.
 import type { JsonValue } from '$lib/components/json-tree-types';
+import { redactValue } from '$lib/redaction';
 import { validateEntityData } from '$lib/schema-validation';
 import { onMount } from 'svelte';
 import type { PageData } from './$types';
@@ -61,6 +64,13 @@ const selectedSchemaHref = $derived(
 let collection = $state<CollectionDetail | null>(null);
 let entities = $state<EntityRecord[]>([]);
 let selectedEntity = $state<EntityRecord | null>(null);
+let effectivePolicy = $state<EffectiveCollectionPolicy | null>(null);
+// True when the most recent effectivePolicy fetch threw. Renderers that
+// expose raw entity state (rollback preview) refuse to display when this
+// is set so a transient policy outage cannot leak redacted-by-policy
+// fields.
+let effectivePolicyFetchFailed = $state(false);
+const redactedFields = $derived(effectivePolicy?.redactedFields ?? []);
 let loading = $state(true);
 let error = $state<string | null>(null);
 let nextCursor = $state<string | null>(null);
@@ -308,9 +318,17 @@ async function doApplyRollback() {
 			selectedEntity.version,
 			scope,
 		);
-		selectedEntity = result.entity;
+		// Re-read via the policy-enforced GET so the rendered detail view
+		// shows the post-rollback state with field-read redaction applied;
+		// the rollback mutation response carries raw values. Best-effort:
+		// if the rollback made the row invisible to this actor, drop it.
+		const readBack = await readBackOrDisappear(result.entity.id);
+		selectedEntity = readBack;
 		const idx = entities.findIndex((e) => e.id === result.entity.id);
-		if (idx >= 0) entities[idx] = result.entity;
+		if (idx >= 0) {
+			if (readBack) entities[idx] = readBack;
+			else entities = entities.filter((_, i) => i !== idx);
+		}
 		rollbackApplyMessage = `Rolled back to v${rollbackPreviewVersion}. Now at v${result.entity.version}.`;
 		rollbackPreview = null;
 		rollbackPreviewVersion = null;
@@ -384,9 +402,15 @@ async function doTransition(lifecycleName: string, targetState: string) {
 			},
 			scope,
 		);
-		selectedEntity = response.entity;
+		// Re-read so policy-redacted fields are masked; the lifecycle
+		// transition response carries raw entity state. Best-effort.
+		const readBack = await readBackOrDisappear(response.entity.id);
+		selectedEntity = readBack;
 		const idx = entities.findIndex((e) => e.id === response.entity.id);
-		if (idx >= 0) entities[idx] = response.entity;
+		if (idx >= 0) {
+			if (readBack) entities[idx] = readBack;
+			else entities = entities.filter((_, i) => i !== idx);
+		}
 	} catch (e: unknown) {
 		lifecycleError = e instanceof Error ? e.message : 'Transition failed';
 	} finally {
@@ -476,16 +500,30 @@ $effect(() => {
 
 async function loadCollection(targetCollection: string, afterId: string | null) {
 	loading = true;
+	// Drop any open force-mask surfaces (rollback preview) before
+	// invalidating the redactedFields list so a slow policy fetch never
+	// leaves a preview rendered with `redactedFields === []`.
+	rollbackPreview = null;
+	rollbackPreviewVersion = null;
+	rollbackPreviewError = null;
+	rollbackApplyError = null;
+	rollbackApplyMessage = null;
+	// Reset the effective-policy state up front so a stale redactedFields
+	// list from the previously-selected collection cannot mask leaves on
+	// the new one (or, worse, fail to mask leaves that should be hidden).
+	effectivePolicy = null;
+	effectivePolicyFetchFailed = false;
 	try {
-		collection = await fetchCollection(targetCollection, scope);
-		const result = await fetchEntities(
-			targetCollection,
-			{
-				limit: 50,
-				afterId,
-			},
-			scope,
-		);
+		const [collectionDetail, result, policyOutcome] = await Promise.all([
+			fetchCollection(targetCollection, scope),
+			fetchEntities(targetCollection, { limit: 50, afterId }, scope),
+			fetchEffectivePolicyOutcome(targetCollection),
+		]);
+		// Assign the policy first so any subsequent rendering of entity
+		// data sees the redactedFields list.
+		effectivePolicy = policyOutcome.policy;
+		effectivePolicyFetchFailed = policyOutcome.failed;
+		collection = collectionDetail;
 		entities = result.entities;
 		nextCursor = result.next_cursor;
 		selectedEntity = entities[0]
@@ -501,6 +539,63 @@ async function loadCollection(targetCollection: string, afterId: string | null) 
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load collection';
 	} finally {
 		loading = false;
+	}
+}
+
+async function fetchEffectivePolicyOutcome(
+	targetCollection: string,
+): Promise<{ policy: EffectiveCollectionPolicy | null; failed: boolean }> {
+	// Server already enforces row/field visibility on read paths, so a
+	// failed lookup loses only the explicit `[redacted]` marker on those
+	// surfaces. For non-read surfaces (rollback preview), the `failed`
+	// flag below is checked to refuse rendering.
+	//
+	// NotFound is treated as "no policy" (and therefore no redaction):
+	// a schemaless collection legitimately has no access_control to
+	// enforce, so the rollback preview should still render. Reserve
+	// `failed: true` for genuine outages (network, auth, server error).
+	try {
+		return { policy: await fetchEffectivePolicy(targetCollection, scope), failed: false };
+	} catch (err) {
+		const message = err instanceof Error ? err.message.toLowerCase() : '';
+		const isMissingPolicy =
+			message.includes('not found') ||
+			message.includes('404') ||
+			message.includes('no schema') ||
+			message.includes('no access_control');
+		return { policy: null, failed: !isMissingPolicy };
+	}
+}
+
+function safeRedact<T>(value: T): T {
+	return redactValue(value, redactedFields);
+}
+
+/**
+ * Force-mask redaction for surfaces whose payloads have NOT passed
+ * through the read-policy enforcement layer (rollback previews, mutation
+ * results). Those endpoints can return raw values the caller is not
+ * allowed to see; mask everything at a redacted path regardless of
+ * whether it is null.
+ */
+function safeRedactForced<T>(value: T): T {
+	return redactValue(value, redactedFields, 'force-mask');
+}
+
+/**
+ * Best-effort reread after a successful mutation. The mutation has
+ * already committed; if the post-write GET fails (e.g. the new state
+ * makes the row policy-invisible to the current actor), do not roll the
+ * UI back into an error state — drop the entity from the list and clear
+ * `selectedEntity`. Returns the read-back entity or null if it
+ * disappeared.
+ */
+async function readBackOrDisappear(id: string): Promise<EntityRecord | null> {
+	if (!collectionName) return null;
+	try {
+		return await fetchEntity(collectionName, id, scope);
+	} catch {
+		return null;
 	}
 }
 
@@ -577,13 +672,20 @@ async function saveEntity() {
 			selectedEntity.version,
 			scope,
 		);
-		selectedEntity = updated;
+		// Re-read via the policy-enforced GET so redacted fields are
+		// masked; the update mutation response returns the value the
+		// writer just sent. Best-effort: if the post-update state is
+		// policy-invisible to this actor, drop it from the list rather
+		// than reporting the (already-committed) save as failed.
+		const readBack = await readBackOrDisappear(updated.id);
+		selectedEntity = readBack;
 		editMode = false;
 		editData = null;
 		saveMessage = `Saved v${updated.version}.`;
 		const idx = entities.findIndex((e) => e.id === updated.id);
 		if (idx >= 0) {
-			entities[idx] = updated;
+			if (readBack) entities[idx] = readBack;
+			else entities = entities.filter((_, i) => i !== idx);
 		}
 	} catch (errorValue: unknown) {
 		saveError = errorValue instanceof Error ? errorValue.message : 'Failed to save entity';
@@ -696,13 +798,19 @@ async function submitCreateEntity() {
 		paginationHistory = [null];
 		pageIndex = 0;
 		await loadCollection(collectionName, null);
+		// Re-read the new entity via the policy-enforced GET so the
+		// detail panel renders with redaction applied; the create
+		// response carries raw values the writer just sent. Best-effort:
+		// if the new row is invisible to this actor, leave the list as
+		// loadCollection produced it.
+		const readBack = await readBackOrDisappear(entity.id);
 		const existingIndex = entities.findIndex((e) => e.id === entity.id);
-		if (existingIndex >= 0) {
-			entities[existingIndex] = entity;
-		} else {
-			entities = [entity, ...entities];
+		if (existingIndex >= 0 && readBack) {
+			entities[existingIndex] = readBack;
+		} else if (readBack) {
+			entities = [readBack, ...entities];
 		}
-		selectedEntity = entity;
+		selectedEntity = readBack;
 		createMessage = `Created ${entity.id}.`;
 	} catch (errorValue: unknown) {
 		createErrors = [errorValue instanceof Error ? errorValue.message : 'Failed to create entity'];
@@ -876,7 +984,7 @@ afterNavigate(() => {
 							>
 								<td>{entity.id}</td>
 								<td>{entity.version}</td>
-								<td><code>{JSON.stringify(entity.data).slice(0, 80)}</code></td>
+								<td><code>{JSON.stringify(safeRedact(entity.data)).slice(0, 80)}</code></td>
 							</tr>
 						{/each}
 					</tbody>
@@ -1041,7 +1149,7 @@ afterNavigate(() => {
 								onupdate={handleTreeUpdate}
 							/>
 						{:else}
-							<JsonTree data={selectedEntity.data as unknown as JsonValue} />
+							<JsonTree data={safeRedact(selectedEntity.data) as unknown as JsonValue} />
 						{/if}
 					</div>
 				{:else if activeTab === 'audit'}
@@ -1084,13 +1192,13 @@ afterNavigate(() => {
 										{#if entry.data_after}
 											<details>
 												<summary>After</summary>
-												<pre>{JSON.stringify(entry.data_after, null, 2)}</pre>
+												<pre>{JSON.stringify(safeRedact(entry.data_after), null, 2)}</pre>
 											</details>
 										{/if}
 										{#if entry.data_before}
 											<details>
 												<summary>Before</summary>
-												<pre>{JSON.stringify(entry.data_before, null, 2)}</pre>
+												<pre>{JSON.stringify(safeRedact(entry.data_before), null, 2)}</pre>
 											</details>
 										{/if}
 									</li>
@@ -1270,7 +1378,7 @@ afterNavigate(() => {
 											</td>
 											<td>
 												<code style="font-size:0.75rem">
-													{JSON.stringify(entry.data_after).slice(0, 60)}
+													{JSON.stringify(safeRedact(entry.data_after)).slice(0, 60)}
 												</code>
 											</td>
 											<td>
@@ -1309,7 +1417,18 @@ afterNavigate(() => {
 									</button>
 								</div>
 								<h4 style="font-size:0.82rem;margin:0.5rem 0 0.25rem">Target data</h4>
-								<pre style="font-size:0.78rem">{JSON.stringify(rollbackPreview.target.data, null, 2)}</pre>
+								{#if effectivePolicyFetchFailed}
+									<p
+										class="message error"
+										data-testid="rollback-target-data-unavailable"
+									>
+										Effective policy lookup failed; refusing to render rollback target
+										data to avoid leaking redacted fields. Reload the page to retry.
+									</p>
+								{:else}
+									<pre
+										style="font-size:0.78rem">{JSON.stringify(safeRedactForced(rollbackPreview.target.data), null, 2)}</pre>
+								{/if}
 								{#if Object.keys(rollbackPreview.diff).length > 0}
 									<h4 style="font-size:0.82rem;margin:0.5rem 0 0.25rem">Field changes</h4>
 									<table data-testid="entity-rollback-diff-table">

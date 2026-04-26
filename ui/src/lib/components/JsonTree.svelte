@@ -1,4 +1,6 @@
 <script lang="ts">
+// biome-ignore lint/correctness/noUnusedImports: Used in template branch for redacted leaves.
+import { isRedactedPlaceholder } from '../redaction';
 // biome-ignore lint/correctness/noUnusedImports: Used in template as recursive self-reference.
 import JsonTree from './JsonTree.svelte';
 import type { JsonValue } from './json-tree-types';
@@ -141,6 +143,11 @@ function entries(value: JsonValue): Array<[string, JsonValue]> {
 							}
 						}}
 					/>
+				{:else if isRedactedPlaceholder(child)}
+					<span
+						class="leaf-value is-redacted"
+						data-testid="redacted-field"
+					>{formatLeaf(child)}</span>
 				{:else}
 					<span class="leaf-value" class:is-string={typeof child === 'string'}
 						class:is-number={typeof child === 'number'}
@@ -164,6 +171,8 @@ function entries(value: JsonValue): Array<[string, JsonValue]> {
 				value={formatLeaf(data)}
 				oninput={handleLeafInput}
 			/>
+		{:else if isRedactedPlaceholder(data)}
+			<span class="leaf-value is-redacted" data-testid="redacted-field">{formatLeaf(data)}</span>
 		{:else}
 			<span class="leaf-value"
 				class:is-string={typeof data === 'string'}
@@ -262,6 +271,12 @@ function entries(value: JsonValue): Array<[string, JsonValue]> {
 	.is-null {
 		color: var(--muted);
 		font-style: italic;
+	}
+
+	.is-redacted {
+		color: var(--accent, #fbbf24);
+		font-weight: 600;
+		letter-spacing: 0.02em;
 	}
 
 	.leaf-input {

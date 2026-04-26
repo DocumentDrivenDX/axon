@@ -1,9 +1,58 @@
 <script lang="ts">
-import { type AuditEntry, fetchAudit, revertAuditEntry, rollbackTransaction } from '$lib/api';
+import {
+	type AuditEntry,
+	type EffectiveCollectionPolicy,
+	fetchAudit,
+	fetchEffectivePolicy,
+	revertAuditEntry,
+	rollbackTransaction,
+} from '$lib/api';
+import { redactValue } from '$lib/redaction';
 import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();
 const scope = $derived(data.scope);
+// Cache is keyed by `${tenant}/${database}/${collection}` so navigating
+// between tenants or databases never reuses another scope's redaction
+// list. `$state` so reactive renderers see new entries as they arrive.
+const policyByScopedCollection = $state<Record<string, EffectiveCollectionPolicy>>({});
+
+function policyCacheKey(collection: string): string {
+	return `${scope.tenant}/${scope.database}/${collection}`;
+}
+
+async function ensureEffectivePolicy(collection: string) {
+	if (!scope) return;
+	const key = policyCacheKey(collection);
+	if (policyByScopedCollection[key] !== undefined) return;
+	try {
+		policyByScopedCollection[key] = await fetchEffectivePolicy(collection, scope);
+	} catch {
+		// Treat missing policy or fetch failure as "no redaction"; do not
+		// block audit rendering on policy lookup. The server has already
+		// enforced visibility at fetch time, so the worst case is that we
+		// lose the explicit `[redacted]` marker.
+		policyByScopedCollection[key] = {
+			collection,
+			canRead: true,
+			canCreate: false,
+			canUpdate: false,
+			canDelete: false,
+			redactedFields: [],
+			deniedFields: [],
+			policyVersion: 0,
+		};
+	}
+}
+
+function redactedFieldsFor(collection: string): readonly string[] {
+	return policyByScopedCollection[policyCacheKey(collection)]?.redactedFields ?? [];
+}
+
+function safeJson(payload: unknown, collection: string): string {
+	const redacted = redactValue(payload, redactedFieldsFor(collection));
+	return JSON.stringify(redacted, null, 2) || 'null';
+}
 
 type AuditFilters = {
 	collection: string;
@@ -46,6 +95,9 @@ function selectEntry(entry: AuditEntry) {
 	txRollbackConfirming = false;
 	txRollbackMessage = null;
 	txRollbackError = null;
+	if (entry.collection) {
+		void ensureEffectivePolicy(entry.collection);
+	}
 }
 
 async function doTxRollback() {
@@ -118,6 +170,13 @@ async function loadEntries() {
 		const response = await fetchAudit(auditFilters, scope);
 		entries = response.entries;
 		selectedEntry = entries[0] ?? null;
+		// Mirror selectEntry()'s policy lookup so the auto-selected first
+		// row's before/after payloads render with the correct redaction
+		// list — otherwise the panel shows raw values until the user
+		// manually clicks the row.
+		if (selectedEntry?.collection) {
+			void ensureEffectivePolicy(selectedEntry.collection);
+		}
 		error = null;
 	} catch (errorValue: unknown) {
 		error = errorValue instanceof Error ? errorValue.message : 'Failed to load audit entries';
@@ -282,11 +341,11 @@ $effect(() => {
 				{/if}
 				<div>
 					<h3>Before</h3>
-					<pre>{JSON.stringify(selectedEntry.data_before, null, 2) || 'null'}</pre>
+					<pre>{safeJson(selectedEntry.data_before, selectedEntry.collection)}</pre>
 				</div>
 				<div>
 					<h3>After</h3>
-					<pre>{JSON.stringify(selectedEntry.data_after, null, 2) || 'null'}</pre>
+					<pre>{safeJson(selectedEntry.data_after, selectedEntry.collection)}</pre>
 				</div>
 			{:else}
 				<p class="muted">Select an entry to inspect its before/after payloads.</p>
