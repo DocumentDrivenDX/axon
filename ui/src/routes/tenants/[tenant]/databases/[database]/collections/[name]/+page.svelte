@@ -76,6 +76,11 @@ const redactedFields = $derived(effectivePolicy?.redactedFields ?? []);
 let loading = $state(true);
 let error = $state<string | null>(null);
 let nextCursor = $state<string | null>(null);
+// Policy-filtered visible count from the GraphQL connection. The collection
+// metadata's `entity_count` is the raw, unfiltered storage count and would
+// leak the existence of hidden rows to a caller who cannot see them; this
+// is what the Entities pill and pagination context display.
+let totalCount = $state<number | null>(null);
 let paginationHistory = $state<Array<string | null>>([null]);
 let pageIndex = $state(0);
 
@@ -524,6 +529,9 @@ async function loadCollection(targetCollection: string, afterId: string | null) 
 	// the new one (or, worse, fail to mask leaves that should be hidden).
 	effectivePolicy = null;
 	effectivePolicyFetchFailed = false;
+	// Drop the stale total so the header doesn't briefly show another
+	// collection's count while the new fetch resolves.
+	totalCount = null;
 	try {
 		const [collectionDetail, result, policyOutcome] = await Promise.all([
 			fetchCollection(targetCollection, scope),
@@ -537,6 +545,7 @@ async function loadCollection(targetCollection: string, afterId: string | null) 
 		collection = collectionDetail;
 		entities = result.entities;
 		nextCursor = result.next_cursor;
+		totalCount = result.total_count;
 		selectedEntity = entities[0]
 			? await fetchEntity(targetCollection, entities[0].id, scope)
 			: null;
@@ -881,11 +890,16 @@ afterNavigate(() => {
 	<div>
 		<h1>{collectionName}</h1>
 		<p class="muted">
-			{collection?.entity_count ?? entities.length} entities
+			<span data-testid="entity-list-total-count">
+				{totalCount ?? entities.length}
+			</span> visible
 			{#if collection?.schema}
 				· schema v{collection.schema.version}
 			{:else}
 				· no schema
+			{/if}
+			{#if effectivePolicy}
+				· policy v<span data-testid="entity-list-policy-version">{effectivePolicy.policyVersion}</span>
 			{/if}
 		</p>
 	</div>
@@ -1064,7 +1078,7 @@ afterNavigate(() => {
 		<div class="panel-body stack">
 			{#if collection}
 				<p class="muted">
-					{collection.entity_count} entities · {collection.schema
+					{totalCount ?? entities.length} visible · {collection.schema
 						? `schema v${collection.schema.version}`
 						: 'no schema'}
 				</p>

@@ -142,4 +142,42 @@ test.describe('Policy enforcement (UI redaction)', () => {
 			page.locator('tbody tr', { hasText: fixture.invoices.large.id }).first(),
 		).toBeVisible();
 	});
+
+	test('contractor list surfaces policy-filtered totalCount and policy version', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-3fdfeb33: the Entities pill must show the
+		// GraphQL-filtered visible count, not the raw collection
+		// entity_count (which would leak the existence of hidden rows).
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-totalcount');
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+		await page.goto(collectionUrl);
+
+		// The displayed total must match the number of rendered rows, and
+		// must be a finite non-negative integer.
+		const totalText = await page.getByTestId('entity-list-total-count').first().innerText();
+		const total = Number.parseInt(totalText.trim(), 10);
+		expect(Number.isFinite(total)).toBe(true);
+		expect(total).toBeGreaterThanOrEqual(0);
+
+		const renderedRows = await page.locator('tbody tr').count();
+		expect(total).toBe(renderedRows);
+
+		// The fixture creates two invoices, both assigned to the contractor.
+		// Contractor's policy-filtered total is 2.
+		expect(total).toBe(2);
+
+		// Policy version must be surfaced for context. Schema is registered
+		// on the invoices collection, so a positive version is expected.
+		const policyVersionText = await page
+			.getByTestId('entity-list-policy-version')
+			.first()
+			.innerText();
+		const policyVersion = Number.parseInt(policyVersionText.trim(), 10);
+		expect(Number.isFinite(policyVersion)).toBe(true);
+		expect(policyVersion).toBeGreaterThanOrEqual(0);
+	});
 });
