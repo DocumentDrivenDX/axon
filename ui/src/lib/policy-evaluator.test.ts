@@ -19,6 +19,7 @@ import {
 	buildGraphqlConsolePreset,
 	buildGraphqlDiagnostics,
 	buildImpactMatrixInputs,
+	buildMcpEnvelopePreview,
 	buildSchemaDiagnostics,
 	dedupeDiagnostics,
 	defaultCollectionName,
@@ -27,6 +28,9 @@ import {
 	errorMessage,
 	formatDiagnosticError,
 	formatFields,
+	formatMcpReproduction,
+	mcpOutcomeFromExplanation,
+	mcpToolNameForOperation,
 	operationRequiresEntity,
 	operationRequiresExpectedVersion,
 	parseJsonFixture,
@@ -817,5 +821,195 @@ describe('resolveImpactCell', () => {
 			presetCtxForSubject: null,
 		});
 		expect(cell.explainHref).toBeNull();
+	});
+});
+
+describe('mcpToolNameForOperation', () => {
+	test('maps each evaluator operation to a stable MCP tool suffix', () => {
+		expect(mcpToolNameForOperation('invoices', 'read')).toBe('invoices.get');
+		expect(mcpToolNameForOperation('invoices', 'create')).toBe('invoices.create');
+		expect(mcpToolNameForOperation('invoices', 'update')).toBe('invoices.patch');
+		expect(mcpToolNameForOperation('invoices', 'patch')).toBe('invoices.patch');
+		expect(mcpToolNameForOperation('invoices', 'delete')).toBe('invoices.delete');
+		expect(mcpToolNameForOperation('invoices', 'transition')).toBe('invoices.patch');
+		expect(mcpToolNameForOperation('invoices', 'rollback')).toBe('invoices.patch');
+		expect(mcpToolNameForOperation('invoices', 'transaction')).toBe('invoices.transaction');
+	});
+	test('returns axon prefix when collection is empty', () => {
+		expect(mcpToolNameForOperation('', 'read')).toBe('axon.get');
+	});
+});
+
+describe('mcpOutcomeFromExplanation', () => {
+	const explanation = (overrides: Partial<PolicyExplanation> = {}): PolicyExplanation => ({
+		operation: 'patch',
+		decision: 'allowed',
+		reason: 'allowed',
+		policyVersion: 1,
+		ruleIds: [],
+		policyIds: [],
+		fieldPaths: [],
+		deniedFields: [],
+		rules: [],
+		approval: null,
+		operations: [],
+		...overrides,
+	});
+
+	test('maps server decision strings to MCP outcomes', () => {
+		expect(mcpOutcomeFromExplanation(explanation({ decision: 'allowed' })).outcome).toBe('allowed');
+		expect(mcpOutcomeFromExplanation(explanation({ decision: 'allow' })).outcome).toBe('allowed');
+		expect(mcpOutcomeFromExplanation(explanation({ decision: 'needs_approval' })).outcome).toBe(
+			'needs_approval',
+		);
+		expect(mcpOutcomeFromExplanation(explanation({ decision: 'deny' })).outcome).toBe('denied');
+		expect(mcpOutcomeFromExplanation(explanation({ decision: 'denied' })).outcome).toBe('denied');
+	});
+
+	test('returns conflict outcome when reason code matches a stale-binding code', () => {
+		const result = mcpOutcomeFromExplanation(
+			explanation({ decision: 'denied', reason: 'intent_pre_image_stale' }),
+		);
+		expect(result.outcome).toBe('conflict');
+		expect(result.conflict?.dimension).toBe('intent_pre_image_stale');
+		expect(result.conflict?.detail).toBe('intent_pre_image_stale');
+	});
+
+	test('returns denied outcome with no conflict when explanation is null', () => {
+		expect(mcpOutcomeFromExplanation(null)).toEqual({ outcome: 'denied', conflict: null });
+	});
+});
+
+describe('buildMcpEnvelopePreview', () => {
+	const explanation = (overrides: Partial<PolicyExplanation> = {}): PolicyExplanation => ({
+		operation: 'patch',
+		decision: 'allowed',
+		reason: 'allowed',
+		policyVersion: 7,
+		ruleIds: ['rule-1'],
+		policyIds: ['policy-1'],
+		fieldPaths: [],
+		deniedFields: [],
+		rules: [],
+		approval: null,
+		operations: [],
+		...overrides,
+	});
+
+	const effective = (
+		overrides: Partial<EffectiveCollectionPolicy> = {},
+	): EffectiveCollectionPolicy => ({
+		collection: 'invoices',
+		canRead: true,
+		canCreate: true,
+		canUpdate: true,
+		canDelete: true,
+		redactedFields: ['amount_cents', 'commercial_terms'],
+		deniedFields: [],
+		policyVersion: 7,
+		...overrides,
+	});
+
+	test('returns null when subject or collection is missing', () => {
+		expect(
+			buildMcpEnvelopePreview({
+				subject: '',
+				collection: 'invoices',
+				operation: 'read',
+				explanation: explanation(),
+				effective: effective(),
+				explainInput: { operation: 'read', collection: 'invoices' },
+			}),
+		).toBeNull();
+		expect(
+			buildMcpEnvelopePreview({
+				subject: 'finance-agent',
+				collection: '',
+				operation: 'read',
+				explanation: explanation(),
+				effective: effective(),
+				explainInput: { operation: 'read' },
+			}),
+		).toBeNull();
+	});
+
+	test('builds an allowed envelope with the policy version drawn from the explanation', () => {
+		const preview = buildMcpEnvelopePreview({
+			subject: 'finance-agent',
+			collection: 'invoices',
+			operation: 'patch',
+			explanation: explanation(),
+			effective: effective(),
+			explainInput: {
+				operation: 'patch',
+				collection: 'invoices',
+				entityId: 'inv-1',
+				patch: { amount_cents: 1500 },
+			},
+		});
+		expect(preview).not.toBeNull();
+		expect(preview?.tool).toBe('invoices.patch');
+		expect(preview?.outcome).toBe('allowed');
+		expect(preview?.policyVersion).toBe(7);
+		expect(preview?.reasonCode).toBe('allowed');
+		expect(preview?.subject).toBe('finance-agent');
+		expect(preview?.reproduction.outcome).toBe('allowed');
+		expect(preview?.reproduction.tool).toBe('invoices.patch');
+		expect(preview?.reproduction.arguments.entityId).toBe('inv-1');
+	});
+
+	test('redacts redacted fields in the reproduction patch payload', () => {
+		const preview = buildMcpEnvelopePreview({
+			subject: 'contractor',
+			collection: 'invoices',
+			operation: 'patch',
+			explanation: explanation({ decision: 'denied', reason: 'forbidden_field_write' }),
+			effective: effective(),
+			explainInput: {
+				operation: 'patch',
+				collection: 'invoices',
+				entityId: 'inv-1',
+				patch: { amount_cents: 50_000, status: 'submitted' },
+			},
+		});
+		expect(preview?.outcome).toBe('denied');
+		expect((preview?.reproduction.arguments.patch as Record<string, unknown>).amount_cents).toBe(
+			'[redacted]',
+		);
+		expect((preview?.reproduction.arguments.patch as Record<string, unknown>).status).toBe(
+			'submitted',
+		);
+	});
+
+	test('emits a conflict outcome when the explanation reason indicates a stale binding', () => {
+		const preview = buildMcpEnvelopePreview({
+			subject: 'finance-agent',
+			collection: 'invoices',
+			operation: 'patch',
+			explanation: explanation({
+				decision: 'denied',
+				reason: 'intent_grant_version_stale',
+			}),
+			effective: effective(),
+			explainInput: { operation: 'patch', collection: 'invoices', entityId: 'inv-1' },
+		});
+		expect(preview?.outcome).toBe('conflict');
+		expect(preview?.conflict?.dimension).toBe('intent_grant_version_stale');
+		expect(preview?.reproduction.outcome).toBe('conflict');
+	});
+
+	test('formatMcpReproduction emits stable JSON', () => {
+		const preview = buildMcpEnvelopePreview({
+			subject: 'finance-agent',
+			collection: 'invoices',
+			operation: 'read',
+			explanation: explanation({ decision: 'allowed', reason: 'allowed' }),
+			effective: effective(),
+			explainInput: { operation: 'read', collection: 'invoices', entityId: 'inv-1' },
+		});
+		const json = preview ? formatMcpReproduction(preview) : '';
+		expect(json).toContain('"tool": "invoices.get"');
+		expect(json).toContain('"subject": "finance-agent"');
+		expect(json).toContain('"outcome": "allowed"');
 	});
 });

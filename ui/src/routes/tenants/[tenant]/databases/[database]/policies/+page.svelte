@@ -25,6 +25,7 @@ import {
 	buildExplainConsolePreset,
 	buildGraphqlDiagnostics,
 	buildImpactMatrixInputs,
+	buildMcpEnvelopePreview,
 	buildSchemaDiagnostics,
 	dedupeDiagnostics,
 	defaultCollectionName,
@@ -34,6 +35,7 @@ import {
 	formatDiagnosticError,
 	// biome-ignore lint/correctness/noUnusedImports: used only in the template.
 	formatFields,
+	formatMcpReproduction,
 	operationRequiresEntity,
 	operationRequiresExpectedVersion,
 	prettyJson,
@@ -134,6 +136,20 @@ const evaluatorDiagnostics = $derived(
 	dedupeDiagnostics([...schemaDiagnostics, ...graphqlDiagnostics]),
 );
 const explainConsolePreview = $derived(tryBuildExplainInput(currentExplainArgs(selectedEntity)));
+const mcpEnvelopePreview = $derived(
+	buildMcpEnvelopePreview({
+		subject: selectedSubject,
+		collection: selectedCollection,
+		operation: selectedOperation,
+		explanation,
+		effective: effectivePolicy,
+		explainInput: explainConsolePreview.input,
+	}),
+);
+const mcpReproductionJson = $derived(
+	mcpEnvelopePreview ? formatMcpReproduction(mcpEnvelopePreview) : '',
+);
+let mcpCopyState = $state<'idle' | 'copied' | 'error'>('idle');
 const effectiveConsolePreset = $derived(
 	buildEffectiveConsolePreset(consolePresetContext, selectedCollection, selectedEntity),
 );
@@ -448,6 +464,19 @@ function handleOperationChange(event: Event) {
 function resetFixtureFromSampleRow() {
 	seedEditorFixtures(selectedEntity);
 	void runPolicyEvaluation(selectedEntity);
+}
+
+async function copyMcpReproduction() {
+	if (!mcpReproductionJson) return;
+	try {
+		await navigator.clipboard.writeText(mcpReproductionJson);
+		mcpCopyState = 'copied';
+	} catch {
+		mcpCopyState = 'error';
+	}
+	setTimeout(() => {
+		mcpCopyState = 'idle';
+	}, 1500);
 }
 
 onMount(() => {
@@ -841,6 +870,93 @@ onMount(() => {
 					</div>
 				{:else if !loadingExplanation && !explanationError}
 					<p class="muted">Choose an operation and run the evaluator.</p>
+				{/if}
+			</div>
+		</section>
+
+		<section class="panel" data-testid="mcp-envelope-panel">
+			<div class="panel-header">
+				<h2>MCP Envelope Preview</h2>
+			</div>
+			<div class="panel-body stack">
+				{#if mcpEnvelopePreview}
+					<p class="muted">
+						The envelope an MCP-capable agent would observe for this subject, collection, and
+						operation. Reason codes mirror the explainPolicy/GraphQL result above.
+					</p>
+					<div class="explanation-row">
+						<span class="label">Tool</span>
+						<strong data-testid="mcp-envelope-tool">{mcpEnvelopePreview.tool}</strong>
+					</div>
+					<div class="explanation-row">
+						<span class="label">Subject</span>
+						<strong data-testid="mcp-envelope-subject">{mcpEnvelopePreview.subject}</strong>
+					</div>
+					<div class="explanation-row">
+						<span class="label">Operation</span>
+						<strong data-testid="mcp-envelope-operation">{mcpEnvelopePreview.operation}</strong>
+					</div>
+					<div class="explanation-row">
+						<span class="label">Policy version</span>
+						<strong data-testid="mcp-envelope-policy-version">
+							{mcpEnvelopePreview.policyVersion !== null
+								? `v${mcpEnvelopePreview.policyVersion}`
+								: 'Unknown'}
+						</strong>
+					</div>
+					<div class="explanation-row">
+						<span class="label">Outcome</span>
+						<strong
+							class="impact-decision impact-decision-{mcpEnvelopePreview.outcome}"
+							data-testid="mcp-envelope-outcome"
+							data-outcome={mcpEnvelopePreview.outcome}
+						>
+							{mcpEnvelopePreview.outcome}
+						</strong>
+					</div>
+					<div class="explanation-row">
+						<span class="label">Reason code</span>
+						<strong data-testid="mcp-envelope-reason">{mcpEnvelopePreview.reasonCode}</strong>
+					</div>
+					{#if mcpEnvelopePreview.approval?.role}
+						<div class="explanation-row">
+							<span class="label">Required approver role</span>
+							<strong data-testid="mcp-envelope-approval-role">
+								{mcpEnvelopePreview.approval.role}
+							</strong>
+						</div>
+					{/if}
+					{#if mcpEnvelopePreview.conflict}
+						<div class="explanation-row">
+							<span class="label">Conflict dimension</span>
+							<strong data-testid="mcp-envelope-conflict-dimension">
+								{mcpEnvelopePreview.conflict.dimension}
+							</strong>
+						</div>
+					{/if}
+					<div class="explanation-row">
+						<span class="label">Reproduction (non-secret)</span>
+						<pre data-testid="mcp-envelope-reproduction">{mcpReproductionJson}</pre>
+					</div>
+					<div class="actions">
+						<button
+							type="button"
+							data-testid="mcp-envelope-copy"
+							onclick={() => void copyMcpReproduction()}
+						>
+							{#if mcpCopyState === 'copied'}
+								Copied
+							{:else if mcpCopyState === 'error'}
+								Copy failed
+							{:else}
+								Copy reproduction JSON
+							{/if}
+						</button>
+					</div>
+				{:else}
+					<p class="muted" data-testid="mcp-envelope-empty">
+						Run the evaluator to preview the MCP envelope for the selected scope.
+					</p>
 				{/if}
 			</div>
 		</section>
@@ -1264,6 +1380,10 @@ onMount(() => {
 
 	.impact-decision-error {
 		color: #cbd5f5;
+	}
+
+	.impact-decision-conflict {
+		color: #c084fc;
 	}
 
 	.impact-approval,

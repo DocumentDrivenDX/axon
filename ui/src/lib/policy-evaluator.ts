@@ -4,8 +4,10 @@ import type {
 	EffectiveCollectionPolicy,
 	EntityRecord,
 	ExplainPolicyInput,
+	PolicyApprovalSummary,
 	PolicyExplainDiagnostic,
 	PolicyExplainResult,
+	PolicyExplanation,
 } from './api';
 
 export type SubjectOption = {
@@ -582,4 +584,181 @@ export function resolveImpactCell({
 		diagnostic,
 		explainHref,
 	};
+}
+
+export type McpEnvelopeOutcome = 'allowed' | 'needs_approval' | 'denied' | 'conflict';
+
+export type McpEnvelopePreview = {
+	tool: string;
+	subject: string;
+	collection: string;
+	operation: EvaluationOperation;
+	policyVersion: number | null;
+	outcome: McpEnvelopeOutcome;
+	reasonCode: string;
+	ruleIds: string[];
+	policyIds: string[];
+	approval: PolicyApprovalSummary | null;
+	redactedFields: string[];
+	deniedFields: string[];
+	conflict: McpEnvelopeConflict | null;
+	reproduction: McpEnvelopeReproduction;
+};
+
+export type McpEnvelopeConflict = {
+	dimension: string;
+	detail: string;
+};
+
+export type McpEnvelopeReproduction = {
+	tool: string;
+	subject: string;
+	policy_version: number | null;
+	outcome: McpEnvelopeOutcome;
+	reason_code: string;
+	arguments: Record<string, unknown>;
+};
+
+const CONFLICT_REASON_CODES = new Set([
+	'intent_stale',
+	'intent_mismatch',
+	'intent_grant_version_stale',
+	'intent_schema_version_stale',
+	'intent_policy_version_stale',
+	'intent_pre_image_stale',
+	'expected_version_mismatch',
+	'version_conflict',
+	'stale',
+]);
+
+const POLICY_OPERATION_TOOL_SUFFIX: Record<EvaluationOperation, string> = {
+	read: 'get',
+	create: 'create',
+	update: 'patch',
+	patch: 'patch',
+	delete: 'delete',
+	transition: 'patch',
+	rollback: 'patch',
+	transaction: 'transaction',
+};
+
+export function mcpToolNameForOperation(
+	collection: string,
+	operation: EvaluationOperation,
+): string {
+	const suffix = POLICY_OPERATION_TOOL_SUFFIX[operation] ?? operation;
+	if (!collection) return `axon.${suffix}`;
+	return `${collection}.${suffix}`;
+}
+
+export function mcpOutcomeFromExplanation(explanation: PolicyExplanation | null): {
+	outcome: McpEnvelopeOutcome;
+	conflict: McpEnvelopeConflict | null;
+} {
+	if (!explanation) {
+		return { outcome: 'denied', conflict: null };
+	}
+	const decision = explanation.decision.trim().toLowerCase();
+	const reason = explanation.reason.trim().toLowerCase();
+	if (CONFLICT_REASON_CODES.has(reason)) {
+		return {
+			outcome: 'conflict',
+			conflict: { dimension: reason, detail: explanation.reason },
+		};
+	}
+	if (decision === 'needs_approval' || decision === 'needs-approval') {
+		return { outcome: 'needs_approval', conflict: null };
+	}
+	if (decision === 'deny' || decision === 'denied') {
+		return { outcome: 'denied', conflict: null };
+	}
+	return { outcome: 'allowed', conflict: null };
+}
+
+function sanitizeReproductionArguments(
+	input: ExplainPolicyInput,
+	redactedFields: string[],
+): Record<string, unknown> {
+	const args: Record<string, unknown> = {};
+	if (input.collection) args.collection = input.collection;
+	if (input.entityId) args.entityId = input.entityId;
+	if (typeof input.expectedVersion === 'number') args.expectedVersion = input.expectedVersion;
+	if (input.lifecycleName) args.lifecycleName = input.lifecycleName;
+	if (input.targetState) args.targetState = input.targetState;
+	if (typeof input.toVersion === 'number') args.toVersion = input.toVersion;
+	if (input.data !== undefined) args.data = redactPayload(input.data, redactedFields);
+	if (input.patch !== undefined) args.patch = redactPayload(input.patch, redactedFields);
+	if (input.operations) args.operations = input.operations;
+	return args;
+}
+
+function redactPayload(value: unknown, redactedFields: string[]): unknown {
+	if (!redactedFields.length) return value;
+	if (Array.isArray(value)) {
+		return value.map((item) => redactPayload(item, redactedFields));
+	}
+	if (value && typeof value === 'object') {
+		const fields = new Set(redactedFields);
+		return Object.fromEntries(
+			Object.entries(value as Record<string, unknown>).map(([key, current]) => [
+				key,
+				fields.has(key) ? '[redacted]' : current,
+			]),
+		);
+	}
+	return value;
+}
+
+export type BuildMcpEnvelopePreviewArgs = {
+	subject: string;
+	collection: string;
+	operation: EvaluationOperation;
+	explanation: PolicyExplanation | null;
+	effective: EffectiveCollectionPolicy | null;
+	explainInput: ExplainPolicyInput | null;
+};
+
+export function buildMcpEnvelopePreview(
+	args: BuildMcpEnvelopePreviewArgs,
+): McpEnvelopePreview | null {
+	const { subject, collection, operation, explanation, effective, explainInput } = args;
+	if (!collection || !subject) return null;
+	if (!explanation && !explainInput) return null;
+
+	const tool = mcpToolNameForOperation(collection, operation);
+	const { outcome, conflict } = mcpOutcomeFromExplanation(explanation);
+	const policyVersion = explanation?.policyVersion ?? effective?.policyVersion ?? null;
+	const reasonCode = explanation?.reason ?? (outcome === 'denied' ? 'unknown' : outcome);
+	const redactedFields = effective?.redactedFields ?? [];
+	const reproductionArgs = explainInput
+		? sanitizeReproductionArguments(explainInput, redactedFields)
+		: { collection };
+
+	return {
+		tool,
+		subject,
+		collection,
+		operation,
+		policyVersion,
+		outcome,
+		reasonCode,
+		ruleIds: explanation?.ruleIds ?? [],
+		policyIds: explanation?.policyIds ?? [],
+		approval: explanation?.approval ?? null,
+		redactedFields,
+		deniedFields: explanation?.deniedFields ?? [],
+		conflict,
+		reproduction: {
+			tool,
+			subject,
+			policy_version: policyVersion,
+			outcome,
+			reason_code: reasonCode,
+			arguments: reproductionArgs,
+		},
+	};
+}
+
+export function formatMcpReproduction(preview: McpEnvelopePreview): string {
+	return prettyJson(preview.reproduction);
 }
