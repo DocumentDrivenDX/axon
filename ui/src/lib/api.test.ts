@@ -1017,8 +1017,12 @@ test('traverseLinks() uses tenant-scoped GraphQL neighbors query', async () => {
 	mockFetch({
 		data: {
 			neighbors: {
+				totalCount: 1,
 				groups: [
 					{
+						linkType: 'owns',
+						direction: 'outbound',
+						totalCount: 1,
 						edges: [
 							{
 								node: {
@@ -1067,6 +1071,8 @@ test('traverseLinks() uses tenant-scoped GraphQL neighbors query', async () => {
 				link_type: 'owns',
 			},
 		],
+		group_summaries: [{ link_type: 'owns', direction: 'outbound', total_count: 1 }],
+		total_count: 1,
 	});
 });
 

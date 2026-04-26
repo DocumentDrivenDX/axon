@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import {
 	SCN017_COLLECTIONS,
 	SCN017_SUBJECTS,
+	createTestLink,
 	dbAuditUrl,
 	dbCollectionUrl,
 	routeGraphqlAs,
@@ -179,5 +180,71 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		const policyVersion = Number.parseInt(policyVersionText.trim(), 10);
 		expect(Number.isFinite(policyVersion)).toBe(true);
 		expect(policyVersion).toBeGreaterThanOrEqual(0);
+	});
+
+	test('contractor links tab surfaces backend-filtered totalCount and group totals', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-41f48f99: the Links tab must surface
+		// per-link-type and connection totals computed by the GraphQL
+		// neighbors resolver (which applies row-level read policy on
+		// targets), with no local filtering. Hidden targets must not appear
+		// in the rendered table OR in the per-group total chip.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-traverse');
+
+		// Seed two outbound links from the contractor-visible large invoice
+		// to its primary vendor and to the small invoice. Both targets are
+		// visible to the contractor (vendors collection has no row-level
+		// read policy; the small invoice is also assigned to the
+		// contractor), so totalCount === 2 with two distinct link types.
+		await createTestLink(request, fixture.db, {
+			source_collection: SCN017_COLLECTIONS.invoices,
+			source_id: fixture.invoices.large.id,
+			target_collection: SCN017_COLLECTIONS.vendors,
+			target_id: fixture.vendors.secondary.id,
+			link_type: 'invoice-vendor',
+		});
+		await createTestLink(request, fixture.db, {
+			source_collection: SCN017_COLLECTIONS.invoices,
+			source_id: fixture.invoices.large.id,
+			target_collection: SCN017_COLLECTIONS.invoices,
+			target_id: fixture.invoices.small.id,
+			link_type: 'related-invoice',
+		});
+
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+		await page.goto(collectionUrl);
+
+		// Open the large invoice and switch to the Links tab.
+		await page.locator('tr', { hasText: fixture.invoices.large.id }).first().click();
+		await page.getByTestId('entity-tab-links').click();
+
+		// Wait for the Links tab to load (table rows or empty-state).
+		await expect(page.locator('table[data-testid="entity-links-table"]')).toBeVisible();
+
+		// The total chip must equal the rendered link count, both must be
+		// 2 for this fixture, and the chip must be the value the backend
+		// sent (we do not recompute it locally).
+		const totalText = await page.getByTestId('entity-links-total').innerText();
+		const totalMatch = totalText.match(/\d+/);
+		expect(totalMatch).not.toBeNull();
+		const total = Number.parseInt(totalMatch?.[0] ?? '', 10);
+		expect(total).toBe(2);
+		const renderedRowCount = await page
+			.locator('table[data-testid="entity-links-table"] tbody tr')
+			.count();
+		expect(renderedRowCount).toBe(2);
+
+		// Per-group summary must show one chip per (linkType, direction).
+		const groupSummary = page.getByTestId('entity-links-group-summary');
+		await expect(groupSummary).toBeVisible();
+		const invoiceVendorPill = page.getByTestId('entity-links-group-invoice-vendor-outbound');
+		await expect(invoiceVendorPill).toBeVisible();
+		await expect(invoiceVendorPill).toContainText('1');
+		const relatedInvoicePill = page.getByTestId('entity-links-group-related-invoice-outbound');
+		await expect(relatedInvoicePill).toBeVisible();
+		await expect(relatedInvoicePill).toContainText('1');
 	});
 });

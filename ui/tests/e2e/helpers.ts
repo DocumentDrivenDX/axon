@@ -127,6 +127,28 @@ export async function updateTestEntity(
 	await expectOkResponse(response, `update entity ${id}`);
 }
 
+/** Create a link between two entities via the REST endpoint. */
+export async function createTestLink(
+	request: APIRequestContext,
+	db: TestDatabase,
+	link: {
+		source_collection: string;
+		source_id: string;
+		target_collection: string;
+		target_id: string;
+		link_type: string;
+	},
+): Promise<void> {
+	const url = `/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/links`;
+	const response = await request.post(url, {
+		data: link,
+	});
+	await expectOkResponse(
+		response,
+		`create link ${link.source_collection}/${link.source_id} -[${link.link_type}]-> ${link.target_collection}/${link.target_id}`,
+	);
+}
+
 /** Build a UI URL for the database collections page. */
 export function dbCollectionsUrl(db: TestDatabase): string {
 	return `/ui/tenants/${encodeURIComponent(db.tenant.db_name)}/databases/${encodeURIComponent(db.name)}/collections`;

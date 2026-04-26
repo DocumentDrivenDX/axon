@@ -485,7 +485,11 @@ type GraphQLAuditConnection = {
 };
 
 type GraphQLNeighborConnection = {
+	totalCount: number;
 	groups: Array<{
+		linkType: string;
+		direction: string;
+		totalCount: number;
 		edges: Array<{
 			node: GraphQLEntity;
 			linkType: string;
@@ -2266,9 +2270,27 @@ export type TraversePath = {
 	link_type: string;
 };
 
+export type TraverseGroupSummary = {
+	link_type: string;
+	direction: string;
+	total_count: number;
+};
+
 export type TraverseResult = {
 	entities: EntityRecord[];
 	paths?: TraversePath[];
+	/**
+	 * Per-link-type/direction subtotal, as filtered by the caller's
+	 * effective policy on the backend. Hidden neighbours never appear in
+	 * `paths` or `entities`; this `total_count` is the policy-filtered
+	 * visible count for that group, before pagination.
+	 */
+	group_summaries?: TraverseGroupSummary[];
+	/**
+	 * Sum of all per-group `total_count`s, also policy-filtered. The REST
+	 * fallback path leaves this undefined.
+	 */
+	total_count?: number;
 };
 
 /** Traverse outbound links from the given entity, optionally filtered by link_type. */
@@ -2293,7 +2315,11 @@ export async function traverseLinks(
 					linkType: $linkType
 					direction: $direction
 				) {
+					totalCount
 					groups {
+						linkType
+						direction
+						totalCount
 						edges {
 							node {
 								collection
@@ -2327,6 +2353,12 @@ export async function traverseLinks(
 				target_id: edge.targetId,
 				link_type: edge.linkType,
 			})),
+			group_summaries: data.neighbors.groups.map((group) => ({
+				link_type: group.linkType,
+				direction: group.direction,
+				total_count: group.totalCount,
+			})),
+			total_count: data.neighbors.totalCount,
 		};
 	}
 

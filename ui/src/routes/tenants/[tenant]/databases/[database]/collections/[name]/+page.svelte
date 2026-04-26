@@ -1249,11 +1249,27 @@ afterNavigate(() => {
 							<p class="message error">{linksError}</p>
 						{/if}
 						<div class="links-header">
-							<span class="muted">{links.length} outbound link{links.length === 1 ? '' : 's'}</span>
+							<span class="muted" data-testid="entity-links-total">
+								{traverse?.total_count ?? links.length} outbound link{(traverse?.total_count ?? links.length) === 1 ? '' : 's'}
+							</span>
 							<button onclick={() => (showCreateLink = !showCreateLink)}>
 								{showCreateLink ? 'Cancel' : 'Add Link'}
 							</button>
 						</div>
+						{#if traverse?.group_summaries && traverse.group_summaries.length > 0}
+							<div class="links-group-summary" data-testid="entity-links-group-summary">
+								{#each traverse.group_summaries as group}
+									<span
+										class="pill"
+										data-testid={`entity-links-group-${group.link_type}-${group.direction}`}
+									>
+										{group.link_type}
+										<span class="muted">·</span>
+										<span>{group.total_count}</span>
+									</span>
+								{/each}
+							</div>
+						{/if}
 						{#if showCreateLink}
 							<form
 								class="create-link-form stack"
@@ -1825,6 +1841,12 @@ afterNavigate(() => {
 		display: flex;
 		justify-content: space-between;
 		align-items: center;
+	}
+
+	.links-group-summary {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
 	}
 
 	.create-link-form {
