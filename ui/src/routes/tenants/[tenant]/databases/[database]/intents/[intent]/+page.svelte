@@ -11,6 +11,8 @@ import {
 	fetchMutationIntent,
 	rejectMutationIntent,
 } from '$lib/api';
+// biome-ignore lint/correctness/noUnusedImports: Used in template for action denials.
+import DenialMessage from '$lib/components/DenialMessage.svelte';
 // biome-ignore lint/correctness/noUnusedImports: Used in template as a component.
 import JsonTree from '$lib/components/JsonTree.svelte';
 import type { JsonValue } from '$lib/components/json-tree-types';
@@ -46,7 +48,7 @@ let auditError = $state<string | null>(null);
 let loading = $state(true);
 let error = $state<string | null>(null);
 let actionMessage = $state<string | null>(null);
-let actionError = $state<string | null>(null);
+let actionError = $state<unknown>(null);
 let reviewReason = $state('');
 let reviewReasonError = $state<string | null>(null);
 let reviewing = $state(false);
@@ -330,7 +332,8 @@ async function approveIntent() {
 		actionMessage = 'Intent approved.';
 		await loadAuditTrail(intent.id);
 	} catch (errorValue: unknown) {
-		actionError = errorValue instanceof Error ? errorValue.message : 'Failed to approve intent';
+		actionError =
+			errorValue instanceof Error ? errorValue : String(errorValue ?? 'Failed to approve intent');
 	} finally {
 		reviewing = false;
 	}
@@ -351,7 +354,8 @@ async function rejectIntent() {
 		actionMessage = 'Intent rejected.';
 		await loadAuditTrail(intent.id);
 	} catch (errorValue: unknown) {
-		actionError = errorValue instanceof Error ? errorValue.message : 'Failed to reject intent';
+		actionError =
+			errorValue instanceof Error ? errorValue : String(errorValue ?? 'Failed to reject intent');
 	} finally {
 		reviewing = false;
 	}
@@ -376,7 +380,8 @@ async function commitIntent() {
 			await loadAuditTrail(intent.id);
 		}
 	} catch (errorValue: unknown) {
-		actionError = errorValue instanceof Error ? errorValue.message : 'Failed to commit intent';
+		actionError =
+			errorValue instanceof Error ? errorValue : String(errorValue ?? 'Failed to commit intent');
 	} finally {
 		committing = false;
 	}
@@ -436,7 +441,7 @@ onMount(() => {
 			</div>
 			<div class="panel-body stack" data-testid="intent-overview">
 				{#if actionError}
-					<p class="message error" data-testid="intent-action-error">{actionError}</p>
+					<DenialMessage error={actionError} testid="intent-action-error" />
 				{/if}
 				{#if actionMessage}
 					<p class="message success">{actionMessage}</p>

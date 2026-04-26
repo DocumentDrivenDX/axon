@@ -289,6 +289,79 @@ type GraphQLResult<T> = {
 	errors?: GraphQLError[];
 };
 
+/**
+ * Structured GraphQL error surfaced by all `graphqlRequest` callers.
+ *
+ * The server already emits stable codes plus an `extensions.detail` payload
+ * that carries reason, collection, entity_id, field_path, policy, missing
+ * index, and (for transactions) operation_index. Earlier client code
+ * collapsed all of that to `${code}: ${message}` and threw a plain Error,
+ * losing the field path needed by edit/lifecycle/rollback forms to focus
+ * the offending field. This class preserves the full envelope so denied-
+ * write surfaces can render code / message / field path / explanation.
+ */
+/**
+ * Discriminator field used by {@link isAxonGraphqlError} to recognise an
+ * AxonGraphqlError across module-bundle boundaries (SvelteKit's SSR
+ * bundle and client bundle each instantiate their own copy of this
+ * class, so `instanceof` is unreliable inside a Svelte `<script>` block
+ * that imports this file).
+ */
+const AXON_GRAPHQL_ERROR_BRAND: unique symbol = Symbol.for('axon.AxonGraphqlError');
+
+export class AxonGraphqlError extends Error {
+	readonly [AXON_GRAPHQL_ERROR_BRAND] = true;
+	readonly code: string | null;
+	readonly detail: Record<string, unknown> | null;
+	readonly fieldPath: string | null;
+	readonly ruleIds: string[];
+	readonly errors: GraphQLError[];
+
+	constructor(errors: GraphQLError[]) {
+		super(formatGraphqlErrors(errors));
+		this.name = 'AxonGraphqlError';
+		this.errors = errors;
+		const primary = errors[0];
+		this.code = (primary?.extensions?.code as string | null | undefined) ?? null;
+		const detail = primary?.extensions?.detail;
+		this.detail =
+			detail && typeof detail === 'object' && !Array.isArray(detail)
+				? (detail as Record<string, unknown>)
+				: null;
+		// GraphQL `path` is the response selection path (e.g. ["updateEntity"]),
+		// not the entity field path; only the server-emitted detail.field_path
+		// reliably names the offending entity field.
+		this.fieldPath = (this.detail?.field_path as string | null | undefined) ?? null;
+		const ruleIds = primary?.extensions?.rule_ids;
+		this.ruleIds = Array.isArray(ruleIds)
+			? (ruleIds.filter((id) => typeof id === 'string') as string[])
+			: [];
+	}
+}
+
+/**
+ * Cross-bundle-safe check for {@link AxonGraphqlError}. Use this instead of
+ * `err instanceof AxonGraphqlError` whenever the call site might be
+ * crossing a module-bundle boundary (Svelte component that re-imports the
+ * api client from a different bundle).
+ */
+export function isAxonGraphqlError(value: unknown): value is AxonGraphqlError {
+	return (
+		typeof value === 'object' &&
+		value !== null &&
+		(value as { [AXON_GRAPHQL_ERROR_BRAND]?: boolean })[AXON_GRAPHQL_ERROR_BRAND] === true
+	);
+}
+
+function formatGraphqlErrors(errors: GraphQLError[]): string {
+	return errors
+		.map((error) => {
+			const code = error.extensions?.code;
+			return code ? `${code}: ${error.message}` : error.message;
+		})
+		.join(', ');
+}
+
 type GraphQLCollectionMeta = {
 	name: string;
 	entityCount: number;
@@ -589,6 +662,12 @@ export type MutationIntentError = {
 	message: string;
 	code?: string;
 	stale: MutationIntentStaleDimension[];
+	/** GraphQL extensions.detail payload (reason, collection, entity_id, field_path, policy, missing_index, ...). */
+	detail?: Record<string, unknown> | null;
+	/** Stable rule identifiers from extensions.rule_ids. */
+	ruleIds?: string[];
+	/** Field path the denial targets, when the server emits one. */
+	fieldPath?: string | null;
 };
 
 export type CommitMutationIntentOutcome =
@@ -747,14 +826,7 @@ async function graphqlRequest<T>(
 
 	const result = payload as GraphQLResult<T> | null;
 	if (result?.errors?.length) {
-		throw new Error(
-			result.errors
-				.map((error) => {
-					const code = error.extensions?.code;
-					return code ? `${code}: ${error.message}` : error.message;
-				})
-				.join(', '),
-		);
+		throw new AxonGraphqlError(result.errors);
 	}
 	if (result?.data === undefined) {
 		throw new Error('GraphQL response missing data');
@@ -804,14 +876,7 @@ async function controlGraphqlRequest<T>(
 
 	const result = payload as GraphQLResult<T> | null;
 	if (result?.errors?.length) {
-		throw new Error(
-			result.errors
-				.map((error) => {
-					const code = error.extensions?.code;
-					return code ? `${code}: ${error.message}` : error.message;
-				})
-				.join(', '),
-		);
+		throw new AxonGraphqlError(result.errors);
 	}
 	if (result?.data === undefined) {
 		throw new Error('GraphQL response missing data');
@@ -2737,10 +2802,21 @@ const MUTATION_INTENT_FIELDS = `
 
 function mutationIntentErrorFromGraphql(error: GraphQLError | undefined): MutationIntentError {
 	const code = error?.extensions?.code;
+	const detail = error?.extensions?.detail;
+	const ruleIds = error?.extensions?.rule_ids;
+	const detailObj =
+		detail && typeof detail === 'object' && !Array.isArray(detail)
+			? (detail as Record<string, unknown>)
+			: null;
 	return {
 		message: error?.message ?? 'Mutation intent operation failed',
 		stale: error?.extensions?.stale ?? [],
 		...(code ? { code } : {}),
+		detail: detailObj,
+		ruleIds: Array.isArray(ruleIds)
+			? (ruleIds.filter((id) => typeof id === 'string') as string[])
+			: [],
+		fieldPath: (detailObj?.field_path as string | null | undefined) ?? null,
 	};
 }
 

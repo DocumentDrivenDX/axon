@@ -39,6 +39,8 @@ import {
 	traverseLinks,
 	updateEntity,
 } from '$lib/api';
+// biome-ignore lint/correctness/noUnusedImports: Used in template for denied write/lifecycle/rollback errors.
+import DenialMessage from '$lib/components/DenialMessage.svelte';
 // biome-ignore lint/correctness/noUnusedImports: Used in template for entity data tree.
 import JsonTree from '$lib/components/JsonTree.svelte';
 // biome-ignore lint/correctness/noUnusedImports: Used in template as the intent preview dialog.
@@ -84,12 +86,16 @@ let createId = $state('');
 let createJson = $state(`{
   "title": ""
 }`);
-let createErrors = $state<string[]>([]);
+// Error states accept either a plain string (validation, JSON parse) or
+// an AxonGraphqlError (structured server denial). The DenialMessage
+// component branches on instanceof to render code/fieldPath/policy when
+// the error is a structured denial.
+let createErrors = $state<unknown[]>([]);
 let createMessage = $state<string | null>(null);
 
 let editMode = $state(false);
 let editData = $state<Record<string, unknown> | null>(null);
-let saveError = $state<string | null>(null);
+let saveError = $state<unknown>(null);
 let saveMessage = $state<string | null>(null);
 let saving = $state(false);
 let intentPreview = $state<MutationPreviewResult | null>(null);
@@ -102,6 +108,8 @@ let committingIntent = $state(false);
 let confirmDelete = $state(false);
 // biome-ignore lint/style/useConst: Svelte template onclick handlers mutate this state.
 let deleteMessage = $state<string | null>(null);
+// biome-ignore lint/style/useConst: Svelte template onclick handlers mutate this state.
+let deleteError = $state<unknown>(null);
 
 // ── Entity detail tab state ────────────────────────────────────────────────
 
@@ -125,7 +133,7 @@ let rollbackPreviewVersion = $state<number | null>(null);
 let rollbackPreviewLoading = $state(false);
 let rollbackPreviewError = $state<string | null>(null);
 let rollbackApplying = $state(false);
-let rollbackApplyError = $state<string | null>(null);
+let rollbackApplyError = $state<unknown>(null);
 let rollbackApplyMessage = $state<string | null>(null);
 let loadedTabKey = '';
 
@@ -141,7 +149,7 @@ let newLinkTargetId = $state('');
 let createLinkError = $state<string | null>(null);
 
 // Lifecycle
-let lifecycleError = $state<string | null>(null);
+let lifecycleError = $state<unknown>(null);
 let transitioning = $state(false);
 
 // Markdown rendering
@@ -335,7 +343,10 @@ async function doApplyRollback() {
 		// Reload audit entries to show the rollback entry
 		await loadAuditTab();
 	} catch (e: unknown) {
-		rollbackApplyError = e instanceof Error ? e.message : 'Failed to apply rollback';
+		// Preserve the structured AxonGraphqlError so DenialMessage can render
+		// code/fieldPath/policy; falls back to plain string for non-error
+		// throwables.
+		rollbackApplyError = e instanceof Error ? e : String(e ?? 'Failed to apply rollback');
 	} finally {
 		rollbackApplying = false;
 	}
@@ -412,7 +423,7 @@ async function doTransition(lifecycleName: string, targetState: string) {
 			else entities = entities.filter((_, i) => i !== idx);
 		}
 	} catch (e: unknown) {
-		lifecycleError = e instanceof Error ? e.message : 'Transition failed';
+		lifecycleError = e instanceof Error ? e : String(e ?? 'Transition failed');
 	} finally {
 		transitioning = false;
 	}
@@ -688,7 +699,8 @@ async function saveEntity() {
 			else entities = entities.filter((_, i) => i !== idx);
 		}
 	} catch (errorValue: unknown) {
-		saveError = errorValue instanceof Error ? errorValue.message : 'Failed to save entity';
+		saveError =
+			errorValue instanceof Error ? errorValue : String(errorValue ?? 'Failed to save entity');
 	} finally {
 		saving = false;
 	}
@@ -721,7 +733,8 @@ async function previewEntityIntent() {
 		});
 		intentModalOpen = true;
 	} catch (errorValue: unknown) {
-		saveError = errorValue instanceof Error ? errorValue.message : 'Failed to preview intent';
+		saveError =
+			errorValue instanceof Error ? errorValue : String(errorValue ?? 'Failed to preview intent');
 	} finally {
 		previewingIntent = false;
 	}
@@ -752,7 +765,8 @@ async function commitPreviewIntent() {
 			}
 		}
 	} catch (errorValue: unknown) {
-		saveError = errorValue instanceof Error ? errorValue.message : 'Failed to commit intent';
+		saveError =
+			errorValue instanceof Error ? errorValue : String(errorValue ?? 'Failed to commit intent');
 	} finally {
 		committingIntent = false;
 	}
@@ -813,7 +827,9 @@ async function submitCreateEntity() {
 		selectedEntity = readBack;
 		createMessage = `Created ${entity.id}.`;
 	} catch (errorValue: unknown) {
-		createErrors = [errorValue instanceof Error ? errorValue.message : 'Failed to create entity'];
+		createErrors = [
+			errorValue instanceof Error ? errorValue : String(errorValue ?? 'Failed to create entity'),
+		];
 	}
 }
 
@@ -951,9 +967,9 @@ afterNavigate(() => {
 						<textarea bind:value={createJson} rows="8"></textarea>
 					</label>
 					{#if createErrors.length > 0}
-						<div class="message error">
-							{#each createErrors as issue}
-								<p>{issue}</p>
+						<div data-testid="entity-create-errors">
+							{#each createErrors as issue, idx}
+								<DenialMessage error={issue} testid={`entity-create-error-${idx}`} />
 							{/each}
 						</div>
 					{/if}
@@ -1015,6 +1031,7 @@ afterNavigate(() => {
 								class="danger"
 								onclick={async () => {
 									if (selectedEntity && collectionName) {
+										deleteError = null;
 										try {
 											await deleteEntity(collectionName, selectedEntity.id, scope);
 											deleteMessage = `Deleted ${selectedEntity.id}.`;
@@ -1022,7 +1039,10 @@ afterNavigate(() => {
 											selectedEntity = null;
 											await loadCollection(collectionName, null);
 										} catch (e: unknown) {
-											error = e instanceof Error ? e.message : 'Failed to delete';
+											// Preserve the structured AxonGraphqlError so DenialMessage
+											// can render code/fieldPath/policy.
+											deleteError =
+												e instanceof Error ? e : String(e ?? 'Failed to delete');
 											confirmDelete = false;
 										}
 									}
@@ -1036,6 +1056,9 @@ afterNavigate(() => {
 						{/if}
 					{/if}
 				</div>
+				{#if deleteError}
+					<DenialMessage error={deleteError} testid="entity-delete-error" />
+				{/if}
 			{/if}
 		</div>
 		<div class="panel-body stack">
@@ -1051,7 +1074,7 @@ afterNavigate(() => {
 				<p class="message success">{saveMessage}</p>
 			{/if}
 			{#if saveError}
-				<p class="message error">{saveError}</p>
+				<DenialMessage error={saveError} testid="entity-save-error" />
 			{/if}
 
 			{#if selectedEntity}
@@ -1293,7 +1316,7 @@ afterNavigate(() => {
 				{:else if activeTab === 'lifecycle'}
 					<div class="tab-pane stack">
 						{#if lifecycleError}
-							<p class="message error">{lifecycleError}</p>
+							<DenialMessage error={lifecycleError} testid="entity-lifecycle-error" />
 						{/if}
 						{#each Object.entries(lifecycleDefs) as [name, def]}
 							{@const state = currentLifecycleState(def)}
@@ -1346,7 +1369,7 @@ afterNavigate(() => {
 							<p class="message success">{rollbackApplyMessage}</p>
 						{/if}
 						{#if rollbackApplyError}
-							<p class="message error">{rollbackApplyError}</p>
+							<DenialMessage error={rollbackApplyError} testid="entity-rollback-error" />
 						{/if}
 						<h3 style="font-size:0.9rem;margin:0">Version History</h3>
 						{#if auditLoading}

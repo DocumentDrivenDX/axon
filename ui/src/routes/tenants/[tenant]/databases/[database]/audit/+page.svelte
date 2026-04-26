@@ -7,6 +7,8 @@ import {
 	revertAuditEntry,
 	rollbackTransaction,
 } from '$lib/api';
+// biome-ignore lint/correctness/noUnusedImports: Used in template for revert/tx-rollback denials.
+import DenialMessage from '$lib/components/DenialMessage.svelte';
 import { redactValue } from '$lib/redaction';
 import type { PageData } from './$types';
 
@@ -75,12 +77,12 @@ let selectedEntry = $state<AuditEntry | null>(null);
 // Revert state
 let revertConfirming = $state(false);
 let revertMessage = $state<string | null>(null);
-let revertError = $state<string | null>(null);
+let revertError = $state<unknown>(null);
 
 // Transaction rollback state
 let txRollbackConfirming = $state(false);
 let txRollbackMessage = $state<string | null>(null);
-let txRollbackError = $state<string | null>(null);
+let txRollbackError = $state<unknown>(null);
 
 function txSiblingCount(txId: string | number | null | undefined): number {
 	if (!txId) return 0;
@@ -109,7 +111,9 @@ async function doTxRollback() {
 		txRollbackError = null;
 		await loadEntries();
 	} catch (err: unknown) {
-		txRollbackError = err instanceof Error ? err.message : 'Rollback failed';
+		// Preserve structured AxonGraphqlError so DenialMessage can render
+		// code/fieldPath/policy.
+		txRollbackError = err instanceof Error ? err : String(err ?? 'Rollback failed');
 		txRollbackConfirming = false;
 	}
 }
@@ -123,7 +127,7 @@ async function doRevert() {
 		revertError = null;
 		await loadEntries();
 	} catch (err: unknown) {
-		revertError = err instanceof Error ? err.message : 'Revert failed';
+		revertError = err instanceof Error ? err : String(err ?? 'Revert failed');
 		revertConfirming = false;
 	}
 }
@@ -292,7 +296,7 @@ $effect(() => {
 					<p class="message success">{revertMessage}</p>
 				{/if}
 				{#if revertError}
-					<p class="message error">{revertError}</p>
+					<DenialMessage error={revertError} testid="audit-revert-error" />
 				{/if}
 				{#if selectedEntry.data_before !== null}
 					{#if revertConfirming}
@@ -320,7 +324,7 @@ $effect(() => {
 							<p class="message success">{txRollbackMessage}</p>
 						{/if}
 						{#if txRollbackError}
-							<p class="message error">{txRollbackError}</p>
+							<DenialMessage error={txRollbackError} testid="audit-tx-rollback-error" />
 						{/if}
 						{#if txRollbackConfirming}
 							<div class="actions">

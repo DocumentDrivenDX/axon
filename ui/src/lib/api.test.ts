@@ -138,6 +138,70 @@ function sampleMutationIntent(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+test('AxonGraphqlError preserves code, detail, fieldPath, ruleIds from the GraphQL response', async () => {
+	mockFetch({
+		errors: [
+			{
+				message: 'policy denied: reason=field_write_denied',
+				path: ['updateEntity'],
+				extensions: {
+					code: 'forbidden',
+					detail: {
+						reason: 'field_write_denied',
+						collection: 'tasks',
+						entity_id: 'task-1',
+						field_path: 'secret',
+						policy: 'finance-agent-cannot-write-secret',
+					},
+					rule_ids: ['rule:finance-agent-cannot-write-secret'],
+				},
+			},
+		],
+	});
+
+	let caught: unknown = null;
+	try {
+		await fetchCollection('tasks', { tenant: 'acme', database: 'orders' });
+	} catch (err) {
+		caught = err;
+	}
+	const { AxonGraphqlError, isAxonGraphqlError } = await import('./api');
+	expect(isAxonGraphqlError(caught)).toBe(true);
+	const typed = caught as InstanceType<typeof AxonGraphqlError>;
+	expect(typed.code).toBe('forbidden');
+	expect(typed.fieldPath).toBe('secret');
+	expect(typed.detail?.reason).toBe('field_write_denied');
+	expect(typed.detail?.policy).toBe('finance-agent-cannot-write-secret');
+	expect(typed.ruleIds).toEqual(['rule:finance-agent-cannot-write-secret']);
+	// Backwards-compatible Error.message keeps the old `${code}: ${message}` shape.
+	expect(typed.message).toBe('forbidden: policy denied: reason=field_write_denied');
+});
+
+test('AxonGraphqlError leaves fieldPath null when detail.field_path is absent', async () => {
+	mockFetch({
+		errors: [
+			{
+				message: 'schema validation failed',
+				path: ['createEntity', 'data', 'amount_cents'],
+				extensions: { code: 'SCHEMA_VALIDATION' },
+			},
+		],
+	});
+	let caught: unknown = null;
+	try {
+		await fetchCollection('tasks', { tenant: 'acme', database: 'orders' });
+	} catch (err) {
+		caught = err;
+	}
+	const { AxonGraphqlError, isAxonGraphqlError } = await import('./api');
+	expect(isAxonGraphqlError(caught)).toBe(true);
+	const typed = caught as InstanceType<typeof AxonGraphqlError>;
+	expect(typed.code).toBe('SCHEMA_VALIDATION');
+	// GraphQL response path is NOT the entity field path; do not synthesize one.
+	expect(typed.fieldPath).toBe(null);
+	expect(typed.detail).toBe(null);
+});
+
 test('request() prefixes URL with tenant/database path when scope is provided', async () => {
 	mockFetch({ data: { collections: [] } });
 

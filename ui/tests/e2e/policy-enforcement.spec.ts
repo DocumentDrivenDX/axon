@@ -77,4 +77,69 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		const auditHtml = await page.content();
 		expect(auditHtml).not.toContain(sensitiveCommercialTerms);
 	});
+
+	test('denied delete surfaces stable code, reason, and policy explanation', async ({
+		page,
+		request,
+	}) => {
+		// The SCN-017 procurement policy does not define a delete rule, so
+		// the engine allows it by default; we cannot drive a row-level deny
+		// from a real call here. Instead, intercept the deleteEntity GraphQL
+		// mutation and return the same structured envelope the backend emits
+		// for a real policy_forbidden response. Verifies that the api client
+		// preserves the structured envelope and that DenialMessage renders
+		// code/reason/fieldPath/policy without the UI optimistically mutating
+		// the list.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-deny');
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor, async (postData) => {
+			if (postData.includes('AxonUiDeleteEntity') || postData.includes('deleteEntity')) {
+				return {
+					data: null,
+					errors: [
+						{
+							message: 'policy denied: reason=delete',
+							path: ['deleteEntity'],
+							extensions: {
+								code: 'forbidden',
+								detail: {
+									reason: 'delete',
+									collection: SCN017_COLLECTIONS.invoices,
+									entity_id: fixture.invoices.large.id,
+									policy: 'contractors-cannot-delete-invoices',
+									field_path: null,
+								},
+								rule_ids: ['rule:contractors-cannot-delete-invoices'],
+							},
+						},
+					],
+				};
+			}
+			return null;
+		});
+		await page.goto(collectionUrl);
+
+		await page.locator('tr', { hasText: fixture.invoices.large.id }).first().click();
+		await page.getByRole('button', { name: /^Delete$/ }).click();
+		await page.getByRole('button', { name: /^Confirm$/ }).click();
+
+		const denial = page.getByTestId('entity-delete-error');
+		await expect(denial).toBeVisible();
+		await expect(page.getByTestId('entity-delete-error-code')).toHaveText(/forbidden/i);
+		await expect(page.getByTestId('entity-delete-error-reason')).toHaveText(/delete/);
+		await expect(page.getByTestId('entity-delete-error-policy')).toContainText(
+			'contractors-cannot-delete-invoices',
+		);
+		await expect(page.getByTestId('entity-delete-error-rule-ids')).toContainText(
+			'rule:contractors-cannot-delete-invoices',
+		);
+
+		// No optimistic mutation: the entity row is still in the list (scope
+		// to the entity table tbody so we don't match a re-rendered row in
+		// some other surface).
+		await expect(
+			page.locator('tbody tr', { hasText: fixture.invoices.large.id }).first(),
+		).toBeVisible();
+	});
 });
