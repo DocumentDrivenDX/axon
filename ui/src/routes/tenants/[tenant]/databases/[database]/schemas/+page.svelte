@@ -584,7 +584,6 @@ $effect(() => {
 							<strong>{collection.name}</strong>
 							<span class="muted">{schemaVersionLabel(collection)}</span>
 						</span>
-						<span class="collection-option-meta">{collection.entity_count} entities</span>
 					</button>
 				{/each}
 			</div>
@@ -1325,12 +1324,6 @@ $effect(() => {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-
-	.collection-option-meta {
-		flex-shrink: 0;
-		color: var(--muted);
-		font-size: 0.78rem;
 	}
 
 	.schema-detail-panel {

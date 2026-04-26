@@ -106,8 +106,6 @@ $effect(() => {
 	void scope;
 	void loadCollections();
 });
-
-const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_count, 0));
 </script>
 
 <div class="page-header">
@@ -171,7 +169,6 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 				<h2>Registered Collections</h2>
 				<div class="actions">
 					<span class="pill">{collections.length} collections</span>
-					<span class="pill">{totalEntities} entities</span>
 				</div>
 			</div>
 			<div class="panel-body">
@@ -185,7 +182,6 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 						<thead>
 							<tr>
 								<th>Collection</th>
-								<th>Entities</th>
 								<th>Schema</th>
 								<th>Created</th>
 								<th>Updated</th>
@@ -200,7 +196,6 @@ const totalEntities = $derived(collections.reduce((sum, c) => sum + c.entity_cou
 											<strong>{collection.name}</strong>
 										</a>
 									</td>
-									<td>{collection.entity_count}</td>
 									<td>
 										{collection.schema_version ? `v${collection.schema_version}` : 'No schema'}
 									</td>

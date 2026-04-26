@@ -5,8 +5,10 @@ import {
 	createTestLink,
 	dbAuditUrl,
 	dbCollectionUrl,
+	dbCollectionsUrl,
 	routeGraphqlAs,
 	seedScn017PolicyUiFixture,
+	tenantUrl,
 } from './helpers';
 
 /**
@@ -258,10 +260,7 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		// reviewer_email == subject.email; the contractor has no email
 		// attribute, so they see zero rows.
 		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-empty');
-		const collectionUrl = dbCollectionUrl(
-			fixture.db,
-			SCN017_COLLECTIONS.policyFilterUnindexed,
-		);
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.policyFilterUnindexed);
 
 		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
 		await page.goto(collectionUrl);
@@ -339,5 +338,45 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		expect(errorText.toLowerCase()).not.toContain('forbidden');
 		expect(errorText.toLowerCase()).not.toContain('denied');
 		expect(errorText).not.toContain(targetId);
+	});
+
+	test('list surfaces never display raw storage entity_count to a contractor', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-eb57f5fc: the collections list, schema picker,
+		// and tenant database table previously rendered the unfiltered storage
+		// entity_count. That count includes contractor-hidden invoice rows
+		// (the SCN-017 fixture seeds 2 invoices, both of which the contractor
+		// could read; if any new hidden rows are added, the raw count would
+		// leak their existence). Until the backend exposes a per-collection
+		// policy-filtered totalCount, the leaking cells must be omitted.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-list-totals');
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+
+		// /collections: header pill must not show an "entities" total, and
+		// no per-row Entities cell may appear.
+		await page.goto(dbCollectionsUrl(fixture.db));
+		await expect(page.getByTestId('collections-table')).toBeVisible();
+		const collectionsHeader = await page.locator('thead').first().innerText();
+		expect(collectionsHeader.toLowerCase()).not.toContain('entities');
+		const collectionsHtml = await page.content();
+		expect(collectionsHtml.toLowerCase()).not.toMatch(/\d+\s+entities/);
+
+		// /schemas: collection picker option labels must not include an
+		// "N entities" suffix.
+		await page.goto(
+			`/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/schemas`,
+		);
+		await expect(page.locator('.collection-option').first()).toBeVisible();
+		const schemasHtml = await page.content();
+		expect(schemasHtml.toLowerCase()).not.toMatch(/\d+\s+entities/);
+
+		// /tenants/:tenant: database table must not include an Entities column.
+		await page.goto(tenantUrl(fixture.tenant));
+		await expect(page.locator('table').first()).toBeVisible();
+		const tenantHeader = await page.locator('thead').first().innerText();
+		expect(tenantHeader.toLowerCase()).not.toContain('entities');
 	});
 });

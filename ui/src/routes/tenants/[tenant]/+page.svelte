@@ -172,7 +172,6 @@ async function handleDelete(name: string) {
 					<tr>
 						<th>Name</th>
 						<th>Created</th>
-						<th>Entities</th>
 						<th>Actions</th>
 					</tr>
 				</thead>
@@ -185,7 +184,6 @@ async function handleDelete(name: string) {
 								</a>
 							</td>
 							<td class="muted">{new Date(db.created_at_ms).toLocaleDateString()}</td>
-							<td class="muted">{db.entity_count ?? '—'}</td>
 							<td>
 								<div class="actions">
 									<a class="button-link" href={databaseHref(db.name)}>Open</a>
