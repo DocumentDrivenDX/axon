@@ -5,7 +5,6 @@ import {
 	type CollectionSummary,
 	type EffectiveCollectionPolicy,
 	type EntityRecord,
-	type ExplainPolicyInput,
 	type PolicyExplainDiagnostic,
 	type PolicyExplanation,
 	explainPolicyDetailed,
@@ -14,37 +13,28 @@ import {
 	fetchEffectivePolicy,
 	fetchEntities,
 } from '$lib/api';
+import {
+	type EvaluationOperation,
+	type SubjectOption,
+	buildEffectiveConsolePreset,
+	buildExplainConsolePreset,
+	buildGraphqlDiagnostics,
+	buildSchemaDiagnostics,
+	dedupeDiagnostics,
+	defaultCollectionName,
+	defaultPatchFixture,
+	defaultTransactionFixture,
+	errorMessage,
+	formatDiagnosticError,
+	// biome-ignore lint/correctness/noUnusedImports: used only in the template.
+	formatFields,
+	operationRequiresEntity,
+	operationRequiresExpectedVersion,
+	prettyJson,
+	tryBuildExplainInput,
+} from '$lib/policy-evaluator';
 import { onMount } from 'svelte';
 import type { PageData } from './$types';
-
-type SubjectOption = {
-	id: string;
-	label: string;
-	detail: string | null;
-};
-
-type EvaluationOperation =
-	| 'read'
-	| 'create'
-	| 'update'
-	| 'patch'
-	| 'delete'
-	| 'transition'
-	| 'rollback'
-	| 'transaction';
-
-type WorkspaceDiagnostic = {
-	source: 'schema' | 'graphql';
-	code: string;
-	summary: string;
-	missingField: string | null;
-	remediation: string;
-};
-
-type GraphqlConsolePreset = {
-	href: string;
-	preset: string;
-};
 
 const operationOptions: Array<{ value: EvaluationOperation; label: string }> = [
 	{ value: 'read', label: 'Read' },
@@ -118,111 +108,24 @@ const sampleEntityLabel = $derived(
 	selectedEntity ? `${selectedEntity.collection}/${selectedEntity.id}` : 'No sample entity',
 );
 const sampleRowJson = $derived(prettyJson(selectedEntity?.data ?? {}));
-const requiresEntity = $derived(
-	['update', 'patch', 'delete', 'transition', 'rollback'].includes(selectedOperation),
-);
-const requiresExpectedVersion = $derived(
-	['update', 'patch', 'delete', 'transition'].includes(selectedOperation),
-);
+const requiresEntity = $derived(operationRequiresEntity(selectedOperation));
+const requiresExpectedVersion = $derived(operationRequiresExpectedVersion(selectedOperation));
+const consolePresetContext = $derived({
+	baseHref: graphqlConsoleBaseHref,
+	subject: selectedSubject,
+});
 const schemaDiagnostics = $derived(buildSchemaDiagnostics(collectionDetail, selectedOperation));
 const graphqlDiagnostics = $derived(buildGraphqlDiagnostics(explanationDiagnostics));
 const evaluatorDiagnostics = $derived(
 	dedupeDiagnostics([...schemaDiagnostics, ...graphqlDiagnostics]),
 );
-const explainConsolePreview = $derived(tryBuildExplainInput(selectedEntity));
-const effectiveConsolePreset = $derived(buildEffectiveConsolePreset(selectedEntity));
-const explainConsolePreset = $derived(buildExplainConsolePreset(explainConsolePreview.input));
-
-const EFFECTIVE_POLICY_CONSOLE_QUERY = `query PolicyWorkspaceEffectivePolicy($collection: String!, $entityId: ID) {
-	effectivePolicy(collection: $collection, entityId: $entityId) {
-		collection
-		canRead
-		canCreate
-		canUpdate
-		canDelete
-		redactedFields
-		deniedFields
-		policyVersion
-	}
-}`;
-
-const EXPLAIN_POLICY_CONSOLE_QUERY = `query PolicyWorkspaceExplainPolicy($input: ExplainPolicyInput!) {
-	explainPolicy(input: $input) {
-		operation
-		collection
-		entityId
-		operationIndex
-		decision
-		reason
-		policyVersion
-		ruleIds
-		policyIds
-		fieldPaths
-		deniedFields
-		rules {
-			ruleId
-			name
-			kind
-			fieldPath
-		}
-		approval {
-			policyId
-			name
-			decision
-			role
-			reasonRequired
-			deadlineSeconds
-			separationOfDuties
-		}
-		operations {
-			operation
-			collection
-			entityId
-			operationIndex
-			decision
-			reason
-			policyVersion
-			ruleIds
-			policyIds
-			fieldPaths
-			deniedFields
-			rules {
-				ruleId
-				name
-				kind
-				fieldPath
-			}
-			approval {
-				policyId
-				name
-				decision
-				role
-				reasonRequired
-				deadlineSeconds
-				separationOfDuties
-			}
-		}
-	}
-}`;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function prettyJson(value: unknown): string {
-	return JSON.stringify(value ?? {}, null, 2);
-}
-
-function defaultCollectionName(nextCollections: CollectionSummary[]): string {
-	for (const preferredName of ['invoices', 'task', 'expense']) {
-		const preferred = nextCollections.find((collection) => collection.name === preferredName);
-		if (preferred) return preferred.name;
-	}
-	const preferred = nextCollections.find(
-		(collection) => !['user', 'users'].includes(collection.name),
-	);
-	return preferred?.name ?? nextCollections[0]?.name ?? '';
-}
+const explainConsolePreview = $derived(tryBuildExplainInput(currentExplainArgs(selectedEntity)));
+const effectiveConsolePreset = $derived(
+	buildEffectiveConsolePreset(consolePresetContext, selectedCollection, selectedEntity),
+);
+const explainConsolePreset = $derived(
+	buildExplainConsolePreset(consolePresetContext, explainConsolePreview.input),
+);
 
 function defaultSubjectId(nextSubjects: SubjectOption[]): string {
 	return (
@@ -267,108 +170,6 @@ async function loadSubjectOptions(nextCollections: CollectionSummary[]): Promise
 	}
 }
 
-function formatFields(fields: string[]): string {
-	return fields.length ? fields.join(', ') : 'None';
-}
-
-function errorMessage(error: unknown, fallback: string): string {
-	return error instanceof Error ? error.message : fallback;
-}
-
-function parseOptionalInteger(value: string, label: string): number | null {
-	const trimmed = value.trim();
-	if (!trimmed) return null;
-	const parsed = Number(trimmed);
-	if (!Number.isInteger(parsed) || parsed < 0) {
-		throw new Error(`${label} must be a non-negative integer`);
-	}
-	return parsed;
-}
-
-function parseJsonFixture(text: string, label: string): unknown {
-	try {
-		return JSON.parse(text);
-	} catch {
-		throw new Error(`${label} must be valid JSON`);
-	}
-}
-
-function buildGraphqlConsolePreset(
-	preset: string,
-	query: string,
-	variables: Record<string, unknown>,
-): GraphqlConsolePreset {
-	const params = new URLSearchParams();
-	params.set('preset', preset);
-	params.set('query', query);
-	params.set('variables', JSON.stringify(variables, null, 2));
-	if (selectedSubject) {
-		params.set('actor', selectedSubject);
-	}
-	return {
-		preset,
-		href: `${graphqlConsoleBaseHref}?${params.toString()}`,
-	};
-}
-
-function buildEffectiveConsolePreset(entity: EntityRecord | null): GraphqlConsolePreset | null {
-	if (!selectedCollection) return null;
-	return buildGraphqlConsolePreset('effectivePolicy', EFFECTIVE_POLICY_CONSOLE_QUERY, {
-		collection: selectedCollection,
-		entityId: entity?.id ?? null,
-	});
-}
-
-function tryBuildExplainInput(entity: EntityRecord | null): {
-	input: ExplainPolicyInput | null;
-	error: string | null;
-} {
-	try {
-		return { input: buildExplainInput(entity), error: null };
-	} catch (error) {
-		return {
-			input: null,
-			error: errorMessage(error, 'Failed to build policy evaluation'),
-		};
-	}
-}
-
-function buildExplainConsolePreset(input: ExplainPolicyInput | null): GraphqlConsolePreset | null {
-	if (!input) return null;
-	return buildGraphqlConsolePreset('explainPolicy', EXPLAIN_POLICY_CONSOLE_QUERY, { input });
-}
-
-function defaultPatchFixture(entity: EntityRecord | null): Record<string, unknown> {
-	const data = entity?.data ?? {};
-	if (typeof data.amount_cents === 'number') {
-		return { amount_cents: data.amount_cents + 500_000 };
-	}
-	if (typeof data.budget_cents === 'number') {
-		return { budget_cents: data.budget_cents + 15_000 };
-	}
-	if (typeof data.status === 'string') {
-		return { status: data.status === 'approved' ? 'draft' : 'approved' };
-	}
-	if (typeof data.title === 'string') {
-		return { title: `${data.title} (policy dry-run)` };
-	}
-	return {};
-}
-
-function defaultTransactionFixture(entity: EntityRecord | null): Array<Record<string, unknown>> {
-	if (!entity) return [];
-	return [
-		{
-			updateEntity: {
-				collection: entity.collection,
-				id: entity.id,
-				expectedVersion: entity.version,
-				data: entity.data,
-			},
-		},
-	];
-}
-
 function seedEditorFixtures(entity: EntityRecord | null) {
 	expectedVersionText = entity ? String(entity.version) : '';
 	rollbackVersionText = entity ? String(Math.max(0, entity.version - 1)) : '';
@@ -392,181 +193,19 @@ function actorOptions() {
 	return selectedSubject ? { actor: selectedSubject } : {};
 }
 
-function buildExplainInput(entity: EntityRecord | null): ExplainPolicyInput {
-	const input: ExplainPolicyInput = {
+function currentExplainArgs(entity: EntityRecord | null) {
+	return {
 		operation: selectedOperation,
-		...(selectedCollection ? { collection: selectedCollection } : {}),
+		collection: selectedCollection,
+		entity,
+		expectedVersionText,
+		rollbackVersionText,
+		lifecycleName,
+		targetState,
+		dataFixtureText,
+		patchFixtureText,
+		transactionFixtureText,
 	};
-
-	if (selectedOperation === 'transaction') {
-		const operations = parseJsonFixture(transactionFixtureText, 'Transaction fixture');
-		if (!Array.isArray(operations)) {
-			throw new Error('Transaction fixture must be a JSON array');
-		}
-		return {
-			operation: 'transaction',
-			operations: operations as Record<string, unknown>[],
-		};
-	}
-
-	if (entity) {
-		input.entityId = entity.id;
-	}
-
-	if (requiresEntity && !entity) {
-		throw new Error('Select an entity before running this evaluator operation');
-	}
-
-	if (requiresExpectedVersion) {
-		const expectedVersion = parseOptionalInteger(expectedVersionText, 'Expected version');
-		if (expectedVersion !== null) {
-			input.expectedVersion = expectedVersion;
-		}
-	}
-
-	switch (selectedOperation) {
-		case 'read':
-		case 'delete':
-			return input;
-		case 'create':
-			return {
-				operation: 'create',
-				...(selectedCollection ? { collection: selectedCollection } : {}),
-				data: parseJsonFixture(dataFixtureText, 'JSON fixture'),
-			};
-		case 'update':
-			return {
-				...input,
-				data: parseJsonFixture(dataFixtureText, 'JSON fixture'),
-			};
-		case 'patch':
-			return {
-				...input,
-				patch: parseJsonFixture(patchFixtureText, 'Patch fixture'),
-			};
-		case 'transition':
-			if (!lifecycleName.trim()) {
-				throw new Error('Lifecycle name is required for transition evaluation');
-			}
-			if (!targetState.trim()) {
-				throw new Error('Target state is required for transition evaluation');
-			}
-			return {
-				...input,
-				lifecycleName: lifecycleName.trim(),
-				targetState: targetState.trim(),
-			};
-		case 'rollback': {
-			const toVersion = parseOptionalInteger(rollbackVersionText, 'Rollback version');
-			return {
-				...input,
-				...(toVersion !== null ? { toVersion } : {}),
-			};
-		}
-		default:
-			return input;
-	}
-}
-
-function collectWhereFields(value: unknown, fields: Set<string>) {
-	if (Array.isArray(value)) {
-		for (const item of value) {
-			collectWhereFields(item, fields);
-		}
-		return;
-	}
-	if (!isRecord(value)) return;
-
-	for (const [key, candidate] of Object.entries(value)) {
-		if (key === 'where' && isRecord(candidate) && typeof candidate.field === 'string') {
-			fields.add(candidate.field);
-		}
-		collectWhereFields(candidate, fields);
-	}
-}
-
-function buildSchemaDiagnostics(
-	detail: CollectionDetail | null,
-	operation: EvaluationOperation,
-): WorkspaceDiagnostic[] {
-	if (operation !== 'read') return [];
-	const schema = detail?.schema;
-	if (!schema) return [];
-	const whereFields = new Set<string>();
-	collectWhereFields(schema.access_control, whereFields);
-	if (!whereFields.size) return [];
-
-	const indexedFields = new Set(
-		(schema.indexes ?? [])
-			.map((index) => (typeof index.field === 'string' ? index.field : null))
-			.filter((value): value is string => Boolean(value)),
-	);
-
-	return [...whereFields]
-		.filter((field) => !indexedFields.has(field))
-		.map((field) => ({
-			source: 'schema' as const,
-			code: 'policy_filter_unindexed',
-			summary: `Collection read filters depend on unindexed field "${field}".`,
-			missingField: field,
-			remediation: `Add an index on "${field}" or narrow the policy filter so collection reads do not fail with policy_filter_unindexed.`,
-		}));
-}
-
-function buildGraphqlDiagnostics(diagnostics: PolicyExplainDiagnostic[]): WorkspaceDiagnostic[] {
-	return diagnostics.flatMap((diagnostic) => {
-		const reason = typeof diagnostic.detail?.reason === 'string' ? diagnostic.detail.reason : null;
-		const missingField =
-			typeof diagnostic.detail?.missing_index === 'string' ? diagnostic.detail.missing_index : null;
-		const collection =
-			typeof diagnostic.detail?.collection === 'string' ? diagnostic.detail.collection : null;
-		const candidateCount =
-			typeof diagnostic.detail?.candidate_count === 'number'
-				? diagnostic.detail.candidate_count
-				: null;
-		const costLimit =
-			typeof diagnostic.detail?.cost_limit === 'number' ? diagnostic.detail.cost_limit : null;
-
-		if (reason !== 'policy_filter_unindexed' && diagnostic.code !== 'POLICY_FILTER_UNINDEXED') {
-			return [];
-		}
-
-		const saturation =
-			candidateCount !== null && costLimit !== null
-				? ` Candidate set ${candidateCount} exceeded the limit ${costLimit}.`
-				: '';
-		return [
-			{
-				source: 'graphql' as const,
-				code: 'policy_filter_unindexed',
-				summary: collection
-					? `GraphQL denied ${collection} because the policy filter needs an index${
-							missingField ? ` on "${missingField}"` : ''
-						}.${saturation}`
-					: `GraphQL policy evaluation needs a missing index${
-							missingField ? ` on "${missingField}"` : ''
-						}.${saturation}`,
-				missingField,
-				remediation: missingField
-					? `Add an index on "${missingField}" so the policy can evaluate without post-filter rejection.`
-					: 'Add the missing index or simplify the policy filter before retrying.',
-			},
-		];
-	});
-}
-
-function dedupeDiagnostics(diagnostics: WorkspaceDiagnostic[]): WorkspaceDiagnostic[] {
-	const seen = new Set<string>();
-	return diagnostics.filter((diagnostic) => {
-		const key = `${diagnostic.code}:${diagnostic.missingField ?? ''}:${diagnostic.source}`;
-		if (seen.has(key)) return false;
-		seen.add(key);
-		return true;
-	});
-}
-
-function formatDiagnosticError(diagnostic: PolicyExplainDiagnostic): string {
-	return diagnostic.code ? `${diagnostic.code}: ${diagnostic.message}` : diagnostic.message;
 }
 
 async function runPolicyEvaluation(entity: EntityRecord | null = selectedEntity) {
@@ -581,14 +220,11 @@ async function runPolicyEvaluation(entity: EntityRecord | null = selectedEntity)
 	explanation = null;
 	explanationDiagnostics = [];
 
-	const nextInput = (() => {
-		try {
-			return buildExplainInput(entity);
-		} catch (error) {
-			explanationError = errorMessage(error, 'Failed to build policy evaluation');
-			return null;
-		}
-	})();
+	const built = tryBuildExplainInput(currentExplainArgs(entity));
+	if (built.error) {
+		explanationError = built.error;
+	}
+	const nextInput = built.input;
 
 	const [effectiveResult, explanationResult] = await Promise.allSettled([
 		fetchEffectivePolicy(selectedCollection, scope, {
