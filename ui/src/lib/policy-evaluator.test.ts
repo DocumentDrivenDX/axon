@@ -2,18 +2,23 @@ import { describe, expect, test } from 'bun:test';
 import type {
 	CollectionDetail,
 	CollectionSummary,
+	EffectiveCollectionPolicy,
 	EntityRecord,
 	PolicyExplainDiagnostic,
+	PolicyExplainResult,
+	PolicyExplanation,
 } from './api';
 import {
 	type BuildExplainInputArgs,
 	EFFECTIVE_POLICY_CONSOLE_QUERY,
 	EXPLAIN_POLICY_CONSOLE_QUERY,
+	IMPACT_MATRIX_OPERATIONS,
 	buildEffectiveConsolePreset,
 	buildExplainConsolePreset,
 	buildExplainInput,
 	buildGraphqlConsolePreset,
 	buildGraphqlDiagnostics,
+	buildImpactMatrixInputs,
 	buildSchemaDiagnostics,
 	dedupeDiagnostics,
 	defaultCollectionName,
@@ -27,6 +32,7 @@ import {
 	parseJsonFixture,
 	parseOptionalInteger,
 	prettyJson,
+	resolveImpactCell,
 	tryBuildExplainInput,
 } from './policy-evaluator';
 
@@ -576,5 +582,240 @@ describe('console query constants', () => {
 	});
 	test('explain policy query references explainPolicy field', () => {
 		expect(EXPLAIN_POLICY_CONSOLE_QUERY).toContain('explainPolicy(');
+	});
+});
+
+describe('buildImpactMatrixInputs', () => {
+	const subjects = [
+		{ id: 'finance-agent', label: 'Finance', detail: null },
+		{ id: 'contractor', label: 'Contractor', detail: null },
+	];
+	const entities = [
+		entity({ id: 'inv-1', version: 3, data: { amount_cents: 100 } }),
+		entity({ id: 'inv-2', version: 5, data: { status: 'approved' } }),
+	];
+
+	test('returns an empty list when collection is blank', () => {
+		expect(buildImpactMatrixInputs('', entities, subjects)).toEqual([]);
+	});
+
+	test('produces one request per (entity, subject, operation) tuple', () => {
+		const result = buildImpactMatrixInputs('invoices', entities, subjects);
+		expect(result).toHaveLength(
+			entities.length * subjects.length * IMPACT_MATRIX_OPERATIONS.length,
+		);
+		const seen = new Set(result.map((r) => `${r.entity.id}|${r.subjectId}|${r.operation}`));
+		expect(seen.size).toBe(result.length);
+	});
+
+	test('default ops are read/patch/delete with appropriate input shape', () => {
+		const firstEntity = entities[0];
+		const firstSubject = subjects[0];
+		expect(firstEntity).toBeDefined();
+		expect(firstSubject).toBeDefined();
+		if (!firstEntity || !firstSubject) return;
+		const result = buildImpactMatrixInputs('invoices', [firstEntity], [firstSubject]);
+		const byOp = Object.fromEntries(result.map((r) => [r.operation, r.explainInput]));
+		expect(byOp.read).toEqual({ operation: 'read', collection: 'invoices', entityId: 'inv-1' });
+		expect(byOp.delete).toEqual({
+			operation: 'delete',
+			collection: 'invoices',
+			entityId: 'inv-1',
+			expectedVersion: 3,
+		});
+		expect(byOp.patch).toMatchObject({
+			operation: 'patch',
+			collection: 'invoices',
+			entityId: 'inv-1',
+			expectedVersion: 3,
+		});
+		expect(byOp.patch?.patch).toEqual({ amount_cents: 500_100 });
+	});
+
+	test('honours a custom operations list', () => {
+		const firstEntity = entities[0];
+		const firstSubject = subjects[0];
+		expect(firstEntity).toBeDefined();
+		expect(firstSubject).toBeDefined();
+		if (!firstEntity || !firstSubject) return;
+		const result = buildImpactMatrixInputs('invoices', [firstEntity], [firstSubject], ['update']);
+		expect(result).toHaveLength(1);
+		expect(result[0]?.explainInput).toEqual({
+			operation: 'update',
+			collection: 'invoices',
+			entityId: 'inv-1',
+			expectedVersion: 3,
+			data: { amount_cents: 100 },
+		});
+	});
+});
+
+describe('resolveImpactCell', () => {
+	const ctx = { baseHref: '/base/graphql', subject: 'finance-agent' };
+	const baseRequest = {
+		subjectId: 'finance-agent',
+		operation: 'read' as const,
+		entity: entity(),
+		explainInput: {
+			operation: 'read' as const,
+			collection: 'invoices',
+			entityId: 'inv-1',
+		},
+	};
+
+	const explanation = (overrides: Partial<PolicyExplanation> = {}): PolicyExplanation => ({
+		operation: 'read',
+		decision: 'allowed',
+		reason: 'allowed',
+		policyVersion: 1,
+		ruleIds: [],
+		policyIds: [],
+		fieldPaths: [],
+		deniedFields: [],
+		rules: [],
+		approval: null,
+		operations: [],
+		...overrides,
+	});
+
+	const effective = (
+		overrides: Partial<EffectiveCollectionPolicy> = {},
+	): EffectiveCollectionPolicy => ({
+		collection: 'invoices',
+		canRead: true,
+		canCreate: true,
+		canUpdate: true,
+		canDelete: true,
+		redactedFields: [],
+		deniedFields: [],
+		policyVersion: 1,
+		...overrides,
+	});
+
+	const result = (overrides: Partial<PolicyExplainResult> = {}): PolicyExplainResult => ({
+		explanation: null,
+		diagnostics: [],
+		...overrides,
+	});
+
+	test('maps allowed explanation to allowed decision and pulls redactedFields from effective', () => {
+		const cell = resolveImpactCell({
+			request: baseRequest,
+			explainResult: result({ explanation: explanation({ decision: 'allowed', reason: 'ok' }) }),
+			effective: effective({ redactedFields: ['amount_cents', 'commercial_terms'] }),
+			presetCtxForSubject: ctx,
+		});
+		expect(cell.decision).toBe('allowed');
+		expect(cell.reason).toBe('ok');
+		expect(cell.redactedFields).toEqual(['amount_cents', 'commercial_terms']);
+		expect(cell.explainHref).toContain('/base/graphql?');
+		expect(cell.explainHref).toContain('preset=explainPolicy');
+	});
+
+	test('normalises server allow/deny to allowed/denied', () => {
+		const allowed = resolveImpactCell({
+			request: baseRequest,
+			explainResult: result({ explanation: explanation({ decision: 'allow', reason: 'ok' }) }),
+			effective: null,
+			presetCtxForSubject: ctx,
+		});
+		expect(allowed.decision).toBe('allowed');
+
+		const denied = resolveImpactCell({
+			request: baseRequest,
+			explainResult: result({
+				explanation: explanation({ decision: 'deny', reason: 'forbidden' }),
+			}),
+			effective: null,
+			presetCtxForSubject: ctx,
+		});
+		expect(denied.decision).toBe('denied');
+	});
+
+	test('maps needs_approval and surfaces approval role', () => {
+		const cell = resolveImpactCell({
+			request: baseRequest,
+			explainResult: result({
+				explanation: explanation({
+					decision: 'needs_approval',
+					reason: 'large_invoice',
+					approval: {
+						name: 'finance-approver',
+						decision: 'pending',
+						role: 'finance_approver',
+					},
+				}),
+			}),
+			effective: null,
+			presetCtxForSubject: ctx,
+		});
+		expect(cell.decision).toBe('needs_approval');
+		expect(cell.approvalRole).toBe('finance_approver');
+	});
+
+	test('maps denied explanation and includes deniedFields', () => {
+		const cell = resolveImpactCell({
+			request: baseRequest,
+			explainResult: result({
+				explanation: explanation({
+					decision: 'denied',
+					reason: 'forbidden',
+					deniedFields: ['amount_cents'],
+				}),
+			}),
+			effective: effective(),
+			presetCtxForSubject: ctx,
+		});
+		expect(cell.decision).toBe('denied');
+		expect(cell.deniedFields).toEqual(['amount_cents']);
+	});
+
+	test('surfaces the policy_filter_unindexed diagnostic from explain diagnostics', () => {
+		const cell = resolveImpactCell({
+			request: baseRequest,
+			explainResult: result({
+				explanation: null,
+				diagnostics: [
+					{
+						code: 'POLICY_FILTER_UNINDEXED',
+						message: 'denied',
+						detail: {
+							reason: 'policy_filter_unindexed',
+							missing_index: 'reviewer_email',
+							collection: 'policy_filter_unindexed',
+						},
+					},
+				],
+			}),
+			effective: null,
+			presetCtxForSubject: ctx,
+		});
+		expect(cell.decision).toBe('error');
+		expect(cell.reason).toBe('POLICY_FILTER_UNINDEXED');
+		expect(cell.diagnostic).not.toBeNull();
+		expect(cell.diagnostic?.missingField).toBe('reviewer_email');
+		expect(cell.diagnostic?.code).toBe('policy_filter_unindexed');
+	});
+
+	test('falls back to error decision when both explanation and diagnostics are missing', () => {
+		const cell = resolveImpactCell({
+			request: baseRequest,
+			explainResult: null,
+			effective: null,
+			presetCtxForSubject: ctx,
+		});
+		expect(cell.decision).toBe('error');
+		expect(cell.reason).toBe('unknown');
+		expect(cell.explainHref).toContain('preset=explainPolicy');
+	});
+
+	test('omits explainHref when no preset context is supplied', () => {
+		const cell = resolveImpactCell({
+			request: baseRequest,
+			explainResult: result({ explanation: explanation() }),
+			effective: null,
+			presetCtxForSubject: null,
+		});
+		expect(cell.explainHref).toBeNull();
 	});
 });

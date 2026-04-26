@@ -91,4 +91,34 @@ test.describe('GraphQL policy console', () => {
 			`"role": "${SCN017_ROLES.financeApprover}"`,
 		);
 	});
+
+	test('opens an explainPolicy preset from an impact-matrix row', async ({ page, request }) => {
+		const fixture = await seedScn017PolicyUiFixture(
+			request,
+			'graphql-policy-console-impact-matrix',
+		);
+		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.financeAgent);
+		await page.goto(policiesUrl);
+
+		await page.getByTestId('policy-collection-picker').selectOption(SCN017_COLLECTIONS.invoices);
+		const matrix = page.getByTestId('policy-impact-matrix');
+		await expect(matrix).toBeVisible();
+
+		const contractorReadSmall = matrix.locator(
+			`[data-testid="policy-impact-matrix-cell"][data-entity-id="${fixture.invoices.small.id}"][data-subject-id="${SCN017_SUBJECTS.contractor}"][data-operation="read"]`,
+		);
+		await expect(contractorReadSmall).toHaveAttribute('data-decision', 'allowed');
+		await contractorReadSmall.getByTestId('policy-impact-matrix-open-graphql').click();
+
+		await expect(page).toHaveURL(/\/graphql\?/);
+		await expect(page.getByTestId('graphql-preset')).toHaveText('explainPolicy');
+		await expect(page.getByTestId('graphql-actor')).toHaveValue(SCN017_SUBJECTS.contractor);
+		await expect(page.getByTestId('graphql-query')).toHaveValue(/explainPolicy/);
+		await expect(page.getByTestId('graphql-variables')).toHaveValue(/"operation": "read"/);
+		await expect(page.getByTestId('graphql-variables')).toHaveValue(
+			new RegExp(`"entityId": "${escapeRegExp(fixture.invoices.small.id)}"`),
+		);
+	});
 });

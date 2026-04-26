@@ -1,9 +1,11 @@
 import type {
 	CollectionDetail,
 	CollectionSummary,
+	EffectiveCollectionPolicy,
 	EntityRecord,
 	ExplainPolicyInput,
 	PolicyExplainDiagnostic,
+	PolicyExplainResult,
 } from './api';
 
 export type SubjectOption = {
@@ -454,4 +456,130 @@ export function tryBuildExplainInput(args: BuildExplainInputArgs): {
 			error: errorMessage(error, 'Failed to build policy evaluation'),
 		};
 	}
+}
+
+export type ImpactDecisionKind = 'allowed' | 'denied' | 'needs_approval' | 'error';
+
+export type ImpactCell = {
+	subjectId: string;
+	operation: EvaluationOperation;
+	entityId: string;
+	decision: ImpactDecisionKind;
+	reason: string;
+	redactedFields: string[];
+	deniedFields: string[];
+	approvalRole: string | null;
+	diagnostic: WorkspaceDiagnostic | null;
+	explainHref: string | null;
+};
+
+export type ImpactMatrixRequest = {
+	subjectId: string;
+	operation: EvaluationOperation;
+	entity: EntityRecord;
+	explainInput: ExplainPolicyInput;
+};
+
+export const IMPACT_MATRIX_OPERATIONS: EvaluationOperation[] = ['read', 'patch', 'delete'];
+export const IMPACT_MATRIX_SUBJECT_LIMIT = 3;
+export const IMPACT_MATRIX_ENTITY_LIMIT = 2;
+
+function normaliseDecisionKind(decision: string): ImpactDecisionKind {
+	const kind = decision.trim().toLowerCase();
+	if (kind === 'allow' || kind === 'allowed') return 'allowed';
+	if (kind === 'deny' || kind === 'denied') return 'denied';
+	if (kind === 'needs_approval' || kind === 'needs-approval') return 'needs_approval';
+	return 'error';
+}
+
+function buildImpactExplainInput(
+	collection: string,
+	entity: EntityRecord,
+	operation: EvaluationOperation,
+): ExplainPolicyInput {
+	const base: ExplainPolicyInput = { operation, collection, entityId: entity.id };
+	switch (operation) {
+		case 'read':
+			return base;
+		case 'delete':
+			return { ...base, expectedVersion: entity.version };
+		case 'update':
+			return { ...base, expectedVersion: entity.version, data: entity.data };
+		case 'patch':
+			return {
+				...base,
+				expectedVersion: entity.version,
+				patch: defaultPatchFixture(entity),
+			};
+		default:
+			return base;
+	}
+}
+
+export function buildImpactMatrixInputs(
+	collection: string,
+	entities: EntityRecord[],
+	subjects: SubjectOption[],
+	operations: EvaluationOperation[] = IMPACT_MATRIX_OPERATIONS,
+): ImpactMatrixRequest[] {
+	if (!collection) return [];
+	return entities.flatMap((entity) =>
+		subjects.flatMap((subject) =>
+			operations.map((operation) => ({
+				subjectId: subject.id,
+				operation,
+				entity,
+				explainInput: buildImpactExplainInput(collection, entity, operation),
+			})),
+		),
+	);
+}
+
+export type ResolveImpactCellArgs = {
+	request: ImpactMatrixRequest;
+	explainResult: PolicyExplainResult | null;
+	effective: EffectiveCollectionPolicy | null;
+	presetCtxForSubject: ConsolePresetContext | null;
+};
+
+export function resolveImpactCell({
+	request,
+	explainResult,
+	effective,
+	presetCtxForSubject,
+}: ResolveImpactCellArgs): ImpactCell {
+	const explanation = explainResult?.explanation ?? null;
+	const explainDiagnostics = explainResult?.diagnostics ?? [];
+	const graphqlDiagnostics = buildGraphqlDiagnostics(explainDiagnostics);
+	const diagnostic = graphqlDiagnostics[0] ?? null;
+
+	let decision: ImpactDecisionKind;
+	let reason: string;
+	if (explanation) {
+		decision = normaliseDecisionKind(explanation.decision);
+		reason = explanation.reason;
+	} else if (explainDiagnostics.length) {
+		decision = 'error';
+		reason = explainDiagnostics[0]?.code ?? 'error';
+	} else {
+		decision = 'error';
+		reason = 'unknown';
+	}
+
+	const explainHref = presetCtxForSubject
+		? (buildExplainConsolePreset(presetCtxForSubject, request.explainInput)?.href ?? null)
+		: null;
+
+	return {
+		subjectId: request.subjectId,
+		operation: request.operation,
+		entityId: request.entity.id,
+		decision,
+		reason,
+		redactedFields: effective?.redactedFields ?? [],
+		deniedFields: explanation?.deniedFields ?? [],
+		approvalRole: explanation?.approval?.role ?? null,
+		diagnostic,
+		explainHref,
+	};
 }

@@ -15,10 +15,16 @@ import {
 } from '$lib/api';
 import {
 	type EvaluationOperation,
+	IMPACT_MATRIX_ENTITY_LIMIT,
+	IMPACT_MATRIX_OPERATIONS,
+	IMPACT_MATRIX_SUBJECT_LIMIT,
+	type ImpactCell,
+	type ImpactMatrixRequest,
 	type SubjectOption,
 	buildEffectiveConsolePreset,
 	buildExplainConsolePreset,
 	buildGraphqlDiagnostics,
+	buildImpactMatrixInputs,
 	buildSchemaDiagnostics,
 	dedupeDiagnostics,
 	defaultCollectionName,
@@ -31,6 +37,7 @@ import {
 	operationRequiresEntity,
 	operationRequiresExpectedVersion,
 	prettyJson,
+	resolveImpactCell,
 	tryBuildExplainInput,
 } from '$lib/policy-evaluator';
 import { onMount } from 'svelte';
@@ -80,8 +87,14 @@ let targetState = $state('approved');
 let dataFixtureText = $state('{}');
 let patchFixtureText = $state('{}');
 let transactionFixtureText = $state('[]');
+let impactMatrix = $state<ImpactCell[]>([]);
+let impactMatrixSubjects = $state<SubjectOption[]>([]);
+let impactMatrixEntities = $state<EntityRecord[]>([]);
+let impactMatrixError = $state<string | null>(null);
+let loadingImpactMatrix = $state(false);
 let collectionContextToken = 0;
 let evaluationToken = 0;
+let impactMatrixToken = 0;
 
 const selectedCollectionSummary = $derived(
 	collections.find((collection) => collection.name === selectedCollection) ?? null,
@@ -115,6 +128,7 @@ const consolePresetContext = $derived({
 	subject: selectedSubject,
 });
 const schemaDiagnostics = $derived(buildSchemaDiagnostics(collectionDetail, selectedOperation));
+const matrixSchemaDiagnostics = $derived(buildSchemaDiagnostics(collectionDetail, 'read'));
 const graphqlDiagnostics = $derived(buildGraphqlDiagnostics(explanationDiagnostics));
 const evaluatorDiagnostics = $derived(
 	dedupeDiagnostics([...schemaDiagnostics, ...graphqlDiagnostics]),
@@ -293,6 +307,99 @@ async function loadCollectionContext(resetEditors = true) {
 
 	loadingCollectionContext = false;
 	await runPolicyEvaluation(nextEntity);
+	void loadImpactMatrix();
+}
+
+async function loadImpactMatrix() {
+	if (!selectedCollection) {
+		impactMatrix = [];
+		impactMatrixSubjects = [];
+		impactMatrixEntities = [];
+		return;
+	}
+
+	const matrixSubjects = subjects.slice(0, IMPACT_MATRIX_SUBJECT_LIMIT);
+	const matrixEntities = collectionEntities.slice(0, IMPACT_MATRIX_ENTITY_LIMIT);
+	if (matrixSubjects.length === 0 || matrixEntities.length === 0) {
+		impactMatrix = [];
+		impactMatrixSubjects = matrixSubjects;
+		impactMatrixEntities = matrixEntities;
+		return;
+	}
+
+	const token = ++impactMatrixToken;
+	loadingImpactMatrix = true;
+	impactMatrixError = null;
+	impactMatrixSubjects = matrixSubjects;
+	impactMatrixEntities = matrixEntities;
+
+	const requests: ImpactMatrixRequest[] = buildImpactMatrixInputs(
+		selectedCollection,
+		matrixEntities,
+		matrixSubjects,
+		IMPACT_MATRIX_OPERATIONS,
+	);
+
+	const explainResults = await Promise.allSettled(
+		requests.map((request) =>
+			explainPolicyDetailed(request.explainInput, scope, { actor: request.subjectId }),
+		),
+	);
+
+	const effectiveByKey = new Map<string, EffectiveCollectionPolicy>();
+	const effectiveKeys: Array<{ subjectId: string; entityId: string; key: string }> = [];
+	for (const subject of matrixSubjects) {
+		for (const entity of matrixEntities) {
+			effectiveKeys.push({
+				subjectId: subject.id,
+				entityId: entity.id,
+				key: `${subject.id}|${entity.id}`,
+			});
+		}
+	}
+	const effectiveResults = await Promise.allSettled(
+		effectiveKeys.map(({ subjectId, entityId }) =>
+			fetchEffectivePolicy(selectedCollection, scope, {
+				entityId,
+				actor: subjectId,
+			}),
+		),
+	);
+	effectiveResults.forEach((result, index) => {
+		const meta = effectiveKeys[index];
+		if (!meta) return;
+		if (result.status === 'fulfilled') {
+			effectiveByKey.set(meta.key, result.value);
+		}
+	});
+
+	if (token !== impactMatrixToken) return;
+
+	const cells: ImpactCell[] = requests.map((request, index) => {
+		const explainPromise = explainResults[index];
+		const explainResult =
+			explainPromise && explainPromise.status === 'fulfilled' ? explainPromise.value : null;
+		const effective = effectiveByKey.get(`${request.subjectId}|${request.entity.id}`) ?? null;
+		return resolveImpactCell({
+			request,
+			explainResult,
+			effective,
+			presetCtxForSubject: {
+				baseHref: graphqlConsoleBaseHref,
+				subject: request.subjectId,
+			},
+		});
+	});
+
+	const failureCount = explainResults.filter((r) => r.status === 'rejected').length;
+	if (failureCount === explainResults.length && explainResults.length > 0) {
+		impactMatrixError = 'Failed to load any impact matrix cells.';
+	} else if (failureCount > 0) {
+		impactMatrixError = `Failed to load ${failureCount} of ${explainResults.length} matrix cells.`;
+	}
+
+	impactMatrix = cells;
+	loadingImpactMatrix = false;
 }
 
 async function loadRouteShell() {
@@ -764,6 +871,154 @@ onMount(() => {
 			</div>
 		</section>
 	</div>
+
+	<section class="panel" data-testid="policy-impact-matrix">
+		<div class="panel-header">
+			<h2>Impact Matrix</h2>
+			<div class="actions">
+				{#if loadingImpactMatrix}
+					<span class="muted">Loading impact matrix…</span>
+				{/if}
+				<button
+					type="button"
+					data-testid="policy-impact-matrix-refresh"
+					onclick={() => void loadImpactMatrix()}
+				>
+					Refresh
+				</button>
+			</div>
+		</div>
+		<div class="panel-body stack">
+			<p class="muted">
+				Active-policy outcomes for the first {impactMatrixEntities.length} sample row(s) across
+				up to {impactMatrixSubjects.length} subjects and {IMPACT_MATRIX_OPERATIONS.length} operations.
+			</p>
+			{#if impactMatrixError}
+				<p class="message error" data-testid="policy-impact-matrix-error">{impactMatrixError}</p>
+			{/if}
+			{#if matrixSchemaDiagnostics.length}
+				<div class="stack">
+					{#each matrixSchemaDiagnostics as diagnostic}
+						<div class="impact-diagnostic" data-testid="policy-impact-matrix-diagnostic">
+							<strong>{diagnostic.code}</strong>
+							<p>{diagnostic.summary}</p>
+							<p class="muted">{diagnostic.remediation}</p>
+						</div>
+					{/each}
+				</div>
+			{/if}
+			{#if impactMatrixEntities.length === 0}
+				<p class="muted" data-testid="policy-impact-matrix-empty">
+					No sample rows available for the selected collection.
+				</p>
+			{:else}
+				{#each impactMatrixEntities as entity (entity.id)}
+					<div
+						class="impact-matrix-entity"
+						data-testid="policy-impact-matrix-entity"
+						data-entity-id={entity.id}
+					>
+						<h3 data-testid="policy-impact-matrix-entity-label">
+							{entity.collection}/{entity.id} · v{entity.version}
+						</h3>
+						<table class="impact-matrix-table">
+							<thead>
+								<tr>
+									<th scope="col">Operation</th>
+									{#each impactMatrixSubjects as subject}
+										<th scope="col" data-testid="policy-impact-matrix-subject-header">
+											{subject.label}
+										</th>
+									{/each}
+								</tr>
+							</thead>
+							<tbody>
+								{#each IMPACT_MATRIX_OPERATIONS as operation}
+									<tr>
+										<th scope="row">{operation}</th>
+										{#each impactMatrixSubjects as subject}
+											{@const cell = impactMatrix.find(
+												(c) =>
+													c.entityId === entity.id &&
+													c.subjectId === subject.id &&
+													c.operation === operation,
+											)}
+											<td
+												data-testid="policy-impact-matrix-cell"
+												data-entity-id={entity.id}
+												data-subject-id={subject.id}
+												data-operation={operation}
+												data-decision={cell?.decision ?? 'pending'}
+											>
+												{#if cell}
+													<div
+														class="impact-decision impact-decision-{cell.decision}"
+														data-testid="policy-impact-matrix-decision"
+													>
+														{cell.decision}
+													</div>
+													<div
+														class="muted impact-reason"
+														data-testid="policy-impact-matrix-reason"
+													>
+														{cell.reason}
+													</div>
+													{#if cell.approvalRole}
+														<div
+															class="muted impact-approval"
+															data-testid="policy-impact-matrix-approval-role"
+														>
+															approver: {cell.approvalRole}
+														</div>
+													{/if}
+													{#if cell.redactedFields.length}
+														<div
+															class="impact-fields"
+															data-testid="policy-impact-matrix-redacted-fields"
+														>
+															redacted: {formatFields(cell.redactedFields)}
+														</div>
+													{/if}
+													{#if cell.deniedFields.length}
+														<div
+															class="impact-fields"
+															data-testid="policy-impact-matrix-denied-fields"
+														>
+															denied: {formatFields(cell.deniedFields)}
+														</div>
+													{/if}
+													{#if cell.diagnostic}
+														<div
+															class="impact-diagnostic"
+															data-testid="policy-impact-matrix-diagnostic"
+														>
+															<strong>{cell.diagnostic.code}</strong>
+															<p>{cell.diagnostic.remediation}</p>
+														</div>
+													{/if}
+													{#if cell.explainHref}
+														<a
+															class="impact-link"
+															href={cell.explainHref}
+															data-testid="policy-impact-matrix-open-graphql"
+														>
+															Open explainPolicy
+														</a>
+													{/if}
+												{:else}
+													<span class="muted">…</span>
+												{/if}
+											</td>
+										{/each}
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{/each}
+			{/if}
+		</div>
+	</section>
 {/if}
 
 <style>
@@ -955,6 +1210,94 @@ onMount(() => {
 		letter-spacing: 0.04em;
 	}
 
+	.impact-matrix-entity {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+
+	.impact-matrix-entity h3 {
+		margin: 0;
+		font-size: 0.95rem;
+	}
+
+	.impact-matrix-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.85rem;
+	}
+
+	.impact-matrix-table th,
+	.impact-matrix-table td {
+		padding: 0.55rem 0.65rem;
+		border: 1px solid rgba(255, 255, 255, 0.08);
+		vertical-align: top;
+		text-align: left;
+	}
+
+	.impact-matrix-table thead th {
+		background: rgba(255, 255, 255, 0.04);
+		font-size: 0.78rem;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+	}
+
+	.impact-decision {
+		font-weight: 600;
+		text-transform: uppercase;
+		letter-spacing: 0.04em;
+		font-size: 0.78rem;
+		margin-bottom: 0.4rem;
+	}
+
+	.impact-decision-allowed {
+		color: #4ade80;
+	}
+
+	.impact-decision-denied {
+		color: #f87171;
+	}
+
+	.impact-decision-needs_approval {
+		color: #fbbf24;
+	}
+
+	.impact-decision-error {
+		color: #cbd5f5;
+	}
+
+	.impact-approval,
+	.impact-fields,
+	.impact-reason {
+		font-size: 0.78rem;
+		margin-top: 0.25rem;
+	}
+
+	.impact-diagnostic {
+		margin-top: 0.4rem;
+		padding: 0.45rem 0.55rem;
+		border-radius: 0.4rem;
+		background: rgba(248, 113, 113, 0.12);
+	}
+
+	.impact-diagnostic strong {
+		font-size: 0.78rem;
+		display: block;
+		margin-bottom: 0.2rem;
+	}
+
+	.impact-diagnostic p {
+		margin: 0;
+		font-size: 0.78rem;
+	}
+
+	.impact-link {
+		display: inline-block;
+		margin-top: 0.4rem;
+		font-size: 0.8rem;
+		color: var(--text);
+	}
+
 	@media (max-width: 720px) {
 		.capability-grid {
 			grid-template-columns: 1fr;
@@ -962,6 +1305,10 @@ onMount(() => {
 
 		.fixture-header {
 			flex-direction: column;
+		}
+
+		.impact-matrix-table {
+			font-size: 0.78rem;
 		}
 	}
 </style>

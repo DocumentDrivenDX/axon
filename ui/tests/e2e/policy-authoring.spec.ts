@@ -113,6 +113,64 @@ test.describe('Policy authoring', () => {
 	});
 });
 
+test.describe('Policy authoring (impact matrix)', () => {
+	test('renders subject × operation × fixture-row outcomes for the active policy', async ({
+		page,
+		request,
+	}) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-impact-matrix');
+		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.financeAgent);
+		await page.goto(policiesUrl);
+
+		await page.getByTestId('policy-collection-picker').selectOption(SCN017_COLLECTIONS.invoices);
+		const matrix = page.getByTestId('policy-impact-matrix');
+		await expect(matrix).toBeVisible();
+		// Wait for at least one cell to populate.
+		await expect(matrix.getByTestId('policy-impact-matrix-cell').first()).toHaveAttribute(
+			'data-decision',
+			/(allowed|denied|needs_approval)/,
+		);
+
+		// A read against the contractor should be allowed with amount_cents redacted on a small invoice.
+		const contractorReadSmall = matrix.locator(
+			`[data-testid="policy-impact-matrix-cell"][data-entity-id="${fixture.invoices.small.id}"][data-subject-id="${SCN017_SUBJECTS.contractor}"][data-operation="read"]`,
+		);
+		await expect(contractorReadSmall).toHaveAttribute('data-decision', 'allowed');
+		await expect(
+			contractorReadSmall.getByTestId('policy-impact-matrix-redacted-fields'),
+		).toContainText('amount_cents');
+
+		// Finance-agent patching the large invoice should need approval.
+		const financePatchLarge = matrix.locator(
+			`[data-testid="policy-impact-matrix-cell"][data-entity-id="${fixture.invoices.large.id}"][data-subject-id="${SCN017_SUBJECTS.financeAgent}"][data-operation="patch"]`,
+		);
+		await expect(financePatchLarge).toHaveAttribute('data-decision', 'needs_approval');
+		await expect(
+			financePatchLarge.getByTestId('policy-impact-matrix-approval-role'),
+		).toContainText(SCN017_ROLES.financeApprover);
+	});
+
+	test('surfaces policy_filter_unindexed remediation in the matrix', async ({ page, request }) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-impact-matrix-unindexed');
+		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.financeAgent);
+		await page.goto(policiesUrl);
+
+		await page
+			.getByTestId('policy-collection-picker')
+			.selectOption(SCN017_COLLECTIONS.policyFilterUnindexed);
+
+		const matrix = page.getByTestId('policy-impact-matrix');
+		await expect(matrix).toBeVisible();
+		const diagnostic = matrix.getByTestId('policy-impact-matrix-diagnostic').first();
+		await expect(diagnostic).toContainText('policy_filter_unindexed');
+		await expect(diagnostic).toContainText('reviewer_email');
+	});
+});
+
 test.describe('Policy authoring (schemas tab)', () => {
 	test('compile + fixture dry-run + activate updates the persisted policy', async ({
 		page,
