@@ -136,6 +136,13 @@ pub struct ServeArgs {
     /// start if the target paths do not already exist. When `--tls-cert` /
     /// `--tls-key` are also set, those paths are used; otherwise the cert
     /// lands in `$XDG_DATA_HOME/axon/tls/`. Intended for local development.
+    ///
+    /// The default cert covers `localhost`, `127.0.0.1`, `::1`, `0.0.0.0`,
+    /// and the local hostname. To reach the server over a different name
+    /// (machine hostname, tailnet hostname, LAN IP) without disabling TLS
+    /// verification, supply a comma-separated SAN list via
+    /// `--tls-self-signed-san`, or provide a CA-signed cert via
+    /// `--tls-cert` / `--tls-key`.
     #[arg(
         long,
         env = "AXON_TLS_SELF_SIGNED",
@@ -145,6 +152,16 @@ pub struct ServeArgs {
         value_parser = clap::builder::BoolishValueParser::new()
     )]
     pub tls_self_signed: bool,
+
+    /// Comma-separated extra SAN entries (DNS names or IP addresses) to
+    /// embed in a freshly generated self-signed certificate. Tokens that
+    /// parse as IP addresses become IP SANs; everything else becomes a DNS
+    /// SAN. Ignored when the cert/key files already exist; delete the
+    /// existing pair to regenerate with a new SAN list.
+    ///
+    /// Example: `--tls-self-signed-san sindri,sindri.local,100.64.0.5`
+    #[arg(long, env = "AXON_TLS_SELF_SIGNED_SAN")]
+    pub tls_self_signed_san: Option<String>,
 }
 
 /// Resolve the TLS material paths for this invocation, applying defaults and
@@ -158,7 +175,12 @@ pub fn resolve_tls_material(args: &ServeArgs) -> Result<Option<(PathBuf, PathBuf
 
     if args.tls_self_signed {
         let (cert, key) = explicit.unwrap_or_else(crate::tls_bootstrap::default_tls_paths);
-        crate::tls_bootstrap::ensure_tls_material(&cert, &key)?;
+        let extras = args
+            .tls_self_signed_san
+            .as_deref()
+            .map(crate::tls_bootstrap::ExtraSans::parse_csv)
+            .unwrap_or_default();
+        crate::tls_bootstrap::ensure_tls_material_with_sans(&cert, &key, &extras)?;
         return Ok(Some((cert, key)));
     }
 
@@ -816,5 +838,26 @@ mod tests {
     fn grpc_opt_in_with_port() {
         let args = ServeArgs::parse_from(["axon-serve", "--grpc-port", "4171"]);
         assert_eq!(args.grpc_port, Some(4171));
+    }
+
+    #[test]
+    fn cli_tls_self_signed_san_parses_csv() {
+        let args = ServeArgs::parse_from([
+            "axon-serve",
+            "--tls-self-signed",
+            "--tls-self-signed-san",
+            "sindri,sindri.local,100.64.0.5",
+        ]);
+
+        assert!(args.tls_self_signed);
+        let extras = crate::tls_bootstrap::ExtraSans::parse_csv(
+            args.tls_self_signed_san.as_deref().unwrap_or(""),
+        );
+        assert_eq!(extras.dns_names, vec!["sindri", "sindri.local"]);
+        assert_eq!(extras.ip_addresses.len(), 1);
+        assert_eq!(
+            extras.ip_addresses[0],
+            "100.64.0.5".parse::<std::net::IpAddr>().unwrap()
+        );
     }
 }

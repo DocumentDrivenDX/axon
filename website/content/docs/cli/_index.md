@@ -89,6 +89,39 @@ axon serve --storage postgres --postgres-dsn "$DSN" --grpc-port 4171
 axon serve --tailscale-socket /var/run/tailscale/tailscaled.sock
 ```
 
+**TLS**
+
+| Flag | Env var | Default | Description |
+|------|---------|---------|-------------|
+| `--tls-cert <path>` | `AXON_TLS_CERT` | — | PEM-encoded TLS certificate. Requires `--tls-key`. |
+| `--tls-key <path>` | `AXON_TLS_KEY` | — | PEM-encoded TLS private key. Requires `--tls-cert`. |
+| `--tls-self-signed` | `AXON_TLS_SELF_SIGNED` | `false` | Generate a self-signed cert on first start (dev only) |
+| `--tls-self-signed-san <list>` | `AXON_TLS_SELF_SIGNED_SAN` | — | Comma-separated extra SAN entries (DNS names or IPs) |
+
+When both `--tls-cert` and `--tls-key` are supplied (or any of the equivalent
+env vars), the server listens on HTTPS using the operator-provided
+certificate. Without TLS flags, the server falls back to plain HTTP.
+
+The auto-generated `--tls-self-signed` certificate covers `localhost`,
+`127.0.0.1`, `::1`, `0.0.0.0`, and the local hostname by default. If clients
+reach the server over a different name (machine hostname, tailnet name, LAN
+IP), extend the SAN list rather than disabling TLS verification:
+
+```bash
+# Self-signed cert that browsers and Node clients trust over the LAN
+axon serve --tls-self-signed \
+  --tls-self-signed-san sindri,sindri.local,100.64.0.5
+
+# Or hand a CA-signed leaf cert directly (e.g. mkcert workflow):
+mkcert -install
+mkcert sindri sindri.local localhost 127.0.0.1
+axon serve --tls-cert ./sindri+3.pem --tls-key ./sindri+3-key.pem
+```
+
+The self-signed cert is regenerated only when the cert/key files are
+absent. Delete them to refresh the SAN list. Production deployments should
+provide a CA-signed cert via `--tls-cert` / `--tls-key`.
+
 ---
 
 ## axon collections

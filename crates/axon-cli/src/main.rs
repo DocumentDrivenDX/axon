@@ -960,6 +960,7 @@ fn run_server_command(cli: Cli) -> Result<()> {
                 tls_cert: None,
                 tls_key: None,
                 tls_self_signed: false,
+                tls_self_signed_san: None,
             };
             rt.block_on(async {
                 axon_server::serve::serve(args)

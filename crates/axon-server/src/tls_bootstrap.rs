@@ -7,12 +7,53 @@
 //! unset.
 //!
 //! The generated certificate carries SANs for `localhost`, `127.0.0.1`,
-//! `::1`, `0.0.0.0`, and the local hostname, and is valid for ten years.
+//! `::1`, `0.0.0.0`, and the local hostname by default, and is valid for ten
+//! years. Operators reaching the server over a different name (machine
+//! hostname, tailnet hostname, LAN IP) can extend the SAN list via
+//! `ExtraSans`; bead axon-a51dde79 added this so downstream consumers can
+//! drop `NODE_TLS_REJECT_UNAUTHORIZED=0` from their dev configs.
 //! Key material is written with mode `0600` on Unix.
 
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, SanType};
+
+/// Additional Subject Alternative Name entries to embed in a generated
+/// self-signed certificate. Empty vectors are equivalent to omitting the
+/// extras; the default SAN list is always included.
+#[derive(Debug, Default, Clone)]
+pub struct ExtraSans {
+    pub dns_names: Vec<String>,
+    pub ip_addresses: Vec<IpAddr>,
+}
+
+impl ExtraSans {
+    pub fn is_empty(&self) -> bool {
+        self.dns_names.is_empty() && self.ip_addresses.is_empty()
+    }
+
+    /// Parse a comma-separated SAN list from the CLI. Tokens that parse as
+    /// IP addresses become IP SANs; everything else becomes a DNS SAN. Empty
+    /// tokens are skipped silently. Unparseable input never errors here —
+    /// rcgen will reject malformed DNS names downstream with a clearer
+    /// message tied to the cert-generation step.
+    pub fn parse_csv(input: &str) -> Self {
+        let mut sans = ExtraSans::default();
+        for raw in input.split(',') {
+            let token = raw.trim();
+            if token.is_empty() {
+                continue;
+            }
+            if let Ok(ip) = token.parse::<IpAddr>() {
+                sans.ip_addresses.push(ip);
+            } else {
+                sans.dns_names.push(token.to_string());
+            }
+        }
+        sans
+    }
+}
 
 /// Resolve the default XDG-based location for self-signed TLS material.
 ///
@@ -36,11 +77,26 @@ pub fn default_tls_paths() -> (PathBuf, PathBuf) {
 /// (re-)written.  The parent directory is created with mode `0700` if
 /// needed, and key material is chmod'd to `0600` on Unix.
 pub fn ensure_tls_material(cert_path: &Path, key_path: &Path) -> Result<(), String> {
+    ensure_tls_material_with_sans(cert_path, key_path, &ExtraSans::default())
+}
+
+/// Same contract as [`ensure_tls_material`], but accepts additional SAN entries.
+///
+/// The supplied DNS names and IP addresses get merged into the default SAN
+/// list when generating a new certificate. When the certificate already
+/// exists at `cert_path`, the extras are ignored (we do not regenerate just
+/// because the SAN list changed; operators must delete the file to refresh
+/// it).
+pub fn ensure_tls_material_with_sans(
+    cert_path: &Path,
+    key_path: &Path,
+    extra: &ExtraSans,
+) -> Result<(), String> {
     if cert_path.exists() && key_path.exists() {
         return Ok(());
     }
 
-    let (cert_pem, key_pem) = generate_self_signed_pem()?;
+    let (cert_pem, key_pem) = generate_self_signed_pem(extra)?;
 
     for path in [cert_path, key_path] {
         if let Some(parent) = path.parent() {
@@ -56,13 +112,15 @@ pub fn ensure_tls_material(cert_path: &Path, key_path: &Path) -> Result<(), Stri
     tracing::warn!(
         cert = %cert_path.display(),
         key = %key_path.display(),
+        extra_dns = ?extra.dns_names,
+        extra_ip = ?extra.ip_addresses,
         "generated self-signed TLS certificate (dev only — do not expose publicly)"
     );
 
     Ok(())
 }
 
-fn generate_self_signed_pem() -> Result<(String, String), String> {
+fn generate_self_signed_pem(extra: &ExtraSans) -> Result<(String, String), String> {
     let mut params = CertificateParams::default();
     params.distinguished_name = DistinguishedName::new();
     params
@@ -84,6 +142,17 @@ fn generate_self_signed_pem() -> Result<(String, String), String> {
         if let Ok(dns) = hostname.as_str().try_into() {
             params.subject_alt_names.push(SanType::DnsName(dns));
         }
+    }
+
+    for dns in &extra.dns_names {
+        let parsed = dns
+            .as_str()
+            .try_into()
+            .map_err(|e| format!("SAN dns {dns}: {e}"))?;
+        params.subject_alt_names.push(SanType::DnsName(parsed));
+    }
+    for ip in &extra.ip_addresses {
+        params.subject_alt_names.push(SanType::IpAddress(*ip));
     }
 
     let now = time::OffsetDateTime::now_utc();
@@ -218,5 +287,61 @@ mod tests {
         let (cert, key) = default_tls_paths();
         assert!(cert.ends_with("axon/tls/cert.pem"), "cert path: {cert:?}");
         assert!(key.ends_with("axon/tls/key.pem"), "key path: {key:?}");
+    }
+
+    #[test]
+    fn parse_csv_splits_dns_and_ip_tokens() {
+        let sans = ExtraSans::parse_csv(" sindri ,sindri.local, 100.64.0.5 , ::1, ");
+        assert_eq!(sans.dns_names, vec!["sindri", "sindri.local"]);
+        assert_eq!(sans.ip_addresses.len(), 2);
+        assert!(sans.ip_addresses.iter().any(|ip| ip.is_ipv4()));
+        assert!(sans.ip_addresses.iter().any(|ip| ip.is_ipv6()));
+    }
+
+    #[test]
+    fn parse_csv_treats_empty_input_as_empty_extras() {
+        assert!(ExtraSans::parse_csv("").is_empty());
+        assert!(ExtraSans::parse_csv(" , , ").is_empty());
+    }
+
+    #[test]
+    fn extra_sans_land_in_generated_certificate() {
+        use rustls_pki_types::{pem::PemObject, CertificateDer};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        let extras = ExtraSans::parse_csv("sindri,sindri.local,100.64.0.5");
+
+        ensure_tls_material_with_sans(&cert_path, &key_path, &extras)
+            .expect("generate cert with extra SANs");
+
+        let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(&cert_path)
+            .expect("open cert")
+            .collect::<Result<_, _>>()
+            .expect("parse cert");
+        assert_eq!(certs.len(), 1);
+        let der = certs[0].as_ref();
+
+        // DNS SANs are encoded as ASCII inside the DER, so a byte-window
+        // search is enough to confirm the SAN list was applied. The IP SAN
+        // appears as the raw 4-byte sequence 100.64.0.5.
+        assert!(
+            der.windows(b"sindri".len()).any(|w| w == b"sindri"),
+            "expected 'sindri' DNS SAN in cert DER"
+        );
+        assert!(
+            der.windows(b"sindri.local".len())
+                .any(|w| w == b"sindri.local"),
+            "expected 'sindri.local' DNS SAN in cert DER"
+        );
+        let ipv4_bytes: [u8; 4] = [100, 64, 0, 5];
+        assert!(
+            der.windows(ipv4_bytes.len()).any(|w| w == ipv4_bytes),
+            "expected 100.64.0.5 IP SAN bytes in cert DER"
+        );
+
+        // Default SANs are still present.
+        assert!(der.windows(b"localhost".len()).any(|w| w == b"localhost"));
     }
 }
