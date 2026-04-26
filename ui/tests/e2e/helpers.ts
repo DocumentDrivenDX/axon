@@ -267,6 +267,18 @@ export async function routeGraphqlAs(page: Page, actor: string, mock?: GraphqlMo
 			},
 		});
 	});
+
+	// Also override /auth/me so the UI's `fetchAuthMe()` reflects the
+	// scoped actor — otherwise the topnav and the policy-aware empty
+	// states display the deployment default (admin / guest) instead of
+	// the actor under test.
+	await page.route('**/auth/me', async (route) => {
+		await route.fulfill({
+			status: 200,
+			contentType: 'application/json',
+			body: JSON.stringify({ actor, role: 'read' }),
+		});
+	});
 }
 
 export function captureDataPlaneRequests(page: Page, db: TestDatabase): string[] {

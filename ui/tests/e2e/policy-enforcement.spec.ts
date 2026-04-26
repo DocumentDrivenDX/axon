@@ -247,4 +247,97 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		await expect(relatedInvoicePill).toBeVisible();
 		await expect(relatedInvoicePill).toContainText('1');
 	});
+
+	test('no-visible-rows empty state shows policy version with no hidden counts', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-6c16692e: a caller with no matching read
+		// rule must see a policy-aware empty state. The
+		// policy_filter_unindexed collection allows reads only when
+		// reviewer_email == subject.email; the contractor has no email
+		// attribute, so they see zero rows.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-empty');
+		const collectionUrl = dbCollectionUrl(
+			fixture.db,
+			SCN017_COLLECTIONS.policyFilterUnindexed,
+		);
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+		await page.goto(collectionUrl);
+
+		// The policy-aware empty state must render with subject and policy
+		// version context, and a link to the explainer.
+		const emptyState = page.getByTestId('entity-list-empty');
+		await expect(emptyState).toBeVisible();
+		await expect(page.getByTestId('entity-list-empty-title')).toBeVisible();
+		await expect(page.getByTestId('entity-list-empty-subject')).toBeVisible();
+		await expect(page.getByTestId('entity-list-empty-subject')).toContainText(
+			SCN017_SUBJECTS.contractor,
+		);
+		await expect(page.getByTestId('entity-list-empty-policy-version')).toBeVisible();
+		await expect(page.getByTestId('entity-list-empty-policy-link')).toBeVisible();
+
+		// The empty state must NOT contain a hidden-row count (e.g. "5 hidden")
+		// or any seeded entity identifier (we know one exists in storage).
+		const emptyText = await emptyState.innerText();
+		expect(emptyText.toLowerCase()).not.toMatch(/\b\d+\s+hidden\b/);
+		expect(emptyText.toLowerCase()).not.toMatch(/policy-shadow/);
+
+		// Background sanity: nothing on the page leaks the seeded id.
+		const html = await page.content();
+		expect(html).not.toContain('policy-shadow');
+	});
+
+	test('point-read of hidden entity renders not-found without existence leakage', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-6c16692e: a forbidden / hidden / 404 read
+		// must collapse to the same uniform "not found" surface so the UI
+		// cannot be used as an existence oracle.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-pointread');
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+
+		// Inject a synthetic forbidden envelope on the entity point-read so
+		// we can assert the UI does not surface "forbidden", "denied", or
+		// the requested entity id in the rendered error string.
+		const targetId = fixture.invoices.large.id;
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor, async (postData) => {
+			if (postData.includes('AxonUiEntity(') && postData.includes(targetId)) {
+				return {
+					data: { entity: null },
+					errors: [
+						{
+							message: `policy denied: read on invoices/${targetId}`,
+							path: ['entity'],
+							extensions: {
+								code: 'forbidden',
+								detail: {
+									reason: 'read',
+									collection: SCN017_COLLECTIONS.invoices,
+									entity_id: targetId,
+									policy: 'contractors-do-not-read-invoice',
+								},
+							},
+						},
+					],
+				};
+			}
+			return null;
+		});
+
+		await page.goto(collectionUrl);
+		// Click the row to drive openEntity; the mocked forbidden response
+		// must collapse to the uniform "Entity not found." string.
+		await page.locator('tr', { hasText: targetId }).first().click();
+
+		const errorBanner = page.getByTestId('collection-page-error');
+		await expect(errorBanner).toBeVisible();
+		await expect(errorBanner).toHaveText('Entity not found.');
+		const errorText = await errorBanner.innerText();
+		expect(errorText.toLowerCase()).not.toContain('forbidden');
+		expect(errorText.toLowerCase()).not.toContain('denied');
+		expect(errorText).not.toContain(targetId);
+	});
 });

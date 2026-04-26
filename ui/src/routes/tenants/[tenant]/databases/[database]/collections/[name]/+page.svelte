@@ -23,6 +23,7 @@ import {
 	// biome-ignore lint/correctness/noUnusedImports: Used in template onclick handler.
 	deleteEntity,
 	deleteLink,
+	fetchAuthMe,
 	fetchCollection,
 	fetchCollectionTemplate,
 	fetchEffectivePolicy,
@@ -30,6 +31,7 @@ import {
 	fetchEntity,
 	fetchEntityAudit,
 	fetchRenderedEntity,
+	isAxonGraphqlError,
 	lifecyclesFromSchema,
 	previewEntityRollback,
 	previewMutationIntent,
@@ -45,6 +47,8 @@ import DenialMessage from '$lib/components/DenialMessage.svelte';
 import JsonTree from '$lib/components/JsonTree.svelte';
 // biome-ignore lint/correctness/noUnusedImports: Used in template as the intent preview dialog.
 import MutationIntentPreviewModal from '$lib/components/MutationIntentPreviewModal.svelte';
+// biome-ignore lint/correctness/noUnusedImports: Used in template for empty/denied list states.
+import PolicyEmptyState from '$lib/components/PolicyEmptyState.svelte';
 // biome-ignore lint/correctness/noUnusedImports: Used in template for casting entity data.
 import type { JsonValue } from '$lib/components/json-tree-types';
 import { redactValue } from '$lib/redaction';
@@ -58,11 +62,17 @@ const basePath = $derived(
 	`${base}/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}`,
 );
 const schemasHref = $derived(`${basePath}/schemas`);
+const policiesHref = $derived(`${basePath}/policies`);
 
 let collectionName = $state('');
 const selectedSchemaHref = $derived(
 	collectionName ? `${schemasHref}?collection=${encodeURIComponent(collectionName)}` : schemasHref,
 );
+// Current actor, surfaced to the policy-aware empty states so the user
+// can see "no entities visible to <subject>" without the empty surface
+// having to make a back-channel inference. Loaded once on mount; the
+// shell layout already shows the same identity in the topnav.
+let currentActor = $state<string | null>(null);
 let collection = $state<CollectionDetail | null>(null);
 let entities = $state<EntityRecord[]>([]);
 let selectedEntity = $state<EntityRecord | null>(null);
@@ -556,7 +566,10 @@ async function loadCollection(targetCollection: string, afterId: string | null) 
 		intentCommitOutcome = null;
 		error = null;
 	} catch (errorValue: unknown) {
-		error = errorValue instanceof Error ? errorValue.message : 'Failed to load collection';
+		// Collapse forbidden / not-found into the same uniform "collection
+		// not found" surface so a hidden collection / hidden row cannot be
+		// inferred from a direct URL navigation.
+		error = normalizeReadFailure(errorValue, 'collection');
 	} finally {
 		loading = false;
 	}
@@ -619,6 +632,34 @@ async function readBackOrDisappear(id: string): Promise<EntityRecord | null> {
 	}
 }
 
+/**
+ * Normalize a read failure into a uniform "not found" message so the UI
+ * cannot leak the existence of an entity (or collection) that the
+ * caller is forbidden from reading. Both 404 and 403/policy-denied
+ * collapse to the same surface; only unexpected errors (network,
+ * server-fault) keep their original message. The regex must run on the
+ * raw message even though server-formatted messages may include
+ * collection/entity ids — the collapsed "not found" string contains
+ * none of them, so id leakage is contained.
+ */
+function normalizeReadFailure(
+	errorValue: unknown,
+	kind: 'entity' | 'collection' = 'entity',
+): string {
+	const collapsed = kind === 'collection' ? 'Collection not found.' : 'Entity not found.';
+	if (isAxonGraphqlError(errorValue)) {
+		const code = errorValue.code?.toLowerCase() ?? '';
+		if (code === 'forbidden' || code === 'not_found' || code === 'notfound') {
+			return collapsed;
+		}
+	}
+	const message = errorValue instanceof Error ? errorValue.message : String(errorValue ?? '');
+	if (/not[_ ]?found|404|forbidden|denied/i.test(message)) {
+		return collapsed;
+	}
+	return message || (kind === 'collection' ? 'Failed to load collection' : 'Failed to load entity');
+}
+
 async function openEntity(id: string) {
 	if (!collectionName) {
 		return;
@@ -634,7 +675,7 @@ async function openEntity(id: string) {
 		saveError = null;
 		saveMessage = null;
 	} catch (errorValue: unknown) {
-		error = errorValue instanceof Error ? errorValue.message : 'Failed to load entity';
+		error = normalizeReadFailure(errorValue);
 	}
 }
 
@@ -879,6 +920,14 @@ async function syncRoute() {
 
 onMount(() => {
 	void syncRoute();
+	void (async () => {
+		try {
+			const identity = await fetchAuthMe();
+			currentActor = identity.actor;
+		} catch {
+			currentActor = null;
+		}
+	})();
 });
 
 afterNavigate(() => {
@@ -912,7 +961,7 @@ afterNavigate(() => {
 </div>
 
 {#if error}
-	<p class="message error">{error}</p>
+	<p class="message error" data-testid="collection-page-error">{error}</p>
 {/if}
 
 {#if createMessage}
@@ -996,7 +1045,14 @@ afterNavigate(() => {
 			{#if loading}
 				<p class="message">Loading entities...</p>
 			{:else if entities.length === 0}
-				<p class="muted">No entities yet.</p>
+				<PolicyEmptyState
+					title="No entities visible for the current policy."
+					subject={currentActor}
+					policyVersion={effectivePolicy?.policyVersion ?? null}
+					schemaVersion={collection?.schema?.version ?? null}
+					policyHref={policiesHref}
+					testid="entity-list-empty"
+				/>
 			{:else}
 				<table>
 					<thead>
@@ -1315,7 +1371,14 @@ afterNavigate(() => {
 						{#if linksLoading}
 							<p class="muted">Loading links…</p>
 						{:else if links.length === 0}
-							<p class="muted">No outbound links. Use "Add Link" to create one.</p>
+							<PolicyEmptyState
+								title="No outbound links visible for the current policy."
+								subject={currentActor}
+								policyVersion={effectivePolicy?.policyVersion ?? null}
+								schemaVersion={collection?.schema?.version ?? null}
+								policyHref={policiesHref}
+								testid="entity-links-empty"
+							/>
 						{:else}
 							<table data-testid="entity-links-table">
 								<thead>
