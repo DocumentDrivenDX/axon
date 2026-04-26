@@ -239,7 +239,7 @@ async function loadAuditTab() {
 		const result = await fetchEntityAudit(collectionName, selectedEntity.id, scope);
 		auditEntries = result.entries;
 	} catch (e: unknown) {
-		auditError = e instanceof Error ? e.message : 'Failed to load audit';
+		auditError = normalizeReadFailure(e);
 	} finally {
 		auditLoading = false;
 	}
@@ -269,7 +269,7 @@ async function loadLinksTab() {
 			});
 		}
 	} catch (e: unknown) {
-		linksError = e instanceof Error ? e.message : 'Failed to load links';
+		linksError = normalizeReadFailure(e);
 	} finally {
 		linksLoading = false;
 	}
@@ -282,7 +282,7 @@ async function loadMarkdownTab() {
 	try {
 		renderedMarkdown = await fetchRenderedEntity(collectionName, selectedEntity.id, scope);
 	} catch (e: unknown) {
-		renderedError = e instanceof Error ? e.message : 'Failed to render markdown';
+		renderedError = normalizeReadFailure(e);
 	}
 }
 
@@ -322,7 +322,7 @@ async function doPreviewRollback(toVersion: number) {
 			scope,
 		);
 	} catch (e: unknown) {
-		rollbackPreviewError = e instanceof Error ? e.message : 'Failed to preview rollback';
+		rollbackPreviewError = normalizeReadFailure(e);
 	} finally {
 		rollbackPreviewLoading = false;
 	}
@@ -1250,7 +1250,7 @@ afterNavigate(() => {
 						{#if auditLoading}
 							<p class="muted">Loading history…</p>
 						{:else if auditError}
-							<p class="message error">{auditError}</p>
+							<p class="message error" data-testid="entity-audit-error">{auditError}</p>
 						{:else if auditEntries.length === 0}
 							<p class="muted">No audit entries for this entity.</p>
 						{:else}
@@ -1302,7 +1302,7 @@ afterNavigate(() => {
 				{:else if activeTab === 'links'}
 					<div class="tab-pane stack">
 						{#if linksError}
-							<p class="message error">{linksError}</p>
+							<p class="message error" data-testid="entity-links-error">{linksError}</p>
 						{/if}
 						<div class="links-header">
 							<span class="muted" data-testid="entity-links-total">
@@ -1445,7 +1445,7 @@ afterNavigate(() => {
 				{:else if activeTab === 'markdown'}
 					<div class="tab-pane stack">
 						{#if renderedError}
-							<p class="message error">{renderedError}</p>
+							<p class="message error" data-testid="entity-rendered-error">{renderedError}</p>
 						{:else if renderedMarkdown === null}
 							<p class="muted">Loading rendered markdown…</p>
 						{:else if renderedMarkdown.trim() === ''}
@@ -1515,7 +1515,7 @@ afterNavigate(() => {
 							<p class="muted">Loading preview…</p>
 						{/if}
 						{#if rollbackPreviewError}
-							<p class="message error">{rollbackPreviewError}</p>
+							<p class="message error" data-testid="entity-rollback-preview-error">{rollbackPreviewError}</p>
 						{/if}
 						{#if rollbackPreview !== null && rollbackPreviewVersion !== null}
 							<div class="rollback-preview" data-testid="entity-rollback-preview">

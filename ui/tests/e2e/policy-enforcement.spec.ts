@@ -340,6 +340,71 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		expect(errorText).not.toContain(targetId);
 	});
 
+	test('forbidden audit and links tab loads collapse to a uniform error string', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-a065f3fe: loadAuditTab and loadLinksTab catches
+		// must run their failure values through normalizeReadFailure so a
+		// 403/forbidden tab response cannot leak "policy denied: read on …/<id>"
+		// or the entity id verbatim through the auditError/linksError banners.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-tab-loads');
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+		const targetId = fixture.invoices.large.id;
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor, async (postData) => {
+			const isAuditQuery =
+				postData.includes('AxonUiEntityAudit') || postData.includes('entityAudit');
+			const isLinksQuery =
+				postData.includes('AxonUiTraverseLinks') ||
+				postData.includes('traverseLinks') ||
+				postData.includes('neighbors');
+			if (!isAuditQuery && !isLinksQuery) return null;
+			return {
+				data: null,
+				errors: [
+					{
+						message: `policy denied: read on invoices/${targetId}`,
+						path: [isAuditQuery ? 'entityAudit' : 'traverseLinks'],
+						extensions: {
+							code: 'forbidden',
+							detail: {
+								reason: 'read',
+								collection: SCN017_COLLECTIONS.invoices,
+								entity_id: targetId,
+								policy: 'contractors-do-not-read-invoice',
+							},
+						},
+					},
+				],
+			};
+		});
+
+		await page.goto(collectionUrl);
+		await page.locator('tr', { hasText: targetId }).first().click();
+
+		// Audit tab: open and assert the banner is the uniform "Entity not
+		// found." string with no leaked id or denial wording.
+		await page.getByTestId('entity-tab-audit').click();
+		const auditError = page.locator('[data-testid="entity-audit-error"], .message.error').first();
+		await expect(auditError).toBeVisible();
+		const auditText = (await auditError.innerText()).toLowerCase();
+		expect(auditText).toContain('not found');
+		expect(auditText).not.toContain('forbidden');
+		expect(auditText).not.toContain('denied');
+		expect(auditText).not.toContain(targetId.toLowerCase());
+
+		// Links tab: same uniform-collapse contract.
+		await page.getByTestId('entity-tab-links').click();
+		const linksError = page.locator('[data-testid="entity-links-error"], .message.error').first();
+		await expect(linksError).toBeVisible();
+		const linksText = (await linksError.innerText()).toLowerCase();
+		expect(linksText).toContain('not found');
+		expect(linksText).not.toContain('forbidden');
+		expect(linksText).not.toContain('denied');
+		expect(linksText).not.toContain(targetId.toLowerCase());
+	});
+
 	test('list surfaces never display raw storage entity_count to a contractor', async ({
 		page,
 		request,
