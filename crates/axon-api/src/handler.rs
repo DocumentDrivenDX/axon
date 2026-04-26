@@ -10392,6 +10392,149 @@ mod tests {
         assert!(!contractor_audit_json.contains("net-7 confidential override terms"));
     }
 
+    /// Asserts that traverse() drops neighbor edges whose target entity is
+    /// hidden by row-level read policy. Bead axon-27a73744: handler.rs:6792-6800
+    /// short-circuits to `continue` when get_visible_entity_for_read_with_context
+    /// returns None for the neighbor; removing that short-circuit must make
+    /// this test fail.
+    #[test]
+    fn scn_017_traverse_drops_contractor_hidden_neighbors() {
+        let mut h = handler();
+        let fixture = seed_procurement_fixture(&mut h).expect("SCN-017 fixture should seed");
+        let invoices = fixture.collections.invoices.clone();
+
+        // The procurement fixture's invoice schema does not declare a
+        // self-referential link type. Extend it with `related-invoice` so we
+        // can model a forward neighbor in the same collection without
+        // changing the access_control policy under test.
+        let mut invoice_schema = fixture
+            .schemas
+            .iter()
+            .find(|schema| schema.collection == invoices)
+            .cloned()
+            .expect("invoice schema should be in fixture.schemas");
+        invoice_schema.version += 1;
+        invoice_schema.link_types.insert(
+            "related-invoice".into(),
+            LinkTypeDef {
+                target_collection: invoices.as_str().into(),
+                cardinality: Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: None,
+            },
+        );
+        h.put_schema(invoice_schema)
+            .expect("extend invoice schema with related-invoice link type");
+
+        // Seed an additional invoice assigned to a non-contractor user. Under
+        // the SCN-017 procurement policy, contractor reads require
+        // assigned_contractor_id == subject.user_id, so a contractor caller
+        // cannot read this row. Cross-link it from the contractor-visible
+        // small invoice to model a hidden-target neighbor.
+        let hidden_invoice_id = EntityId::new("inv-hidden-from-contractor");
+        h.create_entity(CreateEntityRequest {
+            collection: invoices.clone(),
+            id: hidden_invoice_id.clone(),
+            data: json!({
+                "number": "INV-9001",
+                "vendor_id": fixture.ids.primary_vendor.as_str(),
+                "requester_id": fixture.ids.requester.as_str(),
+                "assigned_contractor_id": fixture.ids.finance_agent.as_str(),
+                "purchase_order_id": fixture.ids.under_threshold_purchase_order.as_str(),
+                "status": "submitted",
+                "amount_cents": 250_000,
+                "currency": "USD",
+                "commercial_terms": "net-15 hidden-from-contractor terms",
+                "received_at": "2026-04-03T10:00:00Z",
+                "metadata": { "source": "test" }
+            }),
+            actor: Some("admin".into()),
+            audit_metadata: None,
+            attribution: None,
+        })
+        .expect("seed contractor-hidden invoice");
+
+        h.create_link(CreateLinkRequest {
+            source_collection: invoices.clone(),
+            source_id: fixture.ids.under_threshold_invoice.clone(),
+            target_collection: invoices.clone(),
+            target_id: hidden_invoice_id.clone(),
+            link_type: "related-invoice".into(),
+            metadata: json!({}),
+            actor: Some("admin".into()),
+            attribution: None,
+        })
+        .expect("link visible invoice to hidden one");
+
+        // Sanity: the operator (who can read all invoices) sees the hidden
+        // target via traversal. This proves the link exists; the contractor
+        // assertion below would otherwise pass vacuously if the link were
+        // absent.
+        let operator = CallerIdentity::new(fixture.subjects.operator, Role::Read);
+        let operator_traversal = h
+            .traverse_with_caller(
+                TraverseRequest {
+                    collection: invoices.clone(),
+                    id: fixture.ids.under_threshold_invoice.clone(),
+                    link_type: Some("related-invoice".into()),
+                    max_depth: Some(1),
+                    direction: TraverseDirection::Forward,
+                    hop_filter: None,
+                },
+                &operator,
+                None,
+            )
+            .expect("operator traversal");
+        assert!(operator_traversal
+            .entities
+            .iter()
+            .any(|entity| entity.id == hidden_invoice_id));
+
+        // Contractor traversal: the hidden neighbor must be filtered out by
+        // the row-level read policy. The visibility short-circuit at
+        // handler.rs:6792-6800 collapses both the entities and paths sets,
+        // so neither should expose the hidden entity id.
+        let contractor = CallerIdentity::new(fixture.subjects.contractor, Role::Read);
+        let contractor_traversal = h
+            .traverse_with_caller(
+                TraverseRequest {
+                    collection: invoices.clone(),
+                    id: fixture.ids.under_threshold_invoice.clone(),
+                    link_type: Some("related-invoice".into()),
+                    max_depth: Some(1),
+                    direction: TraverseDirection::Forward,
+                    hop_filter: None,
+                },
+                &contractor,
+                None,
+            )
+            .expect("contractor traversal");
+        assert!(
+            !contractor_traversal
+                .entities
+                .iter()
+                .any(|entity| entity.id == hidden_invoice_id),
+            "contractor traversal entities must drop hidden invoice"
+        );
+        assert!(
+            !contractor_traversal.paths.iter().any(|path| path
+                .hops
+                .iter()
+                .any(|hop| hop.entity.id == hidden_invoice_id)),
+            "contractor traversal paths must drop hidden invoice hops"
+        );
+        let contractor_traversal_json =
+            serde_json::to_string(&contractor_traversal).expect("serialize traversal");
+        assert!(
+            !contractor_traversal_json.contains(hidden_invoice_id.as_str()),
+            "contractor traversal payload must not surface hidden invoice id"
+        );
+        assert!(
+            !contractor_traversal_json.contains("net-15 hidden-from-contractor terms"),
+            "contractor traversal payload must not surface hidden commercial_terms"
+        );
+    }
+
     #[test]
     fn policy_denies_field_create_update_patch_and_delete_without_audit() {
         let mut h = handler();
