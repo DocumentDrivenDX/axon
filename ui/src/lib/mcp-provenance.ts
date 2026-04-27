@@ -101,6 +101,20 @@ function buildLaunchCommand(scope: { tenant: string; database: string }): string
 	return ['axon-server', '--mcp-stdio', '--tenant', scope.tenant, '--database', scope.database];
 }
 
+// POSIX shell single-quote escaping. Operators copy commandText into a
+// terminal, so any tenant/database value containing whitespace or shell
+// metacharacters must be quoted such that the shell parses it back as a
+// single argument with the original literal value.
+function shellQuote(value: string): string {
+	if (value === '') return "''";
+	if (/^[A-Za-z0-9_./:@%+=-]+$/.test(value)) return value;
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function buildCommandText(command: string[]): string {
+	return command.map(shellQuote).join(' ');
+}
+
 function classifyConnection(
 	lastActivityNs: number | null,
 	nowNs: number,
@@ -196,7 +210,7 @@ export function buildMcpStdioProvenance(
 		surface,
 		transport,
 		command,
-		commandText: command.join(' '),
+		commandText: buildCommandText(command),
 		configStatus: status,
 		configStatusLabel: statusLabel(status, lastActivityNs),
 		lastActivityNs,

@@ -49,6 +49,47 @@ function humanIntent(): MutationIntent {
 	return intent;
 }
 
+// Minimal POSIX-style shell parser used to validate that commandText round-trips
+// back to the original argv. Handles unquoted tokens, single-quoted segments
+// (literal — no escapes), and backslash escapes outside of single quotes.
+function parseShellCommand(text: string): string[] {
+	const tokens: string[] = [];
+	let current = '';
+	let inToken = false;
+	let i = 0;
+	while (i < text.length) {
+		const c = text[i];
+		if (c === ' ' || c === '\t') {
+			if (inToken) {
+				tokens.push(current);
+				current = '';
+				inToken = false;
+			}
+			i++;
+			continue;
+		}
+		inToken = true;
+		if (c === "'") {
+			i++;
+			while (i < text.length && text[i] !== "'") {
+				current += text[i];
+				i++;
+			}
+			i++;
+			continue;
+		}
+		if (c === '\\' && i + 1 < text.length) {
+			current += text[i + 1];
+			i += 2;
+			continue;
+		}
+		current += c;
+		i++;
+	}
+	if (inToken) tokens.push(current);
+	return tokens;
+}
+
 function mcpAuditEntry(timestampNs: number, requestId = 'req-mcp-1'): AuditEntry {
 	return {
 		id: 1,
@@ -217,6 +258,40 @@ describe('buildMcpStdioProvenance', () => {
 		// the credential ID elsewhere — the env preview must not leak it.
 		expect(envByKey.get('AXON_CREDENTIAL_ID')?.redacted).toBe(true);
 		expect(envByKey.get('AXON_CREDENTIAL_ID')?.value).toBe('[redacted]');
+	});
+
+	test('commandText is shell-safe under adversarial tenant and database names', () => {
+		const adversarialScopes = [
+			{ tenant: 'multi word tenant', database: 'default' },
+			{ tenant: 'acme', database: 'db; rm -rf /' },
+			{ tenant: 'a$b', database: "it's-fine" },
+		];
+		const audit = [mcpAuditEntry(2_000_000_000)];
+		for (const adversarialScope of adversarialScopes) {
+			const provenance = buildMcpStdioProvenance({
+				intent: mcpIntent(),
+				audit,
+				scope: adversarialScope,
+				now: 2_000_000_000,
+			});
+			expect(provenance).not.toBeNull();
+			const tokens = parseShellCommand(provenance?.commandText ?? '');
+			// Original argv layout: ['axon-server', '--mcp-stdio',
+			// '--tenant', tenant, '--database', database]. After parsing the
+			// rendered commandText through a shell, tenant/database must
+			// arrive as exactly one token each, byte-for-byte equal to the
+			// input. Any other behaviour means the displayed recipe would
+			// either split arguments on whitespace or trigger metacharacter
+			// expansion when copied into a terminal.
+			expect(tokens).toEqual([
+				'axon-server',
+				'--mcp-stdio',
+				'--tenant',
+				adversarialScope.tenant,
+				'--database',
+				adversarialScope.database,
+			]);
+		}
 	});
 
 	test('falls back to mcp surface when no audit activity is available', () => {
