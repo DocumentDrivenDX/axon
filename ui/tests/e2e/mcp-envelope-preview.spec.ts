@@ -219,33 +219,27 @@ test.describe('MCP stdio provenance', () => {
 		await expect(page.getByTestId('mcp-stdio-command')).toContainText(`--database ${db.name}`);
 		await expect(page.getByTestId('mcp-stdio-status')).toHaveText(/active|idle|recent/i);
 
-		// Env preview surfaces non-secret values verbatim.
+		// Env preview surfaces non-secret routing values verbatim.
 		const tenantRow = page
 			.getByTestId('mcp-stdio-env-row')
 			.filter({ has: page.locator('code', { hasText: 'AXON_TENANT' }) });
 		await expect(tenantRow).toHaveAttribute('data-redacted', 'false');
 		await expect(tenantRow).toContainText(db.tenant.db_name);
 
-		// Credential, token, and bearer values are redacted before they
-		// reach the DOM. The literal credential ID never appears in the env
-		// table even though it is shown elsewhere as an identifier.
-		const tokenRow = page
-			.getByTestId('mcp-stdio-env-row')
-			.filter({ has: page.locator('code', { hasText: 'AXON_API_TOKEN' }) });
-		await expect(tokenRow).toHaveAttribute('data-redacted', 'true');
-		await expect(tokenRow).toContainText('[redacted]');
-		const bearerRow = page
-			.getByTestId('mcp-stdio-env-row')
-			.filter({ has: page.locator('code', { hasText: 'AXON_BEARER' }) });
-		await expect(bearerRow).toHaveAttribute('data-redacted', 'true');
+		// Secret-keyed env entries are redacted before they reach the DOM.
+		// AXON_CREDENTIAL_ID is a real routing-scope entry whose key matches
+		// the secret-key pattern, so it must not surface the literal id even
+		// though that id is shown elsewhere as an explicit identifier.
 		const credentialEnvRow = page
 			.getByTestId('mcp-stdio-env-row')
 			.filter({ has: page.locator('code', { hasText: 'AXON_CREDENTIAL_ID' }) });
 		await expect(credentialEnvRow).toHaveAttribute('data-redacted', 'true');
+		await expect(credentialEnvRow).toContainText('[redacted]');
 
-		const provenanceText = await provenance.textContent();
-		expect(provenanceText ?? '').not.toContain('sk-redact-me-please');
-		expect(provenanceText ?? '').not.toContain('Bearer fake-session-cookie');
+		// The credential id is shown in the dedicated identifier row but
+		// must never appear inside the env preview table.
+		const envTableText = (await page.getByTestId('mcp-stdio-env').textContent()) ?? '';
+		expect(envTableText).not.toContain('cred-finance-bot');
 	});
 
 	test('hides the stdio provenance panel for human-originated intents', async ({

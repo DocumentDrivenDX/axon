@@ -159,8 +159,6 @@ function buildEnvPreview(
 			key: 'AXON_CREDENTIAL_ID',
 			value: credential === '-' ? 'unknown' : credential,
 		},
-		{ key: 'AXON_API_TOKEN', value: 'sk-redact-me-please' },
-		{ key: 'AXON_BEARER', value: 'Bearer fake-session-cookie' },
 	];
 	return entries.map(redactEnvEntry);
 }

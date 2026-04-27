@@ -177,7 +177,7 @@ describe('buildMcpStdioProvenance', () => {
 		expect(provenance?.configStatusLabel).toContain('Idle');
 	});
 
-	test('redacts credential and bearer entries from the env preview', () => {
+	test('env preview surfaces only routing-scoped keys and redacts credential id', () => {
 		const audit = [mcpAuditEntry(2_000_000_000)];
 		const provenance = buildMcpStdioProvenance({
 			intent: mcpIntent(),
@@ -186,10 +186,16 @@ describe('buildMcpStdioProvenance', () => {
 			now: 2_000_000_000,
 		});
 		const envByKey = new Map(provenance?.env.map((entry) => [entry.key, entry]) ?? []);
+		expect([...envByKey.keys()].sort()).toEqual([
+			'AXON_AGENT_ID',
+			'AXON_CREDENTIAL_ID',
+			'AXON_DATABASE',
+			'AXON_TENANT',
+		]);
 		expect(envByKey.get('AXON_TENANT')?.value).toBe('acme');
-		expect(envByKey.get('AXON_API_TOKEN')?.redacted).toBe(true);
-		expect(envByKey.get('AXON_API_TOKEN')?.value).toBe('[redacted]');
-		expect(envByKey.get('AXON_BEARER')?.redacted).toBe(true);
+		expect(envByKey.get('AXON_TENANT')?.redacted).toBe(false);
+		expect(envByKey.get('AXON_DATABASE')?.value).toBe('default');
+		expect(envByKey.get('AXON_AGENT_ID')?.value).toBe('tool.review-console');
 		// CREDENTIAL_ID matches the secret-key pattern even though we surface
 		// the credential ID elsewhere — the env preview must not leak it.
 		expect(envByKey.get('AXON_CREDENTIAL_ID')?.redacted).toBe(true);
