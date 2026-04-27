@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import {
 	SCN017_COLLECTIONS,
 	SCN017_SUBJECTS,
+	createTestEntity,
 	createTestLink,
 	dbAuditUrl,
 	dbCollectionUrl,
@@ -453,6 +454,302 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		expect(linksText).not.toContain('forbidden');
 		expect(linksText).not.toContain('denied');
 		expect(linksText).not.toContain(targetId.toLowerCase());
+	});
+
+	test('live insertion of a hidden invoice never reveals it to the contractor', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-8a15f833: when a row that policy hides from
+		// the current actor is created live, the entityChanged subscription
+		// must trigger a re-fetch through the policy-enforced read path so
+		// the hidden row never appears in the rendered list, totalCount, or
+		// pagination state. The subscription envelope itself must not carry
+		// the hidden row's raw payload (the helper requests only auditId /
+		// collection / entityId / operation / version).
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-live-hidden');
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+		const sensitiveCommercialTerms = 'net-7 ultra-secret hidden-row terms';
+		const hiddenInvoiceId = 'inv-hidden-live';
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+
+		const wsPromise = page.waitForEvent('websocket', {
+			predicate: (ws) => ws.url().includes('/graphql/ws'),
+		});
+		await page.goto(collectionUrl);
+
+		// Initial state: contractor sees the two seeded invoices, totalCount 2.
+		await expect(page.locator('tbody tr', { hasText: fixture.invoices.large.id })).toBeVisible();
+		await expect(page.locator('tbody tr', { hasText: fixture.invoices.small.id })).toBeVisible();
+		const initialTotal = await page.getByTestId('entity-list-total-count').first().innerText();
+		expect(Number.parseInt(initialTotal.trim(), 10)).toBe(2);
+
+		// Wait for the WebSocket subscribe frame to be sent so the broker
+		// has us registered before we drive the live event. The handshake
+		// protocol is open → connection_init → connection_ack → subscribe;
+		// observing the subscribe send is the strongest client-side signal
+		// that the server-side stream resolver is about to register us.
+		const ws = await wsPromise;
+		await ws.waitForEvent('framesent', {
+			predicate: (frame) =>
+				typeof frame.payload === 'string' && frame.payload.includes('"subscribe"'),
+		});
+
+		// Drive a live insertion of a hidden row (assigned to a different
+		// contractor) — the contractor's policy must filter it out on
+		// re-fetch.
+		await createTestEntity(request, fixture.db, SCN017_COLLECTIONS.invoices, hiddenInvoiceId, {
+			number: 'INV-9001',
+			vendor_id: fixture.vendors.primary.id,
+			requester_id: SCN017_SUBJECTS.requester,
+			assigned_contractor_id: 'other-contractor',
+			status: 'submitted',
+			amount_cents: 990_000,
+			currency: 'USD',
+			commercial_terms: sensitiveCommercialTerms,
+		});
+
+		// totalCount and the rendered rows must remain at 2; the hidden id
+		// must never appear in the DOM, browser storage, or document title.
+		await expect
+			.poll(
+				async () =>
+					Number.parseInt(
+						(await page.getByTestId('entity-list-total-count').first().innerText()).trim(),
+						10,
+					),
+				{ timeout: 5000 },
+			)
+			.toBe(2);
+		await expect(page.locator('tbody tr')).toHaveCount(2);
+		const html = await page.content();
+		expect(html).not.toContain(hiddenInvoiceId);
+		expect(html).not.toContain(sensitiveCommercialTerms);
+		const leakProbe = await page.evaluate(
+			([needle, terms]) => {
+				const dump = (storage: Storage) => Object.values(storage).join(' ');
+				return {
+					inLocalStorage: dump(localStorage).includes(needle) || dump(localStorage).includes(terms),
+					inSessionStorage:
+						dump(sessionStorage).includes(needle) || dump(sessionStorage).includes(terms),
+					inDocumentTitle: document.title.includes(needle) || document.title.includes(terms),
+				};
+			},
+			[hiddenInvoiceId, sensitiveCommercialTerms] as const,
+		);
+		expect(leakProbe.inLocalStorage).toBe(false);
+		expect(leakProbe.inSessionStorage).toBe(false);
+		expect(leakProbe.inDocumentTitle).toBe(false);
+	});
+
+	test('live insertion of a visible invoice surfaces with redaction preserved', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-8a15f833: when a row visible to the
+		// contractor is created live, the live refresh must show it in the
+		// list with the redacted-field markers in place. The sensitive
+		// commercial_terms / amount_cents values must never reach the DOM,
+		// even though the change-feed event for the same row carries raw
+		// values to broadcast subscribers — the UI subscription only
+		// projects auditId / collection / entityId / operation / version
+		// and re-reads through the policy-enforced GET.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-live-visible');
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+		const sensitiveCommercialTerms = 'net-1 confidential live-row terms';
+		const visibleInvoiceId = 'inv-visible-live';
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+
+		const wsPromise = page.waitForEvent('websocket', {
+			predicate: (ws) => ws.url().includes('/graphql/ws'),
+		});
+		await page.goto(collectionUrl);
+		await expect(page.locator('tbody tr', { hasText: fixture.invoices.large.id })).toBeVisible();
+		await expect(page.locator('tbody tr')).toHaveCount(2);
+		const ws = await wsPromise;
+		await ws.waitForEvent('framesent', {
+			predicate: (frame) =>
+				typeof frame.payload === 'string' && frame.payload.includes('"subscribe"'),
+		});
+
+		await createTestEntity(request, fixture.db, SCN017_COLLECTIONS.invoices, visibleInvoiceId, {
+			number: 'INV-9002',
+			vendor_id: fixture.vendors.primary.id,
+			requester_id: SCN017_SUBJECTS.requester,
+			assigned_contractor_id: SCN017_SUBJECTS.contractor,
+			status: 'submitted',
+			amount_cents: 425_000,
+			currency: 'USD',
+			commercial_terms: sensitiveCommercialTerms,
+		});
+
+		// The new row must appear in the contractor's list and the
+		// totalCount pill must rise to 3 — proving the live channel
+		// invalidated the policy-filtered list.
+		await expect(page.locator('tbody tr', { hasText: visibleInvoiceId })).toBeVisible({
+			timeout: 5000,
+		});
+		await expect
+			.poll(
+				async () =>
+					Number.parseInt(
+						(await page.getByTestId('entity-list-total-count').first().innerText()).trim(),
+						10,
+					),
+				{ timeout: 5000 },
+			)
+			.toBe(3);
+
+		// Sensitive values must still be redacted on the new row, not
+		// rehydrated by the broadcast event payload.
+		const html = await page.content();
+		expect(html).not.toContain(sensitiveCommercialTerms);
+		expect(await page.getByTestId('redacted-field').count()).toBeGreaterThanOrEqual(1);
+		const leakProbe = await page.evaluate((needle: string) => {
+			const dump = (storage: Storage) => Object.values(storage).join(' ');
+			return {
+				inLocalStorage: dump(localStorage).includes(needle),
+				inSessionStorage: dump(sessionStorage).includes(needle),
+				inDocumentTitle: document.title.includes(needle),
+			};
+		}, sensitiveCommercialTerms);
+		expect(leakProbe.inLocalStorage).toBe(false);
+		expect(leakProbe.inSessionStorage).toBe(false);
+		expect(leakProbe.inDocumentTitle).toBe(false);
+	});
+
+	test('live link creation to a hidden target stays omitted from the contractor links tab', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-8a15f833: when a new outbound link points at
+		// a row the contractor's row-level read policy hides, the live
+		// refresh of the Links tab must omit the hidden target. The
+		// neighbors GraphQL resolver applies row policy on targets, and the
+		// subscription envelope itself ships no link payload — both layers
+		// must hold for "omit hidden relationship targets after live
+		// events" to be true end-to-end.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-live-hidden-link');
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+		const hiddenTargetId = 'inv-hidden-link-target';
+
+		// Pre-existing visible link so the Links tab renders a stable
+		// initial baseline for the contractor.
+		await createTestLink(request, fixture.db, {
+			source_collection: SCN017_COLLECTIONS.invoices,
+			source_id: fixture.invoices.large.id,
+			target_collection: SCN017_COLLECTIONS.vendors,
+			target_id: fixture.vendors.secondary.id,
+			link_type: 'invoice-vendor',
+		});
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+
+		const wsPromise = page.waitForEvent('websocket', {
+			predicate: (ws) => ws.url().includes('/graphql/ws'),
+		});
+		await page.goto(collectionUrl);
+		await page.locator('tr', { hasText: fixture.invoices.large.id }).first().click();
+		await page.getByTestId('entity-tab-links').click();
+		await expect(page.locator('table[data-testid="entity-links-table"]')).toBeVisible();
+		await expect(page.locator('table[data-testid="entity-links-table"] tbody tr')).toHaveCount(1);
+
+		const ws = await wsPromise;
+		await ws.waitForEvent('framesent', {
+			predicate: (frame) =>
+				typeof frame.payload === 'string' && frame.payload.includes('"subscribe"'),
+		});
+
+		// Seed the hidden target (assigned to a different contractor) and
+		// link to it from the contractor's visible invoice. The contractor
+		// must NOT see the new edge or its target on live refresh.
+		await createTestEntity(request, fixture.db, SCN017_COLLECTIONS.invoices, hiddenTargetId, {
+			number: 'INV-9003',
+			vendor_id: fixture.vendors.primary.id,
+			requester_id: SCN017_SUBJECTS.requester,
+			assigned_contractor_id: 'other-contractor',
+			status: 'submitted',
+			amount_cents: 333_000,
+			currency: 'USD',
+			commercial_terms: 'irrelevant',
+		});
+		await createTestLink(request, fixture.db, {
+			source_collection: SCN017_COLLECTIONS.invoices,
+			source_id: fixture.invoices.large.id,
+			target_collection: SCN017_COLLECTIONS.invoices,
+			target_id: hiddenTargetId,
+			link_type: 'related-invoice',
+		});
+
+		// Allow the live refresh time to roll through; the visible link
+		// count must remain at 1, and the hidden target id must never
+		// appear in the rendered rows.
+		await expect
+			.poll(async () => page.locator('table[data-testid="entity-links-table"] tbody tr').count(), {
+				timeout: 5000,
+			})
+			.toBe(1);
+		const html = await page.content();
+		expect(html).not.toContain(hiddenTargetId);
+		const totalText = await page.getByTestId('entity-links-total').innerText();
+		const totalMatch = totalText.match(/\d+/);
+		expect(totalMatch).not.toBeNull();
+		expect(Number.parseInt(totalMatch?.[0] ?? '', 10)).toBe(1);
+	});
+
+	test('operator live updates raise totalCount and surface the new row', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-8a15f833: operators have no row-level read
+		// restriction on the SCN-017 invoices collection, so live updates
+		// must update their list and totalCount consistently. Companion to
+		// the contractor-side hidden / visible tests — the goal here is to
+		// pin "live updates for unrestricted callers refresh through the
+		// same policy-enforced read path", not to retest redaction.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-live-operator');
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+		const newInvoiceId = 'inv-operator-live';
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.operator);
+
+		const wsPromise = page.waitForEvent('websocket', {
+			predicate: (ws) => ws.url().includes('/graphql/ws'),
+		});
+		await page.goto(collectionUrl);
+		await expect(page.locator('tbody tr')).toHaveCount(2);
+		const ws = await wsPromise;
+		await ws.waitForEvent('framesent', {
+			predicate: (frame) =>
+				typeof frame.payload === 'string' && frame.payload.includes('"subscribe"'),
+		});
+
+		await createTestEntity(request, fixture.db, SCN017_COLLECTIONS.invoices, newInvoiceId, {
+			number: 'INV-9100',
+			vendor_id: fixture.vendors.primary.id,
+			requester_id: SCN017_SUBJECTS.requester,
+			assigned_contractor_id: SCN017_SUBJECTS.contractor,
+			status: 'submitted',
+			amount_cents: 250_000,
+			currency: 'USD',
+			commercial_terms: 'net-30 standard procurement terms',
+		});
+
+		await expect(page.locator('tbody tr', { hasText: newInvoiceId })).toBeVisible({
+			timeout: 5000,
+		});
+		await expect
+			.poll(
+				async () =>
+					Number.parseInt(
+						(await page.getByTestId('entity-list-total-count').first().innerText()).trim(),
+						10,
+					),
+				{ timeout: 5000 },
+			)
+			.toBe(3);
 	});
 
 	test('list surfaces never display raw storage entity_count to a contractor', async ({

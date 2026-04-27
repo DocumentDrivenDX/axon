@@ -10,6 +10,7 @@ import {
 	type EntityRecord,
 	// biome-ignore lint/correctness/noUnusedImports: Used in template type cast.
 	type FieldDiff,
+	type GraphqlSubscriptionHandle,
 	type LifecycleDef,
 	type Link,
 	type MutationPreviewResult,
@@ -37,6 +38,7 @@ import {
 	previewMutationIntent,
 	putCollectionTemplate,
 	revertAuditEntry,
+	subscribeEntityChanges,
 	transitionLifecycle,
 	traverseLinks,
 	updateEntity,
@@ -53,7 +55,7 @@ import PolicyEmptyState from '$lib/components/PolicyEmptyState.svelte';
 import type { JsonValue } from '$lib/components/json-tree-types';
 import { redactValue } from '$lib/redaction';
 import { validateEntityData } from '$lib/schema-validation';
-import { onMount } from 'svelte';
+import { onDestroy, onMount } from 'svelte';
 import type { PageData } from './$types';
 
 const { data }: { data: PageData } = $props();
@@ -916,6 +918,111 @@ async function syncRoute() {
 	selectedEntity = null;
 	await loadCollection(routeCollectionName, null);
 	await loadTemplate();
+	resubscribeChangeFeed(routeCollectionName);
+}
+
+// ── Policy-safe live updates ───────────────────────────────────────────────
+//
+// Subscribe to `entityChanged` for the current collection and treat each
+// event as an invalidation signal. The envelope projection in
+// `subscribeEntityChanges` deliberately omits `data` and `previousData`, so
+// hidden-row payloads and redacted field values cannot reach the DOM via the
+// subscription. The handlers below re-fetch through the policy-enforced
+// read paths (`fetchEntities`, `fetchEntity`, `traverseLinks`) so
+// pagination, totalCount, and link traversal all reflect the same
+// row/field policy the initial load did.
+let changeFeed: GraphqlSubscriptionHandle | null = null;
+let changeFeedCollection: string | null = null;
+let liveRefreshPending = false;
+let liveRefreshQueued = false;
+
+function disposeChangeFeed() {
+	if (changeFeed) {
+		try {
+			changeFeed.dispose();
+		} catch {
+			// dispose is best-effort; double-dispose is a no-op in the api layer.
+		}
+		changeFeed = null;
+	}
+	changeFeedCollection = null;
+}
+
+async function refreshAfterChangeEvent(event: { entityId: string; operation: string }) {
+	if (!collectionName) return;
+	const targetCollection = collectionName;
+	const cursor = paginationHistory[pageIndex] ?? null;
+	const previouslySelected = selectedEntity?.id ?? null;
+	try {
+		const [result, refreshed] = await Promise.all([
+			fetchEntities(targetCollection, { limit: 50, afterId: cursor }, scope),
+			previouslySelected === event.entityId
+				? readBackOrDisappear(event.entityId)
+				: Promise.resolve(null),
+		]);
+		if (collectionName !== targetCollection) return;
+		entities = result.entities;
+		nextCursor = result.next_cursor;
+		totalCount = result.total_count;
+		if (previouslySelected === event.entityId) {
+			selectedEntity = refreshed;
+			if (refreshed) {
+				const idx = entities.findIndex((e) => e.id === refreshed.id);
+				if (idx >= 0) entities[idx] = refreshed;
+			}
+		} else if (selectedEntity && !entities.some((e) => e.id === selectedEntity?.id)) {
+			// The currently-selected row paged out (or became hidden) after this
+			// event; the detail panel should re-read so redaction and existence
+			// stay consistent with the policy-filtered list.
+			selectedEntity = await readBackOrDisappear(selectedEntity.id);
+		}
+		if (activeTab === 'links' && selectedEntity) {
+			await loadLinksTab();
+		}
+	} catch {
+		// Swallow transient refresh errors; the next event (or a page refresh)
+		// will reconcile. Surfacing them on the live channel would mask real
+		// errors from the read path the user just initiated.
+	}
+}
+
+function scheduleChangeRefresh(event: { entityId: string; operation: string }) {
+	if (liveRefreshPending) {
+		// Coalesce concurrent events so a burst of writes triggers a single
+		// trailing refresh instead of N parallel re-fetches.
+		liveRefreshQueued = true;
+		return;
+	}
+	liveRefreshPending = true;
+	void refreshAfterChangeEvent(event).finally(() => {
+		liveRefreshPending = false;
+		if (liveRefreshQueued) {
+			liveRefreshQueued = false;
+			scheduleChangeRefresh(event);
+		}
+	});
+}
+
+function resubscribeChangeFeed(targetCollection: string) {
+	if (!targetCollection) return;
+	if (changeFeedCollection === targetCollection && changeFeed) return;
+	disposeChangeFeed();
+	if (typeof window === 'undefined' || typeof WebSocket === 'undefined') return;
+	changeFeedCollection = targetCollection;
+	changeFeed = subscribeEntityChanges(
+		scope,
+		targetCollection,
+		(event) => {
+			if (event.collection !== collectionName) return;
+			scheduleChangeRefresh({ entityId: event.entityId, operation: event.operation });
+		},
+		() => {
+			// The subscription channel is an affordance, not a security
+			// boundary. A failed handshake or transport error must not break
+			// the page; the policy-enforced read paths remain the source of
+			// truth, and a refresh / pagination action will reconcile state.
+		},
+	);
 }
 
 onMount(() => {
@@ -932,6 +1039,10 @@ onMount(() => {
 
 afterNavigate(() => {
 	void syncRoute();
+});
+
+onDestroy(() => {
+	disposeChangeFeed();
 });
 </script>
 

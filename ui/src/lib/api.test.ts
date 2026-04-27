@@ -46,8 +46,9 @@ import {
 	revertAuditEntry,
 	revokeCredential,
 	setUserRole,
-	suspendUser,
+	subscribeEntityChanges,
 	subscribeQuery,
+	suspendUser,
 	transitionLifecycle,
 	traverseLinks,
 	updateEntity,
@@ -1797,6 +1798,95 @@ test('subscribeQuery reports abnormal WebSocket closes through onError', () => {
 		ws.emitClose(1011, 'internal server error');
 		expect(lastError).not.toBeNull();
 		expect(lastError instanceof Error ? lastError.message : '').toContain('1011');
+	} finally {
+		restore();
+	}
+});
+
+// ── subscribeEntityChanges (policy-safe envelope projection) ──────────────
+
+test('subscribeEntityChanges projects only the policy-safe envelope fields', () => {
+	const restore = installFakeWebSocket();
+	try {
+		const events: unknown[] = [];
+		subscribeEntityChanges(
+			{ tenant: 'acme', database: 'orders' },
+			'invoices',
+			(event) => events.push(event),
+			() => {},
+		);
+		const ws = FakeWebSocket.instances[0] as FakeWebSocket;
+		ws.open();
+		ws.emit({ type: 'connection_ack' });
+
+		const subscribeMsg = JSON.parse(ws.sent[1] ?? '') as {
+			type: string;
+			payload: { query: string; variables: Record<string, unknown> };
+		};
+		expect(subscribeMsg.type).toBe('subscribe');
+		expect(subscribeMsg.payload.variables).toEqual({ collection: 'invoices' });
+		// The policy-safe envelope must NOT request `data` or `previousData`
+		// — those would carry hidden-row payloads and redacted field
+		// plaintext over the broadcast feed and into the DOM.
+		expect(subscribeMsg.payload.query).toContain('entityChanged(collection: $collection)');
+		expect(subscribeMsg.payload.query).toContain('auditId');
+		expect(subscribeMsg.payload.query).toContain('entityId');
+		expect(subscribeMsg.payload.query).toContain('operation');
+		expect(subscribeMsg.payload.query).toContain('version');
+		expect(subscribeMsg.payload.query).not.toMatch(/\bdata\b/);
+		expect(subscribeMsg.payload.query).not.toMatch(/previousData/);
+	} finally {
+		restore();
+	}
+});
+
+test('subscribeEntityChanges forwards envelopes and ignores empty payloads', () => {
+	const restore = installFakeWebSocket();
+	try {
+		const events: Array<{
+			auditId: string;
+			collection: string;
+			entityId: string;
+			operation: string;
+			version: number;
+		}> = [];
+		subscribeEntityChanges(
+			{ tenant: 'acme', database: 'orders' },
+			'invoices',
+			(event) => events.push(event),
+			() => {},
+		);
+		const ws = FakeWebSocket.instances[0] as FakeWebSocket;
+		ws.open();
+		ws.emit({ type: 'connection_ack' });
+		const subscribeId = (JSON.parse(ws.sent[1] ?? '') as { id: string }).id;
+
+		ws.emit({
+			type: 'next',
+			id: subscribeId,
+			payload: {
+				data: {
+					entityChanged: {
+						auditId: '1',
+						collection: 'invoices',
+						entityId: 'inv-1',
+						operation: 'update',
+						version: 2,
+					},
+				},
+			},
+		});
+		ws.emit({ type: 'next', id: subscribeId, payload: { data: { entityChanged: null } } });
+		ws.emit({ type: 'next', id: subscribeId, payload: { data: null } });
+
+		expect(events).toHaveLength(1);
+		expect(events[0]).toEqual({
+			auditId: '1',
+			collection: 'invoices',
+			entityId: 'inv-1',
+			operation: 'update',
+			version: 2,
+		});
 	} finally {
 		restore();
 	}

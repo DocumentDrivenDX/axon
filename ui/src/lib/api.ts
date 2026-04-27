@@ -968,7 +968,11 @@ export function subscribeQuery(
 		queueMicrotask(() => {
 			if (!disposed) onError(error);
 		});
-		return { dispose: () => { disposed = true; } };
+		return {
+			dispose: () => {
+				disposed = true;
+			},
+		};
 	}
 
 	socket.addEventListener('open', () => {
@@ -1018,9 +1022,7 @@ export function subscribeQuery(
 				// graphql-transport-ws: payload is an array of formatted
 				// GraphQL errors. Preserve the AxonGraphqlError envelope so
 				// DenialMessage renders code/reason/policy uniformly.
-				const errors = Array.isArray(message.payload)
-					? (message.payload as GraphQLError[])
-					: [];
+				const errors = Array.isArray(message.payload) ? (message.payload as GraphQLError[]) : [];
 				onError(
 					errors.length > 0
 						? new AxonGraphqlError(errors)
@@ -1062,7 +1064,9 @@ export function subscribeQuery(
 		// either side at end-of-stream. Anything else is an abnormal close
 		// the caller should hear about.
 		if (event.code !== 1000 && event.code !== 1005) {
-			onError(new Error(`subscription closed: code=${event.code} reason=${event.reason || '(none)'}`));
+			onError(
+				new Error(`subscription closed: code=${event.code} reason=${event.reason || '(none)'}`),
+			);
 		}
 	});
 
@@ -1076,6 +1080,61 @@ export function subscribeQuery(
 			closeSocket(1000, 'client disposed');
 		},
 	};
+}
+
+/**
+ * Policy-safe envelope of a GraphQL `entityChanged` event. Field selection
+ * is intentionally narrow: we ship only the metadata required to invalidate
+ * the policy-enforced read cache. The raw `data` / `previousData` fields
+ * are deliberately NOT requested so a hidden row's payload or a redacted
+ * field's plaintext can never reach the client over the subscription
+ * channel — it would otherwise land in DOM via `event.data` even though
+ * the subsequent point-read would mask it.
+ */
+export type EntityChangeEnvelope = {
+	auditId: string;
+	collection: string;
+	entityId: string;
+	operation: string;
+	version: number;
+};
+
+/**
+ * Subscribe to `entityChanged` events for one collection, projecting only
+ * the policy-safe envelope ({@link EntityChangeEnvelope}). Callers must
+ * treat each event as an invalidation signal and re-fetch via the
+ * policy-enforced read paths (queries / point-reads / traversal). Never
+ * read field-level entity data from the envelope: the broker is a
+ * broadcast feed and does not apply per-caller row filtering or field
+ * redaction.
+ *
+ * The returned handle disposes the underlying WebSocket subscription
+ * idempotently.
+ */
+export function subscribeEntityChanges(
+	scope: ScopedTenantDatabase,
+	collection: string,
+	onEvent: (event: EntityChangeEnvelope) => void,
+	onError: (error: Error) => void,
+): GraphqlSubscriptionHandle {
+	return subscribeQuery(
+		scope,
+		`subscription AxonUiEntityChanged($collection: String!) {
+			entityChanged(collection: $collection) {
+				auditId
+				collection
+				entityId
+				operation
+				version
+			}
+		}`,
+		{ collection },
+		(payload) => {
+			const event = (payload as { entityChanged?: EntityChangeEnvelope } | null)?.entityChanged;
+			if (event) onEvent(event);
+		},
+		onError,
+	);
 }
 
 function collectionSummaryFromGraphql(collection: GraphQLCollectionMeta): CollectionSummary {
