@@ -19,6 +19,7 @@ import {
 	buildGraphqlConsolePreset,
 	buildGraphqlDiagnostics,
 	buildImpactMatrixInputs,
+	buildMcpBridgePreset,
 	buildMcpEnvelopePreview,
 	buildSchemaDiagnostics,
 	dedupeDiagnostics,
@@ -1011,5 +1012,31 @@ describe('buildMcpEnvelopePreview', () => {
 		expect(json).toContain('"tool": "invoices.get"');
 		expect(json).toContain('"subject": "finance-agent"');
 		expect(json).toContain('"outcome": "allowed"');
+	});
+});
+
+describe('buildMcpBridgePreset', () => {
+	const ctx = { baseHref: '/ui/tenants/acme/databases/default/graphql', subject: 'finance-agent' };
+
+	test('returns null when no explain input is supplied', () => {
+		expect(buildMcpBridgePreset(ctx, null)).toBeNull();
+	});
+
+	test('emits an axon.query-labelled preset that reproduces explainPolicy', () => {
+		const preset = buildMcpBridgePreset(ctx, {
+			operation: 'patch',
+			collection: 'invoices',
+			entityId: 'inv-1',
+			expectedVersion: 1,
+			patch: { amount_cents: 1500 },
+		});
+		expect(preset).not.toBeNull();
+		expect(preset?.preset).toBe('axon.query');
+		expect(preset?.href).toContain('preset=axon.query');
+		expect(preset?.href).toContain('actor=finance-agent');
+		// The bridge preset reuses the explainPolicy query so the
+		// envelope's decision, reason, and policy version map 1:1 onto
+		// the GraphQL response a human operator can verify.
+		expect(decodeURIComponent(preset?.href ?? '')).toContain('explainPolicy');
 	});
 });

@@ -25,6 +25,7 @@ import {
 	buildExplainConsolePreset,
 	buildGraphqlDiagnostics,
 	buildImpactMatrixInputs,
+	buildMcpBridgePreset,
 	buildMcpEnvelopePreview,
 	buildSchemaDiagnostics,
 	dedupeDiagnostics,
@@ -155,6 +156,24 @@ const effectiveConsolePreset = $derived(
 );
 const explainConsolePreset = $derived(
 	buildExplainConsolePreset(consolePresetContext, explainConsolePreview.input),
+);
+const mcpBridgePreset = $derived(
+	buildMcpBridgePreset(consolePresetContext, explainConsolePreview.input),
+);
+const mcpEnvelopeComparison = $derived(
+	mcpEnvelopePreview && explanation
+		? {
+				outcomeMatches:
+					mcpEnvelopePreview.reasonCode.trim().toLowerCase() ===
+					explanation.reason.trim().toLowerCase(),
+				policyVersionMatches:
+					mcpEnvelopePreview.policyVersion !== null &&
+					mcpEnvelopePreview.policyVersion === explanation.policyVersion,
+				explainDecision: explanation.decision,
+				explainReason: explanation.reason,
+				explainPolicyVersion: explanation.policyVersion,
+			}
+		: null,
 );
 
 function defaultSubjectId(nextSubjects: SubjectOption[]): string {
@@ -938,6 +957,29 @@ onMount(() => {
 						<span class="label">Reproduction (non-secret)</span>
 						<pre data-testid="mcp-envelope-reproduction">{mcpReproductionJson}</pre>
 					</div>
+					{#if mcpEnvelopeComparison}
+						<div class="explanation-row" data-testid="mcp-envelope-comparison">
+							<span class="label">GraphQL parity</span>
+							<div class="stack">
+								<span
+									data-testid="mcp-envelope-comparison-outcome"
+									data-match={mcpEnvelopeComparison.outcomeMatches ? 'match' : 'mismatch'}
+								>
+									{mcpEnvelopeComparison.outcomeMatches ? 'Reason matches' : 'Reason differs'}
+									(MCP: {mcpEnvelopePreview.reasonCode}; GraphQL: {mcpEnvelopeComparison.explainReason})
+								</span>
+								<span
+									data-testid="mcp-envelope-comparison-policy"
+									data-match={mcpEnvelopeComparison.policyVersionMatches ? 'match' : 'mismatch'}
+								>
+									{mcpEnvelopeComparison.policyVersionMatches
+										? 'Policy version matches'
+										: 'Policy version differs'}
+									(MCP: v{mcpEnvelopePreview.policyVersion ?? '?'}; GraphQL: v{mcpEnvelopeComparison.explainPolicyVersion})
+								</span>
+							</div>
+						</div>
+					{/if}
 					<div class="actions">
 						<button
 							type="button"
@@ -952,6 +994,15 @@ onMount(() => {
 								Copy reproduction JSON
 							{/if}
 						</button>
+						{#if mcpBridgePreset}
+							<a
+								class="console-link"
+								data-testid="mcp-envelope-bridge-graphql"
+								href={mcpBridgePreset.href}
+							>
+								Open as axon.query in GraphQL
+							</a>
+						{/if}
 					</div>
 				{:else}
 					<p class="muted" data-testid="mcp-envelope-empty">

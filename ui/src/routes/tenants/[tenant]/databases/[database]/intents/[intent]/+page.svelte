@@ -22,6 +22,7 @@ import {
 	delegatedByLabel,
 	grantVersionLabel,
 	requesterLabel as intentRequesterLabel,
+	isMcpOriginated,
 	originBadge,
 	originMetadataSummary,
 	structuredOutcomeSummary,
@@ -29,6 +30,7 @@ import {
 	toolArgumentsSummary,
 	toolNameLabel,
 } from '$lib/intent-metadata';
+import { buildMcpStdioProvenance } from '$lib/mcp-provenance';
 import { onMount } from 'svelte';
 import type { PageData } from './$types';
 
@@ -60,6 +62,15 @@ let reviewReasonField = $state<HTMLTextAreaElement | null>(null);
 
 const canApprove = $derived(intent?.approvalState === 'pending' && !reviewing);
 const canReject = $derived(intent?.approvalState === 'pending' && !reviewing);
+const mcpStdioProvenance = $derived(
+	intent && isMcpOriginated(intent)
+		? buildMcpStdioProvenance({
+				intent,
+				audit: auditEntries,
+				scope: { tenant: scope.tenant, database: scope.database },
+			})
+		: null,
+);
 const staleCommitCode = $derived(
 	commitOutcome && !commitOutcome.ok ? (commitOutcome.error.code ?? null) : null,
 );
@@ -544,6 +555,88 @@ onMount(() => {
 			</div>
 		</section>
 
+		{#if mcpStdioProvenance}
+			<section class="panel" data-testid="mcp-stdio-provenance">
+				<div class="panel-header">
+					<h2>MCP stdio provenance</h2>
+					<span
+						class="pill"
+						data-testid="mcp-stdio-status-pill"
+						data-status={mcpStdioProvenance.configStatus}
+					>
+						{mcpStdioProvenance.configStatus}
+					</span>
+				</div>
+				<div class="panel-body stack">
+					<p class="muted">
+						This intent was submitted through the MCP {mcpStdioProvenance.transport} transport.
+						The launch command and config preview below are operator hints — credentials and
+						environment secrets are redacted before they reach the UI.
+					</p>
+					<div class="meta-grid">
+						<span>Surface</span>
+						<code data-testid="mcp-stdio-surface">{mcpStdioProvenance.surface}</code>
+						<span>Transport</span>
+						<code data-testid="mcp-stdio-transport">{mcpStdioProvenance.transport}</code>
+						<span>Agent identity</span>
+						<code data-testid="mcp-stdio-agent">{mcpStdioProvenance.agentIdentity}</code>
+						<span>Tool name</span>
+						<code data-testid="mcp-stdio-tool">{mcpStdioProvenance.toolName}</code>
+						<span>Delegated by</span>
+						<code data-testid="mcp-stdio-delegated">{mcpStdioProvenance.delegatedBy}</code>
+						<span>Tenant role</span>
+						<code data-testid="mcp-stdio-tenant-role">{mcpStdioProvenance.tenantRole}</code>
+						<span>Credential</span>
+						<code data-testid="mcp-stdio-credential">{mcpStdioProvenance.credentialId}</code>
+						<span>Grant version</span>
+						<strong data-testid="mcp-stdio-grant-version">{mcpStdioProvenance.grantVersion}</strong>
+						<span>Request ID</span>
+						<code data-testid="mcp-stdio-request-id">
+							{mcpStdioProvenance.requestId ?? '-'}
+						</code>
+					</div>
+					<div>
+						<h3>Launch command</h3>
+						<pre data-testid="mcp-stdio-command">{mcpStdioProvenance.commandText}</pre>
+					</div>
+					<p class="muted" data-testid="mcp-stdio-status">
+						{mcpStdioProvenance.configStatusLabel}
+					</p>
+					<div>
+						<h3>Environment preview</h3>
+						<table class="env-grid" data-testid="mcp-stdio-env">
+							<thead>
+								<tr>
+									<th>Key</th>
+									<th>Value</th>
+								</tr>
+							</thead>
+							<tbody>
+								{#each mcpStdioProvenance.env as entry}
+									<tr
+										data-testid="mcp-stdio-env-row"
+										data-key={entry.key}
+										data-redacted={entry.redacted ? 'true' : 'false'}
+									>
+										<td><code>{entry.key}</code></td>
+										<td>
+											{#if entry.redacted}
+												<span class="redacted" data-testid="mcp-stdio-env-redacted-{entry.key}">
+													{entry.value}
+												</span>
+											{:else}
+												<code>{entry.value}</code>
+											{/if}
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				</div>
+			</section>
+		{/if}
+
 		<section class="panel" data-testid="intent-diff">
 			<div class="panel-header">
 				<h2>Diff</h2>
@@ -826,6 +919,24 @@ onMount(() => {
 
 	textarea[aria-invalid='true'] {
 		border-color: rgba(248, 113, 113, 0.7);
+	}
+
+	.env-grid {
+		width: 100%;
+		border-collapse: collapse;
+	}
+
+	.env-grid th,
+	.env-grid td {
+		padding: 0.4rem 0.6rem;
+		border-bottom: 1px solid var(--border);
+		text-align: left;
+		font-size: 0.85rem;
+	}
+
+	.redacted {
+		color: var(--muted);
+		font-style: italic;
 	}
 
 	@media (max-width: 1000px) {

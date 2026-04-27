@@ -446,6 +446,21 @@ export function buildExplainConsolePreset(
 	return buildGraphqlConsolePreset(ctx, 'explainPolicy', EXPLAIN_POLICY_CONSOLE_QUERY, { input });
 }
 
+/**
+ * Build a GraphQL preset that mirrors the MCP `axon.query` bridge for the
+ * current envelope. The MCP `axon.query` tool routes through the same
+ * GraphQL surface as the policy console, so the bridge preset is the
+ * `explainPolicy` operation labelled distinctly so an operator can confirm
+ * that what an agent saw matches what GraphQL returns directly.
+ */
+export function buildMcpBridgePreset(
+	ctx: ConsolePresetContext,
+	input: ExplainPolicyInput | null,
+): GraphqlConsolePreset | null {
+	if (!input) return null;
+	return buildGraphqlConsolePreset(ctx, 'axon.query', EXPLAIN_POLICY_CONSOLE_QUERY, { input });
+}
+
 export function tryBuildExplainInput(args: BuildExplainInputArgs): {
 	input: ExplainPolicyInput | null;
 	error: string | null;
@@ -723,12 +738,19 @@ export function buildMcpEnvelopePreview(
 ): McpEnvelopePreview | null {
 	const { subject, collection, operation, explanation, effective, explainInput } = args;
 	if (!collection || !subject) return null;
-	if (!explanation && !explainInput) return null;
+	// Require an actual explainPolicy result before rendering the envelope.
+	// During reactive transitions (operation/subject changes that re-fetch
+	// the explanation), the previous render briefly held a `null` explanation
+	// alongside a non-null `explainInput`, which produced a misleading
+	// envelope where reasonCode showed `unknown` but the policy explanation
+	// panel had not yet caught up. Gating on explanation makes both panels
+	// render coherently from the same evaluation result.
+	if (!explanation) return null;
 
 	const tool = mcpToolNameForOperation(collection, operation);
 	const { outcome, conflict } = mcpOutcomeFromExplanation(explanation);
-	const policyVersion = explanation?.policyVersion ?? effective?.policyVersion ?? null;
-	const reasonCode = explanation?.reason ?? (outcome === 'denied' ? 'unknown' : outcome);
+	const policyVersion = explanation.policyVersion ?? effective?.policyVersion ?? null;
+	const reasonCode = explanation.reason;
 	const redactedFields = effective?.redactedFields ?? [];
 	const reproductionArgs = explainInput
 		? sanitizeReproductionArguments(explainInput, redactedFields)
