@@ -179,6 +179,135 @@ test.describe('Mutation intents', () => {
 		await expect(error).toContainText('sha256:commit');
 	});
 
+	test('editing a previewed field invalidates the preview and disables commit until re-preview', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedIntentCollection(request, 'intent-dirty-field');
+		await routeGraphqlAs(page, 'finance-agent');
+		await openEntityEditor(page, db);
+		await fillJsonField(page, 'budget_cents', '6000');
+
+		const initialPayload = await previewIntent(page);
+		expect(initialPayload.data?.previewMutation?.decision).toBe('allow');
+		const initialIntentId = initialPayload.data?.previewMutation?.intent?.id;
+		const modal = page.getByTestId('mutation-intent-modal');
+		await expect(modal).toBeVisible();
+		await expect(page.getByTestId('intent-commit')).toBeEnabled();
+
+		// Close the modal so the form becomes interactive again. The
+		// preview state survives the close (the user is reviewing the
+		// diff, then editing further before committing).
+		await page.getByTestId('intent-close').click();
+		await expect(modal).not.toBeVisible();
+
+		// Edit a previously-previewed field. This must invalidate the
+		// preview: the in-flight intent token was bound to the old draft
+		// JSON, so committing it now would commit the wrong operation.
+		await fillJsonField(page, 'budget_cents', '6500');
+
+		// The Preview button rebrands to "Re-preview" so the user sees
+		// the primary forward action that re-snapshots the draft.
+		await expect(page.getByTestId('entity-preview-intent')).toHaveText(/Re-preview/);
+
+		// Re-open the modal via the "Show preview" affordance to inspect
+		// the dirty state: commit disabled, dirty notice visible, and the
+		// re-preview button focused so a single Enter resolves the guard.
+		await page.getByTestId('entity-preview-show').click();
+		await expect(modal).toBeVisible();
+		await expect(page.getByTestId('intent-dirty-notice')).toBeVisible();
+		await expect(page.getByTestId('intent-commit')).toBeDisabled();
+		const rePreviewBtn = page.getByTestId('intent-re-preview');
+		await expect(rePreviewBtn).toBeVisible();
+		await expect(rePreviewBtn).toBeFocused();
+
+		// Re-preview re-snapshots the current draft, returns a NEW intent
+		// ID, and re-enables commit. The previous intent ID is exposed
+		// through the lineage banner so the supersession is visible.
+		const rePreviewResponse = page.waitForResponse(
+			(response) =>
+				response.url().endsWith('/graphql') &&
+				response.request().method() === 'POST' &&
+				(response.request().postData() ?? '').includes('previewMutation'),
+		);
+		await rePreviewBtn.click();
+		const refreshed = (await (await rePreviewResponse).json()) as PreviewPayload;
+		const refreshedIntentId = refreshed.data?.previewMutation?.intent?.id;
+		expect(refreshedIntentId).toEqual(expect.any(String));
+		expect(refreshedIntentId).not.toBe(initialIntentId);
+		await expect(page.getByTestId('intent-dirty-notice')).toHaveCount(0);
+		await expect(page.getByTestId('intent-commit')).toBeEnabled();
+
+		await page.getByTestId('intent-commit').click();
+		await expect(page.getByText(/Saved v\d+\./)).toBeVisible({ timeout: 10_000 });
+	});
+
+	test('denied previews preserve the user draft input across modal close', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedIntentCollection(request, 'intent-deny-draft', true);
+		await routeGraphqlAs(page, 'finance-agent');
+		await openEntityEditor(page, db);
+		// Type a value the policy will deny. The draft must survive so the
+		// operator can see exactly what tripped the policy and adjust
+		// without retyping.
+		await fillJsonField(page, 'secret', 'bravo-draft');
+
+		const payload = await previewIntent(page);
+		expect(payload.data?.previewMutation?.decision).toBe('deny');
+		await expect(page.getByTestId('intent-commit')).toBeDisabled();
+
+		await page.getByTestId('intent-close').click();
+		const secretInput = page
+			.locator('.tree-row', { hasText: 'secret' })
+			.locator('input.leaf-input');
+		await expect(secretInput).toHaveValue('bravo-draft');
+
+		// Re-opening the modal shows the same denial — the close did not
+		// silently drop the preview state along with the draft.
+		await page.getByTestId('entity-preview-show').click();
+		await expect(page.getByTestId('mutation-intent-modal')).toContainText('deny');
+		await expect(page.getByTestId('intent-commit')).toBeDisabled();
+	});
+
+	test('prevents double-submit on commit by emitting a single commitMutationIntent call', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedIntentCollection(request, 'intent-no-double-submit');
+		let commitCalls = 0;
+		await routeGraphqlAs(page, 'finance-agent', async (postData) => {
+			if (postData.includes('commitMutationIntent')) {
+				commitCalls += 1;
+				// Slow the commit response so a second click lands while
+				// the first is still in flight. Without this delay the
+				// disabled-on-pending state covers the race; the slowdown
+				// is what surfaces the `committingIntent` re-entry guard.
+				await new Promise((resolve) => setTimeout(resolve, 400));
+			}
+			return null;
+		});
+		await openEntityEditor(page, db);
+		await fillJsonField(page, 'budget_cents', '6000');
+
+		const payload = await previewIntent(page);
+		expect(payload.data?.previewMutation?.decision).toBe('allow');
+		await expect(page.getByTestId('intent-commit')).toBeEnabled();
+
+		const commitBtn = page.getByTestId('intent-commit');
+		// Two rapid clicks: the second must NOT produce a second
+		// commitMutationIntent network call. Use force on the second
+		// click so the test does not rely on the disabled attribute
+		// alone — the handler-level guard is what we are exercising.
+		await commitBtn.click();
+		await commitBtn.click({ force: true }).catch(() => {});
+		await commitBtn.click({ force: true }).catch(() => {});
+
+		await expect(page.getByText(/Saved v\d+\./)).toBeVisible({ timeout: 10_000 });
+		expect(commitCalls).toBe(1);
+	});
+
 	test('re-previews after a stale commit, creates a new intent ID, and preserves the lineage link', async ({
 		page,
 		request,

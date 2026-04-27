@@ -16,6 +16,7 @@ type Props = {
 	commitError?: MutationIntentError | null;
 	committing?: boolean;
 	rePreviewing?: boolean;
+	dirty?: boolean;
 	intentDetailHref?: string | null;
 	previousIntentId?: string | null;
 	previousIntentHref?: string | null;
@@ -31,6 +32,7 @@ const {
 	commitError = null,
 	committing = false,
 	rePreviewing = false,
+	dirty = false,
 	intentDetailHref = null,
 	previousIntentId = null,
 	previousIntentHref = null,
@@ -63,9 +65,22 @@ const canCommit = $derived(
 		typeof preview.intentToken === 'string' &&
 		preview.intentToken.length > 0 &&
 		!committed &&
-		!effectiveError,
+		!effectiveError &&
+		!dirty,
 );
-const canRePreview = $derived(!!onRePreview && isStaleOrMismatch && !committed);
+const canRePreview = $derived(!!onRePreview && (isStaleOrMismatch || dirty) && !committed);
+
+// biome-ignore lint/style/useConst: Svelte bind:this mutates this state.
+let rePreviewButton: HTMLButtonElement | undefined = $state();
+$effect(() => {
+	// When the preview becomes dirty while the modal is open, move focus
+	// to the primary re-preview action so the user does not commit a
+	// stale token by reflex. Acceptance: focus returns to the changed
+	// field or primary re-preview action.
+	if (open && dirty && canRePreview && rePreviewButton) {
+		rePreviewButton.focus();
+	}
+});
 
 function formatNs(value: string | undefined): string {
 	if (!value) return 'not set';
@@ -187,6 +202,16 @@ function formatNs(value: string | undefined): string {
 				{/if}
 			</section>
 
+			{#if dirty}
+				<section class="modal-section dirty-box" data-testid="intent-dirty-notice">
+					<h3>Preview out of date</h3>
+					<p>
+						You changed the form after this preview was taken. Re-preview to
+						bind a fresh intent before committing.
+					</p>
+				</section>
+			{/if}
+
 			{#if effectiveError}
 				<section class="modal-section error-box" data-testid="intent-error">
 					<h3>{effectiveError.code ?? 'intent_error'}</h3>
@@ -217,10 +242,11 @@ function formatNs(value: string | undefined): string {
 			{/if}
 
 			<footer class="modal-actions">
-				<button type="button" onclick={() => onClose?.()}>Close</button>
+				<button type="button" data-testid="intent-close" onclick={() => onClose?.()}>Close</button>
 				{#if canRePreview}
 					<button
 						type="button"
+						bind:this={rePreviewButton}
 						disabled={rePreviewing}
 						onclick={() => onRePreview?.()}
 						data-testid="intent-re-preview"
@@ -362,6 +388,11 @@ function formatNs(value: string | undefined): string {
 	.error-box {
 		border-color: rgba(251, 113, 133, 0.35);
 		background: rgba(251, 113, 133, 0.08);
+	}
+
+	.dirty-box {
+		border-color: rgba(250, 204, 21, 0.45);
+		background: rgba(250, 204, 21, 0.1);
 	}
 
 	.intent-detail-link {

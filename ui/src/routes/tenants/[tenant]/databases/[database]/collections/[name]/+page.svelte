@@ -128,6 +128,14 @@ let rePreviewingIntent = $state(false);
 // lineage is reset whenever a fresh edit cycle starts (cancel, save, open
 // another entity) so a re-preview chain cannot bleed across edit sessions.
 let previousIntentId = $state<string | null>(null);
+// JSON-serialized snapshot of `editData` captured at the moment the
+// preview/re-preview returned. The dirty-state guard compares the live
+// `editData` against this snapshot; any divergence invalidates the
+// previewed intent token (commit is disabled until the user re-previews
+// against the new draft). Tracking this client-side mirrors the server's
+// pre-image binding: a token is only valid for the exact operation it
+// previewed, and the form draft IS the operation payload.
+let intentPreviewSnapshot = $state<string | null>(null);
 
 // biome-ignore lint/style/useConst: Svelte template onclick handlers mutate this state.
 let confirmDelete = $state(false);
@@ -251,6 +259,18 @@ function entitySchemaFields(schema: unknown): EntitySchemaField[] {
 
 const schemaFields = $derived(entitySchemaFields(collection?.schema?.entity_schema));
 const requiredSchemaFields = $derived(schemaFields.filter((field) => field.required));
+
+// True when the in-flight preview no longer matches the user's draft. The
+// snapshot is `null` outside an active preview cycle; once captured, any
+// divergence in the JSON serialization of `editData` flags the preview as
+// stale. The modal commit affordance reads this through the `dirty` prop
+// and refuses to fire commit until a fresh preview re-snapshots the
+// current draft.
+const intentPreviewDirty = $derived(
+	intentPreviewSnapshot !== null &&
+		editData !== null &&
+		JSON.stringify(editData) !== intentPreviewSnapshot,
+);
 
 function currentLifecycleState(def: LifecycleDef): string | null {
 	if (!selectedEntity) return null;
@@ -671,6 +691,7 @@ async function loadCollection(targetCollection: string, afterId: string | null) 
 		intentPreview = null;
 		intentCommitOutcome = null;
 		previousIntentId = null;
+		intentPreviewSnapshot = null;
 		error = null;
 	} catch (errorValue: unknown) {
 		// Collapse forbidden / not-found into the same uniform "collection
@@ -780,6 +801,7 @@ async function openEntity(id: string) {
 		intentPreview = null;
 		intentCommitOutcome = null;
 		previousIntentId = null;
+		intentPreviewSnapshot = null;
 		saveError = null;
 		saveMessage = null;
 	} catch (errorValue: unknown) {
@@ -798,6 +820,7 @@ function startEdit() {
 	intentPreview = null;
 	intentCommitOutcome = null;
 	previousIntentId = null;
+	intentPreviewSnapshot = null;
 	saveError = null;
 	saveMessage = null;
 }
@@ -809,6 +832,7 @@ function cancelEdit() {
 	intentPreview = null;
 	intentCommitOutcome = null;
 	previousIntentId = null;
+	intentPreviewSnapshot = null;
 	saveError = null;
 }
 
@@ -867,6 +891,11 @@ async function saveEntity() {
 }
 
 async function previewEntityIntent() {
+	// Double-submit guard: a fast double-click could fire two preview
+	// calls before the disabled-on-pending state propagates to the DOM.
+	// The second call would create a redundant intent ID and confuse the
+	// supersession lineage, so refuse re-entry while a preview is in flight.
+	if (previewingIntent) return;
 	if (!selectedEntity || !editData || !collectionName) return;
 	previewingIntent = true;
 	saveError = null;
@@ -878,6 +907,12 @@ async function previewEntityIntent() {
 		previewingIntent = false;
 		return;
 	}
+
+	// Snapshot the draft NOW so any concurrent edit while the preview
+	// request is in flight is detected as dirty. Reading through the same
+	// JSON the operation body uses guarantees the snapshot describes the
+	// exact bytes the server is about to bind the intent token to.
+	const snapshot = JSON.stringify(editData);
 
 	try {
 		intentPreview = await previewMutationIntent(scope, {
@@ -892,6 +927,7 @@ async function previewEntityIntent() {
 			},
 			expiresInSeconds: 600,
 		});
+		intentPreviewSnapshot = snapshot;
 		intentModalOpen = true;
 	} catch (errorValue: unknown) {
 		saveError =
@@ -924,10 +960,16 @@ async function previewEntityIntent() {
  * re-preview so a re-preview never silently discards typed input.
  */
 async function rePreviewIntent() {
+	// Double-submit guard for the re-preview path. The dirty-state guard
+	// keeps commit disabled, but re-clicking re-preview while one is in
+	// flight would emit duplicate previewMutation requests against the
+	// server and burn intent IDs.
+	if (rePreviewingIntent || previewingIntent) return;
 	if (!selectedEntity || !editData || !collectionName || !intentPreview?.intent) return;
 	rePreviewingIntent = true;
 
 	const supersededIntentId = intentPreview.intent.id;
+	const snapshot = JSON.stringify(editData);
 
 	try {
 		// Refresh the entity so the next preview's `expected_version` and
@@ -956,6 +998,7 @@ async function rePreviewIntent() {
 
 		previousIntentId = supersededIntentId;
 		intentPreview = nextPreview;
+		intentPreviewSnapshot = snapshot;
 		intentCommitOutcome = null;
 	} catch (errorValue: unknown) {
 		saveError =
@@ -968,9 +1011,19 @@ async function rePreviewIntent() {
 }
 
 async function commitPreviewIntent() {
+	// Double-submit guard. The button is disabled while `committingIntent`
+	// is true, but the disabled state propagates one tick after click, so
+	// a fast double-click can still fire two `commitMutationIntent` calls
+	// against the same intent token. Refusing re-entry here is the
+	// belt-and-suspenders backstop.
+	if (committingIntent) return;
 	if (!intentPreview?.intentToken || !intentPreview.intent || !selectedEntity || !collectionName) {
 		return;
 	}
+	// Refuse to commit a stale client-side preview. The dirty-state guard
+	// disables the button in the UI, but commit is the destructive side
+	// of the workflow — never trust UI-disabled alone for safety.
+	if (intentPreviewDirty) return;
 	committingIntent = true;
 	intentCommitOutcome = null;
 
@@ -1373,9 +1426,26 @@ onDestroy(() => {
 					<span class="pill">v{selectedEntity.version}</span>
 					{#if editMode}
 						<button onclick={cancelEdit}>Cancel</button>
-						<button disabled={previewingIntent || saving} onclick={previewEntityIntent}>
-							{previewingIntent ? 'Previewing...' : 'Preview'}
+						<button
+							disabled={previewingIntent || saving}
+							onclick={previewEntityIntent}
+							data-testid="entity-preview-intent"
+						>
+							{previewingIntent
+								? 'Previewing...'
+								: intentPreview && intentPreviewDirty
+									? 'Re-preview'
+									: 'Preview'}
 						</button>
+						{#if intentPreview && !intentModalOpen && !intentCommitOutcome?.ok}
+							<button
+								type="button"
+								onclick={() => (intentModalOpen = true)}
+								data-testid="entity-preview-show"
+							>
+								{intentPreviewDirty ? 'Show preview (stale)' : 'Show preview'}
+							</button>
+						{/if}
 						<button class="primary" disabled={saving} onclick={saveEntity}>
 							{saving ? 'Saving...' : 'Save'}
 						</button>
@@ -1956,6 +2026,7 @@ onDestroy(() => {
 	commitOutcome={intentCommitOutcome}
 	committing={committingIntent}
 	rePreviewing={rePreviewingIntent}
+	dirty={intentPreviewDirty}
 	intentDetailHref={intentPreview?.intent?.id
 		? `${basePath}/intents/${encodeURIComponent(intentPreview.intent.id)}`
 		: null}
