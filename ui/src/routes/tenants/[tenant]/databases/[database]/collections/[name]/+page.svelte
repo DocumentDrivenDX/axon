@@ -1876,6 +1876,9 @@ onDestroy(() => {
 	preview={intentPreview}
 	commitOutcome={intentCommitOutcome}
 	committing={committingIntent}
+	intentDetailHref={intentPreview?.intent?.id
+		? `${basePath}/intents/${encodeURIComponent(intentPreview.intent.id)}`
+		: null}
 	onClose={() => {
 		intentModalOpen = false;
 	}}

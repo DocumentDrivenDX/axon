@@ -15,6 +15,7 @@ type Props = {
 	commitOutcome?: CommitMutationIntentOutcome | null;
 	commitError?: MutationIntentError | null;
 	committing?: boolean;
+	intentDetailHref?: string | null;
 	onClose?: () => void;
 	onCommit?: () => void;
 };
@@ -25,6 +26,7 @@ const {
 	commitOutcome = null,
 	commitError = null,
 	committing = false,
+	intentDetailHref = null,
 	onClose,
 	onCommit,
 }: Props = $props();
@@ -132,6 +134,15 @@ function formatNs(value: string | undefined): string {
 						<span>Separation of duties</span>
 						<strong>{preview.approvalRoute.separationOfDuties ? 'yes' : 'no'}</strong>
 					</div>
+					{#if intent?.id && intentDetailHref}
+						<a
+							class="intent-detail-link"
+							href={intentDetailHref}
+							data-testid="intent-open-pending-detail"
+						>
+							Open pending intent detail
+						</a>
+					{/if}
 				</section>
 			{/if}
 
@@ -313,6 +324,14 @@ function formatNs(value: string | undefined): string {
 	.error-box {
 		border-color: rgba(251, 113, 133, 0.35);
 		background: rgba(251, 113, 133, 0.08);
+	}
+
+	.intent-detail-link {
+		display: inline-block;
+		margin-top: 0.5rem;
+		color: var(--accent);
+		text-decoration: underline;
+		font-size: 0.88rem;
 	}
 
 	.modal-actions {
