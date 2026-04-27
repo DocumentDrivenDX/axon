@@ -610,6 +610,14 @@ function procurementInvoicePolicy() {
 				},
 			],
 		},
+		delete: {
+			deny: [
+				{
+					name: 'contractors-cannot-delete-invoices',
+					when: { subject: 'procurement_role', eq: SCN017_ROLES.contractor },
+				},
+			],
+		},
 		fields: {
 			amount_cents: {
 				read: {

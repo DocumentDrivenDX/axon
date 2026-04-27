@@ -85,14 +85,15 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		page,
 		request,
 	}) => {
-		// The SCN-017 procurement policy does not define a delete rule, so
-		// the engine allows it by default; we cannot drive a row-level deny
-		// from a real call here. Instead, intercept the deleteEntity GraphQL
-		// mutation and return the same structured envelope the backend emits
-		// for a real policy_forbidden response. Verifies that the api client
-		// preserves the structured envelope and that DenialMessage renders
-		// code/reason/fieldPath/policy without the UI optimistically mutating
-		// the list.
+		// Mocked variant of the contractor-delete denial. The real-backend
+		// companion test below (bead axon-a525ef55) drives an actual
+		// `row_write_denied` envelope through axon-server; this one mocks
+		// the GraphQL response so we can additionally exercise rendering of
+		// extensions.rule_ids, which the production policy engine does not
+		// currently emit. Verifies that the api client preserves the
+		// structured envelope and that DenialMessage renders
+		// code/reason/fieldPath/policy/rule_ids without the UI optimistically
+		// mutating the list.
 		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-deny');
 		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
 
@@ -141,6 +142,46 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		// No optimistic mutation: the entity row is still in the list (scope
 		// to the entity table tbody so we don't match a re-rendered row in
 		// some other surface).
+		await expect(
+			page.locator('tbody tr', { hasText: fixture.invoices.large.id }).first(),
+		).toBeVisible();
+	});
+
+	test('real backend denies contractor delete with stable code, reason, and policy', async ({
+		page,
+		request,
+	}) => {
+		// Bead axon-a525ef55: companion to the mocked "denied delete" test
+		// above. The SCN-017 procurement policy now includes a delete deny
+		// rule (`contractors-cannot-delete-invoices`) so the contractor's
+		// delete attempt produces a real `forbidden` envelope from
+		// axon-server. This proves the backend → wire-format → AxonGraphqlError
+		// → DenialMessage path end-to-end (no GraphQL response mock) and
+		// guards against regressions in the structured-envelope plumbing.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-deny-real');
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+
+		// Route the actor only — no GraphQL response mock. The deleteEntity
+		// mutation hits axon-server and the policy engine emits a real denial.
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+		await page.goto(collectionUrl);
+
+		await page.locator('tr', { hasText: fixture.invoices.large.id }).first().click();
+		await page.getByRole('button', { name: /^Delete$/ }).click();
+		await page.getByRole('button', { name: /^Confirm$/ }).click();
+
+		const denial = page.getByTestId('entity-delete-error');
+		await expect(denial).toBeVisible();
+		await expect(page.getByTestId('entity-delete-error-code')).toHaveText(/forbidden/i);
+		// Real-backend reason for an operation-level deny is `row_write_denied`
+		// (set by enforce_policy_operation in axon-api/handler.rs), not the
+		// synthesised `delete` string the mock injects.
+		await expect(page.getByTestId('entity-delete-error-reason')).toHaveText(/row_write_denied/);
+		await expect(page.getByTestId('entity-delete-error-policy')).toContainText(
+			'contractors-cannot-delete-invoices',
+		);
+
+		// No optimistic mutation: the row must still be in the list.
 		await expect(
 			page.locator('tbody tr', { hasText: fixture.invoices.large.id }).first(),
 		).toBeVisible();
