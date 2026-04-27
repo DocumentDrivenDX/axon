@@ -16,6 +16,7 @@ type PreviewPayload = {
 		previewMutation?: {
 			decision?: string;
 			intentToken?: string | null;
+			intent?: { id?: string } | null;
 		};
 	};
 };
@@ -176,5 +177,63 @@ test.describe('Mutation intents', () => {
 		await expect(error).toContainText('operation_hash');
 		await expect(error).toContainText('sha256:preview');
 		await expect(error).toContainText('sha256:commit');
+	});
+
+	test('re-previews after a stale commit, creates a new intent ID, and preserves the lineage link', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedIntentCollection(request, 'intent-stale-relink');
+		await routeGraphqlAs(page, 'finance-agent');
+		await openEntityEditor(page, db);
+		await fillJsonField(page, 'status', 'ready');
+
+		const initialPayload = await previewIntent(page);
+		expect(initialPayload.data?.previewMutation?.decision).toBe('allow');
+		const initialIntentId = initialPayload.data?.previewMutation?.intent?.id;
+		expect(initialIntentId).toEqual(expect.any(String));
+
+		// Drive a real intent_stale by patching the entity out from under
+		// the previewed pre-image. The committed pre-image dimension
+		// becomes stale (version 1 → version 2) which is exactly what the
+		// re-preview workflow must guide the operator through.
+		await patchBudgetRecordAs(request, db, 'finance-agent', COLLECTION, ENTITY_ID, 5000);
+
+		await page.getByTestId('intent-commit').click();
+		const error = page.getByTestId('intent-error');
+		await expect(error).toContainText('intent_stale');
+		// Commit must be disabled while the active token is bound to a
+		// stale pre-image: the user's only forward path is "Re-preview".
+		await expect(page.getByTestId('intent-commit')).toBeDisabled();
+
+		const rePreviewResponse = page.waitForResponse(
+			(response) =>
+				response.url().endsWith('/graphql') &&
+				response.request().method() === 'POST' &&
+				(response.request().postData() ?? '').includes('previewMutation'),
+		);
+		await page.getByTestId('intent-re-preview').click();
+		const refreshed = (await (await rePreviewResponse).json()) as PreviewPayload;
+		const refreshedIntentId = refreshed.data?.previewMutation?.intent?.id;
+		expect(refreshedIntentId).toEqual(expect.any(String));
+		expect(refreshedIntentId).not.toBe(initialIntentId);
+
+		// Lineage banner shows the superseded intent ID with a link to
+		// its audit detail. This is the visible "preserves lineage link"
+		// half of the acceptance criterion; the other half is the new
+		// intent ID being distinct, which we just asserted above.
+		const lineage = page.getByTestId('intent-lineage-supersedes');
+		await expect(lineage).toBeVisible();
+		await expect(lineage).toContainText(initialIntentId as string);
+		const lineageLink = page.getByTestId('intent-lineage-link');
+		await expect(lineageLink).toHaveAttribute(
+			'href',
+			new RegExp(`/intents/${initialIntentId}$`),
+		);
+
+		// The fresh token is bound to the newly observed pre-image
+		// (version 2), so commit becomes available again and succeeds.
+		await page.getByTestId('intent-commit').click();
+		await expect(page.getByText(/Saved v\d+\./)).toBeVisible({ timeout: 10_000 });
 	});
 });

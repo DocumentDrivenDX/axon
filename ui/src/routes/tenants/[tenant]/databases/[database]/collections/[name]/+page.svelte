@@ -120,6 +120,14 @@ let intentCommitOutcome = $state<CommitMutationIntentOutcome | null>(null);
 let intentModalOpen = $state(false);
 let previewingIntent = $state(false);
 let committingIntent = $state(false);
+let rePreviewingIntent = $state(false);
+// Lineage chain for the re-preview workflow. The most recent superseded
+// intent ID (i.e. the one whose commit returned intent_stale or
+// intent_mismatch) is exposed to the modal so the new preview shows
+// "Supersedes <prev-id>" with a link to that intent's audit detail. The
+// lineage is reset whenever a fresh edit cycle starts (cancel, save, open
+// another entity) so a re-preview chain cannot bleed across edit sessions.
+let previousIntentId = $state<string | null>(null);
 
 // biome-ignore lint/style/useConst: Svelte template onclick handlers mutate this state.
 let confirmDelete = $state(false);
@@ -662,6 +670,7 @@ async function loadCollection(targetCollection: string, afterId: string | null) 
 		intentModalOpen = false;
 		intentPreview = null;
 		intentCommitOutcome = null;
+		previousIntentId = null;
 		error = null;
 	} catch (errorValue: unknown) {
 		// Collapse forbidden / not-found into the same uniform "collection
@@ -770,6 +779,7 @@ async function openEntity(id: string) {
 		intentModalOpen = false;
 		intentPreview = null;
 		intentCommitOutcome = null;
+		previousIntentId = null;
 		saveError = null;
 		saveMessage = null;
 	} catch (errorValue: unknown) {
@@ -787,6 +797,7 @@ function startEdit() {
 	intentModalOpen = false;
 	intentPreview = null;
 	intentCommitOutcome = null;
+	previousIntentId = null;
 	saveError = null;
 	saveMessage = null;
 }
@@ -797,6 +808,7 @@ function cancelEdit() {
 	intentModalOpen = false;
 	intentPreview = null;
 	intentCommitOutcome = null;
+	previousIntentId = null;
 	saveError = null;
 }
 
@@ -860,6 +872,7 @@ async function previewEntityIntent() {
 	saveError = null;
 	saveMessage = null;
 	intentCommitOutcome = null;
+	previousIntentId = null;
 
 	if (!validateEditData()) {
 		previewingIntent = false;
@@ -885,6 +898,72 @@ async function previewEntityIntent() {
 			errorValue instanceof Error ? errorValue : String(errorValue ?? 'Failed to preview intent');
 	} finally {
 		previewingIntent = false;
+	}
+}
+
+/**
+ * Re-preview an intent whose commit returned `intent_stale` or
+ * `intent_mismatch`. The previous intent token is now bound to a
+ * pre-image / schema / policy / grant / operation hash that the server
+ * has invalidated, so re-clicking commit on the same token will keep
+ * failing. This handler:
+ *
+ *   1. captures the superseded intent ID for the lineage banner so the
+ *      audit trail visibly chains "new intent supersedes old intent",
+ *   2. refetches the entity to pick up the latest version (closing the
+ *      pre-image dimension on the entity binding),
+ *   3. re-runs `previewMutation` with the updated `expected_version` to
+ *      obtain a fresh intent ID and fresh token bound to the current
+ *      schema/policy/grant/operation-hash bindings,
+ *   4. clears the stale commit outcome so the modal returns to a
+ *      pre-commit state where the new token can be committed.
+ *
+ * No partial UI update is performed in step (2): only `selectedEntity`
+ * and the entities-list row are refreshed to mirror the server. The
+ * user's edits to `editData` are preserved verbatim across the
+ * re-preview so a re-preview never silently discards typed input.
+ */
+async function rePreviewIntent() {
+	if (!selectedEntity || !editData || !collectionName || !intentPreview?.intent) return;
+	rePreviewingIntent = true;
+
+	const supersededIntentId = intentPreview.intent.id;
+
+	try {
+		// Refresh the entity so the next preview's `expected_version` and
+		// the server-side pre-image binding line up. If the row was
+		// deleted out from under us this still propagates as a read
+		// failure rather than silently committing a delete.
+		const refreshed = await fetchEntity(collectionName, selectedEntity.id, scope);
+		selectedEntity = refreshed;
+		const idx = entities.findIndex((e) => e.id === refreshed.id);
+		if (idx >= 0) {
+			entities[idx] = refreshed;
+		}
+
+		const nextPreview = await previewMutationIntent(scope, {
+			operation: {
+				operationKind: 'update_entity',
+				operation: {
+					collection: collectionName,
+					id: refreshed.id,
+					expected_version: refreshed.version,
+					data: editData,
+				},
+			},
+			expiresInSeconds: 600,
+		});
+
+		previousIntentId = supersededIntentId;
+		intentPreview = nextPreview;
+		intentCommitOutcome = null;
+	} catch (errorValue: unknown) {
+		saveError =
+			errorValue instanceof Error
+				? errorValue
+				: String(errorValue ?? 'Failed to re-preview intent');
+	} finally {
+		rePreviewingIntent = false;
 	}
 }
 
@@ -1876,13 +1955,19 @@ onDestroy(() => {
 	preview={intentPreview}
 	commitOutcome={intentCommitOutcome}
 	committing={committingIntent}
+	rePreviewing={rePreviewingIntent}
 	intentDetailHref={intentPreview?.intent?.id
 		? `${basePath}/intents/${encodeURIComponent(intentPreview.intent.id)}`
+		: null}
+	previousIntentId={previousIntentId}
+	previousIntentHref={previousIntentId
+		? `${basePath}/intents/${encodeURIComponent(previousIntentId)}`
 		: null}
 	onClose={() => {
 		intentModalOpen = false;
 	}}
 	onCommit={commitPreviewIntent}
+	onRePreview={rePreviewIntent}
 />
 
 <style>

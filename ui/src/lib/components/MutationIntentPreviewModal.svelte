@@ -15,9 +15,13 @@ type Props = {
 	commitOutcome?: CommitMutationIntentOutcome | null;
 	commitError?: MutationIntentError | null;
 	committing?: boolean;
+	rePreviewing?: boolean;
 	intentDetailHref?: string | null;
+	previousIntentId?: string | null;
+	previousIntentHref?: string | null;
 	onClose?: () => void;
 	onCommit?: () => void;
+	onRePreview?: () => void;
 };
 
 const {
@@ -26,9 +30,13 @@ const {
 	commitOutcome = null,
 	commitError = null,
 	committing = false,
+	rePreviewing = false,
 	intentDetailHref = null,
+	previousIntentId = null,
+	previousIntentHref = null,
 	onClose,
 	onCommit,
+	onRePreview,
 }: Props = $props();
 
 const effectiveError = $derived(
@@ -42,12 +50,22 @@ const status = $derived(
 		(committed ? 'committed' : preview?.decision) ??
 		'unknown',
 );
+// `intent_stale` and `intent_mismatch` invalidate the previewed token: the
+// committed operation does not match what the policy and pre-images said it
+// would, so the user must re-preview to obtain a fresh intent (and a fresh
+// token bound to the new pre-image versions). Surface a re-preview affordance
+// rather than letting the user re-click commit on a known-bad token.
+const isStaleOrMismatch = $derived(
+	effectiveError?.code === 'intent_stale' || effectiveError?.code === 'intent_mismatch',
+);
 const canCommit = $derived(
 	preview?.decision === 'allow' &&
 		typeof preview.intentToken === 'string' &&
 		preview.intentToken.length > 0 &&
-		!committed,
+		!committed &&
+		!effectiveError,
 );
+const canRePreview = $derived(!!onRePreview && isStaleOrMismatch && !committed);
 
 function formatNs(value: string | undefined): string {
 	if (!value) return 'not set';
@@ -66,6 +84,16 @@ function formatNs(value: string | undefined): string {
 					<p class="muted">
 						{intent?.id ?? 'preview'} · expires {formatNs(intent?.expiresAtNs)}
 					</p>
+					{#if previousIntentId}
+						<p class="muted" data-testid="intent-lineage-supersedes">
+							Supersedes
+							{#if previousIntentHref}
+								<a href={previousIntentHref} data-testid="intent-lineage-link">{previousIntentId}</a>
+							{:else}
+								<code>{previousIntentId}</code>
+							{/if}
+						</p>
+					{/if}
 				</div>
 				<span class:danger={preview.decision === 'deny' || !!effectiveError} class="intent-status">
 					{status}
@@ -190,10 +218,20 @@ function formatNs(value: string | undefined): string {
 
 			<footer class="modal-actions">
 				<button type="button" onclick={() => onClose?.()}>Close</button>
+				{#if canRePreview}
+					<button
+						type="button"
+						disabled={rePreviewing}
+						onclick={() => onRePreview?.()}
+						data-testid="intent-re-preview"
+					>
+						{rePreviewing ? 'Re-previewing...' : 'Re-preview'}
+					</button>
+				{/if}
 				<button
 					type="button"
 					class="primary"
-					disabled={!canCommit || committing}
+					disabled={!canCommit || committing || rePreviewing}
 					onclick={() => onCommit?.()}
 					data-testid="intent-commit"
 				>
