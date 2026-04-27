@@ -889,6 +889,195 @@ async function controlGraphqlRequest<T>(
 	return result.data;
 }
 
+/** Disposable handle returned by {@link subscribeQuery}. */
+export type GraphqlSubscriptionHandle = { dispose: () => void };
+
+function subscriptionWebSocketUrl(scope: ScopedTenantDatabase): string {
+	const path = scopedPath('/graphql/ws', scope);
+	const loc = (globalThis as { location?: Location }).location;
+	if (!loc) {
+		throw new Error('subscribeQuery requires a window.location to derive the WebSocket URL');
+	}
+	const wsProto = loc.protocol === 'https:' ? 'wss:' : 'ws:';
+	return `${wsProto}//${loc.host}${path}`;
+}
+
+function newSubscriptionId(): string {
+	const cryptoApi = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+	if (cryptoApi?.randomUUID) return cryptoApi.randomUUID();
+	return `sub-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+/**
+ * Subscribe to a server-side GraphQL subscription over the
+ * graphql-transport-ws protocol exposed by axon-server at
+ * `/tenants/{tenant}/databases/{database}/graphql/ws`.
+ *
+ * This is the transport-only entry point. No production route consumes it
+ * yet — a follow-up bead applies the policy-filtered behavior on top of
+ * this scaffolding.
+ *
+ * The handle returned by this function exposes `dispose()`, which sends a
+ * `complete` for the active subscription and closes the WebSocket. It is
+ * always safe to call; double-dispose is a no-op.
+ *
+ * Errors arrive on `onError` as either an {@link AxonGraphqlError} (when
+ * the server emits a structured GraphQL error envelope on this
+ * subscription) or a plain `Error` (transport / parse / connection
+ * failure). Preserving AxonGraphqlError lets callers render
+ * `DenialMessage` for denied subscriptions exactly as for queries and
+ * mutations.
+ */
+export function subscribeQuery(
+	scope: ScopedTenantDatabase,
+	query: string,
+	variables: Record<string, unknown> | undefined,
+	onEvent: (data: unknown) => void,
+	onError: (error: Error) => void,
+): GraphqlSubscriptionHandle {
+	let disposed = false;
+	let subscriptionId: string | null = null;
+	let socket: WebSocket | null = null;
+
+	const closeSocket = (code: number, reason: string) => {
+		if (!socket) return;
+		try {
+			socket.close(code, reason);
+		} catch {
+			// Some browsers throw when closing an already-closed socket; ignore.
+		}
+	};
+
+	const sendIfOpen = (payload: unknown) => {
+		if (!socket || socket.readyState !== WebSocket.OPEN) return;
+		try {
+			socket.send(JSON.stringify(payload));
+		} catch (err) {
+			if (!disposed) {
+				onError(err instanceof Error ? err : new Error(String(err)));
+			}
+		}
+	};
+
+	try {
+		socket = new WebSocket(subscriptionWebSocketUrl(scope), 'graphql-transport-ws');
+	} catch (err) {
+		const error = err instanceof Error ? err : new Error(String(err));
+		// Defer onError so the caller can wire up handlers before the first
+		// callback fires.
+		queueMicrotask(() => {
+			if (!disposed) onError(error);
+		});
+		return { dispose: () => { disposed = true; } };
+	}
+
+	socket.addEventListener('open', () => {
+		if (disposed) return;
+		sendIfOpen({ type: 'connection_init' });
+	});
+
+	socket.addEventListener('message', (event: MessageEvent) => {
+		if (disposed) return;
+		let message: { type: string; id?: string; payload?: unknown };
+		try {
+			message =
+				typeof event.data === 'string'
+					? (JSON.parse(event.data) as typeof message)
+					: (JSON.parse(String(event.data)) as typeof message);
+		} catch (err) {
+			onError(
+				err instanceof Error
+					? new Error(`subscription message parse failed: ${err.message}`)
+					: new Error('subscription message parse failed'),
+			);
+			return;
+		}
+
+		switch (message.type) {
+			case 'connection_ack': {
+				subscriptionId = newSubscriptionId();
+				sendIfOpen({
+					id: subscriptionId,
+					type: 'subscribe',
+					payload: { query, variables: variables ?? {} },
+				});
+				return;
+			}
+			case 'next': {
+				const payload = message.payload as GraphQLResult<unknown> | undefined;
+				if (payload?.errors?.length) {
+					onError(new AxonGraphqlError(payload.errors));
+					return;
+				}
+				if (payload && 'data' in payload) {
+					onEvent(payload.data);
+				}
+				return;
+			}
+			case 'error': {
+				// graphql-transport-ws: payload is an array of formatted
+				// GraphQL errors. Preserve the AxonGraphqlError envelope so
+				// DenialMessage renders code/reason/policy uniformly.
+				const errors = Array.isArray(message.payload)
+					? (message.payload as GraphQLError[])
+					: [];
+				onError(
+					errors.length > 0
+						? new AxonGraphqlError(errors)
+						: new Error('subscription error (no details)'),
+				);
+				return;
+			}
+			case 'complete': {
+				// Server signaled end-of-stream for this subscription. The
+				// caller already has any data it will receive; no error.
+				return;
+			}
+			case 'ping': {
+				sendIfOpen({ type: 'pong' });
+				return;
+			}
+			case 'pong':
+			case 'connection_error': {
+				// connection_error is a legacy `graphql-ws` (subscriptions-
+				// transport-ws) signal; surface it through onError.
+				if (message.type === 'connection_error') {
+					onError(new Error(`subscription connection error: ${JSON.stringify(message.payload)}`));
+				}
+				return;
+			}
+			default:
+				return;
+		}
+	});
+
+	socket.addEventListener('error', () => {
+		if (disposed) return;
+		onError(new Error('subscription transport error'));
+	});
+
+	socket.addEventListener('close', (event: CloseEvent) => {
+		if (disposed) return;
+		// 1000 (Normal) and 1005 (No status) are clean closes initiated by
+		// either side at end-of-stream. Anything else is an abnormal close
+		// the caller should hear about.
+		if (event.code !== 1000 && event.code !== 1005) {
+			onError(new Error(`subscription closed: code=${event.code} reason=${event.reason || '(none)'}`));
+		}
+	});
+
+	return {
+		dispose() {
+			if (disposed) return;
+			disposed = true;
+			if (subscriptionId) {
+				sendIfOpen({ id: subscriptionId, type: 'complete' });
+			}
+			closeSocket(1000, 'client disposed');
+		},
+	};
+}
+
 function collectionSummaryFromGraphql(collection: GraphQLCollectionMeta): CollectionSummary {
 	return {
 		name: collection.name,

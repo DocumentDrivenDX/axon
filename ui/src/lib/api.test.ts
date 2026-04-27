@@ -47,6 +47,7 @@ import {
 	revokeCredential,
 	setUserRole,
 	suspendUser,
+	subscribeQuery,
 	transitionLifecycle,
 	traverseLinks,
 	updateEntity,
@@ -1563,4 +1564,240 @@ test('credential helpers use control GraphQL without exposing JWT in list', asyn
 		tenantId: 't1',
 		jti: 'jti-2',
 	});
+});
+
+// ── subscribeQuery (graphql-transport-ws transport) ───────────────────────
+
+type WsListener = (event: unknown) => void;
+
+class FakeWebSocket {
+	static OPEN = 1;
+	static CLOSED = 3;
+	static instances: FakeWebSocket[] = [];
+
+	url: string;
+	protocol: string;
+	readyState = 0;
+	sent: string[] = [];
+	closed: { code: number; reason: string } | null = null;
+	private listeners = new Map<string, Set<WsListener>>();
+
+	constructor(url: string, protocol?: string) {
+		this.url = url;
+		this.protocol = protocol ?? '';
+		FakeWebSocket.instances.push(this);
+	}
+
+	addEventListener(type: string, fn: WsListener) {
+		const set = this.listeners.get(type) ?? new Set<WsListener>();
+		set.add(fn);
+		this.listeners.set(type, set);
+	}
+
+	send(data: string) {
+		if (this.readyState !== FakeWebSocket.OPEN) {
+			throw new Error('FakeWebSocket: send while not OPEN');
+		}
+		this.sent.push(data);
+	}
+
+	close(code = 1000, reason = '') {
+		if (this.readyState === FakeWebSocket.CLOSED) return;
+		this.readyState = FakeWebSocket.CLOSED;
+		this.closed = { code, reason };
+		this.dispatch('close', { code, reason });
+	}
+
+	// ── Test driver ─────────────────────────────────────────────────────
+	open() {
+		this.readyState = FakeWebSocket.OPEN;
+		this.dispatch('open', {});
+	}
+
+	emit(message: unknown) {
+		this.dispatch('message', { data: JSON.stringify(message) });
+	}
+
+	emitRaw(data: string) {
+		this.dispatch('message', { data });
+	}
+
+	emitError() {
+		this.dispatch('error', {});
+	}
+
+	emitClose(code: number, reason = '') {
+		this.readyState = FakeWebSocket.CLOSED;
+		this.dispatch('close', { code, reason });
+	}
+
+	private dispatch(type: string, event: unknown) {
+		const set = this.listeners.get(type);
+		if (!set) return;
+		for (const fn of set) fn(event);
+	}
+}
+
+function installFakeWebSocket() {
+	FakeWebSocket.instances = [];
+	const originalWebSocket = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+	const originalLocation = (globalThis as { location?: Location }).location;
+	(globalThis as { WebSocket?: unknown }).WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+	(globalThis as { location?: unknown }).location = {
+		protocol: 'http:',
+		host: 'localhost:5173',
+	} as Location;
+	return () => {
+		(globalThis as { WebSocket?: unknown }).WebSocket = originalWebSocket;
+		(globalThis as { location?: unknown }).location = originalLocation;
+	};
+}
+
+test('subscribeQuery initializes the graphql-transport-ws handshake at the scoped /graphql/ws path', () => {
+	const restore = installFakeWebSocket();
+	try {
+		const handle = subscribeQuery(
+			{ tenant: 'acme', database: 'orders' },
+			'subscription { entityChanged { id } }',
+			{ collection: 'tasks' },
+			() => {},
+			() => {},
+		);
+		const ws = FakeWebSocket.instances[0] as FakeWebSocket;
+		expect(ws).toBeDefined();
+		expect(ws.url).toBe('ws://localhost:5173/tenants/acme/databases/orders/graphql/ws');
+		expect(ws.protocol).toBe('graphql-transport-ws');
+
+		ws.open();
+		expect(ws.sent).toHaveLength(1);
+		expect(JSON.parse(ws.sent[0] ?? '')).toEqual({ type: 'connection_init' });
+
+		ws.emit({ type: 'connection_ack' });
+		expect(ws.sent).toHaveLength(2);
+		const subscribeMsg = JSON.parse(ws.sent[1] ?? '') as {
+			type: string;
+			id: string;
+			payload: { query: string; variables: Record<string, unknown> };
+		};
+		expect(subscribeMsg.type).toBe('subscribe');
+		expect(typeof subscribeMsg.id).toBe('string');
+		expect(subscribeMsg.id.length).toBeGreaterThan(0);
+		expect(subscribeMsg.payload).toEqual({
+			query: 'subscription { entityChanged { id } }',
+			variables: { collection: 'tasks' },
+		});
+
+		handle.dispose();
+	} finally {
+		restore();
+	}
+});
+
+test('subscribeQuery delivers next-payload data to onEvent and dispose closes cleanly', () => {
+	const restore = installFakeWebSocket();
+	try {
+		const events: unknown[] = [];
+		let lastError: unknown = null;
+		const handle = subscribeQuery(
+			{ tenant: 'acme', database: 'orders' },
+			'subscription { x }',
+			{},
+			(data) => events.push(data),
+			(err) => {
+				lastError = err;
+			},
+		);
+		const ws = FakeWebSocket.instances[0] as FakeWebSocket;
+		ws.open();
+		ws.emit({ type: 'connection_ack' });
+		const subscribeId = (JSON.parse(ws.sent[1] ?? '') as { id: string }).id;
+
+		ws.emit({ type: 'next', id: subscribeId, payload: { data: { entity: { id: 't-1' } } } });
+		ws.emit({ type: 'next', id: subscribeId, payload: { data: { entity: { id: 't-2' } } } });
+		expect(events).toEqual([{ entity: { id: 't-1' } }, { entity: { id: 't-2' } }]);
+		expect(lastError).toBeNull();
+
+		handle.dispose();
+		// dispose sends a `complete` for the active subscription, then closes
+		// the socket with code 1000 (normal). The synthetic close that
+		// follows must NOT be reported through onError.
+		const complete = JSON.parse(ws.sent[2] ?? '') as { type: string; id: string };
+		expect(complete.type).toBe('complete');
+		expect(complete.id).toBe(subscribeId);
+		expect(ws.closed?.code).toBe(1000);
+		expect(lastError).toBeNull();
+	} finally {
+		restore();
+	}
+});
+
+test('subscribeQuery surfaces server-side GraphQL errors as AxonGraphqlError on onError', async () => {
+	const restore = installFakeWebSocket();
+	try {
+		let lastError: unknown = null;
+		subscribeQuery(
+			{ tenant: 'acme', database: 'orders' },
+			'subscription { x }',
+			{},
+			() => {},
+			(err) => {
+				lastError = err;
+			},
+		);
+		const ws = FakeWebSocket.instances[0] as FakeWebSocket;
+		ws.open();
+		ws.emit({ type: 'connection_ack' });
+
+		const errorEnvelope = [
+			{
+				message: 'policy denied: reason=read',
+				path: ['entityChanged'],
+				extensions: {
+					code: 'forbidden',
+					detail: {
+						reason: 'read',
+						collection: 'tasks',
+						entity_id: 'task-1',
+						policy: 'finance-only-reads-tasks',
+					},
+					rule_ids: ['rule:finance-only-reads-tasks'],
+				},
+			},
+		];
+		const subscribeId = (JSON.parse(ws.sent[1] ?? '') as { id: string }).id;
+		ws.emit({ type: 'error', id: subscribeId, payload: errorEnvelope });
+
+		const { AxonGraphqlError, isAxonGraphqlError } = await import('./api');
+		expect(isAxonGraphqlError(lastError)).toBe(true);
+		const typed = lastError as InstanceType<typeof AxonGraphqlError>;
+		expect(typed.code).toBe('forbidden');
+		expect(typed.detail?.reason).toBe('read');
+		expect(typed.detail?.policy).toBe('finance-only-reads-tasks');
+		expect(typed.ruleIds).toEqual(['rule:finance-only-reads-tasks']);
+	} finally {
+		restore();
+	}
+});
+
+test('subscribeQuery reports abnormal WebSocket closes through onError', () => {
+	const restore = installFakeWebSocket();
+	try {
+		let lastError: unknown = null;
+		subscribeQuery(
+			{ tenant: 'acme', database: 'orders' },
+			'subscription { x }',
+			{},
+			() => {},
+			(err) => {
+				lastError = err;
+			},
+		);
+		const ws = FakeWebSocket.instances[0] as FakeWebSocket;
+		ws.open();
+		ws.emitClose(1011, 'internal server error');
+		expect(lastError).not.toBeNull();
+		expect(lastError instanceof Error ? lastError.message : '').toContain('1011');
+	} finally {
+		restore();
+	}
 });
