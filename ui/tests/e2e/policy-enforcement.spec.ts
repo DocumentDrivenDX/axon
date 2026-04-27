@@ -200,6 +200,15 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
 		await page.goto(collectionUrl);
 
+		// The total-count pill is rendered eagerly with `entities.length`
+		// (0) while `loading === true` and the initial GraphQL fetch is in
+		// flight. Read it only after the policy-filtered rows have settled
+		// so the assertion isn't racing the load. Sibling tests above pass
+		// without this wait because they `await expect(...).toBeVisible()`
+		// on row-level redaction markers, which auto-wait for the load.
+		await expect(page.locator('tbody tr', { hasText: fixture.invoices.large.id })).toBeVisible();
+		await expect(page.locator('tbody tr', { hasText: fixture.invoices.small.id })).toBeVisible();
+
 		// The displayed total must match the number of rendered rows, and
 		// must be a finite non-negative integer.
 		const totalText = await page.getByTestId('entity-list-total-count').first().innerText();
