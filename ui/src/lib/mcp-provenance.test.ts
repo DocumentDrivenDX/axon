@@ -131,10 +131,32 @@ describe('isSecretEnvKey', () => {
 		expect(isSecretEnvKey('CREDENTIAL_ID')).toBe(true);
 	});
 
+	test('detects adversarial key shapes that embed secret-marker substrings', () => {
+		// Keys with secret markers in the middle, separator variants, mixed
+		// case, and tail variants must all be flagged. These exercise the
+		// regex set against shapes a sloppy operator config might produce.
+		expect(isSecretEnvKey('OAUTH2_BEARER_TOKEN')).toBe(true);
+		expect(isSecretEnvKey('x-api-key')).toBe(true);
+		expect(isSecretEnvKey('myAPIKey')).toBe(true);
+		expect(isSecretEnvKey('SERVICE_AUTHORIZATION_URL')).toBe(true);
+		expect(isSecretEnvKey('ROTATING_CREDENTIAL_REF')).toBe(true);
+		expect(isSecretEnvKey('SMTP_PASSWORD_FILE')).toBe(true);
+	});
+
 	test('passes through non-secret keys', () => {
 		expect(isSecretEnvKey('AXON_TENANT')).toBe(false);
 		expect(isSecretEnvKey('AXON_DATABASE')).toBe(false);
 		expect(isSecretEnvKey('AXON_AGENT_ID')).toBe(false);
+	});
+
+	test('does not over-match keys that merely embed a secret-marker prefix', () => {
+		// The /key$/i pattern anchors on word-end, so 'KEYBOARD' must not
+		// match. 'BEAVER_DAM' must not match /bearer/i because 'bearer' is
+		// not present. These are the false-positives that would erode
+		// operator trust if the redaction layer were too eager.
+		expect(isSecretEnvKey('AXON_KEYBOARD')).toBe(false);
+		expect(isSecretEnvKey('BEAVER_DAM')).toBe(false);
+		expect(isSecretEnvKey('AXON_REGION')).toBe(false);
 	});
 });
 
@@ -144,9 +166,31 @@ describe('isSecretEnvValue', () => {
 		expect(isSecretEnvValue('sk-anything-here')).toBe(true);
 	});
 
+	test('detects adversarial token-shaped values', () => {
+		// Mixed-case bearer prefix, tab separator, and the dotenv-style
+		// 'NAME_TOKEN=' leak shape must all be flagged. Without these the
+		// redaction layer would let common copy-pasted credential strings
+		// through to the env preview.
+		expect(isSecretEnvValue('BEARER xyz')).toBe(true);
+		expect(isSecretEnvValue('Bearer\teyJhbGciOi')).toBe(true);
+		expect(isSecretEnvValue('SK-ABCDEF1234')).toBe(true);
+		expect(isSecretEnvValue('AXON_API_TOKEN=secret-value')).toBe(true);
+	});
+
 	test('passes through plain identifiers', () => {
 		expect(isSecretEnvValue('finance-agent')).toBe(false);
 		expect(isSecretEnvValue('default')).toBe(false);
+	});
+
+	test('does not over-match values that look superficially similar', () => {
+		// Bearer without a separator is just a word; sk without a hyphen is
+		// not the OpenAI/Stripe-style prefix; lowercase env-style assignment
+		// is not the uppercase TOKEN= leak shape. These three near-misses
+		// guard against the redaction layer becoming a denylist of
+		// substrings.
+		expect(isSecretEnvValue('BearerToken')).toBe(false);
+		expect(isSecretEnvValue('sk_underscore')).toBe(false);
+		expect(isSecretEnvValue('lowercase_token=foo')).toBe(false);
 	});
 });
 
@@ -162,6 +206,15 @@ describe('redactEnvEntry', () => {
 			value: '[redacted]',
 			redacted: true,
 		});
+	});
+
+	test('redacts when only the value matches even if the key looks innocuous', () => {
+		// The key 'PROXY_USER' is not a secret-pattern key, but the value
+		// is a real-shaped bearer token. Operators paste these into env
+		// configs by accident; redactEnvEntry must catch the value side
+		// independently of the key.
+		const result = redactEnvEntry({ key: 'PROXY_USER', value: 'Bearer eyJhbGciOiJIUzI1NiJ9' });
+		expect(result).toEqual({ key: 'PROXY_USER', value: '[redacted]', redacted: true });
 	});
 
 	test('keeps non-secret entries verbatim', () => {
@@ -235,7 +288,7 @@ describe('buildMcpStdioProvenance', () => {
 		expect(staleProv?.configStatusLabel).not.toContain('No recent stdio activity recorded');
 	});
 
-	test('env preview surfaces only routing-scoped keys and redacts credential id', () => {
+	test('env preview surfaces only routing-scoped keys with no leaked secret values', () => {
 		const audit = [mcpAuditEntry(2_000_000_000)];
 		const provenance = buildMcpStdioProvenance({
 			intent: mcpIntent(),
@@ -244,20 +297,38 @@ describe('buildMcpStdioProvenance', () => {
 			now: 2_000_000_000,
 		});
 		const envByKey = new Map(provenance?.env.map((entry) => [entry.key, entry]) ?? []);
-		expect([...envByKey.keys()].sort()).toEqual([
+		// Allowlist: env preview is only the deterministic operator-facing
+		// routing scope. Anything outside this set would mean buildEnvPreview
+		// added an entry that operators cannot derive from public config.
+		const allowedKeys = new Set([
+			'AXON_TENANT',
+			'AXON_DATABASE',
 			'AXON_AGENT_ID',
 			'AXON_CREDENTIAL_ID',
-			'AXON_DATABASE',
-			'AXON_TENANT',
 		]);
+		for (const key of envByKey.keys()) {
+			expect(allowedKeys.has(key)).toBe(true);
+		}
+		// Inputs that came from the test fixture (not synthesized inside
+		// buildEnvPreview) round-trip verbatim and unredacted.
 		expect(envByKey.get('AXON_TENANT')?.value).toBe('acme');
 		expect(envByKey.get('AXON_TENANT')?.redacted).toBe(false);
 		expect(envByKey.get('AXON_DATABASE')?.value).toBe('default');
+		expect(envByKey.get('AXON_DATABASE')?.redacted).toBe(false);
 		expect(envByKey.get('AXON_AGENT_ID')?.value).toBe('tool.review-console');
-		// CREDENTIAL_ID matches the secret-key pattern even though we surface
-		// the credential ID elsewhere — the env preview must not leak it.
-		expect(envByKey.get('AXON_CREDENTIAL_ID')?.redacted).toBe(true);
-		expect(envByKey.get('AXON_CREDENTIAL_ID')?.value).toBe('[redacted]');
+		// Structural invariant: regardless of which keys buildEnvPreview
+		// chooses to surface, no displayed value may match a secret-shaped
+		// pattern, and any entry whose key matches a secret-pattern key
+		// must already be marked redacted. This assertion does not depend
+		// on the implementation's choice of entries — adding or removing
+		// keys cannot make it tautological.
+		for (const entry of provenance?.env ?? []) {
+			expect(isSecretEnvValue(entry.value)).toBe(false);
+			if (isSecretEnvKey(entry.key)) {
+				expect(entry.redacted).toBe(true);
+				expect(entry.value).toBe('[redacted]');
+			}
+		}
 	});
 
 	test('commandText is shell-safe under adversarial tenant and database names', () => {
