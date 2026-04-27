@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test';
 import { expect, test } from '@playwright/test';
 import {
 	SCN017_COLLECTIONS,
@@ -11,6 +12,35 @@ import {
 	seedScn017PolicyUiFixture,
 	tenantUrl,
 } from './helpers';
+
+/**
+ * Capture the GraphQL `subscribe` frame on the live-updates WebSocket.
+ *
+ * Must be called BEFORE `page.goto(collectionUrl)`. The chained promise
+ * registers `ws.waitForEvent('framesent', ...)` synchronously inside the
+ * `.then` of the websocket waiter, so the framesent listener is wired up
+ * the moment Playwright sees the WebSocket appear. That avoids the
+ * forward-only race where the subscribe frame ships before the test
+ * gets around to calling `ws.waitForEvent` (Playwright's `waitForEvent`
+ * does not buffer past events).
+ *
+ * The handshake is open → connection_init → connection_ack → subscribe;
+ * by registering as soon as the WS is created we always observe the
+ * subscribe frame regardless of how long the test's interaction
+ * sequence takes between `page.goto` and the await point.
+ */
+function captureSubscribeFrame(page: Page): Promise<unknown> {
+	return page
+		.waitForEvent('websocket', {
+			predicate: (ws) => ws.url().includes('/graphql/ws'),
+		})
+		.then((ws) =>
+			ws.waitForEvent('framesent', {
+				predicate: (frame) =>
+					typeof frame.payload === 'string' && frame.payload.includes('"subscribe"'),
+			}),
+		);
+}
 
 /**
  * FEAT-031 / bead axon-c3895a14: shared redacted field renderer with no DOM
@@ -474,9 +504,10 @@ test.describe('Policy enforcement (UI redaction)', () => {
 
 		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
 
-		const wsPromise = page.waitForEvent('websocket', {
-			predicate: (ws) => ws.url().includes('/graphql/ws'),
-		});
+		// Capture the subscribe frame BEFORE navigation so the framesent
+		// listener is registered as soon as the WebSocket appears (see the
+		// helper for race details).
+		const subscribeSent = captureSubscribeFrame(page);
 		await page.goto(collectionUrl);
 
 		// Initial state: contractor sees the two seeded invoices, totalCount 2.
@@ -490,11 +521,7 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		// protocol is open → connection_init → connection_ack → subscribe;
 		// observing the subscribe send is the strongest client-side signal
 		// that the server-side stream resolver is about to register us.
-		const ws = await wsPromise;
-		await ws.waitForEvent('framesent', {
-			predicate: (frame) =>
-				typeof frame.payload === 'string' && frame.payload.includes('"subscribe"'),
-		});
+		await subscribeSent;
 
 		// Drive a live insertion of a hidden row (assigned to a different
 		// contractor) — the contractor's policy must filter it out on
@@ -562,17 +589,11 @@ test.describe('Policy enforcement (UI redaction)', () => {
 
 		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
 
-		const wsPromise = page.waitForEvent('websocket', {
-			predicate: (ws) => ws.url().includes('/graphql/ws'),
-		});
+		const subscribeSent = captureSubscribeFrame(page);
 		await page.goto(collectionUrl);
 		await expect(page.locator('tbody tr', { hasText: fixture.invoices.large.id })).toBeVisible();
 		await expect(page.locator('tbody tr')).toHaveCount(2);
-		const ws = await wsPromise;
-		await ws.waitForEvent('framesent', {
-			predicate: (frame) =>
-				typeof frame.payload === 'string' && frame.payload.includes('"subscribe"'),
-		});
+		await subscribeSent;
 
 		await createTestEntity(request, fixture.db, SCN017_COLLECTIONS.invoices, visibleInvoiceId, {
 			number: 'INV-9002',
@@ -647,20 +668,13 @@ test.describe('Policy enforcement (UI redaction)', () => {
 
 		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
 
-		const wsPromise = page.waitForEvent('websocket', {
-			predicate: (ws) => ws.url().includes('/graphql/ws'),
-		});
+		const subscribeSent = captureSubscribeFrame(page);
 		await page.goto(collectionUrl);
 		await page.locator('tr', { hasText: fixture.invoices.large.id }).first().click();
 		await page.getByTestId('entity-tab-links').click();
 		await expect(page.locator('table[data-testid="entity-links-table"]')).toBeVisible();
 		await expect(page.locator('table[data-testid="entity-links-table"] tbody tr')).toHaveCount(1);
-
-		const ws = await wsPromise;
-		await ws.waitForEvent('framesent', {
-			predicate: (frame) =>
-				typeof frame.payload === 'string' && frame.payload.includes('"subscribe"'),
-		});
+		await subscribeSent;
 
 		// Seed the hidden target (assigned to a different contractor) and
 		// link to it from the contractor's visible invoice. The contractor
@@ -715,16 +729,10 @@ test.describe('Policy enforcement (UI redaction)', () => {
 
 		await routeGraphqlAs(page, SCN017_SUBJECTS.operator);
 
-		const wsPromise = page.waitForEvent('websocket', {
-			predicate: (ws) => ws.url().includes('/graphql/ws'),
-		});
+		const subscribeSent = captureSubscribeFrame(page);
 		await page.goto(collectionUrl);
 		await expect(page.locator('tbody tr')).toHaveCount(2);
-		const ws = await wsPromise;
-		await ws.waitForEvent('framesent', {
-			predicate: (frame) =>
-				typeof frame.payload === 'string' && frame.payload.includes('"subscribe"'),
-		});
+		await subscribeSent;
 
 		await createTestEntity(request, fixture.db, SCN017_COLLECTIONS.invoices, newInvoiceId, {
 			number: 'INV-9100',
