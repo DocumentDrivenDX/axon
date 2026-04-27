@@ -155,7 +155,17 @@ let rollbackApplyMessage = $state<string | null>(null);
 let loadedTabKey = '';
 
 // Links
-let links = $state<Link[]>([]);
+type LinkRow = Link & {
+	/**
+	 * Target entity data as returned by `traverseLinks` (already
+	 * policy-filtered by the server). Rendered through {@link redactValue}
+	 * with the target collection's `redactedFields` list before display.
+	 * `null` when the GraphQL response had no parallel entity for the path
+	 * (e.g. the REST fallback path).
+	 */
+	target_data: Record<string, unknown> | null;
+};
+let links = $state<LinkRow[]>([]);
 let traverse = $state<TraverseResult | null>(null);
 let linksLoading = $state(false);
 let linksError = $state<string | null>(null);
@@ -164,6 +174,19 @@ let newLinkType = $state('');
 let newLinkTargetCollection = $state('');
 let newLinkTargetId = $state('');
 let createLinkError = $state<string | null>(null);
+// Per-target-collection effective-policy cache. Mirrors the audit
+// page's pattern (audit/+page.svelte:20) so the inline target-data
+// preview can render redacted leaves without re-fetching the policy on
+// every expand. Keyed by `${tenant}/${database}/${collection}` so cache
+// entries cannot leak across scopes. Survives selected-entity changes:
+// the policy is collection-level and equal for every entity in scope,
+// so the issue's "lifetime of the selected entity" requirement is
+// satisfied by this looser bound.
+const targetPolicyByScopedCollection = $state<Record<string, EffectiveCollectionPolicy>>({});
+// Per-link expansion state for the inline target-data preview. Keyed by
+// the same `${linkType}:${target_collection}/${target_id}` shape used to
+// dedup `links` so a row's expansion survives unrelated re-renders.
+let expandedLinks = $state<Record<string, boolean>>({});
 
 // Lifecycle
 let lifecycleError = $state<unknown>(null);
@@ -251,30 +274,103 @@ async function loadLinksTab() {
 	if (!selectedEntity || !collectionName) return;
 	linksLoading = true;
 	linksError = null;
+	// Reset per-link expansion when the visible link set is about to
+	// change. The target-policy cache survives reloads of the same entity
+	// because it's keyed by `${tenant}/${database}/${collection}`, but
+	// the rows we expanded may no longer exist after the refetch.
+	expandedLinks = {};
 	try {
 		traverse = await traverseLinks(collectionName, selectedEntity.id, {}, scope);
 		// The server returns path hops when available; each hop describes a
 		// single link. Dedup by (target_collection, target_id, link_type).
+		// `traverse.entities[i]` corresponds 1:1 to `traverse.paths[i]`
+		// (same edge index from the GraphQL `neighbors` connection), so we
+		// can attach the (already policy-filtered) target entity data to
+		// each row by matching collection+id.
 		const paths = traverse.paths ?? [];
+		const targetEntities = traverse.entities ?? [];
 		const seen = new Set<string>();
 		links = [];
-		for (const p of paths) {
-			const key = `${p.link_type}:${p.target_collection}/${p.target_id}`;
-			if (seen.has(key)) continue;
+		paths.forEach((p, i) => {
+			const key = linkRowKey(p.link_type, p.target_collection, p.target_id);
+			if (seen.has(key)) return;
 			seen.add(key);
+			const targetEntity = targetEntities[i];
+			const targetData =
+				targetEntity &&
+				targetEntity.id === p.target_id &&
+				targetEntity.collection === p.target_collection
+					? targetEntity.data
+					: (targetEntities.find(
+							(e) => e.id === p.target_id && e.collection === p.target_collection,
+						)?.data ?? null);
 			links.push({
 				source_collection: p.source_collection,
 				source_id: p.source_id,
 				target_collection: p.target_collection,
 				target_id: p.target_id,
 				link_type: p.link_type,
+				target_data: targetData,
 			});
-		}
+		});
 	} catch (e: unknown) {
 		linksError = normalizeReadFailure(e);
 	} finally {
 		linksLoading = false;
 	}
+}
+
+function linkRowKey(linkType: string, targetCollection: string, targetId: string): string {
+	return `${linkType}:${targetCollection}/${targetId}`;
+}
+
+function targetPolicyCacheKey(targetCollection: string): string {
+	return `${scope.tenant}/${scope.database}/${targetCollection}`;
+}
+
+async function ensureTargetPolicy(targetCollection: string): Promise<void> {
+	const key = targetPolicyCacheKey(targetCollection);
+	if (targetPolicyByScopedCollection[key] !== undefined) return;
+	try {
+		targetPolicyByScopedCollection[key] = await fetchEffectivePolicy(targetCollection, scope);
+	} catch {
+		// Treat missing policy or fetch failure as "no redaction": the
+		// server has already enforced field-level visibility on the
+		// traverse response, so the worst case is we lose the explicit
+		// `[redacted]` marker. Refusing to render would be worse — the
+		// user sees the same values they'd see on the entity itself.
+		targetPolicyByScopedCollection[key] = {
+			collection: targetCollection,
+			canRead: true,
+			canCreate: false,
+			canUpdate: false,
+			canDelete: false,
+			redactedFields: [],
+			deniedFields: [],
+			policyVersion: 0,
+		};
+	}
+}
+
+function targetRedactedFields(targetCollection: string): readonly string[] {
+	return (
+		targetPolicyByScopedCollection[targetPolicyCacheKey(targetCollection)]?.redactedFields ?? []
+	);
+}
+
+async function toggleLinkPreview(link: LinkRow): Promise<void> {
+	const key = linkRowKey(link.link_type, link.target_collection, link.target_id);
+	if (expandedLinks[key]) {
+		delete expandedLinks[key];
+		expandedLinks = { ...expandedLinks };
+		return;
+	}
+	// Fetch the target collection's effective policy BEFORE marking the
+	// row expanded so the JsonTree never renders raw target_data leaves
+	// without the redacted-field markers in place.
+	await ensureTargetPolicy(link.target_collection);
+	expandedLinks[key] = true;
+	expandedLinks = { ...expandedLinks };
 }
 
 async function loadMarkdownTab() {
@@ -1497,14 +1593,27 @@ onDestroy(() => {
 										<th>Type</th>
 										<th>Target</th>
 										<th></th>
+										<th></th>
 									</tr>
 								</thead>
 								<tbody>
 									{#each links as link}
+										{@const rowKey = linkRowKey(link.link_type, link.target_collection, link.target_id)}
+										{@const expanded = expandedLinks[rowKey] === true}
+										{@const targetTestid = `${link.link_type}-${link.target_id}`}
 										<tr>
 											<td><code>{link.link_type}</code></td>
 											<td>
 												<code>{link.target_collection}/{link.target_id}</code>
+											</td>
+											<td>
+												<button
+													data-testid={`entity-link-preview-toggle-${targetTestid}`}
+													disabled={link.target_data === null}
+													onclick={() => void toggleLinkPreview(link)}
+												>
+													{expanded ? 'Hide data' : 'Show data'}
+												</button>
 											</td>
 											<td>
 												<button class="danger" onclick={() => void removeLink(link)}>
@@ -1512,6 +1621,18 @@ onDestroy(() => {
 												</button>
 											</td>
 										</tr>
+										{#if expanded && link.target_data !== null}
+											<tr
+												class="link-preview-row"
+												data-testid={`entity-link-preview-${targetTestid}`}
+											>
+												<td colspan="4">
+													<JsonTree
+														data={redactValue(link.target_data, targetRedactedFields(link.target_collection)) as JsonValue}
+													/>
+												</td>
+											</tr>
+										{/if}
 									{/each}
 								</tbody>
 							</table>
@@ -2021,6 +2142,12 @@ onDestroy(() => {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.4rem;
+	}
+
+	.link-preview-row > td {
+		background: rgba(0, 0, 0, 0.2);
+		border-top: 1px dashed rgba(255, 255, 255, 0.06);
+		padding: 0.5rem 0.75rem;
 	}
 
 	.create-link-form {

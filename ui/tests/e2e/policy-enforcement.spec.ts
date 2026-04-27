@@ -331,6 +331,108 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		await expect(relatedInvoicePill).toContainText('1');
 	});
 
+	test('contractor links tab inline preview redacts target invoice fields', async ({
+		page,
+		request,
+	}) => {
+		// FEAT-031 / bead axon-1c094bb5: the Links tab supports an inline
+		// expandable target-data preview per row. When expanded, the target
+		// entity's data must be rendered through the shared redaction
+		// primitive against the *target* collection's effective policy
+		// (fetched lazily and cached per scoped-collection). For a
+		// contractor traversing from one invoice to another via a
+		// `related-invoice` link, the target invoice's `commercial_terms`
+		// and `amount_cents` must surface as `[redacted]` markers, and the
+		// raw sensitive value must never reach the DOM, localStorage,
+		// sessionStorage, or document.title.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-link-preview');
+		// Seed an outbound `related-invoice` link from large → small. Both
+		// invoices are assigned to the contractor, so both are visible, but
+		// `commercial_terms` and `amount_cents` are field-redacted by the
+		// contractor's policy on the invoices collection.
+		await createTestLink(request, fixture.db, {
+			source_collection: SCN017_COLLECTIONS.invoices,
+			source_id: fixture.invoices.large.id,
+			target_collection: SCN017_COLLECTIONS.invoices,
+			target_id: fixture.invoices.small.id,
+			link_type: 'related-invoice',
+		});
+
+		// The seeded small invoice's `commercial_terms` value (must never
+		// appear in the rendered DOM under the contractor's view).
+		const sensitiveTermsValue = 'net-30 standard procurement terms';
+		// The seeded small invoice's `amount_cents` value as a string (must
+		// never appear in the rendered DOM under the contractor's view).
+		const sensitiveAmountValue = '750000';
+
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+		await page.goto(collectionUrl);
+
+		// Open the large invoice and switch to the Links tab.
+		await page.locator('tr', { hasText: fixture.invoices.large.id }).first().click();
+		await page.getByTestId('entity-tab-links').click();
+		await expect(page.locator('table[data-testid="entity-links-table"]')).toBeVisible();
+
+		// Toggle the inline preview on the related-invoice row.
+		const toggle = page.getByTestId(
+			`entity-link-preview-toggle-related-invoice-${fixture.invoices.small.id}`,
+		);
+		await expect(toggle).toBeVisible();
+		await toggle.click();
+
+		// The preview row must render and contain redacted-field markers
+		// for the target invoice's policy-redacted leaves.
+		const previewRow = page.getByTestId(
+			`entity-link-preview-related-invoice-${fixture.invoices.small.id}`,
+		);
+		await expect(previewRow).toBeVisible();
+		const previewRedactedCount = await previewRow.getByTestId('redacted-field').count();
+		expect(previewRedactedCount).toBeGreaterThanOrEqual(2);
+
+		// The non-redacted neighbour fields must still render so the user
+		// can confirm they expanded the right row (sanity check on the
+		// JsonTree pass-through).
+		await expect(previewRow).toContainText('INV-1001');
+
+		// The redaction contract: the sensitive raw values must never
+		// appear anywhere in the rendered HTML, even though they exist on
+		// the entity in storage.
+		const html = await page.content();
+		expect(html).not.toContain(sensitiveTermsValue);
+		expect(html).not.toContain(sensitiveAmountValue);
+
+		// Storage probes: the secret must not appear in localStorage,
+		// sessionStorage, or document.title.
+		const leakProbe = await page.evaluate(
+			(needles: { term: string; amount: string }) => {
+				const dump = (storage: Storage) => Object.values(storage).join(' ');
+				const localDump = dump(localStorage);
+				const sessionDump = dump(sessionStorage);
+				const titleDump = document.title;
+				return {
+					termInLocalStorage: localDump.includes(needles.term),
+					termInSessionStorage: sessionDump.includes(needles.term),
+					termInDocumentTitle: titleDump.includes(needles.term),
+					amountInLocalStorage: localDump.includes(needles.amount),
+					amountInSessionStorage: sessionDump.includes(needles.amount),
+					amountInDocumentTitle: titleDump.includes(needles.amount),
+				};
+			},
+			{ term: sensitiveTermsValue, amount: sensitiveAmountValue },
+		);
+		expect(leakProbe.termInLocalStorage).toBe(false);
+		expect(leakProbe.termInSessionStorage).toBe(false);
+		expect(leakProbe.termInDocumentTitle).toBe(false);
+		expect(leakProbe.amountInLocalStorage).toBe(false);
+		expect(leakProbe.amountInSessionStorage).toBe(false);
+		expect(leakProbe.amountInDocumentTitle).toBe(false);
+
+		// Toggling closed must hide the preview row entirely.
+		await toggle.click();
+		await expect(previewRow).toBeHidden();
+	});
+
 	test('no-visible-rows empty state shows policy version with no hidden counts', async ({
 		page,
 		request,
