@@ -39,11 +39,11 @@ use axon_api::intent::{
 use axon_api::request::{
     CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest,
     DeleteCollectionTemplateRequest, DeleteEntityRequest, DeleteLinkRequest,
-    DescribeCollectionRequest, DropCollectionRequest, ExplainPolicyRequest, FieldFilter,
-    FilterNode, FilterOp, FindLinkCandidatesRequest, GateFilter, GetCollectionTemplateRequest,
-    GetEntityRequest, ListCollectionsRequest, PatchEntityRequest, PutCollectionTemplateRequest,
-    PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest,
-    RollbackEntityRequest, RollbackEntityTarget, SortDirection, SortField,
+    DescribeCollectionRequest, DropCollectionRequest, ExplainActorOverride, ExplainPolicyRequest,
+    FieldFilter, FilterNode, FilterOp, FindLinkCandidatesRequest, GateFilter,
+    GetCollectionTemplateRequest, GetEntityRequest, ListCollectionsRequest, PatchEntityRequest,
+    PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest,
+    RevertEntityRequest, RollbackEntityRequest, RollbackEntityTarget, SortDirection, SortField,
     TransitionLifecycleRequest, TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
 use axon_api::transaction::Transaction;
@@ -765,6 +765,11 @@ fn explain_policy_input_object() -> InputObject {
             "operations",
             TypeRef::named_nn_list(TRANSACTION_OPERATION_INPUT),
         ))
+        // Synthetic actor used by the `putSchema` dry-run fixture path so the
+        // admin UI can preview decisions for a different subject. The active
+        // `explainPolicy` query ignores this and continues to evaluate as the
+        // authenticated caller.
+        .field(InputValue::new("actor", TypeRef::named("JSON")))
 }
 
 fn commit_transaction_input_object() -> InputObject {
@@ -4030,6 +4035,7 @@ fn empty_explain_policy_request(operation: impl Into<String>) -> ExplainPolicyRe
         target_state: None,
         to_version: None,
         operations: Vec::new(),
+        actor_override: None,
     }
 }
 
@@ -4061,7 +4067,44 @@ fn explain_policy_request_from_value(value: &Value) -> Result<ExplainPolicyReque
         .map(explain_transaction_operations_from_value)
         .transpose()?
         .unwrap_or_default();
+    request.actor_override = input
+        .get("actor")
+        .filter(|v| !v.is_null())
+        .map(explain_actor_override_from_value)
+        .transpose()?;
     Ok(request)
+}
+
+fn explain_actor_override_from_value(value: &Value) -> Result<ExplainActorOverride, GqlError> {
+    let obj = value.as_object().ok_or_else(|| {
+        GqlError::new("actor must be a JSON object").extend_with(|_err, ext| {
+            ext.set("code", "INVALID_ARGUMENT");
+        })
+    })?;
+    let mut subject = HashMap::new();
+    if let Some(subject_value) = obj.get("subject") {
+        if !subject_value.is_null() {
+            let subject_obj = subject_value.as_object().ok_or_else(|| {
+                GqlError::new("actor.subject must be a JSON object").extend_with(|_err, ext| {
+                    ext.set("code", "INVALID_ARGUMENT");
+                })
+            })?;
+            for (k, v) in subject_obj {
+                subject.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    Ok(ExplainActorOverride {
+        actor: obj
+            .get("actor")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        role: obj
+            .get("role")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        subject,
+    })
 }
 
 fn explain_transaction_operations_from_value(

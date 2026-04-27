@@ -822,6 +822,7 @@ fn empty_explain_policy_request(operation: &str) -> ExplainPolicyRequest {
         target_state: None,
         to_version: None,
         operations: Vec::new(),
+        actor_override: None,
     }
 }
 
@@ -1925,6 +1926,7 @@ fn execute_create<S: StorageAdapter>(
             target_state: None,
             to_version: None,
             operations: Vec::new(),
+            actor_override: None,
         },
     );
     match handler.create_entity_with_caller(request, caller, None) {
@@ -2009,6 +2011,7 @@ fn execute_patch<S: StorageAdapter>(
             target_state: None,
             to_version: None,
             operations: Vec::new(),
+            actor_override: None,
         },
     );
     match handler.patch_entity_with_caller(request, caller, None) {
@@ -2080,6 +2083,7 @@ fn execute_delete<S: StorageAdapter>(
             target_state: None,
             to_version: None,
             operations: Vec::new(),
+            actor_override: None,
         },
     );
     match handler.delete_entity_with_caller(request, caller, None) {

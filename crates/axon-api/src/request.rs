@@ -504,6 +504,30 @@ pub struct ExplainPolicyRequest {
     pub to_version: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<ExplainPolicyRequest>,
+    /// Synthetic actor used by the `putSchema` dry-run fixture path so the
+    /// admin UI can preview a policy decision as a different subject. Honored
+    /// only by the dry-run path under `Operation::Admin`; the live
+    /// `explainPolicy` query ignores this field and continues to evaluate as
+    /// the authenticated caller.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_override: Option<ExplainActorOverride>,
+}
+
+/// Synthetic actor identity injected into the `putSchema` dry-run path so the
+/// admin UI can preview decisions for a subject other than the schema-writer.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExplainActorOverride {
+    /// Actor name. Defaults to the schema-writer's actor when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    /// Caller role. Defaults to `admin` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    /// Subject-binding overrides applied on top of the policy-snapshot
+    /// defaults. Keys are bare binding names (e.g. `tenant_role`,
+    /// `subject.team`); values are JSON.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub subject: HashMap<String, Value>,
 }
 
 /// Request to revalidate all entities in a collection against the current schema.

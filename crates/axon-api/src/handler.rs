@@ -42,12 +42,12 @@ use crate::request::{
     CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest, CreateNamespaceRequest,
     DeleteCollectionTemplateRequest, DeleteEntityRequest, DeleteLinkRequest,
     DescribeCollectionRequest, DiffSchemaRequest, DropCollectionRequest, DropDatabaseRequest,
-    DropNamespaceRequest, ExplainPolicyRequest, FieldFilter, FilterNode, FilterOp,
-    GetCollectionTemplateRequest, GetEntityRequest, GetSchemaRequest, ListCollectionsRequest,
-    ListDatabasesRequest, ListNamespaceCollectionsRequest, ListNamespacesRequest,
-    PatchEntityRequest, PutCollectionTemplateRequest, PutSchemaRequest, QueryAuditRequest,
-    QueryEntitiesRequest, ReachableRequest, RevalidateRequest, RevertEntityRequest,
-    RollbackCollectionRequest, RollbackEntityRequest, RollbackEntityTarget,
+    DropNamespaceRequest, ExplainActorOverride, ExplainPolicyRequest, FieldFilter, FilterNode,
+    FilterOp, GetCollectionTemplateRequest, GetEntityRequest, GetSchemaRequest,
+    ListCollectionsRequest, ListDatabasesRequest, ListNamespaceCollectionsRequest,
+    ListNamespacesRequest, PatchEntityRequest, PutCollectionTemplateRequest, PutSchemaRequest,
+    QueryAuditRequest, QueryEntitiesRequest, ReachableRequest, RevalidateRequest,
+    RevertEntityRequest, RollbackCollectionRequest, RollbackEntityRequest, RollbackEntityTarget,
     RollbackTransactionRequest, SnapshotRequest, SortDirection, TransitionLifecycleRequest,
     TraverseDirection, TraverseRequest, UpdateEntityRequest,
 };
@@ -119,22 +119,26 @@ struct PolicyPredicateContext<'a> {
     snapshot: &'a PolicyRequestSnapshot,
     operation: &'a PolicyOperation,
     data: &'a Value,
+    preview: Option<&'a PreviewedSchemaPlan<'a>>,
 }
 
 /// Override pair used by the `putSchema` dry-run fixture path so explain
 /// resolution sees the proposed (in-memory) schema and plan for the root
 /// collection instead of the active stored ones.
 ///
-/// Limitation: relationship `target_policy` recursion still queries storage
-/// for non-root collections — those plans are unaffected by the proposed
-/// change so storage is correct, but a self-referential `target_policy` on
-/// the root collection would resolve via the stored plan rather than the
-/// proposed one. Tracked as a follow-up; the current acceptance test uses
-/// non-self-referential predicates.
+/// `plans` carries the full proposed catalog so a self-referential
+/// `target_policy` recursion (target collection equals the previewed root)
+/// resolves through the proposed plan instead of storage.
+///
+/// `actor_override` (when present) injects subject bindings into the policy
+/// snapshot so the admin UI can preview decisions as a different subject
+/// without changing the authenticated caller.
 #[derive(Debug, Clone, Copy)]
 struct PreviewedSchemaPlan<'a> {
     schema: &'a CollectionSchema,
     plan: &'a PolicyPlan,
+    plans: &'a HashMap<String, PolicyPlan>,
+    actor_override: Option<&'a ExplainActorOverride>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -603,7 +607,8 @@ impl<S: StorageAdapter> AxonHandler<S> {
         snapshot: &PolicyRequestSnapshot,
         check: PolicyOperationCheck<'_>,
     ) -> Result<(), AxonError> {
-        let denial_label = self.policy_operation_denial_label(plan, snapshot, check.clone())?;
+        let denial_label =
+            self.policy_operation_denial_label(plan, snapshot, check.clone(), None)?;
         let Some(denial_label) = denial_label else {
             return Ok(());
         };
@@ -623,9 +628,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
         plan: &PolicyPlan,
         snapshot: &PolicyRequestSnapshot,
         check: PolicyOperationCheck<'_>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<bool, AxonError> {
         Ok(self
-            .policy_operation_denial_label(plan, snapshot, check)?
+            .policy_operation_denial_label(plan, snapshot, check, preview)?
             .is_none())
     }
 
@@ -634,13 +640,20 @@ impl<S: StorageAdapter> AxonHandler<S> {
         plan: &PolicyPlan,
         snapshot: &PolicyRequestSnapshot,
         check: PolicyOperationCheck<'_>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<Option<String>, AxonError> {
         let mut allow_rules_present = false;
         let mut allow_matched = false;
 
         for policy in applicable_operation_policies(plan, &check.operation) {
             for rule in &policy.deny {
-                if self.policy_rule_matches(rule, snapshot, &check.operation, check.data)? {
+                if self.policy_rule_matches(
+                    rule,
+                    snapshot,
+                    &check.operation,
+                    check.data,
+                    preview,
+                )? {
                     return Ok(Some(policy_rule_label(rule)));
                 }
             }
@@ -649,7 +662,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 allow_rules_present = true;
             }
             for rule in &policy.allow {
-                if self.policy_rule_matches(rule, snapshot, &check.operation, check.data)? {
+                if self.policy_rule_matches(
+                    rule,
+                    snapshot,
+                    &check.operation,
+                    check.data,
+                    preview,
+                )? {
                     allow_matched = true;
                 }
             }
@@ -682,6 +701,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     snapshot,
                     &check.operation,
                     check.candidate_data,
+                    None,
                 )? {
                     return Err(policy_forbidden(
                         "field_write_denied",
@@ -702,6 +722,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         snapshot,
                         &check.operation,
                         check.candidate_data,
+                        None,
                     )? {
                         matched = true;
                         break;
@@ -738,6 +759,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     snapshot,
                     operation: &check.operation,
                     data: check.candidate_data,
+                    preview: None,
                 },
             )? {
                 match envelope.decision {
@@ -793,7 +815,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         };
 
         for rule in &policy.deny {
-            if self.policy_rule_matches(rule, snapshot, &PolicyOperation::Update, check.data)? {
+            if self.policy_rule_matches(
+                rule,
+                snapshot,
+                &PolicyOperation::Update,
+                check.data,
+                None,
+            )? {
                 return Err(policy_forbidden(
                     "row_write_denied",
                     check.collection,
@@ -808,7 +836,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if !policy.allow.is_empty() {
             let mut matched = false;
             for rule in &policy.allow {
-                if self.policy_rule_matches(rule, snapshot, &PolicyOperation::Update, check.data)? {
+                if self.policy_rule_matches(
+                    rule,
+                    snapshot,
+                    &PolicyOperation::Update,
+                    check.data,
+                    None,
+                )? {
                     matched = true;
                     break;
                 }
@@ -834,11 +868,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         snapshot: &PolicyRequestSnapshot,
         operation: &PolicyOperation,
         data: &Value,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<bool, AxonError> {
         let ctx = PolicyPredicateContext {
             snapshot,
             operation,
             data,
+            preview,
         };
         Ok(self.policy_predicate_matches(rule.when.as_ref(), ctx)?
             && self.policy_predicate_matches(rule.where_clause.as_ref(), ctx)?)
@@ -850,11 +886,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         snapshot: &PolicyRequestSnapshot,
         operation: &PolicyOperation,
         data: &Value,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<bool, AxonError> {
         let ctx = PolicyPredicateContext {
             snapshot,
             operation,
             data,
+            preview,
         };
         Ok(self.policy_predicate_matches(rule.when.as_ref(), ctx)?
             && self.policy_predicate_matches(rule.where_clause.as_ref(), ctx)?)
@@ -942,10 +980,9 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 let Some(target) = self.storage.get(target_collection, target_id)? else {
                     continue;
                 };
-                let Some(target_schema) = self.storage.get_schema(target_collection)? else {
-                    continue;
-                };
-                let Some(target_plan) = self.compile_policy_plan_for_schema(&target_schema)? else {
+                let Some((target_plan, _)) =
+                    self.resolve_target_policy_plan(target_collection, ctx.preview)?
+                else {
                     continue;
                 };
                 let mut target_snapshot = ctx.snapshot.clone();
@@ -961,6 +998,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         data: &target_data,
                         operation_index: None,
                     },
+                    ctx.preview,
                 )? {
                     continue;
                 }
@@ -969,6 +1007,35 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         Ok(false)
+    }
+
+    /// Resolve the `(plan, schema)` pair that governs `target_collection` for
+    /// a `target_policy` recursion. When a preview catalog is provided and
+    /// contains a plan for `target_collection`, the proposed plan wins so
+    /// self-referential `target_policy` recursion (target == previewed root)
+    /// uses the proposed plan instead of the active stored one.
+    fn resolve_target_policy_plan(
+        &self,
+        target_collection: &CollectionId,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
+    ) -> Result<Option<(PolicyPlan, Option<CollectionSchema>)>, AxonError> {
+        if let Some(p) = preview {
+            if let Some(plan) = p.plans.get(target_collection.as_str()).cloned() {
+                let schema = if &p.schema.collection == target_collection {
+                    Some(p.schema.clone())
+                } else {
+                    self.storage.get_schema(target_collection)?
+                };
+                return Ok(Some((plan, schema)));
+            }
+        }
+        let Some(target_schema) = self.storage.get_schema(target_collection)? else {
+            return Ok(None);
+        };
+        let Some(target_plan) = self.compile_policy_plan_for_schema(&target_schema)? else {
+            return Ok(None);
+        };
+        Ok(Some((target_plan, Some(target_schema))))
     }
 
     fn read_policy_allows_entity(
@@ -989,6 +1056,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 data: &data,
                 operation_index: None,
             },
+            None,
         )
     }
 
@@ -1007,7 +1075,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
             let mut redaction = None;
             for rule in &read_policy.deny {
-                if self.field_policy_rule_matches(rule, snapshot, &PolicyOperation::Read, data)? {
+                if self.field_policy_rule_matches(
+                    rule,
+                    snapshot,
+                    &PolicyOperation::Read,
+                    data,
+                    None,
+                )? {
                     redaction = Some(rule.redact_as.clone().unwrap_or(Value::Null));
                     break;
                 }
@@ -1021,6 +1095,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         snapshot,
                         &PolicyOperation::Read,
                         data,
+                        None,
                     )? {
                         matched = true;
                         break;
@@ -1173,6 +1248,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     data,
                     operation_index: None,
                 },
+                None,
             )?,
             None => effective_operation_allows_static(&plan, &snapshot, PolicyOperation::Read),
         };
@@ -1260,6 +1336,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     data,
                     operation_index: None,
                 },
+                None,
             ),
             None => Ok(effective_operation_allows_static(plan, snapshot, operation)),
         }
@@ -1338,14 +1415,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
         self.explain_policy_inner(req, caller, attribution.as_ref(), None, None)
     }
 
-    /// Run an explain against a proposed (in-memory) schema and plan instead
-    /// of the active stored ones.
+    /// Run an explain against a proposed (in-memory) schema and catalog plans
+    /// instead of the active stored ones.
     ///
     /// Used by the `putSchema` dry-run fixture path so the admin UI can
     /// preview decisions for the policy version that *would* be activated.
-    /// The proposed schema/plan apply to the root collection only;
-    /// relationship `target_policy` recursion still resolves through storage
-    /// for non-root collections (their plans are not part of this preview).
+    /// `plans` carries the full proposed catalog so a self-referential
+    /// `target_policy` recursion (target collection equals the previewed root)
+    /// resolves through the proposed plan instead of the active stored one.
+    #[allow(clippy::too_many_arguments)]
     pub fn explain_policy_with_plan(
         &self,
         req: ExplainPolicyRequest,
@@ -1353,8 +1431,15 @@ impl<S: StorageAdapter> AxonHandler<S> {
         attribution: Option<&AuditAttribution>,
         schema: &CollectionSchema,
         plan: &PolicyPlan,
+        plans: &HashMap<String, PolicyPlan>,
+        actor_override: Option<&ExplainActorOverride>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
-        let preview = PreviewedSchemaPlan { schema, plan };
+        let preview = PreviewedSchemaPlan {
+            schema,
+            plan,
+            plans,
+            actor_override,
+        };
         self.explain_policy_inner(req, caller, attribution, None, Some(&preview))
     }
 
@@ -1413,7 +1498,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         attribution: Option<&AuditAttribution>,
         preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<Option<(PolicyRequestSnapshot, PolicyPlan)>, AxonError> {
-        let Some(snapshot) = self.policy_snapshot_for_request(
+        let Some(mut snapshot) = self.policy_snapshot_for_request(
             collection,
             Some(schema),
             None,
@@ -1423,8 +1508,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
         else {
             return Ok(None);
         };
+        if let Some(p) = preview {
+            if let Some(override_) = p.actor_override {
+                apply_actor_override_subject(&mut snapshot, override_);
+            }
+        }
         // Use the proposed plan when its collection matches the request.
-        // Recursion into related target_policies still goes through storage.
+        // Self-referential `target_policy` recursion picks up the proposed
+        // plan via `PreviewedSchemaPlan::plans` (see `policy_related_matches`).
         if let Some(p) = preview {
             if &p.schema.collection == collection {
                 return Ok(Some((snapshot, p.plan.clone())));
@@ -1509,6 +1600,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             "row_read_denied",
             policy_version,
             operation_index,
+            preview,
         )
     }
 
@@ -1562,6 +1654,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 operation_index,
             },
             policy_version,
+            preview,
         )
     }
 
@@ -1621,6 +1714,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 operation_index,
             },
             policy_version,
+            preview,
         )
     }
 
@@ -1682,6 +1776,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 operation_index,
             },
             policy_version,
+            preview,
         )
     }
 
@@ -1737,6 +1832,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 operation_index,
             },
             policy_version,
+            preview,
         )
     }
 
@@ -1820,6 +1916,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             &data,
             policy_version,
             operation_index,
+            preview,
         )?;
         if transition.decision == "deny" {
             return Ok(transition);
@@ -1841,6 +1938,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 operation_index,
             },
             policy_version,
+            preview,
         )?;
         merge_policy_explanation(&mut write, transition);
         Ok(finalize_policy_explanation(write))
@@ -1914,6 +2012,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 operation_index,
             },
             policy_version,
+            preview,
         )
     }
 
@@ -1972,6 +2071,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         denied_reason: &str,
         policy_version: u32,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
         let mut response = policy_explanation(
             operation_name,
@@ -1987,7 +2087,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
         for policy in applicable_operation_policies(plan, &operation) {
             for rule in &policy.deny {
-                if self.policy_rule_matches(rule, snapshot, &operation, data)? {
+                if self.policy_rule_matches(rule, snapshot, &operation, data, preview)? {
                     response.decision = "deny".into();
                     response.reason = denied_reason.into();
                     response
@@ -2001,7 +2101,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 allow_rules_present = true;
             }
             for rule in &policy.allow {
-                if self.policy_rule_matches(rule, snapshot, &operation, data)? {
+                if self.policy_rule_matches(rule, snapshot, &operation, data, preview)? {
                     allow_matched = true;
                     response
                         .rules
@@ -2029,6 +2129,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         snapshot: &PolicyRequestSnapshot,
         check: PolicyWriteCheck<'_>,
         policy_version: u32,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
         let operation_name = operation_name.into();
         let mut response = policy_explanation(
@@ -2053,6 +2154,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 "row_read_denied",
                 policy_version,
                 check.operation_index,
+                preview,
             )?;
             merge_policy_explanation(&mut response, read.clone());
             if read.decision == "deny" {
@@ -2073,6 +2175,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             "row_write_denied",
             policy_version,
             check.operation_index,
+            preview,
         )?;
         merge_policy_explanation(&mut response, operation.clone());
         if operation.decision == "deny" {
@@ -2082,7 +2185,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         if let Some(field_denial) =
-            self.explain_field_write_policy(plan, snapshot, check.clone(), policy_version)?
+            self.explain_field_write_policy(plan, snapshot, check.clone(), policy_version, preview)?
         {
             merge_policy_explanation(&mut response, field_denial.clone());
             response.decision = "deny".into();
@@ -2091,7 +2194,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
 
         if let Some(envelope) =
-            self.explain_policy_envelopes(plan, snapshot, check.clone(), policy_version)?
+            self.explain_policy_envelopes(plan, snapshot, check.clone(), policy_version, preview)?
         {
             merge_policy_explanation(&mut response, envelope.clone());
             response.decision = envelope.decision;
@@ -2108,6 +2211,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         snapshot: &PolicyRequestSnapshot,
         check: PolicyWriteCheck<'_>,
         policy_version: u32,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<Option<PolicyExplanationResponse>, AxonError> {
         for (field_path, field_policy) in &plan.fields {
             let Some(write_policy) = field_policy.write.as_ref() else {
@@ -2123,6 +2227,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     snapshot,
                     &check.operation,
                     check.candidate_data,
+                    preview,
                 )? {
                     let mut response = policy_explanation(
                         check.operation.as_str(),
@@ -2150,6 +2255,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         snapshot,
                         &check.operation,
                         check.candidate_data,
+                        preview,
                     )? {
                         matched = true;
                         break;
@@ -2188,6 +2294,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         snapshot: &PolicyRequestSnapshot,
         check: PolicyWriteCheck<'_>,
         policy_version: u32,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<Option<PolicyExplanationResponse>, AxonError> {
         let mut needs_approval = None;
 
@@ -2198,6 +2305,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     snapshot,
                     operation: &check.operation,
                     data: check.candidate_data,
+                    preview,
                 },
             )? {
                 match envelope.decision {
@@ -2250,6 +2358,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         data: &Value,
         policy_version: u32,
         operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
         let mut response = policy_explanation(
             "transition",
@@ -2268,7 +2377,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         };
 
         for rule in &policy.deny {
-            if self.policy_rule_matches(rule, snapshot, &PolicyOperation::Update, data)? {
+            if self.policy_rule_matches(rule, snapshot, &PolicyOperation::Update, data, preview)? {
                 response.decision = "deny".into();
                 response.reason = "row_write_denied".into();
                 response.field_paths.push(lifecycle_field.to_string());
@@ -2282,7 +2391,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
         if !policy.allow.is_empty() {
             let mut matched = false;
             for rule in &policy.allow {
-                if self.policy_rule_matches(rule, snapshot, &PolicyOperation::Update, data)? {
+                if self.policy_rule_matches(
+                    rule,
+                    snapshot,
+                    &PolicyOperation::Update,
+                    data,
+                    preview,
+                )? {
                     matched = true;
                     response
                         .rules
@@ -2692,6 +2807,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         data: &target_data,
                         operation_index: None,
                     },
+                    None,
                 )? {
                     continue;
                 }
@@ -6137,9 +6253,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
     /// - `Some(vec![..])` carrying one explanation per input, in order.
     ///
     /// Each explanation is evaluated as a synthetic admin caller derived
-    /// from `req.actor`. Subject-aware predicate evaluation that depends on
-    /// caller-supplied identity bindings is left to a follow-up that adds
-    /// `actor_override` plumbing.
+    /// from `req.actor` unless the input carries an `actor_override`, in which
+    /// case the override drives the synthetic caller and subject bindings.
+    /// Transaction explain inputs recurse into child operations against the
+    /// same proposed catalog, so the proposed plan governs the root collection
+    /// throughout.
     fn dry_run_explanations_for_proposed(
         &self,
         proposed_schema: &CollectionSchema,
@@ -6155,62 +6273,72 @@ impl<S: StorageAdapter> AxonHandler<S> {
         }
         // Build the in-memory plan for the proposed schema.
         let schemas = self.policy_catalog_schemas(proposed_schema)?;
-        let proposed_plan_opt = match compile_policy_catalog(&schemas) {
-            Ok(catalog) => catalog
-                .plans
-                .get(proposed_schema.collection.as_str())
-                .cloned(),
+        let catalog = match compile_policy_catalog(&schemas) {
+            Ok(catalog) => catalog,
             Err(_) => {
                 // Compile errors should already be in the report from the
                 // caller, but defensively return None instead of panicking.
                 return Ok(None);
             }
         };
-        let Some(proposed_plan) = proposed_plan_opt else {
+        let Some(proposed_plan) = catalog
+            .plans
+            .get(proposed_schema.collection.as_str())
+            .cloned()
+        else {
             // No access_control on the proposed schema -> empty result.
             return Ok(Some(Vec::new()));
         };
-        let synthetic_caller = axon_core::auth::CallerIdentity::new(
-            actor.unwrap_or("anonymous"),
-            axon_core::auth::Role::Admin,
-        );
+        let proposed_plans = catalog.plans;
         let mut out = Vec::with_capacity(explain_inputs.len());
         for input in explain_inputs {
-            // Reject explain inputs targeting a different collection: the
-            // proposed plan only covers the root collection. Cross-collection
-            // dry-runs are out of scope for this bead.
-            if let Some(target) = &input.collection {
-                if target.as_str() != proposed_schema.collection.as_str() {
-                    return Err(AxonError::InvalidArgument(format!(
-                        "putSchema dry-run explain_inputs must target the proposed collection '{}', got '{}'",
-                        proposed_schema.collection, target
-                    )));
-                }
-            }
-            // Reject transaction fixtures. Their child operations recurse
-            // into explain_policy_inner with their own (collection, plan) and
-            // would silently mix the proposed root plan with active storage
-            // plans for non-root children. Transaction-level fixture dry-run
-            // is out of scope for this bead.
-            if input.operation.trim().eq_ignore_ascii_case("transaction") {
-                return Err(AxonError::InvalidArgument(
-                    "putSchema dry-run does not yet support transaction explain_inputs".to_string(),
-                ));
-            }
+            validate_dry_run_explain_collection(proposed_schema, input)?;
             let mut input_clone = input.clone();
             input_clone.collection = Some(proposed_schema.collection.clone());
+            // Prepare child collections for transactions before stripping the
+            // override (the override only applies once, at the top level).
+            if input_clone
+                .operation
+                .trim()
+                .eq_ignore_ascii_case("transaction")
+            {
+                for child in &mut input_clone.operations {
+                    validate_dry_run_explain_collection(proposed_schema, child)?;
+                    child.collection = Some(proposed_schema.collection.clone());
+                }
+            }
+            let synthetic_caller = synthetic_dry_run_caller(actor, input.actor_override.as_ref())?;
             let response = self.explain_policy_with_plan(
                 input_clone,
                 &synthetic_caller,
                 None,
                 proposed_schema,
                 &proposed_plan,
+                &proposed_plans,
+                input.actor_override.as_ref(),
             )?;
             out.push(response);
         }
         Ok(Some(out))
     }
+}
 
+fn validate_dry_run_explain_collection(
+    proposed_schema: &CollectionSchema,
+    input: &ExplainPolicyRequest,
+) -> Result<(), AxonError> {
+    if let Some(target) = &input.collection {
+        if target.as_str() != proposed_schema.collection.as_str() {
+            return Err(AxonError::InvalidArgument(format!(
+                "putSchema dry-run explain_inputs must target the proposed collection '{}', got '{}'",
+                proposed_schema.collection, target
+            )));
+        }
+    }
+    Ok(())
+}
+
+impl<S: StorageAdapter> AxonHandler<S> {
     /// Retrieve the schema for a collection.
     ///
     /// Returns [`AxonError::NotFound`] if no schema has been stored.
@@ -7777,6 +7905,77 @@ fn check_unique_constraints<S: StorageAdapter>(
     Ok(())
 }
 
+/// Build the synthetic caller used by the `putSchema` dry-run fixture path.
+///
+/// `req_actor` is the schema-writer's actor (from `PutSchemaRequest.actor`)
+/// and is used as the default identity. `actor_override` (when present)
+/// overrides actor and role so the admin UI can preview decisions as a
+/// different subject. The caller always has `Role::Admin` floor: dry-run
+/// runs under the schema-writer's admin authority and the override is
+/// purely a predicate-evaluation alias.
+fn synthetic_dry_run_caller(
+    req_actor: Option<&str>,
+    actor_override: Option<&ExplainActorOverride>,
+) -> Result<CallerIdentity, AxonError> {
+    let actor = actor_override
+        .and_then(|o| o.actor.as_deref())
+        .or(req_actor)
+        .unwrap_or("anonymous");
+    let role = match actor_override.and_then(|o| o.role.as_deref()) {
+        None => axon_core::auth::Role::Admin,
+        Some(role) => parse_explain_role(role)?,
+    };
+    Ok(CallerIdentity::new(actor, role))
+}
+
+fn parse_explain_role(role: &str) -> Result<axon_core::auth::Role, AxonError> {
+    match role.trim().to_ascii_lowercase().as_str() {
+        "admin" => Ok(axon_core::auth::Role::Admin),
+        "write" | "writer" => Ok(axon_core::auth::Role::Write),
+        "read" | "reader" => Ok(axon_core::auth::Role::Read),
+        "none" => Ok(axon_core::auth::Role::None),
+        other => Err(AxonError::InvalidArgument(format!(
+            "unsupported actor_override role '{other}' (expected admin, write, read, or none)"
+        ))),
+    }
+}
+
+/// Apply an `actor_override` to a freshly built policy snapshot.
+///
+/// Updates the snapshot's actor and `tenant_role`/`actor`/`user_id` bindings
+/// to reflect the override and merges any explicit subject bindings on top
+/// of the defaults. Subject keys may be bare (`team`) or prefixed
+/// (`subject.team`); the prefix is stripped before insertion.
+fn apply_actor_override_subject(
+    snapshot: &mut PolicyRequestSnapshot,
+    actor_override: &ExplainActorOverride,
+) {
+    if let Some(actor) = &actor_override.actor {
+        snapshot.subject.actor = actor.clone();
+        snapshot
+            .subject
+            .bindings
+            .insert("actor".into(), Value::String(actor.clone()));
+        snapshot
+            .subject
+            .bindings
+            .insert("user_id".into(), Value::String(actor.clone()));
+    }
+    if let Some(role) = &actor_override.role {
+        snapshot
+            .subject
+            .bindings
+            .insert("tenant_role".into(), Value::String(role.clone()));
+    }
+    for (key, value) in &actor_override.subject {
+        let bare = key.strip_prefix("subject.").unwrap_or(key.as_str());
+        snapshot
+            .subject
+            .bindings
+            .insert(bare.to_string(), value.clone());
+    }
+}
+
 fn default_policy_subject_bindings(
     actor: &str,
     caller: Option<&CallerIdentity>,
@@ -8198,6 +8397,7 @@ fn policy_static_predicate_matches(
                 snapshot,
                 operation,
                 data: &Value::Null,
+                preview: None,
             };
             Some(policy_comparison_matches(comparison, ctx))
         }
@@ -8313,7 +8513,7 @@ fn effective_field_write_denied_for_data<S: StorageAdapter>(
     data: &Value,
 ) -> Result<bool, AxonError> {
     for rule in &policy.deny {
-        if handler.field_policy_rule_matches(rule, snapshot, operation, data)? {
+        if handler.field_policy_rule_matches(rule, snapshot, operation, data, None)? {
             return Ok(true);
         }
     }
@@ -8321,7 +8521,7 @@ fn effective_field_write_denied_for_data<S: StorageAdapter>(
     if !policy.allow.is_empty() {
         let mut matched = false;
         for rule in &policy.allow {
-            if handler.field_policy_rule_matches(rule, snapshot, operation, data)? {
+            if handler.field_policy_rule_matches(rule, snapshot, operation, data, None)? {
                 matched = true;
                 break;
             }
@@ -15473,6 +15673,7 @@ link_types:
                     target_state: None,
                     to_version: None,
                     operations: Vec::new(),
+                    actor_override: None,
                 }],
             })
             .expect("dry-run with explain inputs but no access_control must succeed");
@@ -15535,6 +15736,7 @@ link_types:
                     target_state: None,
                     to_version: None,
                     operations: Vec::new(),
+                    actor_override: None,
                 },
                 &axon_core::auth::CallerIdentity::new("admin", axon_core::auth::Role::Admin),
                 None,
@@ -15585,6 +15787,7 @@ link_types:
                     target_state: None,
                     to_version: None,
                     operations: Vec::new(),
+                    actor_override: None,
                 }],
             })
             .expect("valid proposed policy must dry-run successfully");
@@ -15642,10 +15845,359 @@ link_types:
                     target_state: None,
                     to_version: None,
                     operations: Vec::new(),
+                    actor_override: None,
                 }],
             })
             .expect_err("cross-collection explain input must error");
         assert!(matches!(err, AxonError::InvalidArgument(_)));
+    }
+
+    /// Empty explain-policy request with `operation` set; centralizes the
+    /// boilerplate so the dry-run tests in this module stay focused on the
+    /// fixture difference under test.
+    fn empty_explain_request(operation: &str) -> ExplainPolicyRequest {
+        ExplainPolicyRequest {
+            operation: operation.into(),
+            collection: None,
+            entity_id: None,
+            expected_version: None,
+            data: None,
+            patch: None,
+            lifecycle_name: None,
+            target_state: None,
+            to_version: None,
+            operations: Vec::new(),
+            actor_override: None,
+        }
+    }
+
+    /// Schema whose proposed read policy gates on `subject.tenant_role`. Used
+    /// by the actor-override dry-run test so a single proposed plan can decide
+    /// "allow" or "deny" depending on which synthetic caller the override
+    /// supplies.
+    fn subject_role_gated_schema(col: &CollectionId) -> CollectionSchema {
+        CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "title": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": {
+                        "allow": [{
+                            "name": "admins-only",
+                            "where": { "subject": "tenant_role", "eq": "admin" }
+                        }]
+                    }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        }
+    }
+
+    #[test]
+    fn put_schema_dry_run_actor_override_drives_synthetic_caller() {
+        let mut h = handler();
+        let col = CollectionId::new("policy_actor_override");
+        let proposed = subject_role_gated_schema(&col);
+
+        // Override -> Role::Admin: subject-aware predicate matches and the
+        // proposed plan allows.
+        let admin_resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: proposed.clone(),
+                actor: Some("schema-writer".into()),
+                force: false,
+                dry_run: true,
+                explain_inputs: vec![ExplainPolicyRequest {
+                    actor_override: Some(ExplainActorOverride {
+                        actor: Some("alice".into()),
+                        role: Some("admin".into()),
+                        subject: HashMap::new(),
+                    }),
+                    data: Some(json!({"title": "hi"})),
+                    ..empty_explain_request("read")
+                }],
+            })
+            .expect("admin override dry-run");
+        let admin_explanations = admin_resp
+            .dry_run_explanations
+            .expect("explanations should be Some on success");
+        assert_eq!(admin_explanations.len(), 1);
+        assert_eq!(admin_explanations[0].decision, "allow");
+
+        // Override -> Role::Read: same proposed policy, but the override flips
+        // the subject role binding so the predicate fails.
+        let reader_resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: proposed,
+                actor: Some("schema-writer".into()),
+                force: false,
+                dry_run: true,
+                explain_inputs: vec![ExplainPolicyRequest {
+                    actor_override: Some(ExplainActorOverride {
+                        actor: Some("bob".into()),
+                        role: Some("read".into()),
+                        subject: HashMap::new(),
+                    }),
+                    data: Some(json!({"title": "hi"})),
+                    ..empty_explain_request("read")
+                }],
+            })
+            .expect("reader override dry-run");
+        let reader_explanations = reader_resp
+            .dry_run_explanations
+            .expect("explanations should be Some on success");
+        assert_eq!(reader_explanations.len(), 1);
+        assert_eq!(reader_explanations[0].decision, "deny");
+    }
+
+    #[test]
+    fn put_schema_dry_run_self_target_policy_uses_proposed_plan() {
+        let mut h = handler();
+        let col = CollectionId::new("policy_self_target");
+
+        // Active plan: only owner=bob may read or update. Self-link declared
+        // so the proposed plan can attach a `target_policy: update` recursion
+        // that lands back on this same collection. (Direct read→read self
+        // recursion is rejected by the compile cycle check; read→update is
+        // permitted and still exercises the proposed-catalog resolver because
+        // the recursion target collection equals the previewed root.)
+        let mut active = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "owner": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": {
+                        "allow": [{ "name": "owner-bob", "where": { "field": "owner", "eq": "bob" } }]
+                    },
+                    "update": {
+                        "allow": [{ "name": "owner-bob", "where": { "field": "owner", "eq": "bob" } }]
+                    }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+        active.link_types.insert(
+            "follows".into(),
+            LinkTypeDef {
+                target_collection: col.to_string(),
+                cardinality: Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: None,
+            },
+        );
+        h.handle_put_schema(PutSchemaRequest {
+            schema: active.clone(),
+            actor: Some("setup".into()),
+            force: false,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+
+        // Seed two entities and a self-link. w_alice matches owner-alice under
+        // the proposed plan; w_carol matches no direct rule but follows
+        // w_alice, so the self-target_policy recursion should make it readable
+        // when the proposed plan governs that recursion.
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("w_alice"),
+            data: json!({"_id": "w_alice", "owner": "alice"}),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("w_carol"),
+            data: json!({"_id": "w_carol", "owner": "carol"}),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+        h.create_link(CreateLinkRequest {
+            source_collection: col.clone(),
+            source_id: EntityId::new("w_carol"),
+            target_collection: col.clone(),
+            target_id: EntityId::new("w_alice"),
+            link_type: "follows".into(),
+            metadata: json!({}),
+            actor: None,
+            attribution: None,
+        })
+        .unwrap();
+
+        // Proposed plan: read = owner-alice OR follows-updateable (self
+        // target_policy = update); update = owner-alice. If the recursion
+        // consulted the active stored plan, w_alice (owner=alice) would not
+        // match the active update rule (which only allows owner=bob), the
+        // related-target_policy clause would fail, and w_carol would deny.
+        // With the proposed catalog driving recursion, the recursive update
+        // for w_alice matches owner-alice and w_carol is allowed.
+        let proposed = CollectionSchema {
+            version: 2,
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": {
+                        "allow": [
+                            { "name": "owner-alice", "where": { "field": "owner", "eq": "alice" } },
+                            {
+                                "name": "follows-updateable",
+                                "where": {
+                                    "related": {
+                                        "link_type": "follows",
+                                        "direction": "outgoing",
+                                        "target_collection": col.as_str(),
+                                        "target_policy": "update"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "update": {
+                        "allow": [{ "name": "owner-alice", "where": { "field": "owner", "eq": "alice" } }]
+                    }
+                }))
+                .unwrap(),
+            ),
+            ..active.clone()
+        };
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: proposed,
+                actor: Some("admin".into()),
+                force: false,
+                dry_run: true,
+                explain_inputs: vec![ExplainPolicyRequest {
+                    entity_id: Some(EntityId::new("w_carol")),
+                    ..empty_explain_request("read")
+                }],
+            })
+            .expect("self-referential dry-run must succeed");
+        let explanations = resp.dry_run_explanations.unwrap_or_else(|| {
+            let report = resp.policy_compile_report.as_ref().unwrap();
+            panic!("expected compile to succeed; errors: {:?}", report.errors)
+        });
+        assert_eq!(explanations.len(), 1);
+        assert_eq!(
+            explanations[0].decision, "allow",
+            "self-referential target_policy must consult the proposed plan, not storage"
+        );
+    }
+
+    #[test]
+    fn put_schema_dry_run_transaction_threads_proposed_plan_into_children() {
+        let mut h = handler();
+        let col = CollectionId::new("policy_tx_dry_run");
+
+        let active = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "status": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": {
+                        "allow": [{
+                            "name": "only-open",
+                            "where": { "field": "status", "eq": "open" }
+                        }]
+                    }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema: active.clone(),
+            actor: Some("setup".into()),
+            force: false,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+
+        // Proposed plan: read also allows status="archived". Run a transaction
+        // explain whose only child is a read of an archived record. Under the
+        // active plan that read denies (status=archived doesn't match
+        // only-open). Under the proposed plan it allows. Transaction recursion
+        // must thread the proposed plan into the child explanation.
+        let proposed = CollectionSchema {
+            version: 2,
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": {
+                        "allow": [
+                            { "name": "only-open", "where": { "field": "status", "eq": "open" } },
+                            { "name": "also-archived", "where": { "field": "status", "eq": "archived" } }
+                        ]
+                    }
+                }))
+                .unwrap(),
+            ),
+            ..active.clone()
+        };
+        let child = ExplainPolicyRequest {
+            data: Some(json!({"status": "archived"})),
+            ..empty_explain_request("read")
+        };
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema: proposed,
+                actor: Some("admin".into()),
+                force: false,
+                dry_run: true,
+                explain_inputs: vec![ExplainPolicyRequest {
+                    operations: vec![child],
+                    ..empty_explain_request("transaction")
+                }],
+            })
+            .expect("transaction dry-run must succeed");
+        let explanations = resp
+            .dry_run_explanations
+            .expect("transaction explanations on success");
+        assert_eq!(explanations.len(), 1);
+        assert_eq!(explanations[0].operation, "transaction");
+        assert_eq!(
+            explanations[0].decision, "allow",
+            "transaction must allow when proposed plan permits the child"
+        );
+        assert_eq!(explanations[0].operations.len(), 1);
+        assert_eq!(
+            explanations[0].operations[0].decision, "allow",
+            "child read must decide against proposed plan, not storage"
+        );
     }
 
     #[test]

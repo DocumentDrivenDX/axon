@@ -49,7 +49,14 @@ let policyActivateError = $state<string | null>(null);
 let policyActivateStatus = $state<string | null>(null);
 // biome-ignore lint/style/useConst: bind:value mutates this state.
 let fixtureSubject = $state('');
-type FixtureOperation = 'read' | 'create' | 'update' | 'patch' | 'delete';
+type FixtureOperation =
+	| 'read'
+	| 'create'
+	| 'update'
+	| 'patch'
+	| 'delete'
+	| 'transition'
+	| 'rollback';
 // biome-ignore lint/style/useConst: bind:value mutates this state.
 let fixtureOperation = $state<FixtureOperation>('read');
 let policyCompileGeneration = 0;
@@ -60,6 +67,12 @@ let fixtureEntityId = $state('');
 let fixtureDataJson = $state('{}');
 // biome-ignore lint/style/useConst: bind:value mutates this state.
 let fixturePatchJson = $state('{}');
+// biome-ignore lint/style/useConst: bind:value mutates this state.
+let fixtureLifecycleName = $state('');
+// biome-ignore lint/style/useConst: bind:value mutates this state.
+let fixtureTargetState = $state('');
+// biome-ignore lint/style/useConst: bind:value mutates this state.
+let fixtureToVersion = $state('');
 let fixtureResult = $state<DryRunExplanation | null>(null);
 let fixtureError = $state<string | null>(null);
 let fixtureLoading = $state(false);
@@ -385,6 +398,27 @@ async function runFixtureDryRun() {
 	if (fixtureEntityId.trim()) input.entityId = fixtureEntityId.trim();
 	if (parsedData !== undefined) input.data = parsedData;
 	if (parsedPatch !== undefined) input.patch = parsedPatch;
+	if (fixtureOperation === 'transition') {
+		const lifecycle = fixtureLifecycleName.trim();
+		const target = fixtureTargetState.trim();
+		if (!lifecycle || !target) {
+			fixtureError = 'transition fixtures require lifecycleName and targetState';
+			fixtureResult = null;
+			return;
+		}
+		input.lifecycleName = lifecycle;
+		input.targetState = target;
+	}
+	if (fixtureOperation === 'rollback') {
+		const trimmed = fixtureToVersion.trim();
+		const parsedVersion = trimmed ? Number.parseInt(trimmed, 10) : Number.NaN;
+		if (!Number.isInteger(parsedVersion) || parsedVersion < 0) {
+			fixtureError = 'rollback fixtures require a non-negative toVersion integer';
+			fixtureResult = null;
+			return;
+		}
+		input.toVersion = parsedVersion;
+	}
 	fixtureGeneration += 1;
 	const generation = fixtureGeneration;
 	fixtureLoading = true;
@@ -913,6 +947,8 @@ $effect(() => {
 												<option value="update">update</option>
 												<option value="patch">patch</option>
 												<option value="delete">delete</option>
+												<option value="transition">transition</option>
+												<option value="rollback">rollback</option>
 											</select>
 										</label>
 										<label>
@@ -941,6 +977,35 @@ $effect(() => {
 													bind:value={fixturePatchJson}
 													spellcheck="false"
 												></textarea>
+											</label>
+										{/if}
+										{#if fixtureOperation === 'transition'}
+											<label>
+												<span>lifecycleName</span>
+												<input
+													data-testid="schema-policy-fixture-lifecycle-name"
+													bind:value={fixtureLifecycleName}
+													placeholder="status_lifecycle"
+												/>
+											</label>
+											<label>
+												<span>targetState</span>
+												<input
+													data-testid="schema-policy-fixture-target-state"
+													bind:value={fixtureTargetState}
+													placeholder="approved"
+												/>
+											</label>
+										{/if}
+										{#if fixtureOperation === 'rollback'}
+											<label>
+												<span>toVersion</span>
+												<input
+													data-testid="schema-policy-fixture-to-version"
+													bind:value={fixtureToVersion}
+													inputmode="numeric"
+													placeholder="3"
+												/>
 											</label>
 										{/if}
 									</div>
