@@ -164,17 +164,34 @@ describe('buildMcpStdioProvenance', () => {
 	});
 
 	test('marks idle status when last activity is hours old', () => {
-		const oneHourPlusAgoNs = 0;
-		const audit = [mcpAuditEntry(oneHourPlusAgoNs)];
-		const nowNs = 30 * 60 * 1_000 * 1_000_000;
-		const provenance = buildMcpStdioProvenance({
+		// Within 60 minutes: idle, label includes the lastSeen timestamp.
+		const idleActivityNs = 0;
+		const idleNowNs = 30 * 60 * 1_000 * 1_000_000;
+		const idleProv = buildMcpStdioProvenance({
 			intent: mcpIntent(),
-			audit,
+			audit: [mcpAuditEntry(idleActivityNs)],
 			scope,
-			now: nowNs,
+			now: idleNowNs,
 		});
-		expect(provenance?.configStatus).toBe('idle');
-		expect(provenance?.configStatusLabel).toContain('Idle');
+		expect(idleProv?.configStatus).toBe('idle');
+		expect(idleProv?.configStatusLabel).toContain('Idle');
+		expect(idleProv?.configStatusLabel).toContain('last stdio activity');
+
+		// Older than 60 minutes: stale, not the "no activity" message.
+		// Operators must see the timestamp so they can correlate with the
+		// audit timeline rather than a misleading "no activity" string.
+		const staleActivityNs = 0;
+		const staleNowNs = 90 * 60 * 1_000 * 1_000_000;
+		const staleProv = buildMcpStdioProvenance({
+			intent: mcpIntent(),
+			audit: [mcpAuditEntry(staleActivityNs)],
+			scope,
+			now: staleNowNs,
+		});
+		expect(staleProv?.configStatus).toBe('stale');
+		expect(staleProv?.configStatusLabel).toContain('Stale');
+		expect(staleProv?.configStatusLabel).toContain('last stdio activity');
+		expect(staleProv?.configStatusLabel).not.toContain('No recent stdio activity recorded');
 	});
 
 	test('env preview surfaces only routing-scoped keys and redacts credential id', () => {

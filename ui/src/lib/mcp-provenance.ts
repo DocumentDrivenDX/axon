@@ -21,7 +21,7 @@ import {
 	toolNameLabel,
 } from '$lib/intent-metadata';
 
-export type McpStdioConnectionStatus = 'active' | 'idle' | 'unknown';
+export type McpStdioConnectionStatus = 'active' | 'idle' | 'stale' | 'unknown';
 
 export type McpStdioEnvEntry = {
 	key: string;
@@ -109,17 +109,23 @@ function classifyConnection(
 	const elapsedMs = (nowNs - lastActivityNs) / 1_000_000;
 	if (elapsedMs <= 5 * 60 * 1000) return 'active';
 	if (elapsedMs <= 60 * 60 * 1000) return 'idle';
-	return 'unknown';
+	return 'stale';
 }
 
 function statusLabel(status: McpStdioConnectionStatus, lastActivityNs: number | null): string {
-	if (status === 'unknown' || lastActivityNs === null) {
+	if (lastActivityNs === null) {
 		return 'No recent stdio activity recorded';
 	}
 	const lastSeen = new Date(Math.floor(lastActivityNs / 1_000_000)).toISOString();
-	return status === 'active'
-		? `Active (last stdio activity ${lastSeen})`
-		: `Idle (last stdio activity ${lastSeen})`;
+	switch (status) {
+		case 'active':
+			return `Active (last stdio activity ${lastSeen})`;
+		case 'idle':
+			return `Idle (last stdio activity ${lastSeen})`;
+		case 'stale':
+		case 'unknown':
+			return `Stale (last stdio activity ${lastSeen})`;
+	}
 }
 
 export function isSecretEnvKey(key: string): boolean {
