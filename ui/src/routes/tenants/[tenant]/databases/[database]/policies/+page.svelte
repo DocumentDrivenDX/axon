@@ -26,6 +26,7 @@ import {
 	buildGraphqlDiagnostics,
 	buildImpactMatrixInputs,
 	buildMcpBridgePreset,
+	buildMcpEnvelopeComparison,
 	buildMcpEnvelopePreview,
 	buildSchemaDiagnostics,
 	dedupeDiagnostics,
@@ -160,21 +161,7 @@ const explainConsolePreset = $derived(
 const mcpBridgePreset = $derived(
 	buildMcpBridgePreset(consolePresetContext, explainConsolePreview.input),
 );
-const mcpEnvelopeComparison = $derived(
-	mcpEnvelopePreview && explanation
-		? {
-				outcomeMatches:
-					mcpEnvelopePreview.reasonCode.trim().toLowerCase() ===
-					explanation.reason.trim().toLowerCase(),
-				policyVersionMatches:
-					mcpEnvelopePreview.policyVersion !== null &&
-					mcpEnvelopePreview.policyVersion === explanation.policyVersion,
-				explainDecision: explanation.decision,
-				explainReason: explanation.reason,
-				explainPolicyVersion: explanation.policyVersion,
-			}
-		: null,
-);
+const mcpEnvelopeComparison = $derived(buildMcpEnvelopeComparison(mcpEnvelopePreview, explanation));
 
 function defaultSubjectId(nextSubjects: SubjectOption[]): string {
 	return (
@@ -963,19 +950,26 @@ onMount(() => {
 							<div class="stack">
 								<span
 									data-testid="mcp-envelope-comparison-outcome"
-									data-match={mcpEnvelopeComparison.outcomeMatches ? 'match' : 'mismatch'}
+									data-match={mcpEnvelopeComparison.outcomeMatch}
 								>
-									{mcpEnvelopeComparison.outcomeMatches ? 'Reason matches' : 'Reason differs'}
-									(MCP: {mcpEnvelopePreview.reasonCode}; GraphQL: {mcpEnvelopeComparison.explainReason})
+									{mcpEnvelopeComparison.outcomeMatch === 'match'
+										? 'Reason matches'
+										: 'Reason differs'}
+									(MCP: {mcpEnvelopeComparison.mcpReasonCode}; GraphQL: {mcpEnvelopeComparison.explainReason})
 								</span>
 								<span
 									data-testid="mcp-envelope-comparison-policy"
-									data-match={mcpEnvelopeComparison.policyVersionMatches ? 'match' : 'mismatch'}
+									data-match={mcpEnvelopeComparison.policyVersionMatch}
 								>
-									{mcpEnvelopeComparison.policyVersionMatches
-										? 'Policy version matches'
-										: 'Policy version differs'}
-									(MCP: v{mcpEnvelopePreview.policyVersion ?? '?'}; GraphQL: v{mcpEnvelopeComparison.explainPolicyVersion})
+									{#if mcpEnvelopeComparison.policyVersionMatch === 'unknown'}
+										Policy version unknown (no active version)
+									{:else if mcpEnvelopeComparison.policyVersionMatch === 'match'}
+										Policy version matches (MCP: v{mcpEnvelopeComparison.mcpPolicyVersion}; GraphQL:
+										v{mcpEnvelopeComparison.explainPolicyVersion})
+									{:else}
+										Policy version differs (MCP: v{mcpEnvelopeComparison.mcpPolicyVersion ?? '?'};
+										GraphQL: v{mcpEnvelopeComparison.explainPolicyVersion ?? '?'})
+									{/if}
 								</span>
 							</div>
 						</div>

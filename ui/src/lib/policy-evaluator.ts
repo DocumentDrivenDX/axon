@@ -784,3 +784,45 @@ export function buildMcpEnvelopePreview(
 export function formatMcpReproduction(preview: McpEnvelopePreview): string {
 	return prettyJson(preview.reproduction);
 }
+
+export type McpEnvelopeMatchState = 'match' | 'mismatch' | 'unknown';
+
+export type McpEnvelopeComparison = {
+	outcomeMatch: 'match' | 'mismatch';
+	policyVersionMatch: McpEnvelopeMatchState;
+	mcpReasonCode: string;
+	mcpPolicyVersion: number | null;
+	explainDecision: string;
+	explainReason: string;
+	explainPolicyVersion: number | null;
+};
+
+export function buildMcpEnvelopeComparison(
+	preview: McpEnvelopePreview | null,
+	explanation: PolicyExplanation | null,
+): McpEnvelopeComparison | null {
+	if (!preview || !explanation) return null;
+	const explainPolicyVersion =
+		typeof explanation.policyVersion === 'number' ? explanation.policyVersion : null;
+	const outcomeMatch =
+		preview.reasonCode.trim().toLowerCase() === explanation.reason.trim().toLowerCase()
+			? 'match'
+			: 'mismatch';
+	let policyVersionMatch: McpEnvelopeMatchState;
+	if (preview.policyVersion === null && explainPolicyVersion === null) {
+		policyVersionMatch = 'unknown';
+	} else if (preview.policyVersion === explainPolicyVersion) {
+		policyVersionMatch = 'match';
+	} else {
+		policyVersionMatch = 'mismatch';
+	}
+	return {
+		outcomeMatch,
+		policyVersionMatch,
+		mcpReasonCode: preview.reasonCode,
+		mcpPolicyVersion: preview.policyVersion,
+		explainDecision: explanation.decision,
+		explainReason: explanation.reason,
+		explainPolicyVersion,
+	};
+}

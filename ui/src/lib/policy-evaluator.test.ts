@@ -20,6 +20,7 @@ import {
 	buildGraphqlDiagnostics,
 	buildImpactMatrixInputs,
 	buildMcpBridgePreset,
+	buildMcpEnvelopeComparison,
 	buildMcpEnvelopePreview,
 	buildSchemaDiagnostics,
 	dedupeDiagnostics,
@@ -1012,6 +1013,105 @@ describe('buildMcpEnvelopePreview', () => {
 		expect(json).toContain('"tool": "invoices.get"');
 		expect(json).toContain('"subject": "finance-agent"');
 		expect(json).toContain('"outcome": "allowed"');
+	});
+});
+
+describe('buildMcpEnvelopeComparison', () => {
+	const explanation = (overrides: Partial<PolicyExplanation> = {}): PolicyExplanation => ({
+		operation: 'patch',
+		decision: 'allowed',
+		reason: 'allowed',
+		policyVersion: 7,
+		ruleIds: ['rule-1'],
+		policyIds: ['policy-1'],
+		fieldPaths: [],
+		deniedFields: [],
+		rules: [],
+		approval: null,
+		operations: [],
+		...overrides,
+	});
+
+	const effective = (
+		overrides: Partial<EffectiveCollectionPolicy> = {},
+	): EffectiveCollectionPolicy => ({
+		collection: 'invoices',
+		canRead: true,
+		canCreate: true,
+		canUpdate: true,
+		canDelete: true,
+		redactedFields: [],
+		deniedFields: [],
+		policyVersion: 7,
+		...overrides,
+	});
+
+	const buildPreview = (overrides?: {
+		explanation?: PolicyExplanation;
+		effective?: EffectiveCollectionPolicy | null;
+	}) =>
+		buildMcpEnvelopePreview({
+			subject: 'finance-agent',
+			collection: 'invoices',
+			operation: 'patch',
+			explanation: overrides?.explanation ?? explanation(),
+			effective: overrides?.effective === undefined ? effective() : overrides.effective,
+			explainInput: { operation: 'patch', collection: 'invoices', entityId: 'inv-1' },
+		});
+
+	test('returns null when preview or explanation is missing', () => {
+		expect(buildMcpEnvelopeComparison(null, explanation())).toBeNull();
+		expect(buildMcpEnvelopeComparison(buildPreview(), null)).toBeNull();
+	});
+
+	test('matches when reason and policy version agree on non-null values', () => {
+		const expl = explanation();
+		const comparison = buildMcpEnvelopeComparison(buildPreview({ explanation: expl }), expl);
+		expect(comparison?.outcomeMatch).toBe('match');
+		expect(comparison?.policyVersionMatch).toBe('match');
+		expect(comparison?.mcpPolicyVersion).toBe(7);
+		expect(comparison?.explainPolicyVersion).toBe(7);
+	});
+
+	test('reports policyVersionMatch=unknown when both sides are null', () => {
+		const expl = explanation({
+			policyVersion: null as unknown as number,
+		});
+		const comparison = buildMcpEnvelopeComparison(
+			buildPreview({ explanation: expl, effective: null }),
+			expl,
+		);
+		expect(comparison?.policyVersionMatch).toBe('unknown');
+		expect(comparison?.mcpPolicyVersion).toBeNull();
+		expect(comparison?.explainPolicyVersion).toBeNull();
+	});
+
+	test('reports policyVersionMatch=mismatch when only one side is null', () => {
+		const expl = explanation({
+			policyVersion: null as unknown as number,
+		});
+		const comparison = buildMcpEnvelopeComparison(buildPreview({ explanation: expl }), expl);
+		expect(comparison?.policyVersionMatch).toBe('mismatch');
+		expect(comparison?.mcpPolicyVersion).toBe(7);
+		expect(comparison?.explainPolicyVersion).toBeNull();
+	});
+
+	test('reports policyVersionMatch=mismatch when versions differ', () => {
+		const expl = explanation({ policyVersion: 8 });
+		const preview = buildPreview({ explanation: explanation({ policyVersion: 7 }) });
+		const comparison = buildMcpEnvelopeComparison(preview, expl);
+		expect(comparison?.policyVersionMatch).toBe('mismatch');
+	});
+
+	test('reports outcomeMatch=mismatch when reasons diverge', () => {
+		const previewExplanation = explanation({ reason: 'allowed' });
+		const graphqlExplanation = explanation({ reason: 'forbidden_field_write' });
+		const comparison = buildMcpEnvelopeComparison(
+			buildPreview({ explanation: previewExplanation }),
+			graphqlExplanation,
+		);
+		expect(comparison?.outcomeMatch).toBe('mismatch');
+		expect(comparison?.explainReason).toBe('forbidden_field_write');
 	});
 });
 
