@@ -1,2 +1,35 @@
 
 ▶ axon-ff92fed7: build(feat-031): proposed-policy delta matrix and review
+2026/04/28 23:34:15 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260429T033103-c8eec7eb/embedded/svc-1777433463543480229.jsonl: file already closed"
+✓ axon-ff92fed7 → no_changes
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "no_changes",
+  "results": [
+    {
+      "bead_id": "axon-ff92fed7",
+      "attempt_id": "20260429T033103-c8eec7eb",
+      "harness": "agent",
+      "provider": "bragi",
+      "model": "qwen/qwen3.6-35b-a3b",
+      "status": "no_changes",
+      "detail": "no_changes",
+      "session_id": "eb-36361b72",
+      "base_rev": "2b2996eebab4a914c00a3a6b941bcdcbf847c574",
+      "result_rev": "2b2996eebab4a914c00a3a6b941bcdcbf847c574",
+      "retry_after": "2026-04-29T09:34:15Z",
+      "tier": "cheap",
+      "probe_result": "ok",
+      "duration_ms": 191581,
+      "requested_profile": "default",
+      "requested_tier": "cheap",
+      "resolved_tier": "cheap",
+      "final_tier": "cheap"
+    }
+  ]
+}
