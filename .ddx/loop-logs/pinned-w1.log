@@ -1,0 +1,4 @@
+adaptive min-tier: skipping cheap tier (trailing success rate 0.00 over 9 attempts; threshold 0.20) — min-tier=standard
+warning: agent.routing.model_overrides is opt-in. It is consulted only when --override-model is passed; the default execute path ignores it. See docs/migrations/routing-config.md.
+
+▶ axon-80979cb8: build(feat-031): impact-matrix proposed-policy state and op set extension (A1/4 of axon-ff92fed7)

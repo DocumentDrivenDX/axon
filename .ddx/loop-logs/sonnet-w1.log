@@ -1,3 +1,33 @@
 warning: agent.routing.model_overrides is opt-in. It is consulted only when --override-model is passed; the default execute path ignores it. See docs/migrations/routing-config.md.
 
 ▶ axon-80979cb8: build(feat-031): impact-matrix proposed-policy state and op set extension (A1/4 of axon-ff92fed7)
+2026/04/29 19:52:54 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260429T235203-46dc867a/embedded/svc-1777506724326406513.jsonl: file already closed"
+2026/04/29 19:53:15 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/agent-logs/svc-1777506777700870657.jsonl: file already closed"
+✓ axon-80979cb8 → error: post-merge review: BLOCK (flagged for human)
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "review_block",
+  "results": [
+    {
+      "bead_id": "axon-80979cb8",
+      "attempt_id": "20260429T235203-46dc867a",
+      "harness": "agent",
+      "provider": "openrouter",
+      "model": "openai/gpt-5.4-mini",
+      "status": "review_block",
+      "detail": "post-merge review: BLOCK (flagged for human)",
+      "session_id": "eb-096b4a59",
+      "base_rev": "14e2bd72ed0690359fe99f14d7df6a578f2fcc6e",
+      "result_rev": "1434a4e2de69d94f98973df843817ea1ffbab8da",
+      "review_verdict": "BLOCK",
+      "review_rationale": "The diff only adds an execution metadata file and does not modify the required UI or API code, so none of the acceptance criteria for the impact-matrix/proposed-policy implementation can be verified as implemented.",
+      "cost_usd": 0.05284005,
+      "duration_ms": 50392
+    }
+  ]
+}

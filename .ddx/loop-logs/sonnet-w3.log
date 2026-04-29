@@ -1,3 +1,4 @@
 warning: agent.routing.model_overrides is opt-in. It is consulted only when --override-model is passed; the default execute path ignores it. See docs/migrations/routing-config.md.
 
 ▶ hx-5f4d4ea1: ui: toggle race during in-flight target-policy fetch on Links preview
+2026/04/29 19:53:13 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260429T235225-7c33d9d1/embedded/svc-1777506746792423921.jsonl: file already closed"

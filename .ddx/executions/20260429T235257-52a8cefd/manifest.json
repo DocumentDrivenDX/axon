@@ -1,0 +1,47 @@
+{
+  "harness": "codex",
+  "model": "gpt-5.4",
+  "session_id": "/home/erik/Projects/axon/.ddx/agent-logs/svc-1777506777700870657.jsonl",
+  "base_rev": "7dd645f9ffdd24d5bcb6542c65ae8463bd32095a",
+  "result_rev": "1434a4e2de69d94f98973df843817ea1ffbab8da",
+  "verdict": "BLOCK",
+  "bead_id": "axon-80979cb8",
+  "execution_dir": ".ddx/executions/20260429T235257-52a8cefd",
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 4053,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 108,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260429T235203-46dc867a/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 1238,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 7025,
+    "output_bytes": 1166,
+    "elapsed_ms": 17625,
+    "harness": "codex",
+    "model": "gpt-5.4"
+  }
+}

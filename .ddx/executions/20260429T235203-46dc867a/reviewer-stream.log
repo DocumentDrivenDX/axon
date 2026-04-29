@@ -1,0 +1,24 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "The diff only adds an execution metadata file and does not modify the required UI or API code, so none of the acceptance criteria for the impact-matrix/proposed-policy implementation can be verified as implemented.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "No change was made to extend `IMPACT_MATRIX_OPERATIONS` to include `create` and `update`, so the required five-operation matrix is not implemented.",
+      "location": "ui/src/lib/policy-evaluator.ts:500"
+    },
+    {
+      "severity": "block",
+      "summary": "The policies page was not updated with the required proposed-policy state declarations, reset behavior, or second proposed-policy load/fanout, so AC2-AC4 are not implemented.",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte"
+    },
+    {
+      "severity": "block",
+      "summary": "There are no changes to the explain/effective policy API surface for optional `policyOverride`, and no evidence of the required typecheck, lint, or E2E verification.",
+      "location": "ui/src/lib/api.ts"
+    }
+  ]
+}
+```

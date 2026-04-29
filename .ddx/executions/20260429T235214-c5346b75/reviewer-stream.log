@@ -1,0 +1,19 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "The diff only adds execution metadata. None of the required audit-write API contract documentation or examples are present, so the bead is not implemented.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "The only change is an execution result artifact; the required Audit Writes contract section was not added, leaving the write path, schema, idempotency, retention/queryability, and rejection semantics undocumented.",
+      "location": ".ddx/executions/20260429T235214-c5346b75/result.json:1"
+    },
+    {
+      "severity": "block",
+      "summary": "The acceptance criteria also require reference invocation examples for a browser client and an integration worker, but no documentation changes were made to add them.",
+      "location": "docs/helix/02-design/api-contracts.md"
+    }
+  ]
+}
+```
