@@ -1,8 +1,8 @@
 {
-  "bead_id": "hx-92456dd2",
-  "attempt_id": "20260429T030633-05b976e4",
-  "harness": "claude",
-  "model": "claude-haiku-4-5",
-  "started_at": "2026-04-29T03:06:33.459040854Z",
-  "worktree_path": "/tmp/ddx-exec-wt/.execute-bead-wt-hx-92456dd2-20260429T030633-05b976e4"
+  "bead_id": "hx-5f4d4ea1",
+  "attempt_id": "20260429T030828-075a28c5",
+  "harness": "agent",
+  "model": "qwen3.6",
+  "started_at": "2026-04-29T03:08:28.631934026Z",
+  "worktree_path": "/tmp/ddx-exec-wt/.execute-bead-wt-hx-5f4d4ea1-20260429T030828-075a28c5"
 }
