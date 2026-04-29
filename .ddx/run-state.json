@@ -1,8 +1,8 @@
 {
-  "bead_id": "axon-80979cb8",
-  "attempt_id": "20260429T182641-50a20087",
+  "bead_id": "axon-db7a6d0a",
+  "attempt_id": "20260429T182653-8f2ff09f",
   "harness": "agent",
   "model": "qwen/qwen3.6-35b-a3b",
-  "started_at": "2026-04-29T18:26:42.176620167Z",
-  "worktree_path": "/tmp/ddx-exec-wt/.execute-bead-wt-axon-80979cb8-20260429T182641-50a20087"
+  "started_at": "2026-04-29T18:26:54.286892278Z",
+  "worktree_path": "/tmp/ddx-exec-wt/.execute-bead-wt-axon-db7a6d0a-20260429T182653-8f2ff09f"
 }
