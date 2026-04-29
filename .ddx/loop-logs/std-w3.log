@@ -1,0 +1,3 @@
+warning: agent.routing.model_overrides is opt-in. It is consulted only when --override-model is passed; the default execute path ignores it. See docs/migrations/routing-config.md.
+
+▶ axon-ab2e52e0: build(feat-030): record preview as non-mutation operational event
