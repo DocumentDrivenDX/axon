@@ -901,4 +901,135 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		const tenantHeader = await page.locator('thead').first().innerText();
 		expect(tenantHeader.toLowerCase()).not.toContain('entities');
 	});
+
+	test('link preview retries on transient policy fetch failure', async ({ page, request }) => {
+		// hx-92456dd2: ensureTargetPolicy must retry on subsequent toggle after
+		// a failed fetch, rather than permanently caching a permissive fallback.
+		// With the policy endpoint failing on the first call and succeeding on
+		// the second, the second expand of a row in the same target collection
+		// must retry and render [redacted] markers correctly.
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-enforcement-retry');
+
+		// Seed two outbound links from the contractor-visible large invoice
+		// to two target invoices (both visible to contractor). Each will trigger
+		// a policy fetch on expand.
+		await createTestLink(request, fixture.db, {
+			source_collection: SCN017_COLLECTIONS.invoices,
+			source_id: fixture.invoices.large.id,
+			target_collection: SCN017_COLLECTIONS.invoices,
+			target_id: fixture.invoices.small.id,
+			link_type: 'related-invoice',
+		});
+		// Create a second target entity for a second expand attempt.
+		const secondTargetId = 'second-target-invoice';
+		await createTestEntity(request, fixture.db, SCN017_COLLECTIONS.invoices, secondTargetId, {
+			id: secondTargetId,
+			po_number: 'PO-2002',
+			amount_cents: 999999,
+			commercial_terms: 'net-45 second target terms',
+		});
+		await createTestLink(request, fixture.db, {
+			source_collection: SCN017_COLLECTIONS.invoices,
+			source_id: fixture.invoices.large.id,
+			target_collection: SCN017_COLLECTIONS.invoices,
+			target_id: secondTargetId,
+			link_type: 'related-invoice',
+		});
+
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+		let policyFetchAttempt = 0;
+		let policyFailureMode = true; // First attempt fails, second succeeds.
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor, async (postData) => {
+			// Intercept the policy query and fail on the first attempt, then succeed.
+			if (
+				postData.includes('effectivePolicy') ||
+				(postData.includes('query') &&
+					postData.includes('effectivePolicy') &&
+					postData.includes(SCN017_COLLECTIONS.invoices))
+			) {
+				policyFetchAttempt++;
+				if (policyFailureMode) {
+					// First attempt: fail with a network error.
+					return {
+						data: null,
+						errors: [
+							{
+								message: 'Internal Server Error',
+								path: ['effectivePolicy'],
+								extensions: {
+									code: 'internal_server_error',
+								},
+							},
+						],
+					};
+				}
+				// Second attempt and beyond: succeed.
+				return {
+					data: {
+						effectivePolicy: {
+							collection: SCN017_COLLECTIONS.invoices,
+							canRead: true,
+							canCreate: false,
+							canUpdate: false,
+							canDelete: false,
+							redactedFields: ['commercial_terms', 'amount_cents'],
+							deniedFields: [],
+							policyVersion: 1,
+						},
+					},
+				};
+			}
+			return null;
+		});
+
+		await page.goto(collectionUrl);
+
+		// Open the large invoice and switch to the Links tab.
+		await page.locator('tr', { hasText: fixture.invoices.large.id }).first().click();
+		await page.getByTestId('entity-tab-links').click();
+		await expect(page.locator('table[data-testid="entity-links-table"]')).toBeVisible();
+
+		// Toggle the preview on the first related-invoice row (to the small invoice).
+		// This will trigger a policy fetch that fails.
+		const firstToggle = page.getByTestId(
+			`entity-link-preview-toggle-related-invoice-${fixture.invoices.small.id}`,
+		);
+		await expect(firstToggle).toBeVisible();
+		await firstToggle.click();
+
+		// After the failed fetch, the preview row should still be visible but
+		// without redacted markers (graceful degradation).
+		const firstPreviewRow = page.getByTestId(
+			`entity-link-preview-related-invoice-${fixture.invoices.small.id}`,
+		);
+		await expect(firstPreviewRow).toBeVisible();
+
+		// Close the first preview.
+		await firstToggle.click();
+		await expect(firstPreviewRow).toBeHidden();
+
+		// Now allow policy fetches to succeed.
+		policyFailureMode = false;
+
+		// Toggle the preview on the second related-invoice row (to the second target).
+		// This should trigger a policy fetch that succeeds (because the cache had
+		// marked the previous fetch as failed, allowing retry).
+		const secondToggle = page.getByTestId(
+			`entity-link-preview-toggle-related-invoice-${secondTargetId}`,
+		);
+		await expect(secondToggle).toBeVisible();
+		await secondToggle.click();
+
+		// The second preview row must render with redacted markers.
+		const secondPreviewRow = page.getByTestId(
+			`entity-link-preview-related-invoice-${secondTargetId}`,
+		);
+		await expect(secondPreviewRow).toBeVisible();
+		const redactedCount = await secondPreviewRow.getByTestId('redacted-field').count();
+		expect(redactedCount).toBeGreaterThanOrEqual(2);
+
+		// Verify that we attempted the policy fetch at least twice (once failed, once succeeded).
+		expect(policyFetchAttempt).toBeGreaterThanOrEqual(2);
+	});
 });

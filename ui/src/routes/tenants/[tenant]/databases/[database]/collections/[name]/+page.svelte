@@ -198,7 +198,12 @@ let createLinkError = $state<string | null>(null);
 // the policy is collection-level and equal for every entity in scope,
 // so the issue's "lifetime of the selected entity" requirement is
 // satisfied by this looser bound.
-const targetPolicyByScopedCollection = $state<Record<string, EffectiveCollectionPolicy>>({});
+// Distinguishes successful fetches (stores EffectiveCollectionPolicy) from
+// failed fetches (stores { failed: true }) so transient errors don't
+// permanently disable retries.
+const targetPolicyByScopedCollection = $state<
+	Record<string, EffectiveCollectionPolicy | { failed: true }>
+>({});
 // Per-link expansion state for the inline target-data preview. Keyed by
 // the same `${linkType}:${target_collection}/${target_id}` shape used to
 // dedup `links` so a row's expansion survives unrelated re-renders.
@@ -358,32 +363,32 @@ function targetPolicyCacheKey(targetCollection: string): string {
 
 async function ensureTargetPolicy(targetCollection: string): Promise<void> {
 	const key = targetPolicyCacheKey(targetCollection);
-	if (targetPolicyByScopedCollection[key] !== undefined) return;
+	const cached = targetPolicyByScopedCollection[key];
+	// Only return early if we have a successful fetch. Failed fetches (marked
+	// with { failed: true }) allow the next expand to retry.
+	if (cached && 'canRead' in cached) return;
 	try {
 		targetPolicyByScopedCollection[key] = await fetchEffectivePolicy(targetCollection, scope);
 	} catch {
-		// Treat missing policy or fetch failure as "no redaction": the
-		// server has already enforced field-level visibility on the
-		// traverse response, so the worst case is we lose the explicit
-		// `[redacted]` marker. Refusing to render would be worse — the
-		// user sees the same values they'd see on the entity itself.
-		targetPolicyByScopedCollection[key] = {
-			collection: targetCollection,
-			canRead: true,
-			canCreate: false,
-			canUpdate: false,
-			canDelete: false,
-			redactedFields: [],
-			deniedFields: [],
-			policyVersion: 0,
-		};
+		// Mark the fetch as failed so the next expand of any row in this
+		// collection retries rather than permanently using a permissive
+		// fallback. The server has already enforced field-level visibility,
+		// so rendering without redaction markers is acceptable in the rare
+		// case of a transient policy outage.
+		targetPolicyByScopedCollection[key] = { failed: true };
 	}
 }
 
 function targetRedactedFields(targetCollection: string): readonly string[] {
-	return (
-		targetPolicyByScopedCollection[targetPolicyCacheKey(targetCollection)]?.redactedFields ?? []
-	);
+	const cached = targetPolicyByScopedCollection[targetPolicyCacheKey(targetCollection)];
+	// Return redactedFields if we have a successful fetch; otherwise return
+	// empty array (either policy not yet fetched or fetch failed). When the
+	// fetch fails, the server has already enforced field visibility, so we
+	// render without redaction markers.
+	if (cached && 'canRead' in cached) {
+		return cached.redactedFields;
+	}
+	return [];
 }
 
 async function toggleLinkPreview(link: LinkRow): Promise<void> {
