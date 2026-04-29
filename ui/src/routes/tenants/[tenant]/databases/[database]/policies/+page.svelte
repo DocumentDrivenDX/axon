@@ -336,8 +336,12 @@ async function loadImpactMatrix() {
 		impactMatrix = [];
 		impactMatrixSubjects = [];
 		impactMatrixEntities = [];
+		proposedImpactMatrix = [];
+		proposedImpactMatrixError = null;
+		loadingProposedImpactMatrix = false;
 		return;
 	}
+
 
 	const matrixSubjects = subjects.slice(0, IMPACT_MATRIX_SUBJECT_LIMIT);
 	const matrixEntities = collectionEntities.slice(0, IMPACT_MATRIX_ENTITY_LIMIT);
@@ -345,8 +349,12 @@ async function loadImpactMatrix() {
 		impactMatrix = [];
 		impactMatrixSubjects = matrixSubjects;
 		impactMatrixEntities = matrixEntities;
+		proposedImpactMatrix = [];
+		proposedImpactMatrixError = null;
+		loadingProposedImpactMatrix = false;
 		return;
 	}
+
 
 	const requests: ImpactMatrixRequest[] = buildImpactMatrixInputs(
 		selectedCollection,
@@ -414,8 +422,71 @@ async function loadImpactMatrix() {
 	}
 
 	impactMatrix = cells;
+
+	const schemaDraft = collectionDetail?.schema?.draft?.access_control ?? null;
+	if (!schemaDraft) {
+		proposedImpactMatrix = [];
+		proposedImpactMatrixError = null;
+		loadingProposedImpactMatrix = false;
+		loadingImpactMatrix = false;
+		return;
+	}
+
+	loadingProposedImpactMatrix = true;
+	proposedImpactMatrixError = null;
+
+	const proposedExplainResults = await Promise.allSettled(
+		requests.map((request) =>
+			explainPolicyDetailed(request.explainInput, scope, {
+				actor: request.subjectId,
+				policyOverride: schemaDraft,
+			}),
+		),
+	);
+	const proposedEffectiveResults = await Promise.allSettled(
+		effectiveKeys.map(({ subjectId, entityId }) =>
+			fetchEffectivePolicy(selectedCollection, scope, {
+				entityId,
+				actor: subjectId,
+				policyOverride: schemaDraft,
+			}),
+		),
+	);
+	const proposedEffectiveByKey = new Map<string, EffectiveCollectionPolicy>();
+	proposedEffectiveResults.forEach((result, index) => {
+		const meta = effectiveKeys[index];
+		if (!meta) return;
+		if (result.status === 'fulfilled') {
+			proposedEffectiveByKey.set(meta.key, result.value);
+		}
+	});
+
+	if (token !== impactMatrixToken) return;
+
+	proposedImpactMatrix = requests.map((request, index) => {
+		const explainPromise = proposedExplainResults[index];
+		const explainResult =
+			explainPromise && explainPromise.status === 'fulfilled' ? explainPromise.value : null;
+		const effective = proposedEffectiveByKey.get(`${request.subjectId}|${request.entity.id}`) ?? null;
+		return resolveImpactCell({
+			request,
+			explainResult,
+			effective,
+			presetCtxForSubject: {
+				baseHref: graphqlConsoleBaseHref,
+				subject: request.subjectId,
+			},
+		});
+	});
+	const proposedFailureCount = proposedExplainResults.filter((r) => r.status === 'rejected').length;
+	if (proposedFailureCount === proposedExplainResults.length && proposedExplainResults.length > 0) {
+		proposedImpactMatrixError = 'Failed to load any proposed impact matrix cells.';
+	} else if (proposedFailureCount > 0) {
+		proposedImpactMatrixError = `Failed to load ${proposedFailureCount} of ${proposedExplainResults.length} proposed matrix cells.`;
+	}
+	loadingProposedImpactMatrix = false;
 	loadingImpactMatrix = false;
-async function loadRouteShell() {
+
 	loadingShell = true;
 	shellError = null;
 
