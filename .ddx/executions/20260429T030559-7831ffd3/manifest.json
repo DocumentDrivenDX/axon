@@ -1,0 +1,39 @@
+{
+  "attempt_id": "20260429T030559-7831ffd3",
+  "bead_id": "hx-92456dd2",
+  "base_rev": "cb5862292cdff7167aebfd41bce3640d6d429c62",
+  "created_at": "2026-04-29T03:05:59.568355263Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-haiku-4-5",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "hx-92456dd2",
+    "title": "ui: ensureTargetPolicy permanently caches permissive fallback on fetch failure",
+    "description": "Review finding from fresh-eyes review of c28a750.\nFile: ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte:325-348 (ensureTargetPolicy)\nCategory: correctness (resilience)\nSeverity: medium\nDescription: ensureTargetPolicy swallows ALL fetchEffectivePolicy errors and writes a permissive sentinel into the cache (canRead: true, redactedFields: []). Subsequent toggles on rows in the same target collection short-circuit on `if (targetPolicyByScopedCollection[key] !== undefined) return;` and never retry. A transient network blip therefore disables [redacted] markers for the rest of the session for that scoped collection. The server still field-filters traverseLinks (the data values arrive as null at redacted paths), so this is NOT a value-leak — but it is a silent UX regression that masks an underlying bug: with empty redactedFields, redactValue (replace-nulls mode) leaves the server-supplied nulls in place and JsonTree renders them as literal \"null\" rather than [redacted].\nSuggested fix: Distinguish \"fetched: success\" from \"fetched: failed\" in the cache (e.g., use `Record\u003cstring, EffectiveCollectionPolicy | { failed: true }\u003e`, or store undefined and write only on success). On a failed fetch, allow the next expand of any row in that collection to retry. Optionally surface an inline non-blocking warning in the preview row when the policy is unavailable so reviewers can distinguish \"server-filtered nulls\" from \"missing policy\".",
+    "acceptance": "ensureTargetPolicy retries on a subsequent toggle after a failed fetch (no permanent permissive cache entry). New unit/e2e coverage demonstrates: with the policy endpoint failing on first call and succeeding on second, the second expand of a row in the same target collection renders [redacted] markers.",
+    "parent": "hx-2bab5350",
+    "labels": [
+      "helix"
+    ],
+    "metadata": {
+      "spec-id": "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte"
+    }
+  },
+  "governing": [
+    {
+      "id": "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte",
+      "path": "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260429T030559-7831ffd3",
+    "prompt": ".ddx/executions/20260429T030559-7831ffd3/prompt.md",
+    "manifest": ".ddx/executions/20260429T030559-7831ffd3/manifest.json",
+    "result": ".ddx/executions/20260429T030559-7831ffd3/result.json",
+    "checks": ".ddx/executions/20260429T030559-7831ffd3/checks.json",
+    "usage": ".ddx/executions/20260429T030559-7831ffd3/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-hx-92456dd2-20260429T030559-7831ffd3"
+  }
+}
