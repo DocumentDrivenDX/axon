@@ -1,0 +1,4 @@
+adaptive min-tier: skipping cheap tier (trailing success rate 0.00 over 9 attempts; threshold 0.20) — min-tier=standard
+warning: agent.routing.model_overrides is opt-in. It is consulted only when --override-model is passed; the default execute path ignores it. See docs/migrations/routing-config.md.
+
+▶ axon-db7a6d0a: feature: application audit-write API — first-class 'emit audit event' contract for downstream consumers

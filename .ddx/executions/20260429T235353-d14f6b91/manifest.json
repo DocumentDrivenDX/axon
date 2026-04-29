@@ -1,0 +1,136 @@
+{
+  "attempt_id": "20260429T235353-d14f6b91",
+  "bead_id": "axon-80979cb8",
+  "base_rev": "cf47ca378832c81f7bbe6fcfb04996ce5e4bad7a",
+  "created_at": "2026-04-29T23:53:55.897732863Z",
+  "requested": {
+    "harness": "claude",
+    "model": "claude-sonnet-4-6",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-80979cb8",
+    "title": "build(feat-031): impact-matrix proposed-policy state and op set extension (A1/4 of axon-ff92fed7)",
+    "description": "Subdivision 1 of 4 of axon-ff92fed7. Lay the data-layer groundwork for the proposed-policy column WITHOUT touching the render block. Two changes:\n\nA. Extend IMPACT_MATRIX_OPERATIONS in ui/src/lib/policy-evaluator.ts:500 from\n   ['read', 'patch', 'delete']\n   to\n   ['read', 'create', 'update', 'patch', 'delete']\n   The acceptance criterion of the parent bead requires assertions across all five ops, so the matrix must surface them. The IMPACT_MATRIX_SUBJECT_LIMIT/ENTITY_LIMIT constants stay unchanged.\n\nB. Add proposed-policy state slots adjacent to the existing active-policy state in ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte (around lines 94-101 for declarations, 337-356 for resets, 358-423 for fetch):\n\n   New $state declarations alongside lines 94-101:\n     let proposedImpactMatrix = $state\u003cImpactCell[]\u003e([]);\n     let proposedImpactMatrixError = $state\u003cstring | null\u003e(null);\n     let loadingProposedImpactMatrix = $state(false);\n\n   Existing ImpactCell shape (do not modify) from ui/src/lib/policy-evaluator.ts:480:\n     type ImpactCell = {\n       subjectId: string;\n       operation: EvaluationOperation;\n       entityId: string;\n       decision: 'allowed' | 'denied' | 'needs_approval' | 'error';\n       reason: string;\n       redactedFields: string[];\n       deniedFields: string[];\n       approvalRole: string | null;\n       diagnostic: WorkspaceDiagnostic | null;\n       explainHref: string | null;\n     };\n\n   Run a SECOND Promise.allSettled in the fetch block (after the existing one at 365 finishes) that mirrors the same explainPolicyDetailed + fetchEffectivePolicy fanout but passes the schema's draft access_control as a policyOverride argument. If api.ts's explainPolicyDetailed/fetchEffectivePolicy do not yet accept a policyOverride, add an optional 4th argument { policyOverride?: AccessControlDraft } that — when set — sends the draft access_control along the GraphQL operation. The GraphQL backend already supports dry-run via the schemaDraft path used by the policy editor on the same page (search 'schema.draft' or 'access_control' in policies/+page.svelte for the existing shape).\n\n   Populate proposedImpactMatrix using the same resolveImpactCell flow with the proposed explain/effective results.\n\n   When the schema has no draft access_control set, leave proposedImpactMatrix = [] and proposedImpactMatrixError = null. The render block (out of scope for this bead) will collapse to active-only in that case.\n\nOUT OF SCOPE for this bead: any UI render changes, any delta computation, any Playwright assertions. Existing policy-authoring.spec.ts must continue to pass unchanged.",
+    "acceptance": "AC1. IMPACT_MATRIX_OPERATIONS in ui/src/lib/policy-evaluator.ts is ['read', 'create', 'update', 'patch', 'delete'].\n\nAC2. proposedImpactMatrix, proposedImpactMatrixError, loadingProposedImpactMatrix state declarations exist in policies/+page.svelte adjacent to the active-policy state.\n\nAC3. After loadImpactMatrix runs, when the schema has a draft access_control, proposedImpactMatrix.length === impactMatrix.length and each proposed cell has a matching (subjectId, entityId, operation) tuple in impactMatrix.\n\nAC4. When the schema has no draft access_control, proposedImpactMatrix === [] and proposedImpactMatrixError === null.\n\nAC5. bun run typecheck and bun run lint pass.\n\nAC6. Existing policy-authoring.spec.ts continues to pass under bash scripts/test-ui-e2e-docker.sh -- tests/e2e/policy-authoring.spec.ts (no new assertions added in this bead).",
+    "parent": "axon-ff92fed7",
+    "labels": [
+      "helix",
+      "feat-031",
+      "decomp"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-29T23:53:53Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3580381",
+      "events": [
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"openrouter\",\"resolved_model\":\"openai/gpt-5.4-mini\",\"fallback_chain\":[]}",
+          "created_at": "2026-04-29T19:08:20.237290268Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=openrouter model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"attempt_id\":\"20260429T190634-579df880\",\"harness\":\"agent\",\"provider\":\"openrouter\",\"model\":\"openai/gpt-5.4-mini\",\"input_tokens\":601994,\"output_tokens\":7106,\"total_tokens\":609100,\"cost_usd\":0.11644529999999997,\"duration_ms\":104628,\"exit_code\":0}",
+          "created_at": "2026-04-29T19:08:20.365080982Z",
+          "kind": "cost",
+          "source": "ddx agent execute-bead",
+          "summary": "tokens=609100 cost_usd=0.1164 model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"escalation_count\":0,\"fallback_chain\":[],\"final_tier\":\"\",\"requested_profile\":\"\",\"requested_tier\":\"\",\"resolved_model\":\"openai/gpt-5.4-mini\",\"resolved_provider\":\"openrouter\",\"resolved_tier\":\"\"}",
+          "created_at": "2026-04-29T19:08:24.185288905Z",
+          "kind": "routing",
+          "source": "ddx agent execute-loop",
+          "summary": "provider=openrouter model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "erik",
+          "body": "The reviewed revision does not implement the required five-operation matrix, does not complete proposed-policy matrix loading/reset behavior, and introduces build-breaking regressions in the policies page and explain API.\nharness=codex\nmodel=gpt-5.4\ninput_bytes=6774\noutput_bytes=1699\nelapsed_ms=93413",
+          "created_at": "2026-04-29T19:09:58.142099223Z",
+          "kind": "review",
+          "source": "ddx agent execute-loop",
+          "summary": "BLOCK"
+        },
+        {
+          "actor": "",
+          "body": "",
+          "created_at": "2026-04-29T19:10:05.648523386Z",
+          "kind": "reopen",
+          "source": "",
+          "summary": "review: BLOCK"
+        },
+        {
+          "actor": "erik",
+          "body": "post-merge review: BLOCK (flagged for human)\nThe reviewed revision does not implement the required five-operation matrix, does not complete proposed-policy matrix loading/reset behavior, and introduces build-breaking regressions in the policies page and explain API.\nresult_rev=6b68ef8f05463bc643645b535744b326765a8a0f\nbase_rev=4c5635533859f7f171381d2bb7995c1106d7b62c",
+          "created_at": "2026-04-29T19:10:07.743988639Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "review_block"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"openrouter\",\"resolved_model\":\"openai/gpt-5.4-mini\",\"fallback_chain\":[]}",
+          "created_at": "2026-04-29T23:52:54.723030822Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=openrouter model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"attempt_id\":\"20260429T235203-46dc867a\",\"harness\":\"agent\",\"provider\":\"openrouter\",\"model\":\"openai/gpt-5.4-mini\",\"input_tokens\":268727,\"output_tokens\":4356,\"total_tokens\":273083,\"cost_usd\":0.05284005,\"duration_ms\":50392,\"exit_code\":0}",
+          "created_at": "2026-04-29T23:52:54.875338543Z",
+          "kind": "cost",
+          "source": "ddx agent execute-bead",
+          "summary": "tokens=273083 cost_usd=0.0528 model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"escalation_count\":0,\"fallback_chain\":[],\"final_tier\":\"\",\"requested_profile\":\"\",\"requested_tier\":\"\",\"resolved_model\":\"openai/gpt-5.4-mini\",\"resolved_provider\":\"openrouter\",\"resolved_tier\":\"\"}",
+          "created_at": "2026-04-29T23:52:57.458863969Z",
+          "kind": "routing",
+          "source": "ddx agent execute-loop",
+          "summary": "provider=openrouter model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "erik",
+          "body": "The diff only adds an execution metadata file and does not modify the required UI or API code, so none of the acceptance criteria for the impact-matrix/proposed-policy implementation can be verified as implemented.\nharness=codex\nmodel=gpt-5.4\ninput_bytes=7025\noutput_bytes=1166\nelapsed_ms=17625",
+          "created_at": "2026-04-29T23:53:15.339808109Z",
+          "kind": "review",
+          "source": "ddx agent execute-loop",
+          "summary": "BLOCK"
+        },
+        {
+          "actor": "",
+          "body": "",
+          "created_at": "2026-04-29T23:53:15.504277997Z",
+          "kind": "reopen",
+          "source": "",
+          "summary": "review: BLOCK"
+        },
+        {
+          "actor": "erik",
+          "body": "post-merge review: BLOCK (flagged for human)\nThe diff only adds an execution metadata file and does not modify the required UI or API code, so none of the acceptance criteria for the impact-matrix/proposed-policy implementation can be verified as implemented.\nresult_rev=1434a4e2de69d94f98973df843817ea1ffbab8da\nbase_rev=14e2bd72ed0690359fe99f14d7df6a578f2fcc6e",
+          "created_at": "2026-04-29T23:53:15.645337791Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "review_block"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-04-29T23:53:53.506159879Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260429T235353-d14f6b91",
+    "prompt": ".ddx/executions/20260429T235353-d14f6b91/prompt.md",
+    "manifest": ".ddx/executions/20260429T235353-d14f6b91/manifest.json",
+    "result": ".ddx/executions/20260429T235353-d14f6b91/result.json",
+    "checks": ".ddx/executions/20260429T235353-d14f6b91/checks.json",
+    "usage": ".ddx/executions/20260429T235353-d14f6b91/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-80979cb8-20260429T235353-d14f6b91"
+  }
+}
