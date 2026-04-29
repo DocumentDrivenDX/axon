@@ -1017,47 +1017,163 @@ Browser clients should use the same route-scoped bearer token they use for
 entity writes. Integration workers should use a service credential whose actor
 is meaningful in audit history, for example `auth-sync@nexiq`.
 
-## GraphQL Subscriptions
+## Audit Writes
 
-When a deployment enables the GraphQL broadcast broker, the schema exposes both
-generic and generated subscription fields:
+Application-level audit events are written through the transaction API, not a
+separate audit endpoint. The pinned contract is:
+
+- GraphQL `commitTransaction(input:)` accepts `auditEvents`.
+- REST `POST /transactions` accepts `audit_events`.
+- `operations: []` with one or more audit events is a valid transaction.
+- `operations: []` with no audit events remains the existing no-op.
+- No `POST /audit/events` endpoint is canonical for V1.
+- No standalone GraphQL `emitAuditEvent` mutation is canonical for V1.
+
+This keeps idempotency, replay behavior, actor resolution, tenant/database
+scoping, and write rate limiting identical to normal entity transactions.
+RBAC denials still return the existing `forbidden` write response; Axon does not
+implicitly emit audit entries on denial in the RBAC layer.
+
+GraphQL shape:
 
 ```graphql
-subscription {
-  entityChanged(
-    collection: "time_entries"
-    filter: { field: "status", op: "eq", value: "approved" }
-  ) {
-    auditId
-    operation
-    mutation
-    collection
-    entityId
-    data
-    previousData
-    version
-    previousVersion
-    actor
-    timestampMs
-    timestampNs
-  }
-
-  timeEntriesChanged(filter: { field: "status", op: "eq", value: "approved" }) {
-    auditId
-    data
+mutation {
+  commitTransaction(input: {
+    idempotencyKey: "audit-access-denied-018f4f9c"
+    operations: []
+    auditEvents: [
+      {
+        eventKind: "access_denied"
+        subjectRef: {
+          collection: "engagements"
+          id: "eng-1"
+        }
+        payloadJson: {
+          route: "/engagements/eng-1/rate-card"
+          attempted_action: "view_rate_card"
+          caller_identity: "ada@example.com"
+          reason: "missing_grant"
+        }
+        origin: {
+          system: "nexiq"
+          surface: "browser"
+          route: "/engagements/:id/rate-card"
+          request_id: "018f4f9c-7cb2-7b38-a9f1-77b16d6a2e2a"
+        }
+      }
+    ]
+  }) {
+    transactionId
+    auditEventIds
+    replayHit
   }
 }
 ```
 
-`filter` uses the same `AxonFilterInput` semantics as GraphQL list queries.
-`data` is the entity state after the write. `previousData` and
-`previousVersion` are nullable and populated only when the write path has that
-state available. `auditId` is the audit cursor for the change event.
+REST shape:
 
-Current reconnect behavior is no-resume: a disconnected WebSocket subscriber
-does not receive events missed while offline. Clients should reconnect and then
-use `auditLog(after: lastSeenAuditId)` to catch up before trusting the live
-stream again. Native replay/resume in the subscription protocol is deferred.
+```http
+POST /tenants/default/databases/default/transactions
+Authorization: Bearer eyJ...
+Content-Type: application/json
+```
+
+```json
+{
+  "idempotency_key": "audit-login-attempted-018f4f9c",
+  "operations": [],
+  "audit_events": [
+    {
+      "event_kind": "login_attempted",
+      "subject_ref": null,
+      "payload_json": {
+        "identifier": "ada@example.com",
+        "result": "failed",
+        "reason": "bad_password"
+      },
+      "origin": {
+        "system": "nexiq",
+        "surface": "integration_worker",
+        "worker": "auth-sync",
+        "request_id": "018f4f9c-7cb2-7b38-a9f1-77b16d6a2e2a"
+      }
+    }
+  ]
+}
+```
+
+Event schema:
+
+- `event_kind`: required string, `^[a-z][a-z0-9_.-]{0,127}$`. Consumers may
+  define new values. Axon reserves the `axon.` prefix for built-in events.
+- `subject_ref`: optional object `{ collection, id }`. Use `null` for events
+  not tied to a single entity, such as login attempts.
+- `payload_json`: required JSON object. It is consumer-defined event data, not
+  an entity mutation payload.
+- `origin`: required JSON object describing the producer. Browser calls should
+  include `system`, `surface`, `route`, and `request_id`; integration workers
+  should include `system`, `surface`, `worker`, and `request_id`.
+- `actor`: never accepted from the event body. Axon resolves actor from the
+  authenticated request exactly as it does for entity writes.
+
+Application audit events are stored in the same append-only audit log as entity
+mutations and have the same retention and export guarantees. They are visible
+through `auditLog` and REST `/audit/query`:
+
+- `mutation` is `application.event`.
+- `actor` is the authenticated actor.
+- `metadata.kind` is the submitted `event_kind`.
+- `metadata.origin` stores the submitted origin object.
+- `dataAfter` stores `payload_json`.
+- When `subject_ref` is present, `collection` and `entityId` match it.
+- When `subject_ref` is null, `collection` is `application_events` and
+  `entityId` is the server-assigned audit event id.
+
+Idempotency and atomicity:
+
+- `idempotency_key` covers both `operations` and `audit_events`.
+- Replaying the same key after success returns the cached transaction response
+  and does not append duplicate audit events.
+- If any entity operation or audit event is invalid, the whole transaction
+  aborts and no audit events are appended.
+- A transaction with multiple audit events appends all of them with the same
+  `transactionId`.
+
+Rejection shapes:
+
+```json
+{
+  "code": "rate_limit_exceeded",
+  "detail": {
+    "message": "write rate limit exceeded",
+    "retry_after_seconds": 60,
+    "scope": "actor_write"
+  }
+}
+```
+
+```json
+{
+  "code": "unknown_event_kind",
+  "detail": {
+    "event_kind": "axon.internal.override",
+    "message": "event_kind uses a reserved prefix"
+  }
+}
+```
+
+```json
+{
+  "code": "missing_actor",
+  "detail": {
+    "message": "audit events require an authenticated actor"
+  }
+}
+```
+
+Browser clients should use the same route-scoped bearer token they use for
+entity writes. Integration workers should use a service credential whose actor
+is meaningful in audit history, for example `auth-sync@nexiq`.
 
 ## Collection, Schema, And Lifecycle GraphQL
 
