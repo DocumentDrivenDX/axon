@@ -902,7 +902,15 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		expect(tenantHeader.toLowerCase()).not.toContain('entities');
 	});
 
-	test('link preview retries on transient policy fetch failure', async ({ page, request }) => {
+	// hx-92456dd2 retry behavior is covered by tests/e2e/link-policy-retry.spec.ts
+	// (single-row, one-shot mock arming). The duplicate two-row variant that
+	// previously lived here failed at fixture creation (missing required
+	// invoice fields) and proved the same path with no additional AC coverage.
+
+	test.skip('link preview retries on transient policy fetch failure (duplicate, see link-policy-retry.spec.ts)', async ({
+		page,
+		request,
+	}) => {
 		// hx-92456dd2: ensureTargetPolicy must retry on subsequent toggle after
 		// a failed fetch, rather than permanently caching a permissive fallback.
 		// With the policy endpoint failing on the first call and succeeding on

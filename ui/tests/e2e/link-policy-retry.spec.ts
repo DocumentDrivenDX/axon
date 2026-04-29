@@ -42,16 +42,20 @@ test.describe('Link preview policy retry', () => {
 			link_type: 'related-invoice',
 		});
 
-		let policyFetchCount = 0;
+		// One-shot fail flag — armed right before the action that should fail,
+		// so initial page-load policy fetches (source-collection list view)
+		// always pass through to the real server. The page and the link
+		// target collection are the same in this test, so the GraphQL
+		// operation/variables are identical for both source and target
+		// fetches; timing is the only reliable discriminator.
+		let nextPolicyFetchShouldFail = false;
+		const policyFetches = { failed: 0, succeeded: 0 };
 
-		// Set up mocking for the GraphQL policy query.
-		// First call will return an error to simulate a transient failure.
-		// Second call will return the real policy.
 		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor, async (postData) => {
 			if (postData.includes('AxonUiEffectivePolicy')) {
-				policyFetchCount += 1;
-				if (policyFetchCount === 1) {
-					// First call: return a server error
+				if (nextPolicyFetchShouldFail) {
+					nextPolicyFetchShouldFail = false;
+					policyFetches.failed += 1;
 					return {
 						data: null,
 						errors: [
@@ -62,7 +66,7 @@ test.describe('Link preview policy retry', () => {
 						],
 					};
 				}
-				// Second call: return null to pass through to the real server
+				policyFetches.succeeded += 1;
 			}
 			return null;
 		});
@@ -80,40 +84,34 @@ test.describe('Link preview policy retry', () => {
 		const toggleButton = page.getByTestId(`entity-link-preview-toggle-${linkRowTestId}`);
 		await expect(toggleButton).toBeVisible();
 
-		// ── First expand: policy fetch fails ──────────────────────────────────
-		// Click to expand the link. The policy fetch will fail, so the
-		// cached value becomes { failed: true }. The preview renders with
-		// empty redactedFields, so [redacted] markers do NOT appear.
+		// ── First expand: arm fail flag so the target-policy fetch errors ──
+		nextPolicyFetchShouldFail = true;
 		await toggleButton.click();
 		const previewRow = page.getByTestId(`entity-link-preview-${linkRowTestId}`);
 		await expect(previewRow).toBeVisible({ timeout: 10_000 });
 
-		// With a permissive fallback (empty redactedFields), the sensitive
-		// fields should render as the server-supplied values or null.
-		// The field JSON should be visible, and we should NOT see [redacted].
+		// Cache should now hold { failed: true }; targetRedactedFields returns
+		// []; redactValue should not introduce [redacted] markers.
 		const firstPreviewContent = await previewRow.innerText();
 		expect(firstPreviewContent).not.toContain('[redacted]');
+		expect(policyFetches.failed).toBe(1);
 
-		// ── Second expand: policy fetch succeeds ────────────────────────────
-		// Close the preview by clicking the toggle again.
+		// ── Second expand: flag is disarmed, fetch succeeds, retry happens ─
 		await toggleButton.click();
 		await expect(previewRow).not.toBeVisible();
 
-		// Reset the mock to allow the policy fetch to succeed on the next call.
-		// Actually, our mock above already handles this: policyFetchCount === 1
-		// only on the first call, so the second call passes through.
-
-		// Click to expand again. Now ensureTargetPolicy will retry because
-		// the cached value is { failed: true }, and the fetch will succeed.
+		const succeededBefore = policyFetches.succeeded;
 		await toggleButton.click();
 		await expect(previewRow).toBeVisible({ timeout: 10_000 });
 
-		// With the correct policy (redacted_fields=['amount_cents', 'commercial_terms']),
-		// those fields should now render as [redacted] markers.
+		// Successful policy fetch with redacted_fields=['amount_cents',
+		// 'commercial_terms'] → those fields render as [redacted].
 		const secondPreviewContent = await previewRow.innerText();
 		expect(secondPreviewContent).toContain('[redacted]');
 
-		// Verify the policy was retried (second fetch should have been attempted).
-		expect(policyFetchCount).toBeGreaterThanOrEqual(2);
+		// Verify the cache was reissued (a new fetch happened after the
+		// failure — proves the cache wasn't poisoned by the permissive
+		// fallback).
+		expect(policyFetches.succeeded).toBeGreaterThan(succeededBefore);
 	});
 });
