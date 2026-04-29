@@ -114,4 +114,46 @@ test.describe('Link preview policy retry', () => {
 		// fallback).
 		expect(policyFetches.succeeded).toBeGreaterThan(succeededBefore);
 	});
+
+	test('rapid double-click on link preview toggle leaves row collapsed while fetch is in flight', async ({
+		page,
+		request,
+	}) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'link-preview-double-click');
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+
+		await createTestLink(request, fixture.db, {
+			source_collection: SCN017_COLLECTIONS.invoices,
+			source_id: fixture.invoices.large.id,
+			target_collection: SCN017_COLLECTIONS.invoices,
+			target_id: fixture.invoices.small.id,
+			link_type: 'related-invoice',
+		});
+
+		let resolvePolicyFetch: (() => void) | null = null;
+		const policyFetchPending = new Promise<void>((resolve) => {
+			resolvePolicyFetch = resolve;
+		});
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor, async (postData) => {
+			if (postData.includes('AxonUiEffectivePolicy')) {
+				await policyFetchPending;
+			}
+			return null;
+		});
+		await page.goto(collectionUrl);
+		await page.locator('tr', { hasText: fixture.invoices.large.id }).first().click();
+		await page.getByTestId('entity-tab-links').click();
+
+		const linkRowTestId = `related-invoice-${fixture.invoices.small.id}`;
+		const toggleButton = page.getByTestId(`entity-link-preview-toggle-${linkRowTestId}`);
+		const previewRow = page.getByTestId(`entity-link-preview-${linkRowTestId}`);
+
+		await toggleButton.click();
+		await toggleButton.click();
+		resolvePolicyFetch?.();
+
+		await expect(previewRow).toBeHidden({ timeout: 10_000 });
+		await expect(page.getByTestId('redacted-field')).toHaveCount(0);
+	});
 });
