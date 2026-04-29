@@ -398,12 +398,17 @@ async function toggleLinkPreview(link: LinkRow): Promise<void> {
 		expandedLinks = { ...expandedLinks };
 		return;
 	}
-	// Fetch the target collection's effective policy BEFORE marking the
-	// row expanded so the JsonTree never renders raw target_data leaves
-	// without the redacted-field markers in place.
-	await ensureTargetPolicy(link.target_collection);
+	// Optimistically mark the row expanded before the policy fetch so a
+	// repeated click while the request is in flight can take the collapse
+	// branch. If the fetch fails, roll the optimistic expansion back.
 	expandedLinks[key] = true;
 	expandedLinks = { ...expandedLinks };
+	try {
+		await ensureTargetPolicy(link.target_collection);
+	} catch {
+		delete expandedLinks[key];
+		expandedLinks = { ...expandedLinks };
+	}
 }
 
 async function loadMarkdownTab() {
