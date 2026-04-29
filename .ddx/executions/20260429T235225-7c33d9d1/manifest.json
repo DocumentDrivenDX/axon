@@ -1,0 +1,44 @@
+{
+  "attempt_id": "20260429T235225-7c33d9d1",
+  "bead_id": "hx-5f4d4ea1",
+  "base_rev": "e1846c6737077e20dfe88d28ad734309bc551606",
+  "created_at": "2026-04-29T23:52:26.779599492Z",
+  "requested": {
+    "harness": "agent",
+    "model": "openai/gpt-5.4-mini",
+    "provider": "openrouter",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "hx-5f4d4ea1",
+    "title": "ui: toggle race during in-flight target-policy fetch on Links preview",
+    "description": "Review finding from fresh-eyes review of c28a750.\nFile: ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte:362-374 (toggleLinkPreview)\nCategory: correctness (UX)\nSeverity: medium\nDescription: toggleLinkPreview marks expanded state ONLY after `await ensureTargetPolicy(...)` resolves. If the user clicks the toggle button a second time while the policy fetch is still in flight, expandedLinks[key] is still falsy on entry, so the second click also takes the expand branch instead of toggling closed. Result: a rapid double-click leaves the row expanded when the user expected it to collapse, and may issue a redundant fetch (mitigated by the cache only after the first await completes).\nSuggested fix: Either (a) set expandedLinks[key] = true optimistically BEFORE the await so subsequent clicks see the truthy value and the existing collapse branch handles them, or (b) track an explicit pendingExpand Set and ignore re-entrant toggle clicks while a fetch is in flight. (a) is preferable because it preserves user-initiated cancellation; pair it with a guard so a fetch failure rolls expandedLinks[key] back to false.",
+    "acceptance": "Rapidly clicking the inline target-data toggle on the same row twice leaves the row collapsed (or visibly mid-fetch) rather than expanded. Add a Playwright assertion: click toggle twice without awaiting; expect previewRow toBeHidden and the redacted-field count to be 0. policy-enforcement.spec.ts continues to pass.",
+    "parent": "hx-2bab5350",
+    "labels": [
+      "helix"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-29T23:52:21Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3575500",
+      "execute-loop-heartbeat-at": "2026-04-29T23:52:21.684558357Z",
+      "spec-id": "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte"
+    }
+  },
+  "governing": [
+    {
+      "id": "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte",
+      "path": "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260429T235225-7c33d9d1",
+    "prompt": ".ddx/executions/20260429T235225-7c33d9d1/prompt.md",
+    "manifest": ".ddx/executions/20260429T235225-7c33d9d1/manifest.json",
+    "result": ".ddx/executions/20260429T235225-7c33d9d1/result.json",
+    "checks": ".ddx/executions/20260429T235225-7c33d9d1/checks.json",
+    "usage": ".ddx/executions/20260429T235225-7c33d9d1/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-hx-5f4d4ea1-20260429T235225-7c33d9d1"
+  }
+}
