@@ -1,0 +1,8 @@
+{
+  "bead_id": "hx-92456dd2",
+  "attempt_id": "20260429T030633-05b976e4",
+  "harness": "claude",
+  "model": "claude-haiku-4-5",
+  "started_at": "2026-04-29T03:06:33.459040854Z",
+  "worktree_path": "/tmp/ddx-exec-wt/.execute-bead-wt-hx-92456dd2-20260429T030633-05b976e4"
+}
