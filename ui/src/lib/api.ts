@@ -3,15 +3,7 @@ export type ApiError = {
 	detail?: unknown;
 };
 
-export type CollectionSchema = {
-	collection: string;
-	description?: string | null;
-	version: number;
-	entity_schema?: unknown;
-	link_types?: Record<string, unknown>;
-	access_control?: unknown;
-	indexes?: Array<Record<string, unknown>>;
-};
+export type AccessControlDraft = unknown;
 
 export type FieldChange = {
 	path: string;
@@ -1505,12 +1497,13 @@ export async function fetchEffectivePolicy(
 	options: {
 		entityId?: string | null;
 		actor?: string | null;
+		policyOverride?: AccessControlDraft;
 	} = {},
 ): Promise<EffectiveCollectionPolicy> {
 	const data = await graphqlRequest<{ effectivePolicy: GraphQLEffectivePolicy }>(
 		scope,
-		`query AxonUiEffectivePolicy($collection: String!, $entityId: ID) {
-			effectivePolicy(collection: $collection, entityId: $entityId) {
+		`query AxonUiEffectivePolicy($collection: String!, $entityId: ID, $policyOverride: JSON) {
+			effectivePolicy(collection: $collection, entityId: $entityId, policyOverride: $policyOverride) {
 				collection
 				canRead
 				canCreate
@@ -1524,6 +1517,7 @@ export async function fetchEffectivePolicy(
 		{
 			collection,
 			entityId: options.entityId ?? null,
+			policyOverride: options.policyOverride ?? null,
 		},
 		options.actor ? { headers: { 'x-axon-actor': options.actor } } : {},
 	);
@@ -1549,12 +1543,12 @@ export async function explainPolicy(
 export async function explainPolicyDetailed(
 	input: ExplainPolicyInput,
 	scope: { tenant: string; database: string },
-	options: { actor?: string | null } = {},
+	options: { actor?: string | null; policyOverride?: AccessControlDraft } = {},
 ): Promise<PolicyExplainResult> {
 	const result = await graphqlRawRequest<{ explainPolicy: GraphQLPolicyExplanation | null }>(
 		scope,
 		EXPLAIN_POLICY_QUERY,
-		{ input },
+		{ input, policyOverride: options.policyOverride ?? null },
 		options.actor ? { headers: { 'x-axon-actor': options.actor } } : {},
 	);
 

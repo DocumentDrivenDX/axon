@@ -90,15 +90,14 @@ let lifecycleName = $state('status');
 let targetState = $state('approved');
 let dataFixtureText = $state('{}');
 let patchFixtureText = $state('{}');
-let transactionFixtureText = $state('[]');
 let impactMatrix = $state<ImpactCell[]>([]);
 let impactMatrixSubjects = $state<SubjectOption[]>([]);
 let impactMatrixEntities = $state<EntityRecord[]>([]);
 let impactMatrixError = $state<string | null>(null);
 let loadingImpactMatrix = $state(false);
-let collectionContextToken = 0;
-let evaluationToken = 0;
-let impactMatrixToken = 0;
+let proposedImpactMatrix = $state<ImpactCell[]>([]);
+let proposedImpactMatrixError = $state<string | null>(null);
+let loadingProposedImpactMatrix = $state(false);
 
 const selectedCollectionSummary = $derived(
 	collections.find((collection) => collection.name === selectedCollection) ?? null,
@@ -349,12 +348,6 @@ async function loadImpactMatrix() {
 		return;
 	}
 
-	const token = ++impactMatrixToken;
-	loadingImpactMatrix = true;
-	impactMatrixError = null;
-	impactMatrixSubjects = matrixSubjects;
-	impactMatrixEntities = matrixEntities;
-
 	const requests: ImpactMatrixRequest[] = buildImpactMatrixInputs(
 		selectedCollection,
 		matrixEntities,
@@ -422,8 +415,6 @@ async function loadImpactMatrix() {
 
 	impactMatrix = cells;
 	loadingImpactMatrix = false;
-}
-
 async function loadRouteShell() {
 	loadingShell = true;
 	shellError = null;
