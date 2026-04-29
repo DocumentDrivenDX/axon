@@ -1,0 +1,19 @@
+
+▶ axon-ff92fed7: build(feat-031): proposed-policy delta matrix and review
+✓ axon-ff92fed7 → error: execute-loop: all tiers exhausted — no viable provider found
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "execution_failed",
+  "results": [
+    {
+      "bead_id": "axon-ff92fed7",
+      "status": "execution_failed",
+      "detail": "execute-loop: all tiers exhausted — no viable provider found"
+    }
+  ]
+}
