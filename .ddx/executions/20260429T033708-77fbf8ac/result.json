@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-db7a6d0a",
+  "attempt_id": "20260429T033708-77fbf8ac",
+  "base_rev": "7dbae3b9590db5a9f9d4e755a120621d63129370",
+  "result_rev": "7dbae3b9590db5a9f9d4e755a120621d63129370",
+  "outcome": "task_failed",
+  "status": "execution_failed",
+  "detail": "agent: provider error: openai: POST \"http://bragi:1234/v1/chat/completions\": 400 Bad Request {\n        \"message\": \"Invalid model identifier \\\"qwen3.6\\\". Please specify a valid downloaded model (e.g., qwen/qwen3.6-27b@q4_k_m, qwen/qwen3.6-27b, qwen3.6-27b).\",\n        \"type\": \"invalid_request_error\",\n        \"param\": \"model\",\n        \"code\": \"model_not_found\"\n    }",
+  "harness": "agent",
+  "provider": "bragi",
+  "model": "qwen3.6",
+  "session_id": "eb-7ee0c45b",
+  "duration_ms": 2127,
+  "exit_code": 1,
+  "error": "agent: provider error: openai: POST \"http://bragi:1234/v1/chat/completions\": 400 Bad Request {\n        \"message\": \"Invalid model identifier \\\"qwen3.6\\\". Please specify a valid downloaded model (e.g., qwen/qwen3.6-27b@q4_k_m, qwen/qwen3.6-27b, qwen3.6-27b).\",\n        \"type\": \"invalid_request_error\",\n        \"param\": \"model\",\n        \"code\": \"model_not_found\"\n    }",
+  "failure_mode": "unknown",
+  "execution_dir": ".ddx/executions/20260429T033708-77fbf8ac",
+  "prompt_file": ".ddx/executions/20260429T033708-77fbf8ac/prompt.md",
+  "manifest_file": ".ddx/executions/20260429T033708-77fbf8ac/manifest.json",
+  "result_file": ".ddx/executions/20260429T033708-77fbf8ac/result.json",
+  "started_at": "2026-04-29T03:37:08.440400983Z",
+  "finished_at": "2026-04-29T03:37:10.568208287Z"
+}

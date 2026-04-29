@@ -1,0 +1,11 @@
+2026/04/28 23:37:10 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260429T033708-77fbf8ac/embedded/svc-1777433828442695673.jsonl: file already closed"
+bead:    axon-db7a6d0a
+base:    7dbae3b9590db5a9f9d4e755a120621d63129370
+outcome: error
+status:  execution_failed
+detail:  agent: provider error: openai: POST "http://bragi:1234/v1/chat/completions": 400 Bad Request {
+        "message": "Invalid model identifier \"qwen3.6\". Please specify a valid downloaded model (e.g., qwen/qwen3.6-27b@q4_k_m, qwen/qwen3.6-27b, qwen3.6-27b).",
+        "type": "invalid_request_error",
+        "param": "model",
+        "code": "model_not_found"
+    }
