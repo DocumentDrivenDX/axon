@@ -1,0 +1,37 @@
+{
+  "attempt_id": "20260429T182705-c5715701",
+  "bead_id": "axon-ab2e52e0",
+  "base_rev": "f722dc29d1b06d8e95275d7ab0a2d15a8d9b665c",
+  "created_at": "2026-04-29T18:27:05.787073201Z",
+  "requested": {
+    "harness": "agent",
+    "model": "qwen/qwen3.6-35b-a3b",
+    "provider": "bragi",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-ab2e52e0",
+    "title": "build(feat-030): record preview as non-mutation operational event",
+    "description": "Record mutation previews as operational intent events without creating entity or link mutation audit entries, preserving requester, agent/tool identity when present, policy version, operation hash, decision, and redacted diff metadata.",
+    "acceptance": "Preview operational events are queryable by intent ID, no entity/link mutation audit entry is created by preview, and recorded metadata includes requester, agent/tool identity when present, policy version, operation hash, decision, and redacted diff for policy-safe reads.",
+    "parent": "axon-79d1df96",
+    "labels": [
+      "helix"
+    ],
+    "metadata": {
+      "claimed-at": "2026-04-29T18:27:00Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "2853605",
+      "execute-loop-heartbeat-at": "2026-04-29T18:27:00.927570821Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260429T182705-c5715701",
+    "prompt": ".ddx/executions/20260429T182705-c5715701/prompt.md",
+    "manifest": ".ddx/executions/20260429T182705-c5715701/manifest.json",
+    "result": ".ddx/executions/20260429T182705-c5715701/result.json",
+    "checks": ".ddx/executions/20260429T182705-c5715701/checks.json",
+    "usage": ".ddx/executions/20260429T182705-c5715701/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-ab2e52e0-20260429T182705-c5715701"
+  }
+}

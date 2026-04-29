@@ -1,2 +1,3 @@
 
 ▶ axon-db7a6d0a: feature: application audit-write API — first-class 'emit audit event' contract for downstream consumers
+2026/04/29 14:48:52 WARN provider error, retrying attempt=1 err="provider request timeout: wall-clock 15m0s" delay=1s
