@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-db7a6d0a",
+  "attempt_id": "20260429T235406-20eeaf2c",
+  "base_rev": "337831991956adc3ef2f2aa838e8a31cff157735",
+  "result_rev": "4cb152558e1709f8ca197161349db7cbc75ac8ec",
+  "outcome": "task_succeeded",
+  "status": "success",
+  "detail": "success",
+  "harness": "claude",
+  "model": "sonnet",
+  "session_id": "eb-c3810df4",
+  "duration_ms": 253321,
+  "tokens": 14779,
+  "cost_usd": 0.5719165,
+  "exit_code": 0,
+  "execution_dir": ".ddx/executions/20260429T235406-20eeaf2c",
+  "prompt_file": ".ddx/executions/20260429T235406-20eeaf2c/prompt.md",
+  "manifest_file": ".ddx/executions/20260429T235406-20eeaf2c/manifest.json",
+  "result_file": ".ddx/executions/20260429T235406-20eeaf2c/result.json",
+  "usage_file": ".ddx/executions/20260429T235406-20eeaf2c/usage.json",
+  "started_at": "2026-04-29T23:54:07.670174892Z",
+  "finished_at": "2026-04-29T23:58:20.99201871Z"
+}
