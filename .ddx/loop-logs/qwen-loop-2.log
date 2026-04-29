@@ -1,2 +1,36 @@
 
 ▶ axon-db7a6d0a: feature: application audit-write API — first-class 'emit audit event' contract for downstream consumers
+2026/04/28 23:56:33 WARN provider error, retrying attempt=1 err="provider request timeout: wall-clock 15m0s" delay=1s
+2026/04/29 00:07:12 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260429T033750-f9b149c5/embedded/svc-1777433870589215784.jsonl: file already closed"
+✓ axon-db7a6d0a → no_changes
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "no_changes",
+  "results": [
+    {
+      "bead_id": "axon-db7a6d0a",
+      "attempt_id": "20260429T033750-f9b149c5",
+      "harness": "agent",
+      "provider": "bragi",
+      "model": "qwen/qwen3.6-35b-a3b",
+      "status": "no_changes",
+      "detail": "no_changes",
+      "session_id": "eb-2f177e29",
+      "base_rev": "59821a1864ed745965dc9d18bee96b5488c6e4c4",
+      "result_rev": "59821a1864ed745965dc9d18bee96b5488c6e4c4",
+      "retry_after": "2026-04-29T10:07:13Z",
+      "tier": "cheap",
+      "probe_result": "ok",
+      "duration_ms": 1762081,
+      "requested_profile": "default",
+      "requested_tier": "cheap",
+      "resolved_tier": "cheap",
+      "final_tier": "cheap"
+    }
+  ]
+}

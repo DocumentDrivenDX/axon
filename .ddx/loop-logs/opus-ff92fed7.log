@@ -1,0 +1,8 @@
+2026/04/28 23:59:43 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260429T033704-aec01014/embedded/svc-1777433825374322497.jsonl: file already closed"
+bead:    axon-ff92fed7
+base:    7037b03b9dbed8712e20f54ea31376a7c2969e9c
+result:  4c86b8bd995a89376f096299564812138cec6544
+outcome: preserved
+status:  execution_failed
+detail:  agent execution failed: exit status 1
+ref:     refs/ddx/iterations/axon-ff92fed7/20260429T035944Z-7037b03b9dbe
