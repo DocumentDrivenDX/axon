@@ -1,9 +1,7 @@
-import type { Page } from '@playwright/test';
 import { expect, test } from '@playwright/test';
 import {
 	SCN017_COLLECTIONS,
 	SCN017_SUBJECTS,
-	createTestEntity,
 	createTestLink,
 	dbCollectionUrl,
 	routeGraphqlAs,
@@ -79,9 +77,7 @@ test.describe('Link preview policy retry', () => {
 
 		// Find the "Show data" button for the related-invoice link (target: small invoice).
 		const linkRowTestId = `related-invoice-${fixture.invoices.small.id}`;
-		const toggleButton = page.getByTestId(
-			`entity-link-preview-toggle-${linkRowTestId}`,
-		);
+		const toggleButton = page.getByTestId(`entity-link-preview-toggle-${linkRowTestId}`);
 		await expect(toggleButton).toBeVisible();
 
 		// ── First expand: policy fetch fails ──────────────────────────────────
@@ -89,9 +85,7 @@ test.describe('Link preview policy retry', () => {
 		// cached value becomes { failed: true }. The preview renders with
 		// empty redactedFields, so [redacted] markers do NOT appear.
 		await toggleButton.click();
-		const previewRow = page.getByTestId(
-			`entity-link-preview-${linkRowTestId}`,
-		);
+		const previewRow = page.getByTestId(`entity-link-preview-${linkRowTestId}`);
 		await expect(previewRow).toBeVisible({ timeout: 10_000 });
 
 		// With a permissive fallback (empty redactedFields), the sensitive
