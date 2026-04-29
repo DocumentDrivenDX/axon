@@ -1,0 +1,10 @@
+{
+  "attempt_id": "20260429T190634-579df880",
+  "harness": "agent",
+  "provider": "openrouter",
+  "model": "openai/gpt-5.4-mini",
+  "tokens": 609100,
+  "input_tokens": 601994,
+  "output_tokens": 7106,
+  "cost_usd": 0.11644529999999997
+}
