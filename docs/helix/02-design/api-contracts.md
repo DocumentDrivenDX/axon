@@ -873,6 +873,8 @@ separate audit endpoint. The pinned contract is:
 
 This keeps idempotency, replay behavior, actor resolution, tenant/database
 scoping, and write rate limiting identical to normal entity transactions.
+RBAC denials still return the existing `forbidden` write response; Axon does not
+implicitly emit audit entries on denial in the RBAC layer.
 
 GraphQL shape:
 
