@@ -1,3 +1,33 @@
 warning: agent.routing.model_overrides is opt-in. It is consulted only when --override-model is passed; the default execute path ignores it. See docs/migrations/routing-config.md.
 
 ▶ axon-db7a6d0a: feature: application audit-write API — first-class 'emit audit event' contract for downstream consumers
+2026/04/29 15:14:20 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260429T190646-5aa5b46e/embedded/svc-1777489606737703587.jsonl: file already closed"
+2026/04/29 15:14:49 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/agent-logs/svc-1777490069181447303.jsonl: file already closed"
+✓ axon-db7a6d0a → error: post-merge review: BLOCK (flagged for human)
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "review_block",
+  "results": [
+    {
+      "bead_id": "axon-db7a6d0a",
+      "attempt_id": "20260429T190646-5aa5b46e",
+      "harness": "agent",
+      "provider": "openrouter",
+      "model": "openai/gpt-5.4-mini",
+      "status": "review_block",
+      "detail": "post-merge review: BLOCK (flagged for human)",
+      "session_id": "eb-36d209dc",
+      "base_rev": "6b9d86b9a5fbc96f91d7442e66fa49efbf894e8b",
+      "result_rev": "2d60be4cc173b0974a6aec51bc71f5ba57111e9b",
+      "review_verdict": "BLOCK",
+      "review_rationale": "The change only adds an execution metadata file. None of the required API contract documentation for audit writes, schema, idempotency, rejection behavior, retention/queryability, or examples is present, so the bead is not implemented.",
+      "cost_usd": 0.058149450000000005,
+      "duration_ms": 453380
+    }
+  ]
+}

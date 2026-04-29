@@ -1,0 +1,29 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "The reviewed revision does not implement the required five-operation matrix, does not complete proposed-policy matrix loading/reset behavior, and introduces build-breaking regressions in the policies page and explain API.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "AC1 is unmet: the impact-matrix operation set is still `['read', 'patch', 'delete']`, so `create` and `update` are never surfaced.",
+      "location": "ui/src/lib/policy-evaluator.ts:500"
+    },
+    {
+      "severity": "block",
+      "summary": "The proposed-policy matrix flow from the bead description is not implemented here: `loadImpactMatrix` still only runs the active-policy fanout and never performs the second `Promise.allSettled` / reset path needed for proposed cells and no-draft handling.",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:351"
+    },
+    {
+      "severity": "block",
+      "summary": "The page is left in a broken state: removed token state is still referenced (`evaluationToken`, `collectionContextToken`, `impactMatrixToken`, `transactionFixtureText`), and `loadImpactMatrix` is not closed before `loadRouteShell`, which would fail typecheck/lint.",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:130"
+    },
+    {
+      "severity": "block",
+      "summary": "The new dry-run explain path is malformed: `explainPolicyDetailed` sends `policyOverride`, but `EXPLAIN_POLICY_QUERY` still declares only `$input`, so GraphQL cannot accept the override variable.",
+      "location": "ui/src/lib/api.ts:1216"
+    }
+  ]
+}
+```

@@ -1,3 +1,31 @@
 warning: agent.routing.model_overrides is opt-in. It is consulted only when --override-model is passed; the default execute path ignores it. See docs/migrations/routing-config.md.
 
 ▶ axon-ab2e52e0: build(feat-030): record preview as non-mutation operational event
+2026/04/29 15:07:22 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260429T190657-fa91f49b/embedded/svc-1777489617904687274.jsonl: file already closed"
+✓ axon-ab2e52e0 → error: stalled: no_progress_tools_exceeded
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "execution_failed",
+  "results": [
+    {
+      "bead_id": "axon-ab2e52e0",
+      "attempt_id": "20260429T190657-fa91f49b",
+      "harness": "agent",
+      "provider": "openrouter",
+      "model": "openai/gpt-5.4-mini",
+      "status": "execution_failed",
+      "detail": "stalled: no_progress_tools_exceeded",
+      "session_id": "eb-44094496",
+      "base_rev": "34cb116cc89fbfbc64fdaeea510503210ddbc40d",
+      "result_rev": "34cb116cc89fbfbc64fdaeea510503210ddbc40d",
+      "retry_after": "2026-04-30T01:07:23Z",
+      "cost_usd": 0.0851484,
+      "duration_ms": 24362
+    }
+  ]
+}

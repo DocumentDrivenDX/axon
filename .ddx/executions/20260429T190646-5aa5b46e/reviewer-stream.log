@@ -1,0 +1,19 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "The change only adds an execution metadata file. None of the required API contract documentation for audit writes, schema, idempotency, rejection behavior, retention/queryability, or examples is present, so the bead is not implemented.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "The required 'Audit Writes' documentation was not added to api-contracts.md. The acceptance criteria call for a new section defining the write path, schema, idempotency, retention/queryability, rejection responses, and examples, but the diff contains only an execution result artifact.",
+      "location": "docs/helix/02-design/api-contracts.md:1"
+    },
+    {
+      "severity": "block",
+      "summary": "The only changed file is an execution result JSON artifact, which does not implement any of the requested contract changes or provide evidence that the acceptance criteria were addressed.",
+      "location": ".ddx/executions/20260429T190646-5aa5b46e/result.json:1"
+    }
+  ]
+}
+```
