@@ -130,13 +130,20 @@ test.describe('Link preview policy retry', () => {
 			link_type: 'related-invoice',
 		});
 
+		// One-shot stall flag — armed right before the toggle click so the
+		// page-load source-policy fetch always completes. Otherwise the page
+		// would deadlock waiting for its own initial AxonUiEffectivePolicy
+		// query, the row would never render, and the test would time out
+		// before exercising the double-click race at all.
+		let stallNextPolicyFetch = false;
 		let resolvePolicyFetch!: () => void;
 		const policyFetchPending = new Promise<void>((resolve) => {
 			resolvePolicyFetch = resolve as () => void;
 		});
 
 		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor, async (postData) => {
-			if (postData.includes('AxonUiEffectivePolicy')) {
+			if (postData.includes('AxonUiEffectivePolicy') && stallNextPolicyFetch) {
+				stallNextPolicyFetch = false;
 				await policyFetchPending;
 			}
 			return null;
@@ -149,6 +156,7 @@ test.describe('Link preview policy retry', () => {
 		const toggleButton = page.getByTestId(`entity-link-preview-toggle-${linkRowTestId}`);
 		const previewRow = page.getByTestId(`entity-link-preview-${linkRowTestId}`);
 
+		stallNextPolicyFetch = true;
 		await toggleButton.click();
 		await toggleButton.click();
 		resolvePolicyFetch();
