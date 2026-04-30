@@ -1,0 +1,58 @@
+{
+  "verdict": "BLOCK",
+  "rationale": "The diff only adds execution metadata and does not include any of the required UI or API changes, so none of the acceptance criteria can be verified as implemented.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "No change updates `IMPACT_MATRIX_OPERATIONS` to include `create` and `update`, so the required five-operation matrix is not implemented.",
+      "location": "ui/src/lib/policy-evaluator.ts:500"
+    },
+    {
+      "severity": "block",
+      "summary": "No change adds the proposed-policy state slots or the second proposed-policy fetch/reset flow, so the required proposed impact-matrix behavior is absent.",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:94"
+    },
+    {
+      "severity": "block",
+      "summary": "The only modified file is execution metadata; there is no evidence of the API extension for optional `policyOverride` or any implementation that could satisfy the typecheck, lint, and existing policy-authoring test requirements.",
+      "location": ".ddx/executions/20260430T010704-32f384e1/result.json:1"
+    }
+  ],
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 4713,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 108,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260430T010704-32f384e1/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 1246,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 7693,
+    "output_bytes": 1187,
+    "elapsed_ms": 17343,
+    "harness": "codex",
+    "model": "gpt-5.4"
+  }
+}

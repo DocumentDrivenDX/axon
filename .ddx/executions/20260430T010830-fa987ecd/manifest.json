@@ -1,0 +1,58 @@
+{
+  "harness": "codex",
+  "model": "gpt-5.4",
+  "session_id": "/home/erik/Projects/axon/.ddx/agent-logs/svc-1777511310241767369.jsonl",
+  "base_rev": "95961b7c581691fe4129debe40ee4306f030ef81",
+  "result_rev": "cfb2cff84b33ee457d4c55494f826ad89fa48237",
+  "verdict": "BLOCK",
+  "bead_id": "hx-5f4d4ea1",
+  "execution_dir": ".ddx/executions/20260430T010830-fa987ecd",
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 1816,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 180,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260430T010731-a5eddb19/manifest.json",
+          ".ddx/executions/20260430T010731-a5eddb19/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "governing:ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte",
+        "bytes_included": 75464,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 6128,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 85344,
+    "output_bytes": 850,
+    "elapsed_ms": 92374,
+    "harness": "codex",
+    "model": "gpt-5.4"
+  }
+}

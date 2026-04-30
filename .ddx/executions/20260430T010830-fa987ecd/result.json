@@ -1,0 +1,59 @@
+{
+  "verdict": "BLOCK",
+  "rationale": "The UI toggle fix is present, but the new Playwright coverage is incorrect: it stalls every `AxonUiEffectivePolicy` GraphQL request, including the page-load policy fetch, so the collection view never loads and `policy-enforcement.spec.ts` cannot reliably pass.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "The mock blocks all `AxonUiEffectivePolicy` requests before `page.goto()`, which also catches the initial collection-page policy fetch from `loadCollection()`. That deadlocks the page before any entity row is clickable, so the acceptance test does not correctly verify the double-click race and `policy-enforcement.spec.ts` will hang/fail instead of continuing to pass.",
+      "location": "ui/tests/e2e/policy-enforcement.spec.ts:109"
+    }
+  ],
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 1816,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 180,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260430T010731-a5eddb19/manifest.json",
+          ".ddx/executions/20260430T010731-a5eddb19/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "governing:ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte",
+        "bytes_included": 75464,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 6128,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 85344,
+    "output_bytes": 850,
+    "elapsed_ms": 92374,
+    "harness": "codex",
+    "model": "gpt-5.4"
+  }
+}

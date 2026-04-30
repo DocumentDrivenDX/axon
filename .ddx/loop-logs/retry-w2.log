@@ -1,3 +1,33 @@
 warning: triage complexity gate is disabled; coarse beads may waste dispatch attempts
 
 ▶ axon-9490abe4: investigate: createXxx duplicate-id rejection scope — typed-only or full storage path? (precursor for axon-27ee5f04)
+2026/04/29 21:07:43 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260430T010717-2e03a2af/embedded/svc-1777511238194195092.jsonl: file already closed"
+2026/04/29 21:08:08 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/agent-logs/svc-1777511266925642915.jsonl: file already closed"
+✓ axon-9490abe4 → error: post-merge review: BLOCK (flagged for human)
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "review_block",
+  "results": [
+    {
+      "bead_id": "axon-9490abe4",
+      "attempt_id": "20260430T010717-2e03a2af",
+      "harness": "agent",
+      "provider": "openrouter",
+      "model": "openai/gpt-5.4-mini",
+      "status": "review_block",
+      "detail": "post-merge review: BLOCK (flagged for human)",
+      "session_id": "eb-d1d8c8e5",
+      "base_rev": "ad68e596dfded95800e033f85ac23a997d49c54b",
+      "result_rev": "8ed3c76dbc66d66ae3afd726ea98606df5dd7a02",
+      "review_verdict": "BLOCK",
+      "review_rationale": "The change only adds execution metadata. The required create-semantics decision document and the follow-up implementation bead/tracker update are missing, so the acceptance criteria cannot be satisfied.",
+      "cost_usd": 0.040398899999999995,
+      "duration_ms": 24922
+    }
+  ]
+}

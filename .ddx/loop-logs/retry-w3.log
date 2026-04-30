@@ -1,3 +1,33 @@
 warning: triage complexity gate is disabled; coarse beads may waste dispatch attempts
 
 ▶ hx-5f4d4ea1: ui: toggle race during in-flight target-policy fetch on Links preview
+2026/04/29 21:08:25 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260430T010731-a5eddb19/embedded/svc-1777511252756029034.jsonl: file already closed"
+2026/04/29 21:10:02 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/agent-logs/svc-1777511310241767369.jsonl: file already closed"
+✓ hx-5f4d4ea1 → error: post-merge review: BLOCK (flagged for human)
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "review_block",
+  "results": [
+    {
+      "bead_id": "hx-5f4d4ea1",
+      "attempt_id": "20260430T010731-a5eddb19",
+      "harness": "agent",
+      "provider": "openrouter",
+      "model": "openai/gpt-5.4-mini",
+      "status": "review_block",
+      "detail": "post-merge review: BLOCK (flagged for human)",
+      "session_id": "eb-5a380c29",
+      "base_rev": "824eabceda2b32e64586d1ad4a50f967e83bc19e",
+      "result_rev": "cfb2cff84b33ee457d4c55494f826ad89fa48237",
+      "review_verdict": "BLOCK",
+      "review_rationale": "The UI toggle fix is present, but the new Playwright coverage is incorrect: it stalls every `AxonUiEffectivePolicy` GraphQL request, including the page-load policy fetch, so the collection view never loads and `policy-enforcement.spec.ts` cannot reliably pass.",
+      "cost_usd": 0.06091800000000001,
+      "duration_ms": 52364
+    }
+  ]
+}
