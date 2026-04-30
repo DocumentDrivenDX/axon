@@ -1,0 +1,3 @@
+warning: triage complexity gate is disabled; coarse beads may waste dispatch attempts
+
+▶ axon-9490abe4: investigate: createXxx duplicate-id rejection scope — typed-only or full storage path? (precursor for axon-27ee5f04)
