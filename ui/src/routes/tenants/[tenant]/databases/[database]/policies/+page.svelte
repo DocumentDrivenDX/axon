@@ -98,6 +98,10 @@ let loadingImpactMatrix = $state(false);
 let proposedImpactMatrix = $state<ImpactCell[]>([]);
 let proposedImpactMatrixError = $state<string | null>(null);
 let loadingProposedImpactMatrix = $state(false);
+let transactionFixtureText = $state('[]');
+let evaluationToken = 0;
+let collectionContextToken = 0;
+let impactMatrixToken = 0;
 
 const selectedCollectionSummary = $derived(
 	collections.find((collection) => collection.name === selectedCollection) ?? null,
@@ -342,7 +346,6 @@ async function loadImpactMatrix() {
 		return;
 	}
 
-
 	const matrixSubjects = subjects.slice(0, IMPACT_MATRIX_SUBJECT_LIMIT);
 	const matrixEntities = collectionEntities.slice(0, IMPACT_MATRIX_ENTITY_LIMIT);
 	if (matrixSubjects.length === 0 || matrixEntities.length === 0) {
@@ -355,6 +358,11 @@ async function loadImpactMatrix() {
 		return;
 	}
 
+	const token = ++impactMatrixToken;
+	loadingImpactMatrix = true;
+	impactMatrixError = null;
+	impactMatrixSubjects = matrixSubjects;
+	impactMatrixEntities = matrixEntities;
 
 	const requests: ImpactMatrixRequest[] = buildImpactMatrixInputs(
 		selectedCollection,
@@ -467,7 +475,8 @@ async function loadImpactMatrix() {
 		const explainPromise = proposedExplainResults[index];
 		const explainResult =
 			explainPromise && explainPromise.status === 'fulfilled' ? explainPromise.value : null;
-		const effective = proposedEffectiveByKey.get(`${request.subjectId}|${request.entity.id}`) ?? null;
+		const effective =
+			proposedEffectiveByKey.get(`${request.subjectId}|${request.entity.id}`) ?? null;
 		return resolveImpactCell({
 			request,
 			explainResult,
@@ -486,7 +495,9 @@ async function loadImpactMatrix() {
 	}
 	loadingProposedImpactMatrix = false;
 	loadingImpactMatrix = false;
+}
 
+async function loadRouteShell() {
 	loadingShell = true;
 	shellError = null;
 

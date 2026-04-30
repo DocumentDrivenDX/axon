@@ -130,9 +130,9 @@ test.describe('Link preview policy retry', () => {
 			link_type: 'related-invoice',
 		});
 
-		let resolvePolicyFetch: (() => void) | null = null;
+		let resolvePolicyFetch!: () => void;
 		const policyFetchPending = new Promise<void>((resolve) => {
-			resolvePolicyFetch = resolve;
+			resolvePolicyFetch = resolve as () => void;
 		});
 
 		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor, async (postData) => {
@@ -151,7 +151,7 @@ test.describe('Link preview policy retry', () => {
 
 		await toggleButton.click();
 		await toggleButton.click();
-		resolvePolicyFetch?.();
+		resolvePolicyFetch();
 
 		await expect(previewRow).toBeHidden({ timeout: 10_000 });
 		await expect(page.getByTestId('redacted-field')).toHaveCount(0);

@@ -497,7 +497,13 @@ export type ImpactMatrixRequest = {
 	explainInput: ExplainPolicyInput;
 };
 
-export const IMPACT_MATRIX_OPERATIONS: EvaluationOperation[] = ['read', 'patch', 'delete'];
+export const IMPACT_MATRIX_OPERATIONS: EvaluationOperation[] = [
+	'read',
+	'create',
+	'update',
+	'patch',
+	'delete',
+];
 export const IMPACT_MATRIX_SUBJECT_LIMIT = 3;
 export const IMPACT_MATRIX_ENTITY_LIMIT = 2;
 
