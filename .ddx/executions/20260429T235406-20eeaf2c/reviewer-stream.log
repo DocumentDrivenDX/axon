@@ -1,0 +1,19 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "The change set only adds execution metadata files. The required audit-write API contract documentation, semantics, rejection behavior, and reference examples were not added to the design docs.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "The required `Audit Writes` section was not added to `api-contracts.md`; there is no documented standalone audit-write shape, transaction-vs-endpoint decision, schema, idempotency behavior, retention/query parity, or rejection contract.",
+      "location": "docs/helix/02-design/api-contracts.md"
+    },
+    {
+      "severity": "block",
+      "summary": "The acceptance criteria require reference invocations from a browser client and an integration worker, but no contract examples were added anywhere in the diff.",
+      "location": "docs/helix/02-design/api-contracts.md"
+    }
+  ]
+}
+```

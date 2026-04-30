@@ -2,3 +2,32 @@ adaptive min-tier: skipping cheap tier (trailing success rate 0.00 over 9 attemp
 warning: agent.routing.model_overrides is opt-in. It is consulted only when --override-model is passed; the default execute path ignores it. See docs/migrations/routing-config.md.
 
 ▶ axon-80979cb8: build(feat-031): impact-matrix proposed-policy state and op set extension (A1/4 of axon-ff92fed7)
+2026/04/29 20:07:33 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260429T235353-d14f6b91/embedded/svc-1777506835911308721.jsonl: file already closed"
+2026/04/29 20:08:03 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/agent-logs/svc-1777507659245218746.jsonl: file already closed"
+✓ axon-80979cb8 → error: post-merge review: BLOCK (flagged for human)
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "review_block",
+  "results": [
+    {
+      "bead_id": "axon-80979cb8",
+      "attempt_id": "20260429T235353-d14f6b91",
+      "harness": "claude",
+      "model": "sonnet",
+      "status": "review_block",
+      "detail": "post-merge review: BLOCK (flagged for human)",
+      "session_id": "eb-b522c143",
+      "base_rev": "cf47ca378832c81f7bbe6fcfb04996ce5e4bad7a",
+      "result_rev": "529d466dee357cabec4aa2b03d0164e643f730c4",
+      "review_verdict": "BLOCK",
+      "review_rationale": "The revision only adds an execution metadata file. The required UI and API changes for the five-operation impact matrix and proposed-policy loading are absent, so the acceptance criteria are neither implemented nor verifiable.",
+      "cost_usd": 3.607105649999999,
+      "duration_ms": 817588
+    }
+  ]
+}

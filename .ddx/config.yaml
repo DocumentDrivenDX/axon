@@ -5,12 +5,6 @@ library:
         url: https://github.com/easel/ddx-library
         branch: main
 bead: {}
-agent:
-    routing:
-        model_overrides:
-            cheap: qwen3.6
-            standard: claude-sonnet-4-6
-            smart: claude-opus-4-6
 update_check:
     enabled: true
     frequency: 24h

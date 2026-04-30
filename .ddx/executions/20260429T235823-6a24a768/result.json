@@ -1,0 +1,54 @@
+{
+  "verdict": "BLOCK",
+  "rationale": "The change set only adds execution metadata files. The required audit-write API contract documentation, semantics, rejection behavior, and reference examples were not added to the design docs.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "The required `Audit Writes` section was not added to `api-contracts.md`; there is no documented standalone audit-write shape, transaction-vs-endpoint decision, schema, idempotency behavior, retention/query parity, or rejection contract.",
+      "location": "docs/helix/02-design/api-contracts.md"
+    },
+    {
+      "severity": "block",
+      "summary": "The acceptance criteria require reference invocations from a browser client and an integration worker, but no contract examples were added anywhere in the diff.",
+      "location": "docs/helix/02-design/api-contracts.md"
+    }
+  ],
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 5432,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 180,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260429T235406-20eeaf2c/manifest.json",
+          ".ddx/executions/20260429T235406-20eeaf2c/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 17904,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 25142,
+    "output_bytes": 922,
+    "elapsed_ms": 20449,
+    "harness": "codex",
+    "model": "gpt-5.4"
+  }
+}

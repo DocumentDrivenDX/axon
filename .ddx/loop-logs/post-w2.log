@@ -1,0 +1,47 @@
+Error: unknown flag: --no-adaptive-min-tier
+Usage:
+  ddx agent execute-loop [flags]
+
+Examples:
+  # Drain the current execution-ready queue once and exit (normal surface)
+  ddx agent execute-loop
+
+  # Pick one ready bead, execute it, and stop
+  ddx agent execute-loop --profile default --once
+
+  # Run continuously as a bounded queue worker
+  ddx agent execute-loop --poll-interval 30s
+
+  # Force a specific harness/model for a debugging pass
+  ddx agent execute-loop --once --harness codex
+  ddx agent execute-loop --once --harness agent --model minimax/minimax-m2.7
+
+  # Run inline in the current process (not recommended for long runs)
+  ddx agent execute-loop --local --once
+
+Flags:
+      --effort string              Effort level
+      --from string                Base git revision to start from (default: HEAD)
+      --harness string             Agent harness to use
+  -h, --help                       help for execute-loop
+      --json                       Output loop result as JSON
+      --local                      Run inline in current process instead of server worker (default: submit to server)
+      --max-cost float             Stop the loop when accumulated billed cost exceeds USD; 0 = unlimited; subscription and local providers do not count (default 100)
+      --model string               Model override
+      --model-ref string           Model catalog reference (e.g. code-medium); resolved via the model catalog
+      --no-review                  Skip post-merge review (e.g. for doc-only beads or tight iteration loops)
+      --once                       Process at most one ready bead
+      --poll-interval duration     Poll interval for continuous scanning; zero drains current ready work and exits
+      --profile string             Routing profile: default, cheap, fast, or smart (default "default")
+      --project string             Target project root path or name (default: CWD git root). Env: DDX_PROJECT_ROOT
+      --provider string            Provider name (e.g. vidar, openrouter); selects a named provider from config
+      --request-timeout duration   Per-request provider wall-clock timeout (e.g. 60m, 2h); overrides project config and model-class defaults. Use when a thinking model needs more than the default 15 min.
+      --review-harness string      Harness to use for the post-merge reviewer (default: same as implementation harness)
+      --review-model string        Model override for the post-merge reviewer (default: smart tier)
+
+Global Flags:
+      --config string              config file (default is $HOME/.ddx.yml)
+      --library-base-path string   override path for DDx library location
+  -v, --verbose                    verbose output
+
+Error: unknown flag: --no-adaptive-min-tier

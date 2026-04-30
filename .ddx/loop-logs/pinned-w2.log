@@ -2,3 +2,32 @@ adaptive min-tier: skipping cheap tier (trailing success rate 0.00 over 9 attemp
 warning: agent.routing.model_overrides is opt-in. It is consulted only when --override-model is passed; the default execute path ignores it. See docs/migrations/routing-config.md.
 
 ▶ axon-db7a6d0a: feature: application audit-write API — first-class 'emit audit event' contract for downstream consumers
+2026/04/29 19:58:20 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260429T235406-20eeaf2c/embedded/svc-1777506847674605633.jsonl: file already closed"
+2026/04/29 19:58:44 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/agent-logs/svc-1777507103944364619.jsonl: file already closed"
+✓ axon-db7a6d0a → error: post-merge review: BLOCK (flagged for human)
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "review_block",
+  "results": [
+    {
+      "bead_id": "axon-db7a6d0a",
+      "attempt_id": "20260429T235406-20eeaf2c",
+      "harness": "claude",
+      "model": "sonnet",
+      "status": "review_block",
+      "detail": "post-merge review: BLOCK (flagged for human)",
+      "session_id": "eb-c3810df4",
+      "base_rev": "337831991956adc3ef2f2aa838e8a31cff157735",
+      "result_rev": "b1b4a5b585f3f41f0f2ebd8f84568a17190aad79",
+      "review_verdict": "BLOCK",
+      "review_rationale": "The change set only adds execution metadata files. The required audit-write API contract documentation, semantics, rejection behavior, and reference examples were not added to the design docs.",
+      "cost_usd": 0.5719165,
+      "duration_ms": 253321
+    }
+  ]
+}

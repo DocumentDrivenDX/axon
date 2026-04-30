@@ -1,0 +1,16 @@
+adaptive min-tier: skipping cheap tier (trailing success rate 0.00 over 9 attempts; threshold 0.20) — min-tier=standard
+warning: agent.routing.model_overrides is opt-in. It is consulted only when --override-model is passed; the default execute path ignores it. See docs/migrations/routing-config.md.
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 0,
+  "successes": 0,
+  "failures": 0,
+  "no_ready_work": true,
+  "no_ready_work_detail": {
+    "skipped_on_cooldown": [
+      "axon-ab2e52e0"
+    ],
+    "next_retry_after": "2026-04-30T01:07:23Z"
+  },
+  "last_success_at": "0001-01-01T00:00:00Z"
+}
