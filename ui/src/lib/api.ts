@@ -5,6 +5,17 @@ export type ApiError = {
 
 export type AccessControlDraft = unknown;
 
+export type CollectionSchema = {
+	collection: string;
+	description?: string | null;
+	version: number;
+	entity_schema?: unknown;
+	link_types?: Record<string, unknown>;
+	access_control?: unknown;
+	draft?: { access_control?: AccessControlDraft } | null;
+	indexes?: Array<Record<string, unknown>>;
+};
+
 export type FieldChange = {
 	path: string;
 	kind:
