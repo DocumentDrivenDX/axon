@@ -1,8 +1,8 @@
 {
-  "bead_id": "axon-80979cb8",
-  "attempt_id": "20260430T005434-a2c65d98",
+  "bead_id": "axon-cf99b8a4",
+  "attempt_id": "20260430T005449-e9673250",
   "harness": "agent",
   "model": "openai/gpt-5.4-mini",
-  "started_at": "2026-04-30T00:54:37.134505567Z",
-  "worktree_path": "/tmp/ddx-exec-wt/.execute-bead-wt-axon-80979cb8-20260430T005434-a2c65d98"
+  "started_at": "2026-04-30T00:54:50.330142597Z",
+  "worktree_path": "/tmp/ddx-exec-wt/.execute-bead-wt-axon-cf99b8a4-20260430T005449-e9673250"
 }
