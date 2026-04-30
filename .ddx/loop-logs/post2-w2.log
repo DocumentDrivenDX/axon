@@ -1,3 +1,31 @@
 warning: triage complexity gate is disabled; coarse beads may waste dispatch attempts
 
 ▶ axon-cf99b8a4: build(feat-031): GraphQL policyOverride support for explainPolicy and effectivePolicy (backend half of axon-80979cb8)
+2026/04/29 20:55:28 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260430T005449-e9673250/embedded/svc-1777510490473675235.jsonl: file already closed"
+✓ axon-cf99b8a4 → error: stalled: no_progress_tools_exceeded
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "execution_failed",
+  "results": [
+    {
+      "bead_id": "axon-cf99b8a4",
+      "attempt_id": "20260430T005449-e9673250",
+      "harness": "agent",
+      "provider": "openrouter",
+      "model": "openai/gpt-5.4-mini",
+      "status": "execution_failed",
+      "detail": "stalled: no_progress_tools_exceeded",
+      "session_id": "eb-7b42331b",
+      "base_rev": "e6e4553d5846f2b9fd94c40ddf65766e2c4a69ba",
+      "result_rev": "e6e4553d5846f2b9fd94c40ddf65766e2c4a69ba",
+      "retry_after": "2026-04-30T06:55:31Z",
+      "cost_usd": 0.05452875,
+      "duration_ms": 38461
+    }
+  ]
+}

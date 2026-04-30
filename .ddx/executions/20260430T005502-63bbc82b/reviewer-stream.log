@@ -1,0 +1,19 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "The diff only adds execution metadata. It does not include the required decision document or any follow-up implementation bead/tracker change, so AC1-AC3 are not satisfied.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "The required design decision document is missing. AC1 and AC2 require `docs/helix/02-design/decisions/create-semantics.md` with a pattern decision, survey table, rationale, and explicit nexiq migration analysis, but no such file or content is present in the diff.",
+      "location": "docs/helix/02-design/decisions/create-semantics.md"
+    },
+    {
+      "severity": "block",
+      "summary": "There is no evidence of a follow-up implementation bead being filed or `axon-27ee5f04` being updated/superseded. AC3 is therefore not implemented; the diff only records execution metadata.",
+      "location": ".ddx/executions/20260430T005502-63bbc82b/manifest.json:1"
+    }
+  ]
+}
+```

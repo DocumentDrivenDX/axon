@@ -1,0 +1,24 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "The revision only adds execution metadata and does not implement the required impact-matrix or proposed-policy code changes, so the acceptance criteria cannot be satisfied.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "The required five-operation impact matrix update is absent; there is no change to IMPACT_MATRIX_OPERATIONS to add create and update.",
+      "location": "ui/src/lib/policy-evaluator.ts:500"
+    },
+    {
+      "severity": "block",
+      "summary": "The policies page does not add the proposedImpactMatrix, proposedImpactMatrixError, or loadingProposedImpactMatrix state, nor the required reset/fetch logic for proposed-policy loading.",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte"
+    },
+    {
+      "severity": "block",
+      "summary": "The diff contains only an execution result file, so there is no implementation evidence for the optional policyOverride API support, the second Promise.allSettled flow, or any verification for lint/typecheck/e2e acceptance criteria.",
+      "location": ".ddx/executions/20260430T005434-a2c65d98/result.json:1"
+    }
+  ]
+}
+```

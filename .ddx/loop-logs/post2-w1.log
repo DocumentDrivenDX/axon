@@ -1,3 +1,33 @@
 warning: triage complexity gate is disabled; coarse beads may waste dispatch attempts
 
 ▶ axon-80979cb8: build(feat-031): impact-matrix proposed-policy state and op set extension (A1/4 of axon-ff92fed7)
+2026/04/29 20:56:45 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260430T005434-a2c65d98/embedded/svc-1777510477332257545.jsonl: file already closed"
+2026/04/29 20:57:07 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/agent-logs/svc-1777510610139409248.jsonl: file already closed"
+✓ axon-80979cb8 → error: post-merge review: BLOCK (flagged for human)
+{
+  "project_root": "/home/erik/Projects/axon",
+  "attempts": 1,
+  "successes": 0,
+  "failures": 1,
+  "no_ready_work_detail": {},
+  "last_success_at": "0001-01-01T00:00:00Z",
+  "last_failure_status": "review_block",
+  "results": [
+    {
+      "bead_id": "axon-80979cb8",
+      "attempt_id": "20260430T005434-a2c65d98",
+      "harness": "agent",
+      "provider": "openrouter",
+      "model": "openai/gpt-5.4-mini",
+      "status": "review_block",
+      "detail": "post-merge review: BLOCK (flagged for human)",
+      "session_id": "eb-126e4261",
+      "base_rev": "0f6ac94ed475624df3c7237cf27e89311cce4562",
+      "result_rev": "d3fea2b9b7655990dc6c00ec82e3cf8719e137e1",
+      "review_verdict": "BLOCK",
+      "review_rationale": "The revision only adds execution metadata and does not implement the required impact-matrix or proposed-policy code changes, so the acceptance criteria cannot be satisfied.",
+      "cost_usd": 0.12226679999999998,
+      "duration_ms": 128041
+    }
+  ]
+}
