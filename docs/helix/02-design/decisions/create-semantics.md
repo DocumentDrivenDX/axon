@@ -2,44 +2,47 @@
 
 ## Decision
 
-**Pattern B**: keep the storage adapter `put` contract as overwrite/upsert, and make the typed GraphQL `createXxx` path plus `commitTransaction` `op:create` the strict duplicate-rejecting surfaces.
+Choose **Pattern B**: keep the storage adapter `put` contract as overwrite/upsert, and make the strict duplicate rejection behavior apply only to the surfaces that already route through transaction-style create validation: typed GraphQL `createXxx` and `commitTransaction` `op:create`.
 
-## Rationale
+This matches the existing storage abstraction and avoids turning the adapter into a semantics layer for all callers. It also preserves current HTTP and gRPC behavior, which are already implemented on top of the same overwrite-capable storage path.
 
-The repository already treats storage `put` as an overwrite primitive. That contract is documented in `crates/axon-storage/src/adapter.rs`, and the SQLite/Postgres implementations both implement `put` as an unconditional insert-or-replace / on-conflict-do-update path. Changing the storage adapter to reject duplicates would break the existing low-level contract and would ripple into code paths that intentionally rely on overwrite semantics.
+## Why Pattern B
 
-At the same time, the higher-level API behavior is not uniform today:
+1. **Storage contract already means overwrite**
+   The storage adapters implement `put` as an idempotent upsert. SQLite/Postgres/memory all write through without rejecting an existing row, and the adapter docs describe `put` as the standard persistence operation rather than a uniqueness guard.
 
-- typed GraphQL `createXxx` currently routes through `handler.create_entity_with_caller(...)` and then `storage.put(...)`
-- `commitTransaction` enforces duplicate rejection for staged `op:create` before it reaches `storage.put(...)`
-- HTTP entity create currently appears to use the same create handler as GraphQL, so it is also an upsert today
-- gRPC create should therefore also track the same storage behavior unless it has an explicit guard elsewhere
+2. **The strict duplicate check already exists above storage**
+   Transaction commits perform the rejection for staged `create` operations before applying them. That means the domain already has a distinct "create must fail if entity exists" path without requiring storage-level rejection.
 
-Given that the storage layer is shared by many write paths, the safest interpretation is: **storage is an upsert primitive; strict create semantics belong at the API/orchestration layer**. That lets us preserve the current storage contract while making the strict surfaces explicit and testable.
+3. **Preserves existing transport semantics**
+   HTTP `/entities` POST and gRPC `CreateEntity` currently follow the upsert path. Changing storage to reject duplicates would alter both transports and likely break callers that rely on overwrite semantics.
 
-## Behavior survey
+4. **Smallest behavioral change with clearest contract**
+   The typed GraphQL `createXxx` mutation and transaction `op:create` can be documented as strict create semantics, while HTTP and gRPC remain documented as upsert/create-or-replace operations.
 
-| Surface | Current behavior | Duplicate id on create | Notes |
-| --- | --- | --- | --- |
-| Typed GraphQL `createXxx` | Calls `create_entity_with_caller` | **Rejects** only if the handler path has been fixed; survey should verify current code/tests | This is the surface the original bug report focused on |
-| Untyped `commitTransaction` `op:create` | Pre-checks existence in `enforce_transaction_policy` before `storage.put` | **Rejects** with `AlreadyExists` | This is already the strict create path |
-| HTTP `POST /entities` | Uses the entity create handler | **Upsert / overwrite** unless a separate guard is added | Documented as storage-backed create, not strict create |
-| gRPC `CreateEntity` | Uses the entity create handler through the service layer | **Upsert / overwrite** unless a separate guard is added | Should stay aligned with HTTP unless a dedicated strict RPC is introduced |
-| Storage adapter `put` | Unconditional insert-or-replace / on-conflict-do-update | **Overwrite** | Low-level primitive; not a duplicate guard |
+## Survey of current behavior
 
-## Downstream contract: nexiq
+| Surface | Current behavior | Duplicate-id result | Notes |
+|---|---|---|---|
+| Typed GraphQL `createXxx` | Calls `handler.create_entity_with_caller(...)` | **Rejects** via handler-side validation / create path | This is the strict surface under review. |
+| Untyped `commitTransaction` `op:create` | Staged transaction create path | **Rejects** duplicates before commit | This is already enforced in `commit_transaction`. |
+| HTTP `/entities/{collection}/{id}` POST | Direct create handler backed by storage `put` | **Overwrites / upserts** | No duplicate rejection in the adapter path. |
+| gRPC `CreateEntity` | Direct create RPC backed by storage `put` | **Overwrites / upserts** | Same storage contract as HTTP. |
+| Storage adapter `put` | Pure persistence write | **Overwrites / upserts** | Not a duplicate guard; intended as the base contract. |
 
-Nexiq already routes around the bug via `commitTransaction`, so their create flow is on the strict path. Under Pattern B, their migration cost is **zero** for the contract they already use: they only need to unskip or re-enable tests that were previously bypassing the broken typed GraphQL path. No data migration or caller rewrite is required for the transaction-based flow.
+## Downstream contract impact: nexiq
 
-If Nexiq also depends on typed GraphQL `createXxx` being strict, that remains a behavioral fix for the GraphQL surface itself, but it does not require any storage-layer or transaction-contract changes.
+Nexiq already routes around the current bug by using `commitTransaction` for create semantics, so the migration cost is **non-zero but contained**:
+
+- If nexiq stays on `commitTransaction`, migration cost is effectively **zero**; existing behavior remains valid.
+- If nexiq has tests that assumed typed GraphQL `createXxx` would upsert, those tests will need to be updated or unskipped to match the strict-create contract.
+- HTTP/gRPC callers do **not** need migration for this decision, because Pattern B keeps their overwrite behavior intact.
 
 ## Follow-up implementation bead
 
-File a follow-up implementation bead that:
+File an implementation bead to ensure the documentation and tests explicitly describe:
 
-1. keeps storage `put` overwrite semantics intact,
-2. makes typed GraphQL `createXxx` strictly reject duplicates,
-3. preserves `commitTransaction` `op:create` duplicate rejection,
-4. updates/expands HTTP and gRPC docs to state they are upsert surfaces unless a dedicated strict variant is added later,
-5. adds tests covering the survey table above.
+- typed GraphQL `createXxx` and `commitTransaction op:create` as strict duplicate-rejecting create paths;
+- HTTP and gRPC create endpoints as overwrite/upsert paths;
+- storage `put` as the shared overwrite contract.
 
