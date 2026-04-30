@@ -1,5 +1,5 @@
-import { base } from '$app/paths';
 import {
+	type AccessControlDraft,
 	type CollectionDetail,
 	type CollectionSummary,
 	type EffectiveCollectionPolicy,
@@ -28,7 +28,6 @@ import {
 	buildMcpEnvelopeComparison,
 	buildMcpEnvelopePreview,
 	buildSchemaDiagnostics,
-	dedupeDiagnostics,
 	defaultCollectionName,
 	defaultPatchFixture,
 	defaultTransactionFixture,
@@ -102,3 +101,86 @@ let evaluationToken = 0;
 let collectionContextToken = 0;
 let impactMatrixToken = 0;
 
+function getDraftAccessControl(): AccessControlDraft | null {
+	return collectionDetail?.schema?.draft?.access_control ?? null;
+}
+
+async function loadImpactMatrix() {
+	const token = ++impactMatrixToken;
+	loadingImpactMatrix = true;
+	loadingProposedImpactMatrix = true;
+	impactMatrixError = null;
+	proposedImpactMatrixError = null;
+	try {
+		const [entitiesResult, activeResults, proposedResults, draftAccessControl] = await Promise.all([
+			fetchEntities(selectedCollection, { limit: IMPACT_MATRIX_ENTITY_LIMIT }, scope),
+			Promise.allSettled(
+				buildImpactMatrixInputs(
+					selectedCollection,
+					collectionEntities.slice(0, IMPACT_MATRIX_ENTITY_LIMIT),
+					impactMatrixSubjects.slice(0, IMPACT_MATRIX_SUBJECT_LIMIT),
+				).map(async (request) => {
+					const [explainResult, effective] = await Promise.all([
+						explainPolicyDetailed(request.explainInput, scope),
+						fetchEffectivePolicy(selectedCollection, scope, { entityId: request.entity.id }),
+					]);
+					return resolveImpactCell({
+						request,
+						explainResult,
+						effective,
+						presetCtxForSubject: null,
+					});
+				}),
+			),
+			Promise.resolve(getDraftAccessControl()),
+		]);
+
+		if (token !== impactMatrixToken) return;
+
+		collectionEntities = entitiesResult.entities;
+		impactMatrix = activeResults
+			.filter((result): result is PromiseFulfilledResult<ImpactCell> => result.status === 'fulfilled')
+			.map((result) => result.value);
+		impactMatrixError = activeResults.some((result) => result.status === 'rejected')
+			? 'Failed to evaluate impact matrix'
+			: null;
+
+		if (!draftAccessControl) {
+			proposedImpactMatrix = [];
+			proposedImpactMatrixError = null;
+		} else {
+			const proposedResultsSettled = await Promise.allSettled(
+				buildImpactMatrixInputs(
+					selectedCollection,
+					collectionEntities.slice(0, IMPACT_MATRIX_ENTITY_LIMIT),
+					impactMatrixSubjects.slice(0, IMPACT_MATRIX_SUBJECT_LIMIT),
+				).map(async (request) => {
+					const [explainResult, effective] = await Promise.all([
+						explainPolicyDetailed(request.explainInput, scope, { policyOverride: draftAccessControl }),
+						fetchEffectivePolicy(selectedCollection, scope, {
+							entityId: request.entity.id,
+							policyOverride: draftAccessControl,
+						}),
+					]);
+					return resolveImpactCell({
+						request,
+						explainResult,
+						effective,
+						presetCtxForSubject: null,
+					});
+				}),
+			);
+			proposedImpactMatrix = proposedResultsSettled
+				.filter((result): result is PromiseFulfilledResult<ImpactCell> => result.status === 'fulfilled')
+				.map((result) => result.value);
+			proposedImpactMatrixError = proposedResultsSettled.some((result) => result.status === 'rejected')
+				? 'Failed to evaluate proposed impact matrix'
+				: null;
+		}
+	} finally {
+		if (token === impactMatrixToken) {
+			loadingImpactMatrix = false;
+			loadingProposedImpactMatrix = false;
+		}
+	}
+}
