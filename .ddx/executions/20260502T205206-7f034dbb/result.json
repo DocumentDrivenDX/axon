@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-79d1df96",
+  "attempt_id": "20260502T205206-7f034dbb",
+  "base_rev": "6039f1ecb3b8591a25a85edbd1ec6423b7512136",
+  "result_rev": "6039f1ecb3b8591a25a85edbd1ec6423b7512136",
+  "outcome": "task_failed",
+  "status": "execution_failed",
+  "detail": "agent: provider error: openai: POST \"https://openrouter.ai/api/v1/chat/completions\": 401 Unauthorized {\"message\":\"Missing Authentication header\",\"code\":401}",
+  "harness": "agent",
+  "provider": "openrouter",
+  "model": "qwen/qwen3.6-35b-a3b",
+  "session_id": "eb-ad989d49",
+  "duration_ms": 12978,
+  "exit_code": 1,
+  "error": "agent: provider error: openai: POST \"https://openrouter.ai/api/v1/chat/completions\": 401 Unauthorized {\"message\":\"Missing Authentication header\",\"code\":401}",
+  "failure_mode": "auth_error",
+  "execution_dir": ".ddx/executions/20260502T205206-7f034dbb",
+  "prompt_file": ".ddx/executions/20260502T205206-7f034dbb/prompt.md",
+  "manifest_file": ".ddx/executions/20260502T205206-7f034dbb/manifest.json",
+  "result_file": ".ddx/executions/20260502T205206-7f034dbb/result.json",
+  "started_at": "2026-05-02T20:52:07.463852088Z",
+  "finished_at": "2026-05-02T20:52:20.442168616Z"
+}

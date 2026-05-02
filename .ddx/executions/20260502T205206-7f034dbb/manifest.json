@@ -1,0 +1,40 @@
+{
+  "attempt_id": "20260502T205206-7f034dbb",
+  "bead_id": "axon-79d1df96",
+  "base_rev": "6039f1ecb3b8591a25a85edbd1ec6423b7512136",
+  "created_at": "2026-05-02T20:52:07.46259567Z",
+  "requested": {
+    "model": "qwen/qwen3.6-35b-a3b",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-79d1df96",
+    "title": "build(feat-030): audit approval and intent lineage",
+    "description": "Record preview, approval, rejection, expiry, stale, and committed intent lineage with actor, agent/tool identity when present, policy version, approver reason, intent ID, and pre/post images with FEAT-029 redaction on reads.",
+    "acceptance": "Audit tests prove lineage can be queried by intent ID and entity ID, approvals/rejections include required metadata, and redacted audit reads match entity read redaction.",
+    "parent": "axon-c7111156",
+    "labels": [
+      "helix",
+      "phase:build",
+      "kind:implementation",
+      "area:audit",
+      "feat-030"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-02T20:52:06Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3316349",
+      "execute-loop-heartbeat-at": "2026-05-02T20:52:06.631075267Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260502T205206-7f034dbb",
+    "prompt": ".ddx/executions/20260502T205206-7f034dbb/prompt.md",
+    "manifest": ".ddx/executions/20260502T205206-7f034dbb/manifest.json",
+    "result": ".ddx/executions/20260502T205206-7f034dbb/result.json",
+    "checks": ".ddx/executions/20260502T205206-7f034dbb/checks.json",
+    "usage": ".ddx/executions/20260502T205206-7f034dbb/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-79d1df96-20260502T205206-7f034dbb"
+  },
+  "prompt_sha": "5ce08c17a8358dbf598630bf9cb7f69569481fce14b41c0f3b4292df9a64a29c"
+}
