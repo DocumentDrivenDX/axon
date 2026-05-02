@@ -1,0 +1,39 @@
+{
+  "attempt_id": "20260502T205450-d59c7bff",
+  "bead_id": "axon-648120e4",
+  "base_rev": "c6d20f1edd371deb7c3ecf6a23300afb81b3c5ce",
+  "created_at": "2026-05-02T20:54:50.872469324Z",
+  "requested": {
+    "model": "MiniMax-M2.5-MLX-4bit",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-648120e4",
+    "title": "build(feat-030): preview audit threading Pattern A — create_preview_record takes audit log",
+    "description": "preview-audit-threading.md picked Pattern A. Implement the signature change:\n\ncreate_preview_record\u003cS: StorageAdapter, A: AuditLog\u003e(\n    \u0026self, storage: \u0026mut S, audit: \u0026mut A, intent: MutationIntent,\n) -\u003e Result\u003cMutationIntentPreviewRecord, MutationIntentLifecycleError\u003e\n\nEmit operational event with field shape from preview-audit-threading.md: operation=mutation_intent.preview, actor=intent subject, collection=__mutation_intents, entity_id=intent_id, metadata={decision, schema_version, policy_version, operation_hash, expires_at}, before=null, after=review_summary only.\n\nUpdate GraphQL handler (crates/axon-graphql/src/dynamic.rs:4817-4910) and MCP handler (crates/axon-mcp/src/handlers.rs:674-724) to pass audit. Update test callers throughout crates/axon-api/src/intent.rs.\n\nAdd integration test asserting auditLog(collection: '__mutation_intents', entityId: $intentId) returns preview event for both GraphQL- and MCP-originated previews.\n\nCloses axon-e21cad01 (decision-doc bead).",
+    "acceptance": "AC1. create_preview_record signature includes \u0026mut AuditLog. AC2. Operational event emitted on every successful preview-record creation per the field shape above. AC3. GraphQL preview endpoint passes audit; MCP preview endpoint passes audit. AC4. auditLog query integration test passes for both surfaces. AC5. cargo test --workspace passes; clippy clean. AC6. axon-e21cad01 closes as superseded. AC7. axon-ab2e52e0 (parent) progresses or closes per its AC.",
+    "labels": [
+      "helix",
+      "feat-030",
+      "area:api",
+      "area:audit",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-02T20:54:50Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3316349",
+      "execute-loop-heartbeat-at": "2026-05-02T20:54:50.167117673Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260502T205450-d59c7bff",
+    "prompt": ".ddx/executions/20260502T205450-d59c7bff/prompt.md",
+    "manifest": ".ddx/executions/20260502T205450-d59c7bff/manifest.json",
+    "result": ".ddx/executions/20260502T205450-d59c7bff/result.json",
+    "checks": ".ddx/executions/20260502T205450-d59c7bff/checks.json",
+    "usage": ".ddx/executions/20260502T205450-d59c7bff/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-648120e4-20260502T205450-d59c7bff"
+  },
+  "prompt_sha": "c495b4033e62ef2fd10d1a50cc6d82ad935c87d3ce376836d9d926cd71ea5427"
+}
