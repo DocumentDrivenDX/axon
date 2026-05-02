@@ -267,9 +267,13 @@ Every data-plane route is nested under a fixed prefix:
 ```
 
 An entity's canonical URL is simultaneously its identifier, its routing
-key, and its HTTP cache key. There is no `X-Axon-Database` header, no
-`X-Axon-Tenant` header, and no un-prefixed legacy routes. See ADR-018
-for the rationale.
+key, and its HTTP cache key. These URLs are **dereferenceable IRIs** in the
+linked-data sense — `GET`-ing the URL returns the entity, optionally as
+JSON-LD when the client requests `Accept: application/ld+json` (see
+FEAT-015). There is no `X-Axon-Database` header, no `X-Axon-Tenant` header,
+and no un-prefixed legacy routes. See ADR-018 for routing rationale and
+ADR-020 for the document-shaped data-model decision and the IRI
+commitment that JSON-LD and PROV-O audit (FEAT-003) build on.
 
 ### Defaults
 

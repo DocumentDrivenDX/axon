@@ -285,6 +285,39 @@ relationships and pagination
   links + recent audit where practical
 - [ ] Admin UI entity detail query (entity + links + recent audit) completes in < 200ms p99
 
+### Story US-078: JSON-LD Content Negotiation [FEAT-015]
+
+**As a** linked-data-aware client (an external integrator, a knowledge-graph
+tool, or any consumer that wants standardized provenance/context)
+**I want** to request entity payloads as JSON-LD via content negotiation
+**So that** I can consume Axon data with `@context`, `@id`, and `@type`
+without bespoke translation
+
+**Background:** ADR-020 selected document-shaped storage with selective RDF
+concept adoption. Entity URLs are dereferenceable IRIs (per technical-
+requirements.md §4c). JSON-LD adoption is additive: the canonical surface
+remains plain JSON; JSON-LD is available on request.
+
+**Acceptance Criteria:**
+- [ ] A request with `Accept: application/ld+json` to a GraphQL entity
+  query returns the response body as JSON-LD with a generated `@context`,
+  `@id` set to the canonical entity URL
+  (`/tenants/{t}/databases/{d}/collections/{c}/entities/{id}`), and
+  `@type` derived from the collection schema.
+- [ ] The default `Accept: application/json` (and any unspecified Accept)
+  returns the existing JSON response shape unchanged.
+- [ ] The `@context` is generated from the active ESF schema. Field names
+  that collide with JSON-LD reserved keywords (`@id`, `@type`, `@graph`,
+  `@context`, etc.) are remapped via `@context` aliases; the schema
+  validator (FEAT-002) emits a warning when a collision is detected at
+  schema-write time.
+- [ ] Linked entities (relationship traversals) render as nested
+  `@id`-bearing nodes; clients can dereference the `@id` to fetch the
+  full entity.
+- [ ] Validates against a JSON-LD 1.1 processor (e.g., `jsonld.js`,
+  `pyld`).
+- [ ] No performance regression on the plain-JSON path.
+
 ## Edge Cases
 
 - **Empty collection**: GraphQL type is generated but queries return

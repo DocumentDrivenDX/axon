@@ -92,6 +92,49 @@ When agents modify state, there is no trace of what happened, who/what did it, o
 - [ ] Metadata keys and values are strings (simple key-value)
 - [ ] Metadata does not affect the operation itself — it's purely informational
 
+### Story US-010: PROV-O Audit Shape [FEAT-003]
+
+**As an** integrator pulling audit data into a provenance-aware system
+**I want** Axon's audit entries to map to W3C PROV-O classes and predicates
+**So that** lineage is interchangeable across systems without bespoke translation
+
+**Background:** ADR-020 selected document-shaped storage with selective RDF
+concept adoption. PROV-O (https://www.w3.org/TR/prov-o/) is the standard
+provenance vocabulary. The mapping is:
+
+| Audit field | PROV-O class / predicate |
+|---|---|
+| operation (`entity.create`, etc.) | `prov:Activity` |
+| affected entity / link | `prov:Entity` (PROV-O sense, broader than Axon's "entity" — see naming-clash note below) |
+| actor (user, agent, system) | `prov:Agent` |
+| `before` state of the affected record | linked via `prov:used` |
+| `after` state of the affected record | linked via `prov:wasGeneratedBy` |
+| actor → operation association | `prov:wasAssociatedWith` |
+| operation → operation chain (transactions) | `prov:wasInformedBy` |
+| timestamp | `prov:startedAtTime` / `prov:endedAtTime` |
+
+**Acceptance Criteria:**
+- [ ] An audit query may request PROV-O serialization via content negotiation (`Accept: application/ld+json` with PROV-O `@context`) or a query parameter (`?format=prov`).
+- [ ] The native JSON audit shape continues to work unchanged (PROV-O is additive in V1).
+- [ ] PROV-O serialization uses canonical W3C IRIs (`http://www.w3.org/ns/prov#Activity`, etc.).
+- [ ] Subject IRIs in PROV-O output use Axon's canonical entity URLs (`/tenants/{t}/databases/{d}/collections/{c}/entities/{id}`) per ADR-020 §IRIs.
+- [ ] PROV-O output validates against the official PROV-O ontology.
+- [ ] Tests assert round-trip: native audit JSON → PROV-O → re-import preserves all auditable facts.
+
+**Naming-clash note:** PROV-O's `prov:Entity` class is broader than Axon's
+notion of an entity. PROV-O Entity = "any data item, real-world object, or
+abstract concept that an Activity acts on." Axon Entity = "a schema-bound,
+versioned, ID-bearing record in a collection." When discussing PROV-O
+serialization, prefer "PROV Entity" or `prov:Entity` to distinguish.
+Documentation aimed at end users should call out this distinction
+explicitly.
+
+**Open question (resolved by this story):** PROV-O ships in V1 as an
+**additive serialization** — the canonical wire shape stays the current
+JSON. A future amendment may promote PROV-O to canonical if integrations
+prove the additive serialization carries more information than is
+useful as a duplicate. Tracked but not committed.
+
 ## Edge Cases and Error Handling
 
 - **Revert to incompatible schema**: Entity state from an old audit entry may not validate against the current schema. Revert fails with a clear error. Force-revert option bypasses schema validation (with warning)

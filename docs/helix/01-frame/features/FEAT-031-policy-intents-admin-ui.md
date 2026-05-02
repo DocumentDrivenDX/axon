@@ -65,6 +65,29 @@ intent slice needs a corresponding Axon web UI workflow.
 - **Policy version visibility**: The UI shows the active schema/policy version
   on policy, entity, intent, and audit views.
 
+#### Impact Matrix and Explain Panel — operation scope
+
+The policy workspace surfaces effective-policy results on two distinct
+UX surfaces with deliberately different operation coverage:
+
+- **Impact Matrix** (grid view of subject × entity × operation cells)
+  surfaces the **five entity-CRUD operations**: `read`, `create`, `update`,
+  `patch`, `delete`. These are the operations whose semantics fit a single
+  (subject, entity, op) tuple — they need no further fixture context to
+  evaluate. The matrix is optimized for at-a-glance policy review across
+  many subjects and entities.
+- **Explain Panel** (drill-in view for a single subject/entity/op) covers
+  **all eight policy operations**: the five above, plus `transition`,
+  `rollback`, and `transaction`. These three require additional fixture
+  context — a `transition` needs a `(from_state, to_state)` pair, a
+  `rollback` needs a target audit_id or version, and a `transaction`
+  needs an operation list — which the explain panel collects via fixture
+  selectors before evaluating.
+
+This split means US-113 acceptance criteria are evaluated on two surfaces:
+matrix-coverage assertions enumerate the 5 entity-CRUD ops; explain-panel
+coverage assertions enumerate all 8 ops with appropriate fixtures.
+
 #### Policy-Safe Entity Browsing
 
 - **Hidden rows**: Collection lists, relationship tabs, search results,

@@ -126,13 +126,34 @@ Axon's bet: most agentic and workflow applications model the world as *things* (
 
 ### Query Model
 
-Entities within a collection are queryable with familiar operations:
+Filter, sort, aggregate, traversal, and pattern matching are expressed in **one read-side language: a read-only subset of openCypher**. One language, one planner, one policy-enforcement point. Secondary indexes (FEAT-013) accelerate every read path. See ADR-020 (data model) and ADR-021 (language) for the rationale.
 
-- **Filter**: `status = "pending" AND priority > 3`
-- **Sort**: `ORDER BY created_at DESC`
-- **Aggregate**: `COUNT(*) WHERE status = "done" GROUP BY assignee`
-- **Traverse links**: `FOLLOW depends-on FROM bead-A DEPTH 3` — graph traversal over typed links
-- **Join via links**: Find all documents authored by customers in segment X — link traversal + entity filter
+```cypher
+// Filter + sort + paginate
+MATCH (i:Invoice {status: 'pending'})
+WHERE i.amount > 1000
+RETURN i ORDER BY i.created_at DESC LIMIT 50
+
+// Aggregate
+MATCH (i:Invoice) WHERE i.status = 'done'
+RETURN i.assignee, count(*) ORDER BY count(*) DESC
+
+// Traverse links
+MATCH (a:Bead {id: 'bead-A'})-[:DEPENDS_ON*1..3]->(d:Bead)
+RETURN d
+
+// Pattern: ready queue (DDx use case)
+MATCH (b:Bead {status: 'open'})
+WHERE NOT EXISTS { (b)-[:DEPENDS_ON]->(d:Bead) WHERE d.status <> 'closed' }
+RETURN b
+```
+
+Two surfaces expose the language:
+
+- **Schema-declared named queries** — declared in the collection schema, surfaced as typed GraphQL fields and MCP tools, policy-bound at schema-write time.
+- **Ad-hoc queries** — `axonQuery(cypher: String!)` for runtime exploration, subject to policy, depth, and cost limits.
+
+Writes remain in the GraphQL/MCP mutation-intent flow (FEAT-030); Cypher write clauses (`CREATE`, `MERGE`, `SET`, `DELETE`) are not part of V1.
 
 The query model targets **moderate scale** — thousands to low millions of entities per collection. Axon is not a data warehouse; analytical workloads at scale belong in niflheim.
 
@@ -326,6 +347,12 @@ and audit pipelines.
 14. **Embedded mode** — run Axon in-process for development and testing
 15. **CLI** — command-line tool for collection management, schema operations,
     data inspection, policy testing, and audit queries
+16. **Unified graph query (read-only Cypher subset)** — filter, sort,
+    aggregate, traversal, and pattern matching expressed in one openCypher
+    subset. One planner, one policy enforcement point. Schema-declared named
+    queries (typed GraphQL fields + MCP tools) and ad-hoc queries
+    (`axonQuery`) under policy, depth, and cost limits. Writes remain in the
+    mutation-intent flow. See FEAT-009 and ADR-021.
 
 ### Should Have (P1)
 
@@ -369,7 +396,6 @@ and audit pipelines.
 The following capabilities have been discussed and are architecturally
 compatible with Axon but are not prioritized for any release:
 
-- **Cypher subset (read-only)** — graph pattern matching query language. Valuable for complex multi-hop, cycle detection, and cross-link-type queries. Would compile to the same query planner as GraphQL
 - **SQL DML** — batch updates, bulk operations, data migration via SQL write syntax. Read-side SQL is better served by CDC → DuckDB
 - **Semantic search (vector indexes)** — vector similarity as an ESF index type. Eliminates need for a separate vector store. Would surface as a `near` filter in GraphQL. Architecturally feasible because entity storage and indexing are decoupled
 - **Document search (Tantivy)** — full-text search with inverted indexes, BM25 ranking, faceting. Significant integration effort. Same decoupled index architecture applies

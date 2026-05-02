@@ -169,6 +169,50 @@ compatibility detection, and revalidation.
 - [ ] Schema change audit entry includes the field-level diff
 - [ ] Diff between non-adjacent versions (e.g., v1 to v5) works correctly
 
+### Story US-062: Lazy-Read Schema Migration [FEAT-017]
+
+**As a** maintainer evolving a schema with live consumers (e.g., DDx
+adopting Axon as a backend per axon-82b6f7b2)
+**I want** entities written at `schema_version=N` to remain readable after
+the schema bumps to `N+1`, so that workers don't see validation failures
+during a rolling schema change
+
+**Background:** ADR-007 already tracks `schema_version` per entity.
+Compatible changes (US-058) apply zero-downtime by definition. The gap
+this story closes: a *write* at `schema_version=N+1` may add new fields
+that older entities (still at `N`) lack. Without lazy-read semantics,
+every read of an old entity either returns it as-is (and risks the client
+expecting the new shape) or rejects it (breaking the read path).
+
+**Acceptance Criteria:**
+- [ ] Reading an entity at `schema_version=N` against an active schema at
+  `N+1` succeeds. The entity's `schema_version` field reflects its actual
+  storage version (`N`).
+- [ ] Schema declarations may include `on_read_defaults: { field: value }`
+  for fields added in version `N+1`. When reading a `schema_version=N`
+  entity, fields named in `on_read_defaults` are populated from the
+  declared default before being returned to the caller.
+- [ ] Fields added in `N+1` that have no `on_read_defaults` are returned as
+  `null` (or omitted, depending on JSON Schema declaration).
+- [ ] If the schema upgrade adds a *required* field with no default, reads
+  of `N`-version entities return them with the field absent (or `null`)
+  and a structured warning. Writes are still rejected — the schema's
+  required-with-no-default constraint applies to writes, not reads.
+- [ ] Lazy-read does not modify storage. The entity remains at
+  `schema_version=N` until it is next written, at which point normal
+  validation against the active schema applies.
+- [ ] An admin can opt into eager revalidation/migration via the existing
+  US-060 `revalidate` operation; lazy-read is the runtime default.
+- [ ] DDx Use Case C (axon-82b6f7b2) is satisfied: a worker reading a bead
+  written at `N` after a schema bump to `N+1` sees the bead with
+  `on_read_defaults` applied, and a worker writing a bead at `N+1`
+  coexists with both old and new readers without coordination.
+
+**Out of scope for this story:** Schema-version-aware *transformation*
+beyond simple defaults (e.g., field renames, nested-shape changes,
+type conversions) — those are V2 transform-rule territory per
+"Migration Declarations" above.
+
 ## Edge Cases
 
 - **Revalidation of empty collection**: Returns success with zero invalid
