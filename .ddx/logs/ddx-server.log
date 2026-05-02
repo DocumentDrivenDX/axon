@@ -1,0 +1,48 @@
+DDx server listening on https://127.0.0.1:7743
+DDx ts-net enabled (hostname: ddx-sindri)
+2026/05/02 19:48:35 tsnet running state path /home/erik/Projects/axon/.ddx/tsnet/tailscaled.state
+2026/05/02 19:48:35 tsnet starting with hostname "ddx-sindri", varRoot "/home/erik/Projects/axon/.ddx/tsnet"
+2026/05/02 19:48:35 LocalBackend state is NeedsLogin; running StartLoginInteractive...
+2026/05/02 19:48:40 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:48:45 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:48:50 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:48:55 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:00 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:05 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:11 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:16 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:21 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:26 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:31 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:36 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:42 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:47 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:52 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:49:57 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:50:02 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:50:07 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:50:12 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:50:18 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:50:23 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+2026/05/02 19:50:28 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/ad8a2e10154ff
+DDx server listening on https://127.0.0.1:7743
+DDx ts-net enabled (hostname: ddx-sindri)
+2026/05/02 19:50:29 tsnet running state path /home/erik/Projects/axon/.ddx/tsnet/tailscaled.state
+2026/05/02 19:50:29 tsnet starting with hostname "ddx-sindri", varRoot "/home/erik/Projects/axon/.ddx/tsnet"
+2026/05/02 19:50:29 LocalBackend state is NeedsLogin; running StartLoginInteractive...
+2026/05/02 19:50:34 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/1eae8ae901decc
+2026/05/02 19:50:39 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/1eae8ae901decc
+2026/05/02 19:50:44 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/1eae8ae901decc
+2026/05/02 19:50:50 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/1eae8ae901decc
+DDx server listening on https://127.0.0.1:7743
+DDx ts-net enabled (hostname: ddx-sindri)
+2026/05/02 19:50:52 tsnet running state path /home/erik/Projects/axon/.ddx/tsnet/tailscaled.state
+2026/05/02 19:50:52 tsnet starting with hostname "ddx-sindri", varRoot "/home/erik/Projects/axon/.ddx/tsnet"
+2026/05/02 19:50:52 LocalBackend state is NeedsLogin; running StartLoginInteractive...
+2026/05/02 19:50:57 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:02 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:07 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:12 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:17 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:23 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:28 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2

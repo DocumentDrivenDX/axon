@@ -1,0 +1,6 @@
+{
+  "project_root": "/home/erik/Projects/axon",
+  "model": "Qwen3.6-27B-MLX-8bit",
+  "profile": "default",
+  "once": true
+}

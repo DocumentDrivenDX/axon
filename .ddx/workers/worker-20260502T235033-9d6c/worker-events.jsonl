@@ -1,0 +1,3 @@
+{"data":{"assignee":"ddx","harness":"claude","model":"","once":false,"project_root":"/home/erik/Projects/axon","session_id":"","worker_id":"worker-20260502T235033-9d6c"},"session_id":"","ts":"2026-05-02T23:50:33.830886313Z","type":"loop.start"}
+{"data":{"bead_id":"axon-79d1df96","harness":"claude","model":"","reason":"no viable routing candidate for pins harness=claude: 1 candidates rejected"},"session_id":"","ts":"2026-05-02T23:50:36.14657784Z","type":"preflight.rejected"}
+{"data":{"attempts":1,"failures":1,"last_failure_status":"execution_failed","successes":0},"session_id":"","ts":"2026-05-02T23:50:36.146603636Z","type":"loop.end"}

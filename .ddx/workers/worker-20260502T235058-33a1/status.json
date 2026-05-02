@@ -1,0 +1,32 @@
+{
+  "id": "worker-20260502T235058-33a1",
+  "kind": "execute-loop",
+  "state": "exited",
+  "status": "execution_failed",
+  "project_root": "/home/erik/Projects/axon",
+  "harness": "agent",
+  "profile": "default",
+  "poll_interval": "0s",
+  "started_at": "2026-05-02T23:50:58.587712527Z",
+  "finished_at": "2026-05-02T23:51:01.304103Z",
+  "stdout_path": ".ddx/workers/worker-20260502T235058-33a1/worker.log",
+  "spec_path": ".ddx/workers/worker-20260502T235058-33a1/spec.json",
+  "attempts": 1,
+  "failures": 1,
+  "current_bead": "axon-79d1df96",
+  "last_error": "routing preflight rejected (harness=agent model=): no viable routing candidate for pins harness=agent: 1 candidates rejected",
+  "last_result": {
+    "bead_id": "axon-79d1df96",
+    "harness": "agent",
+    "status": "execution_failed",
+    "detail": "routing preflight rejected (harness=agent model=): no viable routing candidate for pins harness=agent: 1 candidates rejected"
+  },
+  "lifecycle": [
+    {
+      "action": "start",
+      "actor": "local-operator",
+      "timestamp": "2026-05-02T23:50:58.587712527Z",
+      "detail": "kind=execute-loop profile=default"
+    }
+  ]
+}

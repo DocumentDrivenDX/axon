@@ -1,0 +1,21 @@
+{
+  "id": "worker-20260502T234847-6a49",
+  "kind": "execute-loop",
+  "state": "exited",
+  "status": "no_ready_work",
+  "project_root": "/home/erik/Projects/axon",
+  "profile": "default",
+  "poll_interval": "0s",
+  "started_at": "2026-05-02T23:48:47.164800044Z",
+  "finished_at": "2026-05-02T23:48:47.863753Z",
+  "stdout_path": ".ddx/workers/worker-20260502T234847-6a49/worker.log",
+  "spec_path": ".ddx/workers/worker-20260502T234847-6a49/spec.json",
+  "lifecycle": [
+    {
+      "action": "start",
+      "actor": "local-operator",
+      "timestamp": "2026-05-02T23:48:47.164800044Z",
+      "detail": "kind=execute-loop profile=default"
+    }
+  ]
+}
