@@ -46,3 +46,25 @@ DDx ts-net enabled (hostname: ddx-sindri)
 2026/05/02 19:51:17 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
 2026/05/02 19:51:23 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
 2026/05/02 19:51:28 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:33 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:35 WARN provider error, retrying attempt=1 err="openai: POST \"http://vidar:1234/v1/chat/completions\": 502 Bad Gateway " delay=1s
+2026/05/02 19:51:36 WARN provider error, retrying attempt=2 err="openai: POST \"http://vidar:1234/v1/chat/completions\": 502 Bad Gateway " delay=2s
+2026/05/02 19:51:38 WARN provider error, retrying attempt=3 err="openai: POST \"http://vidar:1234/v1/chat/completions\": 502 Bad Gateway " delay=4s
+2026/05/02 19:51:38 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:42 WARN provider error, retrying attempt=4 err="openai: POST \"http://vidar:1234/v1/chat/completions\": 502 Bad Gateway " delay=8s
+2026/05/02 19:51:43 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:48 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:50 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260502T235132-e770aedc/embedded/svc-1777765893171326411.jsonl: file already closed"
+2026/05/02 19:51:54 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:51:59 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:52:04 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:52:09 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:52:14 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:52:19 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+2026/05/02 19:52:24 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/b770bd9014af2
+DDx server listening on https://127.0.0.1:7743
+DDx ts-net enabled (hostname: ddx-sindri)
+2026/05/02 19:52:28 tsnet running state path /home/erik/Projects/axon/.ddx/tsnet/tailscaled.state
+2026/05/02 19:52:28 tsnet starting with hostname "ddx-sindri", varRoot "/home/erik/Projects/axon/.ddx/tsnet"
+2026/05/02 19:52:28 LocalBackend state is NeedsLogin; running StartLoginInteractive...
+2026/05/02 19:52:33 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/19500bd101352d

@@ -1,0 +1,2 @@
+{"data":{"assignee":"ddx","harness":"agent","model":"Qwen3.6-27B-MLX-8bit","once":true,"project_root":"/home/erik/Projects/axon","session_id":"","worker_id":"worker-20260502T235233-fce3"},"session_id":"","ts":"2026-05-02T23:52:33.409083681Z","type":"loop.start"}
+{"data":{"assignee":"ddx","bead_id":"axon-79d1df96","title":"build(feat-030): audit approval and intent lineage"},"session_id":"","ts":"2026-05-02T23:52:33.793174354Z","type":"bead.claimed"}

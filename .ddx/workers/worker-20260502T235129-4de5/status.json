@@ -1,17 +1,61 @@
 {
   "id": "worker-20260502T235129-4de5",
   "kind": "execute-loop",
-  "state": "running",
-  "status": "running",
+  "state": "exited",
+  "status": "execution_failed",
   "project_root": "/home/erik/Projects/axon",
+  "harness": "agent",
+  "provider": "lmstudio-vidar-1234",
   "model": "Qwen3.6-27B-MLX-8bit",
   "profile": "default",
   "once": true,
   "poll_interval": "0s",
   "started_at": "2026-05-02T23:51:29.859861157Z",
-  "finished_at": "0001-01-01T00:00:00Z",
+  "finished_at": "2026-05-02T23:51:50.808122507Z",
   "stdout_path": ".ddx/workers/worker-20260502T235129-4de5/worker.log",
   "spec_path": ".ddx/workers/worker-20260502T235129-4de5/spec.json",
+  "attempts": 1,
+  "failures": 1,
+  "current_bead": "axon-79d1df96",
+  "last_error": "agent: provider error: openai: POST \"http://vidar:1234/v1/chat/completions\": 502 Bad Gateway ",
+  "last_result": {
+    "bead_id": "axon-79d1df96",
+    "attempt_id": "20260502T235132-e770aedc",
+    "harness": "agent",
+    "provider": "lmstudio-vidar-1234",
+    "model": "Qwen3.6-27B-MLX-8bit",
+    "status": "execution_failed",
+    "detail": "agent: provider error: openai: POST \"http://vidar:1234/v1/chat/completions\": 502 Bad Gateway ",
+    "session_id": "eb-bd779b06",
+    "base_rev": "e1428bae82fd7388d24f981e6fcbc007a527f2f5",
+    "result_rev": "e1428bae82fd7388d24f981e6fcbc007a527f2f5",
+    "retry_after": "2026-05-03T05:51:50Z"
+  },
+  "recent_phases": [
+    {
+      "phase": "queueing",
+      "ts": "2026-05-02T23:51:32.351778783Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-02T23:51:32.352295271Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-02T23:51:50.808047862Z",
+      "phase_seq": 3
+    }
+  ],
+  "last_attempt": {
+    "attempt_id": "20260502T235132-18abe4a8",
+    "bead_id": "axon-79d1df96",
+    "phase": "failed",
+    "started_at": "2026-05-02T23:51:32.351778783Z",
+    "ended_at": "2026-05-02T23:51:50.808047862Z",
+    "elapsed_ms": 18456
+  },
   "lifecycle": [
     {
       "action": "start",

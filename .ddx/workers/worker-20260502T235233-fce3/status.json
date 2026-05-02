@@ -1,0 +1,23 @@
+{
+  "id": "worker-20260502T235233-fce3",
+  "kind": "execute-loop",
+  "state": "running",
+  "status": "running",
+  "project_root": "/home/erik/Projects/axon",
+  "model": "Qwen3.6-27B-MLX-8bit",
+  "profile": "default",
+  "once": true,
+  "poll_interval": "0s",
+  "started_at": "2026-05-02T23:52:33.134825844Z",
+  "finished_at": "0001-01-01T00:00:00Z",
+  "stdout_path": ".ddx/workers/worker-20260502T235233-fce3/worker.log",
+  "spec_path": ".ddx/workers/worker-20260502T235233-fce3/spec.json",
+  "lifecycle": [
+    {
+      "action": "start",
+      "actor": "local-operator",
+      "timestamp": "2026-05-02T23:52:33.134825844Z",
+      "detail": "kind=execute-loop profile=default"
+    }
+  ]
+}

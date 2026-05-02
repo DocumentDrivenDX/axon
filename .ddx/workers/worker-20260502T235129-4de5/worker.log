@@ -1,2 +1,3 @@
 
 ▶ axon-79d1df96: build(feat-030): audit approval and intent lineage
+✓ axon-79d1df96 → error: agent: provider error: openai: POST "http://vidar:1234/v1/chat/completions": 502 Bad Gateway 
