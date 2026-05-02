@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260502T205604-d191f09e",
+  "bead_id": "axon-8cdc4e49",
+  "base_rev": "6d5dfbafb3db6968929dfcd416abd29a9eab1618",
+  "created_at": "2026-05-02T20:56:04.968285986Z",
+  "requested": {
+    "model": "MiniMax-M2.5-MLX-4bit",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-8cdc4e49",
+    "title": "build(feat-003): PROV-O audit serialization (additive)",
+    "description": "Per FEAT-003 US-010 and ADR-020 §RDF concept adoption.\n\nAdd additive PROV-O serialization to audit queries. Native JSON audit shape unchanged; PROV-O surfaces via Accept: application/ld+json with PROV @context, or via ?format=prov query parameter.\n\nMapping: operation→prov:Activity; affected entity/link→prov:Entity (note: PROV-O 'Entity' broader than Axon's, see FEAT-003 US-010 naming-clash note); actor→prov:Agent; before→prov:used; after→prov:wasGeneratedBy; actor↔activity→prov:wasAssociatedWith; transaction chain→prov:wasInformedBy; timestamp→prov:startedAtTime/endedAtTime.\n\nSubject IRIs use canonical entity URLs per ADR-020.",
+    "acceptance": "AC1. Audit query supports content negotiation (Accept: application/ld+json with PROV @context) and ?format=prov. AC2. Native JSON audit shape unchanged. AC3. PROV-O output validates against the official PROV-O ontology. AC4. Round-trip test: native JSON → PROV-O → re-import preserves all auditable facts. AC5. cargo test passes; clippy clean.",
+    "labels": [
+      "helix",
+      "feat-003",
+      "area:audit",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-02T20:56:04Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3316349",
+      "execute-loop-heartbeat-at": "2026-05-02T20:56:04.252638293Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260502T205604-d191f09e",
+    "prompt": ".ddx/executions/20260502T205604-d191f09e/prompt.md",
+    "manifest": ".ddx/executions/20260502T205604-d191f09e/manifest.json",
+    "result": ".ddx/executions/20260502T205604-d191f09e/result.json",
+    "checks": ".ddx/executions/20260502T205604-d191f09e/checks.json",
+    "usage": ".ddx/executions/20260502T205604-d191f09e/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-8cdc4e49-20260502T205604-d191f09e"
+  },
+  "prompt_sha": "ebce120567ee1338820b458b70f696c30b8e23538930c52b2b6fea8cf4b84c79"
+}
