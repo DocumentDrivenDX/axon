@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-69633116",
+  "attempt_id": "20260502T205414-53c82929",
+  "base_rev": "436262a779a06bdaf31d921a482311a886e3acdf",
+  "result_rev": "436262a779a06bdaf31d921a482311a886e3acdf",
+  "outcome": "task_failed",
+  "status": "execution_failed",
+  "detail": "agent: provider error: openai: POST \"http://vidar:1235/v1/chat/completions\": 507 Insufficient Storage {\"message\":\"Model 'MiniMax-M2.5-MLX-4bit' (125.82GB) exceeds max-model-memory (64.00GB)\",\"type\":\"server_error\",\"param\":null,\"code\":null}",
+  "harness": "agent",
+  "provider": "vidar",
+  "model": "MiniMax-M2.5-MLX-4bit",
+  "session_id": "eb-fe971f24",
+  "duration_ms": 27580,
+  "exit_code": 1,
+  "error": "agent: provider error: openai: POST \"http://vidar:1235/v1/chat/completions\": 507 Insufficient Storage {\"message\":\"Model 'MiniMax-M2.5-MLX-4bit' (125.82GB) exceeds max-model-memory (64.00GB)\",\"type\":\"server_error\",\"param\":null,\"code\":null}",
+  "failure_mode": "unknown",
+  "execution_dir": ".ddx/executions/20260502T205414-53c82929",
+  "prompt_file": ".ddx/executions/20260502T205414-53c82929/prompt.md",
+  "manifest_file": ".ddx/executions/20260502T205414-53c82929/manifest.json",
+  "result_file": ".ddx/executions/20260502T205414-53c82929/result.json",
+  "started_at": "2026-05-02T20:54:14.898020522Z",
+  "finished_at": "2026-05-02T20:54:42.478413172Z"
+}
