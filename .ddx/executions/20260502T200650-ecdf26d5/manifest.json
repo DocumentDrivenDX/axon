@@ -1,0 +1,34 @@
+{
+  "attempt_id": "20260502T200650-ecdf26d5",
+  "bead_id": "axon-79d1df96",
+  "base_rev": "ada24172c6c3da2412dcefedd55c030ef1139e5a",
+  "created_at": "2026-05-02T20:06:50.590143474Z",
+  "requested": {
+    "harness": "claude",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-79d1df96",
+    "title": "build(feat-030): audit approval and intent lineage",
+    "description": "Record preview, approval, rejection, expiry, stale, and committed intent lineage with actor, agent/tool identity when present, policy version, approver reason, intent ID, and pre/post images with FEAT-029 redaction on reads.",
+    "acceptance": "Audit tests prove lineage can be queried by intent ID and entity ID, approvals/rejections include required metadata, and redacted audit reads match entity read redaction.",
+    "parent": "axon-c7111156",
+    "labels": [
+      "helix",
+      "phase:build",
+      "kind:implementation",
+      "area:audit",
+      "feat-030"
+    ]
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260502T200650-ecdf26d5",
+    "prompt": ".ddx/executions/20260502T200650-ecdf26d5/prompt.md",
+    "manifest": ".ddx/executions/20260502T200650-ecdf26d5/manifest.json",
+    "result": ".ddx/executions/20260502T200650-ecdf26d5/result.json",
+    "checks": ".ddx/executions/20260502T200650-ecdf26d5/checks.json",
+    "usage": ".ddx/executions/20260502T200650-ecdf26d5/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-79d1df96-20260502T200650-ecdf26d5"
+  },
+  "prompt_sha": "489992bc62bf6a9d838b673acfdb2ffbe931b81b36d4171f922bc8fbcb3100fc"
+}
