@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260502T205528-b492c1e2",
+  "bead_id": "axon-84088cbe",
+  "base_rev": "2edc6e158344529e1c21b484077e744ba465403e",
+  "created_at": "2026-05-02T20:55:28.68164542Z",
+  "requested": {
+    "model": "MiniMax-M2.5-MLX-4bit",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-84088cbe",
+    "title": "build(feat-015): JSON-LD content negotiation for GraphQL entity payloads",
+    "description": "Per FEAT-015 US-078 and ADR-020 §RDF concept adoption.\n\nAdd Accept: application/ld+json content-negotiation path to GraphQL responses. Generated @context derived from active ESF schema; @id set to canonical entity URL; @type derived from collection. Linked entities render as nested @id-bearing nodes.\n\nField-name collisions with JSON-LD reserved keywords (@id, @type, @graph, @context) are remapped via @context aliases; FEAT-002 schema validator emits warning at schema-write time when collision detected.\n\nDefault Accept: application/json behavior unchanged (no perf regression).",
+    "acceptance": "AC1. Accept: application/ld+json returns JSON-LD body with @context, @id, @type. AC2. Default Accept returns plain JSON unchanged. AC3. @context generated from ESF schema; reserved-keyword collisions remapped. AC4. Validates against jsonld.js or pyld. AC5. cargo test passes; clippy clean.",
+    "labels": [
+      "helix",
+      "feat-015",
+      "area:graphql",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-02T20:55:27Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3316349",
+      "execute-loop-heartbeat-at": "2026-05-02T20:55:27.986738687Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260502T205528-b492c1e2",
+    "prompt": ".ddx/executions/20260502T205528-b492c1e2/prompt.md",
+    "manifest": ".ddx/executions/20260502T205528-b492c1e2/manifest.json",
+    "result": ".ddx/executions/20260502T205528-b492c1e2/result.json",
+    "checks": ".ddx/executions/20260502T205528-b492c1e2/checks.json",
+    "usage": ".ddx/executions/20260502T205528-b492c1e2/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-84088cbe-20260502T205528-b492c1e2"
+  },
+  "prompt_sha": "84730694eb0067de95d1af7014672161f41928bb22dee6fa91ef3ee950d27ecb"
+}
