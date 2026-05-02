@@ -11,6 +11,7 @@ members = [
     "crates/axon-graphql",
     "crates/axon-mcp",
     "crates/axon-control-plane",
+    "crates/axon-cypher",
 ]
 resolver = "2"
 

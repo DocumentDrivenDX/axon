@@ -1,0 +1,21 @@
+[package]
+name = "axon-cypher"
+description = "openCypher subset parser, planner, and executor for Axon graph queries"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axon-core = { path = "../axon-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+pretty_assertions.workspace = true
+proptest.workspace = true
