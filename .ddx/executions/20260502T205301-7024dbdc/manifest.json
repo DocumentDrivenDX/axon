@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260502T205301-7024dbdc",
+  "bead_id": "axon-51d884f0",
+  "base_rev": "6a8661470c0b9ff82b33de19aed4cceedb61b1c6",
+  "created_at": "2026-05-02T20:53:02.319583968Z",
+  "requested": {
+    "model": "MiniMax-M2.5-MLX-4bit",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-51d884f0",
+    "title": "build(feat-009): Cypher planner — AST + schema → execution plan",
+    "description": "Implement the planner module in crates/axon-cypher per ADR-021 §Compilation strategy. Parser and validator already exist (crates/axon-cypher/src/{parser,validator,schema}.rs). The planner takes a parsed/validated Query plus a SchemaSnapshot and produces an ExecutionPlan operator tree (Scan, IndexLookup, Expand, Filter, Project, Sort, Skip, Limit, ExistsCheck).\n\nIndex selection rules per ADR-021 §Compilation/Index usage: (1) label+property predicate uses FEAT-013 secondary index. (2) Relationship traversal uses links table PK/target index. (3) EXISTS subquery uses links-table index probe. (4) ORDER BY covered by index uses index scan order. (5) Otherwise full scan with predicate pushdown, subject to cost budget.\n\nCost budget per ADR-021 §Cost and depth limits: variable-length paths require explicit bounds, default depth cap 10. Cardinality estimates from index stats; reject plans above 1M intermediate rows for ad-hoc, named queries can override.\n\nOut of scope: actual execution (separate bead), real schema integration (uses SchemaSnapshot fixture), GraphQL/MCP exposure.",
+    "acceptance": "AC1. crates/axon-cypher/src/planner.rs has plan(query, schema) -\u003e Result\u003cExecutionPlan, CypherError\u003e. AC2. ExecutionPlan operator tree types serialize to JSON for observability. AC3. The DDx ready/blocked query (FEAT-009 US-074) compiles using the secondary index on DdxBead.status for both outer match and EXISTS subquery. AC4. Plans requiring unindexed scans on collections above the configured threshold (default 1000) return CypherError::UnsupportedQueryPlan with a missing-index diagnostic. AC5. cargo test -p axon-cypher passes; cargo clippy -p axon-cypher --all-targets -- -D warnings clean. AC6. ≥8 unit tests covering: index hit, range scan, sort-via-index, EXISTS via index probe, OPTIONAL MATCH, fallback scan rejection, depth cap, cardinality budget rejection.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "area:cypher",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-02T20:53:01Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3316349",
+      "execute-loop-heartbeat-at": "2026-05-02T20:53:01.569623904Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260502T205301-7024dbdc",
+    "prompt": ".ddx/executions/20260502T205301-7024dbdc/prompt.md",
+    "manifest": ".ddx/executions/20260502T205301-7024dbdc/manifest.json",
+    "result": ".ddx/executions/20260502T205301-7024dbdc/result.json",
+    "checks": ".ddx/executions/20260502T205301-7024dbdc/checks.json",
+    "usage": ".ddx/executions/20260502T205301-7024dbdc/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-51d884f0-20260502T205301-7024dbdc"
+  },
+  "prompt_sha": "e5f81d2971a7d8bcda721bef73a4eee0234555ae353bb740338e1f4f1733edba"
+}
