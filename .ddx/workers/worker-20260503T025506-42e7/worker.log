@@ -37,3 +37,6 @@ slice: DDx end-to-end graph-query integration suite over a 10-bead, 15-link in-m
 ✓ axon-69633116 → merged (d72132fd)
 
 ▶ axon-648120e4: build(feat-030): preview audit threading Pattern A — create_preview_record takes audit log
+✓ axon-648120e4 → merged (e8d6e27c)
+
+▶ axon-84088cbe: build(feat-015): JSON-LD content negotiation for GraphQL entity payloads

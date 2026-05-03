@@ -1,0 +1,21 @@
+I've verified the bead implementation against all acceptance criteria. While the diff under review (`e8d6e27`) only contains execution-evidence files, the actual implementation landed in the prior commit `348233c` and is present in the working tree.
+
+Verified:
+- **AC1** ✓ — `create_preview_record<S: StorageAdapter, A: AuditLog>(&self, &mut S, &mut A, MutationIntent)` at `crates/axon-api/src/intent.rs:870`
+- **AC2** ✓ — `preview_audit_metadata` (intent.rs) emits `decision`, `schema_version`, `policy_version`, `operation_hash`, `expires_at`; `data_before=None`; `data_after = intent.review_summary` only; `MutationType::IntentPreview` now displays `mutation_intent.preview`; collection is `__mutation_intents`
+- **AC3** ✓ — GraphQL handler `crates/axon-graphql/src/dynamic.rs:5049` and MCP handler `crates/axon-mcp/src/handlers.rs:723` both pass `audit`
+- **AC4** ✓ — `graphql_intents_contract.rs` and `mcp_intents_contract.rs` both query `auditLog(collection: "__mutation_intents", entityId: $intentId)` and assert preview event shape
+- **AC6** ✓ — `axon-e21cad01` status `closed`
+- **AC7** ✓ — `axon-ab2e52e0` (parent) status `closed`
+
+```json
+{
+  "schema_version": 1,
+  "verdict": "APPROVE",
+  "summary": "Implementation in prior commit 348233c satisfies all AC: signature takes &mut AuditLog, operational event emitted with required field shape (collection __mutation_intents, after=review_summary only), GraphQL+MCP threading verified, integration tests added, prereq beads closed.",
+  "findings": [
+    { "severity": "info", "summary": "Diff under review (e8d6e27) only adds .ddx execution-evidence files; the substantive implementation is in commit 348233c which was merged just prior. Evaluating against codebase state confirms all AC satisfied.", "location": ".ddx/executions/20260503T044613-ef9f4ac1/manifest.json" },
+    { "severity": "info", "summary": "Bead axon-648120e4 itself remains status=in_progress; closing it is the natural follow-up to this APPROVE verdict.", "location": ".ddx/beads.jsonl:164" }
+  ]
+}
+```
