@@ -2062,3 +2062,4 @@ DDx ts-net enabled (hostname: ddx-sindri)
 2026/05/02 22:42:22 LocalBackend state is NeedsLogin; running StartLoginInteractive...
 2026/05/02 22:42:27 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
 2026/05/02 22:42:32 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 22:42:38 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
