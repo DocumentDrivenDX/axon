@@ -21,3 +21,6 @@
 ✓ axon-84088cbe → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
 
 ▶ axon-8cdc4e49: build(feat-003): PROV-O audit serialization (additive)
+✓ axon-8cdc4e49 → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
+
+▶ axon-8b814cae: build(feat-017): lazy-read schema migration (US-062) — unblocks DDx GA
