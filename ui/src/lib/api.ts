@@ -1224,8 +1224,8 @@ function policyExplainDiagnosticFromGraphql(error: GraphQLError): PolicyExplainD
 	};
 }
 
-const EXPLAIN_POLICY_QUERY = `query AxonUiExplainPolicy($input: ExplainPolicyInput!) {
-	explainPolicy(input: $input) {
+const EXPLAIN_POLICY_QUERY = `query AxonUiExplainPolicy($input: ExplainPolicyInput!, $policyOverride: JSON) {
+	explainPolicy(input: $input, policyOverride: $policyOverride) {
 		operation
 		collection
 		entityId
@@ -1539,12 +1539,12 @@ export async function fetchEffectivePolicy(
 export async function explainPolicy(
 	input: ExplainPolicyInput,
 	scope: { tenant: string; database: string },
-	options: { actor?: string | null } = {},
+	options: { actor?: string | null; policyOverride?: AccessControlDraft } = {},
 ): Promise<PolicyExplanation> {
 	const data = await graphqlRequest<{ explainPolicy: GraphQLPolicyExplanation }>(
 		scope,
 		EXPLAIN_POLICY_QUERY,
-		{ input },
+		{ input, policyOverride: options.policyOverride ?? null },
 		options.actor ? { headers: { 'x-axon-actor': options.actor } } : {},
 	);
 
