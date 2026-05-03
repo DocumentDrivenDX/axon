@@ -1,0 +1,13 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only .ddx execution metadata (manifest.json, result.json). No source code or tests implementing audit lineage, intent/entity ID queries, approval/rejection metadata, or redacted audit reads are present to evaluate against any acceptance criterion.",
+  "findings": [
+    { "severity": "block", "summary": "No implementation present: diff adds only execution metadata files; acceptance criteria require audit lineage code and tests that are absent.", "location": ".ddx/executions/20260503T224008-95193a59/" },
+    { "severity": "block", "summary": "No tests demonstrating lineage queryable by intent ID and entity ID.", "location": ".ddx/executions/20260503T224008-95193a59/result.json" },
+    { "severity": "block", "summary": "No approval/rejection metadata (actor, agent/tool, policy version, approver reason, intent ID, pre/post images) recorded in audit.", "location": ".ddx/executions/20260503T224008-95193a59/result.json" },
+    { "severity": "block", "summary": "No FEAT-029 redaction applied to audit reads to match entity read redaction.", "location": ".ddx/executions/20260503T224008-95193a59/result.json" }
+  ]
+}
+```
