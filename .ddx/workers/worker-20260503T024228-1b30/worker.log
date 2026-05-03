@@ -1,2 +1,5 @@
 
 ▶ axon-79d1df96: build(feat-030): audit approval and intent lineage
+✓ axon-79d1df96 → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
+
+▶ axon-cf99b8a4: build(feat-031): GraphQL policyOverride support for explainPolicy and effectivePolicy (backend half of axon-80979cb8)
