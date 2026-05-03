@@ -18,3 +18,6 @@
 ✓ axon-648120e4 → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
 
 ▶ axon-84088cbe: build(feat-015): JSON-LD content negotiation for GraphQL entity payloads
+✓ axon-84088cbe → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
+
+▶ axon-8cdc4e49: build(feat-003): PROV-O audit serialization (additive)
