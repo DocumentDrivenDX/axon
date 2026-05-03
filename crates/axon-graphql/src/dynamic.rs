@@ -54,7 +54,8 @@ use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, LinkId};
 use axon_core::types::{Entity, Link};
-use axon_schema::policy::{compile_policy_catalog, PolicyPlan};
+use axon_schema::access_control::AccessControlPolicy;
+use axon_schema::policy::{compile_policy_catalog, PolicyCompileError, PolicyPlan};
 use axon_schema::schema::{CollectionSchema, CollectionView};
 use axon_schema::validation::validate;
 use axon_storage::adapter::StorageAdapter;
@@ -2963,15 +2964,29 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                         .ok()
                         .and_then(|value| value.string().ok())
                         .map(EntityId::new);
+                    let policy_override = policy_override_json_arg(&ctx)?;
                     let guard = handler.lock().await;
-                    let policy = guard
-                        .effective_policy_with_caller(
-                            CollectionId::new(collection),
+                    let collection_id = CollectionId::new(collection);
+                    let override_plan =
+                        policy_override_plan_from_arg(&guard, &collection_id, policy_override)?;
+                    let policy = match override_plan {
+                        Some(override_plan) => guard.effective_policy_with_plan(
+                            collection_id.clone(),
+                            entity_id.clone(),
+                            &caller,
+                            None,
+                            &override_plan.schema,
+                            &override_plan.plan,
+                            &override_plan.plans,
+                        ),
+                        None => guard.effective_policy_with_caller(
+                            collection_id,
                             entity_id,
                             &caller,
                             None,
-                        )
-                        .map_err(axon_error_to_gql)?;
+                        ),
+                    }
+                    .map_err(axon_error_to_gql)?;
                     Ok(Some(json_to_field_value(json!({
                         "collection": policy.collection,
                         "canRead": policy.can_read,
@@ -2989,7 +3004,8 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
             "collection",
             TypeRef::named_nn(TypeRef::STRING),
         ))
-        .argument(InputValue::new("entityId", TypeRef::named(TypeRef::ID))),
+        .argument(InputValue::new("entityId", TypeRef::named(TypeRef::ID)))
+        .argument(InputValue::new("policyOverride", TypeRef::named("JSON"))),
     );
 
     let handler_explain_policy = Arc::clone(&handler);
@@ -3004,10 +3020,32 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
                     let input = explain_policy_request_from_value(&gql_input_to_json(
                         ctx.args.try_get("input")?.as_value(),
                     )?)?;
+                    let policy_override = policy_override_json_arg(&ctx)?;
+                    let has_policy_override = policy_override.is_some();
                     let guard = handler.lock().await;
-                    let explanation = guard
-                        .explain_policy_with_caller(input, &caller, None)
-                        .map_err(axon_error_to_gql)?;
+                    let explanation = if let Some(collection) =
+                        explain_policy_override_collection(&input)
+                    {
+                        match policy_override_plan_from_arg(&guard, &collection, policy_override)? {
+                            Some(override_plan) => guard.explain_policy_with_plan(
+                                input,
+                                &caller,
+                                None,
+                                &override_plan.schema,
+                                &override_plan.plan,
+                                &override_plan.plans,
+                                None,
+                            ),
+                            None => guard.explain_policy_with_caller(input, &caller, None),
+                        }
+                    } else if has_policy_override {
+                        Err(AxonError::InvalidArgument(
+                            "collection is required when policyOverride is supplied".into(),
+                        ))
+                    } else {
+                        guard.explain_policy_with_caller(input, &caller, None)
+                    }
+                    .map_err(axon_error_to_gql)?;
                     Ok(Some(json_to_field_value(policy_explanation_json(
                         &explanation,
                     ))))
@@ -3017,7 +3055,8 @@ fn add_handler_root_query_fields<S: StorageAdapter + 'static>(
         .argument(InputValue::new(
             "input",
             TypeRef::named_nn(EXPLAIN_POLICY_INPUT),
-        )),
+        ))
+        .argument(InputValue::new("policyOverride", TypeRef::named("JSON"))),
     );
 
     let handler_entities = Arc::clone(&handler);
@@ -4073,6 +4112,124 @@ fn explain_policy_request_from_value(value: &Value) -> Result<ExplainPolicyReque
         .map(explain_actor_override_from_value)
         .transpose()?;
     Ok(request)
+}
+
+#[derive(Debug, Clone)]
+struct PolicyOverridePlan {
+    schema: CollectionSchema,
+    plan: PolicyPlan,
+    plans: HashMap<String, PolicyPlan>,
+}
+
+fn policy_override_json_arg(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+) -> Result<Option<Value>, GqlError> {
+    match ctx.args.try_get("policyOverride") {
+        Ok(value) if !matches!(value.as_value(), GqlValue::Null) => {
+            gql_input_to_json(value.as_value()).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+fn explain_policy_override_collection(req: &ExplainPolicyRequest) -> Option<CollectionId> {
+    req.collection.clone().or_else(|| {
+        req.operations
+            .iter()
+            .find_map(explain_policy_override_collection)
+    })
+}
+
+fn policy_override_plan_from_arg<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    collection: &CollectionId,
+    value: Option<Value>,
+) -> Result<Option<PolicyOverridePlan>, GqlError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let access_control = serde_json::from_value::<AccessControlPolicy>(value).map_err(|err| {
+        invalid_policy_override_diagnostics(
+            collection,
+            vec![json!({
+                "code": "invalid_policy_override",
+                "message": format!("invalid policyOverride: {err}"),
+                "collection": collection.as_str(),
+                "path": "policyOverride",
+            })],
+        )
+    })?;
+    let mut schema = handler
+        .get_schema(collection)
+        .map_err(axon_error_to_gql)?
+        .ok_or_else(|| axon_error_to_gql(AxonError::NotFound(collection.to_string())))?;
+    schema.access_control = Some(access_control);
+
+    let schemas = handler
+        .policy_catalog_schemas(&schema)
+        .map_err(axon_error_to_gql)?;
+    let catalog = compile_policy_catalog(&schemas)
+        .map_err(|err| invalid_policy_override_compile_error(collection, &err))?;
+    let plan = catalog
+        .plans
+        .get(collection.as_str())
+        .cloned()
+        .ok_or_else(|| {
+            invalid_policy_override_diagnostics(
+                collection,
+                vec![json!({
+                    "code": "invalid_policy_override",
+                    "message": "policyOverride did not compile a plan for the requested collection",
+                    "collection": collection.as_str(),
+                    "path": "policyOverride",
+                })],
+            )
+        })?;
+
+    Ok(Some(PolicyOverridePlan {
+        schema,
+        plan,
+        plans: catalog.plans,
+    }))
+}
+
+fn invalid_policy_override_compile_error(
+    collection: &CollectionId,
+    err: &PolicyCompileError,
+) -> GqlError {
+    let report = axon_schema::PolicyCompileReport::from_compile_error(err);
+    let diagnostics = report
+        .errors
+        .into_iter()
+        .map(|mut diagnostic| {
+            diagnostic.code = "invalid_policy_override".into();
+            if diagnostic.collection.is_none() {
+                diagnostic.collection = Some(collection.to_string());
+            }
+            serde_json::to_value(diagnostic).unwrap_or_else(|_| {
+                json!({
+                    "code": "invalid_policy_override",
+                    "message": err.message(),
+                    "collection": collection.as_str(),
+                })
+            })
+        })
+        .collect();
+    invalid_policy_override_diagnostics(collection, diagnostics)
+}
+
+fn invalid_policy_override_diagnostics(
+    collection: &CollectionId,
+    diagnostics: Vec<Value>,
+) -> GqlError {
+    let collection = collection.to_string();
+    GqlError::new("invalid policyOverride").extend_with(move |_err, ext| {
+        ext.set("code", "invalid_policy_override");
+        ext.set("collection", collection.as_str());
+        if let Ok(value) = GqlValue::from_json(Value::Array(diagnostics.clone())) {
+            ext.set("diagnostics", value);
+        }
+    })
 }
 
 fn explain_actor_override_from_value(value: &Value) -> Result<ExplainActorOverride, GqlError> {
@@ -8778,6 +8935,33 @@ mod tests {
         }
     }
 
+    fn policy_override_schema() -> CollectionSchema {
+        CollectionSchema {
+            collection: CollectionId::new("policy_items"),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "status": { "type": "string" },
+                    "title": { "type": "string" }
+                }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value::<AccessControlPolicy>(json!({
+                    "read": { "allow": [{ "name": "active-allows-read" }] }
+                }))
+                .expect("access_control should deserialize"),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            lifecycles: Default::default(),
+        }
+    }
+
     async fn introspected_type_fields(schema: &AxonSchema, type_name: &str) -> Value {
         let result = schema
             .schema
@@ -9413,6 +9597,192 @@ mod tests {
         assert_non_null_scalar(&fields, "title", "String");
         assert_nullable_scalar(&fields, "status", "String");
         assert_nullable_scalar(&fields, "priority", "Int");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn policy_override_arguments_are_exposed_on_policy_queries() {
+        let handler = make_handler(&[]).await;
+        let schema = build_schema_with_handler(&[], handler).expect("schema should build");
+        let result = schema
+            .schema
+            .execute(
+                r#"{
+                    __type(name: "Query") {
+                        fields {
+                            name
+                            args { name type { kind name ofType { kind name } } }
+                        }
+                    }
+                }"#,
+            )
+            .await;
+        let data = response_data(result);
+        let fields = data["__type"]["fields"].as_array().expect("fields");
+        for field_name in ["effectivePolicy", "explainPolicy"] {
+            let field = fields
+                .iter()
+                .find(|field| field["name"] == field_name)
+                .unwrap_or_else(|| panic!("{field_name} query should exist"));
+            let arg = field["args"]
+                .as_array()
+                .expect("args")
+                .iter()
+                .find(|arg| arg["name"] == "policyOverride")
+                .unwrap_or_else(|| panic!("{field_name} should expose policyOverride"));
+            assert_eq!(arg["type"]["kind"], "SCALAR");
+            assert_eq!(arg["type"]["name"], "JSON");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn effective_policy_null_override_uses_active_policy_and_valid_override_applies() {
+        let ts = policy_override_schema();
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("policy_items"),
+                    id: EntityId::new("p1"),
+                    data: json!({"status": "archived", "title": "Archived"}),
+                    actor: Some("setup".into()),
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("entity should be created");
+        }
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let active = schema
+            .schema
+            .execute(
+                r#"{
+                    effectivePolicy(
+                        collection: "policy_items",
+                        entityId: "p1",
+                        policyOverride: null
+                    ) { canRead policyVersion }
+                }"#,
+            )
+            .await;
+        let active = response_data(active);
+        assert_eq!(active["effectivePolicy"]["canRead"], true);
+        assert_eq!(active["effectivePolicy"]["policyVersion"], 1);
+
+        let overridden = schema
+            .schema
+            .execute(
+                r#"{
+                    effectivePolicy(
+                        collection: "policy_items",
+                        entityId: "p1",
+                        policyOverride: {
+                            read: {
+                                allow: [{
+                                    name: "only-open",
+                                    where: { field: "status", eq: "open" }
+                                }]
+                            }
+                        }
+                    ) { canRead policyVersion }
+                }"#,
+            )
+            .await;
+        let overridden = response_data(overridden);
+        assert_eq!(overridden["effectivePolicy"]["canRead"], false);
+        assert_eq!(overridden["effectivePolicy"]["policyVersion"], 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explain_policy_override_flips_active_allow_to_deny() {
+        let ts = policy_override_schema();
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute(
+                r#"{
+                    explainPolicy(
+                        input: {
+                            operation: "read",
+                            collection: "policy_items",
+                            data: { status: "archived", title: "Archived" }
+                        },
+                        policyOverride: {
+                            read: {
+                                allow: [{
+                                    name: "only-open",
+                                    where: { field: "status", eq: "open" }
+                                }]
+                            }
+                        }
+                    ) { decision reason ruleIds policyVersion }
+                }"#,
+            )
+            .await;
+        let data = response_data(result);
+        assert_eq!(data["explainPolicy"]["decision"], "deny");
+        assert_eq!(data["explainPolicy"]["reason"], "row_read_denied");
+        assert_eq!(data["explainPolicy"]["policyVersion"], 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn malformed_policy_override_returns_typed_diagnostic_error() {
+        let ts = policy_override_schema();
+        let handler = make_handler(std::slice::from_ref(&ts)).await;
+        let schema =
+            build_schema_with_handler(&[ts], Arc::clone(&handler)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute(
+                r#"{
+                    explainPolicy(
+                        input: {
+                            operation: "read",
+                            collection: "policy_items",
+                            data: { status: "open", title: "Open" }
+                        },
+                        policyOverride: {
+                            read: {
+                                allow: [{
+                                    name: "broken",
+                                    where: { field: "missing_field", eq: "open" }
+                                }]
+                            }
+                        }
+                    ) { decision }
+                }"#,
+            )
+            .await;
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        let ext = result.errors[0].extensions.as_ref().expect("extensions");
+        assert!(matches!(
+            ext.get("code"),
+            Some(GqlValue::String(code)) if code == "invalid_policy_override"
+        ));
+        let diagnostics = ext
+            .get("diagnostics")
+            .and_then(|value| match value {
+                GqlValue::List(items) => Some(items),
+                _ => None,
+            })
+            .expect("diagnostics array");
+        assert_eq!(diagnostics.len(), 1);
+        let GqlValue::Object(diagnostic) = &diagnostics[0] else {
+            panic!("diagnostic should be an object: {:?}", diagnostics[0]);
+        };
+        assert!(matches!(
+            diagnostic.get("code"),
+            Some(GqlValue::String(code)) if code == "invalid_policy_override"
+        ));
+        assert!(matches!(
+            diagnostic.get("field"),
+            Some(GqlValue::String(field)) if field == "missing_field"
+        ));
     }
 
     #[tokio::test(flavor = "multi_thread")]
