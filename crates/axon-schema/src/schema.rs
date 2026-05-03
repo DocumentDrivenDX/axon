@@ -583,6 +583,43 @@ access_control:
     }
 
     #[test]
+    fn esf_parses_named_queries_block() {
+        let doc = EsfDocument::parse(
+            r#"
+esf_version: "1.0"
+collection: ddx_beads
+entity_schema:
+  type: object
+  properties:
+    status: { type: string }
+queries:
+  by_status:
+    description: "Beads by status"
+    cypher: "MATCH (b:DdxBead {status: $status}) RETURN b"
+    parameters:
+      - name: status
+        type: String
+        required: true
+"#,
+        )
+        .expect("named-query ESF should parse");
+        let schema = doc
+            .into_collection_schema()
+            .expect("named-query ESF should convert to collection schema");
+
+        let query = schema
+            .queries
+            .get("by_status")
+            .expect("named query should be present");
+        assert_eq!(query.description, "Beads by status");
+        assert_eq!(query.cypher, "MATCH (b:DdxBead {status: $status}) RETURN b");
+        assert_eq!(query.parameters.len(), 1);
+        assert_eq!(query.parameters[0].name, "status");
+        assert_eq!(query.parameters[0].param_type, "String");
+        assert!(query.parameters[0].required);
+    }
+
+    #[test]
     fn esf_parses_access_control_metadata() {
         let doc = EsfDocument::parse(ACCESS_CONTROL_ESF).expect("access-control ESF should parse");
         let schema = doc
