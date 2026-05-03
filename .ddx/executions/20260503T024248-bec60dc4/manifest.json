@@ -1,0 +1,56 @@
+{
+  "attempt_id": "20260503T024248-bec60dc4",
+  "bead_id": "axon-9a4f3b72",
+  "base_rev": "3faf7290a133a58b05341450d26e42ca358ce179",
+  "created_at": "2026-05-03T02:42:49.334816331Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-9a4f3b72",
+    "title": "build(feat-009): ESF queries: block — schema-time named query registration",
+    "description": "Extend axon-schema to accept a queries: block in collection schemas per FEAT-009 US-075 and ADR-021. Each named query has description, cypher (string), and parameters (list of {name, type, required}).\n\nAt put_schema time, each named query is: (1) parsed via axon-cypher::parse, (2) validated via axon-cypher::validate against the active schema, (3) index-validated — unindexed scans on large collections rejected, (4) policy-validated per ADR-019 — bypass-required queries rejected with policy_required_bypass.\n\nOut of scope: GraphQL field generation, MCP tool generation, subscriptions (separate beads).",
+    "acceptance": "AC1. axon-schema accepts queries: block per FEAT-009 US-075. AC2. put_schema returns CompileReport with per-query diagnostics (ok/parse_error/unknown_identifier/unsupported_query_plan/policy_required_bypass). AC3. put_schema --dry-run returns diagnostics without activating. AC4. Activated schemas expose named-query metadata via existing schema-introspection paths. AC5. cargo test -p axon-schema passes; clippy clean. AC6. ≥8 tests: valid query activates, parse error rejected, unknown label/property/relationship rejected, unindexed-plan rejected, policy-bypass rejected, parameterized query, multiple named queries, dry-run path.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "feat-002",
+      "area:schema",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-03T02:42:48Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3908734",
+      "events": [
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"vidar\",\"resolved_model\":\"MiniMax-M2.5-MLX-4bit\",\"fallback_chain\":[],\"requested_model\":\"MiniMax-M2.5-MLX-4bit\"}",
+          "created_at": "2026-05-02T20:54:06.548831674Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=vidar model=MiniMax-M2.5-MLX-4bit"
+        },
+        {
+          "actor": "ddx",
+          "body": "agent: provider error: openai: POST \"http://vidar:1235/v1/chat/completions\": 507 Insufficient Storage {\"message\":\"Model 'MiniMax-M2.5-MLX-4bit' (125.82GB) exceeds max-model-memory (64.00GB)\",\"type\":\"server_error\",\"param\":null,\"code\":null}\nresult_rev=5841301e64af1cb4db663bfdefa31d99c17902c7\nbase_rev=5841301e64af1cb4db663bfdefa31d99c17902c7\nretry_after=2026-05-03T02:54:06Z",
+          "created_at": "2026-05-02T20:54:06.988705683Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-03T02:42:48.730713338Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260503T024248-bec60dc4",
+    "prompt": ".ddx/executions/20260503T024248-bec60dc4/prompt.md",
+    "manifest": ".ddx/executions/20260503T024248-bec60dc4/manifest.json",
+    "result": ".ddx/executions/20260503T024248-bec60dc4/result.json",
+    "checks": ".ddx/executions/20260503T024248-bec60dc4/checks.json",
+    "usage": ".ddx/executions/20260503T024248-bec60dc4/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-9a4f3b72-20260503T024248-bec60dc4"
+  },
+  "prompt_sha": "eec85e555a4250ee1a61f844c3b483bcb1cb6aa7edce031ccad67383950e3b29"
+}
