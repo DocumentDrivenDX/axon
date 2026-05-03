@@ -1308,6 +1308,9 @@ async fn create_entity(
     }
     let attribution = attribution_from_jwt(jwt_identity);
     let mut guard = handler.lock().await;
+    // HTTP POST /entities is a create-or-replace/upsert surface per
+    // create-semantics.md Pattern B. Duplicate rejection is reserved for typed
+    // GraphQL createXxx and transaction op:create paths.
     let result = guard.create_entity_with_caller(
         CreateEntityRequest {
             collection: qualify_collection_name(&collection, &current_database),

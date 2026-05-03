@@ -197,7 +197,14 @@ pub trait StorageAdapter: Send + Sync {
     fn get(&self, collection: &CollectionId, id: &EntityId) -> Result<Option<Entity>, AxonError>;
 
     /// Stores an entity, overwriting any existing entity with the same ID.
-    /// Use this for initial inserts. For versioned updates, use [`compare_and_swap`].
+    ///
+    /// `put` is the storage adapter's create-or-replace/upsert primitive. It is
+    /// intentionally not a duplicate-ID guard: HTTP `/entities` POST and gRPC
+    /// `CreateEntity` build on this overwrite contract. Strict create semantics
+    /// are enforced above storage by typed GraphQL `createXxx` resolvers and
+    /// transaction `create` operations before they call into the adapter.
+    ///
+    /// For versioned updates, use [`Self::compare_and_swap`].
     fn put(&mut self, entity: Entity) -> Result<(), AxonError>;
 
     /// Deletes an entity. Returns `Ok(())` whether or not the entity existed.

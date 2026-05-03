@@ -3133,7 +3133,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
     // internal callers (tests, CLI, MCP) that construct requests directly
     // without an HTTP/gRPC transport origin.
 
-    /// Create an entity, overriding `req.actor` with the caller identity.
+    /// Create or replace an entity, overriding `req.actor` with the caller identity.
+    ///
+    /// This is the transport-level create path used by HTTP `/entities` POST
+    /// and gRPC `CreateEntity`. It delegates to [`StorageAdapter::put`], so an
+    /// existing entity with the same collection/id is overwritten instead of
+    /// being treated as a duplicate. Strict create semantics live in
+    /// [`Self::create_entity_strict_with_caller`] and transaction `create`
+    /// operations.
     pub fn create_entity_with_caller(
         &mut self,
         mut req: CreateEntityRequest,
@@ -3143,6 +3150,24 @@ impl<S: StorageAdapter> AxonHandler<S> {
         req.actor = Some(caller.actor.clone());
         req.attribution = attribution;
         self.create_entity_inner(req, Some(caller))
+    }
+
+    /// Strictly create an entity, rejecting duplicate collection/id pairs.
+    ///
+    /// Typed GraphQL `createXxx` mutations use this contract so they behave
+    /// like transaction `op:create`: if an entity already exists, the call
+    /// returns [`AxonError::ConflictingVersion`] with `expected = 0` and the
+    /// current entity attached. HTTP and gRPC creates intentionally do not use
+    /// this wrapper; they retain create-or-replace/upsert behavior.
+    pub fn create_entity_strict_with_caller(
+        &mut self,
+        mut req: CreateEntityRequest,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<CreateEntityResponse, AxonError> {
+        req.actor = Some(caller.actor.clone());
+        req.attribution = attribution;
+        self.create_entity_strict_inner(req, Some(caller))
     }
 
     /// Update an entity, overriding `req.actor` with the caller identity.
@@ -3244,11 +3269,33 @@ impl<S: StorageAdapter> AxonHandler<S> {
 
     // ── Entity operations ────────────────────────────────────────────────────
 
+    /// Create or replace an entity.
+    ///
+    /// This method preserves Pattern B create semantics from
+    /// `create-semantics.md`: direct handler/HTTP/gRPC creates are upserts
+    /// backed by [`StorageAdapter::put`]. Use
+    /// [`Self::create_entity_strict_with_caller`] or transaction `create`
+    /// operations when duplicate IDs must be rejected.
     pub fn create_entity(
         &mut self,
         req: CreateEntityRequest,
     ) -> Result<CreateEntityResponse, AxonError> {
         self.create_entity_inner(req, None)
+    }
+
+    fn create_entity_strict_inner(
+        &mut self,
+        req: CreateEntityRequest,
+        caller: Option<&CallerIdentity>,
+    ) -> Result<CreateEntityResponse, AxonError> {
+        if let Some(current) = self.storage.get(&req.collection, &req.id)? {
+            return Err(AxonError::ConflictingVersion {
+                expected: 0,
+                actual: current.version,
+                current_entity: Some(Box::new(current)),
+            });
+        }
+        self.create_entity_inner(req, caller)
     }
 
     fn create_entity_inner(

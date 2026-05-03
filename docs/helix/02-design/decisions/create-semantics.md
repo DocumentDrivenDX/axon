@@ -24,7 +24,7 @@ This matches the existing storage abstraction and avoids turning the adapter int
 
 | Surface | Current behavior | Duplicate-id result | Notes |
 |---|---|---|---|
-| Typed GraphQL `createXxx` | Calls `handler.create_entity_with_caller(...)` | **Rejects** via handler-side validation / create path | This is the strict surface under review. |
+| Typed GraphQL `createXxx` | Calls a strict handler wrapper before storage `put` | **Rejects** via handler-side validation / create path | This is the strict surface under review. |
 | Untyped `commitTransaction` `op:create` | Staged transaction create path | **Rejects** duplicates before commit | This is already enforced in `commit_transaction`. |
 | HTTP `/entities/{collection}/{id}` POST | Direct create handler backed by storage `put` | **Overwrites / upserts** | No duplicate rejection in the adapter path. |
 | gRPC `CreateEntity` | Direct create RPC backed by storage `put` | **Overwrites / upserts** | Same storage contract as HTTP. |
@@ -45,4 +45,3 @@ File an implementation bead to ensure the documentation and tests explicitly des
 - typed GraphQL `createXxx` and `commitTransaction op:create` as strict duplicate-rejecting create paths;
 - HTTP and gRPC create endpoints as overwrite/upsert paths;
 - storage `put` as the shared overwrite contract.
-

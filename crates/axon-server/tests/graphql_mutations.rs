@@ -225,6 +225,45 @@ async fn graphql_collection_admin_create_list_refresh_and_drop() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn typed_graphql_create_rejects_duplicate_id() {
+    let server = test_server();
+    seed_tasks_collection(&server).await;
+
+    let first = gql(
+        &server,
+        r#"mutation { createTasks(id: "strict-create-1", input: { title: "first" }) { id version title } }"#,
+    )
+    .await;
+    assert!(first["errors"].is_null(), "unexpected errors: {first}");
+    assert_eq!(first["data"]["createTasks"]["title"], "first");
+
+    let duplicate = gql(
+        &server,
+        r#"mutation { createTasks(id: "strict-create-1", input: { title: "second" }) { id version title } }"#,
+    )
+    .await;
+    let errors = duplicate["errors"].as_array().expect("errors array");
+    assert!(
+        !errors.is_empty(),
+        "expected duplicate rejection: {duplicate}"
+    );
+    assert_eq!(errors[0]["extensions"]["code"], "VERSION_CONFLICT");
+    assert_eq!(errors[0]["extensions"]["expected"], 0);
+    assert_eq!(errors[0]["extensions"]["actual"], 1);
+
+    let get_body = gql(
+        &server,
+        r#"{ tasks(id: "strict-create-1") { id version title } }"#,
+    )
+    .await;
+    assert!(
+        get_body["errors"].is_null(),
+        "unexpected errors: {get_body}"
+    );
+    assert_eq!(get_body["data"]["tasks"]["title"], "first");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_collection_template_round_trips_and_renders_markdown() {
     let server = test_server();
     seed_tasks_collection(&server).await;
@@ -710,6 +749,57 @@ async fn graphql_commit_transaction_create_and_idempotent_replay() {
         replay["data"]["commitTransaction"]["results"][0]["entity"]["data"]["title"], "batched",
         "same-key/different-payload replay returns the original cached response"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_commit_transaction_create_rejects_duplicate_id() {
+    let server = test_server();
+    seed_tasks_collection(&server).await;
+
+    let first = gql(
+        &server,
+        r#"mutation { createTasks(id: "tx-duplicate-1", input: { title: "first" }) { id } }"#,
+    )
+    .await;
+    assert!(first["errors"].is_null(), "unexpected errors: {first}");
+
+    let duplicate = gql(
+        &server,
+        r#"mutation {
+            commitTransaction(input: {
+                operations: [
+                    { createEntity: {
+                        collection: "tasks"
+                        id: "tx-duplicate-1"
+                        data: { title: "second" }
+                    }}
+                ]
+            }) {
+                transactionId
+            }
+        }"#,
+    )
+    .await;
+
+    let errors = duplicate["errors"].as_array().expect("errors array");
+    assert!(
+        !errors.is_empty(),
+        "expected transaction create conflict: {duplicate}"
+    );
+    assert_eq!(errors[0]["extensions"]["code"], "VERSION_CONFLICT");
+    assert_eq!(errors[0]["extensions"]["expected"], 0);
+    assert_eq!(errors[0]["extensions"]["actual"], 1);
+
+    let get_body = gql(
+        &server,
+        r#"{ tasks(id: "tx-duplicate-1") { id version title } }"#,
+    )
+    .await;
+    assert!(
+        get_body["errors"].is_null(),
+        "unexpected errors: {get_body}"
+    );
+    assert_eq!(get_body["data"]["tasks"]["title"], "first");
 }
 
 #[tokio::test(flavor = "multi_thread")]

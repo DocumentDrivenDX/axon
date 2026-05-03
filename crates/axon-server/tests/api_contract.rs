@@ -93,6 +93,48 @@ async fn grpc_create_then_get_entity() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn grpc_create_entity_upserts_existing_id() {
+    let (addr, _) = start_grpc_server().await;
+    let mut client = grpc_client(addr).await;
+
+    client
+        .create_entity(proto::CreateEntityRequest {
+            collection: "tasks".into(),
+            id: "t-upsert".into(),
+            data_json: r#"{"title":"first"}"#.into(),
+            actor: "test".into(),
+        })
+        .await
+        .unwrap();
+
+    let resp = client
+        .create_entity(proto::CreateEntityRequest {
+            collection: "tasks".into(),
+            id: "t-upsert".into(),
+            data_json: r#"{"title":"second"}"#.into(),
+            actor: "test".into(),
+        })
+        .await
+        .unwrap();
+    let entity = resp.into_inner().entity.unwrap();
+    let data: Value = serde_json::from_str(&entity.data_json).unwrap();
+    assert_eq!(data["title"], "second");
+
+    let got = client
+        .get_entity(proto::GetEntityRequest {
+            collection: "tasks".into(),
+            id: "t-upsert".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .entity
+        .unwrap();
+    let got_data: Value = serde_json::from_str(&got.data_json).unwrap();
+    assert_eq!(got_data["title"], "second");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn grpc_get_missing_returns_not_found() {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
@@ -435,6 +477,37 @@ async fn parity_create_get_entity() {
     let http_data = &http_get_body["entity"]["data"];
     let grpc_data: Value = serde_json::from_str(&grpc_get_entity.data_json).unwrap();
     assert_eq!(http_data, &grpc_data);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_post_entities_upserts_existing_id() {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    let first = http
+        .post("/tenants/default/databases/default/entities/tasks/t-upsert")
+        .json(&json!({"data": {"title": "first"}, "actor": "test"}))
+        .await;
+    first.assert_status(axum::http::StatusCode::CREATED);
+
+    let second = http
+        .post("/tenants/default/databases/default/entities/tasks/t-upsert")
+        .json(&json!({"data": {"title": "second"}, "actor": "test"}))
+        .await;
+    second.assert_status(axum::http::StatusCode::CREATED);
+    let second_body: Value = second.json();
+    assert_eq!(second_body["entity"]["data"]["title"], "second");
+
+    let got = http
+        .get("/tenants/default/databases/default/entities/tasks/t-upsert")
+        .await;
+    got.assert_status_ok();
+    let got_body: Value = got.json();
+    assert_eq!(got_body["entity"]["data"]["title"], "second");
 }
 
 #[tokio::test(flavor = "multi_thread")]

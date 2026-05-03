@@ -127,6 +127,17 @@ macro_rules! storage_conformance_tests {
             }
 
             #[test]
+            fn put_overwrites_existing_entity_with_same_id() {
+                let mut s = store();
+                s.put(entity("t-001", "first")).expect("test operation should succeed");
+                s.put(entity("t-001", "second")).expect("test operation should succeed");
+
+                let got = s.get(&tasks(), &EntityId::new("t-001")).expect("test operation should succeed").expect("entity should exist");
+                assert_eq!(got.data["title"], "second");
+                assert_eq!(s.count(&tasks()).expect("test operation should succeed"), 1);
+            }
+
+            #[test]
             fn count_reflects_puts_and_deletes() {
                 let mut s = store();
                 assert_eq!(s.count(&tasks()).expect("test operation should succeed"), 0);

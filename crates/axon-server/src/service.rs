@@ -315,6 +315,9 @@ impl<S: StorageAdapter + 'static> AxonService for AxonServiceImpl<S> {
         let data: serde_json::Value = serde_json::from_str(&req.data_json)
             .map_err(|e| Status::invalid_argument(format!("invalid data_json: {e}")))?;
 
+        // gRPC CreateEntity is a create-or-replace/upsert surface per
+        // create-semantics.md Pattern B. Duplicate rejection is reserved for
+        // typed GraphQL createXxx and transaction op:create paths.
         let resp = self
             .handler
             .lock()

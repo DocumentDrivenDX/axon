@@ -7482,7 +7482,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
                     let data = mutation_data_arg(&ctx, "input", "legacyInput")?;
 
                     let mut guard = handler.lock().await;
-                    match guard.create_entity_with_caller(
+                    match guard.create_entity_strict_with_caller(
                         CreateEntityRequest {
                             collection: col.clone(),
                             id: EntityId::new(id_str),
@@ -7502,6 +7502,9 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
                     }
                 })
             },
+        )
+        .description(
+            "Strict create mutation: rejects duplicate entity IDs. Use commitTransaction createEntity for atomic strict creates, or HTTP/gRPC creates for upsert/create-or-replace semantics.",
         )
         .argument(InputValue::new("id", TypeRef::named_nn(TypeRef::ID)))
         .argument(InputValue::new(
