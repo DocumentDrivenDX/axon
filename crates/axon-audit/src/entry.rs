@@ -68,7 +68,7 @@ impl std::fmt::Display for MutationType {
             MutationType::TemplateDelete => "template.delete",
             MutationType::SchemaUpdate => "schema.update",
             MutationType::GuardrailRejection => "guardrail_rejection",
-            MutationType::IntentPreview => "intent.preview",
+            MutationType::IntentPreview => "mutation_intent.preview",
             MutationType::IntentApprove => "intent.approve",
             MutationType::IntentReject => "intent.reject",
             MutationType::IntentExpire => "intent.expire",
@@ -454,7 +454,10 @@ mod tests {
             MutationType::GuardrailRejection.to_string(),
             "guardrail_rejection"
         );
-        assert_eq!(MutationType::IntentPreview.to_string(), "intent.preview");
+        assert_eq!(
+            MutationType::IntentPreview.to_string(),
+            "mutation_intent.preview"
+        );
         assert_eq!(MutationType::IntentApprove.to_string(), "intent.approve");
         assert_eq!(MutationType::IntentReject.to_string(), "intent.reject");
         assert_eq!(MutationType::IntentExpire.to_string(), "intent.expire");

@@ -50,7 +50,9 @@ use axon_storage::adapter::{
     extract_index_value, extract_index_values, resolve_field_path, StorageAdapter,
 };
 
-use crate::intent::{MutationIntent, MutationOperationKind};
+use crate::intent::{
+    MutationIntent, MutationOperationKind, MutationReviewSummary, PreImageBinding,
+};
 use crate::policy::{PolicyRequestSnapshot, PolicySubjectSnapshot};
 use crate::request::{
     AggregateFunction, AggregateRequest, CountEntitiesRequest, CreateCollectionRequest,
@@ -4539,7 +4541,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             Some("template.update") => Some(MT::TemplateUpdate),
             Some("template.delete") => Some(MT::TemplateDelete),
             Some("schema.update") => Some(MT::SchemaUpdate),
-            Some("intent.preview") => Some(MT::IntentPreview),
+            Some("mutation_intent.preview" | "intent.preview") => Some(MT::IntentPreview),
             Some("intent.approve") => Some(MT::IntentApprove),
             Some("intent.reject") => Some(MT::IntentReject),
             Some("intent.expire") => Some(MT::IntentExpire),
@@ -4626,6 +4628,10 @@ impl<S: StorageAdapter> AxonHandler<S> {
             return Ok(());
         }
 
+        if entry.mutation == MutationType::IntentPreview {
+            self.redact_preview_audit_review_summary_for_read(entry, caller, attribution)?;
+        }
+
         for payload in [&mut entry.data_before, &mut entry.data_after]
             .into_iter()
             .flatten()
@@ -4638,6 +4644,45 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 AxonError::InvalidOperation(format!("failed to serialize redacted intent: {err}"))
             })?;
         }
+        Ok(())
+    }
+
+    fn redact_preview_audit_review_summary_for_read(
+        &self,
+        entry: &mut AuditEntry,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<(), AxonError> {
+        let Some(data_after) = entry.data_after.as_mut() else {
+            return Ok(());
+        };
+        let Ok(mut summary) = serde_json::from_value::<MutationReviewSummary>(data_after.clone())
+        else {
+            return Ok(());
+        };
+
+        for affected_record in &summary.affected_records {
+            let PreImageBinding::Entity { collection, id, .. } = affected_record else {
+                continue;
+            };
+            let Some(entity) = self.storage.get(collection, id)? else {
+                continue;
+            };
+            let redactions = self.field_read_redactions_for_data(
+                collection,
+                id,
+                &entity.data,
+                caller,
+                attribution,
+            )?;
+            apply_review_summary_diff_redactions(&mut summary.diff, &redactions);
+        }
+
+        *data_after = serde_json::to_value(summary).map_err(|err| {
+            AxonError::InvalidOperation(format!(
+                "failed to serialize redacted preview review summary: {err}"
+            ))
+        })?;
         Ok(())
     }
 
@@ -8485,6 +8530,18 @@ fn apply_diff_value_redactions(diff: &mut Value, redactions: &[(String, Value)])
     if let Ok(redacted) = serde_json::to_value(diff_map) {
         *diff = redacted;
     }
+}
+
+fn apply_review_summary_diff_redactions(diff: &mut Value, redactions: &[(String, Value)]) {
+    if let Some(entries) = diff.as_array_mut() {
+        for entry in entries {
+            if let Some(child_diff) = entry.get_mut("diff") {
+                apply_diff_value_redactions(child_diff, redactions);
+            }
+        }
+        return;
+    }
+    apply_diff_value_redactions(diff, redactions);
 }
 
 fn intent_operation_entity_ref(operation: &Value) -> Option<(CollectionId, EntityId)> {

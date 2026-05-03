@@ -196,6 +196,7 @@ async fn preview_budget_patch(
                 }}) {{
                     decision
                     intentToken
+                    canonicalOperation {{ operationHash }}
                     intent {{ id approvalState decision }}
                 }}
             }}"#
@@ -336,18 +337,78 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
     assert_eq!(result["intent"]["approvalState"], "pending");
     let token = result["intentToken"].as_str().unwrap().to_string();
     let intent_id = result["intent"]["id"].as_str().unwrap().to_string();
-    let preview_audit = audit_by_intent(&server, &intent_id, Some("intent.preview")).await;
+    let preview_audit = audit_by_intent(&server, &intent_id, Some("mutation_intent.preview")).await;
     let preview_entries = preview_audit["entries"].as_array().unwrap();
     assert_eq!(preview_entries.len(), 1);
     assert_eq!(preview_entries[0]["actor"], "finance-agent");
+    assert_eq!(preview_entries[0]["collection"], "__mutation_intents");
+    assert_eq!(preview_entries[0]["entity_id"], intent_id);
+    assert!(preview_entries[0]["data_before"].is_null());
     assert_eq!(preview_entries[0]["intent_lineage"]["intent_id"], intent_id);
     assert_eq!(
         preview_entries[0]["intent_lineage"]["subject_snapshot"]["user_id"],
         "finance-agent"
     );
     assert_eq!(preview_entries[0]["intent_lineage"]["policy_version"], 1);
+    assert_eq!(preview_entries[0]["metadata"]["decision"], "needs_approval");
+    assert_eq!(preview_entries[0]["metadata"]["schema_version"], "1");
+    assert_eq!(preview_entries[0]["metadata"]["policy_version"], "1");
     assert_eq!(
-        preview_entries[0]["data_after"]["review_summary"]["diff"]["budget_cents"]["after"],
+        preview_entries[0]["metadata"]["operation_hash"],
+        result["canonicalOperation"]["operationHash"]
+    );
+    assert!(preview_entries[0]["metadata"]["expires_at"]
+        .as_str()
+        .is_some());
+    assert_eq!(
+        preview_entries[0]["data_after"]["diff"]["budget_cents"]["after"],
+        20_000
+    );
+    assert!(
+        preview_entries[0]["data_after"].get("operation").is_none(),
+        "preview after payload should contain the review summary only"
+    );
+
+    let graphql_preview_audit = gql_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"{{
+                auditLog(collection: "__mutation_intents", entityId: "{intent_id}") {{
+                    totalCount
+                    edges {{
+                        node {{
+                            operation
+                            actor
+                            collection
+                            entityId
+                            metadata
+                            dataBefore
+                            dataAfter
+                        }}
+                    }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_no_errors(&graphql_preview_audit, "GraphQL auditLog preview lookup");
+    let graphql_preview_entry = &graphql_preview_audit["data"]["auditLog"]["edges"][0]["node"];
+    assert_eq!(graphql_preview_audit["data"]["auditLog"]["totalCount"], 1);
+    assert_eq!(
+        graphql_preview_entry["operation"],
+        "mutation_intent.preview"
+    );
+    assert_eq!(graphql_preview_entry["actor"], "finance-agent");
+    assert_eq!(graphql_preview_entry["collection"], "__mutation_intents");
+    assert_eq!(graphql_preview_entry["entityId"], intent_id);
+    assert!(graphql_preview_entry["dataBefore"].is_null());
+    assert_eq!(
+        graphql_preview_entry["metadata"]["decision"],
+        "needs_approval"
+    );
+    assert_eq!(
+        graphql_preview_entry["dataAfter"]["diff"]["budget_cents"]["after"],
         20_000
     );
 
@@ -393,7 +454,8 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
     assert_eq!(lineage_entries.len(), 3);
     assert!(lineage_entries
         .iter()
-        .any(|entry| entry["mutation"] == "intent.preview" && entry["actor"] == "finance-agent"));
+        .any(|entry| entry["mutation"] == "mutation_intent.preview"
+            && entry["actor"] == "finance-agent"));
     assert!(
         lineage_entries
             .iter()

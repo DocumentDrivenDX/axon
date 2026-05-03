@@ -1539,6 +1539,7 @@ fn audit_entry_json(entry: &axon_audit::AuditEntry) -> Value {
         "entityId": entry.entity_id.to_string(),
         "version": entry.version,
         "mutation": entry.mutation.to_string(),
+        "operation": entry.mutation.to_string(),
         "dataBefore": entry.data_before,
         "dataAfter": entry.data_after,
         "actor": entry.actor,
@@ -2178,6 +2179,10 @@ fn audit_entry_object() -> Object {
         ))
         .field(json_object_field(
             "mutation",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "operation",
             TypeRef::named_nn(TypeRef::STRING),
         ))
         .field(json_object_field("dataBefore", TypeRef::named("JSON")))

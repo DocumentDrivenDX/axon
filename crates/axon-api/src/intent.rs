@@ -24,7 +24,7 @@ use crate::request::{
 };
 use crate::transaction::{StagedOp, Transaction};
 
-const INTENT_AUDIT_COLLECTION: &str = "_mutation_intents";
+const INTENT_AUDIT_COLLECTION: &str = "__mutation_intents";
 
 /// Review decision metadata supplied by an approver or operator.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1708,7 +1708,7 @@ fn append_intent_lifecycle_audit<A: AuditLog>(
     actor: &str,
     reason: Option<String>,
 ) -> Result<AuditEntry, MutationIntentLifecycleError> {
-    let data_after = serde_json::to_value(intent)
+    let data_after = serde_json::to_value(&intent.review_summary)
         .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
     append_intent_lifecycle_audit_entry(
         audit,
@@ -1719,9 +1719,22 @@ fn append_intent_lifecycle_audit<A: AuditLog>(
             lineage: intent_lifecycle_lineage(intent, reason),
             data_before: None,
             data_after,
-            metadata: HashMap::new(),
+            metadata: preview_audit_metadata(intent),
         },
     )
+}
+
+fn preview_audit_metadata(intent: &MutationIntent) -> HashMap<String, String> {
+    HashMap::from([
+        ("decision".into(), intent.decision.as_str().into()),
+        ("schema_version".into(), intent.schema_version.to_string()),
+        ("policy_version".into(), intent.policy_version.to_string()),
+        (
+            "operation_hash".into(),
+            intent.operation.operation_hash.clone(),
+        ),
+        ("expires_at".into(), intent.expires_at.to_string()),
+    ])
 }
 
 fn append_intent_transition_audit<A: AuditLog>(
@@ -2995,9 +3008,27 @@ mod tests {
             preview_entry
                 .data_after
                 .as_ref()
-                .expect("preview audit should include intent snapshot")["policy_version"],
-            7
+                .expect("preview audit should include review summary only")["summary"],
+            "Review invoice amount update."
         );
+        assert!(
+            preview_entry
+                .data_after
+                .as_ref()
+                .expect("preview audit should include review summary only")
+                .get("operation")
+                .is_none(),
+            "preview audit after payload must not include the full intent"
+        );
+        assert!(preview_entry.data_before.is_none());
+        assert_eq!(preview_entry.metadata["decision"], "allow");
+        assert_eq!(preview_entry.metadata["schema_version"], "7");
+        assert_eq!(preview_entry.metadata["policy_version"], "7");
+        assert_eq!(
+            preview_entry.metadata["operation_hash"],
+            "sha256:mint_allowed"
+        );
+        assert_eq!(preview_entry.metadata["expires_at"], "100");
         let lineage = preview_entry
             .intent_lineage
             .as_deref()

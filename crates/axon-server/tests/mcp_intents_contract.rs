@@ -308,13 +308,75 @@ async fn generated_mcp_tools_preview_commit_and_block_approval_bypass() {
     assert_eq!(allowed["outcome"], "allowed");
     let token = allowed["intent_token"].as_str().unwrap().to_string();
     let allowed_intent_id = allowed["intent_id"].as_str().unwrap();
-    let preview_audit = audit_by_intent(&server, allowed_intent_id, Some("intent.preview")).await;
+    let preview_audit =
+        audit_by_intent(&server, allowed_intent_id, Some("mutation_intent.preview")).await;
     let preview_entries = preview_audit["entries"].as_array().unwrap();
     assert_eq!(preview_entries.len(), 1);
     assert_eq!(preview_entries[0]["actor"], "finance-agent");
+    assert_eq!(preview_entries[0]["collection"], "__mutation_intents");
+    assert_eq!(preview_entries[0]["entity_id"], allowed_intent_id);
+    assert!(preview_entries[0]["data_before"].is_null());
     assert_eq!(
         preview_entries[0]["intent_lineage"]["intent_id"],
         allowed_intent_id
+    );
+    assert_eq!(preview_entries[0]["metadata"]["decision"], "allow");
+    assert_eq!(preview_entries[0]["metadata"]["schema_version"], "1");
+    assert_eq!(preview_entries[0]["metadata"]["policy_version"], "1");
+    assert!(preview_entries[0]["metadata"]["operation_hash"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+    assert!(preview_entries[0]["metadata"]["expires_at"]
+        .as_str()
+        .is_some());
+    assert_eq!(
+        preview_entries[0]["data_after"]["diff"]["amount_cents"]["after"],
+        6000
+    );
+    assert!(
+        preview_entries[0]["data_after"].get("operation").is_none(),
+        "preview after payload should contain the review summary only"
+    );
+
+    let graphql_preview_audit = gql_as(
+        &server,
+        "finance-agent",
+        &format!(
+            r#"{{
+                auditLog(collection: "__mutation_intents", entityId: "{allowed_intent_id}") {{
+                    totalCount
+                    edges {{
+                        node {{
+                            operation
+                            actor
+                            collection
+                            entityId
+                            metadata
+                            dataBefore
+                            dataAfter
+                        }}
+                    }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_no_graphql_errors(&graphql_preview_audit, "GraphQL auditLog after MCP preview");
+    let graphql_preview_entry = &graphql_preview_audit["data"]["auditLog"]["edges"][0]["node"];
+    assert_eq!(graphql_preview_audit["data"]["auditLog"]["totalCount"], 1);
+    assert_eq!(
+        graphql_preview_entry["operation"],
+        "mutation_intent.preview"
+    );
+    assert_eq!(graphql_preview_entry["actor"], "finance-agent");
+    assert_eq!(graphql_preview_entry["collection"], "__mutation_intents");
+    assert_eq!(graphql_preview_entry["entityId"], allowed_intent_id);
+    assert!(graphql_preview_entry["dataBefore"].is_null());
+    assert_eq!(graphql_preview_entry["metadata"]["decision"], "allow");
+    assert_eq!(
+        graphql_preview_entry["dataAfter"]["diff"]["amount_cents"]["after"],
+        6000
     );
     let before_commit = get_task(&server).await;
     assert_eq!(before_commit["data"]["amount_cents"], 5000);
