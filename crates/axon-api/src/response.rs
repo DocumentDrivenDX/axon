@@ -14,6 +14,22 @@ use crate::policy::PolicyRequestSnapshot;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GetEntityResponse {
     pub entity: Entity,
+    /// Structured non-fatal warnings produced while projecting an older stored
+    /// entity through the active read schema.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<ReadWarning>,
+}
+
+/// Non-fatal warning emitted by read-time schema projection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadWarning {
+    pub code: String,
+    pub collection: String,
+    pub id: String,
+    pub field: String,
+    pub entity_schema_version: u32,
+    pub active_schema_version: u32,
+    pub message: String,
 }
 
 /// Outcome of requesting an entity rendered through a collection markdown template.
@@ -402,6 +418,10 @@ pub struct QueryEntitiesResponse {
     /// control was active for the query.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_plan: Option<PolicyQueryPlanDiagnostics>,
+    /// Structured non-fatal warnings produced while projecting returned older
+    /// entities through the active read schema.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_warnings: Vec<ReadWarning>,
 }
 
 /// Explain-style diagnostics for a read-policy query plan.

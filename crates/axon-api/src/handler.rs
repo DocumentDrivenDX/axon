@@ -26,6 +26,32 @@ fn query_compile_summary(report: &axon_schema::CompileReport) -> String {
         .join("; ")
 }
 
+fn entity_schema_properties(entity_schema: &Value) -> Option<&serde_json::Map<String, Value>> {
+    entity_schema.get("properties").and_then(Value::as_object)
+}
+
+fn entity_schema_on_read_defaults(
+    entity_schema: &Value,
+) -> Option<&serde_json::Map<String, Value>> {
+    entity_schema
+        .get("on_read_defaults")
+        .and_then(Value::as_object)
+}
+
+fn entity_schema_required_fields(entity_schema: &Value) -> BTreeSet<String> {
+    entity_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|required| {
+            required
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 use axon_audit::entry::{compute_diff, AuditAttribution, AuditEntry, FieldDiff, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::auth::CallerIdentity;
@@ -79,10 +105,11 @@ use crate::response::{
     ListNamespaceCollectionsResponse, ListNamespacesResponse, PatchEntityResponse,
     PolicyApprovalEnvelopeSummary, PolicyExplanationResponse, PolicyQueryPlanDiagnostics,
     PolicyRuleMatch, PutCollectionTemplateResponse, PutSchemaResponse, QueryAuditResponse,
-    QueryEntitiesResponse, ReachableResponse, RevalidateResponse, RevertEntityResponse,
-    RollbackCollectionEntityResult, RollbackCollectionResponse, RollbackEntityResponse,
-    RollbackTransactionEntityResult, RollbackTransactionResponse, SnapshotResponse,
-    TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse, UpdateEntityResponse,
+    QueryEntitiesResponse, ReachableResponse, ReadWarning, RevalidateResponse,
+    RevertEntityResponse, RollbackCollectionEntityResult, RollbackCollectionResponse,
+    RollbackEntityResponse, RollbackTransactionEntityResult, RollbackTransactionResponse,
+    SnapshotResponse, TransitionLifecycleResponse, TraverseHop, TraversePath, TraverseResponse,
+    UpdateEntityResponse,
 };
 
 const DEFAULT_MAX_DEPTH: usize = 3;
@@ -314,6 +341,72 @@ impl<S: StorageAdapter> AxonHandler<S> {
     fn present_schema(requested: &CollectionId, mut schema: CollectionSchema) -> CollectionSchema {
         schema.collection = requested.clone();
         schema
+    }
+
+    fn project_entity_for_lazy_read(
+        &self,
+        collection: &CollectionId,
+        mut entity: Entity,
+    ) -> Result<(Entity, Vec<ReadWarning>), AxonError> {
+        let Some(active_schema) = self.storage.get_schema(collection)? else {
+            return Ok((entity, Vec::new()));
+        };
+        let Some(entity_schema_version) = entity.schema_version else {
+            return Ok((entity, Vec::new()));
+        };
+        if entity_schema_version >= active_schema.version {
+            return Ok((entity, Vec::new()));
+        }
+
+        let Some(active_entity_schema) = active_schema.entity_schema.as_ref() else {
+            return Ok((entity, Vec::new()));
+        };
+        let Some(active_properties) = entity_schema_properties(active_entity_schema) else {
+            return Ok((entity, Vec::new()));
+        };
+
+        let stored_schema = self
+            .storage
+            .get_schema_version(collection, entity_schema_version)?;
+        let stored_properties = stored_schema
+            .as_ref()
+            .and_then(|schema| schema.entity_schema.as_ref())
+            .and_then(entity_schema_properties);
+        let active_required = entity_schema_required_fields(active_entity_schema);
+        let on_read_defaults = entity_schema_on_read_defaults(active_entity_schema);
+        let Some(data) = entity.data.as_object_mut() else {
+            return Ok((entity, Vec::new()));
+        };
+
+        let mut warnings = Vec::new();
+        for field in active_properties.keys() {
+            if stored_properties.is_some_and(|properties| properties.contains_key(field))
+                || data.contains_key(field)
+            {
+                continue;
+            }
+
+            if let Some(default) = on_read_defaults.and_then(|defaults| defaults.get(field)) {
+                data.insert(field.clone(), default.clone());
+            } else if active_required.contains(field) {
+                warnings.push(ReadWarning {
+                    code: "required_without_on_read_default".into(),
+                    collection: collection.to_string(),
+                    id: entity.id.to_string(),
+                    field: field.clone(),
+                    entity_schema_version,
+                    active_schema_version: active_schema.version,
+                    message: format!(
+                        "field '{field}' is required by active schema version {} but entity was stored at schema version {entity_schema_version} and no on_read_defaults value is declared",
+                        active_schema.version
+                    ),
+                });
+            } else {
+                data.insert(field.clone(), Value::Null);
+            }
+        }
+
+        Ok((entity, warnings))
     }
 
     fn present_collection_view(
@@ -1191,10 +1284,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
     fn redact_entity_for_read_with_context(
         &self,
         collection: &CollectionId,
-        mut entity: Entity,
+        entity: Entity,
         caller: Option<&CallerIdentity>,
         attribution: Option<&AuditAttribution>,
     ) -> Result<Entity, AxonError> {
+        let (entity, _) =
+            self.prepare_entity_for_read_with_context(collection, entity, caller, attribution)?;
+        Ok(entity)
+    }
+
+    fn prepare_entity_for_read_with_context(
+        &self,
+        collection: &CollectionId,
+        entity: Entity,
+        caller: Option<&CallerIdentity>,
+        attribution: Option<&AuditAttribution>,
+    ) -> Result<(Entity, Vec<ReadWarning>), AxonError> {
+        let (mut entity, warnings) = self.project_entity_for_lazy_read(collection, entity)?;
         let schema = self.storage.get_schema(collection)?;
         let policy_snapshot = self.policy_snapshot_for_request(
             collection,
@@ -1214,7 +1320,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             self.redact_entity_fields_for_read(plan, snapshot, &mut entity)?;
         }
 
-        Ok(entity)
+        Ok((entity, warnings))
     }
 
     fn entity_visible_for_read_with_context(
@@ -3470,7 +3576,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             attribution,
         )? {
             Some(entity) => {
-                let entity = self.redact_entity_for_read_with_context(
+                let (entity, warnings) = self.prepare_entity_for_read_with_context(
                     &req.collection,
                     entity,
                     caller,
@@ -3478,6 +3584,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 )?;
                 Ok(GetEntityResponse {
                     entity: Self::present_entity(&req.collection, entity),
+                    warnings,
                 })
             }
             None => Err(AxonError::NotFound(req.id.to_string())),
@@ -4204,14 +4311,19 @@ impl<S: StorageAdapter> AxonHandler<S> {
             None
         };
 
+        let mut read_warnings = Vec::new();
         let entities = if req.count_only {
             vec![]
         } else {
-            let mut entities = matched;
-            if let (Some(plan), Some(snapshot)) = (&compiled_policy, &policy_snapshot) {
-                for entity in &mut entities {
-                    self.redact_entity_fields_for_read(plan, snapshot, entity)?;
+            let mut entities = Vec::with_capacity(matched.len());
+            for entity in matched {
+                let (mut entity, warnings) =
+                    self.project_entity_for_lazy_read(&req.collection, entity)?;
+                read_warnings.extend(warnings);
+                if let (Some(plan), Some(snapshot)) = (&compiled_policy, &policy_snapshot) {
+                    self.redact_entity_fields_for_read(plan, snapshot, &mut entity)?;
                 }
+                entities.push(entity);
             }
             Self::present_entities(&req.collection, entities)
         };
@@ -4223,6 +4335,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             policy_plan: compiled_policy
                 .as_ref()
                 .map(|_| policy_storage_plan.diagnostics()),
+            read_warnings,
         })
     }
 
@@ -18658,6 +18771,318 @@ link_types:
         assert_eq!(resp.total_scanned, 0);
         assert_eq!(resp.valid_count, 0);
         assert!(resp.invalid.is_empty());
+    }
+
+    #[test]
+    fn lazy_read_applies_defaults_and_nulls_without_modifying_storage() {
+        let mut h = handler();
+        let col = CollectionId::new("lazy-read");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 1,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "required": ["title"],
+                    "properties": {
+                        "title": { "type": "string" }
+                    }
+                })),
+                link_types: Default::default(),
+                access_control: None,
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                queries: Default::default(),
+                lifecycles: Default::default(),
+            },
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("old"),
+            data: json!({ "title": "old bead" }),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+
+        h.handle_put_schema(PutSchemaRequest {
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 2,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "required": ["title"],
+                    "on_read_defaults": {
+                        "status": "ready"
+                    },
+                    "properties": {
+                        "title": { "type": "string" },
+                        "status": { "type": "string" },
+                        "priority": { "type": "integer" }
+                    }
+                })),
+                link_types: Default::default(),
+                access_control: None,
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                queries: Default::default(),
+                lifecycles: Default::default(),
+            },
+            actor: None,
+            force: false,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+
+        let read = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("old"),
+            })
+            .unwrap();
+        assert_eq!(read.entity.schema_version, Some(1));
+        assert_eq!(read.entity.data["status"], json!("ready"));
+        assert!(read.entity.data["priority"].is_null());
+        assert!(read.warnings.is_empty());
+
+        let stored = h
+            .storage_ref()
+            .get(&col, &EntityId::new("old"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.schema_version, Some(1));
+        assert!(stored.data.get("status").is_none());
+        assert!(stored.data.get("priority").is_none());
+
+        let newer = h
+            .create_entity(CreateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("new"),
+                data: json!({ "title": "new bead", "status": "blocked" }),
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .unwrap();
+        assert_eq!(newer.entity.schema_version, Some(2));
+        let newer_read = h
+            .get_entity(GetEntityRequest {
+                collection: col,
+                id: EntityId::new("new"),
+            })
+            .unwrap();
+        assert_eq!(newer_read.entity.data["status"], json!("blocked"));
+        assert!(newer_read.entity.data.get("priority").is_none());
+        assert!(newer_read.warnings.is_empty());
+    }
+
+    #[test]
+    fn lazy_read_required_without_default_warns_and_revalidation_remains_opt_in() {
+        let mut h = handler();
+        let col = CollectionId::new("lazy-read-required");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 1,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "required": ["title"],
+                    "properties": {
+                        "title": { "type": "string" }
+                    }
+                })),
+                link_types: Default::default(),
+                access_control: None,
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                queries: Default::default(),
+                lifecycles: Default::default(),
+            },
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("old"),
+            data: json!({ "title": "old bead" }),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+
+        h.handle_put_schema(PutSchemaRequest {
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 2,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "required": ["title", "owner"],
+                    "properties": {
+                        "title": { "type": "string" },
+                        "owner": { "type": "string" }
+                    }
+                })),
+                link_types: Default::default(),
+                access_control: None,
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                queries: Default::default(),
+                lifecycles: Default::default(),
+            },
+            actor: None,
+            force: true,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+
+        let read = h
+            .get_entity(GetEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("old"),
+            })
+            .unwrap();
+        assert!(read.entity.data.get("owner").is_none());
+        assert_eq!(read.warnings.len(), 1);
+        assert_eq!(read.warnings[0].code, "required_without_on_read_default");
+        assert_eq!(read.warnings[0].field, "owner");
+        assert_eq!(read.warnings[0].entity_schema_version, 1);
+        assert_eq!(read.warnings[0].active_schema_version, 2);
+
+        let write_err = h
+            .update_entity(UpdateEntityRequest {
+                collection: col.clone(),
+                id: EntityId::new("old"),
+                data: json!({ "title": "still missing owner" }),
+                expected_version: 1,
+                actor: None,
+                audit_metadata: None,
+                attribution: None,
+            })
+            .expect_err("writes still validate against the active schema");
+        assert!(matches!(write_err, AxonError::SchemaValidation(_)));
+
+        let revalidated = h
+            .revalidate(RevalidateRequest {
+                collection: col.clone(),
+            })
+            .unwrap();
+        assert_eq!(revalidated.total_scanned, 1);
+        assert_eq!(revalidated.valid_count, 0);
+        assert_eq!(revalidated.invalid[0].id, "old");
+
+        let stored = h
+            .storage_ref()
+            .get(&col, &EntityId::new("old"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.schema_version, Some(1));
+        assert!(stored.data.get("owner").is_none());
+    }
+
+    #[test]
+    fn ddx_worker_reading_older_bead_after_schema_bump_sees_defaults() {
+        let mut h = handler();
+        let col = CollectionId::new("beads");
+        h.create_collection(CreateCollectionRequest {
+            name: col.clone(),
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 1,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "required": ["bead_type"],
+                    "properties": {
+                        "bead_type": { "type": "string" }
+                    }
+                })),
+                link_types: Default::default(),
+                access_control: None,
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                queries: Default::default(),
+                lifecycles: Default::default(),
+            },
+            actor: None,
+        })
+        .unwrap();
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("axon-82b6f7b2"),
+            data: json!({ "bead_type": "task" }),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+
+        h.handle_put_schema(PutSchemaRequest {
+            schema: CollectionSchema {
+                collection: col.clone(),
+                description: None,
+                version: 2,
+                entity_schema: Some(json!({
+                    "type": "object",
+                    "required": ["bead_type"],
+                    "on_read_defaults": {
+                        "status": "ready"
+                    },
+                    "properties": {
+                        "bead_type": { "type": "string" },
+                        "status": { "type": "string" }
+                    }
+                })),
+                link_types: Default::default(),
+                access_control: None,
+                gates: Default::default(),
+                validation_rules: Default::default(),
+                indexes: Default::default(),
+                compound_indexes: Default::default(),
+                queries: Default::default(),
+                lifecycles: Default::default(),
+            },
+            actor: None,
+            force: false,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+
+        let response = h
+            .query_entities(QueryEntitiesRequest {
+                collection: col,
+                filter: None,
+                sort: Vec::new(),
+                limit: None,
+                after_id: None,
+                count_only: false,
+            })
+            .unwrap();
+        assert_eq!(response.total_count, 1);
+        assert_eq!(response.entities[0].data["status"], json!("ready"));
+        assert!(response.read_warnings.is_empty());
     }
 
     // ── Gate filter tests (US-074b) ───────────────────────────────────────
