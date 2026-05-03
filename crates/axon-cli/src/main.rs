@@ -1123,6 +1123,7 @@ fn run_collection(
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             };
             handler
@@ -1853,6 +1854,10 @@ fn run_schema(
                 compound_indexes: existing
                     .as_ref()
                     .map(|s| s.compound_indexes.clone())
+                    .unwrap_or_default(),
+                queries: existing
+                    .as_ref()
+                    .map(|s| s.queries.clone())
                     .unwrap_or_default(),
                 lifecycles: Default::default(),
             };
@@ -2686,6 +2691,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    queries: Default::default(),
                     lifecycles: Default::default(),
                 },
                 actor: None,
@@ -2732,6 +2738,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    queries: Default::default(),
                     lifecycles: Default::default(),
                 },
                 actor: None,
@@ -2781,6 +2788,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    queries: Default::default(),
                     lifecycles: Default::default(),
                 },
                 actor: None,
@@ -2844,6 +2852,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    queries: Default::default(),
                     lifecycles: Default::default(),
                 },
                 actor: None,

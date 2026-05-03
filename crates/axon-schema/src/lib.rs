@@ -8,6 +8,7 @@
 pub mod access_control;
 pub mod evolution;
 pub mod gates;
+pub mod named_queries;
 pub mod policy;
 pub mod rules;
 pub mod schema;
@@ -26,6 +27,10 @@ pub use evolution::{
     classify, diff_schemas, Compatibility, FieldChange, FieldChangeKind, SchemaDiff,
 };
 pub use gates::{evaluate_gates, GateEvaluation, GateResult};
+pub use named_queries::{
+    compile_named_queries, schema_snapshot_from_schemas, CompileReport, NamedQueryDiagnostic,
+    NamedQueryStatus,
+};
 pub use policy::{
     compile_policy_catalog, compile_policy_plan, CompiledCompareOp, CompiledComparison,
     CompiledFieldAccessPolicy, CompiledFieldPolicy, CompiledFieldPolicyRule,
@@ -40,7 +45,8 @@ pub use rules::validate_rule_definitions;
 pub use rules::ValidationRule;
 pub use schema::{
     Cardinality, CollectionSchema, CollectionView, CompoundIndexDef, CompoundIndexField,
-    EsfDocument, GateDef, IndexDef, IndexType, LifecycleDef, LinkTypeDef,
+    EsfDocument, GateDef, IndexDef, IndexType, LifecycleDef, LinkTypeDef, NamedQueryDef,
+    NamedQueryParameter,
 };
 pub use validation::{
     compile_entity_schema, validate, validate_entity, validate_link_metadata,

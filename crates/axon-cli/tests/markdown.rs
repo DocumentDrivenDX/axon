@@ -74,6 +74,7 @@ fn seed_namespaced_collection(db: &str, qualified: &str) {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         })
         .expect("put schema should succeed");

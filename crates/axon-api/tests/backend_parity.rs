@@ -37,6 +37,7 @@ fn make_schema(name: &str) -> CollectionSchema {
         validation_rules: Default::default(),
         indexes: Default::default(),
         compound_indexes: Default::default(),
+        queries: Default::default(),
         lifecycles: Default::default(),
     }
 }
@@ -279,6 +280,7 @@ fn test_schema_enforcement<S: StorageAdapter>(mut h: AxonHandler<S>) {
         validation_rules: Default::default(),
         indexes: Default::default(),
         compound_indexes: Default::default(),
+        queries: Default::default(),
         lifecycles: Default::default(),
     };
 

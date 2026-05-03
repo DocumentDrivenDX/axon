@@ -251,6 +251,7 @@ fn users_schema(collections: &ProcurementCollections) -> CollectionSchema {
             index("department_id", IndexType::String, false),
         ],
         compound_indexes: Vec::new(),
+        queries: Default::default(),
         lifecycles: HashMap::new(),
     }
 }
@@ -278,6 +279,7 @@ fn vendors_schema(collections: &ProcurementCollections) -> Result<CollectionSche
             index("risk_rating", IndexType::String, false),
         ],
         compound_indexes: Vec::new(),
+        queries: Default::default(),
         lifecycles: HashMap::new(),
     })
 }
@@ -347,6 +349,7 @@ fn invoices_schema(collections: &ProcurementCollections) -> Result<CollectionSch
             ("status", IndexType::String),
             ("vendor_id", IndexType::String),
         ])],
+        queries: Default::default(),
         lifecycles: HashMap::from([(
             "status".into(),
             LifecycleDef {
@@ -429,6 +432,7 @@ fn purchase_orders_schema(
             ("status", IndexType::String),
             ("department_id", IndexType::String),
         ])],
+        queries: Default::default(),
         lifecycles: HashMap::from([(
             "status".into(),
             LifecycleDef {
@@ -487,6 +491,7 @@ fn approvals_schema(collections: &ProcurementCollections) -> Result<CollectionSc
             ("target_collection", IndexType::String),
             ("target_id", IndexType::String),
         ])],
+        queries: Default::default(),
         lifecycles: HashMap::new(),
     })
 }
@@ -990,6 +995,7 @@ fn nexiq_users_schema(
             index("user_role", IndexType::String, false),
         ],
         compound_indexes: Vec::new(),
+        queries: Default::default(),
         lifecycles: HashMap::new(),
     })
 }
@@ -1044,6 +1050,7 @@ fn nexiq_engagements_schema(
             index("status", IndexType::String, false),
         ],
         compound_indexes: Vec::new(),
+        queries: Default::default(),
         lifecycles: HashMap::new(),
     })
 }
@@ -1083,6 +1090,7 @@ fn nexiq_contracts_schema(
         validation_rules: Vec::new(),
         indexes: vec![index("engagement_id", IndexType::String, false)],
         compound_indexes: Vec::new(),
+        queries: Default::default(),
         lifecycles: HashMap::new(),
     })
 }
@@ -1115,6 +1123,7 @@ fn nexiq_tasks_schema(
             index("status", IndexType::String, false),
         ],
         compound_indexes: Vec::new(),
+        queries: Default::default(),
         lifecycles: HashMap::new(),
     })
 }
@@ -1149,6 +1158,7 @@ fn nexiq_invoices_schema(
             index("status", IndexType::String, false),
         ],
         compound_indexes: Vec::new(),
+        queries: Default::default(),
         lifecycles: HashMap::new(),
     })
 }
@@ -1185,6 +1195,7 @@ fn nexiq_time_entries_schema(
             index("status", IndexType::String, false),
         ],
         compound_indexes: Vec::new(),
+        queries: Default::default(),
         lifecycles: HashMap::new(),
     })
 }

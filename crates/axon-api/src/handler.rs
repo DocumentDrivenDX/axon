@@ -11,6 +11,21 @@ fn now_ns() -> u64 {
         .unwrap_or(0)
 }
 
+fn query_compile_summary(report: &axon_schema::CompileReport) -> String {
+    report
+        .queries
+        .iter()
+        .filter(|diagnostic| diagnostic.status != axon_schema::NamedQueryStatus::Ok)
+        .map(|diagnostic| {
+            format!(
+                "{}:{}:{}",
+                diagnostic.name, diagnostic.code, diagnostic.message
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 use axon_audit::entry::{compute_diff, AuditAttribution, AuditEntry, FieldDiff, MutationType};
 use axon_audit::log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
 use axon_core::auth::CallerIdentity;
@@ -426,6 +441,14 @@ impl<S: StorageAdapter> AxonHandler<S> {
             }
         }
 
+        let compile_report = self.compile_report_for_schema(&schema)?;
+        if !compile_report.is_success() {
+            return Err(AxonError::SchemaValidation(format!(
+                "query_compile_failed: {}",
+                query_compile_summary(&compile_report)
+            )));
+        }
+
         self.storage.put_schema(&schema)
     }
 
@@ -552,6 +575,42 @@ impl<S: StorageAdapter> AxonHandler<S> {
             Ok(catalog) => Ok(catalog.report),
             Err(err) => Ok(axon_schema::PolicyCompileReport::from_compile_error(&err)),
         }
+    }
+
+    fn compile_report_for_schema(
+        &self,
+        schema: &CollectionSchema,
+    ) -> Result<axon_schema::CompileReport, AxonError> {
+        if schema.queries.is_empty() {
+            return Ok(axon_schema::CompileReport::default());
+        }
+
+        let mut schemas = Vec::new();
+        let mut seen = HashSet::from([schema.collection.to_string()]);
+
+        for link_type in schema.link_types.values() {
+            if !seen.insert(link_type.target_collection.clone()) {
+                continue;
+            }
+            if let Some(active) = self
+                .storage
+                .get_schema(&CollectionId::new(&link_type.target_collection))?
+            {
+                schemas.push(active);
+            }
+        }
+
+        let mut estimated_counts = HashMap::new();
+        for active in schemas.iter().chain(std::iter::once(schema)) {
+            let count = self.storage.count(&active.collection).unwrap_or(0) as u64;
+            estimated_counts.insert(active.collection.to_string(), count);
+        }
+
+        Ok(axon_schema::compile_named_queries(
+            schema,
+            &schemas,
+            &estimated_counts,
+        ))
     }
 
     fn enforce_write_policy(
@@ -6152,6 +6211,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let diff = axon_schema::diff_schemas(old_entity_schema, new_entity_schema);
         let compatibility = axon_schema::classify(&diff);
         let policy_compile_report = self.policy_compile_report_for_schema(&req.schema)?;
+        let compile_report = self.compile_report_for_schema(&req.schema)?;
 
         // Dry-run: return classification without applying. Policy compile
         // failures ride the report instead of bubbling so the admin UI can
@@ -6171,6 +6231,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 compatibility: Some(compatibility),
                 diff: Some(diff),
                 policy_compile_report: Some(policy_compile_report),
+                compile_report: Some(compile_report),
                 dry_run_explanations,
                 dry_run: true,
             });
@@ -6188,6 +6249,13 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 .join("; ");
             return Err(AxonError::SchemaValidation(format!(
                 "policy_compile_failed: {summary}"
+            )));
+        }
+
+        if !compile_report.is_success() {
+            return Err(AxonError::SchemaValidation(format!(
+                "query_compile_failed: {}",
+                query_compile_summary(&compile_report)
             )));
         }
 
@@ -6288,6 +6356,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             compatibility: Some(compatibility),
             diff: Some(diff),
             policy_compile_report: Some(policy_compile_report),
+            compile_report: Some(compile_report),
             dry_run_explanations: None,
             dry_run: false,
         })
@@ -8957,7 +9026,7 @@ mod tests {
     use axon_core::id::{CollectionId, EntityId, Namespace};
     use axon_schema::schema::{
         Cardinality, CollectionSchema, CollectionView, EsfDocument, IndexDef, IndexType,
-        LinkTypeDef,
+        LinkTypeDef, NamedQueryDef,
     };
     use axon_schema::{
         AccessControlPolicy, FieldAccessPolicy, FieldPolicy, FieldPolicyRule,
@@ -9219,6 +9288,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         }
     }
@@ -9381,6 +9451,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         }
     }
@@ -11421,6 +11492,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    queries: Default::default(),
                     lifecycles: Default::default(),
                 },
                 actor: None,
@@ -11476,6 +11548,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    queries: Default::default(),
                     lifecycles: Default::default(),
                 },
                 actor: None,
@@ -11584,6 +11657,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    queries: Default::default(),
                     lifecycles: Default::default(),
                 },
                 actor: None,
@@ -11739,6 +11813,7 @@ mod tests {
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             })
             .expect("qualified schema put should succeed");
@@ -14123,6 +14198,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
@@ -14236,6 +14312,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -14329,6 +14406,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         })
         .unwrap();
@@ -14360,6 +14438,7 @@ entity_schema:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         })
         .unwrap();
@@ -15540,6 +15619,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -15590,6 +15670,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -15609,6 +15690,117 @@ link_types:
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].collection, col);
         assert_eq!(entries[0].actor, "alice");
+    }
+
+    fn named_query_schema(collection: &str, cypher: &str) -> CollectionSchema {
+        let mut schema = CollectionSchema::new(CollectionId::new(collection));
+        schema.entity_schema = Some(json!({
+            "type": "object",
+            "properties": {
+                "status": { "type": "string" },
+                "priority": { "type": "integer" }
+            }
+        }));
+        schema.indexes = vec![IndexDef {
+            field: "status".into(),
+            index_type: IndexType::String,
+            unique: false,
+        }];
+        schema.queries.insert(
+            "ready_beads".into(),
+            NamedQueryDef {
+                description: "Open ready beads".into(),
+                cypher: cypher.into(),
+                parameters: Vec::new(),
+            },
+        );
+        schema
+    }
+
+    #[test]
+    fn handle_put_schema_valid_named_query_activates_and_introspects() {
+        let mut h = handler();
+        let col = CollectionId::new("ddx_beads");
+        let schema = named_query_schema(
+            col.as_str(),
+            "MATCH (b:DdxBead {status: 'open'}) RETURN b ORDER BY b.status",
+        );
+
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema,
+                actor: Some("alice".into()),
+                force: false,
+                dry_run: false,
+                explain_inputs: Vec::new(),
+            })
+            .expect("valid named query should activate");
+
+        let report = resp.compile_report.expect("query compile report present");
+        assert!(report.is_success(), "{report:?}");
+        let stored = h
+            .handle_get_schema(GetSchemaRequest {
+                collection: col.clone(),
+            })
+            .expect("schema should be active")
+            .schema;
+        assert!(stored.queries.contains_key("ready_beads"));
+        assert_eq!(
+            stored.queries["ready_beads"].description,
+            "Open ready beads"
+        );
+    }
+
+    #[test]
+    fn handle_put_schema_dry_run_reports_named_query_errors_without_activation() {
+        let mut h = handler();
+        let col = CollectionId::new("ddx_beads");
+        let schema = named_query_schema(col.as_str(), "MATCH (b:DdxBead RETURN b");
+
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema,
+                actor: Some("alice".into()),
+                force: false,
+                dry_run: true,
+                explain_inputs: Vec::new(),
+            })
+            .expect("dry-run should return diagnostics instead of activating");
+
+        assert!(resp.dry_run);
+        let report = resp.compile_report.expect("query compile report present");
+        assert_eq!(report.queries.len(), 1);
+        assert_eq!(
+            report.queries[0].status,
+            axon_schema::NamedQueryStatus::ParseError
+        );
+        assert!(
+            h.get_schema(&col).unwrap().is_none(),
+            "dry-run must not activate the schema"
+        );
+    }
+
+    #[test]
+    fn handle_put_schema_rejects_named_query_compile_errors() {
+        let mut h = handler();
+        let col = CollectionId::new("ddx_beads");
+        let schema = named_query_schema(col.as_str(), "MATCH (b:Missing) RETURN b");
+
+        let err = h
+            .handle_put_schema(PutSchemaRequest {
+                schema,
+                actor: Some("alice".into()),
+                force: false,
+                dry_run: false,
+                explain_inputs: Vec::new(),
+            })
+            .expect_err("activation must reject invalid named query");
+
+        assert!(matches!(
+            err,
+            AxonError::SchemaValidation(ref msg) if msg.starts_with("query_compile_failed")
+        ));
+        assert!(h.get_schema(&col).unwrap().is_none());
     }
 
     #[test]
@@ -15631,6 +15823,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
@@ -15668,6 +15861,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         let resp = h
@@ -15716,6 +15910,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -15775,6 +15970,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
@@ -15831,6 +16027,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         let resp = h
@@ -15889,6 +16086,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         let err = h
@@ -15963,6 +16161,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         }
     }
@@ -16059,6 +16258,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         active.link_types.insert(
@@ -16200,6 +16400,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
@@ -16283,6 +16484,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
@@ -16324,6 +16526,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         let err = h
@@ -16410,6 +16613,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -16435,6 +16639,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -16470,6 +16675,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -16505,6 +16711,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
@@ -16536,6 +16743,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         let err = h
@@ -16572,6 +16780,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
@@ -16602,6 +16811,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         let resp = h
@@ -16639,6 +16849,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
@@ -16669,6 +16880,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         let resp = h
@@ -16710,6 +16922,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
@@ -16740,6 +16953,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         let resp = h
@@ -16951,6 +17165,7 @@ link_types:
             ],
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.put_schema(schema).unwrap();
@@ -17017,6 +17232,7 @@ link_types:
                 }],
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             },
             actor: Some("schema-admin".into()),
@@ -18207,6 +18423,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
@@ -18286,6 +18503,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             },
             actor: None,
@@ -18322,6 +18540,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             },
             actor: None,
@@ -18573,6 +18792,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.create_collection(CreateCollectionRequest {
@@ -18600,6 +18820,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         h.handle_put_schema(PutSchemaRequest {
@@ -18676,6 +18897,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             },
             actor: None,
@@ -18701,6 +18923,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             },
             actor: None,
@@ -18730,6 +18953,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             },
             actor: None,
@@ -18942,6 +19166,7 @@ link_types:
                 },
             ],
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -19144,6 +19369,7 @@ link_types:
                 unique: false,
             }],
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -19266,6 +19492,7 @@ link_types:
                 unique: false,
             }],
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -19304,6 +19531,7 @@ link_types:
                 unique: true,
             }],
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -20460,6 +20688,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             },
             actor: None,
@@ -20506,6 +20735,7 @@ link_types:
                 validation_rules: Default::default(),
                 indexes: Default::default(),
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             },
             actor: None,
@@ -20779,6 +21009,7 @@ link_types:
             ],
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -21091,6 +21322,7 @@ link_types:
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles,
         };
 

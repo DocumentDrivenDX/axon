@@ -3484,6 +3484,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         let v2 = CollectionSchema {
@@ -3499,6 +3500,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 
@@ -3616,6 +3618,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         })
         .expect("qualified schema put should succeed");
@@ -3677,6 +3680,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         s.put_schema(&schema)

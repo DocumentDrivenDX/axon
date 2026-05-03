@@ -129,6 +129,28 @@ pub struct CompoundIndexDef {
     pub unique: bool,
 }
 
+/// A named schema-declared graph query (FEAT-009 / ADR-021).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedQueryDef {
+    /// Human-readable description surfaced through generated API metadata.
+    pub description: String,
+    /// Read-only openCypher subset query text.
+    pub cypher: String,
+    /// Caller-supplied parameters accepted by the query.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<NamedQueryParameter>,
+}
+
+/// A single named-query parameter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedQueryParameter {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub param_type: String,
+    #[serde(default)]
+    pub required: bool,
+}
+
 /// Defines the structure and constraints for entities in a collection.
 ///
 /// The `entity_schema` field holds a JSON Schema 2020-12 document (Layer 1 of ESF)
@@ -162,6 +184,9 @@ pub struct CollectionSchema {
     /// Compound index declarations (ESF Layer 4, US-033).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compound_indexes: Vec<CompoundIndexDef>,
+    /// Schema-declared named graph queries (FEAT-009 / US-075).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub queries: HashMap<String, NamedQueryDef>,
     /// Lifecycle definitions (ESF Layer 6). Keys are lifecycle names.
     #[serde(default)]
     pub lifecycles: HashMap<String, LifecycleDef>,
@@ -217,6 +242,7 @@ impl CollectionSchema {
             validation_rules: Vec::new(),
             indexes: Vec::new(),
             compound_indexes: Vec::new(),
+            queries: HashMap::new(),
             lifecycles: HashMap::new(),
         }
     }
@@ -242,6 +268,8 @@ pub struct EsfDocument {
     pub link_types: Option<Value>,
     /// Schema-adjacent data-layer access-control policy metadata.
     pub access_control: Option<Value>,
+    /// Schema-declared named graph queries.
+    pub queries: Option<Value>,
     /// Layer 3: Custom validation rules with severity. Stored as raw JSON for now.
     pub validation_rules: Option<Value>,
     /// Layer 6: Lifecycle definitions. Stored as raw JSON for now.
@@ -282,6 +310,12 @@ impl EsfDocument {
             })?),
             None => None,
         };
+        let queries: HashMap<String, NamedQueryDef> = match self.queries {
+            Some(val) => serde_json::from_value(val).map_err(|e| {
+                AxonError::SchemaValidation(format!("invalid queries definition: {e}"))
+            })?,
+            None => HashMap::new(),
+        };
         Ok(CollectionSchema {
             collection: CollectionId::new(self.collection),
             description: None,
@@ -293,6 +327,7 @@ impl EsfDocument {
             validation_rules: Vec::new(),
             indexes: Vec::new(),
             compound_indexes: Vec::new(),
+            queries,
             lifecycles,
         })
     }
@@ -664,6 +699,7 @@ access_control:
             validation_rules: Vec::new(),
             indexes: Vec::new(),
             compound_indexes: Vec::new(),
+            queries: HashMap::new(),
             lifecycles,
         };
         let json = serde_json::to_string(&schema).unwrap();

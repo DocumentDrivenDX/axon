@@ -2465,6 +2465,7 @@ async fn create_collection(
         validation_rules: schema_body.validation_rules.unwrap_or_default(),
         indexes: schema_body.indexes.unwrap_or_default(),
         compound_indexes: schema_body.compound_indexes.unwrap_or_default(),
+        queries: Default::default(),
         lifecycles: schema_body.lifecycles.unwrap_or_default(),
     };
     match handler
@@ -2663,6 +2664,7 @@ async fn put_schema(
         validation_rules: body.validation_rules.unwrap_or_default(),
         indexes: body.indexes.unwrap_or_default(),
         compound_indexes: body.compound_indexes.unwrap_or_default(),
+        queries: Default::default(),
         lifecycles: body.lifecycles.unwrap_or_default(),
     };
     match handler.lock().await.handle_put_schema(PutSchemaRequest {
@@ -4187,6 +4189,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    queries: Default::default(),
                     lifecycles: Default::default(),
                 }),
                 "storing qualified schema for template HTTP test",
@@ -4972,6 +4975,7 @@ mod tests {
                     }],
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    queries: Default::default(),
                     lifecycles: Default::default(),
                 })
                 .unwrap();
@@ -5599,6 +5603,7 @@ mod tests {
                     validation_rules: Default::default(),
                     indexes: Default::default(),
                     compound_indexes: Default::default(),
+                    queries: Default::default(),
                     lifecycles: Default::default(),
                 })
                 .expect("policy schema");
@@ -5692,6 +5697,7 @@ mod tests {
                     unique: true,
                 }],
                 compound_indexes: Default::default(),
+                queries: Default::default(),
                 lifecycles: Default::default(),
             };
             storage

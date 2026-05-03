@@ -134,6 +134,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         validation_rules: Default::default(),
         indexes: Default::default(),
         compound_indexes: Default::default(),
+        queries: Default::default(),
         lifecycles: Default::default(),
     };
     handler
@@ -212,6 +213,7 @@ pub fn run_schema_enforcement_workload() -> SchemaEnforcementResult {
         validation_rules: Default::default(),
         indexes: Default::default(),
         compound_indexes: Default::default(),
+        queries: Default::default(),
         lifecycles: Default::default(),
     };
 

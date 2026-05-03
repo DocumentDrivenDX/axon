@@ -2398,6 +2398,7 @@ fn put_schema_payload_object() -> Object {
             "policyCompileReport",
             TypeRef::named("JSON"),
         ))
+        .field(json_object_field("compileReport", TypeRef::named("JSON")))
         .field(json_object_field(
             "dryRunExplanations",
             TypeRef::named("JSON"),
@@ -4047,6 +4048,7 @@ fn collection_schema_from_json(
         indexes: optional_schema_field(obj, "indexes", "indexes")?.unwrap_or_default(),
         compound_indexes: optional_schema_field(obj, "compound_indexes", "compoundIndexes")?
             .unwrap_or_default(),
+        queries: optional_schema_field(obj, "queries", "queries")?.unwrap_or_default(),
         lifecycles: optional_schema_field(obj, "lifecycles", "lifecycles")?.unwrap_or_default(),
     })
 }
@@ -4057,6 +4059,7 @@ fn put_schema_payload_value(resp: axon_api::response::PutSchemaResponse) -> Valu
         "compatibility": resp.compatibility,
         "diff": resp.diff,
         "policyCompileReport": resp.policy_compile_report,
+        "compileReport": resp.compile_report,
         "dryRunExplanations": resp.dry_run_explanations,
         "dryRun": resp.dry_run,
     })
@@ -8890,6 +8893,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         }
     }
@@ -8931,6 +8935,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         }
     }
@@ -8958,6 +8963,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         }
     }
@@ -9428,6 +9434,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
         let handler_with_users = make_handler(std::slice::from_ref(&users)).await;
@@ -9559,6 +9566,7 @@ mod tests {
             validation_rules: Default::default(),
             indexes: Default::default(),
             compound_indexes: Default::default(),
+            queries: Default::default(),
             lifecycles: Default::default(),
         };
 

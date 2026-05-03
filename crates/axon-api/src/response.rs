@@ -508,6 +508,9 @@ pub struct PutSchemaResponse {
     /// Policy compile report for the candidate schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_compile_report: Option<axon_schema::PolicyCompileReport>,
+    /// Schema-declared named-query compile report for the candidate schema.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compile_report: Option<axon_schema::CompileReport>,
     /// Fixture explain results evaluated against the proposed plan during a
     /// dry-run. `Some(vec![])` when the request supplied no explain inputs
     /// or the proposed schema has no `access_control`. `None` when the
