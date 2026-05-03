@@ -509,7 +509,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         Ok(catalog.plans.remove(schema.collection.as_str()))
     }
 
-    fn policy_catalog_schemas(
+    pub fn policy_catalog_schemas(
         &self,
         root: &CollectionSchema,
     ) -> Result<Vec<CollectionSchema>, AxonError> {
@@ -1065,6 +1065,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         plan: &PolicyPlan,
         snapshot: &PolicyRequestSnapshot,
         data: &Value,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<Vec<(String, Value)>, AxonError> {
         let mut redactions = Vec::new();
 
@@ -1080,7 +1081,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     snapshot,
                     &PolicyOperation::Read,
                     data,
-                    None,
+                    preview,
                 )? {
                     redaction = Some(rule.redact_as.clone().unwrap_or(Value::Null));
                     break;
@@ -1095,7 +1096,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         snapshot,
                         &PolicyOperation::Read,
                         data,
-                        None,
+                        preview,
                     )? {
                         matched = true;
                         break;
@@ -1121,7 +1122,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         entity: &mut Entity,
     ) -> Result<(), AxonError> {
         let policy_data = entity_policy_data(entity);
-        let redactions = self.field_read_redactions(plan, snapshot, &policy_data)?;
+        let redactions = self.field_read_redactions(plan, snapshot, &policy_data, None)?;
         apply_field_redactions(&mut entity.data, &redactions);
         Ok(())
     }
@@ -1192,16 +1193,49 @@ impl<S: StorageAdapter> AxonHandler<S> {
         caller: &CallerIdentity,
         attribution: Option<AuditAttribution>,
     ) -> Result<EffectivePolicyResponse, AxonError> {
+        self.effective_policy_inner(collection, entity_id, caller, attribution.as_ref(), None)
+    }
+
+    /// Resolve effective capabilities against an in-memory policy plan instead
+    /// of the active stored access_control for `schema.collection`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn effective_policy_with_plan(
+        &self,
+        collection: CollectionId,
+        entity_id: Option<EntityId>,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        schema: &CollectionSchema,
+        plan: &PolicyPlan,
+        plans: &HashMap<String, PolicyPlan>,
+    ) -> Result<EffectivePolicyResponse, AxonError> {
+        let preview = PreviewedSchemaPlan {
+            schema,
+            plan,
+            plans,
+            actor_override: None,
+        };
+        self.effective_policy_inner(collection, entity_id, caller, attribution, Some(&preview))
+    }
+
+    fn effective_policy_inner(
+        &self,
+        collection: CollectionId,
+        entity_id: Option<EntityId>,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
+    ) -> Result<EffectivePolicyResponse, AxonError> {
         let Some(schema) = self.storage.get_schema(&collection)? else {
             return Err(AxonError::NotFound(collection.to_string()));
         };
         let policy_version = schema.version;
         let Some(snapshot) = self.policy_snapshot_for_request(
             &collection,
-            Some(&schema),
+            preview.map_or(Some(&schema), |p| Some(p.schema)),
             None,
             Some(caller),
-            attribution.as_ref(),
+            attribution,
         )?
         else {
             return Ok(EffectivePolicyResponse {
@@ -1215,7 +1249,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 policy_version,
             });
         };
-        let Some(plan) = self.compile_policy_plan_for_schema(&schema)? else {
+        let plan = if let Some(p) = preview {
+            Some(p.plan.clone())
+        } else {
+            self.compile_policy_plan_for_schema(&schema)?
+        };
+        let Some(plan) = plan else {
             return Ok(EffectivePolicyResponse {
                 collection: collection.to_string(),
                 can_read: true,
@@ -1248,7 +1287,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     data,
                     operation_index: None,
                 },
-                None,
+                preview,
             )?,
             None => effective_operation_allows_static(&plan, &snapshot, PolicyOperation::Read),
         };
@@ -1258,6 +1297,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             &snapshot,
             PolicyOperation::Create,
             entity_data.as_ref(),
+            preview,
         )?;
         let can_update = can_read
             && self.effective_operation_allows(
@@ -1266,6 +1306,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 &snapshot,
                 PolicyOperation::Update,
                 entity_data.as_ref(),
+                preview,
             )?;
         let can_delete = can_read
             && self.effective_operation_allows(
@@ -1274,10 +1315,12 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 &snapshot,
                 PolicyOperation::Delete,
                 entity_data.as_ref(),
+                preview,
             )?;
         let redacted_fields =
-            self.effective_redacted_fields(&plan, &snapshot, entity_data.as_ref())?;
-        let denied_fields = self.effective_denied_fields(&plan, &snapshot, entity_data.as_ref())?;
+            self.effective_redacted_fields(&plan, &snapshot, entity_data.as_ref(), preview)?;
+        let denied_fields =
+            self.effective_denied_fields(&plan, &snapshot, entity_data.as_ref(), preview)?;
 
         Ok(EffectivePolicyResponse {
             collection: collection.to_string(),
@@ -1324,6 +1367,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         snapshot: &PolicyRequestSnapshot,
         operation: PolicyOperation,
         data: Option<&Value>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<bool, AxonError> {
         match data {
             Some(data) => self.policy_operation_allows(
@@ -1336,7 +1380,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                     data,
                     operation_index: None,
                 },
-                None,
+                preview,
             ),
             None => Ok(effective_operation_allows_static(plan, snapshot, operation)),
         }
@@ -1347,10 +1391,11 @@ impl<S: StorageAdapter> AxonHandler<S> {
         plan: &PolicyPlan,
         snapshot: &PolicyRequestSnapshot,
         data: Option<&Value>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<Vec<String>, AxonError> {
         if let Some(data) = data {
             let mut fields: Vec<String> = self
-                .field_read_redactions(plan, snapshot, data)?
+                .field_read_redactions(plan, snapshot, data, preview)?
                 .into_iter()
                 .map(|(field, _)| field)
                 .collect();
@@ -1376,6 +1421,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         plan: &PolicyPlan,
         snapshot: &PolicyRequestSnapshot,
         data: Option<&Value>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<Vec<String>, AxonError> {
         let mut fields = BTreeSet::new();
         for (field_path, field_policy) in &plan.fields {
@@ -1394,6 +1440,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                         snapshot,
                         &operation,
                         data,
+                        preview,
                     )?,
                     None => effective_field_write_denied_static(write_policy, snapshot, &operation),
                 };
@@ -4734,7 +4781,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             return Ok(Vec::new());
         };
         let policy_data = policy_data_with_entity_id(id, data);
-        self.field_read_redactions(plan, snapshot, &policy_data)
+        self.field_read_redactions(plan, snapshot, &policy_data, None)
     }
 
     fn redact_audit_entry_for_read_with_context(
@@ -4767,7 +4814,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .as_ref()
             .map(|data| {
                 let policy_data = policy_data_with_entity_id(&entry.entity_id, data);
-                self.field_read_redactions(plan, snapshot, &policy_data)
+                self.field_read_redactions(plan, snapshot, &policy_data, None)
             })
             .transpose()?
             .unwrap_or_default();
@@ -4776,7 +4823,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             .as_ref()
             .map(|data| {
                 let policy_data = policy_data_with_entity_id(&entry.entity_id, data);
-                self.field_read_redactions(plan, snapshot, &policy_data)
+                self.field_read_redactions(plan, snapshot, &policy_data, None)
             })
             .transpose()?
             .unwrap_or_default();
@@ -8511,9 +8558,10 @@ fn effective_field_write_denied_for_data<S: StorageAdapter>(
     snapshot: &PolicyRequestSnapshot,
     operation: &PolicyOperation,
     data: &Value,
+    preview: Option<&PreviewedSchemaPlan<'_>>,
 ) -> Result<bool, AxonError> {
     for rule in &policy.deny {
-        if handler.field_policy_rule_matches(rule, snapshot, operation, data, None)? {
+        if handler.field_policy_rule_matches(rule, snapshot, operation, data, preview)? {
             return Ok(true);
         }
     }
@@ -8521,7 +8569,7 @@ fn effective_field_write_denied_for_data<S: StorageAdapter>(
     if !policy.allow.is_empty() {
         let mut matched = false;
         for rule in &policy.allow {
-            if handler.field_policy_rule_matches(rule, snapshot, operation, data, None)? {
+            if handler.field_policy_rule_matches(rule, snapshot, operation, data, preview)? {
                 matched = true;
                 break;
             }
