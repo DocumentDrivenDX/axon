@@ -1,0 +1,132 @@
+{
+  "attempt_id": "20260503T024325-c402d9c6",
+  "bead_id": "hx-5f4d4ea1",
+  "base_rev": "a1fdd09d5e08fd1c344debb577df4bfb1669bbbf",
+  "created_at": "2026-05-03T02:43:25.854410955Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "hx-5f4d4ea1",
+    "title": "ui: toggle race during in-flight target-policy fetch on Links preview",
+    "description": "REWRITTEN 2026-05-02 with state-machine framing per ADR-020/ADR-021 planning session.\n\nOriginal symptom (still valid): rapidly clicking the inline target-data toggle on the same row twice leaves the row expanded when the user expected it to collapse, because toggleLinkPreview marks expanded state ONLY after await ensureTargetPolicy resolves. Optimistic-expand fixes from earlier attempts collided with hx-92456dd2's failed-fetch sentinel cache pattern, regressing the retry-on-subsequent-toggle behavior (was tracked separately as axon-567eea01, now absorbed into THIS bead).\n\nSolution: replace ad-hoc booleans with an explicit state machine per row.\n\nStates: idle | loading | ready | failed\nTransitions:\n  idle → loading on first toggle\n  loading → ready on fetch success\n  loading → failed on fetch error\n  ready → idle on subsequent toggle (collapse)\n  failed → loading on subsequent toggle (retry)\n  loading → idle if user clicks again while in flight (cancel/collapse intent)\n\nJsonTree refuses to render against any state but ready. The 'pending' loading state shows a spinner or skeleton, never raw JSON. The 'failed' state shows an error chip.\n\nFiles: ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte (toggleLinkPreview, expandedLinks state, JsonTree render branch). ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.server.ts (if shared state needed). ui/tests/e2e/link-policy-retry.spec.ts (existing test suite).\n\nThis bead absorbs axon-567eea01's acceptance criteria as well.",
+    "acceptance": "AC1. Rapid double-click on the toggle leaves the row collapsed (or in a visible loading state), not expanded with stale data. AC2. After a transient fetch failure, the next toggle retries the fetch (does not show stale [redacted] state). AC3. Both tests in ui/tests/e2e/link-policy-retry.spec.ts pass: 'retries policy fetch on subsequent toggle after transient failure' AND 'rapid double-click on link preview toggle leaves row collapsed while fetch is in flight'. AC4. policy-enforcement.spec.ts continues to pass unchanged. AC5. JsonTree never renders against an in-flight or failed cache entry. AC6. State machine has explicit type union (e.g. type LinkPreviewState = {status:'idle'} | {status:'loading'} | {status:'ready', cell:ImpactCell} | {status:'failed', error:Error}); no boolean+nullable combos. AC7. typecheck/lint clean.",
+    "parent": "hx-2bab5350",
+    "labels": [
+      "helix"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-03T02:43:25Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3908734",
+      "events": [
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"openrouter\",\"resolved_model\":\"openai/gpt-5.4-mini\",\"fallback_chain\":[]}",
+          "created_at": "2026-04-29T23:53:13.629103135Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=openrouter model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"attempt_id\":\"20260429T235225-7c33d9d1\",\"harness\":\"agent\",\"provider\":\"openrouter\",\"model\":\"openai/gpt-5.4-mini\",\"input_tokens\":210057,\"output_tokens\":5231,\"total_tokens\":215288,\"cost_usd\":0.05182785000000001,\"duration_ms\":46833,\"exit_code\":0}",
+          "created_at": "2026-04-29T23:53:13.863197269Z",
+          "kind": "cost",
+          "source": "ddx agent execute-bead",
+          "summary": "tokens=215288 cost_usd=0.0518 model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"escalation_count\":0,\"fallback_chain\":[],\"final_tier\":\"\",\"requested_profile\":\"\",\"requested_tier\":\"\",\"resolved_model\":\"openai/gpt-5.4-mini\",\"resolved_provider\":\"openrouter\",\"resolved_tier\":\"\"}",
+          "created_at": "2026-04-29T23:53:16.677338473Z",
+          "kind": "routing",
+          "source": "ddx agent execute-loop",
+          "summary": "provider=openrouter model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"openrouter\",\"resolved_model\":\"openai/gpt-5.4-mini\",\"fallback_chain\":[]}",
+          "created_at": "2026-04-30T01:08:25.129222721Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=openrouter model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"attempt_id\":\"20260430T010731-a5eddb19\",\"harness\":\"agent\",\"provider\":\"openrouter\",\"model\":\"openai/gpt-5.4-mini\",\"input_tokens\":252224,\"output_tokens\":6444,\"total_tokens\":258668,\"cost_usd\":0.06091800000000001,\"duration_ms\":52364,\"exit_code\":0}",
+          "created_at": "2026-04-30T01:08:25.63258667Z",
+          "kind": "cost",
+          "source": "ddx agent execute-bead",
+          "summary": "tokens=258668 cost_usd=0.0609 model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"escalation_count\":0,\"fallback_chain\":[],\"final_tier\":\"\",\"requested_profile\":\"\",\"requested_tier\":\"\",\"resolved_model\":\"openai/gpt-5.4-mini\",\"resolved_provider\":\"openrouter\",\"resolved_tier\":\"\"}",
+          "created_at": "2026-04-30T01:08:28.485510096Z",
+          "kind": "routing",
+          "source": "ddx agent execute-loop",
+          "summary": "provider=openrouter model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "erik",
+          "body": "The UI toggle fix is present, but the new Playwright coverage is incorrect: it stalls every `AxonUiEffectivePolicy` GraphQL request, including the page-load policy fetch, so the collection view never loads and `policy-enforcement.spec.ts` cannot reliably pass.\nharness=codex\nmodel=gpt-5.4\ninput_bytes=85344\noutput_bytes=850\nelapsed_ms=92374",
+          "created_at": "2026-04-30T01:10:02.630906343Z",
+          "kind": "review",
+          "source": "ddx agent execute-loop",
+          "summary": "BLOCK"
+        },
+        {
+          "actor": "",
+          "body": "",
+          "created_at": "2026-04-30T01:10:02.805494379Z",
+          "kind": "reopen",
+          "source": "",
+          "summary": "review: BLOCK"
+        },
+        {
+          "actor": "erik",
+          "body": "post-merge review: BLOCK (flagged for human)\nThe UI toggle fix is present, but the new Playwright coverage is incorrect: it stalls every `AxonUiEffectivePolicy` GraphQL request, including the page-load policy fetch, so the collection view never loads and `policy-enforcement.spec.ts` cannot reliably pass.\nresult_rev=cfb2cff84b33ee457d4c55494f826ad89fa48237\nbase_rev=824eabceda2b32e64586d1ad4a50f967e83bc19e",
+          "created_at": "2026-04-30T01:10:02.961990652Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "review_block"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"vidar\",\"resolved_model\":\"MiniMax-M2.5-MLX-4bit\",\"fallback_chain\":[],\"requested_model\":\"MiniMax-M2.5-MLX-4bit\"}",
+          "created_at": "2026-05-02T20:57:48.290432746Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=vidar model=MiniMax-M2.5-MLX-4bit"
+        },
+        {
+          "actor": "ddx",
+          "body": "agent: provider error: openai: POST \"http://vidar:1235/v1/chat/completions\": 507 Insufficient Storage {\"message\":\"Model 'MiniMax-M2.5-MLX-4bit' (125.82GB) exceeds max-model-memory (64.00GB)\",\"type\":\"server_error\",\"param\":null,\"code\":null}\nresult_rev=b459256902ac1eeb48e54c31f9d139938be04df3\nbase_rev=b459256902ac1eeb48e54c31f9d139938be04df3\nretry_after=2026-05-03T02:57:48Z",
+          "created_at": "2026-05-02T20:57:48.868107089Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-03T02:43:25.134339168Z",
+      "spec-id": "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte"
+    }
+  },
+  "governing": [
+    {
+      "id": "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte",
+      "path": "ui/src/routes/tenants/[tenant]/databases/[database]/collections/[name]/+page.svelte"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260503T024325-c402d9c6",
+    "prompt": ".ddx/executions/20260503T024325-c402d9c6/prompt.md",
+    "manifest": ".ddx/executions/20260503T024325-c402d9c6/manifest.json",
+    "result": ".ddx/executions/20260503T024325-c402d9c6/result.json",
+    "checks": ".ddx/executions/20260503T024325-c402d9c6/checks.json",
+    "usage": ".ddx/executions/20260503T024325-c402d9c6/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-hx-5f4d4ea1-20260503T024325-c402d9c6"
+  },
+  "prompt_sha": "a55728b8171e0a4b70953e0d2039081cb10e757d80c813507a788c8de7e8c805"
+}
