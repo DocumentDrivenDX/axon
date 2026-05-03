@@ -6,7 +6,7 @@
 //!
 //! Surface in V1:
 //! - [`parse`] — parse a Cypher query string into an [`ast::Query`].
-//! - The planner and executor are added in subsequent modules.
+//! - [`planner::plan`] — compile a validated query into an execution plan.
 //!
 //! The supported clauses, exclusions, and policy semantics are all
 //! specified in ADR-021. Any clause outside the supported subset is
@@ -16,11 +16,13 @@ pub mod ast;
 pub mod error;
 pub mod lexer;
 pub mod parser;
+pub mod planner;
 pub mod schema;
 pub mod validator;
 
 pub use ast::Query;
 pub use error::CypherError;
+pub use planner::{plan, ExecutionPlan, PlanOperator};
 pub use schema::SchemaSnapshot;
 pub use validator::validate;
 
