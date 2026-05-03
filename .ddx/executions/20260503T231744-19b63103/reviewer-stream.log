@@ -1,0 +1,11 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "APPROVE",
+  "summary": "policy-impact-delta.ts exports CellDelta and computeCellDelta with the documented shape; 16 tests cover all 14 enumerated cases plus a frozen-input non-mutation test; set-equality is order-insensitive via Set comparison.",
+  "findings": [
+    { "severity": "info", "summary": "Test 16 (frozen inputs) also exercises deduplication semantics — exceeds AC3's mutation check by combining both invariants.", "location": "ui/src/lib/policy-impact-delta.test.ts:169" },
+    { "severity": "info", "summary": "diagnosticCodeChanged uses a general code inequality, which correctly subsumes the policy_filter_unindexed remediation/regression cases described in the bead.", "location": "ui/src/lib/policy-impact-delta.ts:47" }
+  ]
+}
+```

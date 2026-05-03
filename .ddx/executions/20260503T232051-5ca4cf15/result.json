@@ -1,0 +1,54 @@
+{
+  "verdict": "APPROVE",
+  "rationale": "policy-impact-delta.ts exports CellDelta and computeCellDelta with the documented shape; 16 tests cover all 14 enumerated cases plus a frozen-input non-mutation test; set-equality is order-insensitive via Set comparison.",
+  "findings": [
+    {
+      "severity": "info",
+      "summary": "Test 16 (frozen inputs) also exercises deduplication semantics — exceeds AC3's mutation check by combining both invariants.",
+      "location": "ui/src/lib/policy-impact-delta.test.ts:169"
+    },
+    {
+      "severity": "info",
+      "summary": "diagnosticCodeChanged uses a general code inequality, which correctly subsumes the policy_filter_unindexed remediation/regression cases described in the bead.",
+      "location": "ui/src/lib/policy-impact-delta.ts:47"
+    }
+  ],
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 3474,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 180,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260503T231744-19b63103/manifest.json",
+          ".ddx/executions/20260503T231744-19b63103/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 6083,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 11363,
+    "output_bytes": 797,
+    "elapsed_ms": 57135,
+    "harness": "claude",
+    "model": "opus"
+  }
+}
