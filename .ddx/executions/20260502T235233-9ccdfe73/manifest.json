@@ -1,0 +1,75 @@
+{
+  "attempt_id": "20260502T235233-9ccdfe73",
+  "bead_id": "axon-79d1df96",
+  "base_rev": "33c6de095c94b8597638afc0a9fa16ce78837eb6",
+  "created_at": "2026-05-02T23:52:34.400783909Z",
+  "requested": {
+    "harness": "agent",
+    "model": "Qwen3.6-27B-MLX-8bit",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-79d1df96",
+    "title": "build(feat-030): audit approval and intent lineage",
+    "description": "Record preview, approval, rejection, expiry, stale, and committed intent lineage with actor, agent/tool identity when present, policy version, approver reason, intent ID, and pre/post images with FEAT-029 redaction on reads.",
+    "acceptance": "Audit tests prove lineage can be queried by intent ID and entity ID, approvals/rejections include required metadata, and redacted audit reads match entity read redaction.",
+    "parent": "axon-c7111156",
+    "labels": [
+      "helix",
+      "phase:build",
+      "kind:implementation",
+      "area:audit",
+      "feat-030"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-02T23:52:33Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3488118",
+      "events": [
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"openrouter\",\"resolved_model\":\"qwen/qwen3.6-35b-a3b\",\"fallback_chain\":[],\"requested_model\":\"qwen/qwen3.6-35b-a3b\"}",
+          "created_at": "2026-05-02T20:52:20.586388511Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=openrouter model=qwen/qwen3.6-35b-a3b"
+        },
+        {
+          "actor": "ddx",
+          "body": "agent: provider error: openai: POST \"https://openrouter.ai/api/v1/chat/completions\": 401 Unauthorized {\"message\":\"Missing Authentication header\",\"code\":401}\nresult_rev=6039f1ecb3b8591a25a85edbd1ec6423b7512136\nbase_rev=6039f1ecb3b8591a25a85edbd1ec6423b7512136\nretry_after=2026-05-03T02:52:20Z",
+          "created_at": "2026-05-02T20:52:21.019233312Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"lmstudio-vidar-1234\",\"resolved_model\":\"Qwen3.6-27B-MLX-8bit\",\"fallback_chain\":[],\"requested_harness\":\"agent\",\"requested_model\":\"Qwen3.6-27B-MLX-8bit\"}",
+          "created_at": "2026-05-02T23:51:50.372360709Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=lmstudio-vidar-1234 model=Qwen3.6-27B-MLX-8bit"
+        },
+        {
+          "actor": "ddx",
+          "body": "agent: provider error: openai: POST \"http://vidar:1234/v1/chat/completions\": 502 Bad Gateway \nresult_rev=e1428bae82fd7388d24f981e6fcbc007a527f2f5\nbase_rev=e1428bae82fd7388d24f981e6fcbc007a527f2f5\nretry_after=2026-05-03T05:51:50Z",
+          "created_at": "2026-05-02T23:51:50.739098225Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-02T23:52:33.717393418Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260502T235233-9ccdfe73",
+    "prompt": ".ddx/executions/20260502T235233-9ccdfe73/prompt.md",
+    "manifest": ".ddx/executions/20260502T235233-9ccdfe73/manifest.json",
+    "result": ".ddx/executions/20260502T235233-9ccdfe73/result.json",
+    "checks": ".ddx/executions/20260502T235233-9ccdfe73/checks.json",
+    "usage": ".ddx/executions/20260502T235233-9ccdfe73/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-79d1df96-20260502T235233-9ccdfe73"
+  },
+  "prompt_sha": "3480739655f94d067cc3692568dbc28cf807a42949925ce11784769a2d4c4500"
+}

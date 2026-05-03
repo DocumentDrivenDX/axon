@@ -1,0 +1,2 @@
+{"data":{"assignee":"ddx","harness":"agent","model":"Qwen3.6-27B-MLX-8bit","once":false,"project_root":"/home/erik/Projects/axon","session_id":"","worker_id":"worker-20260503T000249-0963"},"session_id":"","ts":"2026-05-03T00:02:49.381282622Z","type":"loop.start"}
+{"data":{"assignee":"ddx","bead_id":"axon-cf99b8a4","title":"build(feat-031): GraphQL policyOverride support for explainPolicy and effectivePolicy (backend half of axon-80979cb8)"},"session_id":"","ts":"2026-05-03T00:02:49.784188152Z","type":"bead.claimed"}

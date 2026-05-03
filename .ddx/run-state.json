@@ -1,0 +1,8 @@
+{
+  "bead_id": "axon-79d1df96",
+  "attempt_id": "20260502T235233-9ccdfe73",
+  "harness": "agent",
+  "model": "Qwen3.6-27B-MLX-8bit",
+  "started_at": "2026-05-02T23:52:34.346806216Z",
+  "worktree_path": "/tmp/ddx-exec-wt/.execute-bead-wt-axon-79d1df96-20260502T235233-9ccdfe73"
+}
