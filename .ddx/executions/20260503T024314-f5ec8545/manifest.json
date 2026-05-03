@@ -1,0 +1,55 @@
+{
+  "attempt_id": "20260503T024314-f5ec8545",
+  "bead_id": "axon-8cdc4e49",
+  "base_rev": "7cbb0c47522c2f2b5f2f0f1d9e9746faaf2fee25",
+  "created_at": "2026-05-03T02:43:14.546181261Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-8cdc4e49",
+    "title": "build(feat-003): PROV-O audit serialization (additive)",
+    "description": "Per FEAT-003 US-010 and ADR-020 §RDF concept adoption.\n\nAdd additive PROV-O serialization to audit queries. Native JSON audit shape unchanged; PROV-O surfaces via Accept: application/ld+json with PROV @context, or via ?format=prov query parameter.\n\nMapping: operation→prov:Activity; affected entity/link→prov:Entity (note: PROV-O 'Entity' broader than Axon's, see FEAT-003 US-010 naming-clash note); actor→prov:Agent; before→prov:used; after→prov:wasGeneratedBy; actor↔activity→prov:wasAssociatedWith; transaction chain→prov:wasInformedBy; timestamp→prov:startedAtTime/endedAtTime.\n\nSubject IRIs use canonical entity URLs per ADR-020.",
+    "acceptance": "AC1. Audit query supports content negotiation (Accept: application/ld+json with PROV @context) and ?format=prov. AC2. Native JSON audit shape unchanged. AC3. PROV-O output validates against the official PROV-O ontology. AC4. Round-trip test: native JSON → PROV-O → re-import preserves all auditable facts. AC5. cargo test passes; clippy clean.",
+    "labels": [
+      "helix",
+      "feat-003",
+      "area:audit",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-03T02:43:13Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3908734",
+      "events": [
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"vidar\",\"resolved_model\":\"MiniMax-M2.5-MLX-4bit\",\"fallback_chain\":[],\"requested_model\":\"MiniMax-M2.5-MLX-4bit\"}",
+          "created_at": "2026-05-02T20:56:33.375433076Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=vidar model=MiniMax-M2.5-MLX-4bit"
+        },
+        {
+          "actor": "ddx",
+          "body": "agent: provider error: openai: POST \"http://vidar:1235/v1/chat/completions\": 507 Insufficient Storage {\"message\":\"Model 'MiniMax-M2.5-MLX-4bit' (125.82GB) exceeds max-model-memory (64.00GB)\",\"type\":\"server_error\",\"param\":null,\"code\":null}\nresult_rev=6d5dfbafb3db6968929dfcd416abd29a9eab1618\nbase_rev=6d5dfbafb3db6968929dfcd416abd29a9eab1618\nretry_after=2026-05-03T02:56:33Z",
+          "created_at": "2026-05-02T20:56:33.831511816Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-03T02:43:13.963495714Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260503T024314-f5ec8545",
+    "prompt": ".ddx/executions/20260503T024314-f5ec8545/prompt.md",
+    "manifest": ".ddx/executions/20260503T024314-f5ec8545/manifest.json",
+    "result": ".ddx/executions/20260503T024314-f5ec8545/result.json",
+    "checks": ".ddx/executions/20260503T024314-f5ec8545/checks.json",
+    "usage": ".ddx/executions/20260503T024314-f5ec8545/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-8cdc4e49-20260503T024314-f5ec8545"
+  },
+  "prompt_sha": "a99bbd1f74452a34d31eead451ca292f18913f679aeacbc96726d5e8b60a3253"
+}
