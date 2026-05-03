@@ -1,0 +1,29 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "APPROVE",
+  "summary": "Cell rendering wraps active content in -active sub-section and adds parallel -proposed sub-section gated on proposedImpactMatrix lookup. All unsuffixed testIds preserved on outer elements; existing assertions use toContainText/href which still pass through the new <span>/<div> wrappers.",
+  "findings": [
+    {
+      "severity": "info",
+      "summary": "AC1/AC2 satisfied: both sub-sections rendered with all 7 inner testIds (decision/reason/approvalRole/redactedFields/deniedFields/diagnostic/explainHref) suffixed correctly per side.",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:1191"
+    },
+    {
+      "severity": "info",
+      "summary": "AC3 satisfied: unsuffixed testIds remain on the outer wrapper elements in the active section; existing policy-authoring.spec.ts uses toContainText which traverses descendants.",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:1201"
+    },
+    {
+      "severity": "info",
+      "summary": "AC4 satisfied: when proposedCell is undefined, the columns class is omitted, the active label is hidden, and the -proposed sub-section is not rendered. Two extra structural divs are added but carry no visual styling without the .impact-cell-columns class.",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:1194"
+    },
+    {
+      "severity": "info",
+      "summary": "AC5: execution result.json reports status=success, exit_code=0 for the codex run, indicating typecheck/lint/e2e gates passed.",
+      "location": ".ddx/executions/20260503T230823-06262984/result.json:1"
+    }
+  ]
+}
+```

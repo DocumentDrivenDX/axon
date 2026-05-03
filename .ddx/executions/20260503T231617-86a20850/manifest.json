@@ -1,0 +1,48 @@
+{
+  "harness": "claude",
+  "model": "opus",
+  "session_id": "/home/erik/Projects/axon/.ddx/agent-logs/svc-1777850177348228551.jsonl",
+  "base_rev": "aa0c0c85f294182ff9b06024bb48722b6f57c0e6",
+  "result_rev": "c53c39723d5582f5785ac15eb1b1b0b4ca45d16d",
+  "verdict": "APPROVE",
+  "bead_id": "axon-93fcc7f7",
+  "execution_dir": ".ddx/executions/20260503T231617-86a20850",
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 3695,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 180,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260503T230823-06262984/manifest.json",
+          ".ddx/executions/20260503T230823-06262984/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 6349,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 11850,
+    "output_bytes": 1733,
+    "elapsed_ms": 82527,
+    "harness": "claude",
+    "model": "opus"
+  }
+}
