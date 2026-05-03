@@ -37,6 +37,7 @@ use axon_api::request::{
 use axon_api::response::{EffectivePolicyResponse, PolicyExplanationResponse};
 use axon_api::transaction::Transaction;
 use axon_audit::entry::compute_diff;
+use axon_audit::entry::{MutationIntentAuditOrigin, MutationIntentAuditOriginSurface};
 use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::{AxonError, PolicyDenial};
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
@@ -678,6 +679,7 @@ fn execute_intent_preview<S: StorageAdapter>(
     operation: CanonicalOperationMetadata,
     preview: MutationPreviewComputation,
     expires_in_seconds: u64,
+    tool_name: Option<String>,
 ) -> Result<Value, ToolError> {
     let policy = handler
         .explain_policy_with_caller(preview.explain_request, caller, None)
@@ -720,7 +722,17 @@ fn execute_intent_preview<S: StorageAdapter>(
     let service = mcp_intent_lifecycle_service();
     let (storage, audit) = handler.storage_and_audit_mut();
     let record = service
-        .create_preview_record(storage, audit, intent)
+        .create_preview_record_with_origin(
+            storage,
+            audit,
+            intent,
+            Some(MutationIntentAuditOrigin {
+                surface: MutationIntentAuditOriginSurface::Mcp,
+                tool_name,
+                request_id: None,
+                operation_hash: Some(operation.operation_hash.clone()),
+            }),
+        )
         .map_err(|error| ToolError::Internal(error.to_string()))?;
     match (&record.intent.decision, record.intent_token.as_ref()) {
         (MutationIntentDecision::Allow, Some(token)) => {
@@ -1910,6 +1922,7 @@ fn execute_create<S: StorageAdapter>(
             operation,
             preview,
             expires_in_seconds(args),
+            Some(format!("{collection}.create")),
         );
     }
 
@@ -1995,6 +2008,7 @@ fn execute_patch<S: StorageAdapter>(
             operation,
             preview,
             expires_in_seconds(args),
+            Some(format!("{collection}.patch")),
         );
     }
 
@@ -2067,6 +2081,7 @@ fn execute_delete<S: StorageAdapter>(
             operation,
             preview,
             expires_in_seconds(args),
+            Some(format!("{collection}.delete")),
         );
     }
 
@@ -2482,6 +2497,7 @@ pub fn build_transition_lifecycle_tool<S: StorageAdapter + 'static>(
                     operation,
                     preview,
                     expires_in_seconds(args),
+                    Some(format!("{collection_id}.transition")),
                 );
             }
 

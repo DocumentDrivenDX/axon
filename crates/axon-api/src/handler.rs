@@ -10791,6 +10791,7 @@ mod tests {
                 crate::MutationIntentReviewMetadata {
                     actor: Some(fixture.subjects.finance_approver.into()),
                     reason: Some("approved commercial update".into()),
+                    ..Default::default()
                 },
                 1,
             )

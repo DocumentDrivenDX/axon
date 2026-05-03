@@ -350,6 +350,14 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
         "finance-agent"
     );
     assert_eq!(preview_entries[0]["intent_lineage"]["policy_version"], 1);
+    assert_eq!(
+        preview_entries[0]["intent_lineage"]["origin"]["surface"],
+        "graphql"
+    );
+    assert_eq!(
+        preview_entries[0]["intent_lineage"]["origin"]["operation_hash"],
+        result["canonicalOperation"]["operationHash"]
+    );
     assert_eq!(preview_entries[0]["metadata"]["decision"], "needs_approval");
     assert_eq!(preview_entries[0]["metadata"]["schema_version"], "1");
     assert_eq!(preview_entries[0]["metadata"]["policy_version"], "1");
@@ -440,6 +448,19 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
         intent_id
     );
     assert_eq!(approval_entries[0]["intent_lineage"]["policy_version"], 1);
+    assert_eq!(
+        approval_entries[0]["intent_lineage"]["origin"]["surface"],
+        "graphql"
+    );
+    assert_eq!(
+        approval_entries[0]["intent_lineage"]["approver"]["actor"],
+        "finance-approver"
+    );
+    assert!(
+        approval_entries[0]["intent_lineage"]["approver"]["tenant_role"]
+            .as_str()
+            .is_some()
+    );
 
     let committed = commit_token(&server, "finance-agent", &token).await;
     assert_no_errors(&committed, "commit");

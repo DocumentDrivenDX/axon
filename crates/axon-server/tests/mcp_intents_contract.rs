@@ -320,6 +320,14 @@ async fn generated_mcp_tools_preview_commit_and_block_approval_bypass() {
         preview_entries[0]["intent_lineage"]["intent_id"],
         allowed_intent_id
     );
+    assert_eq!(
+        preview_entries[0]["intent_lineage"]["origin"]["surface"],
+        "mcp"
+    );
+    assert_eq!(
+        preview_entries[0]["intent_lineage"]["origin"]["tool_name"],
+        "intent_task.patch"
+    );
     assert_eq!(preview_entries[0]["metadata"]["decision"], "allow");
     assert_eq!(preview_entries[0]["metadata"]["schema_version"], "1");
     assert_eq!(preview_entries[0]["metadata"]["policy_version"], "1");

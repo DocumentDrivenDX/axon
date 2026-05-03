@@ -19,6 +19,7 @@ use async_graphql::dynamic::{
 };
 use async_graphql::futures_util::StreamExt;
 use async_graphql::{Error as GqlError, ErrorExtensions, Value as GqlValue};
+use axon_audit::entry::{MutationIntentAuditOrigin, MutationIntentAuditOriginSurface};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
@@ -4573,6 +4574,14 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
     let metadata = MutationIntentReviewMetadata {
         actor: Some(caller.actor.clone()),
         reason: string_member(Some(input_obj), "reason"),
+        tenant_role: Some(caller.role.to_string()),
+        credential_id: None,
+        origin: Some(MutationIntentAuditOrigin {
+            surface: MutationIntentAuditOriginSurface::Graphql,
+            tool_name: None,
+            request_id: None,
+            operation_hash: None,
+        }),
     };
     let scope = graphql_intent_scope(&ctx);
     let now_ns = current_time_ns();
@@ -5057,7 +5066,17 @@ async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
     let (storage, audit) = guard.storage_and_audit_mut();
     let record = service
-        .create_preview_record(storage, audit, intent)
+        .create_preview_record_with_origin(
+            storage,
+            audit,
+            intent,
+            Some(MutationIntentAuditOrigin {
+                surface: MutationIntentAuditOriginSurface::Graphql,
+                tool_name: None,
+                request_id: None,
+                operation_hash: Some(canonical_operation.operation_hash.clone()),
+            }),
+        )
         .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let intent_json = mutation_intent_json(&record.intent);
     let decision_name = record.intent.decision.as_str();

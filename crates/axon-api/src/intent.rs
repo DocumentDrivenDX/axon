@@ -33,6 +33,12 @@ pub struct MutationIntentReviewMetadata {
     pub actor: Option<String>,
     /// Human-readable reason attached to approval or rejection.
     pub reason: Option<String>,
+    /// Tenant role resolved for the reviewer, when available.
+    pub tenant_role: Option<String>,
+    /// Credential used for the review decision, when available.
+    pub credential_id: Option<String>,
+    /// API or tool surface that produced the review decision.
+    pub origin: Option<MutationIntentAuditOrigin>,
 }
 
 impl MutationIntentReviewMetadata {
@@ -873,6 +879,17 @@ impl MutationIntentLifecycleService {
         audit: &mut A,
         intent: MutationIntent,
     ) -> Result<MutationIntentPreviewRecord, MutationIntentLifecycleError> {
+        self.create_preview_record_with_origin(storage, audit, intent, None)
+    }
+
+    /// Persist a preview intent record and attach API/tool origin metadata to the audit entry.
+    pub fn create_preview_record_with_origin<S: StorageAdapter, A: AuditLog>(
+        &self,
+        storage: &mut S,
+        audit: &mut A,
+        intent: MutationIntent,
+        origin: Option<MutationIntentAuditOrigin>,
+    ) -> Result<MutationIntentPreviewRecord, MutationIntentLifecycleError> {
         let expected = preview_state_for_decision(&intent.decision);
         if intent.approval_state != expected {
             return Err(MutationIntentLifecycleError::InvalidPreviewState {
@@ -890,6 +907,7 @@ impl MutationIntentLifecycleService {
             MutationType::IntentPreview,
             intent_audit_actor(&intent),
             None,
+            origin,
         )?;
         let intent_token = intent
             .can_have_executable_token()
@@ -1707,6 +1725,7 @@ fn append_intent_lifecycle_audit<A: AuditLog>(
     mutation: MutationType,
     actor: &str,
     reason: Option<String>,
+    origin: Option<MutationIntentAuditOrigin>,
 ) -> Result<AuditEntry, MutationIntentLifecycleError> {
     let data_after = serde_json::to_value(&intent.review_summary)
         .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
@@ -1716,7 +1735,7 @@ fn append_intent_lifecycle_audit<A: AuditLog>(
             intent,
             mutation,
             actor,
-            lineage: intent_lifecycle_lineage(intent, reason),
+            lineage: intent_lifecycle_lineage_with_origin(intent, reason, origin),
             data_before: None,
             data_after,
             metadata: preview_audit_metadata(intent),
@@ -1836,6 +1855,14 @@ fn intent_lifecycle_lineage(
     intent: &MutationIntent,
     reason: Option<String>,
 ) -> MutationIntentAuditMetadata {
+    intent_lifecycle_lineage_with_origin(intent, reason, None)
+}
+
+fn intent_lifecycle_lineage_with_origin(
+    intent: &MutationIntent,
+    reason: Option<String>,
+    origin: Option<MutationIntentAuditOrigin>,
+) -> MutationIntentAuditMetadata {
     MutationIntentAuditMetadata {
         intent_id: intent.intent_id.clone(),
         decision: intent.decision.clone(),
@@ -1845,12 +1872,12 @@ fn intent_lifecycle_lineage(
         subject_snapshot: intent.subject.clone(),
         approver: None,
         reason,
-        origin: Some(MutationIntentAuditOrigin {
+        origin: Some(origin.unwrap_or_else(|| MutationIntentAuditOrigin {
             surface: MutationIntentAuditOriginSurface::System,
             tool_name: None,
             request_id: None,
             operation_hash: Some(intent.operation.operation_hash.clone()),
-        }),
+        })),
         lineage_links: Vec::new(),
     }
 }
@@ -1866,9 +1893,12 @@ fn intent_review_lineage(
         .map(|actor| MutationIntentApproverMetadata {
             user_id: Some(actor.clone()),
             actor: Some(actor.clone()),
-            tenant_role: None,
-            credential_id: None,
+            tenant_role: metadata.tenant_role.clone(),
+            credential_id: metadata.credential_id.clone(),
         });
+    if let Some(origin) = metadata.origin.clone() {
+        lineage.origin = Some(origin);
+    }
     lineage
 }
 
@@ -1985,6 +2015,7 @@ mod tests {
         MutationIntentReviewMetadata {
             actor: Some("usr_approver".into()),
             reason: reason.map(str::to_string),
+            ..Default::default()
         }
     }
 
