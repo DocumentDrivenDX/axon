@@ -1,0 +1,13 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff under review contains only execution metadata (manifest.json, result.json) — no code changes for JSON-LD content negotiation. None of AC1–AC5 can be evaluated against the provided diff.",
+  "findings": [
+    { "severity": "block", "summary": "No GraphQL/handler code changes present in diff; only .ddx execution evidence files added. AC1 (Accept: application/ld+json path) cannot be verified.", "location": ".ddx/executions/20260503T050919-75cd0e14/manifest.json" },
+    { "severity": "block", "summary": "No schema/context generation code in diff; AC3 (@context derived from ESF schema with reserved-keyword remapping) cannot be verified.", "location": ".ddx/executions/20260503T050919-75cd0e14/result.json" },
+    { "severity": "block", "summary": "No tests added in diff; AC4 (validation against jsonld.js/pyld) and AC5 (cargo test/clippy) cannot be confirmed from the changed-files set.", "location": ".ddx/executions/20260503T050919-75cd0e14/result.json" },
+    { "severity": "warn", "summary": "Implementation may exist in commit 672f328 (feat(graphql): add JSON-LD entity responses) but is not included in the changed-files list provided for review; reviewable diff is insufficient.", "location": "review-scope" }
+  ]
+}
+```

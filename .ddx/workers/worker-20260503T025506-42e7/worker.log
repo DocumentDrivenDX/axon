@@ -40,3 +40,6 @@ slice: DDx end-to-end graph-query integration suite over a 10-bead, 15-link in-m
 ✓ axon-648120e4 → merged (e8d6e27c)
 
 ▶ axon-84088cbe: build(feat-015): JSON-LD content negotiation for GraphQL entity payloads
+✓ axon-84088cbe → error: post-merge review: BLOCK (flagged for human)
+
+▶ axon-8cdc4e49: build(feat-003): PROV-O audit serialization (additive)
