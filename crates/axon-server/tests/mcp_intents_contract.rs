@@ -239,6 +239,22 @@ async fn patch_tool(server: &axum_test::TestServer, id: &str, arguments: Value) 
     .await
 }
 
+async fn audit_by_intent(
+    server: &axum_test::TestServer,
+    intent_id: &str,
+    operation: Option<&str>,
+) -> Value {
+    let operation_query = operation
+        .map(|operation| format!("&operation={operation}"))
+        .unwrap_or_default();
+    server
+        .get(&format!(
+            "/tenants/default/databases/default/audit/query?intent_id={intent_id}{operation_query}"
+        ))
+        .await
+        .json::<Value>()
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn generated_mcp_tools_preview_commit_and_block_approval_bypass() {
     let server = test_server();
@@ -291,6 +307,15 @@ async fn generated_mcp_tools_preview_commit_and_block_approval_bypass() {
     let allowed = &allowed_preview["result"]["structuredContent"];
     assert_eq!(allowed["outcome"], "allowed");
     let token = allowed["intent_token"].as_str().unwrap().to_string();
+    let allowed_intent_id = allowed["intent_id"].as_str().unwrap();
+    let preview_audit = audit_by_intent(&server, allowed_intent_id, Some("intent.preview")).await;
+    let preview_entries = preview_audit["entries"].as_array().unwrap();
+    assert_eq!(preview_entries.len(), 1);
+    assert_eq!(preview_entries[0]["actor"], "finance-agent");
+    assert_eq!(
+        preview_entries[0]["intent_lineage"]["intent_id"],
+        allowed_intent_id
+    );
     let before_commit = get_task(&server).await;
     assert_eq!(before_commit["data"]["amount_cents"], 5000);
     assert_eq!(before_commit["version"], 1);

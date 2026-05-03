@@ -4879,8 +4879,9 @@ async fn preview_mutation_resolver<S: StorageAdapter + 'static>(
         review_summary,
     };
     let service = graphql_intent_lifecycle_service();
+    let (storage, audit) = guard.storage_and_audit_mut();
     let record = service
-        .create_preview_record(guard.storage_mut(), intent)
+        .create_preview_record(storage, audit, intent)
         .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let intent_json = mutation_intent_json(&record.intent);
     let decision_name = record.intent.decision.as_str();

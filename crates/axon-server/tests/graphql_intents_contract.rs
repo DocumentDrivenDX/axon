@@ -336,6 +336,20 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
     assert_eq!(result["intent"]["approvalState"], "pending");
     let token = result["intentToken"].as_str().unwrap().to_string();
     let intent_id = result["intent"]["id"].as_str().unwrap().to_string();
+    let preview_audit = audit_by_intent(&server, &intent_id, Some("intent.preview")).await;
+    let preview_entries = preview_audit["entries"].as_array().unwrap();
+    assert_eq!(preview_entries.len(), 1);
+    assert_eq!(preview_entries[0]["actor"], "finance-agent");
+    assert_eq!(preview_entries[0]["intent_lineage"]["intent_id"], intent_id);
+    assert_eq!(
+        preview_entries[0]["intent_lineage"]["subject_snapshot"]["user_id"],
+        "finance-agent"
+    );
+    assert_eq!(preview_entries[0]["intent_lineage"]["policy_version"], 1);
+    assert_eq!(
+        preview_entries[0]["data_after"]["review_summary"]["diff"]["budget_cents"]["after"],
+        20_000
+    );
 
     let approved = gql_as(
         &server,
@@ -376,7 +390,10 @@ async fn over_threshold_intent_can_be_approved_and_committed() {
 
     let lineage_audit = audit_by_intent(&server, &intent_id, None).await;
     let lineage_entries = lineage_audit["entries"].as_array().unwrap();
-    assert_eq!(lineage_entries.len(), 2);
+    assert_eq!(lineage_entries.len(), 3);
+    assert!(lineage_entries
+        .iter()
+        .any(|entry| entry["mutation"] == "intent.preview" && entry["actor"] == "finance-agent"));
     assert!(
         lineage_entries
             .iter()

@@ -12,32 +12,32 @@ pub struct Token {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Punctuation
-    LParen,    // (
-    RParen,    // )
-    LBracket,  // [
-    RBracket,  // ]
-    LBrace,    // {
-    RBrace,    // }
-    Comma,     // ,
-    Colon,     // :
-    Dot,       // .
-    Pipe,      // |
-    DotDot,    // ..
-    Star,      // *
-    Dollar,    // $
+    LParen,   // (
+    RParen,   // )
+    LBracket, // [
+    RBracket, // ]
+    LBrace,   // {
+    RBrace,   // }
+    Comma,    // ,
+    Colon,    // :
+    Dot,      // .
+    Pipe,     // |
+    DotDot,   // ..
+    Star,     // *
+    Dollar,   // $
 
     // Relationship arrows / dashes
-    Dash,      // -
-    DashGt,    // ->
-    LtDash,    // <-
+    Dash,   // -
+    DashGt, // ->
+    LtDash, // <-
 
     // Comparison
-    Eq,        // =
-    NotEq,     // <> or !=
-    Lt,        // <
-    LtEq,      // <=
-    Gt,        // >
-    GtEq,      // >=
+    Eq,    // =
+    NotEq, // <> or !=
+    Lt,    // <
+    LtEq,  // <=
+    Gt,    // >
+    GtEq,  // >=
 
     // Keywords (case-insensitive in source; canonical-cased here)
     KwMatch,
@@ -115,7 +115,13 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, CypherError> {
         }
 
         if ch == '\'' || ch == '"' {
-            tokens.push(read_string(&mut chars, line, column, &mut line_start, &mut line)?);
+            tokens.push(read_string(
+                &mut chars,
+                line,
+                column,
+                &mut line_start,
+                &mut line,
+            )?);
             continue;
         }
 
@@ -126,18 +132,102 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, CypherError> {
 
         // Single- and multi-char punctuation
         match ch {
-            '(' => { chars.next(); tokens.push(Token { kind: TokenKind::LParen, line, column }); }
-            ')' => { chars.next(); tokens.push(Token { kind: TokenKind::RParen, line, column }); }
-            '[' => { chars.next(); tokens.push(Token { kind: TokenKind::LBracket, line, column }); }
-            ']' => { chars.next(); tokens.push(Token { kind: TokenKind::RBracket, line, column }); }
-            '{' => { chars.next(); tokens.push(Token { kind: TokenKind::LBrace, line, column }); }
-            '}' => { chars.next(); tokens.push(Token { kind: TokenKind::RBrace, line, column }); }
-            ',' => { chars.next(); tokens.push(Token { kind: TokenKind::Comma, line, column }); }
-            ':' => { chars.next(); tokens.push(Token { kind: TokenKind::Colon, line, column }); }
-            '|' => { chars.next(); tokens.push(Token { kind: TokenKind::Pipe, line, column }); }
-            '*' => { chars.next(); tokens.push(Token { kind: TokenKind::Star, line, column }); }
-            '$' => { chars.next(); tokens.push(Token { kind: TokenKind::Dollar, line, column }); }
-            '=' => { chars.next(); tokens.push(Token { kind: TokenKind::Eq, line, column }); }
+            '(' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::LParen,
+                    line,
+                    column,
+                });
+            }
+            ')' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::RParen,
+                    line,
+                    column,
+                });
+            }
+            '[' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::LBracket,
+                    line,
+                    column,
+                });
+            }
+            ']' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::RBracket,
+                    line,
+                    column,
+                });
+            }
+            '{' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::LBrace,
+                    line,
+                    column,
+                });
+            }
+            '}' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::RBrace,
+                    line,
+                    column,
+                });
+            }
+            ',' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::Comma,
+                    line,
+                    column,
+                });
+            }
+            ':' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::Colon,
+                    line,
+                    column,
+                });
+            }
+            '|' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::Pipe,
+                    line,
+                    column,
+                });
+            }
+            '*' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::Star,
+                    line,
+                    column,
+                });
+            }
+            '$' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::Dollar,
+                    line,
+                    column,
+                });
+            }
+            '=' => {
+                chars.next();
+                tokens.push(Token {
+                    kind: TokenKind::Eq,
+                    line,
+                    column,
+                });
+            }
             '+' | '%' => {
                 return Err(CypherError::Parse {
                     line,
@@ -149,43 +239,96 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, CypherError> {
                 chars.next();
                 if let Some(&(_, '.')) = chars.peek() {
                     chars.next();
-                    tokens.push(Token { kind: TokenKind::DotDot, line, column });
+                    tokens.push(Token {
+                        kind: TokenKind::DotDot,
+                        line,
+                        column,
+                    });
                 } else {
-                    tokens.push(Token { kind: TokenKind::Dot, line, column });
+                    tokens.push(Token {
+                        kind: TokenKind::Dot,
+                        line,
+                        column,
+                    });
                 }
             }
             '-' => {
                 chars.next();
                 if let Some(&(_, '>')) = chars.peek() {
                     chars.next();
-                    tokens.push(Token { kind: TokenKind::DashGt, line, column });
+                    tokens.push(Token {
+                        kind: TokenKind::DashGt,
+                        line,
+                        column,
+                    });
                 } else {
-                    tokens.push(Token { kind: TokenKind::Dash, line, column });
+                    tokens.push(Token {
+                        kind: TokenKind::Dash,
+                        line,
+                        column,
+                    });
                 }
             }
             '<' => {
                 chars.next();
                 match chars.peek() {
-                    Some(&(_, '-')) => { chars.next(); tokens.push(Token { kind: TokenKind::LtDash, line, column }); }
-                    Some(&(_, '=')) => { chars.next(); tokens.push(Token { kind: TokenKind::LtEq, line, column }); }
-                    Some(&(_, '>')) => { chars.next(); tokens.push(Token { kind: TokenKind::NotEq, line, column }); }
-                    _ => tokens.push(Token { kind: TokenKind::Lt, line, column }),
+                    Some(&(_, '-')) => {
+                        chars.next();
+                        tokens.push(Token {
+                            kind: TokenKind::LtDash,
+                            line,
+                            column,
+                        });
+                    }
+                    Some(&(_, '=')) => {
+                        chars.next();
+                        tokens.push(Token {
+                            kind: TokenKind::LtEq,
+                            line,
+                            column,
+                        });
+                    }
+                    Some(&(_, '>')) => {
+                        chars.next();
+                        tokens.push(Token {
+                            kind: TokenKind::NotEq,
+                            line,
+                            column,
+                        });
+                    }
+                    _ => tokens.push(Token {
+                        kind: TokenKind::Lt,
+                        line,
+                        column,
+                    }),
                 }
             }
             '>' => {
                 chars.next();
                 if let Some(&(_, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(Token { kind: TokenKind::GtEq, line, column });
+                    tokens.push(Token {
+                        kind: TokenKind::GtEq,
+                        line,
+                        column,
+                    });
                 } else {
-                    tokens.push(Token { kind: TokenKind::Gt, line, column });
+                    tokens.push(Token {
+                        kind: TokenKind::Gt,
+                        line,
+                        column,
+                    });
                 }
             }
             '!' => {
                 chars.next();
                 if let Some(&(_, '=')) = chars.peek() {
                     chars.next();
-                    tokens.push(Token { kind: TokenKind::NotEq, line, column });
+                    tokens.push(Token {
+                        kind: TokenKind::NotEq,
+                        line,
+                        column,
+                    });
                 } else {
                     return Err(CypherError::Parse {
                         line,
@@ -204,7 +347,11 @@ pub fn tokenize(input: &str) -> Result<Vec<Token>, CypherError> {
         }
     }
 
-    tokens.push(Token { kind: TokenKind::Eof, line, column: 0 });
+    tokens.push(Token {
+        kind: TokenKind::Eof,
+        line,
+        column: 0,
+    });
     Ok(tokens)
 }
 
@@ -240,7 +387,11 @@ fn read_number(
 
     if is_float {
         s.parse::<f64>()
-            .map(|f| Token { kind: TokenKind::FloatLit(f), line, column })
+            .map(|f| Token {
+                kind: TokenKind::FloatLit(f),
+                line,
+                column,
+            })
             .map_err(|e| CypherError::Parse {
                 line,
                 column,
@@ -248,7 +399,11 @@ fn read_number(
             })
     } else {
         s.parse::<i64>()
-            .map(|i| Token { kind: TokenKind::IntLit(i), line, column })
+            .map(|i| Token {
+                kind: TokenKind::IntLit(i),
+                line,
+                column,
+            })
             .map_err(|e| CypherError::Parse {
                 line,
                 column,
@@ -269,26 +424,28 @@ fn read_string(
     loop {
         match chars.next() {
             Some((_, c)) if c == quote => {
-                return Ok(Token { kind: TokenKind::StringLit(s), line, column });
+                return Ok(Token {
+                    kind: TokenKind::StringLit(s),
+                    line,
+                    column,
+                });
             }
-            Some((_, '\\')) => {
-                match chars.next() {
-                    Some((_, 'n')) => s.push('\n'),
-                    Some((_, 't')) => s.push('\t'),
-                    Some((_, 'r')) => s.push('\r'),
-                    Some((_, '\\')) => s.push('\\'),
-                    Some((_, '\'')) => s.push('\''),
-                    Some((_, '"')) => s.push('"'),
-                    Some((_, c)) => s.push(c),
-                    None => {
-                        return Err(CypherError::Parse {
-                            line,
-                            column,
-                            message: "unterminated escape in string literal".to_string(),
-                        });
-                    }
+            Some((_, '\\')) => match chars.next() {
+                Some((_, 'n')) => s.push('\n'),
+                Some((_, 't')) => s.push('\t'),
+                Some((_, 'r')) => s.push('\r'),
+                Some((_, '\\')) => s.push('\\'),
+                Some((_, '\'')) => s.push('\''),
+                Some((_, '"')) => s.push('"'),
+                Some((_, c)) => s.push(c),
+                None => {
+                    return Err(CypherError::Parse {
+                        line,
+                        column,
+                        message: "unterminated escape in string literal".to_string(),
+                    });
                 }
-            }
+            },
             Some((idx, '\n')) => {
                 *cur_line += 1;
                 *line_start = idx + 1;
@@ -358,14 +515,23 @@ mod tests {
     use super::*;
 
     fn kinds(input: &str) -> Vec<TokenKind> {
-        tokenize(input).unwrap().into_iter().map(|t| t.kind).collect()
+        tokenize(input)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.kind)
+            .collect()
     }
 
     #[test]
     fn lex_keywords_case_insensitive() {
         assert_eq!(
             kinds("match Match MATCH"),
-            vec![TokenKind::KwMatch, TokenKind::KwMatch, TokenKind::KwMatch, TokenKind::Eof],
+            vec![
+                TokenKind::KwMatch,
+                TokenKind::KwMatch,
+                TokenKind::KwMatch,
+                TokenKind::Eof
+            ],
         );
     }
 
