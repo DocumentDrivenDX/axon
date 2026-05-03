@@ -1,0 +1,3 @@
+{"data":{"assignee":"ddx","harness":"","model":"","once":false,"project_root":"/home/erik/Projects/axon","session_id":"","worker_id":"worker-20260503T024117-64c6"},"session_id":"","ts":"2026-05-03T02:41:17.744156274Z","type":"loop.start"}
+{"data":{"bead_id":"axon-cf99b8a4","harness":"","model":"","reason":"no live endpoint offers a match for default"},"session_id":"","ts":"2026-05-03T02:41:20.145766907Z","type":"preflight.rejected"}
+{"data":{"attempts":1,"failures":1,"last_failure_status":"execution_failed","successes":0},"session_id":"","ts":"2026-05-03T02:41:20.146211873Z","type":"loop.end"}

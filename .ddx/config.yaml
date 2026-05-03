@@ -9,8 +9,19 @@ update_check:
     enabled: true
     frequency: 24h
 agent:
-    harness: agent
     endpoints:
+        - type: lmstudio
+          host: vidar
+          port: 1234
+          api_key: lmstudio
         - type: omlx
           host: vidar
           port: 1235
+        - type: lmstudio
+          host: bragi
+          port: 1234
+          api_key: lmstudio
+        - type: lmstudio
+          host: grendel
+          port: 1234
+          api_key: lmstudio

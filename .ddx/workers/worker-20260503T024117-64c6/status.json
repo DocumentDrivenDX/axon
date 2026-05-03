@@ -1,0 +1,30 @@
+{
+  "id": "worker-20260503T024117-64c6",
+  "kind": "execute-loop",
+  "state": "exited",
+  "status": "execution_failed",
+  "project_root": "/home/erik/Projects/axon",
+  "profile": "default",
+  "poll_interval": "0s",
+  "started_at": "2026-05-03T02:41:17.711848408Z",
+  "finished_at": "2026-05-03T02:41:20.146750088Z",
+  "stdout_path": ".ddx/workers/worker-20260503T024117-64c6/worker.log",
+  "spec_path": ".ddx/workers/worker-20260503T024117-64c6/spec.json",
+  "attempts": 1,
+  "failures": 1,
+  "current_bead": "axon-cf99b8a4",
+  "last_error": "routing preflight rejected (harness= model=): no live endpoint offers a match for default",
+  "last_result": {
+    "bead_id": "axon-cf99b8a4",
+    "status": "execution_failed",
+    "detail": "routing preflight rejected (harness= model=): no live endpoint offers a match for default"
+  },
+  "lifecycle": [
+    {
+      "action": "start",
+      "actor": "local-operator",
+      "timestamp": "2026-05-03T02:41:17.711848408Z",
+      "detail": "kind=execute-loop profile=default"
+    }
+  ]
+}
