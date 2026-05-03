@@ -1,0 +1,82 @@
+{
+  "attempt_id": "20260503T000249-fc0ea0b1",
+  "bead_id": "axon-cf99b8a4",
+  "base_rev": "84802faa47e422c4644fce99222c1f7c5ac66470",
+  "created_at": "2026-05-03T00:02:50.461037576Z",
+  "requested": {
+    "harness": "agent",
+    "model": "Qwen3.6-27B-MLX-8bit",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-cf99b8a4",
+    "title": "build(feat-031): GraphQL policyOverride support for explainPolicy and effectivePolicy (backend half of axon-80979cb8)",
+    "description": "Codex review of axon-80979cb8 flagged this hidden gap: the UI side now sends `policyOverride` arguments in AxonUiEffectivePolicy and explain queries (api.ts:1502-1565), but the GraphQL resolvers in crates/axon-graphql/src/dynamic.rs do NOT accept or apply policyOverride. Verified: `grep policyOverride crates/axon-graphql/src/` returns nothing. The UI work landed with a silent no-op — proposed-matrix state fetched against the active access_control regardless of caller intent.\n\nScope:\n\nA. Add an optional `policyOverride: JSON` argument to two field resolvers in crates/axon-graphql/src/dynamic.rs:\n   - effectivePolicy(collection, entityId, policyOverride)\n   - explainPolicy(input, policyOverride) — and the dry-run variant explainPolicyDryRun if it exists\n\nB. Plumb the override through the policy-evaluator path so that when policyOverride is non-null, the evaluation runs against the supplied access_control instead of the schema's persisted active access_control. The schema's draft.access_control is the canonical shape.\n\nC. Validate the override at parse time; reject malformed policy with a typed error code (e.g. `invalid_policy_override` with field-level diagnostics matching the policy-validation error shape used elsewhere).\n\nD. Ensure existing callers that pass null/omitted policyOverride get exactly the previous behavior (active policy).\n\nE. Rust unit tests in crates/axon-graphql/tests/policy_dryrun_test.rs (or extending an existing test file) covering: null override → active policy result; valid override → override applied; malformed override → typed error; override that flips a decision allow→deny → reflected in result.\n\nF. UI integration sanity check: run the existing tests/e2e/policy-authoring.spec.ts — should pass without changes (no UI changes needed; UI already sends the field). If a fixture needs updating to exercise the new path, do that minimally.\n\nOut of scope: UI render of proposed column (axon-93fcc7f7), delta module (axon-4b264f4e), Playwright delta assertions (axon-1fb17586). This bead is server-only.",
+    "acceptance": "AC1. effectivePolicy and explainPolicy GraphQL fields accept optional policyOverride: JSON argument.\n\nAC2. When policyOverride is non-null, the evaluation uses the override's access_control; when null/omitted, behavior is unchanged.\n\nAC3. Malformed policyOverride returns a typed error (invalid_policy_override) with a field-level diagnostic, not a 500.\n\nAC4. Rust unit tests cover the four scenarios above and pass: cargo test -p axon-graphql.\n\nAC5. cargo clippy --workspace -- -D warnings clean.\n\nAC6. tests/e2e/policy-authoring.spec.ts passes (no regression in active-policy path).",
+    "parent": "axon-ff92fed7",
+    "labels": [
+      "helix",
+      "feat-031",
+      "decomp",
+      "area:graphql"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-03T00:02:49Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3488118",
+      "events": [
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"openrouter\",\"resolved_model\":\"openai/gpt-5.4-mini\",\"fallback_chain\":[]}",
+          "created_at": "2026-04-30T00:55:29.11177998Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=openrouter model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"attempt_id\":\"20260430T005449-e9673250\",\"harness\":\"agent\",\"provider\":\"openrouter\",\"model\":\"openai/gpt-5.4-mini\",\"input_tokens\":366423,\"output_tokens\":967,\"total_tokens\":367390,\"cost_usd\":0.05452875,\"duration_ms\":38461,\"exit_code\":1}",
+          "created_at": "2026-04-30T00:55:29.281501103Z",
+          "kind": "cost",
+          "source": "ddx agent execute-bead",
+          "summary": "tokens=367390 cost_usd=0.0545 model=openai/gpt-5.4-mini"
+        },
+        {
+          "actor": "erik",
+          "body": "stalled: no_progress_tools_exceeded\nresult_rev=e6e4553d5846f2b9fd94c40ddf65766e2c4a69ba\nbase_rev=e6e4553d5846f2b9fd94c40ddf65766e2c4a69ba\nretry_after=2026-04-30T06:55:31Z",
+          "created_at": "2026-04-30T00:55:32.019836434Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"vidar\",\"resolved_model\":\"MiniMax-M2.5-MLX-4bit\",\"fallback_chain\":[],\"requested_model\":\"MiniMax-M2.5-MLX-4bit\"}",
+          "created_at": "2026-05-02T20:53:13.811073244Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=vidar model=MiniMax-M2.5-MLX-4bit"
+        },
+        {
+          "actor": "ddx",
+          "body": "agent: provider error: openai: POST \"http://vidar:1235/v1/chat/completions\": 507 Insufficient Storage {\"message\":\"Model 'MiniMax-M2.5-MLX-4bit' (125.82GB) exceeds max-model-memory (64.00GB)\",\"type\":\"server_error\",\"param\":null,\"code\":null}\nresult_rev=04a8f933fe90ab28dde344743639e68820924c46\nbase_rev=04a8f933fe90ab28dde344743639e68820924c46\nretry_after=2026-05-03T02:53:14Z",
+          "created_at": "2026-05-02T20:53:14.276542283Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-03T00:02:49.743346611Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260503T000249-fc0ea0b1",
+    "prompt": ".ddx/executions/20260503T000249-fc0ea0b1/prompt.md",
+    "manifest": ".ddx/executions/20260503T000249-fc0ea0b1/manifest.json",
+    "result": ".ddx/executions/20260503T000249-fc0ea0b1/result.json",
+    "checks": ".ddx/executions/20260503T000249-fc0ea0b1/checks.json",
+    "usage": ".ddx/executions/20260503T000249-fc0ea0b1/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-cf99b8a4-20260503T000249-fc0ea0b1"
+  },
+  "prompt_sha": "9c4d9339afc6da46a1a550d665d083f19e2e02ba065db3d873e2f1f0f2669299"
+}
