@@ -1,0 +1,13 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only an execution metadata file (result.json) with no code or test changes. No audit lineage implementation, no queries by intent/entity ID, no approval/rejection metadata, and no redacted audit reads are present to evaluate against the acceptance criteria.",
+  "findings": [
+    { "severity": "block", "summary": "No implementation changes for audit approval/intent lineage; only an execution result.json was added.", "location": ".ddx/executions/20260503T024425-64b08244/result.json" },
+    { "severity": "block", "summary": "Acceptance criterion (lineage queryable by intent ID and entity ID) cannot be verified — no audit query code or tests added.", "location": "crates/axon-audit/" },
+    { "severity": "block", "summary": "Acceptance criterion (approvals/rejections include required metadata: actor, agent/tool identity, policy version, approver reason, intent ID, pre/post images) cannot be verified — no schema or recording logic added.", "location": "crates/axon-audit/" },
+    { "severity": "block", "summary": "Acceptance criterion (redacted audit reads match entity read redaction per FEAT-029) cannot be verified — no redaction integration tests added.", "location": "crates/axon-audit/" }
+  ]
+}
+```

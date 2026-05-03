@@ -1,2 +1,5 @@
 
 ▶ axon-cf99b8a4: build(feat-031): GraphQL policyOverride support for explainPolicy and effectivePolicy (backend half of axon-80979cb8)
+✓ axon-cf99b8a4 → merged (48e72cc6)
+
+▶ axon-79d1df96: build(feat-030): audit approval and intent lineage

@@ -1,0 +1,14 @@
+The implementation cleanly addresses all six AC items.
+
+```json
+{
+  "schema_version": 1,
+  "verdict": "APPROVE",
+  "summary": "policyOverride: JSON arg added to effectivePolicy and explainPolicy resolvers; routes through new effective_policy_with_plan/explain_policy_with_plan paths; null preserves active-policy behavior; malformed input returns typed invalid_policy_override extension with diagnostics; four targeted unit tests added covering schema exposure, null vs override, allow→deny flip, and malformed-error path.",
+  "findings": [
+    { "severity": "info", "summary": "explainPolicy with policyOverride supplied but no collection (neither top-level nor in operations[]) returns InvalidArgument rather than an invalid_policy_override diagnostic — reasonable, but not the typed code AC3 specifies. Existing UI paths always send a collection so this is unlikely to surface.", "location": "crates/axon-graphql/src/dynamic.rs:3040" },
+    { "severity": "info", "summary": "No top-level explainPolicyDryRun resolver exists in the schema; dry-run is expressed via the dryRun field on entity mutations, so the bead's optional 'dry-run variant' clause is N/A.", "location": "crates/axon-graphql/src/dynamic.rs:6875" },
+    { "severity": "info", "summary": "AC5 (clippy clean) and AC6 (Playwright e2e green) were not re-verified in this review; relying on the merged execution attempt's reported success (task_succeeded, exit_code=0).", "location": ".ddx/executions/20260503T025509-d65d4ac2/result.json" }
+  ]
+}
+```
