@@ -44,6 +44,8 @@ import {
 	resolveImpactCell,
 	tryBuildExplainInput,
 } from '$lib/policy-evaluator';
+// biome-ignore lint/correctness/noUnusedImports: computeCellDelta is used only in the template.
+import { type CellDelta, computeCellDelta } from '$lib/policy-impact-delta';
 import { onMount } from 'svelte';
 import type { PageData } from './$types';
 
@@ -174,6 +176,20 @@ function defaultSubjectId(nextSubjects: SubjectOption[]): string {
 		nextSubjects[0]?.id ??
 		'guest'
 	);
+}
+
+function hasCellDeltaChanged(delta: CellDelta): boolean {
+	return (
+		delta.decisionChanged ||
+		delta.redactedFieldsChanged ||
+		delta.deniedFieldsChanged ||
+		delta.approvalRoleChanged ||
+		delta.diagnosticCodeChanged
+	);
+}
+
+function isTransactionCollection(collection: string): boolean {
+	return collection === 'transactions';
 }
 
 async function loadSubjectOptions(nextCollections: CollectionSummary[]): Promise<SubjectOption[]> {
@@ -1182,7 +1198,18 @@ onMount(() => {
 													c.entityId === entity.id &&
 													c.subjectId === subject.id &&
 													c.operation === operation,
+											) ?? null}
+											{@const delta = computeCellDelta(cell ?? null, proposedCell)}
+											{@const transactionDeltaUnavailable = isTransactionCollection(
+												entity.collection,
 											)}
+											{@const renderDeltaSummary =
+												!transactionDeltaUnavailable && !delta.isUnchanged && hasCellDeltaChanged(delta)}
+											{@const renderProposedCell =
+												Boolean(proposedCell) &&
+												!transactionDeltaUnavailable &&
+												!delta.isUnchanged &&
+												!delta.onlyActive}
 											<td
 												data-testid="policy-impact-matrix-cell"
 												data-entity-id={entity.id}
@@ -1191,12 +1218,19 @@ onMount(() => {
 												data-decision={cell?.decision ?? 'pending'}
 											>
 												{#if cell}
-													<div class:impact-cell-columns={Boolean(proposedCell)}>
+													<div
+														class:impact-cell-columns={Boolean(
+															renderProposedCell ||
+																renderDeltaSummary ||
+																delta.isUnchanged ||
+																transactionDeltaUnavailable,
+														)}
+													>
 														<div
 															class="impact-cell-section"
 															data-testid="policy-impact-matrix-cell-active"
 														>
-															{#if proposedCell}
+															{#if renderProposedCell || renderDeltaSummary || delta.isUnchanged || transactionDeltaUnavailable}
 																<div class="impact-cell-label">active</div>
 															{/if}
 															<div
@@ -1268,7 +1302,34 @@ onMount(() => {
 																</a>
 															{/if}
 														</div>
-														{#if proposedCell}
+														{#if transactionDeltaUnavailable}
+															<div
+																class="impact-delta-summary"
+																data-testid="policy-impact-matrix-cell-transaction-unavailable"
+															>
+																transaction delta unavailable<a href="#follow-up-bead">follow-up</a>
+															</div>
+														{:else if delta.isUnchanged}
+															<span
+																class="impact-delta-summary"
+																data-testid="policy-impact-matrix-cell-unchanged"
+															>
+																unchanged
+															</span>
+														{:else if renderDeltaSummary}
+															<div
+																class="impact-delta-summary"
+																data-testid="policy-impact-matrix-cell-delta"
+																data-decision-changed={delta.decisionChanged}
+																data-redacted-changed={delta.redactedFieldsChanged}
+																data-denied-changed={delta.deniedFieldsChanged}
+																data-approval-changed={delta.approvalRoleChanged}
+																data-diagnostic-changed={delta.diagnosticCodeChanged}
+															>
+																changed
+															</div>
+														{/if}
+														{#if renderProposedCell && proposedCell}
 															<div
 																class="impact-cell-section"
 																data-testid="policy-impact-matrix-cell-proposed"
@@ -1586,6 +1647,23 @@ onMount(() => {
 		font-weight: 700;
 		letter-spacing: 0.04em;
 		text-transform: uppercase;
+	}
+
+	.impact-delta-summary {
+		align-self: start;
+		padding: 0.35rem 0.45rem;
+		border: 1px solid rgba(255, 255, 255, 0.1);
+		border-radius: 4px;
+		background: rgba(255, 255, 255, 0.04);
+		color: var(--muted);
+		font-size: 0.74rem;
+		font-weight: 700;
+		text-transform: uppercase;
+	}
+
+	.impact-delta-summary a {
+		margin-left: 0.45rem;
+		text-transform: none;
 	}
 
 	.impact-decision {
