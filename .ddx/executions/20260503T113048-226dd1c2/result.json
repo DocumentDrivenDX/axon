@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-ad2a9669",
+  "attempt_id": "20260503T113048-226dd1c2",
+  "base_rev": "2318f26d7224956e7a1213d25cc6417cbd47c0ac",
+  "result_rev": "2318f26d7224956e7a1213d25cc6417cbd47c0ac",
+  "outcome": "task_no_changes",
+  "status": "no_changes",
+  "detail": "no_changes",
+  "no_changes_rationale": "verification_command: test -f .ddx/executions/20260503T113048-226dd1c2/no_changes_rationale.txt \u0026\u0026 ddx bead show axon-390c67d1 \u003e/dev/null \u0026\u0026 ddx bead show axon-ff99d8b1 \u003e/dev/null \u0026\u0026 ddx bead show axon-29b3919b \u003e/dev/null \u0026\u0026 ddx bead show axon-52265708 \u003e/dev/null\n\nstatus: decomposed\nparent: axon-ad2a9669\nreason: The parent bead is too large for one bounded execution pass under the execute-bead size check. It has seven acceptance criteria spanning executor API design, in-memory store implementation, streaming runtime semantics, timeout enforcement, materialization rules, DDx-specific fixtures, and a broad integration suite. Per instructions, no implementation was attempted in this parent attempt.\n\nchild: axon-390c67d1\nslice: QueryStore trait and in-memory entity/link graph store for axon-cypher executor tests.\n\nchild: axon-ff99d8b1\nslice: Core execute(plan, store) -\u003e RowStream surface, basic streaming operators, and timeout enforcement.\n\nchild: axon-29b3919b\nslice: OPTIONAL MATCH, EXISTS, count(*), DISTINCT, and ORDER BY ASC/DESC executor semantics and focused tests.\n\nchild: axon-52265708\nslice: DDx end-to-end graph-query integration suite over a 10-bead, 15-link in-memory dataset.",
+  "harness": "codex",
+  "session_id": "eb-82d7ff61",
+  "duration_ms": 46502,
+  "tokens": 174187,
+  "exit_code": 0,
+  "failure_mode": "no_changes",
+  "execution_dir": ".ddx/executions/20260503T113048-226dd1c2",
+  "prompt_file": ".ddx/executions/20260503T113048-226dd1c2/prompt.md",
+  "manifest_file": ".ddx/executions/20260503T113048-226dd1c2/manifest.json",
+  "result_file": ".ddx/executions/20260503T113048-226dd1c2/result.json",
+  "usage_file": ".ddx/executions/20260503T113048-226dd1c2/usage.json",
+  "started_at": "2026-05-03T11:30:48.933776716Z",
+  "finished_at": "2026-05-03T11:31:35.436664969Z"
+}
