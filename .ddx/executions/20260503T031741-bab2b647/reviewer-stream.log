@@ -1,0 +1,13 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only execution metadata files (manifest.json and result.json) under .ddx/executions/. No source code, tests, or audit lineage implementation are present to evaluate against any acceptance criterion.",
+  "findings": [
+    { "severity": "block", "summary": "No audit lineage implementation: no code recording preview/approval/rejection/expiry/stale/committed events with actor, agent/tool identity, policy version, approver reason, intent ID, or pre/post images.", "location": "crates/axon-audit/" },
+    { "severity": "block", "summary": "No tests demonstrating lineage queries by intent ID or entity ID.", "location": "crates/axon-audit/tests/" },
+    { "severity": "block", "summary": "No FEAT-029 redaction applied to audit reads to match entity read redaction.", "location": "crates/axon-audit/" },
+    { "severity": "info", "summary": "Diff is limited to ddx execution metadata; the referenced result_rev (4c079be) is not represented as code/test changes in this review.", "location": ".ddx/executions/20260503T031741-bab2b647/result.json" }
+  ]
+}
+```
