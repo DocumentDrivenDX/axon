@@ -112,10 +112,7 @@ pub enum Expression {
     /// Bare variable reference: `n`.
     Variable(String),
     /// Property access: `n.field` or `n.field.nested`.
-    Property {
-        variable: String,
-        path: Vec<String>,
-    },
+    Property { variable: String, path: Vec<String> },
     /// Parameter reference: `$paramName`.
     Parameter(String),
     /// `EXISTS { ... }` — subquery existence check.

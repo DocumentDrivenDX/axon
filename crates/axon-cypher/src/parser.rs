@@ -89,8 +89,8 @@ impl Parser {
         if let TokenKind::Identifier(name) = self.peek() {
             let upper = name.to_ascii_uppercase();
             match upper.as_str() {
-                "CREATE" | "MERGE" | "SET" | "DELETE" | "DETACH" | "REMOVE" | "CALL"
-                | "LOAD" | "USING" | "UNION" | "FOREACH" => {
+                "CREATE" | "MERGE" | "SET" | "DELETE" | "DETACH" | "REMOVE" | "CALL" | "LOAD"
+                | "USING" | "UNION" | "FOREACH" => {
                     return Err(CypherError::UnsupportedClause(upper));
                 }
                 _ => {}
@@ -140,7 +140,11 @@ impl Parser {
             Vec::new()
         };
         self.expect(&TokenKind::RParen, ")")?;
-        Ok(NodePattern { variable, label, properties })
+        Ok(NodePattern {
+            variable,
+            label,
+            properties,
+        })
     }
 
     fn parse_relationship_pattern(&mut self) -> Result<RelationshipPattern, CypherError> {
@@ -263,7 +267,10 @@ impl Parser {
             self.match_keyword(TokenKind::KwAsc);
             false
         };
-        Ok(SortItem { expression, descending })
+        Ok(SortItem {
+            expression,
+            descending,
+        })
     }
 
     // ----- Expressions -----
@@ -683,19 +690,14 @@ mod tests {
 
     #[test]
     fn parses_and_or_not() {
-        let q = parse(
-            "MATCH (n) WHERE n.x > 1 AND (n.y < 5 OR NOT n.z = 'a') RETURN n",
-        )
-        .unwrap();
+        let q = parse("MATCH (n) WHERE n.x > 1 AND (n.y < 5 OR NOT n.z = 'a') RETURN n").unwrap();
         assert!(q.where_clause.is_some());
     }
 
     #[test]
     fn parses_string_predicates() {
-        let q = parse(
-            "MATCH (n) WHERE n.title STARTS WITH 'A' AND n.body CONTAINS 'foo' RETURN n",
-        )
-        .unwrap();
+        let q = parse("MATCH (n) WHERE n.title STARTS WITH 'A' AND n.body CONTAINS 'foo' RETURN n")
+            .unwrap();
         q.where_clause.expect("where present");
     }
 

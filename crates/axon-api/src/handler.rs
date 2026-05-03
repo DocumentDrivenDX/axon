@@ -10432,11 +10432,13 @@ mod tests {
         let svc = crate::MutationIntentLifecycleService::new(
             crate::MutationIntentTokenSigner::new(b"redaction-test-secret"),
         );
-        let token = svc
-            .create_preview_record(h.storage_mut(), intent)
-            .expect("preview record should persist")
-            .intent_token
-            .expect("needs-approval intent should issue a token");
+        let token = {
+            let (storage, audit) = h.storage_and_audit_mut();
+            svc.create_preview_record(storage, audit, intent)
+        }
+        .expect("preview record should persist")
+        .intent_token
+        .expect("needs-approval intent should issue a token");
         {
             let (storage, audit) = h.storage_and_audit_mut();
             svc.approve_with_audit(

@@ -718,8 +718,9 @@ fn execute_intent_preview<S: StorageAdapter>(
     };
 
     let service = mcp_intent_lifecycle_service();
+    let (storage, audit) = handler.storage_and_audit_mut();
     let record = service
-        .create_preview_record(handler.storage_mut(), intent)
+        .create_preview_record(storage, audit, intent)
         .map_err(|error| ToolError::Internal(error.to_string()))?;
     match (&record.intent.decision, record.intent_token.as_ref()) {
         (MutationIntentDecision::Allow, Some(token)) => {

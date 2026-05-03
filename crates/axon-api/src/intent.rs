@@ -867,9 +867,10 @@ impl MutationIntentLifecycleService {
     }
 
     /// Persist a preview intent record and issue an executable token when legal.
-    pub fn create_preview_record<S: StorageAdapter>(
+    pub fn create_preview_record<S: StorageAdapter, A: AuditLog>(
         &self,
         storage: &mut S,
+        audit: &mut A,
         intent: MutationIntent,
     ) -> Result<MutationIntentPreviewRecord, MutationIntentLifecycleError> {
         let expected = preview_state_for_decision(&intent.decision);
@@ -883,6 +884,13 @@ impl MutationIntentLifecycleService {
         }
 
         storage.create_mutation_intent(&intent)?;
+        append_intent_lifecycle_audit(
+            audit,
+            &intent,
+            MutationType::IntentPreview,
+            intent_audit_actor(&intent),
+            None,
+        )?;
         let intent_token = intent
             .can_have_executable_token()
             .then(|| self.token_signer.issue(&intent));
@@ -1738,6 +1746,16 @@ fn append_intent_lifecycle_audit_entry<A: AuditLog>(
         .map_err(MutationIntentLifecycleError::from)
 }
 
+fn intent_audit_actor(intent: &MutationIntent) -> &str {
+    intent
+        .subject
+        .user_id
+        .as_deref()
+        .or(intent.subject.agent_id.as_deref())
+        .or(intent.subject.delegated_by.as_deref())
+        .unwrap_or("anonymous")
+}
+
 fn intent_lifecycle_lineage(
     intent: &MutationIntent,
     reason: Option<String>,
@@ -1973,7 +1991,7 @@ mod tests {
         svc: &MutationIntentLifecycleService,
         intent: MutationIntent,
     ) -> MutationIntentToken {
-        svc.create_preview_record(storage, intent)
+        svc.create_preview_record(storage, &mut MemoryAuditLog::default(), intent)
             .expect("preview record")
             .intent_token
             .expect("executable token")
@@ -2821,7 +2839,7 @@ mod tests {
             false,
         );
         intent.operation = previewed_operation.clone();
-        svc.create_preview_record(&mut storage, intent)
+        svc.create_preview_record(&mut storage, &mut MemoryAuditLog::default(), intent)
             .expect("preview should persist");
 
         let err = svc
@@ -2864,10 +2882,12 @@ mod tests {
     #[test]
     fn create_preview_records_allowed_intent_with_none_state_and_token() {
         let mut storage = MemoryStorageAdapter::default();
+        let mut audit = MemoryAuditLog::default();
         let svc = service();
         let record = svc
             .create_preview_record(
                 &mut storage,
+                &mut audit,
                 intent(
                     "mint_allowed",
                     MutationIntentDecision::Allow,
@@ -2887,6 +2907,40 @@ mod tests {
             .expect("intent should exist");
         assert_eq!(stored.approval_state, ApprovalState::None);
         assert_eq!(stored.decision, MutationIntentDecision::Allow);
+
+        let preview_page = audit
+            .query_paginated(AuditQuery {
+                operation: Some(MutationType::IntentPreview),
+                intent_id: Some("mint_allowed".into()),
+                ..AuditQuery::default()
+            })
+            .expect("preview audit should be queryable by intent id");
+        assert_eq!(preview_page.entries.len(), 1);
+        let preview_entry = &preview_page.entries[0];
+        assert_eq!(
+            preview_entry.collection,
+            CollectionId::new(INTENT_AUDIT_COLLECTION)
+        );
+        assert_eq!(preview_entry.entity_id, EntityId::new("mint_allowed"));
+        assert_eq!(preview_entry.actor, "usr_requester");
+        assert_eq!(
+            preview_entry
+                .data_after
+                .as_ref()
+                .expect("preview audit should include intent snapshot")["policy_version"],
+            7
+        );
+        let lineage = preview_entry
+            .intent_lineage
+            .as_deref()
+            .expect("preview audit should include lineage");
+        assert_eq!(lineage.intent_id, "mint_allowed");
+        assert_eq!(lineage.policy_version, 7);
+        assert_eq!(lineage.schema_version, 7);
+        assert_eq!(
+            lineage.subject_snapshot.agent_id.as_deref(),
+            Some("agent_ap")
+        );
     }
 
     #[test]
@@ -2896,6 +2950,7 @@ mod tests {
         let record = svc
             .create_preview_record(
                 &mut storage,
+                &mut MemoryAuditLog::default(),
                 intent(
                     "mint_pending",
                     MutationIntentDecision::NeedsApproval,
@@ -2923,6 +2978,7 @@ mod tests {
         let err = svc
             .create_preview_record(
                 &mut storage,
+                &mut MemoryAuditLog::default(),
                 intent(
                     "mint_bad",
                     MutationIntentDecision::Allow,
@@ -2950,6 +3006,7 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_approve",
                 MutationIntentDecision::NeedsApproval,
@@ -2984,6 +3041,7 @@ mod tests {
 
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_reject",
                 MutationIntentDecision::NeedsApproval,
@@ -3029,6 +3087,7 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_approve_audit",
                 MutationIntentDecision::NeedsApproval,
@@ -3089,6 +3148,7 @@ mod tests {
 
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_reject_audit",
                 MutationIntentDecision::NeedsApproval,
@@ -3136,6 +3196,7 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_expire",
                 MutationIntentDecision::NeedsApproval,
@@ -3185,8 +3246,12 @@ mod tests {
                 ApprovalState::None,
             ),
         ] {
-            svc.create_preview_record(&mut storage, intent(id, decision, state, 10, false))
-                .expect("preview should persist");
+            svc.create_preview_record(
+                &mut storage,
+                &mut MemoryAuditLog::default(),
+                intent(id, decision, state, 10, false),
+            )
+            .expect("preview should persist");
         }
 
         let approve = svc
@@ -3262,6 +3327,7 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_due_pending",
                 MutationIntentDecision::NeedsApproval,
@@ -3273,6 +3339,7 @@ mod tests {
         .expect("due preview should persist");
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_live_pending",
                 MutationIntentDecision::NeedsApproval,
@@ -3309,6 +3376,7 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_due_audited",
                 MutationIntentDecision::NeedsApproval,
@@ -3474,11 +3542,12 @@ mod tests {
     #[test]
     fn preview_record_does_not_create_entity_or_link_audit_entries() {
         let mut storage = MemoryStorageAdapter::default();
-        let audit = MemoryAuditLog::default();
+        let mut audit = MemoryAuditLog::default();
         let svc = service();
 
         svc.create_preview_record(
             &mut storage,
+            &mut audit,
             intent(
                 "mint_preview_no_mutation_audit",
                 MutationIntentDecision::Allow,
@@ -3489,7 +3558,12 @@ mod tests {
         )
         .expect("preview should persist");
 
-        assert_eq!(audit.len(), 0);
+        assert_eq!(audit.len(), 1);
+        assert_eq!(
+            audit.entries()[0].mutation,
+            MutationType::IntentPreview,
+            "preview should be audited as intent lineage, not entity/link mutation"
+        );
         assert!(audit
             .query_by_operation(&MutationType::EntityCreate)
             .expect("entity create audit query should pass")
@@ -3510,6 +3584,7 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_commit",
                 MutationIntentDecision::Allow,
@@ -3545,6 +3620,7 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_rejected",
                 MutationIntentDecision::NeedsApproval,
@@ -3578,6 +3654,7 @@ mod tests {
 
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_expired",
                 MutationIntentDecision::NeedsApproval,
@@ -3611,6 +3688,7 @@ mod tests {
         let svc = service();
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_allowed",
                 MutationIntentDecision::Allow,
@@ -3635,6 +3713,7 @@ mod tests {
 
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_pending_commit",
                 MutationIntentDecision::NeedsApproval,
@@ -3666,6 +3745,7 @@ mod tests {
         for id in ["mint_due_a", "mint_due_b"] {
             svc.create_preview_record(
                 &mut storage,
+                &mut MemoryAuditLog::default(),
                 intent(
                     id,
                     MutationIntentDecision::NeedsApproval,
@@ -3678,6 +3758,7 @@ mod tests {
         }
         svc.create_preview_record(
             &mut storage,
+            &mut MemoryAuditLog::default(),
             intent(
                 "mint_later",
                 MutationIntentDecision::NeedsApproval,

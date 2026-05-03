@@ -152,26 +152,29 @@ fn validate_expression(
             Ok(())
         }
         Expression::Property { variable, path } => {
-            let label = env.label_of(variable).ok_or_else(|| {
-                CypherError::UnknownIdentifier {
+            let label = env
+                .label_of(variable)
+                .ok_or_else(|| CypherError::UnknownIdentifier {
                     kind: "variable",
                     name: variable.clone(),
-                }
-            })?;
+                })?;
             // Property access requires a known label so we can resolve
             // the property. Untyped nodes (no `:Label` in the pattern)
             // are conservatively rejected for now; a future iteration
             // could allow them and validate at runtime.
-            let label_name = label.as_ref().ok_or_else(|| CypherError::UnknownIdentifier {
-                kind: "untyped variable property access",
-                name: variable.clone(),
-            })?;
-            let label_def = schema.label(label_name).ok_or_else(|| {
-                CypherError::UnknownIdentifier {
-                    kind: "label",
-                    name: label_name.clone(),
-                }
-            })?;
+            let label_name = label
+                .as_ref()
+                .ok_or_else(|| CypherError::UnknownIdentifier {
+                    kind: "untyped variable property access",
+                    name: variable.clone(),
+                })?;
+            let label_def =
+                schema
+                    .label(label_name)
+                    .ok_or_else(|| CypherError::UnknownIdentifier {
+                        kind: "label",
+                        name: label_name.clone(),
+                    })?;
             // Only validate the first segment; nested JSON path navigation
             // beyond declared properties is allowed (entity bodies are
             // opaque per ADR-010 §Entity Data Opacity).
@@ -198,9 +201,7 @@ fn validate_expression(
             validate_expression(right, schema, env)
         }
         Expression::IsNull { expression, .. } => validate_expression(expression, schema, env),
-        Expression::Exists(sq) | Expression::NotExists(sq) => {
-            validate_subquery(sq, schema, env)
-        }
+        Expression::Exists(sq) | Expression::NotExists(sq) => validate_subquery(sq, schema, env),
         Expression::FunctionCall { name, arguments } => {
             validate_function_call(name, arguments, schema, env)
         }
@@ -290,25 +291,21 @@ mod tests {
 
     #[test]
     fn unknown_property_in_inline_predicate_rejected() {
-        let err =
-            parse_and_validate("MATCH (b:DdxBead {bogus: 'x'}) RETURN b").unwrap_err();
+        let err = parse_and_validate("MATCH (b:DdxBead {bogus: 'x'}) RETURN b").unwrap_err();
         assert!(matches!(err, CypherError::UnknownIdentifier { kind, .. } if kind == "property"));
     }
 
     #[test]
     fn unknown_relationship_rejected() {
-        let err = parse_and_validate(
-            "MATCH (a:DdxBead)-[:UNKNOWN_REL]->(b:DdxBead) RETURN a",
-        )
-        .unwrap_err();
+        let err = parse_and_validate("MATCH (a:DdxBead)-[:UNKNOWN_REL]->(b:DdxBead) RETURN a")
+            .unwrap_err();
         assert!(matches!(err, CypherError::UnknownIdentifier { kind, .. }
             if kind == "relationship_type"));
     }
 
     #[test]
     fn unknown_property_in_where_rejected() {
-        let err =
-            parse_and_validate("MATCH (b:DdxBead) WHERE b.bogus = 'x' RETURN b").unwrap_err();
+        let err = parse_and_validate("MATCH (b:DdxBead) WHERE b.bogus = 'x' RETURN b").unwrap_err();
         assert!(matches!(err, CypherError::UnknownIdentifier { kind, .. } if kind == "property"));
     }
 

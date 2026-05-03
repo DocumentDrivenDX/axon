@@ -82,7 +82,9 @@ impl LabelDef {
     }
 
     pub fn is_indexed(&self, property: &str) -> bool {
-        self.indexed_properties.iter().any(|p| p.property == property)
+        self.indexed_properties
+            .iter()
+            .any(|p| p.property == property)
     }
 
     pub fn unique_index(&self, property: &str) -> bool {
