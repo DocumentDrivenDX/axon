@@ -3,3 +3,16 @@
 ✓ axon-79d1df96 → error: post-merge review: BLOCK (flagged for human)
 
 ▶ axon-80979cb8: build(feat-031): impact-matrix proposed-policy state and op set extension (A1/4 of axon-ff92fed7)
+✓ axon-80979cb8 → no_changes: status: needs_investigation
+reason: The scoped FEAT-031 UI/API changes are already present in this worktree with no diff to commit: IMPACT_MATRIX_OPERATIONS includes read/create/update/patch/delete; policies/+page.svelte declares proposedImpactMatrix, proposedImpactMatrixError, and loadingProposedImpactMatrix adjacent to the active matrix state; loadImpactMatrix resets proposed state when no draft access_control exists and loads proposed cells using explainPolicyDetailed/fetchEffectivePolicy with policyOverride when a draft exists; api.ts already accepts policyOverride in fetchEffectivePolicy/explainPolicyDetailed. bun run typecheck and bun run lint both pass from ui/. The required targeted e2e command cannot complete because scripts/test-ui-e2e-docker.sh fails during Docker image build before Playwright runs: Dockerfile copies/creates Cargo metadata placeholders for workspace crates but omits crates/axon-cypher, while Cargo.toml includes crates/axon-cypher and crates/axon-schema depends on it. Fixing Dockerfile is outside this bead's named UI/API scope, so this attempt stops for triage rather than modifying out-of-scope build infrastructure.
+
+verified:
+- ui/src/lib/policy-evaluator.ts: IMPACT_MATRIX_OPERATIONS is ['read', 'create', 'update', 'patch', 'delete'].
+- ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte: proposed-policy matrix state and loadImpactMatrix proposed-policy fanout are present.
+- ui/src/lib/api.ts: fetchEffectivePolicy and explainPolicyDetailed accept policyOverride and send it to GraphQL.
+- command passed: cd ui && bun run typecheck
+- command passed: cd ui && bun run lint
+- command failed before tests: bash scripts/test-ui-e2e-docker.sh -- tests/e2e/policy-authoring.spec.ts
+- failure: Dockerfile planner stage does not copy/create crates/axon-cypher/Cargo.toml, causing cargo chef prepare to fail with "failed to read /usr/src/axon/crates/axon-cypher/Cargo.toml".
+
+▶ axon-ad2a9669: build(feat-009): Cypher executor — in-memory streaming runtime
