@@ -1,0 +1,29 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only execution metadata files (manifest.json, result.json) under .ddx/executions/. No source code or tests implementing audit lineage, intent/entity ID queries, approval/rejection metadata, or redacted audit reads are present to evaluate against the acceptance criteria.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "No implementation present: diff only adds .ddx/executions metadata files with no changes to axon-audit or any other crate.",
+      "location": ".ddx/executions/20260503T110845-123129f1/manifest.json"
+    },
+    {
+      "severity": "block",
+      "summary": "Acceptance criterion unmet: no audit tests proving lineage queryable by intent ID and entity ID.",
+      "location": "crates/axon-audit/"
+    },
+    {
+      "severity": "block",
+      "summary": "Acceptance criterion unmet: no approval/rejection metadata (actor, agent/tool identity, policy version, approver reason, intent ID, pre/post images) recorded.",
+      "location": "crates/axon-audit/"
+    },
+    {
+      "severity": "block",
+      "summary": "Acceptance criterion unmet: no redacted audit reads aligned with FEAT-029 entity read redaction.",
+      "location": "crates/axon-audit/"
+    }
+  ]
+}
+```
