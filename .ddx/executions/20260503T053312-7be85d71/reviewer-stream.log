@@ -1,0 +1,15 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only execution metadata (manifest.json, result.json) under .ddx/executions/. No source code changes for PROV-O serialization, content negotiation, query parameter handling, or tests are present. None of AC1–AC5 can be evaluated as implemented.",
+  "findings": [
+    { "severity": "block", "summary": "AC1 not evaluable: no code adding Accept: application/ld+json content negotiation or ?format=prov query parameter on audit endpoints in the diff.", "location": ".ddx/executions/20260503T053312-7be85d71/" },
+    { "severity": "block", "summary": "AC2 not evaluable: no audit handler/serializer changes shown to confirm native JSON shape is preserved.", "location": "crates/axon-audit/" },
+    { "severity": "block", "summary": "AC3 not evaluable: no PROV-O serializer, @context, or ontology validation code/tests in the diff.", "location": "crates/axon-audit/" },
+    { "severity": "block", "summary": "AC4 not evaluable: no round-trip (JSON → PROV-O → re-import) test present in the diff.", "location": "crates/axon-audit/tests/" },
+    { "severity": "block", "summary": "AC5 not evaluable from diff: no source changes to run cargo test/clippy against; only execution metadata files were added.", "location": ".ddx/executions/20260503T053312-7be85d71/result.json" },
+    { "severity": "warn", "summary": "Commit f670ef3 ('add execution evidence') appears to only commit ddx execution artifacts; the actual implementation commit (25876f2 'feat(audit): add PROV-O serialization') is referenced as result_rev but its changes are not included in this review's diff.", "location": ".ddx/executions/20260503T053312-7be85d71/result.json:5" }
+  ]
+}
+```
