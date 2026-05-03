@@ -6,3 +6,6 @@
 ✓ axon-cf99b8a4 → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
 
 ▶ axon-51d884f0: build(feat-009): Cypher planner — AST + schema → execution plan
+✓ axon-51d884f0 → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
+
+▶ axon-9a4f3b72: build(feat-009): ESF queries: block — schema-time named query registration
