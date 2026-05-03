@@ -1,0 +1,79 @@
+{
+  "verdict": "APPROVE",
+  "rationale": "All ACs satisfied: planner.rs implements plan() returning serializable ExecutionPlan; DDx ready/blocked query uses status index for outer match and EXISTS target probe; unindexed scans above threshold raise UnsupportedQueryPlan with missing-index diagnostic; 11 unit tests cover required scenarios.",
+  "findings": [
+    {
+      "severity": "info",
+      "summary": "AC1: pub fn plan(query, schema) -\u003e Result\u003cExecutionPlan, CypherError\u003e implemented as required.",
+      "location": "crates/axon-cypher/src/planner.rs:18"
+    },
+    {
+      "severity": "info",
+      "summary": "AC2: ExecutionPlan and PlanOperator derive Serialize/Deserialize; execution_plan_serializes_to_json test confirms JSON output.",
+      "location": "crates/axon-cypher/src/planner.rs:24-50"
+    },
+    {
+      "severity": "info",
+      "summary": "AC3: ddx_ready_query_uses_status_index_for_outer_match_and_exists_target verifies outer IndexLookup on DdxBead.status and target_index_probe on status with NotEq.",
+      "location": "crates/axon-cypher/src/planner.rs:925-967"
+    },
+    {
+      "severity": "info",
+      "summary": "AC4: ensure_scan_allowed emits UnsupportedQueryPlan with 'missing-index diagnostic' for collections \u003e unindexed_scan_threshold (default 1000); test confirms message contents.",
+      "location": "crates/axon-cypher/src/planner.rs:409-417"
+    },
+    {
+      "severity": "info",
+      "summary": "AC6: 11 tests present (index hit, range scan, sort-via-index, EXISTS via index probe, OPTIONAL MATCH, fallback rejection, depth cap, cardinality budget, JSON serialization, small-collection fallback, named-query budget override) — exceeds the ≥8 requirement.",
+      "location": "crates/axon-cypher/src/planner.rs:867-1096"
+    },
+    {
+      "severity": "info",
+      "summary": "AC5: harness result.json reports exit_code=0 / task_succeeded; cargo could not be re-run in this review session to independently re-verify.",
+      "location": ".ddx/executions/20260503T034127-c287e4dd/result.json"
+    },
+    {
+      "severity": "info",
+      "summary": "Minor inefficiency: when WHERE pushes a predicate into IndexLookup, apply_where still wraps the result in a Filter with the same predicate (visible in range_scan_for_indexed_comparison test). Plan is correct but performs redundant evaluation; not an AC violation.",
+      "location": "crates/axon-cypher/src/planner.rs:419-442"
+    }
+  ],
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 2141,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 180,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260503T034127-c287e4dd/manifest.json",
+          ".ddx/executions/20260503T034127-c287e4dd/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 6533,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 10480,
+    "output_bytes": 2321,
+    "elapsed_ms": 87501,
+    "harness": "claude",
+    "model": "opus"
+  }
+}

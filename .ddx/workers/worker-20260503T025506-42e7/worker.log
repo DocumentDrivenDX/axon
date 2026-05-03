@@ -9,3 +9,6 @@
 ✓ axon-80979cb8 → error: post-merge review: BLOCK (flagged for human)
 
 ▶ axon-51d884f0: build(feat-009): Cypher planner — AST + schema → execution plan
+✓ axon-51d884f0 → merged (87849a5d)
+
+▶ axon-ad2a9669: build(feat-009): Cypher executor — in-memory streaming runtime
