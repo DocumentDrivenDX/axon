@@ -1,0 +1,14 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only ddx execution metadata (manifest.json, result.json). No source changes to axon-schema, axon-cypher, or tests — none of AC1–AC6 can be evaluated as implemented.",
+  "findings": [
+    { "severity": "block", "summary": "No implementation: diff adds only ddx execution metadata files; AC1 (queries: block accepted) cannot be evaluated", "location": ".ddx/executions/20260503T113138-9dd29676/manifest.json" },
+    { "severity": "block", "summary": "No CompileReport diagnostics code present; AC2 unmet", "location": "crates/axon-schema/" },
+    { "severity": "block", "summary": "No --dry-run path changes present; AC3 unmet", "location": "crates/axon-schema/" },
+    { "severity": "block", "summary": "No schema-introspection changes exposing named-query metadata; AC4 unmet", "location": "crates/axon-schema/" },
+    { "severity": "block", "summary": "No tests added; AC5/AC6 unmet (≥8 required test cases absent)", "location": "crates/axon-schema/tests/" }
+  ]
+}
+```
