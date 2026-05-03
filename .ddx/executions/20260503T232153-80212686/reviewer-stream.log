@@ -1,0 +1,12 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "APPROVE",
+  "summary": "All 5 AC are satisfied. Svelte cell renders one of unchanged/delta/transaction-unavailable/active-only states with correct data-*-changed attributes; new Playwright test exercises read|create|update|patch|delete across visible subjects, asserts decision/redacted/denied/diagnostic deltas using both proposedPolicyDraftDenyHigh and proposedPolicyDraftBroken, verifies 'unchanged' literal, and conditionally checks the transaction affordance. Notes capture green test counts (7 passed) plus typecheck/lint/unit/cargo evidence.",
+  "findings": [
+    { "severity": "info", "summary": "biome-ignore comment used to retain the CellDelta type import that is only referenced inside the template; acceptable but worth a future linter rule pass.", "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:47" },
+    { "severity": "info", "summary": "matrixDeltaDraft mutates a copy of proposedPolicyDraftDenyHigh to add redact/deny/contractor-read rules — ensures the test deterministically exercises decisionChanged, redactedFieldsChanged, and deniedFieldsChanged flags.", "location": "ui/tests/e2e/policy-authoring.spec.ts:43" },
+    { "severity": "info", "summary": "Transaction-unavailable assertion is guarded by count()>0, matching the bead's note that transaction-row support is queued separately; acceptable per AC1/AC2 wording ('if rendered').", "location": "ui/tests/e2e/policy-authoring.spec.ts:399" }
+  ]
+}
+```
