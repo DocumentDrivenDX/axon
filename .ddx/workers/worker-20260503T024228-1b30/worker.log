@@ -24,3 +24,6 @@
 ✓ axon-8cdc4e49 → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
 
 ▶ axon-8b814cae: build(feat-017): lazy-read schema migration (US-062) — unblocks DDx GA
+✓ axon-8b814cae → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
+
+▶ hx-5f4d4ea1: ui: toggle race during in-flight target-policy fetch on Links preview
