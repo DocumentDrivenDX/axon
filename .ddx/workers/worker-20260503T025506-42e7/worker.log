@@ -12,3 +12,22 @@
 ✓ axon-51d884f0 → merged (87849a5d)
 
 ▶ axon-ad2a9669: build(feat-009): Cypher executor — in-memory streaming runtime
+✓ axon-ad2a9669 → no_changes: verification_command: test -f .ddx/executions/20260503T035849-6299213d/no_changes_rationale.txt && ddx bead show axon-390c67d1 >/dev/null && ddx bead show axon-ff99d8b1 >/dev/null && ddx bead show axon-29b3919b >/dev/null && ddx bead show axon-52265708 >/dev/null
+
+status: decomposed
+parent: axon-ad2a9669
+reason: The parent bead is too large for one bounded execution pass under the execute-bead size check. It has seven acceptance criteria spanning executor API design, in-memory store implementation, streaming runtime semantics, timeout enforcement, materialization rules, and a broad end-to-end integration suite. Per instructions, no implementation was attempted.
+
+child: axon-390c67d1
+slice: QueryStore trait and in-memory entity/link graph store for axon-cypher executor tests.
+
+child: axon-ff99d8b1
+slice: Core execute(plan, store) -> RowStream surface, basic streaming operators, and timeout enforcement.
+
+child: axon-29b3919b
+slice: OPTIONAL MATCH, EXISTS, count(*), DISTINCT, and ORDER BY ASC/DESC executor semantics and focused tests.
+
+child: axon-52265708
+slice: DDx end-to-end graph-query integration suite over a 10-bead, 15-link in-memory dataset.
+
+▶ axon-9a4f3b72: build(feat-009): ESF queries: block — schema-time named query registration

@@ -2953,3 +2953,29 @@ DDx ts-net enabled (hostname: ddx-sindri)
 2026/05/02 23:58:40 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
 2026/05/02 23:58:46 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/agent-logs/svc-1777780639062863371.jsonl: file already closed"
 2026/05/02 23:58:46 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:58:51 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:58:56 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:01 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:06 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:11 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:18 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:23 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:28 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:33 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:38 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:43 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:48 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:54 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/02 23:59:59 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:04 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:09 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:14 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:19 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:25 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:30 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:35 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:40 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:45 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:50 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:55 To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/a3a80a701b24f
+2026/05/03 00:00:56 WARN session logger: write error err="write /home/erik/Projects/axon/.ddx/executions/20260503T035849-6299213d/embedded/svc-1777780730064330438.jsonl: file already closed"
