@@ -31,3 +31,6 @@ child: axon-52265708
 slice: DDx end-to-end graph-query integration suite over a 10-bead, 15-link in-memory dataset.
 
 ▶ axon-9a4f3b72: build(feat-009): ESF queries: block — schema-time named query registration
+✓ axon-9a4f3b72 → error: post-merge review: BLOCK (flagged for human)
+
+▶ axon-69633116: build: createXxx Pattern B implementation — strict typed/transaction creates, upsert HTTP/gRPC

@@ -1,0 +1,74 @@
+{
+  "verdict": "BLOCK",
+  "rationale": "Diff contains only ddx execution metadata (manifest.json, result.json) for the attempt. No source changes to axon-schema, axon-cypher, or tests are present, so none of AC1–AC6 can be evaluated as implemented.",
+  "findings": [
+    {
+      "severity": "block",
+      "summary": "No changes to axon-schema crate — queries: block acceptance/parsing not visible in diff",
+      "location": "crates/axon-schema/"
+    },
+    {
+      "severity": "block",
+      "summary": "No CompileReport diagnostics implementation visible (AC2)",
+      "location": "crates/axon-schema/"
+    },
+    {
+      "severity": "block",
+      "summary": "No --dry-run path changes visible (AC3)",
+      "location": "crates/axon-schema/"
+    },
+    {
+      "severity": "block",
+      "summary": "No schema-introspection changes exposing named-query metadata (AC4)",
+      "location": "crates/axon-schema/"
+    },
+    {
+      "severity": "block",
+      "summary": "No tests added — AC6 requires ≥8 tests covering listed scenarios",
+      "location": "crates/axon-schema/tests/"
+    },
+    {
+      "severity": "info",
+      "summary": "Diff only includes ddx execution manifest/result artifacts; the actual implementation commit (9fd009f referenced in result.json) is not part of the reviewable changed-files set",
+      "location": ".ddx/executions/20260503T040101-1f366984/"
+    }
+  ],
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 1533,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 180,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260503T040101-1f366984/manifest.json",
+          ".ddx/executions/20260503T040101-1f366984/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 5927,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 9266,
+    "output_bytes": 1303,
+    "elapsed_ms": 14614,
+    "harness": "claude",
+    "model": "opus"
+  }
+}
