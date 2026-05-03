@@ -6,3 +6,6 @@
 ✓ axon-79d1df96 → error: post-merge review: BLOCK (flagged for human)
 
 ▶ axon-80979cb8: build(feat-031): impact-matrix proposed-policy state and op set extension (A1/4 of axon-ff92fed7)
+✓ axon-80979cb8 → error: post-merge review: BLOCK (flagged for human)
+
+▶ axon-51d884f0: build(feat-009): Cypher planner — AST + schema → execution plan

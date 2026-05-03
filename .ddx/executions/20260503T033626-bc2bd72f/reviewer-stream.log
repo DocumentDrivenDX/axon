@@ -1,0 +1,15 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only .ddx execution metadata (manifest.json, result.json). No changes to ui/src/lib/policy-evaluator.ts or policies/+page.svelte. None of AC1–AC6 are implemented or verifiable.",
+  "findings": [
+    { "severity": "block", "summary": "AC1 not met: IMPACT_MATRIX_OPERATIONS unchanged — policy-evaluator.ts is not modified in this diff.", "location": "ui/src/lib/policy-evaluator.ts:500" },
+    { "severity": "block", "summary": "AC2 not met: proposedImpactMatrix / proposedImpactMatrixError / loadingProposedImpactMatrix state declarations not added — +page.svelte is not modified.", "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:94" },
+    { "severity": "block", "summary": "AC3 not met: no second Promise.allSettled fanout with policyOverride present; cannot verify proposedImpactMatrix population parity with impactMatrix.", "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:358" },
+    { "severity": "block", "summary": "AC4 not met: no logic added to leave proposedImpactMatrix=[] / error=null when schema has no draft access_control.", "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte" },
+    { "severity": "block", "summary": "AC5/AC6 unverifiable: with no UI/API source changes, typecheck/lint and Playwright spec results provide no evidence of compliance.", "location": ".ddx/executions/20260503T033626-bc2bd72f/result.json" },
+    { "severity": "info", "summary": "Only execution evidence files were committed; the actual implementation appears missing from the reviewed revision.", "location": ".ddx/executions/20260503T033626-bc2bd72f/manifest.json" }
+  ]
+}
+```
