@@ -1177,6 +1177,12 @@ onMount(() => {
 													c.subjectId === subject.id &&
 													c.operation === operation,
 											)}
+											{@const proposedCell = proposedImpactMatrix.find(
+												(c) =>
+													c.entityId === entity.id &&
+													c.subjectId === subject.id &&
+													c.operation === operation,
+											)}
 											<td
 												data-testid="policy-impact-matrix-cell"
 												data-entity-id={entity.id}
@@ -1185,60 +1191,146 @@ onMount(() => {
 												data-decision={cell?.decision ?? 'pending'}
 											>
 												{#if cell}
-													<div
-														class="impact-decision impact-decision-{cell.decision}"
-														data-testid="policy-impact-matrix-decision"
-													>
-														{cell.decision}
+													<div class:impact-cell-columns={Boolean(proposedCell)}>
+														<div
+															class="impact-cell-section"
+															data-testid="policy-impact-matrix-cell-active"
+														>
+															{#if proposedCell}
+																<div class="impact-cell-label">active</div>
+															{/if}
+															<div
+																class="impact-decision impact-decision-{cell.decision}"
+																data-testid="policy-impact-matrix-decision"
+															>
+																<span data-testid="policy-impact-matrix-decision-active">
+																	{cell.decision}
+																</span>
+															</div>
+															<div
+																class="muted impact-reason"
+																data-testid="policy-impact-matrix-reason"
+															>
+																<span data-testid="policy-impact-matrix-reason-active">
+																	{cell.reason}
+																</span>
+															</div>
+															{#if cell.approvalRole}
+																<div
+																	class="muted impact-approval"
+																	data-testid="policy-impact-matrix-approval-role"
+																>
+																	<span data-testid="policy-impact-matrix-approval-role-active">
+																		approver: {cell.approvalRole}
+																	</span>
+																</div>
+															{/if}
+															{#if cell.redactedFields.length}
+																<div
+																	class="impact-fields"
+																	data-testid="policy-impact-matrix-redacted-fields"
+																>
+																	<span data-testid="policy-impact-matrix-redacted-fields-active">
+																		redacted: {formatFields(cell.redactedFields)}
+																	</span>
+																</div>
+															{/if}
+															{#if cell.deniedFields.length}
+																<div
+																	class="impact-fields"
+																	data-testid="policy-impact-matrix-denied-fields"
+																>
+																	<span data-testid="policy-impact-matrix-denied-fields-active">
+																		denied: {formatFields(cell.deniedFields)}
+																	</span>
+																</div>
+															{/if}
+															{#if cell.diagnostic}
+																<div
+																	class="impact-diagnostic"
+																	data-testid="policy-impact-matrix-diagnostic"
+																>
+																	<div data-testid="policy-impact-matrix-diagnostic-active">
+																		<strong>{cell.diagnostic.code}</strong>
+																		<p>{cell.diagnostic.remediation}</p>
+																	</div>
+																</div>
+															{/if}
+															{#if cell.explainHref}
+																<a
+																	class="impact-link"
+																	href={cell.explainHref}
+																	data-testid="policy-impact-matrix-open-graphql"
+																>
+																	<span data-testid="policy-impact-matrix-open-graphql-active">
+																		Open explainPolicy
+																	</span>
+																</a>
+															{/if}
+														</div>
+														{#if proposedCell}
+															<div
+																class="impact-cell-section"
+																data-testid="policy-impact-matrix-cell-proposed"
+															>
+																<div class="impact-cell-label">proposed</div>
+																<div
+																	class="impact-decision impact-decision-{proposedCell.decision}"
+																	data-testid="policy-impact-matrix-decision-proposed"
+																>
+																	{proposedCell.decision}
+																</div>
+																<div
+																	class="muted impact-reason"
+																	data-testid="policy-impact-matrix-reason-proposed"
+																>
+																	{proposedCell.reason}
+																</div>
+																{#if proposedCell.approvalRole}
+																	<div
+																		class="muted impact-approval"
+																		data-testid="policy-impact-matrix-approval-role-proposed"
+																	>
+																		approver: {proposedCell.approvalRole}
+																	</div>
+																{/if}
+																{#if proposedCell.redactedFields.length}
+																	<div
+																		class="impact-fields"
+																		data-testid="policy-impact-matrix-redacted-fields-proposed"
+																	>
+																		redacted: {formatFields(proposedCell.redactedFields)}
+																	</div>
+																{/if}
+																{#if proposedCell.deniedFields.length}
+																	<div
+																		class="impact-fields"
+																		data-testid="policy-impact-matrix-denied-fields-proposed"
+																	>
+																		denied: {formatFields(proposedCell.deniedFields)}
+																	</div>
+																{/if}
+																{#if proposedCell.diagnostic}
+																	<div
+																		class="impact-diagnostic"
+																		data-testid="policy-impact-matrix-diagnostic-proposed"
+																	>
+																		<strong>{proposedCell.diagnostic.code}</strong>
+																		<p>{proposedCell.diagnostic.remediation}</p>
+																	</div>
+																{/if}
+																{#if proposedCell.explainHref}
+																	<a
+																		class="impact-link"
+																		href={proposedCell.explainHref}
+																		data-testid="policy-impact-matrix-open-graphql-proposed"
+																	>
+																		Open explainPolicy
+																	</a>
+																{/if}
+															</div>
+														{/if}
 													</div>
-													<div
-														class="muted impact-reason"
-														data-testid="policy-impact-matrix-reason"
-													>
-														{cell.reason}
-													</div>
-													{#if cell.approvalRole}
-														<div
-															class="muted impact-approval"
-															data-testid="policy-impact-matrix-approval-role"
-														>
-															approver: {cell.approvalRole}
-														</div>
-													{/if}
-													{#if cell.redactedFields.length}
-														<div
-															class="impact-fields"
-															data-testid="policy-impact-matrix-redacted-fields"
-														>
-															redacted: {formatFields(cell.redactedFields)}
-														</div>
-													{/if}
-													{#if cell.deniedFields.length}
-														<div
-															class="impact-fields"
-															data-testid="policy-impact-matrix-denied-fields"
-														>
-															denied: {formatFields(cell.deniedFields)}
-														</div>
-													{/if}
-													{#if cell.diagnostic}
-														<div
-															class="impact-diagnostic"
-															data-testid="policy-impact-matrix-diagnostic"
-														>
-															<strong>{cell.diagnostic.code}</strong>
-															<p>{cell.diagnostic.remediation}</p>
-														</div>
-													{/if}
-													{#if cell.explainHref}
-														<a
-															class="impact-link"
-															href={cell.explainHref}
-															data-testid="policy-impact-matrix-open-graphql"
-														>
-															Open explainPolicy
-														</a>
-													{/if}
 												{:else}
 													<span class="muted">…</span>
 												{/if}
@@ -1474,6 +1566,26 @@ onMount(() => {
 		font-size: 0.78rem;
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
+	}
+
+	.impact-cell-columns {
+		display: grid;
+		grid-template-columns: minmax(11rem, 1fr) minmax(11rem, 1fr);
+		gap: 0.75rem;
+	}
+
+	.impact-cell-section + .impact-cell-section {
+		padding-left: 0.75rem;
+		border-left: 1px solid rgba(255, 255, 255, 0.08);
+	}
+
+	.impact-cell-label {
+		margin-bottom: 0.45rem;
+		color: var(--muted);
+		font-size: 0.7rem;
+		font-weight: 700;
+		letter-spacing: 0.04em;
+		text-transform: uppercase;
 	}
 
 	.impact-decision {
