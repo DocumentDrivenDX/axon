@@ -46,3 +46,5 @@ slice: DDx end-to-end graph-query integration suite over a 10-bead, 15-link in-m
 ✓ axon-8cdc4e49 → error: post-merge review: BLOCK (flagged for human)
 
 ▶ axon-8b814cae: build(feat-017): lazy-read schema migration (US-062) — unblocks DDx GA
+✓ axon-8b814cae → error: post-merge review: BLOCK (flagged for human)
+routing preflight: routing preflight rejected (harness=codex model=): no viable routing candidate for pins harness=codex: 1 candidates rejected (skipping hx-5f4d4ea1, exiting loop)

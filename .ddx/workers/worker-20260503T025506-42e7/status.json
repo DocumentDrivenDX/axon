@@ -1,16 +1,137 @@
 {
   "id": "worker-20260503T025506-42e7",
   "kind": "execute-loop",
-  "state": "running",
-  "status": "running",
+  "state": "exited",
+  "status": "success",
   "project_root": "/home/erik/Projects/axon",
   "harness": "codex",
   "profile": "default",
   "poll_interval": "0s",
   "started_at": "2026-05-03T02:55:06.751928205Z",
-  "finished_at": "0001-01-01T00:00:00Z",
+  "finished_at": "2026-05-03T06:07:54.35368307Z",
   "stdout_path": ".ddx/workers/worker-20260503T025506-42e7/worker.log",
   "spec_path": ".ddx/workers/worker-20260503T025506-42e7/spec.json",
+  "attempts": 12,
+  "successes": 4,
+  "failures": 8,
+  "current_bead": "hx-5f4d4ea1",
+  "last_error": "routing preflight rejected (harness=codex model=): no viable routing candidate for pins harness=codex: 1 candidates rejected",
+  "last_result": {
+    "bead_id": "hx-5f4d4ea1",
+    "harness": "codex",
+    "status": "execution_failed",
+    "detail": "routing preflight rejected (harness=codex model=): no viable routing candidate for pins harness=codex: 1 candidates rejected"
+  },
+  "recent_phases": [
+    {
+      "phase": "running",
+      "ts": "2026-05-03T03:58:49.405080927Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T04:00:59.030719375Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T04:01:01.400044919Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T04:01:01.400073628Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T04:26:43.810817354Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T04:26:46.288370085Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T04:26:46.288422908Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "done",
+      "ts": "2026-05-03T04:46:09.370352391Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T04:46:13.029508551Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T04:46:13.0295367Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "done",
+      "ts": "2026-05-03T05:09:16.671713743Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T05:09:19.039530872Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T05:09:19.039561119Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T05:33:10.015104917Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T05:33:12.329143877Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T05:33:12.329172731Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T05:53:06.817758974Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T05:53:09.303342042Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T05:53:09.303371311Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T06:07:51.958343956Z",
+      "phase_seq": 3
+    }
+  ],
+  "last_attempt": {
+    "attempt_id": "20260503T055309-18abf864",
+    "bead_id": "axon-8b814cae",
+    "phase": "failed",
+    "started_at": "2026-05-03T05:53:09.303342042Z",
+    "ended_at": "2026-05-03T06:07:51.958343956Z",
+    "elapsed_ms": 847506
+  },
   "lifecycle": [
     {
       "action": "start",

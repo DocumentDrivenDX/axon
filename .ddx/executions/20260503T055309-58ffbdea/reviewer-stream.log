@@ -1,0 +1,17 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only execution evidence files (manifest.json, result.json) under .ddx/executions/. No schema, storage, or read-path code changes are present, so none of AC1–AC7 can be verified from this diff.",
+  "findings": [
+    { "severity": "block", "summary": "AC1 unverifiable: no schema definition changes introducing on_read_defaults block in the diff.", "location": "crates/axon-schema/" },
+    { "severity": "block", "summary": "AC2 unverifiable: no read-path logic applying defaults for older schema_version entities is present in the diff.", "location": "crates/axon-storage/ or crates/axon-api/" },
+    { "severity": "block", "summary": "AC3 unverifiable: no warning-emitting logic for required-without-default fields visible in the diff.", "location": "crates/axon-schema/ or read path" },
+    { "severity": "block", "summary": "AC4 unverifiable: cannot confirm storage is unchanged on read; no storage adapter or read-handler changes shown.", "location": "crates/axon-storage/" },
+    { "severity": "block", "summary": "AC5 unverifiable: no opt-in eager revalidation pathway (US-060) referenced in the diff.", "location": "crates/axon-schema/" },
+    { "severity": "block", "summary": "AC6 unverifiable: no test files added/modified; cannot confirm cargo test/clippy clean from diff alone.", "location": "crates/*/tests/" },
+    { "severity": "block", "summary": "AC7 unverifiable: no DDx integration sanity test included; result.json claims success but actual implementation is not part of this diff.", "location": ".ddx/executions/20260503T055309-58ffbdea/result.json" },
+    { "severity": "info", "summary": "result.json references result_rev b825d0c (commit 'feat(schema): add lazy-read schema defaults') which appears to contain the actual implementation, but its contents are not in the reviewable diff.", "location": ".ddx/executions/20260503T055309-58ffbdea/result.json:5" }
+  ]
+}
+```
