@@ -8,6 +8,7 @@
 pub mod cdc;
 pub mod entry;
 pub mod log;
+pub mod prov;
 
 pub use cdc::{
     CdcEnvelope, CdcOp, CdcSink, CdcSource, JsonlFileSink, KafkaCdcSink, KafkaConfig, MemoryCdcSink,
@@ -18,3 +19,7 @@ pub use entry::{
     MutationIntentLineageLink, MutationIntentLineageRelation, MutationType,
 };
 pub use log::{AuditLog, AuditPage, AuditQuery, MemoryAuditLog};
+pub use prov::{
+    audit_entries_from_prov_json, audit_entries_to_prov_json, audit_entry_to_native_json,
+    validate_prov_o_json, PROV_NAMESPACE,
+};

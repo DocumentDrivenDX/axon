@@ -1925,8 +1925,10 @@ async fn traverse_with_request(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn query_audit_by_entity(
     Extension(handler): Extension<TenantHandler>,
+    Extension(current_tenant): Extension<CurrentTenant>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
     Extension(caller): Extension<CoreCallerIdentity>,
@@ -1934,7 +1936,13 @@ async fn query_audit_by_entity(
         collection,
         id: entity_id,
     }): Path<CollectionEntityPath>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
+    let wants_prov = match audit_wants_prov(&headers, &params) {
+        Ok(wants_prov) => wants_prov,
+        Err(error) => return axon_error_response(error),
+    };
     let handler = handler.lock().await;
     match handler.query_audit_with_caller(
         QueryAuditRequest {
@@ -1949,28 +1957,14 @@ async fn query_audit_by_entity(
         Ok(resp) => {
             let entries =
                 filter_audit_entries_to_database(resp.entries, requested_database_scope.database());
-            let proto: Vec<Value> = entries
-                .iter()
-                .map(|e: &axon_audit::AuditEntry| {
-                    json!({
-                        "id": e.id,
-                        "timestamp_ns": e.timestamp_ns,
-                        "collection": e.collection.to_string(),
-                        "entity_id": e.entity_id.to_string(),
-                        "version": e.version,
-                        "mutation": e.mutation.to_string(),
-                        "operation": e.mutation.to_string(),
-                        "data_before": e.data_before,
-                        "data_after": e.data_after,
-                        "diff": &e.diff,
-                        "actor": e.actor,
-                        "metadata": &e.metadata,
-                        "transaction_id": e.transaction_id,
-                        "intent_lineage": &e.intent_lineage,
-                    })
-                })
-                .collect();
-            Json(json!({ "entries": proto })).into_response()
+            audit_query_response(
+                entries,
+                None,
+                false,
+                wants_prov,
+                current_tenant.as_str(),
+                current_database.as_str(),
+            )
         }
         Err(e) => axon_error_response(e),
     }
@@ -1997,9 +1991,11 @@ fn parse_audit_collections_param(
 
 async fn query_audit(
     Extension(handler): Extension<TenantHandler>,
+    Extension(current_tenant): Extension<CurrentTenant>,
     Extension(current_database): Extension<CurrentDatabase>,
     Extension(requested_database_scope): Extension<RequestedDatabaseScope>,
     Extension(caller): Extension<CoreCallerIdentity>,
+    headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if let Some(filter) = unsupported_audit_filter_param(&params) {
@@ -2020,13 +2016,19 @@ async fn query_audit(
                         "since_ns",
                         "until_ns",
                         "after_id",
-                        "limit"
+                        "limit",
+                        "format"
                     ],
                 }),
             )),
         )
             .into_response();
     }
+
+    let wants_prov = match audit_wants_prov(&headers, &params) {
+        Ok(wants_prov) => wants_prov,
+        Err(error) => return axon_error_response(error),
+    };
 
     let req = QueryAuditRequest {
         database: requested_database_scope.database().map(str::to_string),
@@ -2053,30 +2055,63 @@ async fn query_audit(
             let next_cursor = resp.next_cursor;
             let entries =
                 filter_audit_entries_to_database(resp.entries, requested_database_scope.database());
-            let proto: Vec<Value> = entries
-                .iter()
-                .map(|e: &axon_audit::AuditEntry| {
-                    json!({
-                        "id": e.id,
-                        "timestamp_ns": e.timestamp_ns,
-                        "collection": e.collection.to_string(),
-                        "entity_id": e.entity_id.to_string(),
-                        "version": e.version,
-                        "mutation": e.mutation.to_string(),
-                        "operation": e.mutation.to_string(),
-                        "data_before": e.data_before,
-                        "data_after": e.data_after,
-                        "diff": &e.diff,
-                        "actor": e.actor,
-                        "metadata": &e.metadata,
-                        "transaction_id": e.transaction_id,
-                        "intent_lineage": &e.intent_lineage,
-                    })
-                })
-                .collect();
-            Json(json!({ "entries": proto, "next_cursor": next_cursor })).into_response()
+            audit_query_response(
+                entries,
+                next_cursor,
+                true,
+                wants_prov,
+                current_tenant.as_str(),
+                current_database.as_str(),
+            )
         }
         Err(e) => axon_error_response(e),
+    }
+}
+
+fn audit_wants_prov(
+    headers: &HeaderMap,
+    params: &std::collections::HashMap<String, String>,
+) -> Result<bool, AxonError> {
+    match params.get("format").map(String::as_str) {
+        Some("prov") => Ok(true),
+        Some("json") | None => Ok(accepts_json_ld(headers)),
+        Some(other) => Err(AxonError::InvalidArgument(format!(
+            "unsupported format '{other}'; expected 'prov'"
+        ))),
+    }
+}
+
+fn audit_query_response(
+    entries: Vec<AuditEntry>,
+    next_cursor: Option<u64>,
+    include_next_cursor: bool,
+    wants_prov: bool,
+    tenant: &str,
+    database: &str,
+) -> Response {
+    if wants_prov {
+        let mut body = axon_audit::audit_entries_to_prov_json(&entries, tenant, database);
+        if include_next_cursor {
+            if let Some(obj) = body.as_object_mut() {
+                obj.insert("axon:nextCursor".to_string(), json!(next_cursor));
+            }
+        }
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/ld+json")],
+            Json(body),
+        )
+            .into_response();
+    }
+
+    let proto: Vec<Value> = entries
+        .iter()
+        .map(axon_audit::audit_entry_to_native_json)
+        .collect();
+    if include_next_cursor {
+        Json(json!({ "entries": proto, "next_cursor": next_cursor })).into_response()
+    } else {
+        Json(json!({ "entries": proto })).into_response()
     }
 }
 
@@ -4875,6 +4910,84 @@ mod tests {
         resp.assert_status_ok();
         let body: Value = resp.json();
         assert_eq!(body["entries"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_query_audit_supports_prov_format_parameter() {
+        let server = test_server();
+
+        server
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+        server
+            .put("/tenants/default/databases/default/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v2"}, "expected_version": 1}))
+            .await
+            .assert_status_ok();
+
+        let resp = server
+            .get("/tenants/default/databases/default/audit/query?collection=tasks&format=prov")
+            .await;
+        resp.assert_status_ok();
+        resp.assert_header("content-type", "application/ld+json");
+
+        let body: Value = resp.json();
+        axon_audit::validate_prov_o_json(&body).expect("PROV-O document should validate");
+        assert_eq!(body["@context"]["prov"], axon_audit::PROV_NAMESPACE);
+
+        let graph = body["@graph"].as_array().expect("PROV graph");
+        assert!(graph.iter().any(|node| {
+            node["@type"] == "prov:Activity"
+                && node["axon:operation"] == "entity.update"
+                && node["prov:used"]["@id"]
+                    == "/tenants/default/databases/default/collections/tasks/entities/t-001#audit-2-before"
+        }));
+        assert!(graph.iter().any(|node| {
+            node["@id"] == "/tenants/default/databases/default/collections/tasks/entities/t-001"
+                && node["@type"] == "prov:Entity"
+                && node["prov:wasGeneratedBy"]["@id"]
+                    == "/tenants/default/databases/default/audit/2/activity"
+        }));
+
+        let reimported =
+            axon_audit::audit_entries_from_prov_json(&body).expect("PROV should re-import");
+        assert_eq!(reimported.len(), 2);
+        assert_eq!(reimported[1].mutation, MutationType::EntityUpdate);
+        assert_eq!(reimported[1].data_before, Some(json!({"title": "v1"})));
+        assert_eq!(reimported[1].data_after, Some(json!({"title": "v2"})));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn http_query_audit_supports_prov_accept_negotiation_without_changing_json_default() {
+        let server = test_server();
+
+        server
+            .post("/tenants/default/databases/default/entities/tasks/t-001")
+            .json(&json!({"data": {"title": "v1"}}))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        let json_resp = server
+            .get("/tenants/default/databases/default/audit/query?collection=tasks")
+            .await;
+        json_resp.assert_status_ok();
+        let json_body: Value = json_resp.json();
+        assert!(json_body.get("@context").is_none());
+        assert!(json_body.get("@graph").is_none());
+        assert!(json_body["entries"].is_array());
+        assert_eq!(json_body["entries"][0]["mutation"], "entity.create");
+
+        let prov_resp = server
+            .get("/tenants/default/databases/default/audit/query?collection=tasks")
+            .add_header("accept", "application/ld+json")
+            .await;
+        prov_resp.assert_status_ok();
+        let prov_body: Value = prov_resp.json();
+        axon_audit::validate_prov_o_json(&prov_body).expect("PROV-O document should validate");
+        assert_eq!(prov_body["@context"]["prov"], axon_audit::PROV_NAMESPACE);
+        assert!(prov_body["@graph"].is_array());
     }
 
     #[tokio::test(flavor = "multi_thread")]
