@@ -4,6 +4,7 @@
 //! use structured JSON. Errors are returned as `{"code": "...", "detail": "..."}`
 //! JSON objects with appropriate HTTP status codes.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -55,7 +56,7 @@ use axon_core::auth::{CallerIdentity as CoreCallerIdentity, ResolvedIdentity, Ro
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 use axon_core::types::{Entity, Link};
-use axon_schema::schema::CollectionSchema;
+use axon_schema::schema::{json_ld_reserved_field_aliases, CollectionSchema};
 use axon_storage::adapter::StorageAdapter;
 
 use crate::tenant_router::{TenantHandler, TenantRouter};
@@ -2692,6 +2693,7 @@ async fn put_schema(
             if let Some(report) = &resp.policy_compile_report {
                 result["policy_compile_report"] = json!(report);
             }
+            result["warnings"] = json!(resp.warnings);
             if resp.dry_run {
                 result["dry_run"] = json!(true);
             }
@@ -3257,6 +3259,297 @@ async fn commit_transaction(
 
 // ── GraphQL handler ──────────────────────────────────────────────────────────
 
+fn accepts_json_ld(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|accept| {
+            accept
+                .split(',')
+                .map(|part| part.split(';').next().unwrap_or("").trim())
+                .any(|media_type| media_type.eq_ignore_ascii_case("application/ld+json"))
+        })
+}
+
+fn graphql_response_to_json_ld(
+    response: &async_graphql::Response,
+    schemas: &[CollectionSchema],
+    tenant: &str,
+    database: &str,
+) -> Value {
+    let mut body = serde_json::to_value(response).unwrap_or_else(|error| {
+        json!({
+            "errors": [{
+                "message": format!("failed to serialize GraphQL response: {error}")
+            }]
+        })
+    });
+    let schemas_by_collection: HashMap<String, CollectionSchema> = schemas
+        .iter()
+        .map(|schema| (schema.collection.to_string(), schema.clone()))
+        .collect();
+    if let Some(data) = body.get_mut("data") {
+        transform_graphql_root_json_ld(data, &schemas_by_collection, tenant, database);
+    }
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert(
+            "@context".to_string(),
+            json_ld_context(&schemas_by_collection, tenant, database),
+        );
+    }
+    body
+}
+
+fn transform_graphql_root_json_ld(
+    value: &mut Value,
+    schemas: &HashMap<String, CollectionSchema>,
+    tenant: &str,
+    database: &str,
+) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    for (key, child) in obj.iter_mut() {
+        let collection = root_collection_for_graphql_field(key, schemas);
+        transform_json_ld_value(child, collection.as_deref(), schemas, tenant, database);
+    }
+}
+
+fn transform_json_ld_value(
+    value: &mut Value,
+    current_collection: Option<&str>,
+    schemas: &HashMap<String, CollectionSchema>,
+    tenant: &str,
+    database: &str,
+) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                transform_json_ld_value(item, current_collection, schemas, tenant, database);
+            }
+        }
+        Value::Object(obj) => {
+            let own_collection = obj
+                .get("collection")
+                .and_then(Value::as_str)
+                .or(current_collection)
+                .map(ToOwned::to_owned);
+
+            if let Some(collection) = own_collection.as_deref() {
+                if let Some(schema) = schemas.get(collection) {
+                    remap_json_ld_reserved_fields(obj, schema);
+                    if let Some(data) = obj.get_mut("data") {
+                        remap_json_ld_data_object(data, schema);
+                    }
+                }
+            }
+
+            let entity_id = obj.get("id").and_then(Value::as_str).map(ToOwned::to_owned);
+            if let (Some(collection), Some(id)) = (own_collection.as_deref(), entity_id) {
+                obj.insert(
+                    "@id".to_string(),
+                    Value::String(canonical_entity_url(tenant, database, collection, &id)),
+                );
+                obj.insert("@type".to_string(), Value::String(collection.to_string()));
+            }
+
+            let relationship_targets = own_collection
+                .as_deref()
+                .and_then(|collection| schemas.get(collection))
+                .map(|schema| relationship_targets(schema, schemas))
+                .unwrap_or_default();
+            let keys: Vec<String> = obj.keys().cloned().collect();
+            for key in keys {
+                let fallback_collection = if matches!(key.as_str(), "node" | "edges") {
+                    own_collection.as_deref()
+                } else {
+                    None
+                };
+                let child_collection = relationship_targets
+                    .get(&key)
+                    .map(String::as_str)
+                    .or(fallback_collection);
+                if let Some(child) = obj.get_mut(&key) {
+                    transform_json_ld_value(child, child_collection, schemas, tenant, database);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn remap_json_ld_data_object(value: &mut Value, schema: &CollectionSchema) {
+    if let Some(obj) = value.as_object_mut() {
+        remap_json_ld_reserved_fields(obj, schema);
+    }
+}
+
+fn remap_json_ld_reserved_fields(
+    obj: &mut serde_json::Map<String, Value>,
+    schema: &CollectionSchema,
+) {
+    for (field, alias) in json_ld_reserved_field_aliases(schema) {
+        if let Some(value) = obj.remove(&field) {
+            obj.insert(alias, value);
+        }
+    }
+}
+
+fn relationship_targets(
+    schema: &CollectionSchema,
+    schemas: &HashMap<String, CollectionSchema>,
+) -> HashMap<String, String> {
+    let mut targets = HashMap::new();
+    let collection = schema.collection.to_string();
+    for (link_type, link_def) in &schema.link_types {
+        if schemas.contains_key(&link_def.target_collection) {
+            targets.insert(
+                collection_field_name(link_type),
+                link_def.target_collection.clone(),
+            );
+        }
+    }
+    for source_schema in schemas.values() {
+        for (link_type, link_def) in &source_schema.link_types {
+            if link_def.target_collection == collection {
+                targets.insert(
+                    format!("{}Inbound", collection_field_name(link_type)),
+                    source_schema.collection.to_string(),
+                );
+            }
+        }
+    }
+    targets
+}
+
+fn json_ld_context(
+    schemas: &HashMap<String, CollectionSchema>,
+    tenant: &str,
+    database: &str,
+) -> Value {
+    let mut context = serde_json::Map::new();
+    context.insert(
+        "@vocab".to_string(),
+        Value::String(format!("/tenants/{tenant}/databases/{database}/vocab#")),
+    );
+    for schema in schemas.values() {
+        let aliases = json_ld_reserved_field_aliases(schema);
+        let Some(properties) = schema
+            .entity_schema
+            .as_ref()
+            .and_then(|entity_schema| entity_schema.get("properties"))
+            .and_then(Value::as_object)
+        else {
+            continue;
+        };
+        for field in properties.keys() {
+            let term = aliases.get(field).cloned().unwrap_or_else(|| field.clone());
+            context.insert(
+                term,
+                Value::String(format!(
+                    "/tenants/{tenant}/databases/{database}/collections/{}/fields/{field}",
+                    schema.collection
+                )),
+            );
+        }
+    }
+    Value::Object(context)
+}
+
+fn canonical_entity_url(tenant: &str, database: &str, collection: &str, id: &str) -> String {
+    format!("/tenants/{tenant}/databases/{database}/collections/{collection}/entities/{id}")
+}
+
+fn root_collection_for_graphql_field(
+    field_name: &str,
+    schemas: &HashMap<String, CollectionSchema>,
+) -> Option<String> {
+    schemas.values().find_map(|schema| {
+        let collection = schema.collection.as_str();
+        let get_field = collection_field_name(collection);
+        let list_field = collection_list_field_name(collection);
+        let connection_field = format!("{list_field}Connection");
+        if matches!(field_name, name if name == get_field || name == list_field || name == connection_field)
+        {
+            Some(collection.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn collection_field_name(collection: &str) -> String {
+    let mut words = graphql_name_words(collection);
+    let first = words
+        .first_mut()
+        .map(|word| word.to_ascii_lowercase())
+        .unwrap_or_else(|| String::from("collection"));
+    let mut name = first;
+    for word in words.iter().skip(1) {
+        let mut chars = word.chars();
+        if let Some(c) = chars.next() {
+            name.extend(c.to_uppercase());
+            name.push_str(&chars.as_str().to_ascii_lowercase());
+        }
+    }
+    if name
+        .chars()
+        .next()
+        .map_or(true, |first| !first.is_ascii_alphabetic() && first != '_')
+    {
+        name = format!("collection{name}");
+    }
+    if is_reserved_query_field_name(&name) {
+        name.push_str("Collection");
+    }
+    name
+}
+
+fn collection_list_field_name(collection: &str) -> String {
+    let field_name = collection_field_name(collection);
+    if is_simple_graphql_name(collection) && !field_name.ends_with('s') {
+        format!("{field_name}s")
+    } else {
+        format!("{field_name}List")
+    }
+}
+
+fn graphql_name_words(s: &str) -> Vec<String> {
+    let words: Vec<String> = s
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    if words.is_empty() {
+        vec![String::from("collection")]
+    } else {
+        words
+    }
+}
+
+fn is_simple_graphql_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(first) if first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn is_reserved_query_field_name(name: &str) -> bool {
+    matches!(
+        name,
+        "entity"
+            | "entities"
+            | "collections"
+            | "collection"
+            | "auditLog"
+            | "linkCandidates"
+            | "neighbors"
+            | "effectivePolicy"
+            | "explainPolicy"
+            | "mutationIntent"
+            | "mutationIntents"
+    )
+}
+
 /// Collect all `CollectionSchema`s from the handler, then build and execute
 /// a dynamic GraphQL schema for each incoming request.
 ///
@@ -3268,6 +3561,7 @@ async fn graphql_handler(
     Extension(caller): Extension<CoreCallerIdentity>,
     Extension(current_tenant): Extension<CurrentTenant>,
     Extension(current_database): Extension<CurrentDatabase>,
+    headers: HeaderMap,
     req: async_graphql_axum::GraphQLRequest,
 ) -> Response {
     // 1. Gather current collection schemas.
@@ -3311,6 +3605,20 @@ async fn graphql_handler(
                 idempotency_scope(&current_tenant, &current_database),
             )))
             .await;
+    if accepts_json_ld(&headers) {
+        let body = graphql_response_to_json_ld(
+            &response,
+            &schemas,
+            current_tenant.as_str(),
+            current_database.as_str(),
+        );
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "application/ld+json")],
+            Json(body),
+        )
+            .into_response();
+    }
     async_graphql_axum::GraphQLResponse::from(response).into_response()
 }
 

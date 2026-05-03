@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -246,6 +246,76 @@ impl CollectionSchema {
             lifecycles: HashMap::new(),
         }
     }
+}
+
+pub const JSON_LD_RESERVED_KEYWORDS: [&str; 4] = ["@context", "@graph", "@id", "@type"];
+
+pub fn json_ld_reserved_field_aliases(schema: &CollectionSchema) -> BTreeMap<String, String> {
+    let mut aliases = BTreeMap::new();
+    let Some(properties) = schema
+        .entity_schema
+        .as_ref()
+        .and_then(|entity_schema| entity_schema.get("properties"))
+        .and_then(Value::as_object)
+    else {
+        return aliases;
+    };
+
+    let mut occupied: BTreeSet<String> = properties
+        .keys()
+        .filter(|name| !is_json_ld_reserved_keyword(name))
+        .cloned()
+        .collect();
+
+    let mut reserved: Vec<&String> = properties
+        .keys()
+        .filter(|name| is_json_ld_reserved_keyword(name))
+        .collect();
+    reserved.sort();
+
+    for name in reserved {
+        let base = match name.as_str() {
+            "@context" => "axon_context",
+            "@graph" => "axon_graph",
+            "@id" => "axon_id",
+            "@type" => "axon_type",
+            _ => "axon_field",
+        };
+        let alias = unique_json_ld_alias(base, &mut occupied);
+        aliases.insert(name.clone(), alias);
+    }
+
+    aliases
+}
+
+pub fn json_ld_reserved_field_warnings(schema: &CollectionSchema) -> Vec<String> {
+    json_ld_reserved_field_aliases(schema)
+        .into_iter()
+        .map(|(field, alias)| {
+            format!(
+                "field '{field}' collides with a JSON-LD reserved keyword and will be exposed as '{alias}' in JSON-LD contexts"
+            )
+        })
+        .collect()
+}
+
+pub fn is_json_ld_reserved_keyword(name: &str) -> bool {
+    JSON_LD_RESERVED_KEYWORDS.contains(&name)
+}
+
+fn unique_json_ld_alias(base: &str, occupied: &mut BTreeSet<String>) -> String {
+    if occupied.insert(base.to_string()) {
+        return base.to_string();
+    }
+
+    for suffix in 2.. {
+        let candidate = format!("{base}_{suffix}");
+        if occupied.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded suffix search should always return")
 }
 
 /// A parsed Entity Schema Format (ESF) document.

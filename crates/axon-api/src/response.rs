@@ -511,6 +511,10 @@ pub struct PutSchemaResponse {
     /// Schema-declared named-query compile report for the candidate schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compile_report: Option<axon_schema::CompileReport>,
+    /// Non-blocking schema-write warnings, including JSON-LD reserved-keyword
+    /// field aliases.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// Fixture explain results evaluated against the proposed plan during a
     /// dry-run. `Some(vec![])` when the request supplied no explain inputs
     /// or the proposed schema has no `access_control`. `None` when the

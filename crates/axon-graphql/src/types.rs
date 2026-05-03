@@ -1,6 +1,6 @@
 //! Type mapping from ESF (Entity Schema Format) to GraphQL types.
 
-use axon_schema::schema::CollectionSchema;
+use axon_schema::schema::{json_ld_reserved_field_aliases, CollectionSchema};
 
 /// Map an ESF JSON Schema type to a GraphQL type name.
 ///
@@ -42,6 +42,7 @@ pub fn extract_fields(schema: &CollectionSchema) -> Vec<(String, String, bool)> 
                     })
                     .unwrap_or_default();
 
+                let aliases = json_ld_reserved_field_aliases(schema);
                 for (name, prop_schema) in props {
                     let gql_type = prop_schema
                         .get("type")
@@ -49,7 +50,11 @@ pub fn extract_fields(schema: &CollectionSchema) -> Vec<(String, String, bool)> 
                         .map(json_schema_type_to_graphql)
                         .unwrap_or("JSON");
                     let is_required = required.contains(name);
-                    fields.push((name.clone(), gql_type.to_string(), is_required));
+                    fields.push((
+                        aliases.get(name).cloned().unwrap_or_else(|| name.clone()),
+                        gql_type.to_string(),
+                        is_required,
+                    ));
                 }
             }
         }

@@ -56,7 +56,7 @@ use axon_core::id::{CollectionId, EntityId, LinkId};
 use axon_core::types::{Entity, Link};
 use axon_schema::access_control::AccessControlPolicy;
 use axon_schema::policy::{compile_policy_catalog, PolicyCompileError, PolicyPlan};
-use axon_schema::schema::{CollectionSchema, CollectionView};
+use axon_schema::schema::{json_ld_reserved_field_aliases, CollectionSchema, CollectionView};
 use axon_schema::validation::validate;
 use axon_storage::adapter::StorageAdapter;
 
@@ -180,8 +180,14 @@ fn entity_to_typed_json_with_schema(entity: &Entity, schema: Option<&CollectionS
     }
     // Merge user data fields.
     if let Value::Object(data) = &entity.data {
+        let aliases = schema
+            .map(json_ld_reserved_field_aliases)
+            .unwrap_or_default();
         for (k, v) in data {
-            map.insert(k.clone(), v.clone());
+            map.insert(
+                aliases.get(k).cloned().unwrap_or_else(|| k.clone()),
+                v.clone(),
+            );
         }
     }
     map.insert(
@@ -2405,6 +2411,10 @@ fn put_schema_payload_object() -> Object {
         ))
         .field(json_object_field("compileReport", TypeRef::named("JSON")))
         .field(json_object_field(
+            "warnings",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
             "dryRunExplanations",
             TypeRef::named("JSON"),
         ))
@@ -4065,6 +4075,7 @@ fn put_schema_payload_value(resp: axon_api::response::PutSchemaResponse) -> Valu
         "diff": resp.diff,
         "policyCompileReport": resp.policy_compile_report,
         "compileReport": resp.compile_report,
+        "warnings": resp.warnings,
         "dryRunExplanations": resp.dry_run_explanations,
         "dryRun": resp.dry_run,
     })

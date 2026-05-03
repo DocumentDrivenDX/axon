@@ -876,6 +876,176 @@ async fn graphql_relationship_fields_follow_declared_links() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn graphql_json_ld_accept_returns_context_and_entity_ids() {
+    let server = test_server();
+    seed_relationship_collections(&server).await;
+
+    for mutation in [
+        r#"mutation { createUser(id: "u1", input: { name: "Ada", status: "active" }) { id } }"#,
+        r#"mutation { createTask(id: "task-a", input: { title: "Open A", status: "open" }) { id } }"#,
+        r#"mutation { createLink(sourceCollection: "user", sourceId: "u1", targetCollection: "task", targetId: "task-a", linkType: "assigned-to", metadata: "{}") }"#,
+    ] {
+        let body = gql(&server, mutation).await;
+        assert!(
+            body["errors"].is_null(),
+            "unexpected mutation errors: {body}"
+        );
+    }
+
+    let resp = server
+        .post("/tenants/default/databases/default/graphql")
+        .add_header("accept", "application/ld+json")
+        .json(&json!({
+            "query": r#"{
+                user(id: "u1") {
+                    id
+                    name
+                    assignedTo {
+                        edges { node { id title status } }
+                    }
+                }
+            }"#
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::OK);
+    let content_type = resp
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert!(
+        content_type.starts_with("application/ld+json"),
+        "expected JSON-LD content type, got {content_type}"
+    );
+    let body = resp.json::<Value>();
+
+    assert!(body["@context"].is_object(), "missing @context: {body}");
+    assert_eq!(
+        body["@context"]["name"],
+        "/tenants/default/databases/default/collections/user/fields/name"
+    );
+    let user = &body["data"]["user"];
+    assert_eq!(
+        user["@id"],
+        "/tenants/default/databases/default/collections/user/entities/u1"
+    );
+    assert_eq!(user["@type"], "user");
+    let linked_task = &user["assignedTo"]["edges"][0]["node"];
+    assert_eq!(
+        linked_task["@id"],
+        "/tenants/default/databases/default/collections/task/entities/task-a"
+    );
+    assert_eq!(linked_task["@type"], "task");
+
+    let default_body = gql(&server, r#"{ user(id: "u1") { id name } }"#).await;
+    assert!(
+        default_body.get("@context").is_none()
+            && default_body["data"]["user"].get("@id").is_none()
+            && default_body["data"]["user"].get("@type").is_none(),
+        "default GraphQL JSON response should remain plain JSON: {default_body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_json_ld_reserved_fields_are_aliased_and_warned() {
+    let server = test_server();
+
+    server
+        .post("/tenants/default/databases/default/collections/linked")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "properties": {
+                        "@id": { "type": "string" },
+                        "@type": { "type": "string" },
+                        "label": { "type": "string" }
+                    }
+                }
+            },
+            "actor": "test"
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let warning = server
+        .post("/tenants/default/databases/default/graphql")
+        .json(&json!({
+            "query": r#"mutation PutLinkedSchema($schema: JSON!) {
+                putSchema(input: { collection: "linked", schema: $schema }) { warnings }
+            }"#,
+            "variables": {
+                "schema": {
+                    "version": 2,
+                    "entitySchema": {
+                        "type": "object",
+                        "properties": {
+                            "@id": { "type": "string" },
+                            "@type": { "type": "string" },
+                            "label": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        }))
+        .await
+        .json::<Value>();
+    assert!(
+        warning["errors"].is_null(),
+        "unexpected putSchema errors: {warning}"
+    );
+    let warnings = warning["data"]["putSchema"]["warnings"]
+        .as_array()
+        .expect("warnings array");
+    assert_eq!(warnings.len(), 2);
+    assert!(
+        warnings
+            .iter()
+            .any(|entry| entry.as_str().unwrap_or_default().contains("axon_id")),
+        "expected @id alias warning: {warning}"
+    );
+
+    server
+        .post("/tenants/default/databases/default/entities/linked/ld-1")
+        .json(&json!({
+            "data": {
+                "@id": "domain-id",
+                "@type": "domain-type",
+                "label": "Linked"
+            },
+            "actor": "test"
+        }))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let resp = server
+        .post("/tenants/default/databases/default/graphql")
+        .add_header("accept", "application/ld+json")
+        .json(&json!({
+            "query": r#"{ linked(id: "ld-1") { id axon_id axon_type label } }"#
+        }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::OK);
+    let body = resp.json::<Value>();
+    let entity = &body["data"]["linked"];
+    assert_eq!(
+        entity["@id"],
+        "/tenants/default/databases/default/collections/linked/entities/ld-1"
+    );
+    assert_eq!(entity["axon_id"], "domain-id");
+    assert_eq!(entity["axon_type"], "domain-type");
+    assert_eq!(
+        body["@context"]["axon_id"],
+        "/tenants/default/databases/default/collections/linked/fields/@id"
+    );
+    assert!(
+        entity.get("@graph").is_none() && entity.get("@context").is_none(),
+        "reserved JSON-LD user fields should not overwrite keywords: {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn graphql_link_discovery_and_neighbors_are_exposed() {
     let server = test_server();
     seed_relationship_collections(&server).await;

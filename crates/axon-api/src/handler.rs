@@ -6304,6 +6304,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
         let compatibility = axon_schema::classify(&diff);
         let policy_compile_report = self.policy_compile_report_for_schema(&req.schema)?;
         let compile_report = self.compile_report_for_schema(&req.schema)?;
+        let warnings = axon_schema::schema::json_ld_reserved_field_warnings(&req.schema);
 
         // Dry-run: return classification without applying. Policy compile
         // failures ride the report instead of bubbling so the admin UI can
@@ -6324,6 +6325,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 diff: Some(diff),
                 policy_compile_report: Some(policy_compile_report),
                 compile_report: Some(compile_report),
+                warnings,
                 dry_run_explanations,
                 dry_run: true,
             });
@@ -6449,6 +6451,7 @@ impl<S: StorageAdapter> AxonHandler<S> {
             diff: Some(diff),
             policy_compile_report: Some(policy_compile_report),
             compile_report: Some(compile_report),
+            warnings,
             dry_run_explanations: None,
             dry_run: false,
         })
