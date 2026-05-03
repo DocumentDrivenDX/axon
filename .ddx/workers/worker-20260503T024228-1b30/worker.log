@@ -9,3 +9,6 @@
 ✓ axon-51d884f0 → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
 
 ▶ axon-9a4f3b72: build(feat-009): ESF queries: block — schema-time named query registration
+✓ axon-9a4f3b72 → error: ResolveRoute: no viable routing candidate: 4 candidates rejected
+
+▶ axon-69633116: build: createXxx Pattern B implementation — strict typed/transaction creates, upsert HTTP/gRPC
