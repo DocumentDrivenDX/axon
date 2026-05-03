@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-80979cb8",
+  "attempt_id": "20260503T112612-f890635b",
+  "base_rev": "f4512cece841a79eb1fb71748478906a774ba943",
+  "result_rev": "f4512cece841a79eb1fb71748478906a774ba943",
+  "outcome": "task_no_changes",
+  "status": "no_changes",
+  "detail": "no_changes",
+  "no_changes_rationale": "status: needs_investigation\nreason: The scoped FEAT-031 UI/API changes are already present in this worktree with no diff to commit: IMPACT_MATRIX_OPERATIONS includes read/create/update/patch/delete; policies/+page.svelte declares proposedImpactMatrix, proposedImpactMatrixError, and loadingProposedImpactMatrix adjacent to the active matrix state; loadImpactMatrix resets proposed state when no draft access_control exists and loads proposed cells using explainPolicyDetailed/fetchEffectivePolicy with policyOverride when a draft exists; api.ts already accepts policyOverride in fetchEffectivePolicy/explainPolicyDetailed. bun run typecheck and bun run lint both pass from ui/. The required targeted e2e command cannot complete because scripts/test-ui-e2e-docker.sh fails during Docker image build before Playwright runs: Dockerfile copies/creates Cargo metadata placeholders for workspace crates but omits crates/axon-cypher, while Cargo.toml includes crates/axon-cypher and crates/axon-schema depends on it. Fixing Dockerfile is outside this bead's named UI/API scope, so this attempt stops for triage rather than modifying out-of-scope build infrastructure.\n\nverified:\n- ui/src/lib/policy-evaluator.ts: IMPACT_MATRIX_OPERATIONS is ['read', 'create', 'update', 'patch', 'delete'].\n- ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte: proposed-policy matrix state and loadImpactMatrix proposed-policy fanout are present.\n- ui/src/lib/api.ts: fetchEffectivePolicy and explainPolicyDetailed accept policyOverride and send it to GraphQL.\n- command passed: cd ui \u0026\u0026 bun run typecheck\n- command passed: cd ui \u0026\u0026 bun run lint\n- command failed before tests: bash scripts/test-ui-e2e-docker.sh -- tests/e2e/policy-authoring.spec.ts\n- failure: Dockerfile planner stage does not copy/create crates/axon-cypher/Cargo.toml, causing cargo chef prepare to fail with \"failed to read /usr/src/axon/crates/axon-cypher/Cargo.toml\".",
+  "harness": "codex",
+  "session_id": "eb-d2c74817",
+  "duration_ms": 267605,
+  "tokens": 879954,
+  "exit_code": 0,
+  "failure_mode": "no_changes",
+  "execution_dir": ".ddx/executions/20260503T112612-f890635b",
+  "prompt_file": ".ddx/executions/20260503T112612-f890635b/prompt.md",
+  "manifest_file": ".ddx/executions/20260503T112612-f890635b/manifest.json",
+  "result_file": ".ddx/executions/20260503T112612-f890635b/result.json",
+  "usage_file": ".ddx/executions/20260503T112612-f890635b/usage.json",
+  "started_at": "2026-05-03T11:26:15.740237874Z",
+  "finished_at": "2026-05-03T11:30:43.345605772Z"
+}
