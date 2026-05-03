@@ -726,6 +726,66 @@ async fn expired_intent_cannot_commit() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn pending_query_materializes_and_audits_expired_intent_lineage() {
+    let server = test_server();
+    seed_intent_fixture(&server).await;
+
+    let preview = preview_budget_patch(&server, 22_000, 0).await;
+    assert_no_errors(&preview, "preview");
+    let intent_id = preview["data"]["previewMutation"]["intent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    tokio::time::sleep(Duration::from_millis(1)).await;
+
+    let queried = gql_as(
+        &server,
+        "finance-approver",
+        &format!(
+            r#"{{
+                pendingMutationIntents(filter: {{ status: "expired" }}, limit: 10) {{
+                    totalCount
+                    edges {{ node {{ id approvalState decision }} }}
+                }}
+                mutationIntent(id: "{intent_id}") {{ id approvalState decision }}
+            }}"#
+        ),
+    )
+    .await;
+    assert_no_errors(&queried, "expired intent query");
+    assert_eq!(
+        queried["data"]["mutationIntent"]["approvalState"],
+        "expired"
+    );
+    assert_eq!(
+        queried["data"]["pendingMutationIntents"]["edges"][0]["node"]["id"],
+        intent_id
+    );
+    assert_eq!(
+        queried["data"]["pendingMutationIntents"]["edges"][0]["node"]["approvalState"],
+        "expired"
+    );
+
+    let expiry_audit = audit_by_intent(&server, &intent_id, Some("intent.expire")).await;
+    let expiry_entries = expiry_audit["entries"].as_array().unwrap();
+    assert_eq!(expiry_entries.len(), 1);
+    assert_eq!(expiry_entries[0]["actor"], "system");
+    assert_eq!(expiry_entries[0]["collection"], "__mutation_intents");
+    assert_eq!(expiry_entries[0]["entity_id"], intent_id);
+    assert_eq!(
+        expiry_entries[0]["data_before"]["approval_state"],
+        "pending"
+    );
+    assert_eq!(expiry_entries[0]["data_after"]["approval_state"], "expired");
+    assert_eq!(expiry_entries[0]["intent_lineage"]["intent_id"], intent_id);
+    assert_eq!(expiry_entries[0]["intent_lineage"]["policy_version"], 1);
+    assert_eq!(
+        expiry_entries[0]["intent_lineage"]["origin"]["surface"],
+        "system"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn denied_preview_has_no_executable_token() {
     let server = test_server();
     seed_intent_fixture(&server).await;

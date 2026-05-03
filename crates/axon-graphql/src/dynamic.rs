@@ -4459,8 +4459,9 @@ async fn mutation_intent_resolver<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
+    let (storage, audit) = guard.storage_and_audit_mut();
     service
-        .expire_due(guard.storage_mut(), &scope, now_ns, None)
+        .expire_due_with_audit(storage, audit, &scope, now_ns, None)
         .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let intent = guard
         .storage_ref()
@@ -4492,6 +4493,10 @@ async fn pending_mutation_intents_resolver<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
+    let (storage, audit) = guard.storage_and_audit_mut();
+    service
+        .expire_due_with_audit(storage, audit, &scope, now_ns, None)
+        .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let mut intents = if filter.states.is_empty() {
         let mut pending = service
             .list_pending(guard.storage_mut(), &scope, now_ns, None)
@@ -4588,8 +4593,9 @@ async fn review_mutation_intent<S: StorageAdapter + 'static>(
     let service = graphql_intent_lifecycle_service();
 
     let mut guard = handler.lock().await;
+    let (storage, audit) = guard.storage_and_audit_mut();
     service
-        .expire_due(guard.storage_mut(), &scope, now_ns, None)
+        .expire_due_with_audit(storage, audit, &scope, now_ns, None)
         .map_err(mutation_intent_lifecycle_error_to_gql)?;
     let intent = guard
         .storage_ref()
