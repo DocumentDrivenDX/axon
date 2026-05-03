@@ -3,3 +3,6 @@
 ✓ axon-79d1df96 → error: post-merge review: BLOCK (flagged for human)
 
 ▶ axon-80979cb8: build(feat-031): impact-matrix proposed-policy state and op set extension (A1/4 of axon-ff92fed7)
+✓ axon-80979cb8 → merged (7b4a6590)
+
+▶ axon-93fcc7f7: build(feat-031): impact-matrix proposed-policy column rendering (A2/4 of axon-ff92fed7)

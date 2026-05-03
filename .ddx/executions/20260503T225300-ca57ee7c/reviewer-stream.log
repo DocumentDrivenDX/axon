@@ -1,0 +1,41 @@
+All ACs verifiable in HEAD: AC1 confirmed at policy-evaluator.ts:500, AC2 at +page.svelte:98-100, AC3 satisfied because `proposedImpactMatrix = requests.map(...)` reuses the same `requests` array as `impactMatrix`, AC4 confirmed at lines 434-440 (resets when no schemaDraft), AC5/AC6 attested by verification.md after running typecheck/lint/e2e.
+
+```json
+{
+  "schema_version": 1,
+  "verdict": "APPROVE",
+  "summary": "All AC items verified in result_rev. IMPACT_MATRIX_OPERATIONS extended to 5 ops; proposed-policy state declared adjacent to active state; loadImpactMatrix builds proposed matrix from same requests array (AC3 tuple parity holds) and resets to []/null when no schemaDraft (AC4); api.ts accepts policyOverride; verification.md attests typecheck/lint/e2e all green.",
+  "findings": [
+    {
+      "severity": "info",
+      "summary": "This attempt's diff only contains .ddx execution metadata; the code changes were carried in the worktree from prior attempts and are now verifiable in HEAD with a recorded verification.md.",
+      "location": ".ddx/executions/20260503T225300-ca57ee7c/verification.md"
+    },
+    {
+      "severity": "info",
+      "summary": "IMPACT_MATRIX_OPERATIONS = ['read', 'create', 'update', 'patch', 'delete'] (AC1).",
+      "location": "ui/src/lib/policy-evaluator.ts:500"
+    },
+    {
+      "severity": "info",
+      "summary": "proposedImpactMatrix / proposedImpactMatrixError / loadingProposedImpactMatrix declared adjacent to active matrix state (AC2).",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:98"
+    },
+    {
+      "severity": "info",
+      "summary": "proposedImpactMatrix is built by mapping the same `requests` array used for impactMatrix, guaranteeing identical (subjectId, entityId, operation) tuples and length parity (AC3).",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:474"
+    },
+    {
+      "severity": "info",
+      "summary": "When schemaDraft is null, proposedImpactMatrix = [] and proposedImpactMatrixError = null (AC4).",
+      "location": "ui/src/routes/tenants/[tenant]/databases/[database]/policies/+page.svelte:434"
+    },
+    {
+      "severity": "info",
+      "summary": "fetchEffectivePolicy and explainPolicyDetailed accept and forward policyOverride to GraphQL.",
+      "location": "ui/src/lib/api.ts:1505"
+    }
+  ]
+}
+```
