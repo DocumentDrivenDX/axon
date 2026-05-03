@@ -4515,20 +4515,23 @@ impl<S: StorageAdapter> AxonHandler<S> {
                 | MutationType::IntentApprove
                 | MutationType::IntentReject
                 | MutationType::IntentExpire
+                | MutationType::IntentCommit
         ) {
             return Ok(());
         }
 
-        let Some(data_after) = entry.data_after.as_mut() else {
-            return Ok(());
-        };
-        let Ok(mut intent) = serde_json::from_value::<MutationIntent>(data_after.clone()) else {
-            return Ok(());
-        };
-        self.redact_mutation_intent_for_read_with_context(&mut intent, caller, attribution)?;
-        *data_after = serde_json::to_value(intent).map_err(|err| {
-            AxonError::InvalidOperation(format!("failed to serialize redacted intent: {err}"))
-        })?;
+        for payload in [&mut entry.data_before, &mut entry.data_after]
+            .into_iter()
+            .flatten()
+        {
+            let Ok(mut intent) = serde_json::from_value::<MutationIntent>(payload.clone()) else {
+                continue;
+            };
+            self.redact_mutation_intent_for_read_with_context(&mut intent, caller, attribution)?;
+            *payload = serde_json::to_value(intent).map_err(|err| {
+                AxonError::InvalidOperation(format!("failed to serialize redacted intent: {err}"))
+            })?;
+        }
         Ok(())
     }
 
@@ -10622,6 +10625,16 @@ mod tests {
             .iter()
             .find(|entry| entry.mutation == MutationType::IntentApprove)
             .expect("contractor lineage should include approval audit");
+        let approval_pre_image = contractor_approval.data_before.as_ref().unwrap();
+        assert_eq!(
+            approval_pre_image["review_summary"]["diff"][0]["diff"]["amount_cents"]["after"],
+            Value::Null
+        );
+        assert_eq!(
+            approval_pre_image["operation"]["canonical_operation"]["operations"][0]["data"]
+                ["commercial_terms"],
+            Value::Null
+        );
         let approval_payload = contractor_approval.data_after.as_ref().unwrap();
         assert_eq!(
             approval_payload["review_summary"]["diff"][0]["diff"]["amount_cents"]["after"],

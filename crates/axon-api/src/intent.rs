@@ -953,8 +953,15 @@ impl MutationIntentLifecycleService {
         metadata: MutationIntentReviewMetadata,
         now_ns: u64,
     ) -> Result<MutationIntent, MutationIntentLifecycleError> {
+        let before = load_intent(storage, scope, intent_id)?;
         let approved = self.approve(storage, scope, intent_id, metadata.clone(), now_ns)?;
-        append_intent_review_audit(audit, &approved, MutationType::IntentApprove, &metadata)?;
+        append_intent_review_audit(
+            audit,
+            &before,
+            &approved,
+            MutationType::IntentApprove,
+            &metadata,
+        )?;
         Ok(approved)
     }
 
@@ -1006,8 +1013,15 @@ impl MutationIntentLifecycleService {
         metadata: MutationIntentReviewMetadata,
         now_ns: u64,
     ) -> Result<MutationIntent, MutationIntentLifecycleError> {
+        let before = load_intent(storage, scope, intent_id)?;
         let rejected = self.reject(storage, scope, intent_id, metadata.clone(), now_ns)?;
-        append_intent_review_audit(audit, &rejected, MutationType::IntentReject, &metadata)?;
+        append_intent_review_audit(
+            audit,
+            &before,
+            &rejected,
+            MutationType::IntentReject,
+            &metadata,
+        )?;
         Ok(rejected)
     }
 
@@ -1077,8 +1091,16 @@ impl MutationIntentLifecycleService {
         intent_id: &str,
         now_ns: u64,
     ) -> Result<MutationIntent, MutationIntentLifecycleError> {
+        let before = load_intent(storage, scope, intent_id)?;
         let expired = self.expire(storage, scope, intent_id, now_ns)?;
-        append_intent_lifecycle_audit(audit, &expired, MutationType::IntentExpire, "system", None)?;
+        append_intent_transition_audit(
+            audit,
+            &before,
+            &expired,
+            MutationType::IntentExpire,
+            "system",
+            None,
+        )?;
         Ok(expired)
     }
 
@@ -1100,8 +1122,9 @@ impl MutationIntentLifecycleService {
         let mut expired = Vec::with_capacity(due.len());
         for intent in due {
             let updated = self.expire(storage, scope, &intent.intent_id, now_ns)?;
-            append_intent_lifecycle_audit(
+            append_intent_transition_audit(
                 audit,
+                &intent,
                 &updated,
                 MutationType::IntentExpire,
                 "system",
@@ -1689,22 +1712,54 @@ fn append_intent_lifecycle_audit<A: AuditLog>(
         .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
     append_intent_lifecycle_audit_entry(
         audit,
-        intent,
-        mutation,
-        actor,
-        intent_lifecycle_lineage(intent, reason),
-        data_after,
-        HashMap::new(),
+        IntentAuditEntryParts {
+            intent,
+            mutation,
+            actor,
+            lineage: intent_lifecycle_lineage(intent, reason),
+            data_before: None,
+            data_after,
+            metadata: HashMap::new(),
+        },
+    )
+}
+
+fn append_intent_transition_audit<A: AuditLog>(
+    audit: &mut A,
+    before: &MutationIntent,
+    after: &MutationIntent,
+    mutation: MutationType,
+    actor: &str,
+    reason: Option<String>,
+) -> Result<AuditEntry, MutationIntentLifecycleError> {
+    let data_before = serde_json::to_value(before)
+        .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
+    let data_after = serde_json::to_value(after)
+        .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
+    append_intent_lifecycle_audit_entry(
+        audit,
+        IntentAuditEntryParts {
+            intent: after,
+            mutation,
+            actor,
+            lineage: intent_lifecycle_lineage(after, reason),
+            data_before: Some(data_before),
+            data_after,
+            metadata: HashMap::new(),
+        },
     )
 }
 
 fn append_intent_review_audit<A: AuditLog>(
     audit: &mut A,
-    intent: &MutationIntent,
+    before: &MutationIntent,
+    after: &MutationIntent,
     mutation: MutationType,
     metadata: &MutationIntentReviewMetadata,
 ) -> Result<AuditEntry, MutationIntentLifecycleError> {
-    let data_after = serde_json::to_value(intent)
+    let data_before = serde_json::to_value(before)
+        .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
+    let data_after = serde_json::to_value(after)
         .map_err(|error| MutationIntentLifecycleError::Storage(error.to_string()))?;
     let mut entry_metadata = HashMap::new();
     if let Some(reason) = &metadata.reason {
@@ -1712,35 +1767,43 @@ fn append_intent_review_audit<A: AuditLog>(
     }
     append_intent_lifecycle_audit_entry(
         audit,
-        intent,
-        mutation,
-        metadata.actor.as_deref().unwrap_or("anonymous"),
-        intent_review_lineage(intent, metadata),
-        data_after,
-        entry_metadata,
+        IntentAuditEntryParts {
+            intent: after,
+            mutation,
+            actor: metadata.actor.as_deref().unwrap_or("anonymous"),
+            lineage: intent_review_lineage(after, metadata),
+            data_before: Some(data_before),
+            data_after,
+            metadata: entry_metadata,
+        },
     )
+}
+
+struct IntentAuditEntryParts<'a> {
+    intent: &'a MutationIntent,
+    mutation: MutationType,
+    actor: &'a str,
+    lineage: MutationIntentAuditMetadata,
+    data_before: Option<Value>,
+    data_after: Value,
+    metadata: HashMap<String, String>,
 }
 
 fn append_intent_lifecycle_audit_entry<A: AuditLog>(
     audit: &mut A,
-    intent: &MutationIntent,
-    mutation: MutationType,
-    actor: &str,
-    lineage: MutationIntentAuditMetadata,
-    data_after: Value,
-    metadata: HashMap<String, String>,
+    parts: IntentAuditEntryParts<'_>,
 ) -> Result<AuditEntry, MutationIntentLifecycleError> {
     let entry = AuditEntry::new(
         CollectionId::new(INTENT_AUDIT_COLLECTION),
-        EntityId::new(intent.intent_id.clone()),
+        EntityId::new(parts.intent.intent_id.clone()),
         0,
-        mutation,
-        None,
-        Some(data_after),
-        Some(actor.to_string()),
+        parts.mutation,
+        parts.data_before,
+        Some(parts.data_after),
+        Some(parts.actor.to_string()),
     )
-    .with_metadata(metadata)
-    .with_intent_lineage(lineage);
+    .with_metadata(parts.metadata)
+    .with_intent_lineage(parts.lineage);
     audit
         .append(entry)
         .map_err(MutationIntentLifecycleError::from)
@@ -1809,18 +1872,23 @@ fn append_commit_validation_failure_audit<S: StorageAdapter, A: AuditLog>(
     let intent = load_intent(storage, scope, intent_id)
         .map_err(|error| MutationIntentCommitValidationError::Storage(error.to_string()))?;
     let data_after = commit_validation_failure_payload(&intent, error)?;
+    let data_before = serde_json::to_value(&intent)
+        .map_err(|error| MutationIntentCommitValidationError::Storage(error.to_string()))?;
     let mut metadata = HashMap::new();
     metadata.insert("event".into(), "commit_validation_failed".into());
     metadata.insert("error_code".into(), error.error_code().into());
 
     append_intent_lifecycle_audit_entry(
         audit,
-        &intent,
-        MutationType::IntentCommit,
-        actor.unwrap_or("anonymous"),
-        intent_lifecycle_lineage(&intent, None),
-        data_after,
-        metadata,
+        IntentAuditEntryParts {
+            intent: &intent,
+            mutation: MutationType::IntentCommit,
+            actor: actor.unwrap_or("anonymous"),
+            lineage: intent_lifecycle_lineage(&intent, None),
+            data_before: Some(data_before),
+            data_after,
+            metadata,
+        },
     )
     .map_err(|error| MutationIntentCommitValidationError::Storage(error.to_string()))?;
     Ok(())
@@ -3123,6 +3191,13 @@ mod tests {
         assert_eq!(approve_entry.metadata["reason"], "approved after review");
         assert_eq!(
             approve_entry
+                .data_before
+                .as_ref()
+                .expect("approval audit should include reviewed pre-image")["approval_state"],
+            json!("pending")
+        );
+        assert_eq!(
+            approve_entry
                 .data_after
                 .as_ref()
                 .expect("approval audit should include intent snapshot")["approval_state"],
@@ -3181,6 +3256,20 @@ mod tests {
         let reject_entry = &reject_page.entries[0];
         assert_eq!(reject_entry.actor, "usr_approver");
         assert_eq!(reject_entry.metadata["reason"], "risk too high");
+        assert_eq!(
+            reject_entry
+                .data_before
+                .as_ref()
+                .expect("rejection audit should include reviewed pre-image")["approval_state"],
+            json!("pending")
+        );
+        assert_eq!(
+            reject_entry
+                .data_after
+                .as_ref()
+                .expect("rejection audit should include post-image")["approval_state"],
+            json!("rejected")
+        );
         let reject_lineage = reject_entry
             .intent_lineage
             .as_deref()
@@ -3408,6 +3497,13 @@ mod tests {
         assert_eq!(entry.mutation, MutationType::IntentExpire);
         assert_eq!(
             entry
+                .data_before
+                .as_ref()
+                .expect("expiry audit should include pre-expiry intent snapshot")["approval_state"],
+            json!("pending")
+        );
+        assert_eq!(
+            entry
                 .data_after
                 .as_ref()
                 .expect("expiry audit should include intent snapshot")["approval_state"],
@@ -3478,6 +3574,13 @@ mod tests {
         let stale_entry = &stale_page.entries[0];
         assert_eq!(stale_entry.actor, "commit-agent");
         assert_eq!(stale_entry.metadata["error_code"], "intent_stale");
+        assert_eq!(
+            stale_entry
+                .data_before
+                .as_ref()
+                .expect("stale audit should include bound intent pre-image")["operation_hash"],
+            stale_intent.operation.operation_hash
+        );
         let stale_payload = stale_entry
             .data_after
             .as_ref()
@@ -3527,6 +3630,13 @@ mod tests {
             })
             .expect("mismatch commit audit should be queryable");
         assert_eq!(mismatch_page.entries.len(), 1);
+        assert_eq!(
+            mismatch_page.entries[0]
+                .data_before
+                .as_ref()
+                .expect("mismatch audit should include bound intent pre-image")["operation_hash"],
+            mismatch_intent.operation.operation_hash
+        );
         let mismatch_payload = mismatch_page.entries[0]
             .data_after
             .as_ref()
