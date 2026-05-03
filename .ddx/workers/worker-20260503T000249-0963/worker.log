@@ -1,2 +1,5 @@
 
 ▶ axon-cf99b8a4: build(feat-031): GraphQL policyOverride support for explainPolicy and effectivePolicy (backend half of axon-80979cb8)
+✓ axon-cf99b8a4 → error: stalled: no_progress_tools_exceeded
+
+▶ axon-51d884f0: build(feat-009): Cypher planner — AST + schema → execution plan
