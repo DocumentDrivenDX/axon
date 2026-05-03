@@ -1,15 +1,139 @@
 {
   "id": "worker-20260503T024228-1b30",
   "kind": "execute-loop",
-  "state": "running",
-  "status": "running",
+  "state": "exited",
+  "status": "execution_failed",
   "project_root": "/home/erik/Projects/axon",
   "profile": "default",
   "poll_interval": "0s",
   "started_at": "2026-05-03T02:42:28.566868379Z",
-  "finished_at": "0001-01-01T00:00:00Z",
+  "finished_at": "2026-05-03T02:43:29.206454361Z",
   "stdout_path": ".ddx/workers/worker-20260503T024228-1b30/worker.log",
   "spec_path": ".ddx/workers/worker-20260503T024228-1b30/spec.json",
+  "attempts": 10,
+  "failures": 10,
+  "current_bead": "hx-5f4d4ea1",
+  "last_error": "ResolveRoute: no viable routing candidate: 4 candidates rejected",
+  "last_result": {
+    "bead_id": "hx-5f4d4ea1",
+    "attempt_id": "20260503T024325-c402d9c6",
+    "status": "execution_failed",
+    "detail": "ResolveRoute: no viable routing candidate: 4 candidates rejected",
+    "session_id": "eb-7696a558",
+    "base_rev": "a1fdd09d5e08fd1c344debb577df4bfb1669bbbf",
+    "result_rev": "a1fdd09d5e08fd1c344debb577df4bfb1669bbbf",
+    "retry_after": "2026-05-03T08:43:28Z"
+  },
+  "recent_phases": [
+    {
+      "phase": "running",
+      "ts": "2026-05-03T02:42:48.763240885Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T02:42:51.994046915Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T02:42:54.40093327Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T02:42:54.401036069Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T02:42:58.405746822Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T02:43:01.209820252Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T02:43:01.209847382Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T02:43:05.022808386Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T02:43:08.502107803Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T02:43:08.5021419Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T02:43:11.691767272Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T02:43:14.002338102Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T02:43:14.0023644Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T02:43:17.157311381Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T02:43:19.465414817Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T02:43:19.465449274Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T02:43:22.818375817Z",
+      "phase_seq": 3
+    },
+    {
+      "phase": "queueing",
+      "ts": "2026-05-03T02:43:25.207752012Z",
+      "phase_seq": 1
+    },
+    {
+      "phase": "running",
+      "ts": "2026-05-03T02:43:25.207780556Z",
+      "phase_seq": 2
+    },
+    {
+      "phase": "failed",
+      "ts": "2026-05-03T02:43:29.105151113Z",
+      "phase_seq": 3
+    }
+  ],
+  "last_attempt": {
+    "attempt_id": "20260503T024325-18abee0a",
+    "bead_id": "hx-5f4d4ea1",
+    "phase": "failed",
+    "started_at": "2026-05-03T02:43:25.207752012Z",
+    "ended_at": "2026-05-03T02:43:29.105151113Z",
+    "elapsed_ms": 3897
+  },
   "lifecycle": [
     {
       "action": "start",
