@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260503T035849-6299213d",
+  "bead_id": "axon-ad2a9669",
+  "base_rev": "6582adf24c77e5548ba1def306996bf4b037a894",
+  "created_at": "2026-05-03T03:58:50.060795523Z",
+  "requested": {
+    "harness": "codex",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-ad2a9669",
+    "title": "build(feat-009): Cypher executor — in-memory streaming runtime",
+    "description": "Implement a streaming executor for the Cypher operator tree from the planner bead, against an in-memory entity/link store. Smallest end-to-end execution path: parser → validator → planner → executor.\n\nEach operator is a row iterator; bounded memory, ORDER BY without a covering index materializes; everything else streams. 30-second wall-clock timeout enforced.\n\nAdd crates/axon-cypher/src/memory_store.rs with a QueryStore trait against an in-memory entity+link store sufficient for testing. The trait will later be implemented over axon-storage::StorageAdapter (separate bead).\n\nOut of scope: SQLite/Postgres backends, GraphQL surface, MCP surface, subscriptions.",
+    "acceptance": "AC1. crates/axon-cypher/src/executor.rs has execute(plan, store) -\u003e RowStream. AC2. crates/axon-cypher/src/memory_store.rs implements the QueryStore trait. AC3. The DDx ready/blocked query end-to-end (parse → validate → plan → execute) returns expected ready and blocked beads on a hand-built dataset of 10 beads with 15 links. AC4. Bounded-memory streaming; only ORDER BY/collect()/DISTINCT materialize. AC5. 30-second wall-clock timeout enforced. AC6. ≥10 integration tests: DDx ready/blocked, dependency DAG (US-023), reachability (US-025), DISTINCT, OPTIONAL MATCH, EXISTS true/false, count(*), ORDER BY ASC/DESC. AC7. cargo test -p axon-cypher passes; clippy clean.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "area:cypher",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-03T03:58:49Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3908734",
+      "execute-loop-heartbeat-at": "2026-05-03T03:58:49.371089196Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260503T035849-6299213d",
+    "prompt": ".ddx/executions/20260503T035849-6299213d/prompt.md",
+    "manifest": ".ddx/executions/20260503T035849-6299213d/manifest.json",
+    "result": ".ddx/executions/20260503T035849-6299213d/result.json",
+    "checks": ".ddx/executions/20260503T035849-6299213d/checks.json",
+    "usage": ".ddx/executions/20260503T035849-6299213d/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-ad2a9669-20260503T035849-6299213d"
+  },
+  "prompt_sha": "a92cd24c6930f3fc82282516891f41376bf59f518548f3eae238ff9c1c79b16b"
+}

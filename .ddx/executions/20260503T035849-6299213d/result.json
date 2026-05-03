@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-ad2a9669",
+  "attempt_id": "20260503T035849-6299213d",
+  "base_rev": "6582adf24c77e5548ba1def306996bf4b037a894",
+  "result_rev": "6582adf24c77e5548ba1def306996bf4b037a894",
+  "outcome": "task_no_changes",
+  "status": "no_changes",
+  "detail": "no_changes",
+  "no_changes_rationale": "verification_command: test -f .ddx/executions/20260503T035849-6299213d/no_changes_rationale.txt \u0026\u0026 ddx bead show axon-390c67d1 \u003e/dev/null \u0026\u0026 ddx bead show axon-ff99d8b1 \u003e/dev/null \u0026\u0026 ddx bead show axon-29b3919b \u003e/dev/null \u0026\u0026 ddx bead show axon-52265708 \u003e/dev/null\n\nstatus: decomposed\nparent: axon-ad2a9669\nreason: The parent bead is too large for one bounded execution pass under the execute-bead size check. It has seven acceptance criteria spanning executor API design, in-memory store implementation, streaming runtime semantics, timeout enforcement, materialization rules, and a broad end-to-end integration suite. Per instructions, no implementation was attempted.\n\nchild: axon-390c67d1\nslice: QueryStore trait and in-memory entity/link graph store for axon-cypher executor tests.\n\nchild: axon-ff99d8b1\nslice: Core execute(plan, store) -\u003e RowStream surface, basic streaming operators, and timeout enforcement.\n\nchild: axon-29b3919b\nslice: OPTIONAL MATCH, EXISTS, count(*), DISTINCT, and ORDER BY ASC/DESC executor semantics and focused tests.\n\nchild: axon-52265708\nslice: DDx end-to-end graph-query integration suite over a 10-bead, 15-link in-memory dataset.",
+  "harness": "codex",
+  "session_id": "eb-02d06b3c",
+  "duration_ms": 126860,
+  "tokens": 548508,
+  "exit_code": 0,
+  "failure_mode": "no_changes",
+  "execution_dir": ".ddx/executions/20260503T035849-6299213d",
+  "prompt_file": ".ddx/executions/20260503T035849-6299213d/prompt.md",
+  "manifest_file": ".ddx/executions/20260503T035849-6299213d/manifest.json",
+  "result_file": ".ddx/executions/20260503T035849-6299213d/result.json",
+  "usage_file": ".ddx/executions/20260503T035849-6299213d/usage.json",
+  "started_at": "2026-05-03T03:58:50.061870574Z",
+  "finished_at": "2026-05-03T04:00:56.922078328Z"
+}
