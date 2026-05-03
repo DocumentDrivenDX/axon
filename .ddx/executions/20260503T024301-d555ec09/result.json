@@ -1,0 +1,20 @@
+{
+  "bead_id": "axon-648120e4",
+  "attempt_id": "20260503T024301-d555ec09",
+  "base_rev": "833db6b438ffb47d4b672d767b75e9987f772505",
+  "result_rev": "833db6b438ffb47d4b672d767b75e9987f772505",
+  "outcome": "task_failed",
+  "status": "execution_failed",
+  "detail": "ResolveRoute: no viable routing candidate: 4 candidates rejected",
+  "session_id": "eb-ef2558be",
+  "duration_ms": 2013,
+  "exit_code": 1,
+  "error": "ResolveRoute: no viable routing candidate: 4 candidates rejected",
+  "failure_mode": "unknown",
+  "execution_dir": ".ddx/executions/20260503T024301-d555ec09",
+  "prompt_file": ".ddx/executions/20260503T024301-d555ec09/prompt.md",
+  "manifest_file": ".ddx/executions/20260503T024301-d555ec09/manifest.json",
+  "result_file": ".ddx/executions/20260503T024301-d555ec09/result.json",
+  "started_at": "2026-05-03T02:43:02.437957266Z",
+  "finished_at": "2026-05-03T02:43:04.451844685Z"
+}

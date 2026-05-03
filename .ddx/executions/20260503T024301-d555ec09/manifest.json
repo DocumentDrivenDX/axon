@@ -1,0 +1,56 @@
+{
+  "attempt_id": "20260503T024301-d555ec09",
+  "bead_id": "axon-648120e4",
+  "base_rev": "833db6b438ffb47d4b672d767b75e9987f772505",
+  "created_at": "2026-05-03T02:43:02.436757142Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-648120e4",
+    "title": "build(feat-030): preview audit threading Pattern A — create_preview_record takes audit log",
+    "description": "preview-audit-threading.md picked Pattern A. Implement the signature change:\n\ncreate_preview_record\u003cS: StorageAdapter, A: AuditLog\u003e(\n    \u0026self, storage: \u0026mut S, audit: \u0026mut A, intent: MutationIntent,\n) -\u003e Result\u003cMutationIntentPreviewRecord, MutationIntentLifecycleError\u003e\n\nEmit operational event with field shape from preview-audit-threading.md: operation=mutation_intent.preview, actor=intent subject, collection=__mutation_intents, entity_id=intent_id, metadata={decision, schema_version, policy_version, operation_hash, expires_at}, before=null, after=review_summary only.\n\nUpdate GraphQL handler (crates/axon-graphql/src/dynamic.rs:4817-4910) and MCP handler (crates/axon-mcp/src/handlers.rs:674-724) to pass audit. Update test callers throughout crates/axon-api/src/intent.rs.\n\nAdd integration test asserting auditLog(collection: '__mutation_intents', entityId: $intentId) returns preview event for both GraphQL- and MCP-originated previews.\n\nCloses axon-e21cad01 (decision-doc bead).",
+    "acceptance": "AC1. create_preview_record signature includes \u0026mut AuditLog. AC2. Operational event emitted on every successful preview-record creation per the field shape above. AC3. GraphQL preview endpoint passes audit; MCP preview endpoint passes audit. AC4. auditLog query integration test passes for both surfaces. AC5. cargo test --workspace passes; clippy clean. AC6. axon-e21cad01 closes as superseded. AC7. axon-ab2e52e0 (parent) progresses or closes per its AC.",
+    "labels": [
+      "helix",
+      "feat-030",
+      "area:api",
+      "area:audit",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-03T02:43:01Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3908734",
+      "events": [
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"vidar\",\"resolved_model\":\"MiniMax-M2.5-MLX-4bit\",\"fallback_chain\":[],\"requested_model\":\"MiniMax-M2.5-MLX-4bit\"}",
+          "created_at": "2026-05-02T20:55:19.880759431Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=vidar model=MiniMax-M2.5-MLX-4bit"
+        },
+        {
+          "actor": "ddx",
+          "body": "agent: provider error: openai: POST \"http://vidar:1235/v1/chat/completions\": 507 Insufficient Storage {\"message\":\"Model 'MiniMax-M2.5-MLX-4bit' (125.82GB) exceeds max-model-memory (64.00GB)\",\"type\":\"server_error\",\"param\":null,\"code\":null}\nresult_rev=c6d20f1edd371deb7c3ecf6a23300afb81b3c5ce\nbase_rev=c6d20f1edd371deb7c3ecf6a23300afb81b3c5ce\nretry_after=2026-05-03T02:55:20Z",
+          "created_at": "2026-05-02T20:55:21.017274173Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "execution_failed"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-03T02:43:01.139309579Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260503T024301-d555ec09",
+    "prompt": ".ddx/executions/20260503T024301-d555ec09/prompt.md",
+    "manifest": ".ddx/executions/20260503T024301-d555ec09/manifest.json",
+    "result": ".ddx/executions/20260503T024301-d555ec09/result.json",
+    "checks": ".ddx/executions/20260503T024301-d555ec09/checks.json",
+    "usage": ".ddx/executions/20260503T024301-d555ec09/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-648120e4-20260503T024301-d555ec09"
+  },
+  "prompt_sha": "b5c64b7457362cb9dc181d5993a660451e479968b1ca0402d66625cfd9dc1848"
+}
