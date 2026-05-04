@@ -36,3 +36,6 @@
 ✓ axon-8b91e47d → error: post-merge review: BLOCK (flagged for human)
 
 ▶ axon-390c67d1: build(feat-009): Cypher QueryStore and in-memory graph store
+✓ axon-390c67d1 → merged (706f6745)
+
+▶ axon-ff99d8b1: build(feat-009): Cypher streaming executor core

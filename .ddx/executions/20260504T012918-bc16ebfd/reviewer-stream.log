@@ -1,0 +1,30 @@
+Reviewed actual implementation in commit f4d43538 (referenced as `result_rev` in the result.json). The diff in the review only shows the execution metadata; the implementation is in `crates/axon-cypher/src/memory_store.rs` and `lib.rs`.
+
+AC1: `QueryStore` trait defined at memory_store.rs:19. AC2: `MemoryQueryStore` with `insert_entity`/`insert_link` for hand-built entities and typed links with `PropertyMap`. AC3: `EntityStream`/`LinkStream` boxed iterators (streaming), `EntityScan` (label + property filters), `LinkTraversal` (anchor + Direction + types + filters), `get_entity`/`get_link` by id; no `axon-storage` import. AC4: Four focused tests (entity scan, lookup, outgoing typed traversal, incoming/Either with directed indexes).
+
+Notable: `Direction` is reused from `crate::ast`, which is appropriate. Link IDs auto-derive as `source/type/target`, with a `with_id` escape hatch. Direction::Either dedupes via `BTreeSet`.
+
+```json
+{
+  "schema_version": 1,
+  "verdict": "APPROVE",
+  "summary": "All ACs satisfied: QueryStore trait + MemoryQueryStore with labeled entities, typed directed links, streaming scans/traversals via boxed iterators, by-id lookup, no axon-storage coupling, and four focused tests covering scans, lookup, and directional traversal.",
+  "findings": [
+    {
+      "severity": "info",
+      "summary": "QueryStore trait, EntityScan/LinkTraversal inputs, and streaming iterators are defined and re-exported from lib.rs; implementation has no dependency on axon-storage::StorageAdapter, satisfying the future-backend boundary.",
+      "location": "crates/axon-cypher/src/memory_store.rs:19"
+    },
+    {
+      "severity": "info",
+      "summary": "MemoryQueryStore maintains directed outgoing/incoming link indexes keyed by entity id, enabling efficient traversal in all three Direction variants.",
+      "location": "crates/axon-cypher/src/memory_store.rs:194"
+    },
+    {
+      "severity": "info",
+      "summary": "Tests cover label+property scan filtering, nested-property lookup by id, typed outgoing traversal with property filter, and incoming/Either traversal — minimal but sufficient store-level coverage per the bead's stated scope.",
+      "location": "crates/axon-cypher/src/memory_store.rs:331"
+    }
+  ]
+}
+```
