@@ -28,8 +28,8 @@ pub use evolution::{
 };
 pub use gates::{evaluate_gates, GateEvaluation, GateResult};
 pub use named_queries::{
-    compile_named_queries, schema_snapshot_from_schemas, CompileReport, NamedQueryDiagnostic,
-    NamedQueryStatus,
+    compile_named_queries, schema_snapshot_from_schemas, validate_query_policy_compatibility,
+    CompileReport, NamedQueryDiagnostic, NamedQueryStatus,
 };
 pub use policy::{
     compile_policy_catalog, compile_policy_plan, CompiledCompareOp, CompiledComparison,

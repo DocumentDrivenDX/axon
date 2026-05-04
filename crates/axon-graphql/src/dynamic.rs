@@ -57,8 +57,11 @@ use axon_core::id::{CollectionId, EntityId, LinkId};
 use axon_core::types::{Entity, Link};
 use axon_cypher::ast::{
     ComparisonOp, Direction as CypherDirection, Expression, Literal, LogicalOp, MatchClause,
-    NodePattern, Query as CypherQuery, RelationshipPattern, Subquery,
+    NodePattern, Query as CypherQuery, RelationshipPattern, ReturnItem, Subquery,
 };
+use axon_cypher::planner::{ExecutionPlan, PlanOperator};
+use axon_cypher::schema::{PropertyKind, SchemaSnapshot};
+use axon_cypher::CypherError;
 use axon_schema::access_control::AccessControlPolicy;
 use axon_schema::policy::{compile_policy_catalog, PolicyCompileError, PolicyPlan};
 use axon_schema::schema::{
@@ -106,6 +109,10 @@ const LINK_CANDIDATES_PAYLOAD_TYPE: &str = "LinkCandidatesPayload";
 const NEIGHBOR_EDGE_TYPE: &str = "NeighborEdge";
 const NEIGHBOR_GROUP_TYPE: &str = "NeighborGroup";
 const NEIGHBORS_CONNECTION_TYPE: &str = "NeighborsConnection";
+const AXON_QUERY_RESULT_TYPE: &str = "AxonQueryResult";
+const AXON_QUERY_SCHEMA_TYPE: &str = "AxonQuerySchema";
+const AXON_QUERY_COLUMN_TYPE: &str = "AxonQueryColumn";
+const AXON_QUERY_METADATA_TYPE: &str = "AxonQueryMetadata";
 const CREATE_COLLECTION_INPUT: &str = "CreateCollectionInput";
 const DROP_COLLECTION_INPUT: &str = "DropCollectionInput";
 const PUT_SCHEMA_INPUT: &str = "PutSchemaInput";
@@ -145,6 +152,7 @@ const DEFAULT_MAX_GRAPHQL_DEPTH: usize = 10;
 const DEFAULT_MAX_GRAPHQL_COMPLEXITY: usize = 256;
 const MAX_DEPTH_ENV: &str = "AXON_GRAPHQL_MAX_DEPTH";
 const MAX_COMPLEXITY_ENV: &str = "AXON_GRAPHQL_MAX_COMPLEXITY";
+const AXON_QUERY_CARDINALITY_BUDGET_ENV: &str = "AXON_GRAPHQL_AXON_QUERY_CARDINALITY_BUDGET";
 const IDEMPOTENCY_TTL: Duration = Duration::from_secs(5 * 60);
 
 static GRAPHQL_IDEMPOTENCY_CACHE: OnceLock<StdMutex<HashMap<(String, String), IdempotencyEntry>>> =
@@ -2395,6 +2403,500 @@ fn named_query_compare_json(a: Option<&Value>, b: Option<&Value>) -> std::cmp::O
     }
 }
 
+fn axon_query_result_object() -> Object {
+    Object::new(AXON_QUERY_RESULT_TYPE)
+        .field(json_object_field("rows", TypeRef::named_nn_list_nn("JSON")))
+        .field(json_object_field(
+            "schema",
+            TypeRef::named_nn(AXON_QUERY_SCHEMA_TYPE),
+        ))
+        .field(json_object_field(
+            "metadata",
+            TypeRef::named_nn(AXON_QUERY_METADATA_TYPE),
+        ))
+}
+
+fn axon_query_schema_object() -> Object {
+    Object::new(AXON_QUERY_SCHEMA_TYPE).field(json_object_field(
+        "columns",
+        TypeRef::named_nn_list_nn(AXON_QUERY_COLUMN_TYPE),
+    ))
+}
+
+fn axon_query_column_object() -> Object {
+    Object::new(AXON_QUERY_COLUMN_TYPE)
+        .field(json_object_field(
+            "name",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "type",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "nullable",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+        ))
+}
+
+fn axon_query_metadata_object() -> Object {
+    Object::new(AXON_QUERY_METADATA_TYPE)
+        .field(json_object_field(
+            "estimatedRows",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "elapsedMs",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field("plan", TypeRef::named_nn("JSON")))
+        .field(json_object_field(
+            "indexUsage",
+            TypeRef::named_nn_list_nn(TypeRef::STRING),
+        ))
+}
+
+fn axon_query_field<S: StorageAdapter + 'static>(
+    schemas_by_collection: HashMap<String, CollectionSchema>,
+    handler: SharedHandler<S>,
+) -> Field {
+    Field::new(
+        "axonQuery",
+        TypeRef::named_nn(AXON_QUERY_RESULT_TYPE),
+        move |ctx| {
+            let handler = Arc::clone(&handler);
+            let schemas_by_collection = schemas_by_collection.clone();
+            let caller = caller_from_ctx(&ctx);
+            FieldFuture::new(async move {
+                let cypher = ctx.args.try_get("cypher")?.string()?.to_owned();
+                let parameters = axon_query_parameters_from_ctx(&ctx)?;
+                let started_at = Instant::now();
+                let deadline = started_at + Duration::from_secs(30);
+                let guard = handler.lock().await;
+                let result = execute_axon_query(
+                    &guard,
+                    &schemas_by_collection,
+                    &caller,
+                    &cypher,
+                    &parameters,
+                    started_at,
+                    deadline,
+                )?;
+                Ok(Some(json_to_field_value(result)))
+            })
+        },
+    )
+    .argument(InputValue::new(
+        "cypher",
+        TypeRef::named_nn(TypeRef::STRING),
+    ))
+    .argument(InputValue::new("parameters", TypeRef::named("JSON")))
+}
+
+fn axon_query_stub_field() -> Field {
+    Field::new(
+        "axonQuery",
+        TypeRef::named_nn(AXON_QUERY_RESULT_TYPE),
+        |_ctx| {
+            FieldFuture::new(async move {
+                Ok(Some(json_to_field_value(json!({
+                    "rows": [],
+                    "schema": { "columns": [] },
+                    "metadata": {
+                        "estimatedRows": 0,
+                        "elapsedMs": 0,
+                        "plan": {},
+                        "indexUsage": []
+                    }
+                }))))
+            })
+        },
+    )
+    .argument(InputValue::new(
+        "cypher",
+        TypeRef::named_nn(TypeRef::STRING),
+    ))
+    .argument(InputValue::new("parameters", TypeRef::named("JSON")))
+}
+
+fn axon_query_parameters_from_ctx(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+) -> Result<HashMap<String, Value>, GqlError> {
+    let Some(value) = ctx
+        .args
+        .try_get("parameters")
+        .ok()
+        .filter(|value| !value.is_null())
+    else {
+        return Ok(HashMap::new());
+    };
+    let json = gql_input_to_json(value.as_value())?;
+    let Value::Object(object) = json else {
+        return Err(
+            GqlError::new("axonQuery parameters must be a JSON object").extend_with(|_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+            }),
+        );
+    };
+    Ok(object.into_iter().collect())
+}
+
+fn execute_axon_query<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+    caller: &CallerIdentity,
+    cypher: &str,
+    params: &HashMap<String, Value>,
+    started_at: Instant,
+    deadline: Instant,
+) -> Result<Value, GqlError> {
+    caller.check(Operation::Read).map_err(axon_error_to_gql)?;
+    axon_query_check_deadline(deadline)?;
+
+    let query = axon_cypher::parse(cypher).map_err(cypher_error_to_gql)?;
+    let schemas: Vec<CollectionSchema> = schemas_by_collection.values().cloned().collect();
+    let snapshot = axon_query_schema_snapshot(handler, &schemas)?;
+    axon_cypher::validate(&query, &snapshot).map_err(cypher_error_to_gql)?;
+    axon_schema::validate_query_policy_compatibility(&query, &schemas)
+        .map_err(cypher_error_to_gql)?;
+    let plan = axon_cypher::plan(&query, &snapshot).map_err(cypher_error_to_gql)?;
+    let mut rows = axon_query_execute_rows(
+        handler,
+        &query,
+        schemas_by_collection,
+        caller,
+        params,
+        deadline,
+    )?;
+
+    if query.return_clause.distinct {
+        let mut seen = HashSet::new();
+        rows.retain(|row| seen.insert(row.to_string()));
+    }
+
+    Ok(json!({
+        "rows": rows,
+        "schema": { "columns": axon_query_columns(&query, &snapshot) },
+        "metadata": {
+            "estimatedRows": i64::try_from(plan.estimated_rows).unwrap_or(i64::MAX),
+            "elapsedMs": i64::try_from(started_at.elapsed().as_millis()).unwrap_or(i64::MAX),
+            "plan": plan,
+            "indexUsage": axon_query_index_usage(&plan),
+        }
+    }))
+}
+
+fn axon_query_schema_snapshot<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    schemas: &[CollectionSchema],
+) -> Result<SchemaSnapshot, GqlError> {
+    let estimated_counts: HashMap<String, u64> = schemas
+        .iter()
+        .map(|schema| {
+            let count = handler
+                .storage_ref()
+                .count(&schema.collection)
+                .map_err(axon_error_to_gql)?;
+            Ok((schema.collection.to_string(), count as u64))
+        })
+        .collect::<Result<_, GqlError>>()?;
+    let mut snapshot = axon_schema::schema_snapshot_from_schemas(schemas, &estimated_counts);
+    if let Ok(value) = std::env::var(AXON_QUERY_CARDINALITY_BUDGET_ENV) {
+        if let Ok(budget) = value.parse::<u64>() {
+            snapshot.planner_config.cardinality_budget = budget;
+        }
+    }
+    Ok(snapshot)
+}
+
+fn axon_query_execute_rows<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    query: &CypherQuery,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+    caller: &CallerIdentity,
+    params: &HashMap<String, Value>,
+    deadline: Instant,
+) -> Result<Vec<Value>, GqlError> {
+    let root_pattern = named_query_root_pattern(query)?;
+    let root_collection = named_query_root_collection(root_pattern, schemas_by_collection)?;
+    let root_filter = named_query_field_filter_from_properties(&root_pattern.start, params)?;
+    let response = handler
+        .query_entities_with_caller(
+            QueryEntitiesRequest {
+                collection: root_collection,
+                filter: root_filter,
+                sort: Vec::new(),
+                limit: None,
+                after_id: None,
+                count_only: false,
+            },
+            caller,
+            None,
+        )
+        .map_err(axon_error_to_gql)?;
+
+    let mut rows = Vec::new();
+    for root in response.entities {
+        axon_query_check_deadline(deadline)?;
+        let mut root_bindings = HashMap::from([(
+            root_pattern
+                .start
+                .variable
+                .clone()
+                .unwrap_or_else(|| "root".to_string()),
+            root.clone(),
+        )]);
+        let candidates = named_query_expand_outer_pattern(
+            handler,
+            root_pattern,
+            &root,
+            schemas_by_collection,
+            caller,
+            params,
+        )?;
+        for candidate_bindings in candidates {
+            axon_query_check_deadline(deadline)?;
+            let mut bindings = root_bindings.clone();
+            bindings.extend(candidate_bindings);
+            if let Some(where_clause) = &query.where_clause {
+                if !named_query_expr_bool(
+                    handler,
+                    where_clause,
+                    &bindings,
+                    schemas_by_collection,
+                    caller,
+                    params,
+                )? {
+                    continue;
+                }
+            }
+            rows.push(axon_query_project_row(query, &bindings, params)?);
+        }
+        root_bindings.clear();
+    }
+
+    axon_query_sort_rows(&mut rows, query, params)?;
+    if let Some(skip) = query.skip {
+        let skip = usize::try_from(skip).map_err(|_| {
+            cypher_error_to_gql(CypherError::UnsupportedQueryPlan(
+                "SKIP exceeds platform usize".into(),
+            ))
+        })?;
+        rows = rows.into_iter().skip(skip).collect();
+    }
+    if let Some(limit) = query.limit {
+        let limit = usize::try_from(limit).map_err(|_| {
+            cypher_error_to_gql(CypherError::UnsupportedQueryPlan(
+                "LIMIT exceeds platform usize".into(),
+            ))
+        })?;
+        rows.truncate(limit);
+    }
+
+    Ok(rows)
+}
+
+fn axon_query_project_row(
+    query: &CypherQuery,
+    bindings: &HashMap<String, Entity>,
+    params: &HashMap<String, Value>,
+) -> Result<Value, GqlError> {
+    let mut row = serde_json::Map::new();
+    for (index, item) in query.return_clause.items.iter().enumerate() {
+        let name = axon_query_return_item_name(item, index);
+        row.insert(
+            name,
+            named_query_expr_value(&item.expression, bindings, params)?,
+        );
+    }
+    Ok(Value::Object(row))
+}
+
+fn axon_query_sort_rows(
+    rows: &mut [Value],
+    query: &CypherQuery,
+    params: &HashMap<String, Value>,
+) -> Result<(), GqlError> {
+    if query.order_by.is_empty() {
+        return Ok(());
+    }
+    let mut decorated = Vec::with_capacity(rows.len());
+    for row in rows.iter() {
+        let keys = query
+            .order_by
+            .iter()
+            .map(|sort| axon_query_row_sort_value(row, &sort.expression, query, params))
+            .collect::<Result<Vec<_>, _>>()?;
+        decorated.push((row.clone(), keys));
+    }
+    decorated.sort_by(|(_, left), (_, right)| {
+        for (index, sort) in query.order_by.iter().enumerate() {
+            let cmp = named_query_compare_json(left.get(index), right.get(index));
+            if cmp != std::cmp::Ordering::Equal {
+                return if sort.descending { cmp.reverse() } else { cmp };
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    for (target, (row, _)) in rows.iter_mut().zip(decorated) {
+        *target = row;
+    }
+    Ok(())
+}
+
+fn axon_query_row_sort_value(
+    row: &Value,
+    expression: &Expression,
+    query: &CypherQuery,
+    params: &HashMap<String, Value>,
+) -> Result<Value, GqlError> {
+    for (index, item) in query.return_clause.items.iter().enumerate() {
+        if &item.expression == expression {
+            let name = axon_query_return_item_name(item, index);
+            return Ok(row.get(&name).cloned().unwrap_or(Value::Null));
+        }
+    }
+    match expression {
+        Expression::Property { variable, path } => {
+            let variable_value = row.get(variable).unwrap_or(&Value::Null);
+            Ok(path
+                .iter()
+                .try_fold(variable_value, |current, segment| current.get(segment))
+                .cloned()
+                .unwrap_or(Value::Null))
+        }
+        Expression::Parameter(name) => Ok(params.get(name).cloned().unwrap_or(Value::Null)),
+        Expression::Literal(literal) => named_query_literal_value(literal, &HashMap::new(), params),
+        _ => Ok(Value::Null),
+    }
+}
+
+fn axon_query_return_item_name(item: &ReturnItem, index: usize) -> String {
+    if let Some(alias) = &item.alias {
+        return alias.clone();
+    }
+    match &item.expression {
+        Expression::Variable(variable) => variable.clone(),
+        Expression::Property { variable, path } => format!("{}.{}", variable, path.join(".")),
+        Expression::FunctionCall { name, .. } => name.clone(),
+        _ => format!("column{}", index + 1),
+    }
+}
+
+fn axon_query_columns(query: &CypherQuery, snapshot: &SchemaSnapshot) -> Vec<Value> {
+    let bindings = axon_query_bindings(query);
+    query
+        .return_clause
+        .items
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            json!({
+                "name": axon_query_return_item_name(item, index),
+                "type": axon_query_expression_type(&item.expression, &bindings, snapshot),
+                "nullable": true
+            })
+        })
+        .collect()
+}
+
+fn axon_query_bindings(query: &CypherQuery) -> HashMap<String, String> {
+    let mut bindings = HashMap::new();
+    for clause in &query.matches {
+        for pattern in &clause.patterns {
+            if let (Some(variable), Some(label)) = (&pattern.start.variable, &pattern.start.label) {
+                bindings.insert(variable.clone(), label.clone());
+            }
+            for step in &pattern.steps {
+                if let (Some(variable), Some(label)) = (&step.node.variable, &step.node.label) {
+                    bindings.insert(variable.clone(), label.clone());
+                }
+            }
+        }
+    }
+    bindings
+}
+
+fn axon_query_expression_type(
+    expression: &Expression,
+    bindings: &HashMap<String, String>,
+    snapshot: &SchemaSnapshot,
+) -> &'static str {
+    match expression {
+        Expression::Variable(_) => "object",
+        Expression::Property { variable, path } => bindings
+            .get(variable)
+            .and_then(|label| snapshot.label(label))
+            .and_then(|label| path.first().and_then(|property| label.property(property)))
+            .map(axon_query_property_kind_name)
+            .unwrap_or("json"),
+        Expression::Literal(Literal::Bool(_)) => "boolean",
+        Expression::Literal(Literal::Integer(_)) => "integer",
+        Expression::Literal(Literal::Float(_)) => "float",
+        Expression::Literal(Literal::String(_)) => "string",
+        Expression::Literal(Literal::Null | Literal::List(_)) | Expression::Parameter(_) => "json",
+        Expression::FunctionCall { name, .. } if name.eq_ignore_ascii_case("count") => "integer",
+        Expression::FunctionCall { .. } => "json",
+        Expression::Comparison { .. }
+        | Expression::BinaryLogical { .. }
+        | Expression::Not(_)
+        | Expression::Exists(_)
+        | Expression::NotExists(_)
+        | Expression::IsNull { .. } => "boolean",
+    }
+}
+
+fn axon_query_property_kind_name(kind: PropertyKind) -> &'static str {
+    match kind {
+        PropertyKind::String | PropertyKind::DateTime => "string",
+        PropertyKind::Integer => "integer",
+        PropertyKind::Float => "float",
+        PropertyKind::Boolean => "boolean",
+        PropertyKind::Other => "json",
+    }
+}
+
+fn axon_query_index_usage(plan: &ExecutionPlan) -> Vec<String> {
+    let mut usage = Vec::new();
+    axon_query_collect_index_usage(&plan.root, &mut usage);
+    usage.sort();
+    usage.dedup();
+    usage
+}
+
+fn axon_query_collect_index_usage(operator: &PlanOperator, usage: &mut Vec<String>) {
+    match operator {
+        PlanOperator::IndexLookup(plan) => {
+            usage.push(format!("{}.{}", plan.collection, plan.property));
+        }
+        PlanOperator::Expand(plan) => axon_query_collect_index_usage(&plan.input, usage),
+        PlanOperator::Filter(plan) => axon_query_collect_index_usage(&plan.input, usage),
+        PlanOperator::Project(plan) => axon_query_collect_index_usage(&plan.input, usage),
+        PlanOperator::Sort(plan) => axon_query_collect_index_usage(&plan.input, usage),
+        PlanOperator::Skip(plan) | PlanOperator::Limit(plan) => {
+            axon_query_collect_index_usage(&plan.input, usage);
+        }
+        PlanOperator::ExistsCheck(plan) => axon_query_collect_index_usage(&plan.input, usage),
+        PlanOperator::Scan(_) => {}
+    }
+}
+
+fn axon_query_check_deadline(deadline: Instant) -> Result<(), GqlError> {
+    if Instant::now() > deadline {
+        return Err(cypher_error_to_gql(CypherError::QueryTimeout(
+            "axonQuery exceeded 30 second wall-clock timeout".into(),
+        )));
+    }
+    Ok(())
+}
+
+fn cypher_error_to_gql(err: CypherError) -> GqlError {
+    let code = err.code();
+    GqlError::new(err.to_string()).extend_with(move |_err, ext| {
+        ext.set("code", code);
+    })
+}
+
 fn collection_meta_json(
     meta: &axon_api::response::CollectionMetadata,
     schema: Option<CollectionSchema>,
@@ -3790,6 +4292,10 @@ fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
         .register(neighbor_edge_object())
         .register(neighbor_group_object())
         .register(neighbors_connection_object())
+        .register(axon_query_result_object())
+        .register(axon_query_schema_object())
+        .register(axon_query_column_object())
+        .register(axon_query_metadata_object())
         .register(transaction_operation_result_object())
         .register(commit_transaction_payload_object())
         .register(drop_collection_payload_object())
@@ -7932,6 +8438,10 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
 
     query = add_handler_root_query_fields(query, Arc::clone(&handler));
     query = add_handler_intent_root_query_fields(query, Arc::clone(&handler));
+    query = query.field(axon_query_field(
+        schemas_by_collection.clone(),
+        Arc::clone(&handler),
+    ));
     mutation = add_handler_intent_root_mutation_fields(mutation, Arc::clone(&handler));
 
     for schema in collections {
@@ -9043,6 +9553,7 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
 
     query = add_stub_root_query_fields(query);
     query = add_intent_root_query_fields(query);
+    query = query.field(axon_query_stub_field());
     mutation = add_intent_root_mutation_fields(mutation);
 
     for schema in collections {
@@ -11239,6 +11750,209 @@ mod tests {
             data["beads_by_owner"]["edges"][0]["node"]["id"],
             json!("mine")
         );
+    }
+
+    fn first_graphql_error_code(response: &async_graphql::Response) -> String {
+        let ext = response.errors[0].extensions.as_ref().expect("extensions");
+        match ext.get("code") {
+            Some(GqlValue::String(code)) => code.clone(),
+            other => panic!("GraphQL error should include string code, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn axon_query_field_is_introspectable_with_cypher_and_parameters_args() {
+        let schema_def = ddx_beads_named_query_schema();
+        let schema = build_schema(std::slice::from_ref(&schema_def)).expect("schema should build");
+        let data = response_data(
+            schema
+                .schema
+                .execute(
+                    r#"{
+                        __type(name: "Query") {
+                            fields {
+                                name
+                                args { name type { kind name ofType { kind name } } }
+                                type { kind name ofType { kind name } }
+                            }
+                        }
+                    }"#,
+                )
+                .await,
+        );
+        let fields = data["__type"]["fields"].as_array().expect("fields");
+        let axon_query = fields
+            .iter()
+            .find(|field| field["name"] == "axonQuery")
+            .expect("axonQuery field should exist");
+        assert_eq!(axon_query["type"]["kind"], "NON_NULL");
+        assert_eq!(axon_query["type"]["ofType"]["name"], AXON_QUERY_RESULT_TYPE);
+        let args: Vec<&str> = axon_query["args"]
+            .as_array()
+            .expect("args")
+            .iter()
+            .filter_map(|arg| arg["name"].as_str())
+            .collect();
+        assert_eq!(args, vec!["cypher", "parameters"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn axon_query_valid_query_returns_rows_schema_and_metadata() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            for (id, owner, status, priority) in [
+                ("mine", "consultant", "open", 3),
+                ("hidden", "other", "open", 2),
+            ] {
+                guard
+                    .create_entity(CreateEntityRequest {
+                        collection: CollectionId::new("ddx_beads"),
+                        id: EntityId::new(id),
+                        data: json!({
+                            "title": id,
+                            "status": status,
+                            "owner": owner,
+                            "priority": priority,
+                            "secret": "classified"
+                        }),
+                        actor: None,
+                        audit_metadata: None,
+                        attribution: None,
+                    })
+                    .expect("bead should seed");
+            }
+        }
+
+        let schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
+        let request = async_graphql::Request::new(
+            r#"{
+                axonQuery(
+                    cypher: "MATCH (b:DdxBead {owner: $owner}) RETURN b.title AS title, b.status AS status ORDER BY b.status"
+                    parameters: { owner: "consultant" }
+                ) {
+                    rows
+                    schema { columns { name type nullable } }
+                    metadata { estimatedRows plan indexUsage elapsedMs }
+                }
+            }"#,
+        )
+        .data(CallerIdentity::new(
+            "consultant",
+            axon_core::auth::Role::Read,
+        ));
+        let data = response_data(schema.schema.execute(request).await);
+        let result = &data["axonQuery"];
+        assert_eq!(
+            result["rows"],
+            json!([{ "title": "mine", "status": "open" }])
+        );
+        assert_eq!(result["schema"]["columns"][0]["name"], "title");
+        assert_eq!(result["schema"]["columns"][0]["type"], "string");
+        assert_eq!(result["metadata"]["estimatedRows"], 1);
+        assert_eq!(result["metadata"]["indexUsage"], json!(["ddx_beads.owner"]));
+        assert!(result["metadata"]["plan"].is_object());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn axon_query_errors_use_stable_cypher_codes() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        let schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
+
+        for (cypher, expected) in [
+            ("MATCH (", "parse_error"),
+            (
+                "MATCH (b:DdxBead {missing: 'x'}) RETURN b",
+                "unknown_identifier",
+            ),
+            (
+                "MATCH (b:DdxBead) WHERE b.secret = 'classified' RETURN b",
+                "policy_required_bypass",
+            ),
+        ] {
+            let request = async_graphql::Request::new(format!(
+                r#"{{ axonQuery(cypher: {cypher:?}) {{ rows }} }}"#
+            ))
+            .data(CallerIdentity::new(
+                "consultant",
+                axon_core::auth::Role::Read,
+            ));
+            let result = schema.schema.execute(request).await;
+            assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+            assert_eq!(first_graphql_error_code(&result), expected);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn axon_query_unsupported_query_plan_error_code() {
+        let schema_def = test_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            for i in 0..=1000 {
+                guard
+                    .create_entity(CreateEntityRequest {
+                        collection: CollectionId::new("tasks"),
+                        id: EntityId::new(format!("t{i}")),
+                        data: json!({"title": format!("Task {i}")}),
+                        actor: None,
+                        audit_metadata: None,
+                        attribution: None,
+                    })
+                    .expect("task should seed");
+            }
+        }
+        let schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
+        let result = schema
+            .schema
+            .execute(r#"{ axonQuery(cypher: "MATCH (t:Task) RETURN t") { rows } }"#)
+            .await;
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        assert_eq!(first_graphql_error_code(&result), "unsupported_query_plan");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn axon_query_query_too_large_error_code() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            for i in 0..2 {
+                guard
+                    .create_entity(CreateEntityRequest {
+                        collection: CollectionId::new("ddx_beads"),
+                        id: EntityId::new(format!("b{i}")),
+                        data: json!({
+                            "title": format!("Bead {i}"),
+                            "status": "open",
+                            "owner": "consultant",
+                            "priority": i,
+                            "secret": "classified"
+                        }),
+                        actor: None,
+                        audit_metadata: None,
+                        attribution: None,
+                    })
+                    .expect("bead should seed");
+            }
+        }
+        std::env::set_var(AXON_QUERY_CARDINALITY_BUDGET_ENV, "1");
+        let schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
+        let result = schema
+            .schema
+            .execute(
+                r#"{ axonQuery(cypher: "MATCH (b:DdxBead) RETURN b ORDER BY b.status") { rows } }"#,
+            )
+            .await;
+        std::env::remove_var(AXON_QUERY_CARDINALITY_BUDGET_ENV);
+        assert_eq!(result.errors.len(), 1, "errors: {:?}", result.errors);
+        assert_eq!(first_graphql_error_code(&result), "query_too_large");
     }
 
     #[tokio::test(flavor = "multi_thread")]

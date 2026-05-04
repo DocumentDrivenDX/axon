@@ -127,6 +127,19 @@ pub fn schema_snapshot_from_schemas<S: BuildHasher>(
     }
 }
 
+/// Validate query references against field-level read redaction policy.
+///
+/// Named queries and ad-hoc GraphQL queries share this check so a predicate
+/// that would require reading redacted data fails before execution.
+pub fn validate_query_policy_compatibility(
+    query: &Query,
+    schemas: &[CollectionSchema],
+) -> Result<(), CypherError> {
+    let label_to_collection = label_collection_map(schemas);
+    let redacted = redacted_fields_by_label(schemas);
+    validate_policy_compatibility(query, &label_to_collection, &redacted)
+}
+
 fn compile_one(
     name: &str,
     cypher: &str,
