@@ -5,6 +5,7 @@
 //!
 //! Uses `std::sync::Mutex` since all `AxonHandler` methods are synchronous.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,11 +41,12 @@ use axon_audit::entry::compute_diff;
 use axon_audit::entry::{MutationIntentAuditOrigin, MutationIntentAuditOriginSurface};
 use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::{AxonError, PolicyDenial};
-use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
+use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE, DEFAULT_SCHEMA};
 use axon_core::types::{Entity, Link};
 use axon_schema::validation::validate;
 use axon_schema::{
-    compile_policy_catalog, CollectionSchema, PolicyCompileReport, PolicyEnvelopeSummary,
+    compile_policy_catalog, CollectionSchema, NamedQueryDef, NamedQueryParameter,
+    PolicyCompileReport, PolicyEnvelopeSummary,
 };
 use axon_storage::adapter::StorageAdapter;
 use serde::{de::DeserializeOwned, Serialize};
@@ -1282,19 +1284,80 @@ fn graphql_optional_filter(
 fn graph_query_schemas<S: StorageAdapter>(
     handler: &AxonHandler<S>,
 ) -> Result<Vec<CollectionSchema>, ToolError> {
-    let names = handler
-        .list_collections(ListCollectionsRequest {})
-        .map_err(to_tool_error)?;
-    Ok(names
-        .collections
-        .iter()
-        .filter_map(|meta| {
-            handler
-                .get_schema(&CollectionId::new(&meta.name))
-                .ok()
-                .flatten()
+    active_schemas_for_database(handler, DEFAULT_DATABASE)
+}
+
+fn active_schemas_for_database<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    current_database: &str,
+) -> Result<Vec<CollectionSchema>, ToolError> {
+    let namespaces = handler
+        .list_namespaces(ListNamespacesRequest {
+            database: current_database.to_string(),
         })
-        .collect())
+        .map_err(to_tool_error)?;
+    let mut schemas = Vec::new();
+
+    for schema_name in namespaces.schemas {
+        let collections = handler
+            .list_namespace_collections(ListNamespaceCollectionsRequest {
+                database: current_database.to_string(),
+                schema: schema_name.clone(),
+            })
+            .map_err(to_tool_error)?;
+        for collection in collections.collections {
+            let visible_collection = if schema_name == DEFAULT_SCHEMA {
+                collection
+            } else {
+                format!("{schema_name}.{collection}")
+            };
+            let collection_id = mcp_collection_id(&visible_collection, current_database);
+            if let Some(schema) = handler.get_schema(&collection_id).map_err(to_tool_error)? {
+                schemas.push(schema);
+            }
+        }
+    }
+
+    Ok(schemas)
+}
+
+fn gql_error_to_tool_error(error: async_graphql::Error) -> ToolError {
+    ToolError::InvalidArgument(error.message)
+}
+
+fn mcp_query_parameters(args: &Value) -> Result<HashMap<String, Value>, ToolError> {
+    let Some(value) = args.get("parameters") else {
+        return Ok(HashMap::new());
+    };
+    let Value::Object(object) = value else {
+        return Err(ToolError::InvalidArgument(
+            "'parameters' must be an object when provided".into(),
+        ));
+    };
+    Ok(object.clone().into_iter().collect())
+}
+
+fn execute_cypher_query<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    current_database: &str,
+    args: &Value,
+    caller: &CallerIdentity,
+) -> Result<Value, ToolError> {
+    let cypher = args
+        .get("cypher")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::InvalidArgument("missing 'cypher' string".into()))?;
+    let parameters = mcp_query_parameters(args)?;
+    let schemas = active_schemas_for_database(handler, current_database)?;
+    let result = axon_graphql::dynamic::execute_axon_query_json(
+        handler,
+        &schemas,
+        caller,
+        cypher,
+        &parameters,
+    )
+    .map_err(gql_error_to_tool_error)?;
+    text_tool_response(&serde_json::json!({ "data": { "axonQuery": result } }))
 }
 
 fn validate_dynamic_graphql_document(query: &str) -> Result<(), ToolError> {
@@ -2114,13 +2177,18 @@ fn execute_delete<S: StorageAdapter>(
 
 fn execute_query<S: StorageAdapter>(
     handler: &AxonHandler<S>,
+    current_database: &str,
     args: &Value,
     caller: &CallerIdentity,
 ) -> Result<Value, ToolError> {
+    if args.get("cypher").is_some() {
+        return execute_cypher_query(handler, current_database, args, caller);
+    }
+
     let query = args
         .get("query")
         .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::InvalidArgument("missing 'query' string".into()))?;
+        .ok_or_else(|| ToolError::InvalidArgument("missing 'cypher' string".into()))?;
     let variables = args
         .get("variables")
         .cloned()
@@ -2131,13 +2199,19 @@ fn execute_query<S: StorageAdapter>(
 
 fn execute_query_tokio<S: StorageAdapter + 'static>(
     handler: Arc<TokioMutex<AxonHandler<S>>>,
+    current_database: String,
     args: &Value,
     caller: &CallerIdentity,
 ) -> Result<Value, ToolError> {
+    if args.get("cypher").is_some() {
+        let guard = handler.blocking_lock();
+        return execute_cypher_query(&guard, &current_database, args, caller);
+    }
+
     let query = args
         .get("query")
         .and_then(Value::as_str)
-        .ok_or_else(|| ToolError::InvalidArgument("missing 'query' string".into()))?;
+        .ok_or_else(|| ToolError::InvalidArgument("missing 'cypher' string".into()))?;
     let variables = args
         .get("variables")
         .cloned()
@@ -2360,36 +2434,251 @@ fn build_delete_tool<S: StorageAdapter + 'static>(
     }
 }
 
-/// Build the `axon.query` tool for GraphQL queries via MCP.
-///
-/// Accepts a `query` string and optional `variables` object and executes a
-/// limited GraphQL read surface against the live handler.
 pub fn build_query_tool<S: StorageAdapter + 'static>(
     handler: Arc<Mutex<AxonHandler<S>>>,
     caller: CallerIdentity,
 ) -> ToolDef {
+    build_query_tool_for_database(handler, caller, DEFAULT_DATABASE.to_string())
+}
+
+/// Build the `axon.query` tool for ad-hoc Cypher queries via MCP.
+///
+/// Accepts a `cypher` string and optional `parameters` object and executes the
+/// same read-only Cypher path as GraphQL `axonQuery`.
+pub fn build_query_tool_for_database<S: StorageAdapter + 'static>(
+    handler: Arc<Mutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
+    current_database: String,
+) -> ToolDef {
     ToolDef {
         name: "axon.query".into(),
-        description: "Execute a live GraphQL read query against Axon. Accepts a query string and optional variables.".into(),
+        description: "Execute a live read-only Cypher query against Axon. Mirrors GraphQL axonQuery and accepts cypher plus optional parameters.".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "query": {
+                "cypher": {
                     "type": "string",
-                    "description": "GraphQL query string"
+                    "description": "Read-only openCypher subset query string"
                 },
-                "variables": {
+                "parameters": {
                     "type": "object",
-                    "description": "Optional variables for the query"
+                    "description": "Optional named parameters referenced by the Cypher query"
                 }
             },
-            "required": ["query"]
+            "required": ["cypher"]
         }),
         handler: Box::new(move |args| {
             let guard = lock_handler(&handler)?;
-            execute_query(&guard, args, &caller)
+            execute_query(&guard, &current_database, args, &caller)
         }),
     }
+}
+
+pub fn build_named_query_tools<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<Mutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
+) -> Result<Vec<ToolDef>, ToolError> {
+    build_named_query_tools_for_database(collection, handler, caller, DEFAULT_DATABASE.to_string())
+}
+
+/// Build one MCP tool per schema-declared named query for a collection.
+pub fn build_named_query_tools_for_database<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<Mutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
+    current_database: String,
+) -> Result<Vec<ToolDef>, ToolError> {
+    let collection_id = mcp_collection_id(collection, &current_database);
+    let named_queries = {
+        let guard = lock_handler(&handler)?;
+        let Some(schema) = guard.get_schema(&collection_id).map_err(to_tool_error)? else {
+            return Ok(Vec::new());
+        };
+        let mut named_queries = schema
+            .queries
+            .into_iter()
+            .collect::<Vec<(String, NamedQueryDef)>>();
+        named_queries.sort_by(|left, right| left.0.cmp(&right.0));
+        named_queries
+    };
+
+    Ok(named_queries
+        .into_iter()
+        .map(|(query_name, named_query)| {
+            build_named_query_tool(
+                collection,
+                query_name,
+                named_query,
+                Arc::clone(&handler),
+                caller.clone(),
+                current_database.clone(),
+            )
+        })
+        .collect())
+}
+
+fn build_named_query_tool<S: StorageAdapter + 'static>(
+    collection: &str,
+    query_name: String,
+    named_query: NamedQueryDef,
+    handler: Arc<Mutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
+    current_database: String,
+) -> ToolDef {
+    let tool_name = format!("{collection}.{query_name}");
+    let description = format!(
+        "{} Named query `{query_name}` on `{collection}`.",
+        named_query.description
+    );
+    let input_schema = named_query_input_schema(&named_query);
+    ToolDef {
+        name: tool_name,
+        description,
+        input_schema,
+        handler: Box::new(move |args| {
+            let guard = lock_handler(&handler)?;
+            execute_named_query_tool(
+                &guard,
+                &current_database,
+                &query_name,
+                &named_query,
+                args,
+                &caller,
+            )
+        }),
+    }
+}
+
+fn named_query_input_schema(named_query: &NamedQueryDef) -> Value {
+    let mut properties = Map::new();
+    properties.insert(
+        "first".into(),
+        serde_json::json!({
+            "type": "integer",
+            "minimum": 0,
+            "description": "Optional maximum number of connection edges to return"
+        }),
+    );
+    properties.insert(
+        "after".into(),
+        serde_json::json!({
+            "type": "string",
+            "description": "Optional cursor after which to return edges"
+        }),
+    );
+    let mut required = Vec::new();
+    for param in &named_query.parameters {
+        properties.insert(param.name.clone(), named_query_parameter_json_schema(param));
+        if param.required {
+            required.push(Value::String(param.name.clone()));
+        }
+    }
+
+    let mut schema = Map::new();
+    schema.insert("type".into(), Value::String("object".into()));
+    schema.insert("properties".into(), Value::Object(properties));
+    if !required.is_empty() {
+        schema.insert("required".into(), Value::Array(required));
+    }
+    Value::Object(schema)
+}
+
+fn named_query_parameter_json_schema(param: &NamedQueryParameter) -> Value {
+    let schema_type = match param
+        .param_type
+        .trim_end_matches('!')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "int" | "integer" => "integer",
+        "float" | "number" => "number",
+        "bool" | "boolean" => "boolean",
+        "json" => "object",
+        _ => "string",
+    };
+    serde_json::json!({
+        "type": schema_type,
+        "description": format!("Named query parameter `{}`", param.name)
+    })
+}
+
+fn named_query_tool_parameters(
+    named_query: &NamedQueryDef,
+    args: &Value,
+) -> Result<HashMap<String, Value>, ToolError> {
+    let mut params = HashMap::new();
+    for param in &named_query.parameters {
+        match args.get(&param.name) {
+            Some(Value::Null) if param.required => {
+                return Err(ToolError::InvalidArgument(format!(
+                    "missing required named query parameter '{}'",
+                    param.name
+                )));
+            }
+            Some(Value::Null) | None if !param.required => {}
+            Some(value) => {
+                params.insert(param.name.clone(), value.clone());
+            }
+            None => {
+                return Err(ToolError::InvalidArgument(format!(
+                    "missing required named query parameter '{}'",
+                    param.name
+                )));
+            }
+        }
+    }
+    Ok(params)
+}
+
+fn named_query_tool_first(args: &Value) -> Result<Option<usize>, ToolError> {
+    let Some(value) = args.get("first") else {
+        return Ok(None);
+    };
+    let first = value.as_u64().ok_or_else(|| {
+        ToolError::InvalidArgument("'first' must be a non-negative integer".into())
+    })?;
+    usize::try_from(first)
+        .map(Some)
+        .map_err(|_| ToolError::InvalidArgument("'first' is too large".into()))
+}
+
+fn named_query_tool_after(args: &Value) -> Result<Option<String>, ToolError> {
+    args.get("after")
+        .map(|value| {
+            value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .ok_or_else(|| ToolError::InvalidArgument("'after' must be a string".into()))
+        })
+        .transpose()
+}
+
+fn execute_named_query_tool<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    current_database: &str,
+    query_name: &str,
+    named_query: &NamedQueryDef,
+    args: &Value,
+    caller: &CallerIdentity,
+) -> Result<Value, ToolError> {
+    let params = named_query_tool_parameters(named_query, args)?;
+    let first = named_query_tool_first(args)?;
+    let after = named_query_tool_after(args)?;
+    let schemas = active_schemas_for_database(handler, current_database)?;
+    let result = axon_graphql::dynamic::execute_named_query_json(
+        handler,
+        &schemas,
+        caller,
+        named_query,
+        &params,
+        first,
+        after.as_deref(),
+    )
+    .map_err(gql_error_to_tool_error)?;
+    let mut data = Map::new();
+    data.insert(query_name.to_string(), result);
+    text_tool_response(&serde_json::json!({ "data": Value::Object(data) }))
 }
 
 /// Build the global `axon.transition_lifecycle` tool (FEAT-015).
@@ -2706,25 +2995,115 @@ pub fn build_query_tool_tokio<S: StorageAdapter + 'static>(
     handler: Arc<TokioMutex<AxonHandler<S>>>,
     caller: CallerIdentity,
 ) -> ToolDef {
+    build_query_tool_tokio_for_database(handler, caller, DEFAULT_DATABASE.to_string())
+}
+
+/// Build the `axon.query` tool backed by a Tokio mutex for a database scope.
+pub fn build_query_tool_tokio_for_database<S: StorageAdapter + 'static>(
+    handler: Arc<TokioMutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
+    current_database: String,
+) -> ToolDef {
     ToolDef {
         name: "axon.query".into(),
-        description: "Execute a live GraphQL read query against Axon. Accepts a query string and optional variables.".into(),
+        description: "Execute a live read-only Cypher query against Axon. Mirrors GraphQL axonQuery and accepts cypher plus optional parameters.".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {
-                "query": {
+                "cypher": {
                     "type": "string",
-                    "description": "GraphQL query string"
+                    "description": "Read-only openCypher subset query string"
                 },
-                "variables": {
+                "parameters": {
                     "type": "object",
-                    "description": "Optional variables for the query"
+                    "description": "Optional named parameters referenced by the Cypher query"
                 }
             },
-            "required": ["query"]
+            "required": ["cypher"]
         }),
         handler: Box::new(move |args| {
-            execute_query_tokio(Arc::clone(&handler), args, &caller)
+            execute_query_tokio(Arc::clone(&handler), current_database.clone(), args, &caller)
+        }),
+    }
+}
+
+pub fn build_named_query_tools_tokio<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<TokioMutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
+) -> Result<Vec<ToolDef>, ToolError> {
+    build_named_query_tools_tokio_for_database(
+        collection,
+        handler,
+        caller,
+        DEFAULT_DATABASE.to_string(),
+    )
+}
+
+/// Build one Tokio-backed MCP tool per schema-declared named query.
+pub fn build_named_query_tools_tokio_for_database<S: StorageAdapter + 'static>(
+    collection: &str,
+    handler: Arc<TokioMutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
+    current_database: String,
+) -> Result<Vec<ToolDef>, ToolError> {
+    let collection_id = mcp_collection_id(collection, &current_database);
+    let named_queries = {
+        let guard = handler.blocking_lock();
+        let Some(schema) = guard.get_schema(&collection_id).map_err(to_tool_error)? else {
+            return Ok(Vec::new());
+        };
+        let mut named_queries = schema
+            .queries
+            .into_iter()
+            .collect::<Vec<(String, NamedQueryDef)>>();
+        named_queries.sort_by(|left, right| left.0.cmp(&right.0));
+        named_queries
+    };
+
+    Ok(named_queries
+        .into_iter()
+        .map(|(query_name, named_query)| {
+            build_named_query_tool_tokio(
+                collection,
+                query_name,
+                named_query,
+                Arc::clone(&handler),
+                caller.clone(),
+                current_database.clone(),
+            )
+        })
+        .collect())
+}
+
+fn build_named_query_tool_tokio<S: StorageAdapter + 'static>(
+    collection: &str,
+    query_name: String,
+    named_query: NamedQueryDef,
+    handler: Arc<TokioMutex<AxonHandler<S>>>,
+    caller: CallerIdentity,
+    current_database: String,
+) -> ToolDef {
+    let tool_name = format!("{collection}.{query_name}");
+    let description = format!(
+        "{} Named query `{query_name}` on `{collection}`.",
+        named_query.description
+    );
+    let input_schema = named_query_input_schema(&named_query);
+    ToolDef {
+        name: tool_name,
+        description,
+        input_schema,
+        handler: Box::new(move |args| {
+            let guard = handler.blocking_lock();
+            execute_named_query_tool(
+                &guard,
+                &current_database,
+                &query_name,
+                &named_query,
+                args,
+                &caller,
+            )
         }),
     }
 }
@@ -2899,7 +3278,10 @@ mod tests {
     use axon_api::handler::AxonHandler;
     use axon_api::request::{CreateCollectionRequest, CreateLinkRequest};
     use axon_api::test_fixtures::seed_procurement_fixture;
-    use axon_schema::schema::{Cardinality, CollectionSchema, LinkTypeDef};
+    use axon_schema::schema::{
+        Cardinality, CollectionSchema, IndexDef, IndexType, LinkTypeDef, NamedQueryDef,
+        NamedQueryParameter,
+    };
     use axon_storage::memory::MemoryStorageAdapter;
     use serde_json::{json, Value};
 
@@ -2913,6 +3295,26 @@ mod tests {
         let mut handler = AxonHandler::new(MemoryStorageAdapter::default());
 
         let mut tasks_schema = CollectionSchema::new(CollectionId::new("tasks"));
+        tasks_schema.entity_schema = Some(json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" },
+                "status": { "type": "string" },
+                "points": { "type": "integer" }
+            }
+        }));
+        tasks_schema.indexes = vec![
+            IndexDef {
+                field: "status".into(),
+                index_type: IndexType::String,
+                unique: false,
+            },
+            IndexDef {
+                field: "points".into(),
+                index_type: IndexType::Integer,
+                unique: false,
+            },
+        ];
         tasks_schema.link_types.insert(
             "depends-on".into(),
             LinkTypeDef {
@@ -2920,6 +3322,18 @@ mod tests {
                 cardinality: Cardinality::ManyToMany,
                 required: false,
                 metadata_schema: None,
+            },
+        );
+        tasks_schema.queries.insert(
+            "ready_tasks".into(),
+            NamedQueryDef {
+                description: "Ready tasks ordered by points".into(),
+                cypher: "MATCH (t:Task {status: $status}) RETURN t ORDER BY t.points DESC".into(),
+                parameters: vec![NamedQueryParameter {
+                    name: "status".into(),
+                    param_type: "String".into(),
+                    required: true,
+                }],
             },
         );
 
@@ -3172,55 +3586,48 @@ mod tests {
         let handler = make_graph_handler();
         let tool = build_query_tool(Arc::clone(&handler), CallerIdentity::anonymous());
         assert_eq!(tool.name, "axon.query");
+        assert_eq!(tool.input_schema["required"], json!(["cypher"]));
+        assert!(tool.input_schema["properties"]["cypher"].is_object());
+        assert!(tool.input_schema["properties"]["parameters"].is_object());
         let result = invoke_tool(
             &tool,
             serde_json::json!({
-                "query": r"query($collection: String!, $id: String!) {
-                collections { name entityCount }
-                entity(collection: $collection, id: $id) { id data }
-                entities(collection: $collection, limit: 2) {
-                    totalCount
-                    pageInfo { hasNextPage endCursor }
-                    edges { cursor node { id data } }
-                }
-            }",
-                "variables": {
-                    "collection": "tasks",
-                    "id": "t-001"
-                }
+                "cypher": "MATCH (t:Task {status: $status}) RETURN t.title AS title, t.points AS points ORDER BY t.points DESC",
+                "parameters": { "status": "ready" }
             }),
         );
         let parsed = parse_tool_payload(&result);
-        assert_eq!(parsed["data"]["collections"][0]["name"], "tasks");
-        assert_eq!(parsed["data"]["collections"][0]["entityCount"], 3);
-        assert_eq!(parsed["data"]["entity"]["id"], "t-001");
-        assert_eq!(parsed["data"]["entity"]["data"]["title"], "First task");
-        assert_eq!(parsed["data"]["entities"]["totalCount"], 3);
+        let axon_query = &parsed["data"]["axonQuery"];
         assert_eq!(
-            parsed["data"]["entities"]["edges"][0]["node"]["id"],
-            "t-001"
+            axon_query["rows"],
+            json!([
+                { "title": "First task", "points": 10 },
+                { "title": "Third task", "points": 5 }
+            ])
         );
+        assert_eq!(axon_query["schema"]["columns"][0]["name"], "title");
+        assert!(axon_query["metadata"]["plan"].is_object());
     }
 
     #[test]
-    fn query_tool_rejects_invalid_graphql_syntax() {
+    fn query_tool_rejects_invalid_cypher_syntax() {
         let tool = build_query_tool(make_graph_handler(), CallerIdentity::anonymous());
         let err = invoke_tool_err(
             &tool,
             serde_json::json!({
-                "query": "{ collections { name }"
+                "cypher": "MATCH ("
             }),
         );
         assert!(matches!(err, ToolError::InvalidArgument(_)));
     }
 
     #[test]
-    fn query_tool_rejects_unsupported_root_fields() {
+    fn query_tool_rejects_unknown_schema_references() {
         let tool = build_query_tool(make_graph_handler(), CallerIdentity::anonymous());
         let err = invoke_tool_err(
             &tool,
             serde_json::json!({
-                "query": "{ tasks { id } }"
+                "cypher": "MATCH (t:MissingLabel) RETURN t"
             }),
         );
         assert!(matches!(err, ToolError::InvalidArgument(_)));
@@ -3243,6 +3650,40 @@ mod tests {
         let tool = build_query_tool(make_graph_handler(), CallerIdentity::anonymous());
         let err = invoke_tool_err(&tool, serde_json::json!({}));
         assert!(matches!(err, ToolError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn named_query_tools_surface_descriptions_and_execute_graphql_path() {
+        let handler = make_graph_handler();
+        let tools =
+            build_named_query_tools("tasks", Arc::clone(&handler), CallerIdentity::anonymous())
+                .expect("named query tools should build");
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == "tasks.ready_tasks")
+            .expect("ready_tasks tool should be generated");
+        assert!(tool.description.contains("Ready tasks ordered by points"));
+        assert_eq!(tool.input_schema["required"], json!(["status"]));
+        assert!(tool.input_schema["properties"]["first"].is_object());
+        assert!(tool.input_schema["properties"]["after"].is_object());
+        assert_eq!(
+            tool.input_schema["properties"]["status"]["type"],
+            json!("string")
+        );
+
+        let result = invoke_tool(
+            tool,
+            json!({
+                "status": "ready",
+                "first": 1
+            }),
+        );
+        let parsed = parse_tool_payload(&result);
+        let connection = &parsed["data"]["ready_tasks"];
+        assert_eq!(connection["totalCount"], 2);
+        assert_eq!(connection["pageInfo"]["hasNextPage"], true);
+        assert_eq!(connection["edges"][0]["node"]["id"], json!("t-001"));
+        assert_eq!(connection["edges"][0]["node"]["title"], json!("First task"));
     }
 
     // ── aggregate tool tests ───────────────────────────────────────────

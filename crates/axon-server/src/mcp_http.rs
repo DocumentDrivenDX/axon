@@ -13,7 +13,8 @@ use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
 use axon_core::types::Entity;
 use axon_mcp::handlers::{
     apply_policy_metadata_to_registry, build_aggregate_tool_tokio, build_crud_tools_tokio,
-    build_link_candidates_tool_tokio, build_neighbors_tool_tokio, build_query_tool_tokio,
+    build_link_candidates_tool_tokio, build_named_query_tools_tokio_for_database,
+    build_neighbors_tool_tokio, build_query_tool_tokio_for_database,
 };
 use axon_mcp::map_axon_error;
 use axon_mcp::prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
@@ -22,7 +23,7 @@ use axon_mcp::resources::{
     discover_collections, read_resource_from_handler, resource_infos, resource_template_infos,
     ResourceRegistry,
 };
-use axon_mcp::tools::ToolRegistry;
+use axon_mcp::tools::{ToolError, ToolRegistry};
 use axon_storage::adapter::StorageAdapter;
 use axum::body::Bytes;
 use axum::extract::{Extension, Query, State};
@@ -342,6 +343,16 @@ fn build_tool_registry<S: StorageAdapter + 'static>(
             Arc::clone(&handler),
         ));
         registry.register(build_neighbors_tool_tokio(collection, Arc::clone(&handler)));
+        for tool in build_named_query_tools_tokio_for_database(
+            collection,
+            Arc::clone(&handler),
+            caller.clone(),
+            current_database.to_string(),
+        )
+        .map_err(map_tool_error)?
+        {
+            registry.register(tool);
+        }
     }
 
     {
@@ -356,8 +367,22 @@ fn build_tool_registry<S: StorageAdapter + 'static>(
         .map_err(map_axon_error)?;
     }
 
-    registry.register(build_query_tool_tokio(handler, caller.clone()));
+    registry.register(build_query_tool_tokio_for_database(
+        handler,
+        caller.clone(),
+        current_database.to_string(),
+    ));
     Ok(registry)
+}
+
+fn map_tool_error(error: ToolError) -> McpError {
+    match error {
+        ToolError::NotFound(message) => McpError::NotFound(message),
+        ToolError::InvalidArgument(message) | ToolError::Conflict(message) => {
+            McpError::InvalidParams(message)
+        }
+        ToolError::Internal(message) => McpError::Internal(message),
+    }
 }
 
 fn build_resource_registry<S: StorageAdapter + 'static>(

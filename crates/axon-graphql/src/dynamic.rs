@@ -9,6 +9,7 @@
 //! inspection and tests).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::hash::BuildHasher;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -1525,6 +1526,42 @@ fn entity_connection_value(
     }))
 }
 
+fn entity_connection_json(
+    entities: &[Entity],
+    total_count: usize,
+    next_cursor: Option<String>,
+    has_previous_page: bool,
+    generic_node: bool,
+    schema: Option<&CollectionSchema>,
+) -> Value {
+    let edges: Vec<Value> = entities
+        .iter()
+        .map(|entity| {
+            json!({
+                "cursor": entity.id.to_string(),
+                "node": if generic_node {
+                    entity_to_generic_json_with_schema(entity, schema)
+                } else {
+                    entity_to_typed_json_with_schema(entity, schema)
+                },
+            })
+        })
+        .collect();
+    let start_cursor = entities.first().map(|entity| entity.id.to_string());
+    let end_cursor = entities.last().map(|entity| entity.id.to_string());
+
+    json!({
+        "edges": edges,
+        "pageInfo": page_info_json(
+            start_cursor,
+            end_cursor,
+            next_cursor.is_some(),
+            has_previous_page,
+        ),
+        "totalCount": total_count,
+    })
+}
+
 fn named_query_graphql_field_name(name: &str) -> String {
     if is_simple_graphql_name(name) && !is_reserved_query_field_name(name) {
         name.to_string()
@@ -1812,6 +1849,13 @@ fn named_query_field<S: StorageAdapter + 'static>(
     named_query_arguments(field, &named_query)
 }
 
+struct NamedQueryConnectionPage {
+    entities: Vec<Entity>,
+    total_count: usize,
+    next_cursor: Option<String>,
+    has_previous_page: bool,
+}
+
 fn named_query_stub_field(
     field_name: &str,
     named_query: &NamedQueryDef,
@@ -1851,6 +1895,36 @@ fn execute_named_query_connection<S: StorageAdapter>(
     first: Option<usize>,
     after: Option<&str>,
 ) -> Result<Option<FieldValue<'static>>, GqlError> {
+    let page = execute_named_query_connection_page(
+        handler,
+        query,
+        schemas_by_collection,
+        caller,
+        params,
+        first,
+        after,
+    )?;
+
+    Ok(Some(entity_connection_value(
+        &page.entities,
+        page.total_count,
+        page.next_cursor,
+        page.has_previous_page,
+        false,
+        Some(result_schema),
+    )))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_named_query_connection_page<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    query: &CypherQuery,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+    caller: &CallerIdentity,
+    params: &HashMap<String, Value>,
+    first: Option<usize>,
+    after: Option<&str>,
+) -> Result<NamedQueryConnectionPage, GqlError> {
     let root_pattern = named_query_root_pattern(query)?;
     let root_collection = named_query_root_collection(root_pattern, schemas_by_collection)?;
     let root_filter = named_query_field_filter_from_properties(&root_pattern.start, params)?;
@@ -1949,14 +2023,12 @@ fn execute_named_query_connection<S: StorageAdapter>(
         .then(|| entities.last().map(|entity| entity.id.to_string()))
         .flatten();
 
-    Ok(Some(entity_connection_value(
-        &entities,
+    Ok(NamedQueryConnectionPage {
+        entities,
         total_count,
         next_cursor,
         has_previous_page,
-        false,
-        Some(result_schema),
-    )))
+    })
 }
 
 fn named_query_expand_outer_pattern<S: StorageAdapter>(
@@ -2584,6 +2656,86 @@ fn execute_axon_query<S: StorageAdapter>(
             "indexUsage": axon_query_index_usage(&plan),
         }
     }))
+}
+
+/// Execute the GraphQL `axonQuery` Cypher path for protocol adapters.
+///
+/// MCP uses this helper so its `axon.query` tool shares GraphQL validation,
+/// policy compatibility checks, planner limits, timeout handling, and result
+/// shape.
+pub fn execute_axon_query_json<S: StorageAdapter, H: BuildHasher>(
+    handler: &AxonHandler<S>,
+    schemas: &[CollectionSchema],
+    caller: &CallerIdentity,
+    cypher: &str,
+    params: &HashMap<String, Value, H>,
+) -> Result<Value, GqlError> {
+    let schemas_by_collection = schemas
+        .iter()
+        .cloned()
+        .map(|schema| (schema.collection.to_string(), schema))
+        .collect();
+    let params: HashMap<String, Value> = params
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    let started_at = Instant::now();
+    let deadline = started_at + Duration::from_secs(30);
+    execute_axon_query(
+        handler,
+        &schemas_by_collection,
+        caller,
+        cypher,
+        &params,
+        started_at,
+        deadline,
+    )
+}
+
+/// Execute a schema-declared named query using the same path as generated
+/// GraphQL named-query fields.
+pub fn execute_named_query_json<S: StorageAdapter, H: BuildHasher>(
+    handler: &AxonHandler<S>,
+    schemas: &[CollectionSchema],
+    caller: &CallerIdentity,
+    named_query: &NamedQueryDef,
+    params: &HashMap<String, Value, H>,
+    first: Option<usize>,
+    after: Option<&str>,
+) -> Result<Value, GqlError> {
+    let schemas_by_collection: HashMap<String, CollectionSchema> = schemas
+        .iter()
+        .cloned()
+        .map(|schema| (schema.collection.to_string(), schema))
+        .collect();
+    let params: HashMap<String, Value> = params
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    let (query_ast, result_schema) = named_query_result_schema(named_query, &schemas_by_collection)
+        .map_err(|message| {
+            GqlError::new(message).extend_with(|_err, ext| {
+                ext.set("code", "INVALID_ARGUMENT");
+            })
+        })?;
+    let page = execute_named_query_connection_page(
+        handler,
+        &query_ast,
+        &schemas_by_collection,
+        caller,
+        &params,
+        first,
+        after,
+    )?;
+
+    Ok(entity_connection_json(
+        &page.entities,
+        page.total_count,
+        page.next_cursor,
+        page.has_previous_page,
+        false,
+        Some(&result_schema),
+    ))
 }
 
 fn axon_query_schema_snapshot<S: StorageAdapter>(

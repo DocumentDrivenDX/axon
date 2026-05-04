@@ -24,9 +24,11 @@ pub mod tools;
 pub use error_mapping::map_axon_error;
 pub use handlers::{
     build_aggregate_tool, build_aggregate_tool_tokio, build_crud_tools, build_crud_tools_tokio,
-    build_link_candidates_tool, build_link_candidates_tool_tokio, build_neighbors_tool,
-    build_neighbors_tool_tokio, build_query_tool, build_query_tool_tokio,
-    build_transition_lifecycle_tool,
+    build_link_candidates_tool, build_link_candidates_tool_tokio, build_named_query_tools,
+    build_named_query_tools_for_database, build_named_query_tools_tokio,
+    build_named_query_tools_tokio_for_database, build_neighbors_tool, build_neighbors_tool_tokio,
+    build_query_tool, build_query_tool_for_database, build_query_tool_tokio,
+    build_query_tool_tokio_for_database, build_transition_lifecycle_tool,
 };
 pub use prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
 pub use protocol::{

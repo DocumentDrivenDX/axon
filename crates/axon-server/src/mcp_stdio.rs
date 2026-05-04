@@ -12,7 +12,7 @@ use axon_core::auth::CallerIdentity;
 use axon_core::id::DEFAULT_DATABASE;
 use axon_mcp::handlers::{
     apply_policy_metadata_to_registry, build_aggregate_tool, build_crud_tools,
-    build_link_candidates_tool, build_neighbors_tool, build_query_tool,
+    build_link_candidates_tool, build_named_query_tools, build_neighbors_tool, build_query_tool,
     build_transition_lifecycle_tool,
 };
 use axon_mcp::prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
@@ -54,6 +54,11 @@ fn build_registry<S: StorageAdapter + 'static>(
         registry.register(build_aggregate_tool(col, Arc::clone(&handler)));
         registry.register(build_link_candidates_tool(col, Arc::clone(&handler)));
         registry.register(build_neighbors_tool(col, Arc::clone(&handler)));
+        for tool in build_named_query_tools(col, Arc::clone(&handler), CallerIdentity::anonymous())
+            .map_err(|e| io::Error::other(format!("failed to build named query tools: {e}")))?
+        {
+            registry.register(tool);
+        }
     }
 
     {
