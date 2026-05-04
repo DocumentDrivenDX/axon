@@ -1,0 +1,106 @@
+{
+  "attempt_id": "20260504T000233-8bd6609d",
+  "bead_id": "axon-ad2a9669",
+  "base_rev": "23a04e3cafdcf0766b4ad9dea1c1b74b24e9baa6",
+  "created_at": "2026-05-04T00:02:33.958104823Z",
+  "requested": {
+    "harness": "codex",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-ad2a9669",
+    "title": "build(feat-009): Cypher executor — in-memory streaming runtime",
+    "description": "Implement a streaming executor for the Cypher operator tree from the planner bead, against an in-memory entity/link store. Smallest end-to-end execution path: parser → validator → planner → executor.\n\nEach operator is a row iterator; bounded memory, ORDER BY without a covering index materializes; everything else streams. 30-second wall-clock timeout enforced.\n\nAdd crates/axon-cypher/src/memory_store.rs with a QueryStore trait against an in-memory entity+link store sufficient for testing. The trait will later be implemented over axon-storage::StorageAdapter (separate bead).\n\nOut of scope: SQLite/Postgres backends, GraphQL surface, MCP surface, subscriptions.",
+    "acceptance": "AC1. crates/axon-cypher/src/executor.rs has execute(plan, store) -\u003e RowStream. AC2. crates/axon-cypher/src/memory_store.rs implements the QueryStore trait. AC3. The DDx ready/blocked query end-to-end (parse → validate → plan → execute) returns expected ready and blocked beads on a hand-built dataset of 10 beads with 15 links. AC4. Bounded-memory streaming; only ORDER BY/collect()/DISTINCT materialize. AC5. 30-second wall-clock timeout enforced. AC6. ≥10 integration tests: DDx ready/blocked, dependency DAG (US-023), reachability (US-025), DISTINCT, OPTIONAL MATCH, EXISTS true/false, count(*), ORDER BY ASC/DESC. AC7. cargo test -p axon-cypher passes; clippy clean.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "area:cypher",
+      "kind:feature",
+      "triage:no-changes-unverified"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-04T00:02:33Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3908734",
+      "events": [
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"codex\",\"fallback_chain\":[],\"requested_harness\":\"codex\"}",
+          "created_at": "2026-05-03T04:00:58.256603656Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=codex"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"attempt_id\":\"20260503T035849-6299213d\",\"harness\":\"codex\",\"input_tokens\":543429,\"output_tokens\":5079,\"total_tokens\":548508,\"cost_usd\":0,\"duration_ms\":126860,\"exit_code\":0}",
+          "created_at": "2026-05-03T04:00:58.33795348Z",
+          "kind": "cost",
+          "source": "ddx agent execute-bead",
+          "summary": "tokens=548508"
+        },
+        {
+          "actor": "ddx",
+          "body": "verification_command=test -f .ddx/executions/20260503T035849-6299213d/no_changes_rationale.txt \u0026\u0026 ddx bead show axon-390c67d1 \u003e/dev/null \u0026\u0026 ddx bead show axon-ff99d8b1 \u003e/dev/null \u0026\u0026 ddx bead show axon-29b3919b \u003e/dev/null \u0026\u0026 ddx bead show axon-52265708 \u003e/dev/null\nexit_code=1",
+          "created_at": "2026-05-03T04:00:58.803007156Z",
+          "kind": "no_changes_unverified",
+          "source": "ddx agent execute-loop",
+          "summary": "no_changes_unverified"
+        },
+        {
+          "actor": "ddx",
+          "body": "no_changes\nrationale: verification_command: test -f .ddx/executions/20260503T035849-6299213d/no_changes_rationale.txt \u0026\u0026 ddx bead show axon-390c67d1 \u003e/dev/null \u0026\u0026 ddx bead show axon-ff99d8b1 \u003e/dev/null \u0026\u0026 ddx bead show axon-29b3919b \u003e/dev/null \u0026\u0026 ddx bead show axon-52265708 \u003e/dev/null\n\nstatus: decomposed\nparent: axon-ad2a9669\nreason: The parent bead is too large for one bounded execution pass under the execute-bead size check. It has seven acceptance criteria spanning executor API design, in-memory store implementation, streaming runtime semantics, timeout enforcement, materialization rules, and a broad end-to-end integration suite. Per instructions, no implementation was attempted.\n\nchild: axon-390c67d1\nslice: QueryStore trait and in-memory entity/link graph store for axon-cypher executor tests.\n\nchild: axon-ff99d8b1\nslice: Core execute(plan, store) -\u003e RowStream surface, basic streaming operators, and timeout enforcement.\n\nchild: axon-29b3919b\nslice: OPTIONAL MATCH, EXISTS, count(*), DISTINCT, and ORDER BY ASC/DESC executor semantics and focused tests.\n\nchild: axon-52265708\nslice: DDx end-to-end graph-query integration suite over a 10-bead, 15-link in-memory dataset.\nresult_rev=6582adf24c77e5548ba1def306996bf4b037a894\nbase_rev=6582adf24c77e5548ba1def306996bf4b037a894\nretry_after=2026-05-03T10:00:58Z",
+          "created_at": "2026-05-03T04:00:58.955421721Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "no_changes"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"codex\",\"fallback_chain\":[],\"requested_harness\":\"codex\"}",
+          "created_at": "2026-05-03T11:31:35.514639368Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=codex"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"attempt_id\":\"20260503T113048-226dd1c2\",\"harness\":\"codex\",\"input_tokens\":172303,\"output_tokens\":1884,\"total_tokens\":174187,\"cost_usd\":0,\"duration_ms\":46502,\"exit_code\":0}",
+          "created_at": "2026-05-03T11:31:35.58268552Z",
+          "kind": "cost",
+          "source": "ddx agent execute-bead",
+          "summary": "tokens=174187"
+        },
+        {
+          "actor": "ddx",
+          "body": "verification_command=test -f .ddx/executions/20260503T113048-226dd1c2/no_changes_rationale.txt \u0026\u0026 ddx bead show axon-390c67d1 \u003e/dev/null \u0026\u0026 ddx bead show axon-ff99d8b1 \u003e/dev/null \u0026\u0026 ddx bead show axon-29b3919b \u003e/dev/null \u0026\u0026 ddx bead show axon-52265708 \u003e/dev/null\nexit_code=1",
+          "created_at": "2026-05-03T11:31:35.970405088Z",
+          "kind": "no_changes_unverified",
+          "source": "ddx agent execute-loop",
+          "summary": "no_changes_unverified"
+        },
+        {
+          "actor": "ddx",
+          "body": "no_changes\nrationale: verification_command: test -f .ddx/executions/20260503T113048-226dd1c2/no_changes_rationale.txt \u0026\u0026 ddx bead show axon-390c67d1 \u003e/dev/null \u0026\u0026 ddx bead show axon-ff99d8b1 \u003e/dev/null \u0026\u0026 ddx bead show axon-29b3919b \u003e/dev/null \u0026\u0026 ddx bead show axon-52265708 \u003e/dev/null\n\nstatus: decomposed\nparent: axon-ad2a9669\nreason: The parent bead is too large for one bounded execution pass under the execute-bead size check. It has seven acceptance criteria spanning executor API design, in-memory store implementation, streaming runtime semantics, timeout enforcement, materialization rules, DDx-specific fixtures, and a broad integration suite. Per instructions, no implementation was attempted in this parent attempt.\n\nchild: axon-390c67d1\nslice: QueryStore trait and in-memory entity/link graph store for axon-cypher executor tests.\n\nchild: axon-ff99d8b1\nslice: Core execute(plan, store) -\u003e RowStream surface, basic streaming operators, and timeout enforcement.\n\nchild: axon-29b3919b\nslice: OPTIONAL MATCH, EXISTS, count(*), DISTINCT, and ORDER BY ASC/DESC executor semantics and focused tests.\n\nchild: axon-52265708\nslice: DDx end-to-end graph-query integration suite over a 10-bead, 15-link in-memory dataset.\nresult_rev=2318f26d7224956e7a1213d25cc6417cbd47c0ac\nbase_rev=2318f26d7224956e7a1213d25cc6417cbd47c0ac\nretry_after=2026-05-03T17:31:36Z",
+          "created_at": "2026-05-03T11:31:36.104107517Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "no_changes"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-04T00:02:33.261273997Z",
+      "execute-loop-no-changes-count": 2
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260504T000233-8bd6609d",
+    "prompt": ".ddx/executions/20260504T000233-8bd6609d/prompt.md",
+    "manifest": ".ddx/executions/20260504T000233-8bd6609d/manifest.json",
+    "result": ".ddx/executions/20260504T000233-8bd6609d/result.json",
+    "checks": ".ddx/executions/20260504T000233-8bd6609d/checks.json",
+    "usage": ".ddx/executions/20260504T000233-8bd6609d/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-ad2a9669-20260504T000233-8bd6609d"
+  },
+  "prompt_sha": "f345e79b767ebaa10dfd871065925890ca3aa0f54289a97a0809c6382f8a12e0"
+}

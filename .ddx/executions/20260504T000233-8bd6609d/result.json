@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-ad2a9669",
+  "attempt_id": "20260504T000233-8bd6609d",
+  "base_rev": "23a04e3cafdcf0766b4ad9dea1c1b74b24e9baa6",
+  "result_rev": "23a04e3cafdcf0766b4ad9dea1c1b74b24e9baa6",
+  "outcome": "task_no_changes",
+  "status": "no_changes",
+  "detail": "no_changes",
+  "no_changes_rationale": "verification_command: ddx bead show axon-390c67d1 | rg 'QueryStore and in-memory graph store' \u003e/dev/null \u0026\u0026 ddx bead show axon-ff99d8b1 | rg 'streaming executor core' \u003e/dev/null \u0026\u0026 ddx bead show axon-29b3919b | rg 'materializing and optional clauses' \u003e/dev/null \u0026\u0026 ddx bead show axon-52265708 | rg 'graph-query integration' \u003e/dev/null\n\nstatus: decomposed\nparent: axon-ad2a9669\nreason: The parent bead is too large for one bounded execution pass under the required execute-bead size check. It has seven acceptance criteria spanning QueryStore design, in-memory graph storage, executor API implementation, streaming semantics, timeout enforcement, materializing clause behavior, and a broad DDx end-to-end integration suite. The bead notes already show it was decomposed, and the child beads exist in the queue. Per the Step 0 contract, no implementation was attempted in this parent attempt.\n\nchild: axon-390c67d1\nslice: QueryStore trait and in-memory entity/link graph store for axon-cypher executor tests.\n\nchild: axon-ff99d8b1\nslice: Core execute(plan, store) -\u003e RowStream surface, basic streaming operators, and timeout enforcement.\n\nchild: axon-29b3919b\nslice: OPTIONAL MATCH, EXISTS, count(*), DISTINCT, and ORDER BY ASC/DESC executor semantics and focused tests.\n\nchild: axon-52265708\nslice: DDx end-to-end graph-query integration suite over a 10-bead, 15-link in-memory dataset.",
+  "harness": "codex",
+  "session_id": "eb-440ada97",
+  "duration_ms": 78978,
+  "tokens": 172421,
+  "exit_code": 0,
+  "failure_mode": "no_changes",
+  "execution_dir": ".ddx/executions/20260504T000233-8bd6609d",
+  "prompt_file": ".ddx/executions/20260504T000233-8bd6609d/prompt.md",
+  "manifest_file": ".ddx/executions/20260504T000233-8bd6609d/manifest.json",
+  "result_file": ".ddx/executions/20260504T000233-8bd6609d/result.json",
+  "usage_file": ".ddx/executions/20260504T000233-8bd6609d/usage.json",
+  "started_at": "2026-05-04T00:02:33.95918733Z",
+  "finished_at": "2026-05-04T00:03:52.937751618Z"
+}
