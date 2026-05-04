@@ -55,9 +55,15 @@ use axon_core::auth::{CallerIdentity, Operation};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, LinkId};
 use axon_core::types::{Entity, Link};
+use axon_cypher::ast::{
+    ComparisonOp, Direction as CypherDirection, Expression, Literal, LogicalOp, MatchClause,
+    NodePattern, Query as CypherQuery, RelationshipPattern, Subquery,
+};
 use axon_schema::access_control::AccessControlPolicy;
 use axon_schema::policy::{compile_policy_catalog, PolicyCompileError, PolicyPlan};
-use axon_schema::schema::{json_ld_reserved_field_aliases, CollectionSchema, CollectionView};
+use axon_schema::schema::{
+    json_ld_reserved_field_aliases, CollectionSchema, CollectionView, NamedQueryDef,
+};
 use axon_schema::validation::validate;
 use axon_storage::adapter::StorageAdapter;
 
@@ -1509,6 +1515,884 @@ fn entity_connection_value(
         ),
         "totalCount": total_count,
     }))
+}
+
+fn named_query_graphql_field_name(name: &str) -> String {
+    if is_simple_graphql_name(name) && !is_reserved_query_field_name(name) {
+        name.to_string()
+    } else {
+        collection_field_name(name)
+    }
+}
+
+fn named_query_parameter_type(param_type: &str, required: bool) -> TypeRef {
+    let base = match param_type
+        .trim_end_matches('!')
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "id" => TypeRef::ID,
+        "int" | "integer" => TypeRef::INT,
+        "float" | "number" => TypeRef::FLOAT,
+        "bool" | "boolean" => TypeRef::BOOLEAN,
+        "json" => "JSON",
+        _ => TypeRef::STRING,
+    };
+    if required {
+        TypeRef::named_nn(base)
+    } else {
+        TypeRef::named(base)
+    }
+}
+
+fn named_query_arguments(field: Field, named_query: &NamedQueryDef) -> Field {
+    let mut field = field
+        .argument(InputValue::new("first", TypeRef::named(TypeRef::INT)))
+        .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING)));
+    for param in &named_query.parameters {
+        field = field.argument(InputValue::new(
+            &param.name,
+            named_query_parameter_type(&param.param_type, param.required),
+        ));
+    }
+    field
+}
+
+fn named_query_label_aliases(collection: &str) -> Vec<String> {
+    let bare = collection.split('.').next_back().unwrap_or(collection);
+    let mut aliases = vec![bare.to_string(), named_query_pascal_singular(bare)];
+    aliases.sort();
+    aliases.dedup();
+    aliases
+}
+
+fn named_query_pascal_singular(name: &str) -> String {
+    let mut out = String::new();
+    for part in name.split(|ch: char| !ch.is_ascii_alphanumeric()) {
+        if part.is_empty() {
+            continue;
+        }
+        let singular = part.strip_suffix('s').unwrap_or(part);
+        let mut chars = singular.chars();
+        if let Some(first) = chars.next() {
+            out.push(first.to_ascii_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    out
+}
+
+fn named_query_relationship_alias(name: &str) -> String {
+    name.split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+        .map(str::to_ascii_uppercase)
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn named_query_label_to_collection(
+    label: &str,
+    schemas: &HashMap<String, CollectionSchema>,
+) -> Option<CollectionId> {
+    schemas.values().find_map(|schema| {
+        named_query_label_aliases(schema.collection.as_str())
+            .iter()
+            .any(|alias| alias == label)
+            .then(|| schema.collection.clone())
+    })
+}
+
+fn named_query_variable_collections(
+    query: &CypherQuery,
+    schemas: &HashMap<String, CollectionSchema>,
+) -> HashMap<String, CollectionId> {
+    let mut bindings = HashMap::new();
+    for clause in &query.matches {
+        for pattern in &clause.patterns {
+            bind_node_collection(&pattern.start, schemas, &mut bindings);
+            for step in &pattern.steps {
+                bind_node_collection(&step.node, schemas, &mut bindings);
+            }
+        }
+    }
+    bindings
+}
+
+fn bind_node_collection(
+    node: &NodePattern,
+    schemas: &HashMap<String, CollectionSchema>,
+    bindings: &mut HashMap<String, CollectionId>,
+) {
+    let (Some(variable), Some(label)) = (&node.variable, &node.label) else {
+        return;
+    };
+    if let Some(collection) = named_query_label_to_collection(label, schemas) {
+        bindings.insert(variable.clone(), collection);
+    }
+}
+
+fn named_query_result_schema(
+    named_query: &NamedQueryDef,
+    schemas: &HashMap<String, CollectionSchema>,
+) -> Result<(CypherQuery, CollectionSchema), String> {
+    let query = axon_cypher::parse(&named_query.cypher).map_err(|err| err.to_string())?;
+    let bindings = named_query_variable_collections(&query, schemas);
+    let Some(return_item) = query.return_clause.items.first() else {
+        return Err("named query must return an entity variable".into());
+    };
+    let Expression::Variable(variable) = &return_item.expression else {
+        return Err("named query GraphQL fields currently require RETURN <entity>".into());
+    };
+    let collection = bindings.get(variable).ok_or_else(|| {
+        format!("named query return variable '{variable}' is not bound to a collection label")
+    })?;
+    let schema = schemas.get(collection.as_str()).cloned().ok_or_else(|| {
+        format!("missing schema for named query result collection '{collection}'")
+    })?;
+    Ok((query, schema))
+}
+
+fn parse_named_query_first(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+) -> Result<Option<usize>, GqlError> {
+    match ctx.args.try_get("first") {
+        Ok(value) => {
+            let first = value.i64()?;
+            if first < 0 {
+                return Err(GqlError::new("first must be non-negative").extend_with(
+                    |_err, ext| {
+                        ext.set("code", "INVALID_ARGUMENT");
+                    },
+                ));
+            }
+            Ok(Some(first as usize))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+fn named_query_parameters_from_ctx(
+    ctx: &async_graphql::dynamic::ResolverContext<'_>,
+    named_query: &NamedQueryDef,
+) -> Result<HashMap<String, Value>, GqlError> {
+    let mut params = HashMap::new();
+    for param in &named_query.parameters {
+        match ctx.args.try_get(param.name.as_str()) {
+            Ok(value) if value.is_null() && param.required => {
+                return Err(GqlError::new(format!(
+                    "missing required named query parameter '{}'",
+                    param.name
+                )));
+            }
+            Ok(value) if value.is_null() => {}
+            Ok(value) => {
+                params.insert(param.name.clone(), gql_input_to_json(value.as_value())?);
+            }
+            Err(_) if param.required => {
+                return Err(GqlError::new(format!(
+                    "missing required named query parameter '{}'",
+                    param.name
+                )));
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(params)
+}
+
+fn named_query_field_filter_from_properties(
+    node: &NodePattern,
+    params: &HashMap<String, Value>,
+) -> Result<Option<FilterNode>, GqlError> {
+    let mut filters = Vec::new();
+    for property in &node.properties {
+        filters.push(FilterNode::Field(FieldFilter {
+            field: property.key.clone(),
+            op: FilterOp::Eq,
+            value: named_query_expr_value(&property.value, &HashMap::new(), params)?,
+        }));
+    }
+    Ok(match filters.len() {
+        0 => None,
+        1 => filters.into_iter().next(),
+        _ => Some(FilterNode::And { filters }),
+    })
+}
+
+fn named_query_root_pattern(
+    query: &CypherQuery,
+) -> Result<&axon_cypher::ast::PathPattern, GqlError> {
+    query
+        .matches
+        .first()
+        .and_then(|clause| clause.patterns.first())
+        .ok_or_else(|| GqlError::new("named query must contain a MATCH pattern"))
+}
+
+fn named_query_root_collection(
+    pattern: &axon_cypher::ast::PathPattern,
+    schemas: &HashMap<String, CollectionSchema>,
+) -> Result<CollectionId, GqlError> {
+    let label = pattern
+        .start
+        .label
+        .as_deref()
+        .ok_or_else(|| GqlError::new("named query root MATCH node must have a label"))?;
+    named_query_label_to_collection(label, schemas).ok_or_else(|| {
+        GqlError::new(format!(
+            "named query root label '{label}' is not mapped to an active collection"
+        ))
+    })
+}
+
+fn named_query_result_variable(query: &CypherQuery) -> Result<String, GqlError> {
+    match query
+        .return_clause
+        .items
+        .first()
+        .map(|item| &item.expression)
+    {
+        Some(Expression::Variable(variable)) => Ok(variable.clone()),
+        _ => Err(GqlError::new(
+            "named query GraphQL execution requires RETURN <entity>",
+        )),
+    }
+}
+
+fn named_query_field<S: StorageAdapter + 'static>(
+    field_name: &str,
+    named_query: NamedQueryDef,
+    query_ast: CypherQuery,
+    result_schema: CollectionSchema,
+    schemas_by_collection: HashMap<String, CollectionSchema>,
+    handler: SharedHandler<S>,
+) -> Field {
+    let description = named_query.description.clone();
+    let query_for_resolver = named_query.clone();
+    let field = Field::new(
+        field_name,
+        TypeRef::named_nn(format!(
+            "{}Connection",
+            pascal_case(result_schema.collection.as_str())
+        )),
+        move |ctx| {
+            let handler = Arc::clone(&handler);
+            let named_query = query_for_resolver.clone();
+            let query_ast = query_ast.clone();
+            let result_schema = result_schema.clone();
+            let schemas_by_collection = schemas_by_collection.clone();
+            let caller = caller_from_ctx(&ctx);
+            FieldFuture::new(async move {
+                let first = parse_named_query_first(&ctx)?;
+                let after = parse_optional_string_arg(&ctx, "after")?;
+                let params = named_query_parameters_from_ctx(&ctx, &named_query)?;
+                let guard = handler.lock().await;
+                execute_named_query_connection(
+                    &guard,
+                    &query_ast,
+                    &result_schema,
+                    &schemas_by_collection,
+                    &caller,
+                    &params,
+                    first,
+                    after.as_deref(),
+                )
+            })
+        },
+    )
+    .description(description);
+    named_query_arguments(field, &named_query)
+}
+
+fn named_query_stub_field(
+    field_name: &str,
+    named_query: &NamedQueryDef,
+    result_schema: &CollectionSchema,
+) -> Field {
+    let field = Field::new(
+        field_name,
+        TypeRef::named_nn(format!(
+            "{}Connection",
+            pascal_case(result_schema.collection.as_str())
+        )),
+        |_ctx| {
+            FieldFuture::new(async move {
+                Ok(Some(entity_connection_value(
+                    &[],
+                    0,
+                    None,
+                    false,
+                    false,
+                    None,
+                )))
+            })
+        },
+    )
+    .description(named_query.description.clone());
+    named_query_arguments(field, named_query)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_named_query_connection<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    query: &CypherQuery,
+    result_schema: &CollectionSchema,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+    caller: &CallerIdentity,
+    params: &HashMap<String, Value>,
+    first: Option<usize>,
+    after: Option<&str>,
+) -> Result<Option<FieldValue<'static>>, GqlError> {
+    let root_pattern = named_query_root_pattern(query)?;
+    let root_collection = named_query_root_collection(root_pattern, schemas_by_collection)?;
+    let root_filter = named_query_field_filter_from_properties(&root_pattern.start, params)?;
+    let response = handler
+        .query_entities_with_caller(
+            QueryEntitiesRequest {
+                collection: root_collection.clone(),
+                filter: root_filter,
+                sort: Vec::new(),
+                limit: None,
+                after_id: None,
+                count_only: false,
+            },
+            caller,
+            None,
+        )
+        .map_err(axon_error_to_gql)?;
+
+    let result_variable = named_query_result_variable(query)?;
+    let mut entities = Vec::new();
+    let mut seen = HashSet::new();
+    for root in response.entities {
+        let mut bindings = HashMap::from([(
+            root_pattern
+                .start
+                .variable
+                .clone()
+                .unwrap_or_else(|| "root".to_string()),
+            root.clone(),
+        )]);
+        let candidates = named_query_expand_outer_pattern(
+            handler,
+            root_pattern,
+            &root,
+            schemas_by_collection,
+            caller,
+            params,
+        )?;
+        for candidate_bindings in candidates {
+            bindings.extend(candidate_bindings);
+            if let Some(where_clause) = &query.where_clause {
+                if !named_query_expr_bool(
+                    handler,
+                    where_clause,
+                    &bindings,
+                    schemas_by_collection,
+                    caller,
+                    params,
+                )? {
+                    continue;
+                }
+            }
+            if let Some(entity) = bindings.get(&result_variable) {
+                if seen.insert(entity.id.to_string()) {
+                    entities.push(entity.clone());
+                }
+            }
+        }
+    }
+
+    named_query_sort_entities(&mut entities, query, &result_variable, params)?;
+
+    if let Some(skip) = query.skip {
+        let skip = usize::try_from(skip)
+            .map_err(|_| GqlError::new("named query SKIP exceeds platform usize"))?;
+        entities = entities.into_iter().skip(skip).collect();
+    }
+    if let Some(limit) = query.limit {
+        let limit = usize::try_from(limit)
+            .map_err(|_| GqlError::new("named query LIMIT exceeds platform usize"))?;
+        entities.truncate(limit);
+    }
+
+    let total_count = entities.len();
+    let has_previous_page = after.is_some();
+    if let Some(cursor) = after {
+        let pos = entities
+            .iter()
+            .position(|entity| entity.id.as_str() == cursor)
+            .ok_or_else(|| {
+                GqlError::new(format!("named query cursor '{cursor}' was not found")).extend_with(
+                    |_err, ext| {
+                        ext.set("code", "INVALID_ARGUMENT");
+                    },
+                )
+            })?;
+        entities = entities.split_off(pos + 1);
+    }
+
+    let page_limit = first.unwrap_or(usize::MAX);
+    let has_more = entities.len() > page_limit;
+    if has_more {
+        entities.truncate(page_limit);
+    }
+    let next_cursor = has_more
+        .then(|| entities.last().map(|entity| entity.id.to_string()))
+        .flatten();
+
+    Ok(Some(entity_connection_value(
+        &entities,
+        total_count,
+        next_cursor,
+        has_previous_page,
+        false,
+        Some(result_schema),
+    )))
+}
+
+fn named_query_expand_outer_pattern<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    pattern: &axon_cypher::ast::PathPattern,
+    root: &Entity,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+    caller: &CallerIdentity,
+    params: &HashMap<String, Value>,
+) -> Result<Vec<HashMap<String, Entity>>, GqlError> {
+    if pattern.steps.is_empty() {
+        return Ok(vec![HashMap::new()]);
+    }
+
+    let Some(step) = pattern.steps.first() else {
+        return Ok(vec![HashMap::new()]);
+    };
+    let source_collection = root.collection.clone();
+    let mut rows = Vec::new();
+    for link_type in named_query_relationship_types(
+        &source_collection,
+        &step.relationship,
+        schemas_by_collection,
+    ) {
+        let direction = match step.relationship.direction {
+            CypherDirection::Incoming => TraverseDirection::Reverse,
+            CypherDirection::Outgoing | CypherDirection::Either => TraverseDirection::Forward,
+        };
+        let response = handler
+            .traverse_with_caller(
+                TraverseRequest {
+                    collection: source_collection.clone(),
+                    id: root.id.clone(),
+                    link_type: link_type.clone(),
+                    max_depth: Some(
+                        step.relationship
+                            .range
+                            .map_or(1, |range| range.max as usize),
+                    ),
+                    direction,
+                    hop_filter: None,
+                },
+                caller,
+                None,
+            )
+            .map_err(axon_error_to_gql)?;
+        for entity in response.entities {
+            if !named_query_node_matches(&step.node, &entity, schemas_by_collection, params)? {
+                continue;
+            }
+            let Some(variable) = &step.node.variable else {
+                rows.push(HashMap::new());
+                continue;
+            };
+            rows.push(HashMap::from([(variable.clone(), entity)]));
+        }
+    }
+
+    Ok(rows)
+}
+
+fn named_query_node_matches(
+    node: &NodePattern,
+    entity: &Entity,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+    params: &HashMap<String, Value>,
+) -> Result<bool, GqlError> {
+    if let Some(label) = &node.label {
+        let Some(collection) = named_query_label_to_collection(label, schemas_by_collection) else {
+            return Ok(false);
+        };
+        if collection != entity.collection {
+            return Ok(false);
+        }
+    }
+    for property in &node.properties {
+        let expected = named_query_expr_value(&property.value, &HashMap::new(), params)?;
+        if named_query_json_path(&entity.data, &property.key) != Some(&expected) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn named_query_sort_entities(
+    entities: &mut [Entity],
+    query: &CypherQuery,
+    result_variable: &str,
+    params: &HashMap<String, Value>,
+) -> Result<(), GqlError> {
+    if query.order_by.is_empty() {
+        return Ok(());
+    }
+    let mut decorated = Vec::with_capacity(entities.len());
+    for entity in entities.iter() {
+        let bindings = HashMap::from([(result_variable.to_string(), entity.clone())]);
+        let keys = query
+            .order_by
+            .iter()
+            .map(|sort| named_query_expr_value(&sort.expression, &bindings, params))
+            .collect::<Result<Vec<_>, _>>()?;
+        decorated.push((entity.clone(), keys));
+    }
+    decorated.sort_by(|(_, left), (_, right)| {
+        for (index, sort) in query.order_by.iter().enumerate() {
+            let cmp = named_query_compare_json(left.get(index), right.get(index));
+            if cmp != std::cmp::Ordering::Equal {
+                return if sort.descending { cmp.reverse() } else { cmp };
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    for (target, (entity, _)) in entities.iter_mut().zip(decorated) {
+        *target = entity;
+    }
+    Ok(())
+}
+
+fn named_query_expr_bool<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    expr: &Expression,
+    bindings: &HashMap<String, Entity>,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+    caller: &CallerIdentity,
+    params: &HashMap<String, Value>,
+) -> Result<bool, GqlError> {
+    match expr {
+        Expression::BinaryLogical { op, left, right } => match op {
+            LogicalOp::And => Ok(named_query_expr_bool(
+                handler,
+                left,
+                bindings,
+                schemas_by_collection,
+                caller,
+                params,
+            )? && named_query_expr_bool(
+                handler,
+                right,
+                bindings,
+                schemas_by_collection,
+                caller,
+                params,
+            )?),
+            LogicalOp::Or => Ok(named_query_expr_bool(
+                handler,
+                left,
+                bindings,
+                schemas_by_collection,
+                caller,
+                params,
+            )? || named_query_expr_bool(
+                handler,
+                right,
+                bindings,
+                schemas_by_collection,
+                caller,
+                params,
+            )?),
+        },
+        Expression::Not(inner) => Ok(!named_query_expr_bool(
+            handler,
+            inner,
+            bindings,
+            schemas_by_collection,
+            caller,
+            params,
+        )?),
+        Expression::Exists(subquery) => named_query_subquery_exists(
+            handler,
+            subquery,
+            bindings,
+            schemas_by_collection,
+            caller,
+            params,
+        ),
+        Expression::NotExists(subquery) => Ok(!named_query_subquery_exists(
+            handler,
+            subquery,
+            bindings,
+            schemas_by_collection,
+            caller,
+            params,
+        )?),
+        Expression::Comparison { op, left, right } => {
+            let left = named_query_expr_value(left, bindings, params)?;
+            let right = named_query_expr_value(right, bindings, params)?;
+            Ok(named_query_compare_op(*op, &left, &right))
+        }
+        Expression::IsNull {
+            expression,
+            negated,
+        } => {
+            let value = named_query_expr_value(expression, bindings, params)?;
+            Ok(value.is_null() != *negated)
+        }
+        other => Ok(named_query_expr_value(other, bindings, params)?
+            .as_bool()
+            .unwrap_or(false)),
+    }
+}
+
+fn named_query_subquery_exists<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    subquery: &Subquery,
+    bindings: &HashMap<String, Entity>,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+    caller: &CallerIdentity,
+    params: &HashMap<String, Value>,
+) -> Result<bool, GqlError> {
+    for clause in &subquery.matches {
+        if named_query_match_clause_exists(
+            handler,
+            clause,
+            bindings,
+            schemas_by_collection,
+            caller,
+            params,
+            subquery.where_clause.as_ref(),
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn named_query_match_clause_exists<S: StorageAdapter>(
+    handler: &AxonHandler<S>,
+    clause: &MatchClause,
+    bindings: &HashMap<String, Entity>,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+    caller: &CallerIdentity,
+    params: &HashMap<String, Value>,
+    where_clause: Option<&Expression>,
+) -> Result<bool, GqlError> {
+    for pattern in &clause.patterns {
+        let Some(source_variable) = &pattern.start.variable else {
+            continue;
+        };
+        let Some(source) = bindings.get(source_variable) else {
+            continue;
+        };
+        let Some(step) = pattern.steps.first() else {
+            continue;
+        };
+
+        for link_type in named_query_relationship_types(
+            &source.collection,
+            &step.relationship,
+            schemas_by_collection,
+        ) {
+            let directions: Vec<TraverseDirection> = match step.relationship.direction {
+                CypherDirection::Outgoing => vec![TraverseDirection::Forward],
+                CypherDirection::Incoming => vec![TraverseDirection::Reverse],
+                CypherDirection::Either => {
+                    vec![TraverseDirection::Forward, TraverseDirection::Reverse]
+                }
+            };
+            for direction in directions {
+                let response = handler
+                    .traverse_with_caller(
+                        TraverseRequest {
+                            collection: source.collection.clone(),
+                            id: source.id.clone(),
+                            link_type: link_type.clone(),
+                            max_depth: Some(
+                                step.relationship
+                                    .range
+                                    .map_or(1, |range| range.max as usize),
+                            ),
+                            direction,
+                            hop_filter: None,
+                        },
+                        caller,
+                        None,
+                    )
+                    .map_err(axon_error_to_gql)?;
+                for entity in response.entities {
+                    if !named_query_node_matches(
+                        &step.node,
+                        &entity,
+                        schemas_by_collection,
+                        params,
+                    )? {
+                        continue;
+                    }
+                    let mut local_bindings = bindings.clone();
+                    if let Some(variable) = &step.node.variable {
+                        local_bindings.insert(variable.clone(), entity);
+                    }
+                    if let Some(where_clause) = where_clause {
+                        if !named_query_expr_bool(
+                            handler,
+                            where_clause,
+                            &local_bindings,
+                            schemas_by_collection,
+                            caller,
+                            params,
+                        )? {
+                            continue;
+                        }
+                    }
+                    return Ok(true);
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+fn named_query_relationship_types(
+    source_collection: &CollectionId,
+    relationship: &RelationshipPattern,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+) -> Vec<Option<String>> {
+    if relationship.types.is_empty() {
+        return vec![None];
+    }
+    let Some(schema) = schemas_by_collection.get(source_collection.as_str()) else {
+        return relationship
+            .types
+            .iter()
+            .map(|link_type| Some(link_type.clone()))
+            .collect();
+    };
+    relationship
+        .types
+        .iter()
+        .filter_map(|requested| {
+            schema.link_types.keys().find_map(|declared| {
+                (declared == requested || named_query_relationship_alias(declared) == *requested)
+                    .then(|| Some(declared.clone()))
+            })
+        })
+        .collect()
+}
+
+fn named_query_expr_value(
+    expr: &Expression,
+    bindings: &HashMap<String, Entity>,
+    params: &HashMap<String, Value>,
+) -> Result<Value, GqlError> {
+    match expr {
+        Expression::Literal(literal) => Ok(named_query_literal_value(literal, bindings, params)?),
+        Expression::Parameter(name) => Ok(params.get(name).cloned().unwrap_or(Value::Null)),
+        Expression::Property { variable, path } => {
+            let Some(entity) = bindings.get(variable) else {
+                return Ok(Value::Null);
+            };
+            if path.len() == 1 && path[0] == "id" {
+                return Ok(Value::String(entity.id.to_string()));
+            }
+            Ok(path
+                .iter()
+                .try_fold(&entity.data, |current, segment| current.get(segment))
+                .cloned()
+                .unwrap_or(Value::Null))
+        }
+        Expression::Variable(variable) => Ok(bindings
+            .get(variable)
+            .map(|entity| entity_to_typed_json_with_schema(entity, None))
+            .unwrap_or(Value::Null)),
+        Expression::Comparison { .. }
+        | Expression::BinaryLogical { .. }
+        | Expression::Not(_)
+        | Expression::Exists(_)
+        | Expression::NotExists(_)
+        | Expression::IsNull { .. }
+        | Expression::FunctionCall { .. } => Err(GqlError::new(
+            "named query expression cannot be used as a scalar value",
+        )),
+    }
+}
+
+fn named_query_literal_value(
+    literal: &Literal,
+    bindings: &HashMap<String, Entity>,
+    params: &HashMap<String, Value>,
+) -> Result<Value, GqlError> {
+    match literal {
+        Literal::Null => Ok(Value::Null),
+        Literal::Bool(value) => Ok(Value::Bool(*value)),
+        Literal::Integer(value) => Ok(json!(value)),
+        Literal::Float(value) => Ok(json!(value)),
+        Literal::String(value) => Ok(Value::String(value.clone())),
+        Literal::List(values) => values
+            .iter()
+            .map(|value| named_query_expr_value(value, bindings, params))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+    }
+}
+
+fn named_query_compare_op(op: ComparisonOp, left: &Value, right: &Value) -> bool {
+    match op {
+        ComparisonOp::Eq => left == right,
+        ComparisonOp::NotEq => left != right,
+        ComparisonOp::Lt => named_query_compare_json(Some(left), Some(right)).is_lt(),
+        ComparisonOp::LtEq => {
+            let ordering = named_query_compare_json(Some(left), Some(right));
+            ordering.is_lt() || ordering.is_eq()
+        }
+        ComparisonOp::Gt => named_query_compare_json(Some(left), Some(right)).is_gt(),
+        ComparisonOp::GtEq => {
+            let ordering = named_query_compare_json(Some(left), Some(right));
+            ordering.is_gt() || ordering.is_eq()
+        }
+        ComparisonOp::In => right
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == left)),
+        ComparisonOp::Contains => match (left, right) {
+            (Value::String(text), Value::String(needle)) => text.contains(needle),
+            _ => false,
+        },
+        ComparisonOp::StartsWith => match (left, right) {
+            (Value::String(text), Value::String(prefix)) => text.starts_with(prefix),
+            _ => false,
+        },
+        ComparisonOp::EndsWith => match (left, right) {
+            (Value::String(text), Value::String(suffix)) => text.ends_with(suffix),
+            _ => false,
+        },
+    }
+}
+
+fn named_query_json_path<'a>(data: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.')
+        .try_fold(data, |current, segment| current.get(segment))
+}
+
+fn named_query_compare_json(a: Option<&Value>, b: Option<&Value>) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a, b) {
+        (Some(Value::Number(an)), Some(Value::Number(bn))) => {
+            let af = an.as_f64().unwrap_or(f64::NAN);
+            let bf = bn.as_f64().unwrap_or(f64::NAN);
+            af.partial_cmp(&bf).unwrap_or(Ordering::Equal)
+        }
+        (Some(Value::String(as_)), Some(Value::String(bs))) => as_.cmp(bs),
+        (Some(Value::Bool(ab)), Some(Value::Bool(bb))) => ab.cmp(bb),
+        (Some(Value::Null), Some(Value::Null)) | (None, None) => Ordering::Equal,
+        (None | Some(Value::Null), _) => Ordering::Less,
+        (_, None | Some(Value::Null)) => Ordering::Greater,
+        _ => Ordering::Equal,
+    }
 }
 
 fn collection_meta_json(
@@ -7026,6 +7910,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
         .iter()
         .map(|schema| (schema.collection.to_string(), schema.clone()))
         .collect();
+    let mut named_query_root_fields = HashSet::new();
     let mut incoming_links: HashMap<String, Vec<(String, String)>> = HashMap::new();
     let mut relationship_type_names = HashSet::new();
 
@@ -7436,6 +8321,27 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
             TypeRef::named_nn_list(&sort_input_name),
         ));
         query = query.field(list_connection_field);
+
+        let mut named_queries: Vec<_> = schema.queries.iter().collect();
+        named_queries.sort_by_key(|(name, _)| *name);
+        for (named_query_name, named_query_def) in named_queries {
+            let named_query_field_name = named_query_graphql_field_name(named_query_name);
+            if !named_query_root_fields.insert(named_query_field_name.clone()) {
+                return Err(format!(
+                    "duplicate named query GraphQL field '{named_query_field_name}'"
+                ));
+            }
+            let (query_ast, result_schema) =
+                named_query_result_schema(named_query_def, &schemas_by_collection)?;
+            query = query.field(named_query_field(
+                &named_query_field_name,
+                named_query_def.clone(),
+                query_ast,
+                result_schema,
+                schemas_by_collection.clone(),
+                Arc::clone(&handler),
+            ));
+        }
 
         // ── Query: aggregate ─────────────────────────────────────────────
         let aggregate_field_name = format!("{}Aggregate", get_field_name);
@@ -8129,6 +9035,11 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
     let mut query = Object::new("Query");
     let mut mutation = Object::new("Mutation");
     let mut type_objects = Vec::new();
+    let schemas_by_collection: HashMap<String, CollectionSchema> = collections
+        .iter()
+        .map(|schema| (schema.collection.to_string(), schema.clone()))
+        .collect();
+    let mut named_query_root_fields = HashSet::new();
 
     query = add_stub_root_query_fields(query);
     query = add_intent_root_query_fields(query);
@@ -8214,6 +9125,24 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
             .argument(InputValue::new("filter", TypeRef::named(FILTER_INPUT)))
             .argument(InputValue::new("sort", TypeRef::named_nn_list(SORT_INPUT))),
         );
+
+        let mut named_queries: Vec<_> = schema.queries.iter().collect();
+        named_queries.sort_by_key(|(name, _)| *name);
+        for (named_query_name, named_query_def) in named_queries {
+            let named_query_field_name = named_query_graphql_field_name(named_query_name);
+            if !named_query_root_fields.insert(named_query_field_name.clone()) {
+                return Err(format!(
+                    "duplicate named query GraphQL field '{named_query_field_name}'"
+                ));
+            }
+            let (_, result_schema) =
+                named_query_result_schema(named_query_def, &schemas_by_collection)?;
+            query = query.field(named_query_stub_field(
+                &named_query_field_name,
+                named_query_def,
+                &result_schema,
+            ));
+        }
 
         // Mutation: create.
         let create_field_name = format!("create{type_name}");
@@ -8940,6 +9869,113 @@ mod tests {
             queries: Default::default(),
             lifecycles: Default::default(),
         }
+    }
+
+    fn ddx_beads_named_query_schema() -> CollectionSchema {
+        let mut schema = CollectionSchema {
+            collection: CollectionId::new("ddx_beads"),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title", "status", "owner"],
+                "properties": {
+                    "title": { "type": "string" },
+                    "status": { "type": "string" },
+                    "owner": { "type": "string" },
+                    "priority": { "type": "integer" },
+                    "secret": { "type": "string" }
+                }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value::<AccessControlPolicy>(json!({
+                    "identity": {
+                        "user_id": "subject.user_id",
+                        "tenant_role": "subject.tenant_role"
+                    },
+                    "read": {
+                        "allow": [
+                            {
+                                "name": "owners-read-own-beads",
+                                "where": { "field": "owner", "eq_subject": "user_id" }
+                            }
+                        ]
+                    },
+                    "fields": {
+                        "secret": {
+                            "read": {
+                                "deny": [
+                                    {
+                                        "name": "readers-do-not-see-secret",
+                                        "when": { "subject": "tenant_role", "eq": "read" },
+                                        "redact_as": null
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                }))
+                .expect("access_control should deserialize"),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: vec![
+                axon_schema::schema::IndexDef {
+                    field: "status".into(),
+                    index_type: axon_schema::schema::IndexType::String,
+                    unique: false,
+                },
+                axon_schema::schema::IndexDef {
+                    field: "owner".into(),
+                    index_type: axon_schema::schema::IndexType::String,
+                    unique: false,
+                },
+            ],
+            compound_indexes: Default::default(),
+            queries: Default::default(),
+            lifecycles: Default::default(),
+        };
+        schema.link_types.insert(
+            "depends-on".into(),
+            axon_schema::schema::LinkTypeDef {
+                target_collection: "ddx_beads".into(),
+                cardinality: axon_schema::schema::Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: None,
+            },
+        );
+        schema.queries.insert(
+            "ready_beads".into(),
+            NamedQueryDef {
+                description: "Open beads with no open dependencies".into(),
+                cypher: r#"
+                    MATCH (b:DdxBead {status: 'open'})
+                    WHERE NOT EXISTS {
+                        MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
+                        WHERE d.status <> 'closed'
+                    }
+                    RETURN b
+                    ORDER BY b.priority DESC
+                "#
+                .into(),
+                parameters: Vec::new(),
+            },
+        );
+        schema.queries.insert(
+            "beads_by_owner".into(),
+            NamedQueryDef {
+                description: "Beads by owner".into(),
+                cypher: "MATCH (b:DdxBead {owner: $owner}) RETURN b ORDER BY b.priority DESC"
+                    .into(),
+                parameters: vec![axon_schema::schema::NamedQueryParameter {
+                    name: "owner".into(),
+                    param_type: "String".into(),
+                    required: true,
+                }],
+            },
+        );
+        schema
     }
 
     fn policy_nullable_schema() -> CollectionSchema {
@@ -10014,6 +11050,195 @@ mod tests {
         let data = result.data.into_json().expect("json");
         let tasks = data["tasksList"].as_array().expect("should be array");
         assert_eq!(tasks.len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_queries_generate_typed_connection_fields_and_parameter_args() {
+        let schema_def = ddx_beads_named_query_schema();
+        let schema = build_schema(std::slice::from_ref(&schema_def)).expect("schema should build");
+
+        let result = schema
+            .schema
+            .execute(
+                r#"{
+                    __type(name: "Query") {
+                        fields {
+                            name
+                            args { name type { kind name ofType { kind name } } }
+                            type { kind name ofType { kind name } }
+                        }
+                    }
+                }"#,
+            )
+            .await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let data = result.data.into_json().expect("json");
+        let fields = data["__type"]["fields"]
+            .as_array()
+            .expect("fields should be a list");
+        let ready = fields
+            .iter()
+            .find(|field| field["name"] == "ready_beads")
+            .expect("ready_beads field should be generated");
+        assert_eq!(ready["type"]["kind"], "NON_NULL");
+        assert_eq!(ready["type"]["ofType"]["name"], "DdxBeadsConnection");
+        let by_owner = fields
+            .iter()
+            .find(|field| field["name"] == "beads_by_owner")
+            .expect("parameterized named query field should be generated");
+        let args: Vec<&str> = by_owner["args"]
+            .as_array()
+            .expect("args should be a list")
+            .iter()
+            .filter_map(|arg| arg["name"].as_str())
+            .collect();
+        assert!(args.contains(&"first"));
+        assert!(args.contains(&"after"));
+        assert!(args.contains(&"owner"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_ready_beads_executes_with_connection_policy_and_redaction() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+
+        {
+            let mut guard = handler.lock().await;
+            for (id, status, owner, priority, secret) in [
+                ("ready", "open", "consultant", 4, "visible-secret"),
+                ("blocked", "open", "consultant", 3, "blocked-secret"),
+                ("dep-open", "open", "consultant", 2, "dep-secret"),
+                ("hidden", "open", "other", 1, "hidden-secret"),
+                ("dep-closed", "closed", "consultant", 0, "closed-secret"),
+            ] {
+                guard
+                    .create_entity(CreateEntityRequest {
+                        collection: CollectionId::new("ddx_beads"),
+                        id: EntityId::new(id),
+                        data: json!({
+                            "title": id,
+                            "status": status,
+                            "owner": owner,
+                            "priority": priority,
+                            "secret": secret
+                        }),
+                        actor: None,
+                        audit_metadata: None,
+                        attribution: None,
+                    })
+                    .expect("bead should seed");
+            }
+            guard
+                .create_link(CreateLinkRequest {
+                    source_collection: CollectionId::new("ddx_beads"),
+                    source_id: EntityId::new("blocked"),
+                    target_collection: CollectionId::new("ddx_beads"),
+                    target_id: EntityId::new("dep-open"),
+                    link_type: "depends-on".into(),
+                    metadata: Value::Null,
+                    actor: None,
+                    attribution: None,
+                })
+                .expect("open dependency link should seed");
+            guard
+                .create_link(CreateLinkRequest {
+                    source_collection: CollectionId::new("ddx_beads"),
+                    source_id: EntityId::new("ready"),
+                    target_collection: CollectionId::new("ddx_beads"),
+                    target_id: EntityId::new("dep-closed"),
+                    link_type: "depends-on".into(),
+                    metadata: Value::Null,
+                    actor: None,
+                    attribution: None,
+                })
+                .expect("closed dependency link should seed");
+        }
+
+        let schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
+        let request = async_graphql::Request::new(
+            r#"{
+                ready_beads(first: 10) {
+                    totalCount
+                    pageInfo { hasNextPage hasPreviousPage }
+                    edges {
+                        cursor
+                        node { id title status owner priority secret }
+                    }
+                }
+            }"#,
+        )
+        .data(CallerIdentity::new(
+            "consultant",
+            axon_core::auth::Role::Read,
+        ));
+        let result = schema.schema.execute(request).await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let data = result.data.into_json().expect("json");
+        let connection = &data["ready_beads"];
+        assert_eq!(connection["totalCount"], 2);
+        assert_eq!(connection["pageInfo"]["hasNextPage"], false);
+        let nodes: Vec<&Value> = connection["edges"]
+            .as_array()
+            .expect("edges should be a list")
+            .iter()
+            .map(|edge| &edge["node"])
+            .collect();
+        let ids: Vec<&str> = nodes
+            .iter()
+            .filter_map(|node| node["id"].as_str())
+            .collect();
+        assert_eq!(ids, vec!["ready", "dep-open"]);
+        assert!(nodes.iter().all(|node| node["owner"] == "consultant"));
+        assert!(nodes.iter().all(|node| node["secret"].is_null()));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_parameter_argument_filters_results() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            for (id, owner) in [("mine", "consultant"), ("theirs", "other")] {
+                guard
+                    .create_entity(CreateEntityRequest {
+                        collection: CollectionId::new("ddx_beads"),
+                        id: EntityId::new(id),
+                        data: json!({
+                            "title": id,
+                            "status": "open",
+                            "owner": owner,
+                            "priority": 1
+                        }),
+                        actor: None,
+                        audit_metadata: None,
+                        attribution: None,
+                    })
+                    .expect("bead should seed");
+            }
+        }
+        let schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler)).expect("schema");
+        let request = async_graphql::Request::new(
+            r#"{
+                beads_by_owner(owner: "consultant", first: 5) {
+                    totalCount
+                    edges { node { id owner } }
+                }
+            }"#,
+        )
+        .data(CallerIdentity::new(
+            "consultant",
+            axon_core::auth::Role::Read,
+        ));
+        let result = schema.schema.execute(request).await;
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let data = result.data.into_json().expect("json");
+        assert_eq!(data["beads_by_owner"]["totalCount"], 1);
+        assert_eq!(
+            data["beads_by_owner"]["edges"][0]["node"]["id"],
+            json!("mine")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
