@@ -21,3 +21,6 @@
 ✓ axon-ad2a9669 → already_satisfied
 
 ▶ axon-243091c3: build(feat-009): Cypher executor — StorageAdapter backend (SQLite)
+✓ axon-243091c3 → already_satisfied
+
+▶ axon-15de5e84: build(feat-009): GraphQL field generation for schema-declared named queries
