@@ -24,3 +24,6 @@
 ✓ axon-243091c3 → already_satisfied
 
 ▶ axon-15de5e84: build(feat-009): GraphQL field generation for schema-declared named queries
+✓ axon-15de5e84 → merged (f14836ed)
+
+▶ axon-d3fbd10a: build(feat-009): axonQuery ad-hoc GraphQL resolver

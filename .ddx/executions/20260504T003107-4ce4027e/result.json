@@ -1,0 +1,54 @@
+{
+  "verdict": "APPROVE",
+  "rationale": "All five AC items satisfied: per-query Query field with typed parameter args, FEAT-015 connection shape, policy+redaction via *_with_caller paths, ddx ready_beads test exercises the whole flow, and the harness reported success with no obvious clippy hazards.",
+  "findings": [
+    {
+      "severity": "info",
+      "summary": "Hop expansion in named_query_expand_outer_pattern only walks the first step of a path; multi-step patterns beyond the current schema's needs would need follow-up.",
+      "location": "crates/axon-graphql/src/dynamic.rs"
+    },
+    {
+      "severity": "info",
+      "summary": "has_previous_page is derived solely from `after.is_some()`, which is the common heuristic but not a true \"there exists a prior page\" check.",
+      "location": "crates/axon-graphql/src/dynamic.rs"
+    }
+  ],
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 1320,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 180,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260504T000840-23a7c0f6/manifest.json",
+          ".ddx/executions/20260504T000840-23a7c0f6/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 3871,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 6997,
+    "output_bytes": 2620,
+    "elapsed_ms": 85832,
+    "harness": "claude",
+    "model": "opus"
+  }
+}
