@@ -13,18 +13,18 @@ pub type QueryEntityId = String;
 pub type QueryLinkId = String;
 pub type PropertyMap = BTreeMap<String, Value>;
 
-pub type EntityStream<'a> = Box<dyn Iterator<Item = &'a QueryEntity> + 'a>;
-pub type LinkStream<'a> = Box<dyn Iterator<Item = &'a QueryLink> + 'a>;
+pub type EntityStream<'a> = Box<dyn Iterator<Item = QueryEntity> + 'a>;
+pub type LinkStream<'a> = Box<dyn Iterator<Item = QueryLink> + 'a>;
 
 /// Storage boundary consumed by future executor operators.
 pub trait QueryStore {
     fn get_entity(&self, id: &str) -> Option<&QueryEntity>;
 
-    fn scan_entities<'a>(&'a self, scan: &'a EntityScan) -> EntityStream<'a>;
+    fn scan_entities(&self, scan: EntityScan) -> EntityStream<'_>;
 
     fn get_link(&self, id: &str) -> Option<&QueryLink>;
 
-    fn traverse_links<'a>(&'a self, traversal: &'a LinkTraversal) -> LinkStream<'a>;
+    fn traverse_links(&self, traversal: LinkTraversal) -> LinkStream<'_>;
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -285,11 +285,12 @@ impl QueryStore for MemoryQueryStore {
         self.entities.get(id)
     }
 
-    fn scan_entities<'a>(&'a self, scan: &'a EntityScan) -> EntityStream<'a> {
+    fn scan_entities(&self, scan: EntityScan) -> EntityStream<'_> {
         Box::new(
             self.entities
                 .values()
-                .filter(move |entity| entity_matches_scan(entity, scan)),
+                .filter(move |entity| entity_matches_scan(entity, &scan))
+                .cloned(),
         )
     }
 
@@ -297,12 +298,13 @@ impl QueryStore for MemoryQueryStore {
         self.links.get(id)
     }
 
-    fn traverse_links<'a>(&'a self, traversal: &'a LinkTraversal) -> LinkStream<'a> {
-        let link_ids = self.link_ids_for_direction(traversal);
+    fn traverse_links(&self, traversal: LinkTraversal) -> LinkStream<'_> {
+        let link_ids = self.link_ids_for_direction(&traversal);
         Box::new(link_ids.into_iter().filter_map(move |id| {
             self.links
                 .get(&id)
-                .filter(|link| link_matches_traversal(link, traversal))
+                .filter(|link| link_matches_traversal(link, &traversal))
+                .cloned()
         }))
     }
 }
@@ -376,12 +378,9 @@ mod tests {
         ));
 
         let scan = EntityScan::label("DdxBead").with_property_eq("status", json!("open"));
-        let ids: Vec<&str> = store
-            .scan_entities(&scan)
-            .map(|entity| entity.id.as_str())
-            .collect();
+        let ids: Vec<String> = store.scan_entities(scan).map(|entity| entity.id).collect();
 
-        assert_eq!(ids, vec!["bead-a"]);
+        assert_eq!(ids, vec!["bead-a".to_string()]);
     }
 
     #[test]
@@ -425,12 +424,12 @@ mod tests {
         let traversal = LinkTraversal::new("bead-a", Direction::Outgoing)
             .with_type("DEPENDS_ON")
             .with_property_eq("active", json!(true));
-        let targets: Vec<&str> = store
-            .traverse_links(&traversal)
-            .map(|link| link.target_id.as_str())
+        let targets: Vec<String> = store
+            .traverse_links(traversal)
+            .map(|link| link.target_id)
             .collect();
 
-        assert_eq!(targets, vec!["bead-b"]);
+        assert_eq!(targets, vec!["bead-b".to_string()]);
     }
 
     #[test]
@@ -450,20 +449,20 @@ mod tests {
         ));
 
         let incoming = LinkTraversal::new("bead-a", Direction::Incoming);
-        let incoming_sources: Vec<&str> = store
-            .traverse_links(&incoming)
-            .map(|link| link.source_id.as_str())
+        let incoming_sources: Vec<String> = store
+            .traverse_links(incoming)
+            .map(|link| link.source_id)
             .collect();
-        assert_eq!(incoming_sources, vec!["bead-c"]);
+        assert_eq!(incoming_sources, vec!["bead-c".to_string()]);
 
         let either = LinkTraversal::new("bead-a", Direction::Either);
-        let link_ids: Vec<&str> = store
-            .traverse_links(&either)
-            .map(|link| link.id.as_str())
-            .collect();
+        let link_ids: Vec<String> = store.traverse_links(either).map(|link| link.id).collect();
         assert_eq!(
             link_ids,
-            vec!["bead-a/DEPENDS_ON/bead-b", "bead-c/DEPENDS_ON/bead-a"]
+            vec![
+                "bead-a/DEPENDS_ON/bead-b".to_string(),
+                "bead-c/DEPENDS_ON/bead-a".to_string()
+            ]
         );
     }
 }

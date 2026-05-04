@@ -14,6 +14,7 @@
 
 pub mod ast;
 pub mod error;
+pub mod executor;
 pub mod lexer;
 pub mod memory_store;
 pub mod parser;
@@ -23,6 +24,9 @@ pub mod validator;
 
 pub use ast::Query;
 pub use error::CypherError;
+pub use executor::{
+    execute, execute_with_options, ExecutionClock, ExecutionOptions, Row, RowStream,
+};
 pub use memory_store::{
     EntityScan, LinkTraversal, MemoryQueryStore, PropertyFilter, PropertyFilterOp, QueryEntity,
     QueryLink, QueryStore,
