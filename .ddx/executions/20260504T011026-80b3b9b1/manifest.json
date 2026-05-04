@@ -1,0 +1,38 @@
+{
+  "attempt_id": "20260504T011026-80b3b9b1",
+  "bead_id": "axon-8b91e47d",
+  "base_rev": "75bea1004efa7723df392b84930d63b5837c4420",
+  "created_at": "2026-05-04T01:10:27.830653016Z",
+  "requested": {
+    "harness": "codex",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-8b91e47d",
+    "title": "build(feat-009): DDx ready/blocked queue benchmark — closes axon-05c1019d",
+    "description": "Closes axon-05c1019d. End-to-end DDx use case implementation:\n\n1. ddx_beads collection schema with two named queries (ready_beads, blocked_beads) per FEAT-009 US-074.\n2. Fixtures at 1k and 10k beads with realistic dep-state mixes.\n3. Benchmark via criterion measuring p99 latency.\n\nPerformance gates per ADR-021: 1k beads (500 open, varied dep states) \u003c100ms p99; 10k beads \u003c500ms p99 single round-trip.\n\nDemonstrates DDx alpha unblock per axon-82b6f7b2 Use Case A.",
+    "acceptance": "AC1. ddx_beads schema with ready_beads and blocked_beads named queries activates without error. AC2. Benchmark in crates/axon-cypher/benches/ddx_benchmark.rs measures p99 at 1k and 10k beads. AC3. 1k beads \u003c100ms p99. AC4. 10k beads \u003c500ms p99. AC5. axon-05c1019d closes as 'closed by this bead'. AC6. axon-82b6f7b2 epic gets a comment that Use Case A is met.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "downstream:ddx",
+      "kind:benchmark"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-04T01:10:26Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3908734",
+      "execute-loop-heartbeat-at": "2026-05-04T01:10:26.32526783Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260504T011026-80b3b9b1",
+    "prompt": ".ddx/executions/20260504T011026-80b3b9b1/prompt.md",
+    "manifest": ".ddx/executions/20260504T011026-80b3b9b1/manifest.json",
+    "result": ".ddx/executions/20260504T011026-80b3b9b1/result.json",
+    "checks": ".ddx/executions/20260504T011026-80b3b9b1/checks.json",
+    "usage": ".ddx/executions/20260504T011026-80b3b9b1/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-8b91e47d-20260504T011026-80b3b9b1"
+  },
+  "prompt_sha": "9bc8f2993770640c3b03cb4dcaa1965dcf39aff55318b886a4e7f07fe49ff846"
+}
