@@ -15973,6 +15973,99 @@ link_types:
     }
 
     #[test]
+    fn handle_put_schema_ddx_ready_and_blocked_named_queries_activate() {
+        let mut h = handler();
+        let col = CollectionId::new("ddx_beads");
+        let mut schema = CollectionSchema::new(col.clone());
+        schema.entity_schema = Some(json!({
+            "type": "object",
+            "required": ["status", "title", "priority", "updated_at"],
+            "properties": {
+                "status": { "type": "string", "enum": ["open", "in_progress", "review", "closed"] },
+                "title": { "type": "string" },
+                "priority": { "type": "integer" },
+                "updated_at": { "type": "string", "format": "date-time" }
+            }
+        }));
+        schema.indexes = vec![
+            IndexDef {
+                field: "status".into(),
+                index_type: IndexType::String,
+                unique: false,
+            },
+            IndexDef {
+                field: "id".into(),
+                index_type: IndexType::String,
+                unique: true,
+            },
+        ];
+        schema.link_types.insert(
+            "depends_on".into(),
+            LinkTypeDef {
+                target_collection: "ddx_beads".into(),
+                cardinality: Cardinality::ManyToMany,
+                required: false,
+                metadata_schema: None,
+            },
+        );
+        schema.queries.insert(
+            "ready_beads".into(),
+            NamedQueryDef {
+                description: "Open beads with no non-closed dependencies".into(),
+                cypher: r"
+MATCH (b:DdxBead {status: 'open'})
+WHERE NOT EXISTS {
+    MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
+    WHERE d.status <> 'closed'
+}
+RETURN b
+ORDER BY b.priority DESC, b.updated_at DESC
+"
+                .into(),
+                parameters: Vec::new(),
+            },
+        );
+        schema.queries.insert(
+            "blocked_beads".into(),
+            NamedQueryDef {
+                description: "Open beads with at least one non-closed dependency".into(),
+                cypher: r"
+MATCH (b:DdxBead {status: 'open'})
+WHERE EXISTS {
+    MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
+    WHERE d.status <> 'closed'
+}
+RETURN b
+ORDER BY b.priority DESC, b.updated_at DESC
+"
+                .into(),
+                parameters: Vec::new(),
+            },
+        );
+
+        let resp = h
+            .handle_put_schema(PutSchemaRequest {
+                schema,
+                actor: Some("ddx".into()),
+                force: false,
+                dry_run: false,
+                explain_inputs: Vec::new(),
+            })
+            .expect("DDx ready/blocked named queries should activate");
+
+        let report = resp.compile_report.expect("query compile report present");
+        assert!(report.is_success(), "{report:?}");
+        let stored = h
+            .handle_get_schema(GetSchemaRequest {
+                collection: col.clone(),
+            })
+            .expect("schema should be active")
+            .schema;
+        assert!(stored.queries.contains_key("ready_beads"));
+        assert!(stored.queries.contains_key("blocked_beads"));
+    }
+
+    #[test]
     fn handle_put_schema_dry_run_reports_named_query_errors_without_activation() {
         let mut h = handler();
         let col = CollectionId::new("ddx_beads");

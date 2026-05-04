@@ -17,5 +17,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+criterion.workspace = true
 pretty_assertions.workspace = true
 proptest.workspace = true
+
+[[bench]]
+name = "ddx_benchmark"
+harness = false
