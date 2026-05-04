@@ -1,0 +1,23 @@
+{
+  "bead_id": "axon-243091c3",
+  "attempt_id": "20260504T000358-04f2ab30",
+  "base_rev": "e1b551d3902f785977de21115fb15755487a92cd",
+  "result_rev": "e1b551d3902f785977de21115fb15755487a92cd",
+  "outcome": "task_no_changes",
+  "status": "no_changes",
+  "detail": "no_changes",
+  "no_changes_rationale": "verification_command: ddx bead show axon-243091c3 | rg 'axon-77f3a5ca|axon-5956e527|axon-100687fd|decomposed' \u0026\u0026 ddx bead show axon-77f3a5ca \u0026\u0026 ddx bead show axon-5956e527 \u0026\u0026 ddx bead show axon-100687fd\n\nSize-check result: decomposed, no implementation attempted.\n\nReason:\nThe bead was too large for one bounded execution pass after reading the current\nworktree. The parent bead assumes the closed executor dependency provides\ncrates/axon-cypher/src/executor.rs and crates/axon-cypher/src/memory_store.rs,\nbut those files are absent in this worktree. The dependency commit recorded on\naxon-ad2a9669 resolves to a checkpoint commit, not an executor implementation.\n\nImplementing axon-243091c3 directly would therefore mix dependency repair,\nstreaming executor implementation, StorageAdapter production backend work,\nSQLite integration parity, and performance benchmarks in one pass.\n\nChild slices created:\n\n- axon-77f3a5ca: build(feat-009): Cypher executor streaming runtime foundation\n  Restores the missing executor foundation: QueryStore trait, execute(plan,\n  store), in-memory store, and the 10+ executor scenarios from the dependency\n  contract.\n\n- axon-5956e527: build(feat-009): Cypher QueryStore over StorageAdapter\n  Implements the production QueryStore over axon-storage::StorageAdapter using\n  portable get/range_scan/index_lookup/link primitives only.\n\n- axon-100687fd: test(feat-009): SQLite Cypher executor parity and ready/blocked benchmarks\n  Reuses the executor scenarios against SqliteStorageAdapter and records the\n  FEAT-009 DDx ready/blocked latency evidence at 1k and 10k beads.\n\nParent tracker update:\naxon-243091c3 notes now record the decomposition and rationale. The parent\ndepends on all three children; axon-5956e527 depends on axon-77f3a5ca, and\naxon-100687fd depends on axon-5956e527.",
+  "harness": "codex",
+  "session_id": "eb-6e912dcd",
+  "duration_ms": 274038,
+  "tokens": 1439698,
+  "exit_code": 0,
+  "failure_mode": "no_changes",
+  "execution_dir": ".ddx/executions/20260504T000358-04f2ab30",
+  "prompt_file": ".ddx/executions/20260504T000358-04f2ab30/prompt.md",
+  "manifest_file": ".ddx/executions/20260504T000358-04f2ab30/manifest.json",
+  "result_file": ".ddx/executions/20260504T000358-04f2ab30/result.json",
+  "usage_file": ".ddx/executions/20260504T000358-04f2ab30/usage.json",
+  "started_at": "2026-05-04T00:03:59.461691695Z",
+  "finished_at": "2026-05-04T00:08:33.500651342Z"
+}

@@ -1,0 +1,39 @@
+{
+  "attempt_id": "20260504T000358-04f2ab30",
+  "bead_id": "axon-243091c3",
+  "base_rev": "e1b551d3902f785977de21115fb15755487a92cd",
+  "created_at": "2026-05-04T00:03:59.460588047Z",
+  "requested": {
+    "harness": "codex",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-243091c3",
+    "title": "build(feat-009): Cypher executor — StorageAdapter backend (SQLite)",
+    "description": "Adapt the Cypher executor to run against axon-storage::StorageAdapter. Implement QueryStore (from the executor bead) using StorageAdapter's get/range_scan/index_lookup/links primitives.\n\nThis is the production execution path. SQLite backend at minimum; PostgreSQL should pass the same tests since the StorageAdapter trait is uniform.\n\nPerformance gates per ADR-021/FEAT-009: DDx ready/blocked at 1k beads \u003c100ms p99, at 10k beads \u003c500ms p99.\n\nNo backend-specific operators per ADR-010 §No Backend-Specific Query Operators.",
+    "acceptance": "AC1. QueryStore has an axon-storage-backed implementation. AC2. The 10+ integration tests from the executor bead pass against the SQLite backend. AC3. DDx ready/blocked benchmark: \u003c100ms p99 at 1k beads on dev hardware. AC4. cargo test --workspace passes; cargo clippy --workspace -- -D warnings clean. AC5. No backend-specific operators (per ADR-010).",
+    "labels": [
+      "helix",
+      "feat-009",
+      "area:cypher",
+      "area:storage",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-04T00:03:58Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3908734",
+      "execute-loop-heartbeat-at": "2026-05-04T00:03:58.851492583Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260504T000358-04f2ab30",
+    "prompt": ".ddx/executions/20260504T000358-04f2ab30/prompt.md",
+    "manifest": ".ddx/executions/20260504T000358-04f2ab30/manifest.json",
+    "result": ".ddx/executions/20260504T000358-04f2ab30/result.json",
+    "checks": ".ddx/executions/20260504T000358-04f2ab30/checks.json",
+    "usage": ".ddx/executions/20260504T000358-04f2ab30/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-243091c3-20260504T000358-04f2ab30"
+  },
+  "prompt_sha": "14accdbf92fa8ecc25be364c088bcf0ea7011bb305d73ffbb53ef785a7b2344a"
+}
