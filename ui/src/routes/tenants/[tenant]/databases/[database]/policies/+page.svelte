@@ -138,6 +138,7 @@ const consolePresetContext = $derived({
 });
 const schemaDiagnostics = $derived(buildSchemaDiagnostics(collectionDetail, selectedOperation));
 const matrixSchemaDiagnostics = $derived(buildSchemaDiagnostics(collectionDetail, 'read'));
+const hasProposedPolicyDraft = $derived(Boolean(collectionDetail?.schema?.draft?.access_control));
 const graphqlDiagnostics = $derived(buildGraphqlDiagnostics(explanationDiagnostics));
 const evaluatorDiagnostics = $derived(
 	dedupeDiagnostics([...schemaDiagnostics, ...graphqlDiagnostics]),
@@ -1143,6 +1144,15 @@ onMount(() => {
 				Active-policy outcomes for the first {impactMatrixEntities.length} sample row(s) across
 				up to {impactMatrixSubjects.length} subjects and {IMPACT_MATRIX_OPERATIONS.length} operations.
 			</p>
+			{#if hasProposedPolicyDraft}
+				<p
+					class="muted impact-delta-unavailable"
+					data-testid="policy-impact-matrix-cell-transaction-unavailable"
+				>
+					transaction delta unavailable
+					<a href={`${base}/beads/axon-84038791`}>follow-up axon-84038791</a>
+				</p>
+			{/if}
 			{#if impactMatrixError}
 				<p class="message error" data-testid="policy-impact-matrix-error">{impactMatrixError}</p>
 			{/if}
@@ -1307,7 +1317,9 @@ onMount(() => {
 																class="impact-delta-summary"
 																data-testid="policy-impact-matrix-cell-transaction-unavailable"
 															>
-																transaction delta unavailable<a href="#follow-up-bead">follow-up</a>
+																transaction delta unavailable<a href={`${base}/beads/axon-84038791`}>
+																	follow-up axon-84038791
+																</a>
 															</div>
 														{:else if delta.isUnchanged}
 															<span

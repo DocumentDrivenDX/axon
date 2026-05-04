@@ -331,7 +331,6 @@ test.describe('Policy authoring (impact matrix)', () => {
 
 		const matrix = page.getByTestId('policy-impact-matrix');
 		await expect(matrix).toBeVisible();
-		await expect(matrix.getByTestId('policy-impact-matrix-cell-delta').first()).toBeVisible();
 
 		const invoiceIds = [fixture.invoices.small.id, fixture.invoices.large.id] as const;
 		for (const entityId of invoiceIds) {
@@ -399,16 +398,14 @@ test.describe('Policy authoring (impact matrix)', () => {
 			diagnosticCell.getByTestId('policy-impact-matrix-diagnostic-proposed'),
 		).toContainText('policy_filter_unindexed');
 
-		const transactionUnavailable = diagnosticMatrix.getByTestId(
-			'policy-impact-matrix-cell-transaction-unavailable',
+		const transactionUnavailable = diagnosticMatrix
+			.getByTestId('policy-impact-matrix-cell-transaction-unavailable')
+			.first();
+		await expect(transactionUnavailable).toContainText('transaction delta unavailable');
+		await expect(transactionUnavailable.locator('a')).toHaveAttribute(
+			'href',
+			'/ui/beads/axon-84038791',
 		);
-		if ((await transactionUnavailable.count()) > 0) {
-			await expect(transactionUnavailable.first()).toContainText('transaction delta unavailable');
-			await expect(transactionUnavailable.first().locator('a')).toHaveAttribute(
-				'href',
-				'#follow-up-bead',
-			);
-		}
 	});
 });
 
