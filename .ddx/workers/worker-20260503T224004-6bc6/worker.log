@@ -15,3 +15,6 @@
 ✓ axon-1fb17586 → merged (4b499ddb)
 
 ▶ axon-ff92fed7: build(feat-031): proposed-policy delta matrix and review
+✓ axon-ff92fed7 → error: post-merge review: BLOCK (flagged for human)
+
+▶ axon-ad2a9669: build(feat-009): Cypher executor — in-memory streaming runtime

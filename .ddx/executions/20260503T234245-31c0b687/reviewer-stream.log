@@ -1,0 +1,12 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only execution manifest/result metadata for the bead attempt — no implementation of the proposed-policy delta matrix, no policy-authoring.spec.ts changes, and no UI/code changes addressing any acceptance criteria.",
+  "findings": [
+    { "severity": "block", "summary": "No implementation diff: only .ddx/executions/.../manifest.json and result.json were added. The acceptance criteria (matrix surfaces changed allow/deny/needs_approval, redacted/denied field deltas, policy_filter_unindexed remediation, 'unchanged' rendering, and 'transaction delta unavailable' affordance) require code and spec changes that are absent.", "location": ".ddx/executions/20260503T234245-31c0b687/" },
+    { "severity": "block", "summary": "policy-authoring.spec.ts is not modified or created in this diff, so no test proves AC behavior.", "location": "policy-authoring.spec.ts" },
+    { "severity": "info", "summary": "Bead is annotated BLOCKED [2026-04-27]: intractable after 4 attempts with exponential backoff; recent attempts show 'no_changes' / exhausted tiers, consistent with the empty implementation diff.", "location": ".ddx/executions/20260503T234245-31c0b687/manifest.json" }
+  ]
+}
+```
