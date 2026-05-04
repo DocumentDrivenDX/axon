@@ -1,0 +1,17 @@
+I have enough from the diff and the CypherError code list to evaluate. All six required test scenarios are present, the field is wired with the right arguments, the result shape matches the spec, errors flow through `cypher_error_to_gql` with stable codes, and policy compatibility uses the newly-extracted `validate_query_policy_compatibility` shared with named queries.
+
+```json
+{
+  "schema_version": 1,
+  "verdict": "APPROVE",
+  "summary": "axonQuery field, AxonQueryResult/Schema/Metadata types, full parser/validator/planner pipeline, CypherError code mapping, policy parity via shared validate_query_policy_compatibility, and tests for all six required scenarios are present.",
+  "findings": [
+    { "severity": "info", "summary": "AC1 satisfied: axonQuery(cypher: String!, parameters: JSON) registered on root Query, with introspection test asserting NON_NULL AxonQueryResult and arg names.", "location": "crates/axon-graphql/src/dynamic.rs (axon_query_field)" },
+    { "severity": "info", "summary": "AC2 satisfied: AxonQueryResult exposes rows (JSON list), schema.columns[{name,type,nullable}], and metadata{estimatedRows,elapsedMs,plan,indexUsage}.", "location": "crates/axon-graphql/src/dynamic.rs (axon_query_result_object/axon_query_metadata_object)" },
+    { "severity": "info", "summary": "AC3 satisfied: cypher_error_to_gql sets ext.code from CypherError::code(); test asserts parse_error/unknown_identifier/policy_required_bypass/unsupported_query_plan/query_too_large codes.", "location": "crates/axon-graphql/src/dynamic.rs (cypher_error_to_gql)" },
+    { "severity": "info", "summary": "AC4 satisfied: shares parser/validator/planner with named queries; new validate_query_policy_compatibility is invoked, caller.check(Read) gates access, and query_entities_with_caller enforces redaction at fetch time.", "location": "crates/axon-schema/src/named_queries.rs:130; crates/axon-graphql/src/dynamic.rs (execute_axon_query)" },
+    { "severity": "info", "summary": "AC5 satisfied: axon_query_valid_query_returns_rows_schema_and_metadata, axon_query_errors_use_stable_cypher_codes (parse/unknown/policy), axon_query_unsupported_query_plan_error_code, axon_query_query_too_large_error_code, plus introspection test cover all six required cases.", "location": "crates/axon-graphql/src/dynamic.rs (tests module)" },
+    { "severity": "info", "summary": "30s wall-clock deadline implemented via axon_query_check_deadline and CypherError::QueryTimeout; not in required AC5 list, so untested but functionally wired.", "location": "crates/axon-graphql/src/dynamic.rs (axon_query_check_deadline)" }
+  ]
+}
+```
