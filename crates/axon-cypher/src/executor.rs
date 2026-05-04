@@ -271,6 +271,14 @@ where
     S: QueryStore + ?Sized,
 {
     let return_clause = plan.return_clause.clone();
+    if return_clause
+        .items
+        .iter()
+        .any(|item| is_count_star(&item.expression))
+    {
+        return count_star_stream(plan, store);
+    }
+
     let projected = binding_stream(&plan.input, store).map(move |row| {
         row.and_then(|row| {
             let mut projected = Row::new();
@@ -293,6 +301,51 @@ where
     } else {
         Box::new(projected)
     }
+}
+
+fn count_star_stream<'a, S>(plan: &'a ProjectPlan, store: &'a S) -> RowIter<'a>
+where
+    S: QueryStore + ?Sized,
+{
+    if !plan
+        .return_clause
+        .items
+        .iter()
+        .all(|item| is_count_star(&item.expression))
+    {
+        let err = CypherError::UnsupportedQueryPlan(
+            "count(*) cannot be mixed with non-aggregate return items yet".to_string(),
+        );
+        return Box::new(std::iter::once(Err(err)));
+    }
+
+    let mut count = 0_u64;
+    for row in binding_stream(&plan.input, store) {
+        match row {
+            Ok(_) => count = count.saturating_add(1),
+            Err(err) => return Box::new(std::iter::once(Err(err))),
+        }
+    }
+
+    let mut projected = Row::new();
+    for item in &plan.return_clause.items {
+        let key = item
+            .alias
+            .clone()
+            .unwrap_or_else(|| expression_name(&item.expression));
+        projected.insert(key, Value::Number(Number::from(count)));
+    }
+
+    Box::new(std::iter::once(Ok(projected)))
+}
+
+fn is_count_star(expr: &Expression) -> bool {
+    matches!(
+        expr,
+        Expression::FunctionCall { name, arguments }
+            if name.eq_ignore_ascii_case("count")
+                && matches!(arguments.as_slice(), [FunctionArg::Star])
+    )
 }
 
 struct DistinctRows<'a> {
@@ -860,6 +913,174 @@ mod tests {
             rows,
             vec![Row::from([("title".to_string(), json!("first"))])]
         );
+    }
+
+    #[test]
+    fn optional_match_preserves_unmatched_input_with_null_binding() {
+        let schema = test_fixtures::ddx_beads();
+        let query = parse(
+            r"
+            MATCH (b:DdxBead {id: 'bead-b'})
+            OPTIONAL MATCH (b:DdxBead)-[:DEPENDS_ON]->(d:DdxBead)
+            RETURN b.title AS source, d AS dependency
+            ",
+        )
+        .expect("query should parse");
+        let plan = plan(&query, &schema).expect("query should plan");
+
+        let rows = execute(&plan, &store())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query should execute");
+
+        assert_eq!(
+            rows,
+            vec![Row::from([
+                ("dependency".to_string(), Value::Null),
+                ("source".to_string(), json!("second")),
+            ])]
+        );
+    }
+
+    #[test]
+    fn exists_check_filters_true_and_false_predicate_cases() {
+        let schema = test_fixtures::ddx_beads();
+        let true_case = parse(
+            r"
+            MATCH (b:DdxBead {status: 'open'})
+            WHERE EXISTS {
+                MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
+                WHERE d.status = 'open'
+            }
+            RETURN b.id AS id
+            ",
+        )
+        .expect("true case should parse");
+        let false_case = parse(
+            r"
+            MATCH (b:DdxBead {status: 'open'})
+            WHERE NOT EXISTS {
+                MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
+                WHERE d.status = 'open'
+            }
+            RETURN b.id AS id
+            ",
+        )
+        .expect("false case should parse");
+
+        let true_plan = plan(&true_case, &schema).expect("true case should plan");
+        let false_plan = plan(&false_case, &schema).expect("false case should plan");
+
+        let true_rows = execute(&true_plan, &store())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("true case should execute");
+        let false_rows = execute(&false_plan, &store())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("false case should execute");
+
+        assert_eq!(
+            true_rows,
+            vec![Row::from([("id".to_string(), json!("bead-a"))])]
+        );
+        assert_eq!(
+            false_rows,
+            vec![Row::from([("id".to_string(), json!("bead-b"))])]
+        );
+    }
+
+    #[test]
+    fn count_star_counts_filtered_rows_without_materializing_result_rows() {
+        let schema = test_fixtures::ddx_beads();
+        let query = parse("MATCH (b:DdxBead {status: 'open'}) RETURN count(*) AS n")
+            .expect("query should parse");
+        let plan = plan(&query, &schema).expect("query should plan");
+
+        let rows = execute(&plan, &store())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query should execute");
+
+        assert_eq!(rows, vec![Row::from([("n".to_string(), json!(2))])]);
+    }
+
+    #[test]
+    fn distinct_returns_unique_projected_rows() {
+        let schema = test_fixtures::ddx_beads();
+        let query = parse("MATCH (b:DdxBead {status: 'open'}) RETURN DISTINCT b.status AS status")
+            .expect("query should parse");
+        let plan = plan(&query, &schema).expect("query should plan");
+
+        let rows = execute(&plan, &store())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query should execute");
+
+        assert_eq!(
+            rows,
+            vec![Row::from([("status".to_string(), json!("open"))])]
+        );
+    }
+
+    #[test]
+    fn order_by_asc_and_desc_execute_with_materialized_sort_when_uncovered() {
+        let schema = test_fixtures::ddx_beads();
+        let asc = parse(
+            "MATCH (b:DdxBead {status: 'open'}) RETURN b.title AS title ORDER BY b.title ASC",
+        )
+        .expect("ASC query should parse");
+        let desc = parse(
+            "MATCH (b:DdxBead {status: 'open'}) RETURN b.title AS title ORDER BY b.title DESC",
+        )
+        .expect("DESC query should parse");
+        let asc_plan = plan(&asc, &schema).expect("ASC query should plan");
+        let desc_plan = plan(&desc, &schema).expect("DESC query should plan");
+
+        match &asc_plan.root {
+            PlanOperator::Project(project) => match &project.input {
+                PlanOperator::Sort(_) => {}
+                other => panic!("uncovered ORDER BY should materialize with Sort, got {other:?}"),
+            },
+            other => panic!("expected Project root, got {other:?}"),
+        }
+
+        let asc_rows = execute(&asc_plan, &store())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("ASC query should execute");
+        let desc_rows = execute(&desc_plan, &store())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("DESC query should execute");
+
+        assert_eq!(
+            asc_rows,
+            vec![
+                Row::from([("title".to_string(), json!("first"))]),
+                Row::from([("title".to_string(), json!("second"))]),
+            ]
+        );
+        assert_eq!(
+            desc_rows,
+            vec![
+                Row::from([("title".to_string(), json!("second"))]),
+                Row::from([("title".to_string(), json!("first"))]),
+            ]
+        );
+    }
+
+    #[test]
+    fn covered_order_by_uses_index_lookup_without_sort_operator() {
+        let schema = test_fixtures::ddx_beads();
+        let query = parse("MATCH (b:DdxBead) RETURN b.id AS id ORDER BY b.priority DESC")
+            .expect("query should parse");
+        let plan = plan(&query, &schema).expect("query should plan");
+
+        match &plan.root {
+            PlanOperator::Project(project) => match &project.input {
+                PlanOperator::IndexLookup(index) => {
+                    assert_eq!(index.property, "priority");
+                    assert_eq!(index.ordered_by.len(), 1);
+                    assert!(index.ordered_by[0].descending);
+                }
+                other => panic!("covered ORDER BY should stay as IndexLookup, got {other:?}"),
+            },
+            other => panic!("expected Project root, got {other:?}"),
+        }
     }
 
     #[test]
