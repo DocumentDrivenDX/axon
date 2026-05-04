@@ -15,6 +15,7 @@
 pub mod ast;
 pub mod error;
 pub mod lexer;
+pub mod memory_store;
 pub mod parser;
 pub mod planner;
 pub mod schema;
@@ -22,6 +23,10 @@ pub mod validator;
 
 pub use ast::Query;
 pub use error::CypherError;
+pub use memory_store::{
+    EntityScan, LinkTraversal, MemoryQueryStore, PropertyFilter, PropertyFilterOp, QueryEntity,
+    QueryLink, QueryStore,
+};
 pub use planner::{plan, ExecutionPlan, PlanOperator};
 pub use schema::SchemaSnapshot;
 pub use validator::validate;
