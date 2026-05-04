@@ -33,3 +33,6 @@
 ✓ axon-2705d3ac → merged (e08e0309)
 
 ▶ axon-8b91e47d: build(feat-009): DDx ready/blocked queue benchmark — closes axon-05c1019d
+✓ axon-8b91e47d → error: post-merge review: BLOCK (flagged for human)
+
+▶ axon-390c67d1: build(feat-009): Cypher QueryStore and in-memory graph store
