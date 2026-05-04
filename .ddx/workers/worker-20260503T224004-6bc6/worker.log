@@ -18,3 +18,6 @@
 ✓ axon-ff92fed7 → error: post-merge review: BLOCK (flagged for human)
 
 ▶ axon-ad2a9669: build(feat-009): Cypher executor — in-memory streaming runtime
+✓ axon-ad2a9669 → already_satisfied
+
+▶ axon-243091c3: build(feat-009): Cypher executor — StorageAdapter backend (SQLite)
