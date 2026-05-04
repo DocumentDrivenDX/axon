@@ -42,3 +42,6 @@
 ✓ axon-ff99d8b1 → merged (2db40dc7)
 
 ▶ axon-29b3919b: build(feat-009): Cypher executor materializing and optional clauses
+✓ axon-29b3919b → merged (6062e4a7)
+
+▶ axon-52265708: build(feat-009): DDx Cypher executor graph-query integration
