@@ -1,0 +1,54 @@
+{
+  "verdict": "APPROVE",
+  "rationale": "axon.query (cypher+parameters) and per-named-query tools generated from schema.queries; descriptions surface schema doc; both delegate to shared axon-graphql dynamic helpers preserving policy/limits/timeout. Wired into stdio and HTTP MCP. New tests cover happy-path and error cases.",
+  "findings": [
+    {
+      "severity": "info",
+      "summary": "execute_query still accepts a legacy 'query' string fallback after the cypher branch, but the tool input_schema requires 'cypher' so the GraphQL fallback path is unreachable through the registered MCP tool. Harmless but dead code.",
+      "location": "crates/axon-mcp/src/handlers.rs:2188"
+    },
+    {
+      "severity": "info",
+      "summary": "build_named_query_tools_tokio uses handler.blocking_lock() during registry construction; this is fine at startup but would deadlock if ever called from inside a Tokio runtime worker without a current task. Today only called from setup paths.",
+      "location": "crates/axon-mcp/src/handlers.rs:3070"
+    }
+  ],
+  "evidence_assembly": {
+    "sections": [
+      {
+        "name": "bead",
+        "bytes_included": 999,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          "bead"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "changed-files",
+        "bytes_included": 180,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": [
+          ".ddx/executions/20260504T004917-537d20b6/manifest.json",
+          ".ddx/executions/20260504T004917-537d20b6/result.json"
+        ],
+        "omitted_items": null
+      },
+      {
+        "name": "diff",
+        "bytes_included": 3549,
+        "bytes_omitted": 0,
+        "truncation_reason": "",
+        "selected_items": null,
+        "omitted_items": null
+      }
+    ],
+    "input_bytes": 6354,
+    "output_bytes": 2352,
+    "elapsed_ms": 75376,
+    "harness": "claude",
+    "model": "opus"
+  }
+}

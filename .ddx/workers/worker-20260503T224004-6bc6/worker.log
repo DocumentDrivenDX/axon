@@ -30,3 +30,6 @@
 ✓ axon-d3fbd10a → merged (8bae5929)
 
 ▶ axon-2705d3ac: build(feat-009): MCP tools — axon.query and per-named-query
+✓ axon-2705d3ac → merged (e08e0309)
+
+▶ axon-8b91e47d: build(feat-009): DDx ready/blocked queue benchmark — closes axon-05c1019d
