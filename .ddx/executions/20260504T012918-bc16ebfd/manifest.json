@@ -1,0 +1,39 @@
+{
+  "attempt_id": "20260504T012918-bc16ebfd",
+  "bead_id": "axon-390c67d1",
+  "base_rev": "f22b4c669b809a455e8b5214beaf0cda858a4c49",
+  "created_at": "2026-05-04T01:29:19.277461086Z",
+  "requested": {
+    "harness": "codex",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-390c67d1",
+    "title": "build(feat-009): Cypher QueryStore and in-memory graph store",
+    "description": "Split from axon-ad2a9669. Add crates/axon-cypher/src/memory_store.rs with a QueryStore trait and an in-memory entity/link store sufficient for executor tests. The store should represent entities with labels/properties and directed typed links with properties, expose streaming-friendly scans/lookups needed by the planner/executor, and remain independent of axon-storage::StorageAdapter for a future backend bead. Out of scope: executor operator semantics beyond minimal store-level unit coverage.",
+    "acceptance": "AC1. crates/axon-cypher/src/memory_store.rs defines the QueryStore trait used by executor-facing code. AC2. MemoryQueryStore (or equivalent) supports hand-built entities and typed links with properties. AC3. Store APIs support streaming-friendly entity scans, label/property filtering inputs, link traversal inputs, and lookup by id without backend-specific types. AC4. cargo test -p axon-cypher includes focused memory-store tests and passes; clippy clean for axon-cypher.",
+    "parent": "axon-ad2a9669",
+    "labels": [
+      "helix",
+      "feat-009",
+      "area:cypher",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-04T01:29:18Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3908734",
+      "execute-loop-heartbeat-at": "2026-05-04T01:29:18.487524245Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260504T012918-bc16ebfd",
+    "prompt": ".ddx/executions/20260504T012918-bc16ebfd/prompt.md",
+    "manifest": ".ddx/executions/20260504T012918-bc16ebfd/manifest.json",
+    "result": ".ddx/executions/20260504T012918-bc16ebfd/result.json",
+    "checks": ".ddx/executions/20260504T012918-bc16ebfd/checks.json",
+    "usage": ".ddx/executions/20260504T012918-bc16ebfd/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-390c67d1-20260504T012918-bc16ebfd"
+  },
+  "prompt_sha": "3aa4750f4b19014b00eb65fda0c12bd68f87aa4d0d584ef071b0673e8c13ff4a"
+}
