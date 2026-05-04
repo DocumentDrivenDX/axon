@@ -1,0 +1,39 @@
+{
+  "attempt_id": "20260504T004917-537d20b6",
+  "bead_id": "axon-2705d3ac",
+  "base_rev": "3b5c8cd12261b83ee8946b3664bdb5514c73f489",
+  "created_at": "2026-05-04T00:49:18.757758794Z",
+  "requested": {
+    "harness": "codex",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-2705d3ac",
+    "title": "build(feat-009): MCP tools — axon.query and per-named-query",
+    "description": "Per ADR-021 §MCP surfacing and FEAT-009 US-073/US-076. MCP exposes:\n\n- axon.query(cypher, parameters) — generic ad-hoc query tool, mirrors GraphQL axonQuery.\n- One tool per named query, named after the query (e.g. ddx_beads.ready_beads). Same parameter shape as the GraphQL field.\n\nTool descriptions surface the named query's documentation string. Both tools enforce identical policy and limits as the GraphQL surface.",
+    "acceptance": "AC1. axon.query MCP tool with cypher + parameters. AC2. Each named query in the active schema generates a corresponding MCP tool. AC3. Tool descriptions include the named query's description: field. AC4. Tools enforce same policy/limits as GraphQL surface. AC5. cargo test -p axon-mcp passes; clippy clean.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "feat-016",
+      "area:mcp",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-04T00:49:17Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "3908734",
+      "execute-loop-heartbeat-at": "2026-05-04T00:49:17.839609454Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260504T004917-537d20b6",
+    "prompt": ".ddx/executions/20260504T004917-537d20b6/prompt.md",
+    "manifest": ".ddx/executions/20260504T004917-537d20b6/manifest.json",
+    "result": ".ddx/executions/20260504T004917-537d20b6/result.json",
+    "checks": ".ddx/executions/20260504T004917-537d20b6/checks.json",
+    "usage": ".ddx/executions/20260504T004917-537d20b6/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-2705d3ac-20260504T004917-537d20b6"
+  },
+  "prompt_sha": "b5e1293075676ac7f4930dded00f409c663f25e88f7cfe480f9e0aa42d78253a"
+}
