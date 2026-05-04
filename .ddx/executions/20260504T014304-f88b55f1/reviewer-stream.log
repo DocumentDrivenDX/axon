@@ -1,0 +1,20 @@
+The diff in this review only shows execution evidence (manifest/result), but the actual code commit is `62bf2bf` which I've fully reviewed. Let me verify the implementation against each AC:
+
+- **AC1**: `crates/axon-cypher/src/executor.rs` exposes `execute(plan, store) -> RowStream` at lines 82-87, also re-exported from `lib.rs`. ✓
+- **AC2**: `parse_validate_plan_execute_simple_match_where_return` test runs the full pipeline for `MATCH (b:DdxBead {status: 'open'}) WHERE b.priority > 3 RETURN ...`. ✓
+- **AC3**: Non-materializing operators (Scan, Filter, Project, Skip, Limit, IndexLookup w/o ordering, Expand, ExistsCheck) all use lazy `filter_map`/`flat_map`/`take`/`skip` chains. The `limit_does_not_pull_full_scan` test confirms with a `CountingStore` that LIMIT 2 over 100 rows only pulls 2. Sort is acknowledged materializing. ✓
+- **AC4**: `ExecutionClock` trait + `ExecutionOptions` makes the clock injectable. `RowStream::next` checks `clock.now() >= deadline` per-pull. `timeout_is_checked_while_rows_are_pulled` test uses `ManualClock` to advance past 30s and asserts `CypherError::QueryTimeout` is returned. ✓
+- **AC5**: The execution `result.json` reports `outcome: task_succeeded`, `exit_code: 0` over a 634s run that includes the standard test+clippy gates.
+
+```json
+{
+  "schema_version": 1,
+  "verdict": "APPROVE",
+  "summary": "All 5 ACs satisfied. execute()/RowStream exposed, full parse→validate→plan→execute path tested, lazy iterator chains verified by CountingStore (LIMIT 2 pulls 2 of 100), 30s timeout enforced via injectable ExecutionClock with ManualClock test. Harness reports tests/clippy passed.",
+  "findings": [
+    { "severity": "info", "summary": "Expand operator buffers all per-input-row expansions into a Vec via BFS (expand_row returns Vec<Result<...>>). Non-materializing at the input level (flat_map streams across input rows) but eager per source row. Acceptable per AC3 wording (no full result set collected) and test coverage.", "location": "crates/axon-cypher/src/executor.rs:328" },
+    { "severity": "info", "summary": "Timeout is checked between row pulls but not within a single operator's per-row work (e.g. Expand BFS, Sort materialization). Adequate for the AC4 wall-clock guarantee on streaming pulls.", "location": "crates/axon-cypher/src/executor.rs:70" },
+    { "severity": "info", "summary": "IndexLookup with ordered_by silently materializes via materialize_sorted; documented behavior consistent with Sort being the only acknowledged materializing operator.", "location": "crates/axon-cypher/src/executor.rs:215" }
+  ]
+}
+```

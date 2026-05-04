@@ -39,3 +39,6 @@
 ✓ axon-390c67d1 → merged (706f6745)
 
 ▶ axon-ff99d8b1: build(feat-009): Cypher streaming executor core
+✓ axon-ff99d8b1 → merged (2db40dc7)
+
+▶ axon-29b3919b: build(feat-009): Cypher executor materializing and optional clauses
