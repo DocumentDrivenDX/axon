@@ -1,0 +1,56 @@
+{
+  "attempt_id": "20260507T005614-04c033f4",
+  "bead_id": "axon-77f3a5ca",
+  "base_rev": "8dbc7f92792a397ba086e0a40dcff00598cc9463",
+  "created_at": "2026-05-07T00:56:16.687017597Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-77f3a5ca",
+    "title": "build(feat-009): Cypher executor streaming runtime foundation",
+    "description": "Implement the missing axon-cypher executor foundation required before a StorageAdapter backend can exist. Add the QueryStore trait, streaming execute(plan, store) runtime, and in-memory store/test fixtures described by the closed executor dependency so downstream backend implementations have a concrete contract to implement.",
+    "acceptance": "AC1. crates/axon-cypher/src/executor.rs exposes execute(plan, store) over the planner ExecutionPlan. AC2. crates/axon-cypher/src/memory_store.rs implements QueryStore for in-memory entity/link fixtures. AC3. The DDx ready/blocked query runs parse -\u003e validate -\u003e plan -\u003e execute against a 10-bead/15-link fixture and returns expected ready and blocked beads. AC4. At least 10 executor integration tests cover DDx ready/blocked, dependency DAG, reachability, DISTINCT, OPTIONAL MATCH, EXISTS true/false, count(*), ORDER BY ASC/DESC. AC5. Bounded-memory streaming and 30-second timeout are enforced. AC6. cargo test -p axon-cypher and cargo clippy -p axon-cypher --all-targets -- -D warnings pass.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "area:cypher",
+      "area:storage",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-07T00:56:14Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "1565319",
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"rationale\":\"\",\"score\":0,\"suggested_fixes\":null,\"waivers_applied\":null,\"warning\":\"lint hook: missing-harness\"}",
+          "created_at": "2026-05-07T00:56:13.707054513Z",
+          "kind": "bead-quality.lint",
+          "source": "ddx agent execute-loop",
+          "summary": "warning score=0"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-07T00:56:14.130327917Z",
+      "spec-id": "FEAT-009"
+    }
+  },
+  "governing": [
+    {
+      "id": "FEAT-009",
+      "path": "docs/helix/01-frame/features/FEAT-009-graph-traversal-queries.md",
+      "title": "Feature Specification: FEAT-009 — Unified Graph Query (Cypher)"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260507T005614-04c033f4",
+    "prompt": ".ddx/executions/20260507T005614-04c033f4/prompt.md",
+    "manifest": ".ddx/executions/20260507T005614-04c033f4/manifest.json",
+    "result": ".ddx/executions/20260507T005614-04c033f4/result.json",
+    "checks": ".ddx/executions/20260507T005614-04c033f4/checks.json",
+    "usage": ".ddx/executions/20260507T005614-04c033f4/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-77f3a5ca-20260507T005614-04c033f4"
+  },
+  "prompt_sha": "04f13d2a0bb9033b43d161514930c45a777cd6d16090ac2c911e1640d4ce9bad"
+}
