@@ -9,6 +9,24 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// A schema-declared named query (per FEAT-009 US-074 / US-075).
+///
+/// Named queries are compiled and policy-validated at `put_schema` time
+/// and exposed as typed GraphQL fields and MCP tools on the collection.
+/// They bypass ad-hoc cardinality-budget enforcement because they are
+/// reviewed offline before activation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedQuery {
+    /// Human-readable description, surfaced as GraphQL field doc and MCP
+    /// tool description.
+    pub description: String,
+    /// The openCypher query string (read-only V1 subset per ADR-021).
+    pub cypher: String,
+    /// Named parameters the query accepts (`$param` references in the cypher).
+    #[serde(default)]
+    pub parameters: Vec<String>,
+}
+
 /// A snapshot of the schema the planner uses for type-checking and
 /// index selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +39,10 @@ pub struct SchemaSnapshot {
     /// Planner limits and feature flags applied when compiling queries.
     #[serde(default)]
     pub planner_config: PlannerConfig,
+    /// Schema-declared named queries for this collection (per FEAT-009).
+    /// Compiled and validated at schema activation time.
+    #[serde(default)]
+    pub queries: BTreeMap<String, NamedQuery>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +114,30 @@ impl Default for PlannerConfig {
 }
 
 impl SchemaSnapshot {
+    /// Compile all schema-declared named queries into execution plans.
+    ///
+    /// Each query is parsed, validated against this schema, and planned.
+    /// Named queries bypass cardinality-budget enforcement because they are
+    /// reviewed at schema-write time, not submitted ad-hoc at runtime.
+    ///
+    /// Returns a map from query name to compiled [`crate::ExecutionPlan`].
+    /// Fails on the first query that does not parse, validate, or plan.
+    pub fn activate_named_queries(
+        &self,
+    ) -> Result<BTreeMap<String, crate::planner::ExecutionPlan>, crate::error::CypherError> {
+        // Named queries are validated offline; relax the ad-hoc budget.
+        let mut relaxed = self.clone();
+        relaxed.planner_config.enforce_cardinality_budget = false;
+
+        let mut plans = BTreeMap::new();
+        for (name, named_query) in &self.queries {
+            let parsed = crate::parse(&named_query.cypher)?;
+            let plan = crate::plan(&parsed, &relaxed)?;
+            plans.insert(name.clone(), plan);
+        }
+        Ok(plans)
+    }
+
     pub fn label(&self, name: &str) -> Option<&LabelDef> {
         self.labels.get(name)
     }
@@ -139,7 +185,29 @@ pub mod test_fixtures {
 
     use super::*;
 
+    const READY_BEADS_CYPHER: &str = "\
+MATCH (b:DdxBead {status: 'open'})
+WHERE NOT EXISTS {
+    MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
+    WHERE d.status <> 'closed'
+}
+RETURN b
+ORDER BY b.priority DESC, b.updated_at DESC";
+
+    const BLOCKED_BEADS_CYPHER: &str = "\
+MATCH (b:DdxBead {status: 'open'})
+WHERE EXISTS {
+    MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
+    WHERE d.status <> 'closed'
+}
+RETURN b
+ORDER BY b.priority DESC, b.updated_at DESC";
+
     /// Schema fixture matching the DDx use case in axon-05c1019d.
+    ///
+    /// Declares `ready_beads` and `blocked_beads` named queries per
+    /// FEAT-009 US-074 so that `activate_named_queries()` can be called
+    /// to verify schema-declared compilation.
     pub fn ddx_beads() -> SchemaSnapshot {
         let mut labels = BTreeMap::new();
         let mut properties = BTreeMap::new();
@@ -190,10 +258,40 @@ pub mod test_fixtures {
             },
         );
 
+        let mut queries = BTreeMap::new();
+        queries.insert(
+            "ready_beads".to_string(),
+            NamedQuery {
+                description: "Open beads with no open dependencies".to_string(),
+                cypher: READY_BEADS_CYPHER.to_string(),
+                parameters: Vec::new(),
+            },
+        );
+        queries.insert(
+            "blocked_beads".to_string(),
+            NamedQuery {
+                description: "Open beads blocked by at least one open dependency".to_string(),
+                cypher: BLOCKED_BEADS_CYPHER.to_string(),
+                parameters: Vec::new(),
+            },
+        );
+
         SchemaSnapshot {
             labels,
             relationships,
             planner_config: PlannerConfig::default(),
+            queries,
         }
+    }
+
+    #[test]
+    fn ddx_beads_named_queries_activate_without_error() {
+        let schema = ddx_beads();
+        let plans = schema
+            .activate_named_queries()
+            .expect("ddx_beads named queries should activate without error");
+        assert_eq!(plans.len(), 2, "expected ready_beads and blocked_beads plans");
+        assert!(plans.contains_key("ready_beads"), "ready_beads plan missing");
+        assert!(plans.contains_key("blocked_beads"), "blocked_beads plan missing");
     }
 }

@@ -10,9 +10,8 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use axon_cypher::schema::{
-    IndexedProperty, LabelDef, PropertyKind, RelationshipDef, SchemaSnapshot,
+    IndexedProperty, LabelDef, NamedQuery, PropertyKind, RelationshipDef, SchemaSnapshot,
 };
-use axon_cypher::{parse, plan};
 use criterion::{criterion_group, criterion_main, Criterion};
 
 const READY_BEADS_QUERY: &str = r"
@@ -204,6 +203,25 @@ fn ddx_schema_snapshot(count: u64) -> SchemaSnapshot {
         ],
     };
 
+    let queries = BTreeMap::from([
+        (
+            "ready_beads".to_string(),
+            NamedQuery {
+                description: "Open beads with no open dependencies".to_string(),
+                cypher: READY_BEADS_QUERY.to_string(),
+                parameters: Vec::new(),
+            },
+        ),
+        (
+            "blocked_beads".to_string(),
+            NamedQuery {
+                description: "Open beads blocked by at least one open dependency".to_string(),
+                cypher: BLOCKED_BEADS_QUERY.to_string(),
+                parameters: Vec::new(),
+            },
+        ),
+    ]);
+
     SchemaSnapshot {
         labels: BTreeMap::from([("DdxBead".to_string(), label)]),
         relationships: BTreeMap::from([(
@@ -214,15 +232,13 @@ fn ddx_schema_snapshot(count: u64) -> SchemaSnapshot {
             },
         )]),
         planner_config: Default::default(),
+        queries,
     }
 }
 
 fn compile_named_queries(count: u64) {
     let schema = ddx_schema_snapshot(count);
-    for cypher in [READY_BEADS_QUERY, BLOCKED_BEADS_QUERY] {
-        let query = parse(cypher).unwrap();
-        black_box(plan(&query, &schema).unwrap());
-    }
+    black_box(schema.activate_named_queries().unwrap());
 }
 
 fn ddx_ready_blocked_queue_benchmark(c: &mut Criterion) {

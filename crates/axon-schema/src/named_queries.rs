@@ -124,6 +124,7 @@ pub fn schema_snapshot_from_schemas<S: BuildHasher>(
         labels,
         relationships,
         planner_config: Default::default(),
+        queries: Default::default(),
     }
 }
 
