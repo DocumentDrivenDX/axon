@@ -1,0 +1,103 @@
+{
+  "attempt_id": "20260507T003133-f947cf49",
+  "bead_id": "axon-8b91e47d",
+  "base_rev": "034499cecc72914ea508e74e419c628aaffc01f2",
+  "created_at": "2026-05-07T00:31:35.710131196Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-8b91e47d",
+    "title": "build(feat-009): DDx ready/blocked queue benchmark — closes axon-05c1019d",
+    "description": "Closes axon-05c1019d. End-to-end DDx use case implementation:\n\n1. ddx_beads collection schema with two named queries (ready_beads, blocked_beads) per FEAT-009 US-074.\n2. Fixtures at 1k and 10k beads with realistic dep-state mixes.\n3. Benchmark via criterion measuring p99 latency.\n\nPerformance gates per ADR-021: 1k beads (500 open, varied dep states) \u003c100ms p99; 10k beads \u003c500ms p99 single round-trip.\n\nDemonstrates DDx alpha unblock per axon-82b6f7b2 Use Case A.",
+    "acceptance": "AC1. ddx_beads schema with ready_beads and blocked_beads named queries activates without error. AC2. Benchmark in crates/axon-cypher/benches/ddx_benchmark.rs measures p99 at 1k and 10k beads. AC3. 1k beads \u003c100ms p99. AC4. 10k beads \u003c500ms p99. AC5. axon-05c1019d closes as 'closed by this bead'. AC6. axon-82b6f7b2 epic gets a comment that Use Case A is met.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "downstream:ddx",
+      "kind:benchmark"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-07T00:31:31Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "1565319",
+      "events": [
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"codex\",\"fallback_chain\":[],\"requested_harness\":\"codex\"}",
+          "created_at": "2026-05-04T01:28:48.474776138Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=codex"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"attempt_id\":\"20260504T011026-80b3b9b1\",\"harness\":\"codex\",\"input_tokens\":14953390,\"output_tokens\":25137,\"total_tokens\":14978527,\"cost_usd\":0,\"duration_ms\":1100635,\"exit_code\":0}",
+          "created_at": "2026-05-04T01:28:48.567586832Z",
+          "kind": "cost",
+          "source": "ddx agent execute-bead",
+          "summary": "tokens=14978527"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"escalation_count\":0,\"fallback_chain\":[],\"final_tier\":\"\",\"requested_profile\":\"\",\"requested_tier\":\"\",\"resolved_model\":\"\",\"resolved_provider\":\"codex\",\"resolved_tier\":\"\"}",
+          "created_at": "2026-05-04T01:28:55.567361028Z",
+          "kind": "routing",
+          "source": "ddx agent execute-loop",
+          "summary": "provider=codex"
+        },
+        {
+          "actor": "ddx",
+          "body": "Diff contains only execution manifest/result metadata files. No schema, fixtures, or benchmark code is present, so none of AC1–AC6 can be verified as implemented.\nharness=claude\nmodel=opus\ninput_bytes=6597\noutput_bytes=1297\nelapsed_ms=15973",
+          "created_at": "2026-05-04T01:29:13.718727898Z",
+          "kind": "review",
+          "source": "ddx agent execute-loop",
+          "summary": "BLOCK"
+        },
+        {
+          "actor": "",
+          "body": "",
+          "created_at": "2026-05-04T01:29:13.813153587Z",
+          "kind": "reopen",
+          "source": "",
+          "summary": "review: BLOCK"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"action\":\"re_attempt_with_context\",\"mode\":\"review_block\"}",
+          "created_at": "2026-05-04T01:29:13.905660528Z",
+          "kind": "triage-decision",
+          "source": "ddx agent execute-loop",
+          "summary": "review_block: re_attempt_with_context"
+        },
+        {
+          "actor": "ddx",
+          "body": "post-merge review: BLOCK (flagged for human)\nDiff contains only execution manifest/result metadata files. No schema, fixtures, or benchmark code is present, so none of AC1–AC6 can be verified as implemented.\nresult_rev=3cd663228c5dd18a959fb77fd143787fa43e3cea\nbase_rev=75bea1004efa7723df392b84930d63b5837c4420",
+          "created_at": "2026-05-04T01:29:14.058562673Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "review_block"
+        },
+        {
+          "actor": "erik",
+          "body": "{\"rationale\":\"\",\"score\":0,\"suggested_fixes\":null,\"waivers_applied\":null,\"warning\":\"lint hook: missing-harness\"}",
+          "created_at": "2026-05-07T00:31:30.980364051Z",
+          "kind": "bead-quality.lint",
+          "source": "ddx agent execute-loop",
+          "summary": "warning score=0"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-07T00:31:31.438369308Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260507T003133-f947cf49",
+    "prompt": ".ddx/executions/20260507T003133-f947cf49/prompt.md",
+    "manifest": ".ddx/executions/20260507T003133-f947cf49/manifest.json",
+    "result": ".ddx/executions/20260507T003133-f947cf49/result.json",
+    "checks": ".ddx/executions/20260507T003133-f947cf49/checks.json",
+    "usage": ".ddx/executions/20260507T003133-f947cf49/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-8b91e47d-20260507T003133-f947cf49"
+  },
+  "prompt_sha": "f4a5d6f3e65bd80a82e99f9f302f0986719dc396b6708a2afb33028e17f4f62d"
+}
