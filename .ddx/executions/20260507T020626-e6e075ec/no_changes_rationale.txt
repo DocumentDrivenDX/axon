@@ -1,0 +1,42 @@
+All five acceptance criteria for axon-53c8d772 are already satisfied in the
+current codebase. The implementation was produced in execution
+20260507T011143-b7141153 (commit fc72939) and merged into master at eda3605,
+which is an ancestor of the current base-rev d25900c.
+
+What is in the codebase (crates/axon-graphql/src/dynamic.rs):
+
+  build_named_query_subscription_field()  — AC1, AC2, AC3, AC4
+    Constructs a SubscriptionField for each named query.  Delivers an initial
+    snapshot via an initial_stream before chaining the change_stream. The
+    change_stream re-evaluates the full named query on every relevant
+    ChangeEvent (entity collection or link collection when watch_links=true).
+    Policy filtering is applied by execute_named_query_connection, so
+    subscribers only see rows their CallerIdentity can read.  Teardown is
+    automatic: dropping the BroadcastStream receiver unregisters it from the
+    tokio broadcast channel with no explicit cleanup.
+
+  build_entity_changed_subscription()     — AC1
+    Iterates all named queries in each CollectionSchema and registers a
+    subscription field for each one.
+
+  named_query_event_is_relevant()         — AC3 (link-add trigger)
+    Matches events on entity collections referenced by the query, and also on
+    the synthetic __axon_links__ collection when the query traverses
+    relationships.
+
+  named_query_subscription_arguments()    — AC1 (parameters exposed)
+    Forwards NamedQueryDef.parameters as SubscriptionField arguments.
+
+Tests (all pass — cargo test -p axon-graphql named_query_subscription):
+
+  named_query_subscription_fields_appear_in_sdl           AC1
+  named_query_subscription_delivers_initial_snapshot      AC2
+  named_query_subscription_updates_on_entity_add          AC5
+  named_query_subscription_updates_on_status_change       AC5
+  named_query_subscription_updates_on_link_add            AC5
+  named_query_subscription_filters_by_policy              AC3/AC5
+  named_query_subscription_clean_teardown_on_disconnect   AC4/AC5
+
+No new changes are required; working tree is clean.
+
+verification_command: cargo test -p axon-graphql named_query_subscription 2>&1 | grep -E "^test result|FAILED|ok$"
