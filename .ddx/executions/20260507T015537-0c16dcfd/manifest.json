@@ -1,0 +1,120 @@
+{
+  "attempt_id": "20260507T015537-0c16dcfd",
+  "bead_id": "axon-5956e527",
+  "base_rev": "887e3864e4663c73e77515f404bce3d6220c7040",
+  "created_at": "2026-05-07T01:55:38.122282782Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-5956e527",
+    "title": "build(feat-009): Cypher QueryStore over StorageAdapter",
+    "description": "Implement the production QueryStore implementation for axon-cypher using axon-storage::StorageAdapter primitives. The implementation must use portable get/range_scan/index_lookup/link primitives only and must not introduce SQLite- or PostgreSQL-specific query operators.",
+    "acceptance": "AC1. axon-cypher has a StorageAdapter-backed QueryStore implementation available to callers. AC2. Entity label/property reads use StorageAdapter index_lookup or bounded range_scan according to the planner operator. AC3. Relationship expansion and EXISTS probes use StorageAdapter link primitives or the dedicated portable link API, not backend-specific SQL/JSON operators. AC4. Errors from storage are mapped into CypherError without unwrap() in library code. AC5. Unit tests cover scan, index lookup, expand, incoming/outgoing links, and EXISTS probes through a fake or memory StorageAdapter. AC6. cargo test -p axon-cypher and cargo clippy -p axon-cypher --all-targets -- -D warnings pass.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "area:cypher",
+      "area:storage",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-07T01:55:37Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "1565319",
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"rationale\":\"\",\"score\":0,\"suggested_fixes\":null,\"waivers_applied\":null,\"warning\":\"lint hook: missing-harness\"}",
+          "created_at": "2026-05-07T01:13:53.497283287Z",
+          "kind": "bead-quality.lint",
+          "source": "ddx agent execute-loop",
+          "summary": "warning score=0"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"claude\",\"resolved_model\":\"sonnet\",\"fallback_chain\":[]}",
+          "created_at": "2026-05-07T01:46:33.484545269Z",
+          "kind": "routing",
+          "source": "ddx agent execute-bead",
+          "summary": "provider=claude model=sonnet"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"attempt_id\":\"20260507T011353-738984f0\",\"harness\":\"claude\",\"model\":\"sonnet\",\"input_tokens\":105,\"output_tokens\":88785,\"total_tokens\":88890,\"cost_usd\":4.957037149999998,\"duration_ms\":1957374,\"exit_code\":0}",
+          "created_at": "2026-05-07T01:46:44.693366745Z",
+          "kind": "cost",
+          "source": "ddx agent execute-bead",
+          "summary": "tokens=88890 cost_usd=4.9570 model=sonnet"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"actual_harness\":\"claude\",\"actual_model\":\"sonnet\",\"actual_power\":0,\"actual_provider\":\"\",\"attempt_id\":\"20260507T011353-738984f0\",\"bead_id\":\"axon-5956e527\",\"rejected_route_pins\":null,\"requested_tier\":\"standard\",\"routing_intent_degraded\":false,\"routing_intent_note\":\"\",\"routing_intent_source\":\"heuristic\",\"smart_justification\":\"\"}",
+          "created_at": "2026-05-07T01:46:59.850091267Z",
+          "kind": "execution-routing-intent",
+          "source": "ddx agent execute-loop",
+          "summary": "source=heuristic tier=standard model=sonnet harness=claude"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"escalation_count\":0,\"fallback_chain\":[],\"final_tier\":\"\",\"requested_profile\":\"\",\"requested_tier\":\"\",\"resolved_model\":\"sonnet\",\"resolved_provider\":\"claude\",\"resolved_tier\":\"\"}",
+          "created_at": "2026-05-07T01:47:00.489776275Z",
+          "kind": "routing",
+          "source": "ddx agent execute-loop",
+          "summary": "provider=claude model=sonnet"
+        },
+        {
+          "actor": "erik",
+          "body": "REQUEST_CHANGES\nImplementation is functionally correct and well-tested, but it deviates from AC1 (lives in axon-storage, not axon-cypher) and AC4 (storage errors are silently swallowed into empty results rather than mapped to CypherError::Storage).\nartifact: .ddx/executions/20260507T011353-738984f0/reviewer-stream.log\nharness=claude\nmodel=opus\ninput_bytes=24719\noutput_bytes=3537\nelapsed_ms=156940",
+          "created_at": "2026-05-07T01:51:15.561770877Z",
+          "kind": "review",
+          "source": "ddx agent execute-loop",
+          "summary": "REQUEST_CHANGES"
+        },
+        {
+          "actor": "erik",
+          "body": "{\"action\":\"re_attempt_with_context\",\"mode\":\"review_block\"}",
+          "created_at": "2026-05-07T01:51:34.049853792Z",
+          "kind": "triage-decision",
+          "source": "ddx agent execute-loop",
+          "summary": "review_block: re_attempt_with_context"
+        },
+        {
+          "actor": "erik",
+          "body": "pre-close review: REQUEST_CHANGES\nImplementation is functionally correct and well-tested, but it deviates from AC1 (lives in axon-storage, not axon-cypher) and AC4 (storage errors are silently swallowed into empty results rather than mapped to CypherError::Storage).\nresult_rev=eb999dd06fdbf3b5c9a4a9feab6cf57b894acd56\nbase_rev=109be7e989e345f4712e1680892a0b508db4b3b7",
+          "created_at": "2026-05-07T01:51:34.271304386Z",
+          "kind": "execute-bead",
+          "source": "ddx agent execute-loop",
+          "summary": "review_request_changes"
+        },
+        {
+          "actor": "erik",
+          "body": "{\"rationale\":\"\",\"score\":0,\"suggested_fixes\":null,\"waivers_applied\":null,\"warning\":\"lint hook: missing-harness\"}",
+          "created_at": "2026-05-07T01:55:36.821856562Z",
+          "kind": "bead-quality.lint",
+          "source": "ddx agent execute-loop",
+          "summary": "warning score=0"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-07T01:55:37.035947527Z",
+      "spec-id": "FEAT-009"
+    }
+  },
+  "governing": [
+    {
+      "id": "FEAT-009",
+      "path": "docs/helix/01-frame/features/FEAT-009-graph-traversal-queries.md",
+      "title": "Feature Specification: FEAT-009 — Unified Graph Query (Cypher)"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260507T015537-0c16dcfd",
+    "prompt": ".ddx/executions/20260507T015537-0c16dcfd/prompt.md",
+    "manifest": ".ddx/executions/20260507T015537-0c16dcfd/manifest.json",
+    "result": ".ddx/executions/20260507T015537-0c16dcfd/result.json",
+    "checks": ".ddx/executions/20260507T015537-0c16dcfd/checks.json",
+    "usage": ".ddx/executions/20260507T015537-0c16dcfd/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-5956e527-20260507T015537-0c16dcfd"
+  },
+  "prompt_sha": "8bca494ccdaf3d47da89fa3c2058b5143216ca8d3612cff960ccc97a1a7ce304"
+}
