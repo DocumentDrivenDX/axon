@@ -308,6 +308,24 @@ fn not_exists_finds_beads_with_no_non_closed_deps() {
     );
 }
 
+// ── AC5: incoming link traversal ────────────────────────────────────────────
+
+#[test]
+fn incoming_links_returns_all_dependents_of_a_leaf_node() {
+    // bead-07 is a leaf (no outgoing DEPENDS_ON). Six beads depend on it:
+    // bead-01, bead-02, bead-03, bead-05, bead-06, bead-08.
+    let rows = run(r"
+        MATCH (b:DdxBead {id: 'bead-07'})<-[:DEPENDS_ON]-(a:DdxBead)
+        RETURN a.id AS id
+        ORDER BY a.id ASC
+        ");
+    assert_eq!(
+        str_field(&rows, "id"),
+        vec!["bead-01", "bead-02", "bead-03", "bead-05", "bead-06", "bead-08"],
+        "six beads have outgoing DEPENDS_ON links to bead-07"
+    );
+}
+
 #[test]
 fn count_star_counts_all_open_beads() {
     let rows = run("MATCH (b:DdxBead {status: 'open'}) RETURN count(*) AS n");
