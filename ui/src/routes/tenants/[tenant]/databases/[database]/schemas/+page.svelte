@@ -16,6 +16,7 @@ import {
 	previewSchemaWithExplain,
 	updateSchema,
 } from '$lib/api';
+import { computeAccessControlHash } from '$lib/policy-hash';
 import { tick } from 'svelte';
 import type { PageData } from './$types';
 
@@ -47,6 +48,11 @@ let policyReport = $state<PolicyCompileReport | null>(null);
 let policyCompileLoading = $state(false);
 let policyActivateError = $state<string | null>(null);
 let policyActivateStatus = $state<string | null>(null);
+// Hash of the access_control JSON for which a matrix dry-run was recorded.
+let matrixDryRunHash = $state<string | null>(null);
+// Current canonical hash of the proposed access_control (async, null while computing).
+let currentPolicyHash = $state<string | null>(null);
+let _policyHashGen = 0;
 // biome-ignore lint/style/useConst: bind:value mutates this state.
 let fixtureSubject = $state('');
 type FixtureOperation =
@@ -79,8 +85,30 @@ let fixtureLoading = $state(false);
 
 const policyHasErrors = $derived(policyReport != null && (policyReport.errors?.length ?? 0) > 0);
 const policyActivateDisabled = $derived(
-	!selectedSchema || policyReport == null || policyHasErrors || policyJsonError != null,
+	!selectedSchema ||
+		policyReport == null ||
+		policyHasErrors ||
+		policyJsonError != null ||
+		matrixDryRunHash == null ||
+		currentPolicyHash == null ||
+		matrixDryRunHash !== currentPolicyHash,
 );
+// Recompute currentPolicyHash whenever policyJson changes.
+$effect(() => {
+	const json = policyJson;
+	const gen = ++_policyHashGen;
+	currentPolicyHash = null;
+	void (async () => {
+		try {
+			const parsed = JSON.parse(json) as unknown;
+			const hash = await computeAccessControlHash(parsed);
+			if (_policyHashGen === gen) currentPolicyHash = hash;
+		} catch {
+			// Invalid JSON — hash stays null
+		}
+	})();
+});
+
 // biome-ignore lint/style/useConst: Svelte bind:value mutates this state.
 let createSchemaJson = $state(`{
   "type": "object",
@@ -303,6 +331,7 @@ function resetPolicyView(schema: CollectionSchema | null) {
 	policyActivateStatus = null;
 	fixtureResult = null;
 	fixtureError = null;
+	matrixDryRunHash = null;
 }
 
 function parsePolicyJson(): unknown | null {
@@ -374,6 +403,9 @@ async function runFixtureDryRun() {
 	if (parsed == null) return;
 	const proposed = buildProposedSchema(parsed);
 	if (!proposed) return;
+	// Compute the access_control hash before starting the API call so we can
+	// record it against this exact policy version when the run succeeds.
+	const accessControlHash = await computeAccessControlHash(parsed);
 	let parsedData: unknown | undefined;
 	let parsedPatch: unknown | undefined;
 	try {
@@ -436,7 +468,11 @@ async function runFixtureDryRun() {
 		// started) while this request was in flight.
 		if (generation !== fixtureGeneration) return;
 		fixtureResult = result.explanations[0] ?? null;
-		if (!fixtureResult) {
+		if (fixtureResult) {
+			// Record the hash so the activation gate knows a matrix dry-run was
+			// completed for this exact proposed access_control.
+			matrixDryRunHash = accessControlHash;
+		} else {
 			fixtureError = 'No explanation returned (proposed policy may be empty).';
 		}
 	} catch (err) {
@@ -741,6 +777,7 @@ $effect(() => {
 									policyJsonError = null;
 									policyReport = null;
 									fixtureResult = null;
+									matrixDryRunHash = null;
 									// Bump generations so any in-flight compile or fixture
 									// response for the previous JSON is dropped on arrival.
 									policyCompileGeneration += 1;
@@ -782,6 +819,13 @@ $effect(() => {
 							>
 								Activate policy
 							</button>
+							{#if policyReport && !policyHasErrors && selectedCollection}
+								<a
+									data-testid="schema-policy-matrix-link"
+									href="{basePath}/policies"
+									class="button-link"
+								>View impact matrix →</a>
+							{/if}
 						</div>
 
 						{#if policyActivateError}
