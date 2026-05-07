@@ -478,6 +478,55 @@ test.describe('Policy authoring (schemas tab)', () => {
 		expect(persisted?.fields?.amount_cents?.read?.deny?.length ?? 0).toBeGreaterThanOrEqual(2);
 	});
 
+	test('matrix dry-run gate: activation blocked until fixture dry-run recorded; editing policy invalidates gate', async ({
+		page,
+		request,
+	}) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'schemas-matrix-gate');
+		const schemasUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/schemas?collection=${encodeURIComponent(SCN017_COLLECTIONS.invoices)}`;
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.financeAgent);
+		await page.goto(schemasUrl);
+		await page.getByTestId('schema-policy-view-toggle').click();
+		await expect(page.getByTestId('schema-policy-view')).toBeVisible();
+
+		// Propose a policy and compile it — no errors.
+		const proposed = proposedPolicyDraftDenyHigh();
+		await page.getByTestId('schema-policy-editor').fill(JSON.stringify(proposed, null, 2));
+		await page.getByTestId('schema-policy-run-compile').click();
+		await expect(page.getByTestId('schema-policy-errors')).toHaveCount(0);
+
+		// Activate must be disabled: matrix dry-run has not been recorded for this hash.
+		await expect(page.getByTestId('schema-policy-activate')).toBeDisabled();
+
+		// Deep-link to the impact matrix is visible so operators can run it inline.
+		await expect(page.getByTestId('schema-policy-matrix-link')).toBeVisible();
+
+		// Run the fixture dry-run — this records the matrix dry-run hash for the
+		// current proposed access_control.
+		await page.getByTestId('schema-policy-fixture-subject').fill(SCN017_SUBJECTS.financeAgent);
+		await page.getByTestId('schema-policy-fixture-operation').selectOption('patch');
+		await page.getByTestId('schema-policy-fixture-entity').fill(fixture.invoices.large.id);
+		await page
+			.getByTestId('schema-policy-fixture-patch')
+			.fill(
+				JSON.stringify({ amount_cents: fixture.invoices.large.amountCents + 500_000 }, null, 2),
+			);
+		await page.getByTestId('schema-policy-fixture-run').click();
+		await expect(page.getByTestId('schema-policy-fixture-decision')).toBeVisible();
+
+		// Activation must now be enabled — dry-run hash recorded for this policy.
+		await expect(page.getByTestId('schema-policy-activate')).toBeEnabled();
+
+		// Editing the policy content changes the canonical hash — gate must be invalidated.
+		await page
+			.getByTestId('schema-policy-editor')
+			.fill(JSON.stringify(matrixDeltaDraft(), null, 2));
+
+		// Activate must be disabled again: the recorded hash no longer matches.
+		await expect(page.getByTestId('schema-policy-activate')).toBeDisabled();
+	});
+
 	test('failed compile blocks activation and leaves the persisted policy unchanged', async ({
 		page,
 		request,
