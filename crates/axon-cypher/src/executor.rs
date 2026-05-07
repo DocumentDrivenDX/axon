@@ -413,7 +413,7 @@ where
         };
         for link in store.traverse_links(traversal) {
             let next_id = other_entity_id(&link, plan.direction);
-            let Some(entity) = store.get_entity(next_id).cloned() else {
+            let Some(entity) = store.get_entity(next_id) else {
                 continue;
             };
             if !target_label_matches(&entity, plan.target_label.as_deref()) {
@@ -467,7 +467,7 @@ where
     };
     for link in store.traverse_links(traversal) {
         let target_id = other_entity_id(&link, subquery.link_probe.direction);
-        let Some(target) = store.get_entity(target_id).cloned() else {
+        let Some(target) = store.get_entity(target_id) else {
             continue;
         };
         if !target_label_matches(&target, subquery.link_probe.target_label.as_deref()) {
@@ -1157,7 +1157,7 @@ mod tests {
     }
 
     impl QueryStore for CountingStore {
-        fn get_entity(&self, id: &str) -> Option<&QueryEntity> {
+        fn get_entity(&self, id: &str) -> Option<QueryEntity> {
             let _ = id;
             None
         }
@@ -1174,7 +1174,7 @@ mod tests {
             }))
         }
 
-        fn get_link(&self, id: &str) -> Option<&QueryLink> {
+        fn get_link(&self, id: &str) -> Option<QueryLink> {
             let _ = id;
             None
         }

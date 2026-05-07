@@ -45,6 +45,10 @@ pub enum CypherError {
     /// The query exceeded its wall-clock budget during execution.
     #[error("query timeout: {0}")]
     QueryTimeout(String),
+
+    /// A storage-layer error encountered during query execution.
+    #[error("storage error: {0}")]
+    Storage(String),
 }
 
 impl CypherError {
@@ -58,6 +62,7 @@ impl CypherError {
             Self::PolicyRequiredBypass(_) => "policy_required_bypass",
             Self::QueryTooLarge(_) => "query_too_large",
             Self::QueryTimeout(_) => "query_timeout",
+            Self::Storage(_) => "storage_error",
         }
     }
 }

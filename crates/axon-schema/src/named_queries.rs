@@ -171,7 +171,8 @@ fn diagnostic_from_error(name: &str, err: CypherError) -> NamedQueryDiagnostic {
         CypherError::UnsupportedClause(_)
         | CypherError::UnsupportedQueryPlan(_)
         | CypherError::QueryTooLarge(_)
-        | CypherError::QueryTimeout(_) => NamedQueryStatus::UnsupportedQueryPlan,
+        | CypherError::QueryTimeout(_)
+        | CypherError::Storage(_) => NamedQueryStatus::UnsupportedQueryPlan,
     };
     let code = match status {
         NamedQueryStatus::Ok => "ok",

@@ -12,6 +12,7 @@ pub mod index_builder;
 pub mod memory;
 pub mod postgres;
 pub mod sqlite;
+pub mod storage_adapter_store;
 
 #[cfg(test)]
 mod proptest_storage;
@@ -26,3 +27,4 @@ pub use postgres::{
     deprovision_postgres_database, provision_postgres_database, tenant_dsn, PostgresStorageAdapter,
 };
 pub use sqlite::SqliteStorageAdapter;
+pub use storage_adapter_store::StorageAdapterQueryStore;

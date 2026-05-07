@@ -18,11 +18,11 @@ pub type LinkStream<'a> = Box<dyn Iterator<Item = QueryLink> + 'a>;
 
 /// Storage boundary consumed by future executor operators.
 pub trait QueryStore {
-    fn get_entity(&self, id: &str) -> Option<&QueryEntity>;
+    fn get_entity(&self, id: &str) -> Option<QueryEntity>;
 
     fn scan_entities(&self, scan: EntityScan) -> EntityStream<'_>;
 
-    fn get_link(&self, id: &str) -> Option<&QueryLink>;
+    fn get_link(&self, id: &str) -> Option<QueryLink>;
 
     fn traverse_links(&self, traversal: LinkTraversal) -> LinkStream<'_>;
 }
@@ -281,8 +281,8 @@ impl MemoryQueryStore {
 }
 
 impl QueryStore for MemoryQueryStore {
-    fn get_entity(&self, id: &str) -> Option<&QueryEntity> {
-        self.entities.get(id)
+    fn get_entity(&self, id: &str) -> Option<QueryEntity> {
+        self.entities.get(id).cloned()
     }
 
     fn scan_entities(&self, scan: EntityScan) -> EntityStream<'_> {
@@ -294,8 +294,8 @@ impl QueryStore for MemoryQueryStore {
         )
     }
 
-    fn get_link(&self, id: &str) -> Option<&QueryLink> {
-        self.links.get(id)
+    fn get_link(&self, id: &str) -> Option<QueryLink> {
+        self.links.get(id).cloned()
     }
 
     fn traverse_links(&self, traversal: LinkTraversal) -> LinkStream<'_> {

@@ -17,6 +17,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+axon-schema = { path = "../axon-schema" }
 criterion.workspace = true
 pretty_assertions.workspace = true
 proptest.workspace = true
