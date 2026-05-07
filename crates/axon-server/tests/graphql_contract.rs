@@ -1045,6 +1045,78 @@ async fn graphql_json_ld_reserved_fields_are_aliased_and_warned() {
     );
 }
 
+/// Pass a JSON-LD document through pyld (Python JSON-LD processor) for
+/// validation. Returns Ok if pyld expands the document without errors,
+/// Err with a message otherwise. Skips silently if pyld is unavailable.
+fn validate_with_pyld(json_ld: &Value) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let script = r#"
+import json, sys
+try:
+    from pyld import jsonld
+except ImportError:
+    sys.exit(2)
+try:
+    doc = json.load(sys.stdin)
+    expanded = jsonld.expand(doc, {"base": "http://localhost:8080"})
+    if not expanded:
+        print("pyld expansion returned empty result", file=sys.stderr)
+        sys.exit(1)
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+"#;
+
+    let mut child = Command::new("python3")
+        .args(["-c", script])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn python3: {e}"))?;
+
+    let json_str = serde_json::to_string(json_ld).map_err(|e| e.to_string())?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(json_str.as_bytes()).map_err(|e| e.to_string())?;
+    }
+    let output = child.wait_with_output().map_err(|e| e.to_string())?;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        Some(2) => Ok(()), // pyld not installed — skip
+        _ => Err(format!(
+            "pyld: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_json_ld_pyld_processor_validates() {
+    let server = test_server();
+    seed_relationship_collections(&server).await;
+
+    let body = gql(
+        &server,
+        r#"mutation { createUser(id: "pyld1", input: { name: "Pyld User", status: "active" }) { id } }"#,
+    )
+    .await;
+    assert!(body["errors"].is_null(), "mutation error: {body}");
+
+    let resp = server
+        .post("/tenants/default/databases/default/graphql")
+        .add_header("accept", "application/ld+json")
+        .json(&json!({ "query": r#"{ user(id: "pyld1") { id name } }"# }))
+        .await;
+    resp.assert_status(axum::http::StatusCode::OK);
+    let json_ld_body = resp.json::<Value>();
+    assert!(json_ld_body["@context"].is_object(), "missing @context");
+
+    validate_with_pyld(&json_ld_body)
+        .expect("JSON-LD GraphQL response should validate against pyld");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_link_discovery_and_neighbors_are_exposed() {
     let server = test_server();
