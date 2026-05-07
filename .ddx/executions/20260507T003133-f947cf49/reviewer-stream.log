@@ -1,0 +1,15 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only an execution result.json metadata file. No schema, fixtures, benchmark code, or tracker updates are present, so none of AC1–AC6 can be verified.",
+  "findings": [
+    { "severity": "block", "summary": "AC1 not verifiable: no ddx_beads schema with ready_beads/blocked_beads named queries is present in the diff.", "location": "(missing) crates/axon-cypher/ or schema definition" },
+    { "severity": "block", "summary": "AC2 not verifiable: no benchmark file at crates/axon-cypher/benches/ddx_benchmark.rs is present in the diff.", "location": "(missing) crates/axon-cypher/benches/ddx_benchmark.rs" },
+    { "severity": "block", "summary": "AC3/AC4 not verifiable: no benchmark code or results demonstrate p99 latency at 1k (<100ms) or 10k (<500ms) beads.", "location": "(missing) benchmark output" },
+    { "severity": "block", "summary": "AC5 not verifiable: no evidence axon-05c1019d is closed by this bead in the diff.", "location": "(missing) .ddx/beads.jsonl update" },
+    { "severity": "block", "summary": "AC6 not verifiable: no comment on epic axon-82b6f7b2 about Use Case A being met is present in the diff.", "location": "(missing) epic comment" },
+    { "severity": "info", "summary": "Only an execution manifest/result metadata file was committed; the actual implementation appears to be missing from this revision.", "location": ".ddx/executions/20260507T003133-f947cf49/result.json" }
+  ]
+}
+```
