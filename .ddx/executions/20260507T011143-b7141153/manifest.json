@@ -1,0 +1,48 @@
+{
+  "attempt_id": "20260507T011143-b7141153",
+  "bead_id": "axon-53c8d772",
+  "base_rev": "97a05cc5e083791cff972c448ea1d2d41a70f104",
+  "created_at": "2026-05-07T01:11:44.556886282Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-53c8d772",
+    "title": "build(feat-009): Subscriptions on schema-declared named queries",
+    "description": "Per FEAT-009 US-077. Each named query supports GraphQL subscription:\n\ntype Subscription { ready_beads: DdxBeadConnection! }\n\nRe-evaluate the named query when the change-feed pipeline emits a relevant change (entity create/update/delete or link create/delete affecting the named query's collections/labels). Initial snapshot delivered on subscribe; clean teardown on disconnect.\n\nAd-hoc subscriptions NOT in scope (deferred per ADR-021).\n\nOut of scope for V1: incremental query maintenance — full re-evaluation acceptable if it meets latency budgets.",
+    "acceptance": "AC1. Each named query exposes a Subscription field. AC2. Initial snapshot delivered on subscribe. AC3. Updates policy-filtered per FEAT-029. AC4. Clean teardown on client disconnect; no leaked watchers. AC5. Tests: initial snapshot, entity-add update, status-change update, link-add update, policy-filter behavior, disconnect cleanup.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "feat-015",
+      "area:graphql",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-07T01:11:43Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "1565319",
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"rationale\":\"\",\"score\":0,\"suggested_fixes\":null,\"waivers_applied\":null,\"warning\":\"lint hook: missing-harness\"}",
+          "created_at": "2026-05-07T01:11:43.433846778Z",
+          "kind": "bead-quality.lint",
+          "source": "ddx agent execute-loop",
+          "summary": "warning score=0"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-07T01:11:43.57362625Z"
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260507T011143-b7141153",
+    "prompt": ".ddx/executions/20260507T011143-b7141153/prompt.md",
+    "manifest": ".ddx/executions/20260507T011143-b7141153/manifest.json",
+    "result": ".ddx/executions/20260507T011143-b7141153/result.json",
+    "checks": ".ddx/executions/20260507T011143-b7141153/checks.json",
+    "usage": ".ddx/executions/20260507T011143-b7141153/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-53c8d772-20260507T011143-b7141153"
+  },
+  "prompt_sha": "c1b477c053c9c7c5a828788183956db498986dcf37068b48b20fd4d22a1180d8"
+}
