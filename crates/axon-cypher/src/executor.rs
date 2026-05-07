@@ -1213,4 +1213,183 @@ mod tests {
             *current
         }
     }
+
+    /// AC3 fixture: 10 beads, 15 DEPENDS_ON links.
+    ///
+    /// Ready  (open, all deps closed):  bead-01, bead-02, bead-03, bead-04
+    /// Blocked (open, ≥1 open dep):     bead-05, bead-06, bead-07, bead-08
+    /// Closed (not returned by either): bead-09, bead-10
+    fn ddx_large_fixture() -> crate::MemoryQueryStore {
+        let mut store = crate::MemoryQueryStore::new();
+        for (id, status, priority) in [
+            ("bead-01", "open", 1_i64),
+            ("bead-02", "open", 2),
+            ("bead-03", "open", 3),
+            ("bead-04", "open", 4),
+            ("bead-05", "open", 5),
+            ("bead-06", "open", 6),
+            ("bead-07", "open", 7),
+            ("bead-08", "open", 8),
+            ("bead-09", "closed", 9),
+            ("bead-10", "closed", 10),
+        ] {
+            store.insert_entity(QueryEntity::new(
+                id,
+                ["DdxBead"],
+                properties([
+                    ("id", json!(id)),
+                    ("status", json!(status)),
+                    ("priority", json!(priority)),
+                ]),
+            ));
+        }
+        // 15 DEPENDS_ON links
+        for (src, tgt) in [
+            ("bead-03", "bead-09"), // dep closed → bead-03 READY
+            ("bead-03", "bead-10"), // dep closed → bead-03 READY
+            ("bead-04", "bead-10"), // dep closed → bead-04 READY
+            ("bead-05", "bead-01"), // bead-01 open → bead-05 BLOCKED
+            ("bead-05", "bead-03"), // bead-03 open → bead-05 BLOCKED
+            ("bead-06", "bead-02"), // bead-02 open → bead-06 BLOCKED
+            ("bead-06", "bead-04"), // bead-04 open → bead-06 BLOCKED
+            ("bead-07", "bead-05"), // bead-05 open → bead-07 BLOCKED
+            ("bead-07", "bead-06"), // bead-06 open → bead-07 BLOCKED
+            ("bead-07", "bead-01"), // bead-01 open → bead-07 BLOCKED
+            ("bead-07", "bead-04"), // bead-04 open → bead-07 BLOCKED
+            ("bead-08", "bead-03"), // bead-03 open → bead-08 BLOCKED
+            ("bead-08", "bead-04"), // bead-04 open → bead-08 BLOCKED
+            ("bead-08", "bead-05"), // bead-05 open → bead-08 BLOCKED
+            ("bead-08", "bead-06"), // bead-06 open → bead-08 BLOCKED
+        ] {
+            store.insert_link(QueryLink::new(src, "DEPENDS_ON", tgt, PropertyMap::new()));
+        }
+        store
+    }
+
+    #[test]
+    fn ddx_ready_blocked_queries_against_10bead_15link_fixture() {
+        let schema = test_fixtures::ddx_beads();
+        let plans = schema
+            .activate_named_queries()
+            .expect("named queries should activate");
+        let store = ddx_large_fixture();
+
+        let ready_plan = plans.get("ready_beads").expect("ready_beads plan missing");
+        let ready_rows = execute(ready_plan, &store)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("ready_beads should execute");
+        let ready_ids: Vec<&str> = ready_rows
+            .iter()
+            .map(|row| row["b"]["id"].as_str().expect("b.id should be string"))
+            .collect();
+        assert_eq!(
+            ready_ids,
+            vec!["bead-04", "bead-03", "bead-02", "bead-01"],
+            "ready_beads: expected 4 beads sorted by priority DESC"
+        );
+
+        let blocked_plan = plans
+            .get("blocked_beads")
+            .expect("blocked_beads plan missing");
+        let blocked_rows = execute(blocked_plan, &store)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("blocked_beads should execute");
+        let blocked_ids: Vec<&str> = blocked_rows
+            .iter()
+            .map(|row| row["b"]["id"].as_str().expect("b.id should be string"))
+            .collect();
+        assert_eq!(
+            blocked_ids,
+            vec!["bead-08", "bead-07", "bead-06", "bead-05"],
+            "blocked_beads: expected 4 beads sorted by priority DESC"
+        );
+    }
+
+    #[test]
+    fn variable_length_path_finds_transitive_deps_in_dependency_dag() {
+        let schema = test_fixtures::ddx_beads();
+        let store = ddx_large_fixture();
+        let query = parse(
+            "MATCH (b:DdxBead {id: 'bead-07'})-[:DEPENDS_ON*1..3]->(d:DdxBead) \
+             RETURN DISTINCT d.id AS id ORDER BY d.id ASC",
+        )
+        .expect("query should parse");
+        validate(&query, &schema).expect("query should validate");
+        let plan = plan(&query, &schema).expect("query should plan");
+
+        let rows = execute(&plan, &store)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query should execute");
+        let ids: Vec<&str> = rows
+            .iter()
+            .map(|row| row["id"].as_str().expect("id should be string"))
+            .collect();
+
+        // bead-07 reaches bead-01..06, bead-09, bead-10 transitively within 3 hops
+        assert_eq!(
+            ids,
+            vec![
+                "bead-01", "bead-02", "bead-03", "bead-04", "bead-05", "bead-06", "bead-09",
+                "bead-10",
+            ]
+        );
+    }
+
+    #[test]
+    fn reachability_variable_length_path_traverses_three_hop_chain() {
+        let schema = test_fixtures::ddx_beads();
+        let mut chain_store = crate::MemoryQueryStore::new();
+        for (id, status) in [
+            ("chain-a", "open"),
+            ("chain-b", "open"),
+            ("chain-c", "open"),
+            ("chain-d", "open"),
+        ] {
+            chain_store.insert_entity(QueryEntity::new(
+                id,
+                ["DdxBead"],
+                properties([
+                    ("id", json!(id)),
+                    ("status", json!(status)),
+                    ("priority", json!(1_i64)),
+                ]),
+            ));
+        }
+        chain_store.insert_link(QueryLink::new(
+            "chain-a",
+            "DEPENDS_ON",
+            "chain-b",
+            PropertyMap::new(),
+        ));
+        chain_store.insert_link(QueryLink::new(
+            "chain-b",
+            "DEPENDS_ON",
+            "chain-c",
+            PropertyMap::new(),
+        ));
+        chain_store.insert_link(QueryLink::new(
+            "chain-c",
+            "DEPENDS_ON",
+            "chain-d",
+            PropertyMap::new(),
+        ));
+
+        let query = parse(
+            "MATCH (a:DdxBead {id: 'chain-a'})-[:DEPENDS_ON*1..3]->(d:DdxBead) RETURN d.id AS id",
+        )
+        .expect("query should parse");
+        validate(&query, &schema).expect("query should validate");
+        let plan = plan(&query, &schema).expect("query should plan");
+
+        let rows = execute(&plan, &chain_store)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("query should execute");
+        let ids: Vec<&str> = rows
+            .iter()
+            .map(|row| row["id"].as_str().expect("id should be string"))
+            .collect();
+
+        // chain-a → chain-b (depth 1) → chain-c (depth 2) → chain-d (depth 3)
+        assert_eq!(ids, vec!["chain-b", "chain-c", "chain-d"]);
+    }
 }
