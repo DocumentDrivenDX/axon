@@ -1,0 +1,14 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "The diff contains only an execution result.json metadata file. There is no implementation of GraphQL subscriptions, named query subscription fields, change-feed wiring, snapshot delivery, policy filtering, or tests. None of AC1–AC5 can be evaluated from this diff.",
+  "findings": [
+    { "severity": "block", "summary": "No source changes present — only an execution metadata file was added; AC1 (Subscription field per named query) cannot be verified.", "location": ".ddx/executions/20260507T011143-b7141153/result.json" },
+    { "severity": "block", "summary": "AC2 (initial snapshot on subscribe) not demonstrated — no resolver or subscription stream code in diff.", "location": ".ddx/executions/20260507T011143-b7141153/result.json" },
+    { "severity": "block", "summary": "AC3 (policy filtering per FEAT-029) not demonstrated — no policy integration code in diff.", "location": ".ddx/executions/20260507T011143-b7141153/result.json" },
+    { "severity": "block", "summary": "AC4 (clean teardown / no leaked watchers) not demonstrated — no watcher lifecycle code in diff.", "location": ".ddx/executions/20260507T011143-b7141153/result.json" },
+    { "severity": "block", "summary": "AC5 (tests for snapshot, entity-add, status-change, link-add, policy filter, disconnect) absent — no test files added or modified in diff.", "location": ".ddx/executions/20260507T011143-b7141153/result.json" }
+  ]
+}
+```
