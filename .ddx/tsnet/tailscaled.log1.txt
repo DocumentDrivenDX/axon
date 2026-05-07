@@ -1,0 +1,1 @@
+{"logtail":{"client_time":"2026-05-07T01:10:55.927173774Z"},"text":"To start this tsnet server, restart with TS_AUTHKEY set, or go to: https://login.tailscale.com/a/163e7918016a24"}
