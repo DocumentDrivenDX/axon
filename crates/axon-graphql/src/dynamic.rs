@@ -9619,8 +9619,15 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
     }
 
     // -- Subscription type ---------------------------------------------------
-    let subscription = broker
-        .map(|broker| build_entity_changed_subscription(broker, collections, subscription_scope));
+    let subscription = broker.map(|broker| {
+        build_entity_changed_subscription(
+            broker,
+            collections,
+            subscription_scope,
+            &schemas_by_collection,
+            Arc::clone(&handler),
+        )
+    });
 
     let subscription_name = subscription.as_ref().map(|s| s.type_name().to_owned());
     let mut schema_builder = Schema::build(
@@ -10332,11 +10339,208 @@ fn build_change_subscription_field(
     field
 }
 
-/// Build the `Subscription` type with generic and per-collection change fields.
-fn build_entity_changed_subscription(
+/// Returns true when the query references at least one relationship step,
+/// including inside `EXISTS` / `NOT EXISTS` subqueries.
+fn named_query_has_relationships(query: &CypherQuery) -> bool {
+    fn patterns_have_steps(clauses: &[MatchClause]) -> bool {
+        clauses
+            .iter()
+            .any(|c| c.patterns.iter().any(|p| !p.steps.is_empty()))
+    }
+    fn expr_has_rel(expr: &Expression) -> bool {
+        match expr {
+            Expression::Exists(sq) | Expression::NotExists(sq) => {
+                patterns_have_steps(&sq.matches)
+                    || sq.where_clause.as_ref().is_some_and(expr_has_rel)
+            }
+            Expression::BinaryLogical { left, right, .. } => {
+                expr_has_rel(left) || expr_has_rel(right)
+            }
+            Expression::Not(inner) => expr_has_rel(inner),
+            _ => false,
+        }
+    }
+    patterns_have_steps(&query.matches)
+        || query.where_clause.as_ref().is_some_and(expr_has_rel)
+}
+
+/// Returns true when the change event should trigger re-evaluation of a named
+/// query subscription (entity collection match or link collection if relevant).
+fn named_query_event_is_relevant(
+    event: &crate::subscriptions::ChangeEvent,
+    watched_collections: &[String],
+    watch_links: bool,
+    scope: Option<&SubscriptionScope>,
+) -> bool {
+    if let Some(scope) = scope {
+        if event.tenant.as_deref() != Some(scope.tenant.as_str())
+            || event.database.as_deref() != Some(scope.database.as_str())
+        {
+            return false;
+        }
+    }
+    if watched_collections.iter().any(|c| c == &event.collection) {
+        return true;
+    }
+    watch_links && event.collection == Link::links_collection().as_str()
+}
+
+/// Add named-query parameters as arguments to a `SubscriptionField`.
+fn named_query_subscription_arguments(
+    mut field: SubscriptionField,
+    named_query: &NamedQueryDef,
+) -> SubscriptionField {
+    for param in &named_query.parameters {
+        field = field.argument(InputValue::new(
+            param.name.as_str(),
+            named_query_parameter_type(&param.param_type, param.required),
+        ));
+    }
+    field
+}
+
+/// Build a `SubscriptionField` that re-evaluates a named query whenever a
+/// relevant change is published to the broker.
+///
+/// - Delivers an initial snapshot immediately on subscribe (AC2).
+/// - Re-evaluates when any entity collection referenced by the query changes,
+///   and also when the link collection changes if the query traverses
+///   relationships (AC3 link-add update).
+/// - Policy filtering is applied by `execute_named_query_connection` (AC3).
+/// - Teardown is automatic: dropping the broadcast receiver removes the watcher
+///   from the channel with no explicit cleanup required (AC4).
+#[allow(clippy::too_many_arguments)]
+fn build_named_query_subscription_field<S: StorageAdapter + 'static>(
+    field_name: &str,
+    named_query: NamedQueryDef,
+    query_ast: CypherQuery,
+    result_schema: CollectionSchema,
+    schemas_by_collection: HashMap<String, CollectionSchema>,
+    handler: SharedHandler<S>,
+    broker: BroadcastBroker,
+    scope: Option<SubscriptionScope>,
+    watched_collections: Vec<String>,
+    watch_links: bool,
+) -> SubscriptionField {
+    let description = named_query.description.clone();
+    let named_query_for_args = named_query.clone();
+    let conn_type = format!("{}Connection", pascal_case(result_schema.collection.as_str()));
+    let field = SubscriptionField::new(
+        field_name,
+        TypeRef::named_nn(conn_type),
+        move |ctx| {
+            let handler = Arc::clone(&handler);
+            let query_ast = query_ast.clone();
+            let result_schema = result_schema.clone();
+            let schemas_by_collection = schemas_by_collection.clone();
+            let named_query = named_query.clone();
+            let broker = broker.clone();
+            let scope = scope.clone();
+            let watched_collections = watched_collections.clone();
+            // Extract caller and args while the context is available.
+            let caller = caller_from_ctx(&ctx);
+            let params_result = named_query_parameters_from_ctx(&ctx, &named_query);
+            let first_result = parse_named_query_first(&ctx);
+            let after_result = parse_optional_string_arg(&ctx, "after");
+            SubscriptionFieldFuture::new(async move {
+                let params = params_result?;
+                let first = first_result?;
+                let after = after_result?;
+                // Initial snapshot (AC2).
+                let initial_value = {
+                    let guard = handler.lock().await;
+                    execute_named_query_connection(
+                        &guard,
+                        &query_ast,
+                        &result_schema,
+                        &schemas_by_collection,
+                        &caller,
+                        &params,
+                        first,
+                        after.as_deref(),
+                    )?
+                    .unwrap_or_else(|| {
+                        entity_connection_value(&[], 0, None, false, false, Some(&result_schema))
+                    })
+                };
+                let rx = broker.subscribe();
+                let initial_stream =
+                    tokio_stream::iter(std::iter::once(Ok::<_, GqlError>(initial_value)));
+                // Change stream: re-evaluate on relevant events.
+                let change_stream = {
+                    let handler = Arc::clone(&handler);
+                    let query_ast = query_ast.clone();
+                    let result_schema = result_schema.clone();
+                    let schemas_by_collection = schemas_by_collection.clone();
+                    let caller = caller.clone();
+                    let params = params.clone();
+                    let scope = scope.clone();
+                    let watched_collections = watched_collections.clone();
+                    tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
+                        move |result| {
+                            let handler = Arc::clone(&handler);
+                            let query_ast = query_ast.clone();
+                            let result_schema = result_schema.clone();
+                            let schemas_by_collection = schemas_by_collection.clone();
+                            let caller = caller.clone();
+                            let params = params.clone();
+                            let scope = scope.clone();
+                            let watched_collections = watched_collections.clone();
+                            let after = after.clone();
+                            async move {
+                                let event = result.ok()?;
+                                if !named_query_event_is_relevant(
+                                    &event,
+                                    &watched_collections,
+                                    watch_links,
+                                    scope.as_ref(),
+                                ) {
+                                    return None;
+                                }
+                                let guard = handler.lock().await;
+                                match execute_named_query_connection(
+                                    &guard,
+                                    &query_ast,
+                                    &result_schema,
+                                    &schemas_by_collection,
+                                    &caller,
+                                    &params,
+                                    first,
+                                    after.as_deref(),
+                                ) {
+                                    Ok(Some(v)) => Some(Ok(v)),
+                                    Ok(None) => Some(Ok(entity_connection_value(
+                                        &[],
+                                        0,
+                                        None,
+                                        false,
+                                        false,
+                                        Some(&result_schema),
+                                    ))),
+                                    Err(e) => Some(Err(e)),
+                                }
+                            }
+                        },
+                    )
+                };
+                Ok(initial_stream.chain(change_stream))
+            })
+        },
+    )
+    .description(description)
+    .argument(InputValue::new("first", TypeRef::named(TypeRef::INT)))
+    .argument(InputValue::new("after", TypeRef::named(TypeRef::STRING)));
+    named_query_subscription_arguments(field, &named_query_for_args)
+}
+
+/// Build the `Subscription` type with generic, per-collection, and named-query
+/// change fields (AC1).
+fn build_entity_changed_subscription<S: StorageAdapter + 'static>(
     broker: BroadcastBroker,
     collections: &[CollectionSchema],
     scope: Option<SubscriptionScope>,
+    schemas_by_collection: &HashMap<String, CollectionSchema>,
+    handler: SharedHandler<S>,
 ) -> Subscription {
     let entity_changed =
         build_change_subscription_field("entityChanged", broker.clone(), None, scope.clone())
@@ -10361,6 +10565,33 @@ fn build_entity_changed_subscription(
                 schema.collection
             )),
         );
+        // Named query subscription fields (AC1).
+        let mut named_queries: Vec<_> = schema.queries.iter().collect();
+        named_queries.sort_by_key(|(name, _)| *name);
+        for (query_name, query_def) in named_queries {
+            let sub_field_name = named_query_graphql_field_name(query_name);
+            if let Ok((query_ast, result_schema)) =
+                named_query_result_schema(query_def, schemas_by_collection)
+            {
+                let watched = named_query_variable_collections(&query_ast, schemas_by_collection)
+                    .into_values()
+                    .map(|id| id.to_string())
+                    .collect::<Vec<_>>();
+                let watch_links = named_query_has_relationships(&query_ast);
+                subscription = subscription.field(build_named_query_subscription_field(
+                    &sub_field_name,
+                    query_def.clone(),
+                    query_ast,
+                    result_schema,
+                    schemas_by_collection.clone(),
+                    Arc::clone(&handler),
+                    broker.clone(),
+                    scope.clone(),
+                    watched,
+                    watch_links,
+                ));
+            }
+        }
     }
     subscription
 }
@@ -10709,6 +10940,47 @@ mod tests {
             queries: Default::default(),
             lifecycles: Default::default(),
         }
+    }
+
+    /// Tasks schema (no access control) that includes a named query for
+    /// subscription tests that need unrestricted write access to the handler.
+    fn tasks_with_open_query_schema() -> CollectionSchema {
+        let mut schema = CollectionSchema {
+            collection: CollectionId::new("tasks"),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "required": ["title"],
+                "properties": {
+                    "title": { "type": "string" },
+                    "status": { "type": "string" },
+                    "priority": { "type": "integer" }
+                }
+            })),
+            link_types: Default::default(),
+            access_control: None,
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: vec![axon_schema::schema::IndexDef {
+                field: "status".into(),
+                index_type: axon_schema::schema::IndexType::String,
+                unique: false,
+            }],
+            compound_indexes: Default::default(),
+            queries: Default::default(),
+            lifecycles: Default::default(),
+        };
+        schema.queries.insert(
+            "open_tasks".into(),
+            NamedQueryDef {
+                description: "Tasks with open status".into(),
+                cypher: "MATCH (t:Task {status: 'open'}) RETURN t ORDER BY t.priority DESC"
+                    .into(),
+                parameters: Vec::new(),
+            },
+        );
+        schema
     }
 
     async fn introspected_type_fields(schema: &AxonSchema, type_name: &str) -> Value {
@@ -12314,5 +12586,398 @@ mod tests {
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let data = result.data.into_json().expect("json");
         assert!(data["tasks"].is_null());
+    }
+
+    // -- Named-query subscription tests (AC1–AC5, US-077) --------------------
+
+    /// AC1: each named query exposes a Subscription field of the correct type.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_subscription_fields_appear_in_sdl() {
+        let schema_def = ddx_beads_named_query_schema();
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        let schema = build_schema_with_handler_and_broker(
+            &[schema_def],
+            Arc::clone(&handler),
+            Some(broker),
+        )
+        .expect("schema should build");
+        let sdl = schema.schema.sdl();
+        assert!(
+            sdl.contains("type Subscription"),
+            "Subscription type missing from SDL"
+        );
+        assert!(
+            sdl.contains("ready_beads"),
+            "ready_beads subscription field should appear in SDL"
+        );
+        assert!(
+            sdl.contains("beads_by_owner"),
+            "beads_by_owner subscription field should appear in SDL"
+        );
+        assert!(
+            sdl.contains("DdxBeadsConnection"),
+            "DdxBeadsConnection return type should be registered"
+        );
+    }
+
+    /// AC2: initial snapshot delivered on subscribe before any mutations.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_subscription_delivers_initial_snapshot() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("ddx_beads"),
+                    id: EntityId::new("snap-ready"),
+                    data: json!({"title": "snap-ready", "status": "open", "owner": "tester", "priority": 1}),
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("seed entity");
+        }
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let schema = build_schema_with_handler_and_broker(
+            &[schema_def],
+            Arc::clone(&handler),
+            Some(broker.clone()),
+        )
+        .expect("schema should build");
+
+        let mut stream = schema.schema.execute_stream(
+            async_graphql::Request::new(
+                r#"subscription { ready_beads(first: 10) { totalCount edges { node { id status } } } }"#,
+            )
+            .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
+        );
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stream.next(),
+        )
+        .await
+        .expect("initial snapshot should arrive within timeout")
+        .expect("stream should yield a response");
+        let data = response_data(response);
+        let conn = &data["ready_beads"];
+        assert_eq!(conn["totalCount"], 1, "initial snapshot should include one entity");
+        assert_eq!(conn["edges"][0]["node"]["id"], "snap-ready");
+    }
+
+    /// AC5 (entity-add update): adding an entity re-evaluates the named query.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_subscription_updates_on_entity_add() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let schema = build_schema_with_handler_and_broker(
+            &[schema_def],
+            Arc::clone(&handler),
+            Some(broker.clone()),
+        )
+        .expect("schema should build");
+
+        let mut stream = schema.schema.execute_stream(
+            async_graphql::Request::new(
+                r#"subscription { ready_beads(first: 10) { totalCount edges { node { id } } } }"#,
+            )
+            .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
+        );
+        // Consume initial snapshot (empty).
+        let snapshot = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stream.next(),
+        )
+        .await
+        .expect("initial snapshot arrives")
+        .expect("stream yields response");
+        assert_eq!(response_data(snapshot)["ready_beads"]["totalCount"], 0);
+
+        // Mutate: add entity, then publish the change event.
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("ddx_beads"),
+                    id: EntityId::new("new-bead"),
+                    data: json!({"title": "new-bead", "status": "open", "owner": "tester", "priority": 1}),
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("create entity");
+        }
+        wait_for_receivers(&broker, 1).await;
+        let _ = broker.publish(crate::subscriptions::ChangeEvent {
+            tenant: None,
+            database: None,
+            audit_id: "audit-new-bead".into(),
+            collection: "ddx_beads".into(),
+            entity_id: "new-bead".into(),
+            operation: "create".into(),
+            data: Some(json!({"title": "new-bead", "status": "open", "owner": "tester", "priority": 1})),
+            previous_data: None,
+            version: 1,
+            previous_version: None,
+            timestamp_ms: 1000,
+            actor: "tester".into(),
+        });
+
+        let update = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stream.next(),
+        )
+        .await
+        .expect("update arrives after entity add")
+        .expect("stream yields update");
+        let data = response_data(update);
+        assert_eq!(data["ready_beads"]["totalCount"], 1, "update should reflect the new entity");
+        assert_eq!(data["ready_beads"]["edges"][0]["node"]["id"], "new-bead");
+    }
+
+    /// AC5 (status-change update): changing an entity's status re-evaluates the query.
+    /// Uses tasks_with_open_query_schema (no access control) so handler writes succeed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_subscription_updates_on_status_change() {
+        let schema_def = tasks_with_open_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_entity(CreateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("t1"),
+                    data: json!({"title": "t1", "status": "open", "priority": 5}),
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("create");
+        }
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let schema = build_schema_with_handler_and_broker(
+            &[schema_def],
+            Arc::clone(&handler),
+            Some(broker.clone()),
+        )
+        .expect("schema should build");
+
+        let mut stream = schema.schema.execute_stream(
+            async_graphql::Request::new(
+                r#"subscription { open_tasks(first: 10) { totalCount } }"#,
+            )
+            .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
+        );
+        // Consume initial snapshot: 1 open task.
+        let snap = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await.unwrap().unwrap();
+        assert_eq!(response_data(snap)["open_tasks"]["totalCount"], 1);
+
+        // Close the task via handler, then publish a change event.
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .update_entity(axon_api::request::UpdateEntityRequest {
+                    collection: CollectionId::new("tasks"),
+                    id: EntityId::new("t1"),
+                    data: json!({"title": "t1", "status": "closed", "priority": 5}),
+                    expected_version: 1,
+                    actor: None,
+                    audit_metadata: None,
+                    attribution: None,
+                })
+                .expect("update");
+        }
+        wait_for_receivers(&broker, 1).await;
+        let _ = broker.publish(crate::subscriptions::ChangeEvent {
+            tenant: None,
+            database: None,
+            audit_id: "audit-t1-closed".into(),
+            collection: "tasks".into(),
+            entity_id: "t1".into(),
+            operation: "update".into(),
+            data: Some(json!({"title": "t1", "status": "closed", "priority": 5})),
+            previous_data: Some(json!({"title": "t1", "status": "open", "priority": 5})),
+            version: 2,
+            previous_version: Some(1),
+            timestamp_ms: 2000,
+            actor: "tester".into(),
+        });
+
+        let update = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await.unwrap().unwrap();
+        assert_eq!(
+            response_data(update)["open_tasks"]["totalCount"],
+            0,
+            "after closing the task, open_tasks should return 0"
+        );
+    }
+
+    /// AC5 (link-add update): adding a link (published as a link ChangeEvent)
+    /// triggers re-evaluation when the query traverses relationships.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_subscription_updates_on_link_add() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            for (id, priority) in [("candidate", 3), ("blocker", 2)] {
+                guard
+                    .create_entity(CreateEntityRequest {
+                        collection: CollectionId::new("ddx_beads"),
+                        id: EntityId::new(id),
+                        data: json!({"title": id, "status": "open", "owner": "tester", "priority": priority}),
+                        actor: None,
+                        audit_metadata: None,
+                        attribution: None,
+                    })
+                    .expect("create entity");
+            }
+        }
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let schema = build_schema_with_handler_and_broker(
+            &[schema_def],
+            Arc::clone(&handler),
+            Some(broker.clone()),
+        )
+        .expect("schema should build");
+
+        let mut stream = schema.schema.execute_stream(
+            async_graphql::Request::new(
+                r#"subscription { ready_beads(first: 10) { totalCount edges { node { id } } } }"#,
+            )
+            .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
+        );
+        // Initial snapshot: both beads are ready (no blocking deps).
+        let snap = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await.unwrap().unwrap();
+        assert_eq!(response_data(snap)["ready_beads"]["totalCount"], 2);
+
+        // Add a depends-on link from "candidate" → "blocker" (open),
+        // which should block "candidate" from the ready_beads query.
+        {
+            let mut guard = handler.lock().await;
+            guard
+                .create_link(CreateLinkRequest {
+                    source_collection: CollectionId::new("ddx_beads"),
+                    source_id: EntityId::new("candidate"),
+                    target_collection: CollectionId::new("ddx_beads"),
+                    target_id: EntityId::new("blocker"),
+                    link_type: "depends-on".into(),
+                    metadata: Value::Null,
+                    actor: None,
+                    attribution: None,
+                })
+                .expect("create link");
+        }
+        // Publish a link change event so the subscription re-evaluates.
+        wait_for_receivers(&broker, 1).await;
+        let _ = broker.publish(crate::subscriptions::ChangeEvent {
+            tenant: None,
+            database: None,
+            audit_id: "audit-link-add".into(),
+            collection: Link::links_collection().to_string(),
+            entity_id: "candidate->blocker".into(),
+            operation: "create".into(),
+            data: Some(json!({"link_type": "depends-on"})),
+            previous_data: None,
+            version: 1,
+            previous_version: None,
+            timestamp_ms: 3000,
+            actor: "tester".into(),
+        });
+
+        let update = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await.unwrap().unwrap();
+        assert_eq!(
+            response_data(update)["ready_beads"]["totalCount"],
+            1,
+            "after link add, candidate is blocked; only blocker remains ready"
+        );
+    }
+
+    /// AC3 + AC5 (policy-filter): subscription results are filtered by access
+    /// control policy — subscriber only sees entities they own.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_subscription_filters_by_policy() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        {
+            let mut guard = handler.lock().await;
+            for (id, owner) in [("mine", "alice"), ("theirs", "bob")] {
+                guard
+                    .create_entity(CreateEntityRequest {
+                        collection: CollectionId::new("ddx_beads"),
+                        id: EntityId::new(id),
+                        data: json!({"title": id, "status": "open", "owner": owner, "priority": 1}),
+                        actor: None,
+                        audit_metadata: None,
+                        attribution: None,
+                    })
+                    .expect("create entity");
+            }
+        }
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let schema = build_schema_with_handler_and_broker(
+            &[schema_def],
+            Arc::clone(&handler),
+            Some(broker.clone()),
+        )
+        .expect("schema should build");
+
+        // Subscribe as "alice" — should only see her own bead.
+        let mut stream = schema.schema.execute_stream(
+            async_graphql::Request::new(
+                r#"subscription { ready_beads(first: 10) { totalCount edges { node { id owner } } } }"#,
+            )
+            .data(CallerIdentity::new("alice", axon_core::auth::Role::Read)),
+        );
+        let snap = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+            .await.unwrap().unwrap();
+        let data = response_data(snap);
+        let conn = &data["ready_beads"];
+        assert_eq!(conn["totalCount"], 1, "alice should only see her own bead");
+        assert_eq!(conn["edges"][0]["node"]["id"], "mine");
+        assert_eq!(conn["edges"][0]["node"]["owner"], "alice");
+    }
+
+    /// AC4 + AC5 (disconnect cleanup): dropping the stream removes the watcher.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn named_query_subscription_clean_teardown_on_disconnect() {
+        let schema_def = ddx_beads_named_query_schema();
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        let broker = crate::subscriptions::BroadcastBroker::default();
+        let schema = build_schema_with_handler_and_broker(
+            &[schema_def],
+            Arc::clone(&handler),
+            Some(broker.clone()),
+        )
+        .expect("schema should build");
+
+        {
+            let mut stream = schema.schema.execute_stream(
+                async_graphql::Request::new(
+                    r#"subscription { ready_beads(first: 10) { totalCount } }"#,
+                )
+                .data(CallerIdentity::new("tester", axon_core::auth::Role::Read)),
+            );
+            // Consume initial snapshot so the receiver is established.
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), stream.next())
+                .await.unwrap().unwrap();
+            // At this point the receiver count should be at least 1.
+            assert!(broker.receiver_count() >= 1, "receiver should be registered while stream is alive");
+            // Stream is dropped here.
+        }
+
+        // After the stream is dropped the broadcast receiver is removed.
+        // Give the tokio runtime a moment to process the drop.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            broker.receiver_count(),
+            0,
+            "no receivers should remain after stream is dropped"
+        );
     }
 }
