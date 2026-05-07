@@ -1066,6 +1066,7 @@ mod tests {
                 },
             )]),
             planner_config: PlannerConfig::default(),
+            queries: Default::default(),
         };
 
         let plan = parse_and_plan("MATCH (s:Small) WHERE s.owner = 'a' RETURN s", &schema).unwrap();
