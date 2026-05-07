@@ -62,6 +62,7 @@ fn ddx_schema() -> SchemaSnapshot {
             },
         )]),
         planner_config: PlannerConfig::default(),
+        queries: BTreeMap::new(),
     }
 }
 
