@@ -1,0 +1,56 @@
+{
+  "attempt_id": "20260507T011353-738984f0",
+  "bead_id": "axon-5956e527",
+  "base_rev": "109be7e989e345f4712e1680892a0b508db4b3b7",
+  "created_at": "2026-05-07T01:13:56.097953072Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-5956e527",
+    "title": "build(feat-009): Cypher QueryStore over StorageAdapter",
+    "description": "Implement the production QueryStore implementation for axon-cypher using axon-storage::StorageAdapter primitives. The implementation must use portable get/range_scan/index_lookup/link primitives only and must not introduce SQLite- or PostgreSQL-specific query operators.",
+    "acceptance": "AC1. axon-cypher has a StorageAdapter-backed QueryStore implementation available to callers. AC2. Entity label/property reads use StorageAdapter index_lookup or bounded range_scan according to the planner operator. AC3. Relationship expansion and EXISTS probes use StorageAdapter link primitives or the dedicated portable link API, not backend-specific SQL/JSON operators. AC4. Errors from storage are mapped into CypherError without unwrap() in library code. AC5. Unit tests cover scan, index lookup, expand, incoming/outgoing links, and EXISTS probes through a fake or memory StorageAdapter. AC6. cargo test -p axon-cypher and cargo clippy -p axon-cypher --all-targets -- -D warnings pass.",
+    "labels": [
+      "helix",
+      "feat-009",
+      "area:cypher",
+      "area:storage",
+      "kind:feature"
+    ],
+    "metadata": {
+      "claimed-at": "2026-05-07T01:13:53Z",
+      "claimed-machine": "sindri",
+      "claimed-pid": "1520283",
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"rationale\":\"\",\"score\":0,\"suggested_fixes\":null,\"waivers_applied\":null,\"warning\":\"lint hook: missing-harness\"}",
+          "created_at": "2026-05-07T01:13:53.497283287Z",
+          "kind": "bead-quality.lint",
+          "source": "ddx agent execute-loop",
+          "summary": "warning score=0"
+        }
+      ],
+      "execute-loop-heartbeat-at": "2026-05-07T01:13:53.889438182Z",
+      "spec-id": "FEAT-009"
+    }
+  },
+  "governing": [
+    {
+      "id": "FEAT-009",
+      "path": "docs/helix/01-frame/features/FEAT-009-graph-traversal-queries.md",
+      "title": "Feature Specification: FEAT-009 — Unified Graph Query (Cypher)"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260507T011353-738984f0",
+    "prompt": ".ddx/executions/20260507T011353-738984f0/prompt.md",
+    "manifest": ".ddx/executions/20260507T011353-738984f0/manifest.json",
+    "result": ".ddx/executions/20260507T011353-738984f0/result.json",
+    "checks": ".ddx/executions/20260507T011353-738984f0/checks.json",
+    "usage": ".ddx/executions/20260507T011353-738984f0/usage.json",
+    "worktree": "tmp/ddx-exec-wt/.execute-bead-wt-axon-5956e527-20260507T011353-738984f0"
+  },
+  "prompt_sha": "e7daa91ce9af70d3f064952f57fb58b6433d1e8d87f8b53f36e89d2e5a94c4f8"
+}
