@@ -22,6 +22,7 @@ use std::collections::{BTreeSet, HashMap};
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Link;
 use axon_cypher::ast::Direction;
+use axon_cypher::error::CypherError;
 use axon_cypher::memory_store::{
     EntityScan, EntityStream, LinkStream, LinkTraversal, PropertyFilter, PropertyFilterOp,
     PropertyMap, QueryEntity, QueryLink, QueryStore,
@@ -53,8 +54,10 @@ fn decode_entity_id(encoded: &str) -> Option<(CollectionId, EntityId)> {
 ///   full-label scans use `StorageAdapter::range_scan`.
 /// - **Link traversal**: uses `StorageAdapter::list_outbound_links` /
 ///   `list_inbound_links` from the dedicated portable link API.
-/// - **Errors**: storage errors are swallowed into empty results; the executor
-///   receives [`axon_cypher::CypherError::Storage`] where the trait permits it.
+/// - **Errors**: storage errors are mapped to [`axon_cypher::CypherError::Storage`]
+///   and propagated through the entity/link streams to the executor.
+///   `index_lookup` failures fall back to `range_scan` (adapter capability gap,
+///   not a data error) and are not propagated.
 pub struct StorageAdapterQueryStore<'a, S> {
     storage: &'a S,
     /// Label name → collection name, derived from the schema snapshot.
@@ -103,18 +106,22 @@ impl<'a, S: StorageAdapter> StorageAdapterQueryStore<'a, S> {
 
 
     /// Full range scan of a collection, filtering with `scan.property_filters`.
+    ///
+    /// Returns an error item if the storage layer fails; otherwise yields
+    /// one `Ok(QueryEntity)` per matching entity.
     fn range_scan_collection(
         &self,
         collection_id: &CollectionId,
         scan: &EntityScan,
-    ) -> Vec<QueryEntity> {
-        self.storage
-            .range_scan(collection_id, None, None, None)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|entity| data_matches_filters(&entity.data, &scan.property_filters))
-            .map(|entity| self.build_query_entity(&entity))
-            .collect()
+    ) -> Vec<Result<QueryEntity, CypherError>> {
+        match self.storage.range_scan(collection_id, None, None, None) {
+            Err(err) => vec![Err(CypherError::Storage(err.to_string()))],
+            Ok(entities) => entities
+                .into_iter()
+                .filter(|entity| data_matches_filters(&entity.data, &scan.property_filters))
+                .map(|entity| Ok(self.build_query_entity(&entity)))
+                .collect(),
+        }
     }
 }
 
@@ -128,6 +135,10 @@ impl<S: StorageAdapter> QueryStore for StorageAdapterQueryStore<'_, S> {
 
     /// Scan entities for a given label, using `index_lookup` for equality
     /// filters and `range_scan` for full-label scans.
+    ///
+    /// Storage errors from `range_scan` are propagated as
+    /// `Err(CypherError::Storage(...))` stream items. `index_lookup` errors
+    /// are treated as a capability gap and fall through to `range_scan`.
     fn scan_entities(&self, scan: EntityScan) -> EntityStream<'_> {
         let label = match scan.label.as_deref() {
             Some(l) => l,
@@ -142,7 +153,7 @@ impl<S: StorageAdapter> QueryStore for StorageAdapterQueryStore<'_, S> {
         // For equality filters, try index_lookup; fall back to range_scan on error.
         let eq_filter = scan.property_filters.iter().find(|f| f.op == PropertyFilterOp::Eq);
 
-        let entities = if let Some(filter) = eq_filter {
+        let entities: Vec<Result<QueryEntity, CypherError>> = if let Some(filter) = eq_filter {
             let property = filter.path.join(".");
             match json_to_index_value(&filter.value) {
                 Some(index_val) => {
@@ -155,7 +166,7 @@ impl<S: StorageAdapter> QueryStore for StorageAdapterQueryStore<'_, S> {
                             .filter(|entity| {
                                 data_matches_filters(&entity.data, &scan.property_filters)
                             })
-                            .map(|entity| self.build_query_entity(&entity))
+                            .map(|entity| Ok(self.build_query_entity(&entity)))
                             .collect(),
                         // index_lookup not supported by this adapter — fall through.
                         Err(_) => self.range_scan_collection(&collection_id, &scan),
@@ -182,6 +193,7 @@ impl<S: StorageAdapter> QueryStore for StorageAdapterQueryStore<'_, S> {
     /// Uses `list_outbound_links` / `list_inbound_links` according to the
     /// requested direction; filters by relationship type in memory when
     /// multiple types are specified (the storage API accepts a single type).
+    /// Storage errors are propagated as `Err(CypherError::Storage(...))` items.
     fn traverse_links(&self, traversal: LinkTraversal) -> LinkStream<'_> {
         let (collection_id, entity_id) = match decode_entity_id(&traversal.anchor_id) {
             Some(parts) => parts,
@@ -196,33 +208,57 @@ impl<S: StorageAdapter> QueryStore for StorageAdapterQueryStore<'_, S> {
             None
         };
 
-        let raw: Vec<Link> = match traversal.direction {
-            Direction::Outgoing => self
+        let raw: Vec<Result<Link, CypherError>> = match traversal.direction {
+            Direction::Outgoing => match self
                 .storage
                 .list_outbound_links(&collection_id, &entity_id, type_hint)
-                .unwrap_or_default(),
-            Direction::Incoming => self
+            {
+                Ok(links) => links.into_iter().map(Ok).collect(),
+                Err(err) => vec![Err(CypherError::Storage(err.to_string()))],
+            },
+            Direction::Incoming => match self
                 .storage
                 .list_inbound_links(&collection_id, &entity_id, type_hint)
-                .unwrap_or_default(),
+            {
+                Ok(links) => links.into_iter().map(Ok).collect(),
+                Err(err) => vec![Err(CypherError::Storage(err.to_string()))],
+            },
             Direction::Either => {
-                let mut out = self
+                match self
                     .storage
                     .list_outbound_links(&collection_id, &entity_id, type_hint)
-                    .unwrap_or_default();
-                out.extend(
-                    self.storage
-                        .list_inbound_links(&collection_id, &entity_id, type_hint)
-                        .unwrap_or_default(),
-                );
-                out
+                {
+                    Err(err) => vec![Err(CypherError::Storage(err.to_string()))],
+                    Ok(mut out) => {
+                        match self
+                            .storage
+                            .list_inbound_links(&collection_id, &entity_id, type_hint)
+                        {
+                            Err(err) => vec![Err(CypherError::Storage(err.to_string()))],
+                            Ok(inbound) => {
+                                out.extend(inbound);
+                                out.into_iter().map(Ok).collect()
+                            }
+                        }
+                    }
+                }
             }
         };
 
-        Box::new(raw.into_iter().filter(move |link| {
-            traversal.relationship_types.is_empty()
-                || traversal.relationship_types.contains(&link.link_type)
-        }).map(|link| build_query_link(&link)))
+        Box::new(raw.into_iter().filter_map(move |link_result| {
+            match link_result {
+                Err(err) => Some(Err(err)),
+                Ok(link) => {
+                    if traversal.relationship_types.is_empty()
+                        || traversal.relationship_types.contains(&link.link_type)
+                    {
+                        Some(Ok(build_query_link(&link)))
+                    } else {
+                        None
+                    }
+                }
+            }
+        }))
     }
 }
 
@@ -431,11 +467,25 @@ mod tests {
 
     // ── AC2: scan / index lookup ─────────────────────────────────────────────
 
+    fn collect_entities(store: &StorageAdapterQueryStore<'_, MemoryStorageAdapter>, scan: EntityScan) -> Vec<QueryEntity> {
+        store
+            .scan_entities(scan)
+            .map(|r| r.expect("storage scan should not error"))
+            .collect()
+    }
+
+    fn collect_links(store: &StorageAdapterQueryStore<'_, MemoryStorageAdapter>, traversal: LinkTraversal) -> Vec<QueryLink> {
+        store
+            .traverse_links(traversal)
+            .map(|r| r.expect("storage traverse should not error"))
+            .collect()
+    }
+
     #[test]
     fn scan_by_label_returns_all_entities_in_collection() {
         let (storage, schema) = setup();
         let store = StorageAdapterQueryStore::new(&storage, &schema);
-        let entities: Vec<_> = store.scan_entities(EntityScan::label("DdxBead")).collect();
+        let entities = collect_entities(&store, EntityScan::label("DdxBead"));
         assert_eq!(entities.len(), 3, "expected all three beads");
         let mut ids: Vec<String> = entities.iter().map(|e| e.id.clone()).collect();
         ids.sort_unstable();
@@ -450,7 +500,7 @@ mod tests {
         let (storage, schema) = setup();
         let store = StorageAdapterQueryStore::new(&storage, &schema);
         let scan = EntityScan::label("DdxBead").with_property_eq("status", json!("open"));
-        let entities: Vec<_> = store.scan_entities(scan).collect();
+        let entities = collect_entities(&store, scan);
         assert_eq!(entities.len(), 2, "only bead-a and bead-b are open");
         assert!(
             entities.iter().all(|e| e
@@ -467,7 +517,7 @@ mod tests {
         let (storage, schema) = setup();
         let store = StorageAdapterQueryStore::new(&storage, &schema);
         let scan = EntityScan::label("DdxBead").with_property_eq("id", json!("bead-a"));
-        let entities: Vec<_> = store.scan_entities(scan).collect();
+        let entities = collect_entities(&store, scan);
         assert_eq!(entities.len(), 1);
         assert_eq!(entities[0].id, encoded("bead-a"));
     }
@@ -515,7 +565,7 @@ mod tests {
             relationship_types: vec!["DEPENDS_ON".to_string()],
             link_property_filters: vec![],
         };
-        let links: Vec<_> = store.traverse_links(traversal).collect();
+        let links = collect_links(&store, traversal);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].link_type, "DEPENDS_ON");
         assert_eq!(links[0].target_id, encoded("bead-b"));
@@ -533,7 +583,7 @@ mod tests {
             relationship_types: vec!["DEPENDS_ON".to_string()],
             link_property_filters: vec![],
         };
-        let links: Vec<_> = store.traverse_links(traversal).collect();
+        let links = collect_links(&store, traversal);
         assert!(links.is_empty());
     }
 
@@ -550,7 +600,7 @@ mod tests {
             relationship_types: vec!["DEPENDS_ON".to_string()],
             link_property_filters: vec![],
         };
-        let links: Vec<_> = store.traverse_links(traversal).collect();
+        let links = collect_links(&store, traversal);
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].source_id, encoded("bead-a"));
     }
@@ -570,7 +620,7 @@ mod tests {
             relationship_types: vec![],
             link_property_filters: vec![],
         };
-        let links: Vec<_> = store.traverse_links(traversal).collect();
+        let links = collect_links(&store, traversal);
         assert_eq!(links.len(), 1);
     }
 

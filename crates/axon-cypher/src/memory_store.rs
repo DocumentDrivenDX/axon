@@ -5,6 +5,7 @@
 //! properties and directed, typed links with JSON properties.
 
 use crate::ast::Direction;
+use crate::error::CypherError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,8 +14,8 @@ pub type QueryEntityId = String;
 pub type QueryLinkId = String;
 pub type PropertyMap = BTreeMap<String, Value>;
 
-pub type EntityStream<'a> = Box<dyn Iterator<Item = QueryEntity> + 'a>;
-pub type LinkStream<'a> = Box<dyn Iterator<Item = QueryLink> + 'a>;
+pub type EntityStream<'a> = Box<dyn Iterator<Item = Result<QueryEntity, CypherError>> + 'a>;
+pub type LinkStream<'a> = Box<dyn Iterator<Item = Result<QueryLink, CypherError>> + 'a>;
 
 /// Storage boundary consumed by future executor operators.
 pub trait QueryStore {
@@ -290,7 +291,8 @@ impl QueryStore for MemoryQueryStore {
             self.entities
                 .values()
                 .filter(move |entity| entity_matches_scan(entity, &scan))
-                .cloned(),
+                .cloned()
+                .map(Ok),
         )
     }
 
@@ -305,6 +307,7 @@ impl QueryStore for MemoryQueryStore {
                 .get(&id)
                 .filter(|link| link_matches_traversal(link, &traversal))
                 .cloned()
+                .map(Ok)
         }))
     }
 }
@@ -378,7 +381,10 @@ mod tests {
         ));
 
         let scan = EntityScan::label("DdxBead").with_property_eq("status", json!("open"));
-        let ids: Vec<String> = store.scan_entities(scan).map(|entity| entity.id).collect();
+        let ids: Vec<String> = store
+            .scan_entities(scan)
+            .map(|r| r.expect("memory scan should not error").id)
+            .collect();
 
         assert_eq!(ids, vec!["bead-a".to_string()]);
     }
@@ -426,7 +432,7 @@ mod tests {
             .with_property_eq("active", json!(true));
         let targets: Vec<String> = store
             .traverse_links(traversal)
-            .map(|link| link.target_id)
+            .map(|r| r.expect("memory traverse should not error").target_id)
             .collect();
 
         assert_eq!(targets, vec!["bead-b".to_string()]);
@@ -451,12 +457,15 @@ mod tests {
         let incoming = LinkTraversal::new("bead-a", Direction::Incoming);
         let incoming_sources: Vec<String> = store
             .traverse_links(incoming)
-            .map(|link| link.source_id)
+            .map(|r| r.expect("memory traverse should not error").source_id)
             .collect();
         assert_eq!(incoming_sources, vec!["bead-c".to_string()]);
 
         let either = LinkTraversal::new("bead-a", Direction::Either);
-        let link_ids: Vec<String> = store.traverse_links(either).map(|link| link.id).collect();
+        let link_ids: Vec<String> = store
+            .traverse_links(either)
+            .map(|r| r.expect("memory traverse should not error").id)
+            .collect();
         assert_eq!(
             link_ids,
             vec![

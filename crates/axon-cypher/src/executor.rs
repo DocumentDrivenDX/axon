@@ -133,13 +133,18 @@ where
             };
             let alias = plan.alias.clone();
             let predicate = plan.predicate.clone();
-            Box::new(store.scan_entities(scan).filter_map(move |entity| {
-                let mut row = BindingRow::new();
-                bind_entity(&mut row, alias.as_deref(), entity);
-                match predicate_matches(predicate.as_ref(), &row) {
-                    Ok(true) => Some(Ok(row)),
-                    Ok(false) => None,
+            Box::new(store.scan_entities(scan).filter_map(move |entity_result| {
+                match entity_result {
                     Err(err) => Some(Err(err)),
+                    Ok(entity) => {
+                        let mut row = BindingRow::new();
+                        bind_entity(&mut row, alias.as_deref(), entity);
+                        match predicate_matches(predicate.as_ref(), &row) {
+                            Ok(true) => Some(Ok(row)),
+                            Ok(false) => None,
+                            Err(err) => Some(Err(err)),
+                        }
+                    }
                 }
             }))
         }
@@ -202,13 +207,18 @@ where
     let alias = plan.alias.clone();
     let predicate = index_predicate_expression(plan);
     let stream_alias = alias.clone();
-    let iter = store.scan_entities(scan).filter_map(move |entity| {
-        let mut row = BindingRow::new();
-        bind_entity(&mut row, stream_alias.as_deref(), entity);
-        match predicate_matches(predicate.as_ref(), &row) {
-            Ok(true) => Some(Ok(row)),
-            Ok(false) => None,
+    let iter = store.scan_entities(scan).filter_map(move |entity_result| {
+        match entity_result {
             Err(err) => Some(Err(err)),
+            Ok(entity) => {
+                let mut row = BindingRow::new();
+                bind_entity(&mut row, stream_alias.as_deref(), entity);
+                match predicate_matches(predicate.as_ref(), &row) {
+                    Ok(true) => Some(Ok(row)),
+                    Ok(false) => None,
+                    Err(err) => Some(Err(err)),
+                }
+            }
         }
     });
 
@@ -411,7 +421,14 @@ where
             relationship_types: plan.relationship_types.clone(),
             link_property_filters: Vec::new(),
         };
-        for link in store.traverse_links(traversal) {
+        for link_result in store.traverse_links(traversal) {
+            let link = match link_result {
+                Ok(link) => link,
+                Err(err) => {
+                    output.push(Err(err));
+                    return output;
+                }
+            };
             let next_id = other_entity_id(&link, plan.direction);
             let Some(entity) = store.get_entity(next_id) else {
                 continue;
@@ -465,7 +482,8 @@ where
         relationship_types: subquery.link_probe.relationship_types.clone(),
         link_property_filters: Vec::new(),
     };
-    for link in store.traverse_links(traversal) {
+    for link_result in store.traverse_links(traversal) {
+        let link = link_result?;
         let target_id = other_entity_id(&link, subquery.link_probe.direction);
         let Some(target) = store.get_entity(target_id) else {
             continue;
@@ -1166,11 +1184,11 @@ mod tests {
             let scanned = Rc::clone(&self.scanned);
             Box::new((0..self.total).map(move |i| {
                 scanned.set(scanned.get() + 1);
-                QueryEntity::new(
+                Ok(QueryEntity::new(
                     format!("bead-{i}"),
                     [scan.label.clone().unwrap_or_else(|| "DdxBead".to_string())],
                     PropertyMap::new(),
-                )
+                ))
             }))
         }
 
@@ -1391,5 +1409,109 @@ mod tests {
 
         // chain-a → chain-b (depth 1) → chain-c (depth 2) → chain-d (depth 3)
         assert_eq!(ids, vec!["chain-b", "chain-c", "chain-d"]);
+    }
+
+    // ── AC4: storage errors propagated as CypherError::Storage ───────────────
+
+    struct FailingStore;
+
+    impl QueryStore for FailingStore {
+        fn get_entity(&self, _id: &str) -> Option<QueryEntity> {
+            None
+        }
+        fn scan_entities(&self, _scan: EntityScan) -> crate::memory_store::EntityStream<'_> {
+            Box::new(std::iter::once(Err(CypherError::Storage(
+                "simulated scan failure".to_string(),
+            ))))
+        }
+        fn get_link(&self, _id: &str) -> Option<QueryLink> {
+            None
+        }
+        fn traverse_links(&self, _traversal: LinkTraversal) -> crate::memory_store::LinkStream<'_> {
+            Box::new(std::iter::once(Err(CypherError::Storage(
+                "simulated traverse failure".to_string(),
+            ))))
+        }
+    }
+
+    #[test]
+    fn storage_scan_error_propagates_as_cypher_error_storage() {
+        let schema = test_fixtures::ddx_beads();
+        // Use a filter on an indexed property so the planner accepts the query.
+        let query = parse("MATCH (b:DdxBead {status: 'open'}) RETURN b.id AS id")
+            .expect("query should parse");
+        let plan = plan(&query, &schema).expect("query should plan");
+
+        let err = execute(&plan, &FailingStore)
+            .next()
+            .expect("should produce one item")
+            .expect_err("should be an error");
+
+        assert!(
+            matches!(err, CypherError::Storage(ref msg) if msg.contains("simulated scan failure")),
+            "scan error should map to CypherError::Storage, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn storage_traverse_error_propagates_through_expand() {
+        let schema = test_fixtures::ddx_beads();
+        let query = parse(
+            "MATCH (b:DdxBead {id: 'bead-a'})-[:DEPENDS_ON]->(d:DdxBead) RETURN d.id AS id",
+        )
+        .expect("query should parse");
+        let plan = plan(&query, &schema).expect("query should plan");
+
+        // The FailingStore returns one entity (via scan first pass... but since
+        // FailingStore::scan_entities returns an error, the error propagates before
+        // traversal. Use a mixed store that succeeds on scan but fails on traverse.
+        struct ScanOkTraverseFailStore;
+        impl QueryStore for ScanOkTraverseFailStore {
+            fn get_entity(&self, _id: &str) -> Option<QueryEntity> {
+                Some(QueryEntity::new(
+                    "ddx_beads\x1fbead-a",
+                    ["DdxBead"],
+                    [
+                        ("id".to_string(), serde_json::json!("bead-a")),
+                        ("status".to_string(), serde_json::json!("open")),
+                        ("priority".to_string(), serde_json::json!(1_i64)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+            }
+            fn scan_entities(&self, _scan: EntityScan) -> crate::memory_store::EntityStream<'_> {
+                Box::new(std::iter::once(Ok(QueryEntity::new(
+                    "ddx_beads\x1fbead-a",
+                    ["DdxBead"],
+                    [
+                        ("id".to_string(), serde_json::json!("bead-a")),
+                        ("status".to_string(), serde_json::json!("open")),
+                        ("priority".to_string(), serde_json::json!(1_i64)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))))
+            }
+            fn get_link(&self, _id: &str) -> Option<QueryLink> {
+                None
+            }
+            fn traverse_links(
+                &self,
+                _traversal: LinkTraversal,
+            ) -> crate::memory_store::LinkStream<'_> {
+                Box::new(std::iter::once(Err(CypherError::Storage(
+                    "simulated traverse failure".to_string(),
+                ))))
+            }
+        }
+
+        let rows: Vec<_> = execute(&plan, &ScanOkTraverseFailStore).collect();
+        assert_eq!(rows.len(), 1, "one error item expected");
+        let err = rows[0].as_ref().expect_err("should be a storage error");
+        assert!(
+            matches!(err, CypherError::Storage(msg) if msg.contains("simulated traverse failure")),
+            "traverse error should map to CypherError::Storage, got {err:?}"
+        );
     }
 }
