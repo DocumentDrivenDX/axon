@@ -290,8 +290,18 @@ ORDER BY b.priority DESC, b.updated_at DESC";
         let plans = schema
             .activate_named_queries()
             .expect("ddx_beads named queries should activate without error");
-        assert_eq!(plans.len(), 2, "expected ready_beads and blocked_beads plans");
-        assert!(plans.contains_key("ready_beads"), "ready_beads plan missing");
-        assert!(plans.contains_key("blocked_beads"), "blocked_beads plan missing");
+        assert_eq!(
+            plans.len(),
+            2,
+            "expected ready_beads and blocked_beads plans"
+        );
+        assert!(
+            plans.contains_key("ready_beads"),
+            "ready_beads plan missing"
+        );
+        assert!(
+            plans.contains_key("blocked_beads"),
+            "blocked_beads plan missing"
+        );
     }
 }

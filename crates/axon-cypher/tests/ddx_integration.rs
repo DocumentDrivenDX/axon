@@ -62,6 +62,7 @@ fn ddx_schema() -> SchemaSnapshot {
             },
         )]),
         planner_config: PlannerConfig::default(),
+        queries: BTreeMap::new(),
     }
 }
 
@@ -153,8 +154,7 @@ fn dataset_has_ten_beads_and_fifteen_links() {
 
 #[test]
 fn ddx_ready_query_returns_open_beads_whose_deps_are_all_closed() {
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {status: 'open'})
         WHERE NOT EXISTS {
             MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
@@ -162,8 +162,7 @@ fn ddx_ready_query_returns_open_beads_whose_deps_are_all_closed() {
         }
         RETURN b.id AS id
         ORDER BY b.priority DESC
-        ",
-    );
+        ");
     assert_eq!(
         str_field(&rows, "id"),
         vec!["bead-01", "bead-03", "bead-05"],
@@ -173,8 +172,7 @@ fn ddx_ready_query_returns_open_beads_whose_deps_are_all_closed() {
 
 #[test]
 fn ddx_blocked_query_returns_open_beads_with_at_least_one_non_closed_dep() {
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {status: 'open'})
         WHERE EXISTS {
             MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
@@ -182,8 +180,7 @@ fn ddx_blocked_query_returns_open_beads_with_at_least_one_non_closed_dep() {
         }
         RETURN b.id AS id
         ORDER BY b.priority DESC
-        ",
-    );
+        ");
     assert_eq!(
         str_field(&rows, "id"),
         vec!["bead-02", "bead-04"],
@@ -195,13 +192,11 @@ fn ddx_blocked_query_returns_open_beads_with_at_least_one_non_closed_dep() {
 
 #[test]
 fn dependency_dag_direct_deps_of_bead_01_ordered_by_id() {
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {id: 'bead-01'})-[:DEPENDS_ON]->(d:DdxBead)
         RETURN d.id AS dep_id
         ORDER BY d.id ASC
-        ",
-    );
+        ");
     assert_eq!(
         str_field(&rows, "dep_id"),
         vec!["bead-06", "bead-07", "bead-10"],
@@ -211,13 +206,14 @@ fn dependency_dag_direct_deps_of_bead_01_ordered_by_id() {
 
 #[test]
 fn dependency_dag_leaf_node_has_no_deps() {
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {id: 'bead-07'})-[:DEPENDS_ON]->(d:DdxBead)
         RETURN d.id AS dep_id
-        ",
+        ");
+    assert!(
+        rows.is_empty(),
+        "bead-07 is a leaf with no outgoing dependencies"
     );
-    assert!(rows.is_empty(), "bead-07 is a leaf with no outgoing dependencies");
 }
 
 // ── AC4: reachability (US-025-style) ─────────────────────────────────────────
@@ -229,13 +225,11 @@ fn reachability_bead_02_transitive_deps_via_variable_length_path() {
     //   bead-09 → {bead-10}                           (depth 2)
     //   bead-06 → {bead-07}                           (depth 3, duplicate)
     // Unique transitive deps: bead-06, bead-07, bead-08, bead-09, bead-10
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {id: 'bead-02'})-[:DEPENDS_ON*1..3]->(d:DdxBead)
         RETURN DISTINCT d.id AS dep_id
         ORDER BY d.id ASC
-        ",
-    );
+        ");
     assert_eq!(
         str_field(&rows, "dep_id"),
         vec!["bead-06", "bead-07", "bead-08", "bead-09", "bead-10"],
@@ -249,13 +243,11 @@ fn reachability_bead_02_transitive_deps_via_variable_length_path() {
 fn distinct_deduplicates_dep_ids_across_all_open_beads() {
     // Open beads share several dependencies (e.g., bead-07 appears 5 times).
     // DISTINCT should collapse to 5 unique dep IDs.
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {status: 'open'})-[:DEPENDS_ON]->(d:DdxBead)
         RETURN DISTINCT d.id AS dep_id
         ORDER BY d.id ASC
-        ",
-    );
+        ");
     assert_eq!(
         str_field(&rows, "dep_id"),
         vec!["bead-06", "bead-07", "bead-08", "bead-09", "bead-10"],
@@ -266,13 +258,11 @@ fn distinct_deduplicates_dep_ids_across_all_open_beads() {
 #[test]
 fn optional_match_produces_null_binding_when_no_outgoing_dep_exists() {
     // bead-10 has no outgoing DEPENDS_ON links, so d should be null.
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {id: 'bead-10'})
         OPTIONAL MATCH (b:DdxBead)-[:DEPENDS_ON]->(d:DdxBead)
         RETURN b.title AS title, d.id AS dep_id
-        ",
-    );
+        ");
     assert_eq!(rows.len(), 1, "should return exactly one row");
     assert_eq!(rows[0]["title"], json!("kappa"));
     assert_eq!(
@@ -284,8 +274,7 @@ fn optional_match_produces_null_binding_when_no_outgoing_dep_exists() {
 
 #[test]
 fn exists_true_finds_beads_that_have_at_least_one_non_closed_dep() {
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {status: 'open'})
         WHERE EXISTS {
             MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
@@ -293,8 +282,7 @@ fn exists_true_finds_beads_that_have_at_least_one_non_closed_dep() {
         }
         RETURN b.id AS id
         ORDER BY b.id ASC
-        ",
-    );
+        ");
     assert_eq!(
         str_field(&rows, "id"),
         vec!["bead-02", "bead-04"],
@@ -304,8 +292,7 @@ fn exists_true_finds_beads_that_have_at_least_one_non_closed_dep() {
 
 #[test]
 fn not_exists_finds_beads_with_no_non_closed_deps() {
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {status: 'open'})
         WHERE NOT EXISTS {
             MATCH (b)-[:DEPENDS_ON]->(d:DdxBead)
@@ -313,8 +300,7 @@ fn not_exists_finds_beads_with_no_non_closed_deps() {
         }
         RETURN b.id AS id
         ORDER BY b.id ASC
-        ",
-    );
+        ");
     assert_eq!(
         str_field(&rows, "id"),
         vec!["bead-01", "bead-03", "bead-05"],
@@ -331,13 +317,11 @@ fn count_star_counts_all_open_beads() {
 
 #[test]
 fn order_by_priority_asc_returns_open_beads_in_ascending_order() {
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {status: 'open'})
         RETURN b.id AS id
         ORDER BY b.priority ASC
-        ",
-    );
+        ");
     assert_eq!(
         str_field(&rows, "id"),
         vec!["bead-05", "bead-04", "bead-03", "bead-02", "bead-01"],
@@ -347,13 +331,11 @@ fn order_by_priority_asc_returns_open_beads_in_ascending_order() {
 
 #[test]
 fn order_by_priority_desc_returns_open_beads_in_descending_order() {
-    let rows = run(
-        r"
+    let rows = run(r"
         MATCH (b:DdxBead {status: 'open'})
         RETURN b.id AS id
         ORDER BY b.priority DESC
-        ",
-    );
+        ");
     assert_eq!(
         str_field(&rows, "id"),
         vec!["bead-01", "bead-02", "bead-03", "bead-04", "bead-05"],
