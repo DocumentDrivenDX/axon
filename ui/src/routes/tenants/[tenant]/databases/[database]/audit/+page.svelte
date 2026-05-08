@@ -1,9 +1,12 @@
 <script lang="ts">
+import { base } from '$app/paths';
+import { page } from '$app/state';
 import {
 	type AuditEntry,
 	type EffectiveCollectionPolicy,
 	fetchAudit,
 	fetchEffectivePolicy,
+	fetchIntentAudit,
 	revertAuditEntry,
 	rollbackTransaction,
 } from '$lib/api';
@@ -61,6 +64,7 @@ type AuditFilters = {
 	actor: string;
 	startDate: string;
 	endDate: string;
+	intentId: string;
 };
 
 let entries = $state<AuditEntry[]>([]);
@@ -71,6 +75,7 @@ const filters = $state<AuditFilters>({
 	actor: '',
 	startDate: '',
 	endDate: '',
+	intentId: page.url.searchParams.get('intent') ?? '',
 });
 let selectedEntry = $state<AuditEntry | null>(null);
 
@@ -83,6 +88,14 @@ let revertError = $state<unknown>(null);
 let txRollbackConfirming = $state(false);
 let txRollbackMessage = $state<string | null>(null);
 let txRollbackError = $state<unknown>(null);
+
+const basePath = $derived(
+	`${base}/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}`,
+);
+
+function intentDetailHref(intentId: string): string {
+	return `${basePath}/intents/${encodeURIComponent(intentId)}`;
+}
 
 function txSiblingCount(txId: string | number | null | undefined): number {
 	if (!txId) return 0;
@@ -149,30 +162,36 @@ function formatTimestamp(timestampNs: number): string {
 async function loadEntries() {
 	loading = true;
 	try {
-		const auditFilters: {
-			collection?: string;
-			actor?: string;
-			sinceNs?: string;
-			untilNs?: string;
-		} = {};
+		if (filters.intentId && scope) {
+			// Use the REST intent-audit endpoint which returns full intent_lineage data.
+			const response = await fetchIntentAudit(filters.intentId, scope);
+			entries = response.entries;
+		} else {
+			const auditFilters: {
+				collection?: string;
+				actor?: string;
+				sinceNs?: string;
+				untilNs?: string;
+			} = {};
 
-		if (filters.collection) {
-			auditFilters.collection = filters.collection;
-		}
-		if (filters.actor) {
-			auditFilters.actor = filters.actor;
-		}
-		const sinceNs = dateToNs(filters.startDate);
-		if (sinceNs) {
-			auditFilters.sinceNs = sinceNs;
-		}
-		const untilNs = dateToNs(filters.endDate, true);
-		if (untilNs) {
-			auditFilters.untilNs = untilNs;
-		}
+			if (filters.collection) {
+				auditFilters.collection = filters.collection;
+			}
+			if (filters.actor) {
+				auditFilters.actor = filters.actor;
+			}
+			const sinceNs = dateToNs(filters.startDate);
+			if (sinceNs) {
+				auditFilters.sinceNs = sinceNs;
+			}
+			const untilNs = dateToNs(filters.endDate, true);
+			if (untilNs) {
+				auditFilters.untilNs = untilNs;
+			}
 
-		const response = await fetchAudit(auditFilters, scope);
-		entries = response.entries;
+			const response = await fetchAudit(auditFilters, scope);
+			entries = response.entries;
+		}
 		selectedEntry = entries[0] ?? null;
 		// Mirror selectEntry()'s policy lookup so the auto-selected first
 		// row's before/after payloads render with the correct redaction
@@ -203,6 +222,23 @@ $effect(() => {
 	</div>
 </div>
 
+{#if filters.intentId}
+	<div class="message" data-testid="audit-intent-banner">
+		Filtered by intent <code>{filters.intentId}</code>
+		<a class="inline-link" href={intentDetailHref(filters.intentId)} data-testid="audit-intent-detail-link">
+			View intent detail
+		</a>
+		<button
+			onclick={() => {
+				filters.intentId = '';
+				void loadEntries();
+			}}
+		>
+			Clear filter
+		</button>
+	</div>
+{/if}
+
 <section class="panel">
 	<div class="panel-body stack">
 		<div class="two-column">
@@ -221,6 +257,14 @@ $effect(() => {
 			<label>
 				<span>Until</span>
 				<input type="date" bind:value={filters.endDate} />
+			</label>
+			<label>
+				<span>Intent ID</span>
+				<input
+					bind:value={filters.intentId}
+					placeholder="Filter by intent ID"
+					data-testid="audit-intent-filter"
+				/>
 			</label>
 		</div>
 		<div class="actions">
@@ -258,7 +302,11 @@ $effect(() => {
 					</thead>
 					<tbody>
 						{#each entries as entry}
-							<tr onclick={() => selectEntry(entry)}>
+							<tr
+								onclick={() => selectEntry(entry)}
+								data-testid="audit-entry-row"
+								data-intent-id={entry.intent_lineage?.intent_id ?? null}
+							>
 								<td>{entry.id}</td>
 								<td>{formatTimestamp(entry.timestamp_ns)}</td>
 								<td>{entry.collection}</td>
@@ -267,6 +315,9 @@ $effect(() => {
 									{entry.mutation}
 									{#if entry.transaction_id}
 										<span class="pill">tx #{String(entry.transaction_id).substring(0, 8)}</span>
+									{/if}
+									{#if entry.intent_lineage?.intent_id}
+										<span class="pill" data-testid="audit-entry-intent-pill">intent</span>
 									{/if}
 								</td>
 								<td>{entry.actor ?? 'system'}</td>
@@ -341,6 +392,45 @@ $effect(() => {
 								</button>
 							</div>
 						{/if}
+					</div>
+				{/if}
+				{#if selectedEntry.intent_lineage}
+					<div data-testid="audit-intent-lineage">
+						<h3>Intent Lineage</h3>
+						<div class="meta-grid">
+							<span>Intent ID</span>
+							<a
+								class="inline-link"
+								href={intentDetailHref(selectedEntry.intent_lineage.intent_id)}
+								data-testid="audit-intent-link"
+							>
+								{selectedEntry.intent_lineage.intent_id}
+							</a>
+							<span>Decision</span>
+							<strong data-testid="audit-lineage-decision">{selectedEntry.intent_lineage.decision}</strong>
+							<span>Policy version</span>
+							<strong data-testid="audit-lineage-policy-version">{selectedEntry.intent_lineage.policy_version}</strong>
+							<span>Schema version</span>
+							<strong>{selectedEntry.intent_lineage.schema_version}</strong>
+							{#if selectedEntry.intent_lineage.approver?.actor ?? selectedEntry.intent_lineage.approver?.user_id}
+								<span>Approver</span>
+								<code data-testid="audit-lineage-approver">
+									{selectedEntry.intent_lineage.approver?.actor ?? selectedEntry.intent_lineage.approver?.user_id}
+								</code>
+							{/if}
+							{#if selectedEntry.intent_lineage.reason}
+								<span>Reason</span>
+								<span data-testid="audit-lineage-reason">{selectedEntry.intent_lineage.reason}</span>
+							{/if}
+							{#if selectedEntry.intent_lineage.origin}
+								<span>Origin</span>
+								<code data-testid="audit-lineage-origin">
+									{[selectedEntry.intent_lineage.origin.surface, selectedEntry.intent_lineage.origin.tool_name]
+										.filter((v) => v && v.length > 0)
+										.join(': ')}
+								</code>
+							{/if}
+						</div>
 					</div>
 				{/if}
 				<div>

@@ -5,7 +5,9 @@ import {
 	TASK_COLLECTION,
 	activateProposedPolicy,
 	approveIntent,
+	commitIntent,
 	createBudgetRecord,
+	dbAuditUrl,
 	dbIntentUrl,
 	dbIntentsUrl,
 	graphqlPath,
@@ -141,5 +143,154 @@ test.describe('Intent audit lineage', () => {
 		expect(metadata.new_schema_version).toBe('2');
 		expect(metadata.old_policy_version).toBe('1');
 		expect(metadata.new_policy_version).toBe('2');
+	});
+});
+
+test.describe('Intent audit deep link and lineage panel', () => {
+	test('deep link filters /audit by intent ID and pre-populates filter', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedApprovalCollections(request, 'audit-deeplink');
+		await createBudgetRecord(request, db, TASK_COLLECTION, 'task-dl');
+		const intent = await previewBudgetIntent(request, db, 'task-dl', 6_000, {
+			agentId: 'tool.commit-dl',
+		});
+		await commitIntent(request, db, intent);
+
+		await routeGraphqlAs(page, 'finance-agent');
+		await page.goto(`${dbAuditUrl(db)}?intent=${encodeURIComponent(intent.intentId)}`);
+
+		// Filter field pre-populated from URL param
+		await expect(page.getByTestId('audit-intent-filter')).toHaveValue(intent.intentId);
+
+		// Banner shows the filtered intent ID
+		await expect(page.getByTestId('audit-intent-banner')).toBeVisible();
+		await expect(page.getByTestId('audit-intent-banner')).toContainText(intent.intentId);
+
+		// Entries are present; preview comes before commit (chronological order)
+		await expect(page.locator('[data-testid="audit-entry-row"]').first()).toBeVisible();
+		const operations = await page
+			.locator('[data-testid="audit-entry-row"] td:nth-child(5)')
+			.allTextContents();
+		const previewIdx = operations.findIndex((op) => op.includes('mutation_intent.preview'));
+		const commitIdx = operations.findIndex((op) => op.includes('intent.commit'));
+		expect(previewIdx).toBeGreaterThanOrEqual(0);
+		expect(commitIdx).toBeGreaterThan(previewIdx);
+	});
+
+	test('shows intent lineage panel when an intent audit entry is selected', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedApprovalCollections(request, 'audit-lineage-panel');
+		await createBudgetRecord(request, db, TASK_COLLECTION, 'task-lp');
+		const intent = await previewBudgetIntent(request, db, 'task-lp', 6_000, {
+			agentId: 'tool.panel-test',
+		});
+		await commitIntent(request, db, intent);
+
+		await routeGraphqlAs(page, 'finance-agent');
+		await page.goto(`${dbAuditUrl(db)}?intent=${encodeURIComponent(intent.intentId)}`);
+
+		// Click the commit row to select it
+		const commitRow = page.locator('[data-testid="audit-entry-row"]', {
+			has: page.locator('td', { hasText: 'intent.commit' }),
+		});
+		await expect(commitRow).toBeVisible();
+		await commitRow.click();
+
+		// Lineage panel is visible in the detail section
+		await expect(page.getByTestId('audit-intent-lineage')).toBeVisible();
+
+		// Intent link navigates to the correct intent detail page
+		const intentLink = page.getByTestId('audit-intent-link');
+		await expect(intentLink).toBeVisible();
+		await expect(intentLink).toContainText(intent.intentId);
+		const href = await intentLink.getAttribute('href');
+		expect(href).toContain(encodeURIComponent(intent.intentId));
+	});
+
+	test('intent detail "open audit log" links to filtered audit view and back', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedApprovalCollections(request, 'audit-backlink');
+		await createBudgetRecord(request, db, TASK_COLLECTION, 'task-back');
+		const intent = await previewBudgetIntent(request, db, 'task-back', 6_000);
+		await commitIntent(request, db, intent);
+
+		await routeGraphqlAs(page, 'finance-agent');
+		await page.goto(dbIntentUrl(db, intent.intentId));
+
+		// The "Open audit log" link should carry the intent ID as a filter param
+		const auditLink = page.getByRole('link', { name: 'Open audit log' });
+		await expect(auditLink).toBeVisible();
+		const href = await auditLink.getAttribute('href');
+		expect(href).toMatch(/\/audit/);
+		expect(href).toContain(encodeURIComponent(intent.intentId));
+
+		// Click through; the audit page should show the filtered view
+		await auditLink.click();
+		await expect(page).toHaveURL(new RegExp('/audit'));
+		await expect(page.getByTestId('audit-intent-filter')).toHaveValue(intent.intentId);
+		await expect(page.getByTestId('audit-intent-banner')).toBeVisible();
+
+		// Clearing the intent filter dismisses the banner
+		await page.getByTestId('audit-intent-banner').getByRole('button', { name: 'Clear filter' }).click();
+		await expect(page.getByTestId('audit-intent-banner')).not.toBeVisible();
+	});
+
+	test('shows preview and approval events for approved intent in chronological order', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedApprovalCollections(request, 'audit-order-approve');
+		await createBudgetRecord(request, db, TASK_COLLECTION, 'task-order');
+		const intent = await previewBudgetIntent(request, db, 'task-order', 20_001, {
+			agentId: 'tool.order-test',
+		});
+		await approveIntent(request, db, intent.intentId);
+
+		await routeGraphqlAs(page, 'finance-agent');
+		await page.goto(`${dbAuditUrl(db)}?intent=${encodeURIComponent(intent.intentId)}`);
+
+		await expect(page.locator('[data-testid="audit-entry-row"]').first()).toBeVisible();
+		const operations = await page
+			.locator('[data-testid="audit-entry-row"] td:nth-child(5)')
+			.allTextContents();
+		const previewIdx = operations.findIndex((op) => op.includes('mutation_intent.preview'));
+		const approveIdx = operations.findIndex((op) => op.includes('intent.approve'));
+		expect(previewIdx).toBeGreaterThanOrEqual(0);
+		expect(approveIdx).toBeGreaterThan(previewIdx);
+	});
+
+	test('shows rejection event for rejected intent in chronological order', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedApprovalCollections(request, 'audit-reject-lineage');
+		const ids = await seedIntentStates(request, db);
+
+		await routeGraphqlAs(page, 'finance-agent');
+		await page.goto(`${dbAuditUrl(db)}?intent=${encodeURIComponent(ids.rejected)}`);
+
+		await expect(page.locator('[data-testid="audit-entry-row"]').first()).toBeVisible();
+		const operations = await page
+			.locator('[data-testid="audit-entry-row"] td:nth-child(5)')
+			.allTextContents();
+		const previewIdx = operations.findIndex((op) => op.includes('mutation_intent.preview'));
+		const rejectIdx = operations.findIndex((op) => op.includes('intent.reject'));
+		expect(previewIdx).toBeGreaterThanOrEqual(0);
+		expect(rejectIdx).toBeGreaterThan(previewIdx);
+
+		// Select the reject entry and verify lineage panel shows the intent link
+		const rejectRow = page.locator('[data-testid="audit-entry-row"]', {
+			has: page.locator('td', { hasText: 'intent.reject' }),
+		});
+		await rejectRow.click();
+		await expect(page.getByTestId('audit-intent-lineage')).toBeVisible();
+		await expect(page.getByTestId('audit-intent-link')).toBeVisible();
+		await expect(page.getByTestId('audit-lineage-decision')).toContainText('needs_approval');
 	});
 });

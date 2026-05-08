@@ -41,7 +41,7 @@ const basePath = $derived(
 	`${base}/tenants/${encodeURIComponent(scope.tenant)}/databases/${encodeURIComponent(scope.database)}`,
 );
 const inboxHref = $derived(`${basePath}/intents`);
-const auditHref = $derived(`${basePath}/audit`);
+const auditHref = $derived(`${basePath}/audit?intent=${encodeURIComponent(intentId)}`);
 
 let intent = $state<MutationIntent | null>(null);
 let auditEntries = $state<AuditEntry[]>([]);
