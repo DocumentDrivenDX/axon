@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::hash::BuildHasher;
 
-use axon_cypher::ast::{
+use axon_cypher_ast::ast::{
     Expression, FunctionArg, MatchClause, NodePattern, PathPattern, Query, Subquery,
 };
-use axon_cypher::schema::{
+use axon_cypher_ast::schema::{
     IndexedProperty, LabelDef, PropertyKind, RelationshipDef, SchemaSnapshot,
 };
-use axon_cypher::{parse, plan, validate, CypherError};
+use axon_cypher_ast::{parse, plan, validate, CypherError};
 use serde::{Deserialize, Serialize};
 
 use crate::schema::{CollectionSchema, IndexType};
