@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use axon_cypher::schema::{
     IndexedProperty, LabelDef, NamedQuery, PropertyKind, RelationshipDef, SchemaSnapshot,
 };
+use axon_cypher::SchemaSnapshotExt as _;
 use criterion::{criterion_group, criterion_main, Criterion};
 
 const READY_BEADS_QUERY: &str = r"

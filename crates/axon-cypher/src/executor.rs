@@ -811,6 +811,7 @@ mod tests {
     use super::*;
     use crate::memory_store::{PropertyMap, QueryEntity, QueryLink};
     use crate::schema::test_fixtures;
+    use crate::schema::SchemaSnapshotExt as _;
     use crate::{parse, plan, validate};
     use serde_json::json;
     use std::cell::Cell;

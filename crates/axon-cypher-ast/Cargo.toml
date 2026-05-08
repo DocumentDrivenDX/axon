@@ -1,0 +1,17 @@
+[package]
+name = "axon-cypher-ast"
+description = "openCypher subset AST, parser, and validator for Axon graph queries"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axon-core = { path = "../axon-core" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

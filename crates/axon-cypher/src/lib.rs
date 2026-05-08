@@ -1,8 +1,8 @@
 //! openCypher subset for Axon graph queries.
 //!
-//! This crate parses, plans, and executes a read-only subset of openCypher
-//! per [ADR-021](../../docs/helix/02-design/adr/ADR-021-graph-query-language.md).
-//! Writes are not supported; that flow lives in mutation intents (FEAT-030).
+//! AST, parser, validator, and schema types live in the leaf crate
+//! `axon-cypher-ast`. This crate adds the planner and executor and
+//! re-exports the full public surface so existing callers need no changes.
 //!
 //! Surface in V1:
 //! - [`parse`] — parse a Cypher query string into an [`ast::Query`].
@@ -12,16 +12,23 @@
 //! specified in ADR-021. Any clause outside the supported subset is
 //! rejected at parse time with a typed error from [`error::CypherError`].
 
-pub mod ast;
-pub mod error;
-pub mod executor;
-pub mod lexer;
-pub mod memory_store;
-pub mod parser;
-pub mod planner;
-pub mod schema;
-pub mod validator;
+// ── Re-export leaf modules from axon-cypher-ast ─────────────────────────────
+pub use axon_cypher_ast::ast;
+pub use axon_cypher_ast::error;
+pub use axon_cypher_ast::lexer;
+pub use axon_cypher_ast::parser;
+pub use axon_cypher_ast::validator;
 
+// ── Local modules: schema extension + executor-side ─────────────────────────
+// `schema` overrides axon_cypher_ast::schema; it re-exports everything from
+// there and adds the SchemaSnapshotExt extension trait.
+pub mod schema;
+pub mod executor;
+pub mod memory_store;
+pub mod planner;
+
+// ── Top-level re-exports for API compatibility ───────────────────────────────
+pub use axon_cypher_ast::parse;
 pub use ast::Query;
 pub use error::CypherError;
 pub use executor::{
@@ -32,14 +39,5 @@ pub use memory_store::{
     QueryLink, QueryStore,
 };
 pub use planner::{plan, ExecutionPlan, PlanOperator};
-pub use schema::SchemaSnapshot;
+pub use schema::{SchemaSnapshot, SchemaSnapshotExt};
 pub use validator::validate;
-
-/// Parse a Cypher query string into an [`ast::Query`].
-///
-/// Returns [`CypherError::Parse`] if the query is malformed or contains
-/// constructs outside the supported V1 subset.
-pub fn parse(input: &str) -> Result<Query, CypherError> {
-    let tokens = lexer::tokenize(input)?;
-    parser::Parser::new(tokens).parse_query()
-}

@@ -12,6 +12,7 @@ members = [
     "crates/axon-mcp",
     "crates/axon-control-plane",
     "crates/axon-cypher",
+    "crates/axon-cypher-ast",
 ]
 resolver = "2"
 
