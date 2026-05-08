@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 
 import {
 	SCN017_COLLECTIONS,
+	SCN017_SUBJECTS,
 	TASK_COLLECTION,
 	activateProposedPolicy,
 	approveIntent,
@@ -292,5 +293,122 @@ test.describe('Intent audit deep link and lineage panel', () => {
 		await expect(page.getByTestId('audit-intent-lineage')).toBeVisible();
 		await expect(page.getByTestId('audit-intent-link')).toBeVisible();
 		await expect(page.getByTestId('audit-lineage-decision')).toContainText('needs_approval');
+	});
+
+	test('contractor lineage redacts metadata fields', async ({ page, request }) => {
+		const db = await seedApprovalCollections(request, 'audit-lineage-contractor-redact');
+
+		const mockIntentId = 'contractor-lineage-redact-intent';
+		const sensitiveReason = 'contract-review-alpha-confidential';
+		const sensitiveApproverActor = 'restricted-finance-approver-actor';
+
+		// Mock GraphQL: effectivePolicy returns redactedFields that overlap lineage field names,
+		// simulating a policy that strips these values for contractor role.
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor, async (postData) => {
+			if (postData.includes('AxonUiEffectivePolicy')) {
+				return {
+					data: {
+						effectivePolicy: {
+							collection: TASK_COLLECTION,
+							canRead: true,
+							canCreate: false,
+							canUpdate: false,
+							canDelete: false,
+							redactedFields: ['reason', 'approver.actor', 'approver.user_id'],
+							deniedFields: [],
+							policyVersion: 1,
+						},
+					},
+				};
+			}
+			return null;
+		});
+
+		// Mock REST audit endpoint: server returns null for fields it stripped from the lineage.
+		await page.route('**/audit/query*', async (route) => {
+			const url = new URL(route.request().url());
+			if (url.searchParams.get('intent_id') === mockIntentId) {
+				await route.fulfill({
+					status: 200,
+					contentType: 'application/json',
+					body: JSON.stringify({
+						entries: [
+							{
+								id: 1001,
+								timestamp_ns: Date.now() * 1_000_000,
+								collection: TASK_COLLECTION,
+								entity_id: 'task-contractor-redact',
+								version: 2,
+								mutation: 'intent.commit',
+								data_before: null,
+								data_after: { budget_cents: 15000, status: 'approved' },
+								actor: SCN017_SUBJECTS.financeAgent,
+								transaction_id: null,
+								metadata: null,
+								intent_lineage: {
+									intent_id: mockIntentId,
+									decision: 'allow',
+									approval_id: null,
+									policy_version: 1,
+									schema_version: 1,
+									subject_snapshot: null,
+									approver: {
+										actor: null,
+										user_id: null,
+										tenant_role: null,
+										credential_id: null,
+									},
+									reason: null,
+									origin: {
+										surface: 'mcp',
+										tool_name: 'tool.audit-test',
+									},
+									lineage_links: null,
+								},
+							},
+						],
+						next_cursor: null,
+					}),
+				});
+				return;
+			}
+			await route.continue();
+		});
+
+		await page.goto(`${dbAuditUrl(db)}?intent=${encodeURIComponent(mockIntentId)}`);
+		await page.waitForLoadState('networkidle');
+
+		const entryRow = page.locator('[data-testid="audit-entry-row"]').first();
+		await expect(entryRow).toBeVisible();
+		await entryRow.click();
+
+		await expect(page.getByTestId('audit-intent-lineage')).toBeVisible();
+
+		// Null fields covered by redactedFields render as [redacted], not blank.
+		await expect(page.getByTestId('audit-lineage-reason')).toBeVisible();
+		await expect(page.getByTestId('audit-lineage-reason')).toContainText('[redacted]');
+		await expect(page.getByTestId('audit-lineage-approver')).toBeVisible();
+		await expect(page.getByTestId('audit-lineage-approver')).toContainText('[redacted]');
+
+		// Fields not in redactedFields render as plain text.
+		await expect(page.getByTestId('audit-lineage-decision')).toContainText('allow');
+		await expect(page.getByTestId('audit-lineage-origin')).toContainText('mcp');
+
+		// DOM-leakage assertions (axon-c3895a14 sibling pattern).
+		const html = await page.content();
+		expect(html).not.toContain(sensitiveReason);
+		expect(html).not.toContain(sensitiveApproverActor);
+
+		const leakProbe = await page.evaluate((needle: string) => {
+			const dump = (s: Storage) => Object.values(s).join(' ');
+			return {
+				inLocalStorage: dump(localStorage).includes(needle),
+				inSessionStorage: dump(sessionStorage).includes(needle),
+				inDocumentTitle: document.title.includes(needle),
+			};
+		}, sensitiveReason);
+		expect(leakProbe.inLocalStorage).toBe(false);
+		expect(leakProbe.inSessionStorage).toBe(false);
+		expect(leakProbe.inDocumentTitle).toBe(false);
 	});
 });

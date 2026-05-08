@@ -395,6 +395,7 @@ $effect(() => {
 					</div>
 				{/if}
 				{#if selectedEntry.intent_lineage}
+					{@const rl = redactValue(selectedEntry.intent_lineage, redactedFieldsFor(selectedEntry.collection))}
 					<div data-testid="audit-intent-lineage">
 						<h3>Intent Lineage</h3>
 						<div class="meta-grid">
@@ -407,25 +408,25 @@ $effect(() => {
 								{selectedEntry.intent_lineage.intent_id}
 							</a>
 							<span>Decision</span>
-							<strong data-testid="audit-lineage-decision">{selectedEntry.intent_lineage.decision}</strong>
+							<strong data-testid="audit-lineage-decision">{rl.decision}</strong>
 							<span>Policy version</span>
-							<strong data-testid="audit-lineage-policy-version">{selectedEntry.intent_lineage.policy_version}</strong>
+							<strong data-testid="audit-lineage-policy-version">{rl.policy_version}</strong>
 							<span>Schema version</span>
-							<strong>{selectedEntry.intent_lineage.schema_version}</strong>
-							{#if selectedEntry.intent_lineage.approver?.actor ?? selectedEntry.intent_lineage.approver?.user_id}
+							<strong>{rl.schema_version}</strong>
+							{#if rl.approver?.actor ?? rl.approver?.user_id}
 								<span>Approver</span>
 								<code data-testid="audit-lineage-approver">
-									{selectedEntry.intent_lineage.approver?.actor ?? selectedEntry.intent_lineage.approver?.user_id}
+									{rl.approver?.actor ?? rl.approver?.user_id}
 								</code>
 							{/if}
-							{#if selectedEntry.intent_lineage.reason}
+							{#if rl.reason}
 								<span>Reason</span>
-								<span data-testid="audit-lineage-reason">{selectedEntry.intent_lineage.reason}</span>
+								<span data-testid="audit-lineage-reason">{rl.reason}</span>
 							{/if}
-							{#if selectedEntry.intent_lineage.origin}
+							{#if rl.origin}
 								<span>Origin</span>
 								<code data-testid="audit-lineage-origin">
-									{[selectedEntry.intent_lineage.origin.surface, selectedEntry.intent_lineage.origin.tool_name]
+									{[rl.origin.surface, rl.origin.tool_name]
 										.filter((v) => v && v.length > 0)
 										.join(': ')}
 								</code>
