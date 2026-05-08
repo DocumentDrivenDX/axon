@@ -181,6 +181,19 @@ type LinkRow = Link & {
 	 */
 	target_data: Record<string, unknown> | null;
 };
+
+// Per-row state machine for the inline target-data preview toggle.
+// Transitions: idle→loading on toggle; loading→ready on success;
+// loading→failed on error; ready→idle on collapse; failed→loading on
+// retry; loading→idle if user clicks again while in-flight (cancel).
+type LinkPreviewState =
+	| { status: 'idle' }
+	| { status: 'loading' }
+	| { status: 'ready'; policy: EffectiveCollectionPolicy | null }
+	| { status: 'failed'; error: Error };
+
+const LINK_PREVIEW_IDLE: LinkPreviewState = { status: 'idle' };
+
 let links = $state<LinkRow[]>([]);
 let traverse = $state<TraverseResult | null>(null);
 let linksLoading = $state(false);
@@ -190,24 +203,16 @@ let newLinkType = $state('');
 let newLinkTargetCollection = $state('');
 let newLinkTargetId = $state('');
 let createLinkError = $state<string | null>(null);
-// Per-target-collection effective-policy cache. Mirrors the audit
-// page's pattern (audit/+page.svelte:20) so the inline target-data
-// preview can render redacted leaves without re-fetching the policy on
-// every expand. Keyed by `${tenant}/${database}/${collection}` so cache
-// entries cannot leak across scopes. Survives selected-entity changes:
-// the policy is collection-level and equal for every entity in scope,
-// so the issue's "lifetime of the selected entity" requirement is
-// satisfied by this looser bound.
-// Distinguishes successful fetches (stores EffectiveCollectionPolicy) from
-// failed fetches (stores { failed: true }) so transient errors don't
-// permanently disable retries.
-const targetPolicyByScopedCollection = $state<
-	Record<string, EffectiveCollectionPolicy | { failed: true }>
->({});
-// Per-link expansion state for the inline target-data preview. Keyed by
-// the same `${linkType}:${target_collection}/${target_id}` shape used to
-// dedup `links` so a row's expansion survives unrelated re-renders.
-let expandedLinks = $state<Record<string, boolean>>({});
+// Per-target-collection effective-policy cache. Only stores successful
+// fetches; failed fetches are not cached so the next toggle retries.
+// Keyed by `${tenant}/${database}/${collection}` to prevent cross-scope
+// leaks. Survives selected-entity changes because the policy is
+// collection-level and equal for every entity in scope.
+const targetPolicyByScopedCollection = $state<Record<string, EffectiveCollectionPolicy>>({});
+// Per-row expansion state machine. Keyed by the same
+// `${linkType}:${target_collection}/${target_id}` shape used to dedup
+// `links` so expansion survives unrelated re-renders.
+let linkPreviewStates = $state<Partial<Record<string, LinkPreviewState>>>({});
 
 // Lifecycle
 let lifecycleError = $state<unknown>(null);
@@ -311,7 +316,7 @@ async function loadLinksTab() {
 	// change. The target-policy cache survives reloads of the same entity
 	// because it's keyed by `${tenant}/${database}/${collection}`, but
 	// the rows we expanded may no longer exist after the refetch.
-	expandedLinks = {};
+	linkPreviewStates = {};
 	try {
 		traverse = await traverseLinks(collectionName, selectedEntity.id, {}, scope);
 		// The server returns path hops when available; each hop describes a
@@ -361,54 +366,49 @@ function targetPolicyCacheKey(targetCollection: string): string {
 	return `${scope.tenant}/${scope.database}/${targetCollection}`;
 }
 
-async function ensureTargetPolicy(targetCollection: string): Promise<void> {
+async function ensureTargetPolicy(
+	targetCollection: string,
+): Promise<EffectiveCollectionPolicy | null> {
 	const key = targetPolicyCacheKey(targetCollection);
 	const cached = targetPolicyByScopedCollection[key];
-	// Only return early if we have a successful fetch. Failed fetches (marked
-	// with { failed: true }) allow the next expand to retry.
-	if (cached && 'canRead' in cached) return;
+	if (cached) return cached;
 	try {
-		targetPolicyByScopedCollection[key] = await fetchEffectivePolicy(targetCollection, scope);
+		const policy = await fetchEffectivePolicy(targetCollection, scope);
+		targetPolicyByScopedCollection[key] = policy;
+		return policy;
 	} catch {
-		// Mark the fetch as failed so the next expand of any row in this
-		// collection retries rather than permanently using a permissive
-		// fallback. The server has already enforced field-level visibility,
-		// so rendering without redaction markers is acceptable in the rare
-		// case of a transient policy outage.
-		targetPolicyByScopedCollection[key] = { failed: true };
+		// Do not cache failures so the next toggle retries the fetch.
+		return null;
 	}
-}
-
-function targetRedactedFields(targetCollection: string): readonly string[] {
-	const cached = targetPolicyByScopedCollection[targetPolicyCacheKey(targetCollection)];
-	// Return redactedFields if we have a successful fetch; otherwise return
-	// empty array (either policy not yet fetched or fetch failed). When the
-	// fetch fails, the server has already enforced field visibility, so we
-	// render without redaction markers.
-	if (cached && 'canRead' in cached) {
-		return cached.redactedFields;
-	}
-	return [];
 }
 
 async function toggleLinkPreview(link: LinkRow): Promise<void> {
-	const key = linkRowKey(link.link_type, link.target_collection, link.target_id);
-	if (expandedLinks[key]) {
-		delete expandedLinks[key];
-		expandedLinks = { ...expandedLinks };
+	const rowKey = linkRowKey(link.link_type, link.target_collection, link.target_id);
+	const current = linkPreviewStates[rowKey] ?? LINK_PREVIEW_IDLE;
+
+	if (current.status !== 'idle') {
+		// Any non-idle state collapses to idle on toggle:
+		// - loading: cancel the in-flight fetch
+		// - ready: collapse the expanded row
+		// - failed: close the error chip (next open will retry from idle)
+		linkPreviewStates = { ...linkPreviewStates, [rowKey]: { status: 'idle' } };
 		return;
 	}
-	// Optimistically mark the row expanded before the policy fetch so a
-	// repeated click while the request is in flight can take the collapse
-	// branch. If the fetch fails, roll the optimistic expansion back.
-	expandedLinks[key] = true;
-	expandedLinks = { ...expandedLinks };
-	try {
-		await ensureTargetPolicy(link.target_collection);
-	} catch {
-		delete expandedLinks[key];
-		expandedLinks = { ...expandedLinks };
-	}
+
+	// idle → start fetch
+	linkPreviewStates = { ...linkPreviewStates, [rowKey]: { status: 'loading' } };
+	const policy = await ensureTargetPolicy(link.target_collection);
+
+	// Abort if a second click already transitioned away from loading.
+	if ((linkPreviewStates[rowKey] ?? LINK_PREVIEW_IDLE).status !== 'loading') return;
+
+	linkPreviewStates = {
+		...linkPreviewStates,
+		[rowKey]:
+			policy !== null
+				? { status: 'ready', policy }
+				: { status: 'failed', error: new Error('Failed to fetch target policy') },
+	};
 }
 
 async function loadMarkdownTab() {
@@ -1758,7 +1758,7 @@ onDestroy(() => {
 								<tbody>
 									{#each links as link}
 										{@const rowKey = linkRowKey(link.link_type, link.target_collection, link.target_id)}
-										{@const expanded = expandedLinks[rowKey] === true}
+										{@const rowState = linkPreviewStates[rowKey] ?? LINK_PREVIEW_IDLE}
 										{@const targetTestid = `${link.link_type}-${link.target_id}`}
 										<tr>
 											<td><code>{link.link_type}</code></td>
@@ -1771,7 +1771,7 @@ onDestroy(() => {
 													disabled={link.target_data === null}
 													onclick={() => void toggleLinkPreview(link)}
 												>
-													{expanded ? 'Hide data' : 'Show data'}
+													{rowState.status === 'ready' ? 'Hide data' : 'Show data'}
 												</button>
 											</td>
 											<td>
@@ -1780,15 +1780,28 @@ onDestroy(() => {
 												</button>
 											</td>
 										</tr>
-										{#if expanded && link.target_data !== null}
+										{#if rowState.status === 'loading'}
+											<tr class="link-preview-row">
+												<td colspan="4"><span class="muted">Loading…</span></td>
+											</tr>
+										{:else if rowState.status === 'ready' && link.target_data !== null}
 											<tr
 												class="link-preview-row"
 												data-testid={`entity-link-preview-${targetTestid}`}
 											>
 												<td colspan="4">
 													<JsonTree
-														data={redactValue(link.target_data, targetRedactedFields(link.target_collection)) as JsonValue}
+														data={redactValue(link.target_data, rowState.policy?.redactedFields ?? []) as JsonValue}
 													/>
+												</td>
+											</tr>
+										{:else if rowState.status === 'failed' && link.target_data !== null}
+											<tr
+												class="link-preview-row"
+												data-testid={`entity-link-preview-${targetTestid}`}
+											>
+												<td colspan="4">
+													<span class="message error" data-testid="link-preview-policy-error">{rowState.error.message}</span>
 												</td>
 											</tr>
 										{/if}
