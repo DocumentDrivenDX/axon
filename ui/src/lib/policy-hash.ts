@@ -2,7 +2,11 @@ function sortKeysDeep(value: unknown): unknown {
 	if (value === null || typeof value !== 'object') return value;
 	if (Array.isArray(value)) return value.map(sortKeysDeep);
 	const obj = value as Record<string, unknown>;
-	return Object.fromEntries(Object.keys(obj).sort().map((k) => [k, sortKeysDeep(obj[k])]));
+	return Object.fromEntries(
+		Object.keys(obj)
+			.sort()
+			.map((k) => [k, sortKeysDeep(obj[k])]),
+	);
 }
 
 // Canonical form: sort keys recursively, no whitespace, SHA-256 first 16 hex chars.
