@@ -3,11 +3,13 @@ import { expect, test } from '@playwright/test';
 import {
 	SCN017_COLLECTIONS,
 	SCN017_SUBJECTS,
+	activateProposedPolicy,
 	createTestEntity,
 	createTestLink,
 	dbAuditUrl,
 	dbCollectionUrl,
 	dbCollectionsUrl,
+	proposedPolicyDraftDenyHigh,
 	routeGraphqlAs,
 	seedScn017PolicyUiFixture,
 	tenantUrl,
@@ -1039,5 +1041,102 @@ test.describe('Policy enforcement (UI redaction)', () => {
 
 		// Verify that we attempted the policy fetch at least twice (once failed, once succeeded).
 		expect(policyFetchAttempt).toBeGreaterThanOrEqual(2);
+	});
+
+	test('entity-list-policy-version increments after policy activation', async ({
+		page,
+		request,
+	}) => {
+		// AC2: entity-list-policy-version testid must show a higher numeric value
+		// after activateProposedPolicy bumps the policy version.
+		const fixture = await seedScn017PolicyUiFixture(
+			request,
+			'policy-enforcement-policy-version-update',
+		);
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+		await page.goto(collectionUrl);
+
+		// Wait for the list to settle before reading the initial version.
+		await expect(page.locator('tbody tr', { hasText: fixture.invoices.large.id })).toBeVisible();
+
+		// Capture the initial policy version.
+		const initialText = await page
+			.getByTestId('entity-list-policy-version')
+			.first()
+			.innerText();
+		const initialVersion = Number.parseInt(initialText.trim(), 10);
+		expect(Number.isFinite(initialVersion)).toBe(true);
+
+		// Activate a new policy version via API — bumps policyVersion by 1.
+		await activateProposedPolicy(
+			request,
+			fixture.db,
+			SCN017_COLLECTIONS.invoices,
+			proposedPolicyDraftDenyHigh(),
+		);
+
+		// Reload the page so the UI re-fetches the effective policy.
+		await page.goto(collectionUrl);
+		await expect(page.locator('tbody tr', { hasText: fixture.invoices.large.id })).toBeVisible();
+
+		// The displayed policy version must have incremented.
+		const updatedText = await page
+			.getByTestId('entity-list-policy-version')
+			.first()
+			.innerText();
+		const updatedVersion = Number.parseInt(updatedText.trim(), 10);
+		expect(Number.isFinite(updatedVersion)).toBe(true);
+		expect(updatedVersion).toBeGreaterThan(initialVersion);
+	});
+
+	test('entity-list-schema-version increments after policy activation', async ({
+		page,
+		request,
+	}) => {
+		// AC3: entity-list-schema-version testid must show a higher numeric value
+		// after activateProposedPolicy, which writes schema.version + 1 via putSchema.
+		const fixture = await seedScn017PolicyUiFixture(
+			request,
+			'policy-enforcement-schema-version-update',
+		);
+		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
+		await page.goto(collectionUrl);
+
+		// Wait for the list to settle before reading the initial version.
+		await expect(page.locator('tbody tr', { hasText: fixture.invoices.large.id })).toBeVisible();
+
+		// Capture the initial schema version.
+		const initialText = await page
+			.getByTestId('entity-list-schema-version')
+			.first()
+			.innerText();
+		const initialVersion = Number.parseInt(initialText.trim(), 10);
+		expect(Number.isFinite(initialVersion)).toBe(true);
+
+		// activateProposedPolicy writes schema.version + 1 via putSchema,
+		// which drives the entity-list-schema-version indicator.
+		await activateProposedPolicy(
+			request,
+			fixture.db,
+			SCN017_COLLECTIONS.invoices,
+			proposedPolicyDraftDenyHigh(),
+		);
+
+		// Reload the page so the UI re-fetches the collection schema.
+		await page.goto(collectionUrl);
+		await expect(page.locator('tbody tr', { hasText: fixture.invoices.large.id })).toBeVisible();
+
+		// The displayed schema version must have incremented.
+		const updatedText = await page
+			.getByTestId('entity-list-schema-version')
+			.first()
+			.innerText();
+		const updatedVersion = Number.parseInt(updatedText.trim(), 10);
+		expect(Number.isFinite(updatedVersion)).toBe(true);
+		expect(updatedVersion).toBeGreaterThan(initialVersion);
 	});
 });

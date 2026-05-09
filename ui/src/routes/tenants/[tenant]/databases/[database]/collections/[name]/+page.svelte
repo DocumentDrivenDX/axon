@@ -1292,7 +1292,7 @@ onDestroy(() => {
 				{totalCount ?? entities.length}
 			</span> visible
 			{#if collection?.schema}
-				· schema v{collection.schema.version}
+				· schema v<span data-testid="entity-list-schema-version">{collection.schema.version}</span>
 			{:else}
 				· no schema
 			{/if}
