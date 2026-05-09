@@ -65,6 +65,8 @@ RUN mkdir -p crates/axon-cli/src \
     && printf '%s\n' 'fn main() {}' > crates/axon-cli/src/main.rs \
     && mkdir -p crates/axon-api/benches \
     && printf '%s\n' 'fn main() {}' > crates/axon-api/benches/benchmarks.rs \
+    && mkdir -p crates/axon-cypher/benches \
+    && printf '%s\n' 'fn main() {}' > crates/axon-cypher/benches/ddx_benchmark.rs \
     && for crate in \
         axon-api \
         axon-audit \
