@@ -462,6 +462,17 @@ type GraphQLTransactionPayload = {
 	}>;
 };
 
+type GraphQLIntentLineage = {
+	intentId: string;
+	decision: string;
+	policyVersion: number;
+	schemaVersion: number;
+	grantVersion?: number | null;
+	approver?: MutationIntentAuditApprover | null;
+	reason?: string | null;
+	origin?: MutationIntentAuditOrigin | null;
+};
+
 type GraphQLAuditEntry = {
 	id: string;
 	timestampNs: string;
@@ -474,6 +485,7 @@ type GraphQLAuditEntry = {
 	actor: string | null;
 	transactionId?: number | null;
 	metadata?: Record<string, string> | null;
+	intentLineage?: GraphQLIntentLineage | null;
 };
 
 type GraphQLAuditConnection = {
@@ -1321,6 +1333,7 @@ async function commitSingleEntityOperation(
 }
 
 function auditEntryFromGraphql(entry: GraphQLAuditEntry): AuditEntry {
+	const intentLineage = entry.intentLineage ?? null;
 	return {
 		id: Number(entry.id),
 		timestamp_ns: Number(entry.timestampNs),
@@ -1333,7 +1346,20 @@ function auditEntryFromGraphql(entry: GraphQLAuditEntry): AuditEntry {
 		actor: entry.actor,
 		transaction_id: entry.transactionId ?? null,
 		metadata: entry.metadata ?? null,
-		intent_lineage: null,
+		intent_lineage: intentLineage
+			? {
+					intent_id: intentLineage.intentId,
+					decision: intentLineage.decision as MutationIntentAuditMetadata['decision'],
+					policy_version: intentLineage.policyVersion,
+					schema_version: intentLineage.schemaVersion,
+					subject_snapshot: {
+						grant_version: intentLineage.grantVersion ?? undefined,
+					},
+					approver: intentLineage.approver ?? null,
+					reason: intentLineage.reason ?? null,
+					origin: intentLineage.origin ?? null,
+				}
+			: null,
 	};
 }
 
@@ -1906,6 +1932,16 @@ export async function fetchAudit(
 							actor
 							transactionId
 							metadata
+							intentLineage {
+								intentId
+								decision
+								policyVersion
+								schemaVersion
+								grantVersion
+								approver
+								reason
+								origin
+							}
 						}
 					}
 					pageInfo {
@@ -2476,6 +2512,16 @@ export async function fetchEntityAudit(
 							actor
 							transactionId
 							metadata
+							intentLineage {
+								intentId
+								decision
+								policyVersion
+								schemaVersion
+								grantVersion
+								approver
+								reason
+								origin
+							}
 						}
 					}
 					pageInfo {
@@ -3039,6 +3085,16 @@ export async function applyEntityRollback(
 						actor
 						transactionId
 						metadata
+						intentLineage {
+							intentId
+							decision
+							policyVersion
+							schemaVersion
+							grantVersion
+							approver
+							reason
+							origin
+						}
 					}
 				}
 			}`,
