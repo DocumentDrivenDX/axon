@@ -50,6 +50,7 @@ COPY crates/axon-config/Cargo.toml crates/axon-config/Cargo.toml
 COPY crates/axon-control-plane/Cargo.toml crates/axon-control-plane/Cargo.toml
 COPY crates/axon-core/Cargo.toml crates/axon-core/Cargo.toml
 COPY crates/axon-cypher/Cargo.toml crates/axon-cypher/Cargo.toml
+COPY crates/axon-cypher-ast/Cargo.toml crates/axon-cypher-ast/Cargo.toml
 COPY crates/axon-graphql/Cargo.toml crates/axon-graphql/Cargo.toml
 COPY crates/axon-mcp/Cargo.toml crates/axon-mcp/Cargo.toml
 COPY crates/axon-render/Cargo.toml crates/axon-render/Cargo.toml
@@ -71,6 +72,7 @@ RUN mkdir -p crates/axon-cli/src \
         axon-control-plane \
         axon-core \
         axon-cypher \
+        axon-cypher-ast \
         axon-graphql \
         axon-mcp \
         axon-render \
