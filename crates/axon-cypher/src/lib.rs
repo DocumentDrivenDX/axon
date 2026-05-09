@@ -26,6 +26,7 @@ pub mod schema;
 pub mod executor;
 pub mod memory_store;
 pub mod planner;
+pub mod storage_adapter_store;
 
 // ── Top-level re-exports for API compatibility ───────────────────────────────
 pub use axon_cypher_ast::parse;
@@ -40,4 +41,5 @@ pub use memory_store::{
 };
 pub use planner::{plan, ExecutionPlan, PlanOperator};
 pub use schema::{SchemaSnapshot, SchemaSnapshotExt};
+pub use storage_adapter_store::StorageAdapterQueryStore;
 pub use validator::validate;
