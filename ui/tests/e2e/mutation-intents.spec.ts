@@ -1,9 +1,13 @@
 import { type Page, expect, test } from '@playwright/test';
 import {
+	SCN017_COLLECTIONS,
 	TASK_COLLECTION,
 	type TestDatabase,
+	activateProposedPolicy,
 	dbCollectionUrl,
+	dbIntentUrl,
 	patchBudgetRecordAs,
+	proposedPolicyDraftDenyHigh,
 	routeGraphqlAs,
 	seedIntentCollection,
 } from './helpers';
@@ -364,5 +368,99 @@ test.describe('Mutation intents', () => {
 		// (version 2), so commit becomes available again and succeeds.
 		await page.getByTestId('intent-commit').click();
 		await expect(page.getByText(/Saved v\d+\./)).toBeVisible({ timeout: 10_000 });
+	});
+
+	test('intent detail page shows schema-version, policy-version, and grant-version indicators', async ({
+		page,
+		request,
+	}) => {
+		// Seed a DB, preview an intent to obtain an intent ID, then navigate
+		// directly to the intent detail page and assert that all three version
+		// testids are rendered and visible.
+		const db = await seedIntentCollection(request, 'intent-version-indicators');
+		await routeGraphqlAs(page, 'finance-agent');
+		await page.goto(dbCollectionUrl(db, COLLECTION));
+		await expect(page.locator('.entity-rail tbody tr', { hasText: ENTITY_ID })).toBeVisible({
+			timeout: 10_000,
+		});
+		await page.getByRole('button', { name: 'Edit' }).click();
+		await page.locator('.tree-row', { hasText: 'budget_cents' }).locator('input.leaf-input').fill('6000');
+
+		const responsePromise = page.waitForResponse(
+			(response) =>
+				response.url().endsWith('/graphql') &&
+				response.request().method() === 'POST' &&
+				(response.request().postData() ?? '').includes('previewMutation'),
+		);
+		await page.getByRole('button', { name: 'Preview' }).click();
+		const response = await responsePromise;
+		const payload = (await response.json()) as {
+			data?: { previewMutation?: { intent?: { id?: string } | null } };
+		};
+		const intentId = payload.data?.previewMutation?.intent?.id;
+		expect(intentId).toEqual(expect.any(String));
+
+		await page.goto(dbIntentUrl(db, intentId as string));
+
+		await expect(page.getByTestId('intent-detail-schema-version')).toBeVisible({ timeout: 10_000 });
+		await expect(page.getByTestId('intent-detail-policy-version')).toBeVisible();
+		// grant-version is driven by subject_snapshot; assert it is rendered.
+		// Programmatic mutation is N/A in spec scope without grant rotation helpers.
+		await expect(page.getByTestId('intent-detail-grant-version')).toBeVisible();
+	});
+
+	test('intent detail policy-version increments after policy activation', async ({
+		page,
+		request,
+	}) => {
+		// Seed a DB, preview an intent, navigate to its detail page, capture
+		// the policy-version value, activate a new policy via API, reload the
+		// detail page, and assert the value incremented by 1.
+		// Pattern mirrors axon-351b9ec5 (commit d60867d): activate → reload → assert.
+		const db = await seedIntentCollection(request, 'intent-policy-version-update');
+		await routeGraphqlAs(page, 'finance-agent');
+		await page.goto(dbCollectionUrl(db, COLLECTION));
+		await expect(page.locator('.entity-rail tbody tr', { hasText: ENTITY_ID })).toBeVisible({
+			timeout: 10_000,
+		});
+		await page.getByRole('button', { name: 'Edit' }).click();
+		await page.locator('.tree-row', { hasText: 'budget_cents' }).locator('input.leaf-input').fill('6000');
+
+		const responsePromise = page.waitForResponse(
+			(response) =>
+				response.url().endsWith('/graphql') &&
+				response.request().method() === 'POST' &&
+				(response.request().postData() ?? '').includes('previewMutation'),
+		);
+		await page.getByRole('button', { name: 'Preview' }).click();
+		const response = await responsePromise;
+		const payload = (await response.json()) as {
+			data?: { previewMutation?: { intent?: { id?: string } | null } };
+		};
+		const intentId = payload.data?.previewMutation?.intent?.id;
+		expect(intentId).toEqual(expect.any(String));
+
+		await page.goto(dbIntentUrl(db, intentId as string));
+		await expect(page.getByTestId('intent-detail-policy-version')).toBeVisible({ timeout: 10_000 });
+		const beforeText = await page.getByTestId('intent-detail-policy-version').textContent();
+		const beforeVersion = Number.parseInt((beforeText ?? '').replace(/^v/, ''), 10);
+		expect(Number.isFinite(beforeVersion)).toBe(true);
+
+		// Activate a new policy version via API (same helper used by axon-351b9ec5).
+		await activateProposedPolicy(
+			request,
+			db,
+			SCN017_COLLECTIONS.task,
+			proposedPolicyDraftDenyHigh(),
+		);
+
+		// Reload the detail page so the component re-fetches the intent with
+		// the updated policyVersion from the server.
+		await page.goto(dbIntentUrl(db, intentId as string));
+		await expect(page.getByTestId('intent-detail-policy-version')).toBeVisible({ timeout: 10_000 });
+		const afterText = await page.getByTestId('intent-detail-policy-version').textContent();
+		const afterVersion = Number.parseInt((afterText ?? '').replace(/^v/, ''), 10);
+		expect(Number.isFinite(afterVersion)).toBe(true);
+		expect(afterVersion).toBe(beforeVersion + 1);
 	});
 });
