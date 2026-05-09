@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 axon-core = { path = "../axon-core" }
 axon-audit = { path = "../axon-audit" }
-axon-cypher = { path = "../axon-cypher" }
 axon-schema = { path = "../axon-schema" }
 serde.workspace = true
 serde_json.workspace = true

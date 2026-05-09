@@ -5,9 +5,10 @@
 //!
 //! ## Crate placement
 //!
-//! `StorageAdapterQueryStore` lives here rather than in `axon-cypher` because
-//! `axon-schema` (which `axon-storage` already depends on) depends on
-//! `axon-cypher` — adding the reverse dependency would create a cycle.
+//! `StorageAdapterQueryStore` now lives in `axon-cypher`, which depends on
+//! `axon-storage`. The previous cycle (axon-storage → axon-cypher → axon-schema
+//! → axon-cypher) was broken when axon-schema was refactored to depend only on
+//! axon-cypher-ast (B1.2).
 //!
 //! ## ID encoding
 //!
@@ -21,16 +22,16 @@ use std::collections::{BTreeSet, HashMap};
 
 use axon_core::id::{CollectionId, EntityId};
 use axon_core::types::Link;
-use axon_cypher::ast::Direction;
-use axon_cypher::error::CypherError;
-use axon_cypher::memory_store::{
+use axon_storage::{IndexValue, OrderedFloat, StorageAdapter};
+use serde_json::Value;
+
+use crate::ast::Direction;
+use crate::error::CypherError;
+use crate::memory_store::{
     EntityScan, EntityStream, LinkStream, LinkTraversal, PropertyFilter, PropertyFilterOp,
     PropertyMap, QueryEntity, QueryLink, QueryStore,
 };
-use axon_cypher::schema::SchemaSnapshot;
-use serde_json::Value;
-
-use crate::{IndexValue, OrderedFloat, StorageAdapter};
+use crate::schema::SchemaSnapshot;
 
 /// ASCII Unit Separator — used to separate collection name from entity ID in
 /// the encoded ID format `"{collection}\x1f{entity_id}"`.
@@ -326,15 +327,15 @@ mod tests {
 
     use super::*;
     use axon_core::types::Entity;
-    use axon_cypher::ast::Direction;
-    use axon_cypher::memory_store::{EntityScan, LinkTraversal, QueryStore};
-    use axon_cypher::schema::{
-        IndexedProperty, LabelDef, PlannerConfig, PropertyKind, RelationshipDef, SchemaSnapshot,
-    };
     use axon_schema::schema::{IndexDef, IndexType};
+    use axon_storage::MemoryStorageAdapter;
     use serde_json::json;
 
-    use crate::MemoryStorageAdapter;
+    use crate::ast::Direction;
+    use crate::memory_store::{EntityScan, LinkTraversal, QueryStore};
+    use crate::schema::{
+        IndexedProperty, LabelDef, PlannerConfig, PropertyKind, RelationshipDef, SchemaSnapshot,
+    };
 
     // ── Schema fixture ───────────────────────────────────────────────────────
 
@@ -628,7 +629,7 @@ mod tests {
 
     #[test]
     fn exists_probe_filters_rows_via_executor_pipeline() {
-        use axon_cypher::{execute, parse, plan};
+        use crate::{execute, parse, plan};
 
         let (storage, schema) = setup();
         let store = StorageAdapterQueryStore::new(&storage, &schema);
@@ -660,7 +661,7 @@ mod tests {
 
     #[test]
     fn not_exists_probe_returns_entity_without_open_dependency() {
-        use axon_cypher::{execute, parse, plan};
+        use crate::{execute, parse, plan};
 
         let (storage, schema) = setup();
         let store = StorageAdapterQueryStore::new(&storage, &schema);
@@ -694,7 +695,7 @@ mod tests {
 
     #[test]
     fn expand_via_executor_finds_dependency_target() {
-        use axon_cypher::{execute, parse, plan};
+        use crate::{execute, parse, plan};
 
         let (storage, schema) = setup();
         let store = StorageAdapterQueryStore::new(&storage, &schema);
