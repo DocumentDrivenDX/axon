@@ -479,11 +479,11 @@ onMount(() => {
 					<span>Expires</span>
 					<strong>{formatNs(intent.expiresAtNs)}</strong>
 					<span>Schema version</span>
-					<strong>{intent.schemaVersion}</strong>
+					<strong data-testid="intent-detail-schema-version">{intent.schemaVersion}</strong>
 					<span>Policy version</span>
-					<strong>{intent.policyVersion}</strong>
+					<strong data-testid="intent-detail-policy-version">{intent.policyVersion}</strong>
 					<span>Grant version</span>
-					<strong>{grantVersion(intent)}</strong>
+					<strong data-testid="intent-detail-grant-version">{grantVersion(intent)}</strong>
 				</div>
 
 				<div class="link-list" data-testid="intent-deep-links">
