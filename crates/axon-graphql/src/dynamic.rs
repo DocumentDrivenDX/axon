@@ -130,6 +130,7 @@ const CREATE_ENTITY_TRANSACTION_INPUT: &str = "CreateEntityTransactionInput";
 const UPDATE_ENTITY_TRANSACTION_INPUT: &str = "UpdateEntityTransactionInput";
 const PATCH_ENTITY_TRANSACTION_INPUT: &str = "PatchEntityTransactionInput";
 const DELETE_ENTITY_TRANSACTION_INPUT: &str = "DeleteEntityTransactionInput";
+const READ_ENTITY_TRANSACTION_INPUT: &str = "ReadEntityTransactionInput";
 const CREATE_LINK_TRANSACTION_INPUT: &str = "CreateLinkTransactionInput";
 const DELETE_LINK_TRANSACTION_INPUT: &str = "DeleteLinkTransactionInput";
 const COMMIT_TRANSACTION_PAYLOAD: &str = "CommitTransactionPayload";
@@ -810,6 +811,10 @@ fn commit_transaction_input_object() -> InputObject {
 fn transaction_operation_input_object() -> InputObject {
     InputObject::new(TRANSACTION_OPERATION_INPUT)
         .field(InputValue::new(
+            "readEntity",
+            TypeRef::named(READ_ENTITY_TRANSACTION_INPUT),
+        ))
+        .field(InputValue::new(
             "createEntity",
             TypeRef::named(CREATE_ENTITY_TRANSACTION_INPUT),
         ))
@@ -884,6 +889,17 @@ fn delete_entity_transaction_input_object() -> InputObject {
             "expectedVersion",
             TypeRef::named_nn(TypeRef::INT),
         ))
+}
+
+fn read_entity_transaction_input_object() -> InputObject {
+    InputObject::new(READ_ENTITY_TRANSACTION_INPUT)
+        .field(InputValue::new(
+            "collection",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        // id is optional — caller may supply `data` for a data-only explain.
+        .field(InputValue::new("id", TypeRef::named(TypeRef::ID)))
+        .field(InputValue::new("data", TypeRef::named("JSON")))
 }
 
 fn create_link_transaction_input_object() -> InputObject {
@@ -5910,6 +5926,21 @@ fn explain_transaction_operation_from_value(
             request.expected_version = Some(required_u64(payload, "expectedVersion", index)?);
             request
         }
+        "readEntity" => {
+            let mut request = empty_explain_policy_request("read");
+            request.collection = Some(CollectionId::new(required_str(
+                payload,
+                "collection",
+                index,
+            )?));
+            // entityId is optional for reads (caller may supply `data` instead).
+            request.entity_id = payload
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(EntityId::new);
+            request.data = payload.get("data").cloned();
+            request
+        }
         "createLink" => empty_explain_policy_request("create_link"),
         "deleteLink" => empty_explain_policy_request("delete_link"),
         other => {
@@ -9648,6 +9679,7 @@ pub fn build_schema_with_handler_and_broker_scoped<S: StorageAdapter + 'static>(
     .register(explain_policy_input_object())
     .register(commit_transaction_input_object())
     .register(transaction_operation_input_object())
+    .register(read_entity_transaction_input_object())
     .register(create_entity_transaction_input_object())
     .register(update_entity_transaction_input_object())
     .register(patch_entity_transaction_input_object())
@@ -10032,6 +10064,7 @@ pub fn build_schema(collections: &[CollectionSchema]) -> Result<AxonSchema, Stri
         .register(explain_policy_input_object())
         .register(commit_transaction_input_object())
         .register(transaction_operation_input_object())
+        .register(read_entity_transaction_input_object())
         .register(create_entity_transaction_input_object())
         .register(update_entity_transaction_input_object())
         .register(patch_entity_transaction_input_object())
@@ -11750,6 +11783,103 @@ mod tests {
         assert_eq!(data["explainPolicy"]["decision"], "deny");
         assert_eq!(data["explainPolicy"]["reason"], "row_read_denied");
         assert_eq!(data["explainPolicy"]["policyVersion"], 1);
+    }
+
+    /// Integration test: `explainPolicy` with `operation: "transaction"` and an
+    /// `operations` list exercises the full wire shape via GraphQL and confirms:
+    ///
+    /// 1. The top-level response carries the aggregate transaction decision.
+    /// 2. The `operations` array contains one entry per step with per-step
+    ///    `decision`, `reason`, and `operationIndex`.
+    /// 3. Forward entity-data threading is active: a `create` in step 1 that
+    ///    produces entity data is visible to a `read` in step 2 via the shadow
+    ///    map even though the entity was never written to storage.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn explain_policy_transaction_returns_per_step_outcomes_via_graphql() {
+        // Schema: read allowed only when status == "open"; create always allowed.
+        let schema_def = CollectionSchema {
+            collection: CollectionId::new("tx_wire_items"),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "status": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value::<AccessControlPolicy>(json!({
+                    "create": { "allow": [{ "name": "allow-all" }] },
+                    "read": {
+                        "allow": [{
+                            "name": "only-open",
+                            "where": { "field": "status", "eq": "open" }
+                        }]
+                    }
+                }))
+                .expect("access_control should deserialize"),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            queries: Default::default(),
+            lifecycles: Default::default(),
+        };
+        let handler = make_handler(std::slice::from_ref(&schema_def)).await;
+        let gql_schema =
+            build_schema_with_handler(&[schema_def], Arc::clone(&handler))
+                .expect("schema should build");
+
+        // Transaction: create entity with status="open", then read it.
+        // The entity is never persisted; the read relies on the shadow map.
+        let result = gql_schema
+            .schema
+            .execute(
+                r#"{
+                    explainPolicy(input: {
+                        operation: "transaction",
+                        operations: [
+                            { createEntity: {
+                                collection: "tx_wire_items",
+                                id: "w-1",
+                                data: { status: "open" }
+                            }},
+                            { readEntity: {
+                                collection: "tx_wire_items",
+                                id: "w-1"
+                            }}
+                        ]
+                    }) {
+                        operation
+                        decision
+                        reason
+                        operations {
+                            operationIndex
+                            operation
+                            decision
+                            reason
+                        }
+                    }
+                }"#,
+            )
+            .await;
+
+        let data = response_data(result);
+        let resp = &data["explainPolicy"];
+        assert_eq!(resp["operation"], "transaction", "top-level operation");
+        assert_eq!(resp["decision"], "allow", "aggregate decision");
+        let ops = resp["operations"].as_array().expect("operations array");
+        assert_eq!(ops.len(), 2, "two per-step results");
+        assert_eq!(ops[0]["operationIndex"], 0);
+        assert_eq!(ops[0]["operation"], "create");
+        assert_eq!(ops[0]["decision"], "allow");
+        assert_eq!(ops[1]["operationIndex"], 1);
+        assert_eq!(ops[1]["operation"], "read");
+        // The read in step 2 sees status="open" from the shadow and is allowed.
+        assert_eq!(
+            ops[1]["decision"], "allow",
+            "read must see shadow entity with status=open"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -2238,6 +2238,79 @@ impl<S: StorageAdapter> AxonHandler<S> {
         operation_index: Option<usize>,
         preview: Option<&PreviewedSchemaPlan<'_>>,
     ) -> Result<PolicyExplanationResponse, AxonError> {
+        // Delegate to explain_transaction_inner so that the `explainPolicy`
+        // GraphQL query and MCP handler get forward entity-data threading for
+        // free: a `create` at step N makes the entity available as
+        // `current_data` for subsequent `update`/`patch`/`delete`/`read`
+        // steps that reference the same `(collection, entity_id)` pair.
+        self.explain_transaction_inner(req.operations, caller, attribution, operation_index, preview)
+    }
+
+    /// Explain a transaction (ordered list of operations) against the **active**
+    /// policy, threading entity-data state forward across steps.
+    ///
+    /// Each step in `operations` is evaluated against the policy as if the
+    /// preceding steps had already executed: a `create` at step N makes the
+    /// created entity's data available as the "current" data for subsequent
+    /// `update`/`patch`/`delete`/`read` steps that reference the same
+    /// `(collection, entity_id)` pair.  The caller's subject snapshot (actor,
+    /// bindings, attributes) is held constant across all steps.
+    ///
+    /// Returns a `PolicyExplanationResponse` whose top-level `decision` and
+    /// `reason` reflect the aggregate transaction outcome (`allow`,
+    /// `needs_approval`, or `deny`) and whose `operations` list contains one
+    /// per-step `PolicyExplanationResponse`.
+    pub fn explain_transaction_with_caller(
+        &self,
+        operations: Vec<ExplainPolicyRequest>,
+        caller: &CallerIdentity,
+        attribution: Option<AuditAttribution>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        self.explain_transaction_inner(operations, caller, attribution.as_ref(), None, None)
+    }
+
+    /// Explain a transaction against a **proposed** (in-memory) schema/policy
+    /// plan in addition to the active one.
+    ///
+    /// See [`explain_transaction_with_caller`] for threading semantics.
+    /// This variant is the transaction-level equivalent of
+    /// [`explain_policy_with_plan`] and is used by the dry-run path so the
+    /// admin UI can preview transaction outcomes for a policy that has not yet
+    /// been activated.
+    #[allow(clippy::too_many_arguments)]
+    pub fn explain_transaction_with_plan(
+        &self,
+        operations: Vec<ExplainPolicyRequest>,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        schema: &CollectionSchema,
+        plan: &PolicyPlan,
+        plans: &HashMap<String, PolicyPlan>,
+        actor_override: Option<&ExplainActorOverride>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let preview = PreviewedSchemaPlan {
+            schema,
+            plan,
+            plans,
+            actor_override,
+        };
+        self.explain_transaction_inner(operations, caller, attribution, None, Some(&preview))
+    }
+
+    /// Core recursive transaction explain with forward entity-data threading.
+    ///
+    /// `entity_shadows` maps `(collection_key, entity_id_key) → current_data`
+    /// and is built up incrementally as each step is evaluated.  Steps that
+    /// mutate or create entities update the shadow map so later steps see the
+    /// post-step state rather than what is currently in storage.
+    fn explain_transaction_inner(
+        &self,
+        operations: Vec<ExplainPolicyRequest>,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
         let mut response = policy_explanation(
             "transaction",
             None,
@@ -2248,9 +2321,22 @@ impl<S: StorageAdapter> AxonHandler<S> {
             0,
         );
         let mut saw_needs_approval = false;
-        for (index, operation) in req.operations.into_iter().enumerate() {
-            let child =
-                self.explain_policy_inner(operation, caller, attribution, Some(index), preview)?;
+        // Shadow map: (collection.to_string(), entity_id.to_string()) → entity data
+        // after the step.  Used to thread state forward so subsequent steps
+        // see the post-write entity rather than the persisted snapshot.
+        let mut entity_shadows: HashMap<(String, String), Value> = HashMap::new();
+
+        for (index, operation) in operations.into_iter().enumerate() {
+            let child = self.explain_transaction_step(
+                operation,
+                caller,
+                attribution,
+                index,
+                preview,
+                &mut entity_shadows,
+            )?;
+            // Shadows are updated inside explain_transaction_step so the next
+            // step in the loop sees the evolved entity state.
             response.policy_version = response.policy_version.max(child.policy_version);
             if child.decision == "deny" {
                 response.decision = "deny".into();
@@ -2270,6 +2356,410 @@ impl<S: StorageAdapter> AxonHandler<S> {
             response.reason = "allowed".into();
         }
         Ok(finalize_policy_explanation(response))
+    }
+
+    /// Evaluate a single step inside a transaction explain, consulting the
+    /// `entity_shadows` map for the current entity state before falling back
+    /// to storage.  After evaluation, updates `entity_shadows` so the next
+    /// step in the transaction sees the evolved entity state.
+    ///
+    /// Shadow update rules (applied regardless of policy decision so that the
+    /// full chain is visible to the impact matrix):
+    /// - `create`: inserts `(collection, entity_id) → req.data` into shadows.
+    /// - `update`: inserts `(collection, entity_id) → req.data` into shadows.
+    /// - `patch`: inserts `(collection, entity_id) → merged_data` into shadows.
+    /// - `delete`: removes `(collection, entity_id)` from shadows.
+    /// - all other ops: shadows unchanged.
+    ///
+    /// For operations that do not reference a specific entity (`transaction`,
+    /// `create_link`, `delete_link`) the shadow map is not consulted and the
+    /// step is delegated directly to `explain_policy_inner`.
+    fn explain_transaction_step(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        index: usize,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
+        entity_shadows: &mut HashMap<(String, String), Value>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let operation = req.operation.trim().to_ascii_lowercase();
+        match operation.as_str() {
+            "create" => {
+                // Record the created entity data so subsequent steps can
+                // reference it as "current" state.
+                if let (Some(collection), Some(entity_id), Some(data)) = (
+                    req.collection.as_ref(),
+                    req.entity_id.as_ref(),
+                    req.data.as_ref(),
+                ) {
+                    entity_shadows.insert(
+                        (collection.to_string(), entity_id.to_string()),
+                        data.clone(),
+                    );
+                }
+                self.explain_policy_inner(req, caller, attribution, Some(index), preview)
+            }
+            "update" => {
+                // Extract shadow-update key/value before moving req; update
+                // shadow AFTER the explain call so that explain_update sees the
+                // pre-step entity as `current_data` and the candidate as `data`.
+                let post_shadow = req
+                    .collection
+                    .as_ref()
+                    .zip(req.entity_id.as_ref())
+                    .zip(req.data.as_ref())
+                    .map(|((col, eid), data)| {
+                        ((col.to_string(), eid.to_string()), data.clone())
+                    });
+                let result = self.explain_update_policy_with_shadow(
+                    req,
+                    caller,
+                    attribution,
+                    Some(index),
+                    preview,
+                    entity_shadows,
+                )?;
+                if let Some((key, val)) = post_shadow {
+                    entity_shadows.insert(key, val);
+                }
+                Ok(result)
+            }
+            "patch" => {
+                // Compute post-merge shadow value before moving req.  Fall back
+                // to current shadow or storage for the base; if neither exists
+                // use an empty object (the explain call will produce a proper
+                // error if the entity is truly absent).
+                let post_shadow = if let (Some(collection), Some(entity_id), Some(patch)) = (
+                    req.collection.as_ref(),
+                    req.entity_id.as_ref(),
+                    req.patch.as_ref(),
+                ) {
+                    let shadow_key = (collection.to_string(), entity_id.to_string());
+                    let base = if let Some(shadowed) = entity_shadows.get(&shadow_key) {
+                        shadowed.clone()
+                    } else {
+                        self.storage
+                            .get(collection, entity_id)?
+                            .map(|e| e.data)
+                            .unwrap_or_else(|| Value::Object(Default::default()))
+                    };
+                    let mut merged = base;
+                    json_merge_patch(&mut merged, patch);
+                    Some((shadow_key, merged))
+                } else {
+                    None
+                };
+                let result = self.explain_patch_policy_with_shadow(
+                    req,
+                    caller,
+                    attribution,
+                    Some(index),
+                    preview,
+                    entity_shadows,
+                )?;
+                if let Some((key, val)) = post_shadow {
+                    entity_shadows.insert(key, val);
+                }
+                Ok(result)
+            }
+            "delete" => {
+                // Record what to remove after the call.
+                let remove_key = req
+                    .collection
+                    .as_ref()
+                    .zip(req.entity_id.as_ref())
+                    .map(|(col, eid)| (col.to_string(), eid.to_string()));
+                let result = self.explain_delete_policy_with_shadow(
+                    req,
+                    caller,
+                    attribution,
+                    Some(index),
+                    preview,
+                    entity_shadows,
+                )?;
+                if let Some(key) = remove_key {
+                    entity_shadows.remove(&key);
+                }
+                Ok(result)
+            }
+            "read" => self.explain_read_policy_with_shadow(
+                req,
+                caller,
+                attribution,
+                Some(index),
+                preview,
+                entity_shadows,
+            ),
+            // transition, rollback, transaction, create_link, delete_link,
+            // and any future ops that don't need current data from the shadow
+            // map fall through to the standard inner path.
+            _ => self.explain_policy_inner(req, caller, attribution, Some(index), preview),
+        }
+    }
+
+    /// Variant of `explain_update_policy` that consults `entity_shadows` for
+    /// the current entity state before falling back to storage.
+    fn explain_update_policy_with_shadow(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
+        entity_shadows: &HashMap<(String, String), Value>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
+        let policy_version = schema.version;
+        let entity_id = req.entity_id.as_ref().ok_or_else(|| {
+            AxonError::InvalidArgument("update explanation requires entityId".into())
+        })?;
+        let mut data = req
+            .data
+            .ok_or_else(|| AxonError::InvalidArgument("update explanation requires data".into()))?;
+        enforce_lifecycle_initial_state(&schema, &mut data, LifecycleEnforcementMode::Update)?;
+        let shadow_key = (collection.to_string(), entity_id.to_string());
+        let current_data = if let Some(shadowed) = entity_shadows.get(&shadow_key) {
+            shadowed.clone()
+        } else {
+            self.storage
+                .get(&collection, entity_id)?
+                .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?
+                .data
+        };
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
+        else {
+            return Ok(policy_explanation(
+                "update",
+                Some(&collection),
+                Some(entity_id),
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+        self.explain_write_policy_response(
+            "update",
+            &collection,
+            Some(entity_id),
+            &plan,
+            &snapshot,
+            PolicyWriteCheck {
+                collection: &collection,
+                entity_id: Some(entity_id),
+                operation: PolicyOperation::Update,
+                current_data: Some(&current_data),
+                candidate_data: &data,
+                field_scope: FieldWriteScope::PresentFields(&data),
+                operation_index,
+            },
+            policy_version,
+            preview,
+        )
+    }
+
+    /// Variant of `explain_patch_policy` that consults `entity_shadows` for
+    /// the current entity state before falling back to storage.
+    fn explain_patch_policy_with_shadow(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
+        entity_shadows: &HashMap<(String, String), Value>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
+        let policy_version = schema.version;
+        let entity_id = req.entity_id.as_ref().ok_or_else(|| {
+            AxonError::InvalidArgument("patch explanation requires entityId".into())
+        })?;
+        let patch = req
+            .patch
+            .ok_or_else(|| AxonError::InvalidArgument("patch explanation requires patch".into()))?;
+        let shadow_key = (collection.to_string(), entity_id.to_string());
+        let current_data = if let Some(shadowed) = entity_shadows.get(&shadow_key) {
+            shadowed.clone()
+        } else {
+            self.storage
+                .get(&collection, entity_id)?
+                .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?
+                .data
+        };
+        let mut merged = current_data.clone();
+        json_merge_patch(&mut merged, &patch);
+        enforce_lifecycle_initial_state(&schema, &mut merged, LifecycleEnforcementMode::Update)?;
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
+        else {
+            return Ok(policy_explanation(
+                "patch",
+                Some(&collection),
+                Some(entity_id),
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+        self.explain_write_policy_response(
+            "patch",
+            &collection,
+            Some(entity_id),
+            &plan,
+            &snapshot,
+            PolicyWriteCheck {
+                collection: &collection,
+                entity_id: Some(entity_id),
+                operation: PolicyOperation::Update,
+                current_data: Some(&current_data),
+                candidate_data: &merged,
+                field_scope: FieldWriteScope::Patch(&patch),
+                operation_index,
+            },
+            policy_version,
+            preview,
+        )
+    }
+
+    /// Variant of `explain_delete_policy` that consults `entity_shadows` for
+    /// the current entity state before falling back to storage.
+    fn explain_delete_policy_with_shadow(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
+        entity_shadows: &HashMap<(String, String), Value>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
+        let policy_version = schema.version;
+        let entity_id = req.entity_id.as_ref().ok_or_else(|| {
+            AxonError::InvalidArgument("delete explanation requires entityId".into())
+        })?;
+        let shadow_key = (collection.to_string(), entity_id.to_string());
+        let current_data = if let Some(shadowed) = entity_shadows.get(&shadow_key) {
+            shadowed.clone()
+        } else {
+            self.storage
+                .get(&collection, entity_id)?
+                .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?
+                .data
+        };
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
+        else {
+            return Ok(policy_explanation(
+                "delete",
+                Some(&collection),
+                Some(entity_id),
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+        self.explain_write_policy_response(
+            "delete",
+            &collection,
+            Some(entity_id),
+            &plan,
+            &snapshot,
+            PolicyWriteCheck {
+                collection: &collection,
+                entity_id: Some(entity_id),
+                operation: PolicyOperation::Delete,
+                current_data: Some(&current_data),
+                candidate_data: &current_data,
+                field_scope: FieldWriteScope::PresentFields(&current_data),
+                operation_index,
+            },
+            policy_version,
+            preview,
+        )
+    }
+
+    /// Variant of `explain_read_policy` that consults `entity_shadows` for
+    /// the entity state when a shadow exists for the given `(collection,
+    /// entity_id)` pair, falling back to storage otherwise.
+    fn explain_read_policy_with_shadow(
+        &self,
+        req: ExplainPolicyRequest,
+        caller: &CallerIdentity,
+        attribution: Option<&AuditAttribution>,
+        operation_index: Option<usize>,
+        preview: Option<&PreviewedSchemaPlan<'_>>,
+        entity_shadows: &HashMap<(String, String), Value>,
+    ) -> Result<PolicyExplanationResponse, AxonError> {
+        let (collection, schema) = self.explain_collection_schema(&req, preview)?;
+        let policy_version = schema.version;
+        let Some((snapshot, plan)) = self.explain_policy_plan_for_request(
+            &collection,
+            &schema,
+            caller,
+            attribution,
+            preview,
+        )?
+        else {
+            return Ok(policy_explanation(
+                "read",
+                Some(&collection),
+                req.entity_id.as_ref(),
+                operation_index,
+                "allow",
+                "no_policy",
+                policy_version,
+            ));
+        };
+        let (entity_id, data) = if let Some(entity_id) = req.entity_id.as_ref() {
+            let shadow_key = (collection.to_string(), entity_id.to_string());
+            let data = if let Some(shadowed) = entity_shadows.get(&shadow_key) {
+                policy_data_with_entity_id(entity_id, shadowed)
+            } else {
+                let entity = self
+                    .storage
+                    .get(&collection, entity_id)?
+                    .ok_or_else(|| AxonError::NotFound(entity_id.to_string()))?;
+                entity_policy_data(&entity)
+            };
+            (Some(entity_id), data)
+        } else {
+            let data = req.data.ok_or_else(|| {
+                AxonError::InvalidArgument("read explanation requires entityId or data".into())
+            })?;
+            (None, data)
+        };
+        self.explain_operation_policy_response(
+            "read",
+            &collection,
+            entity_id,
+            &plan,
+            &snapshot,
+            PolicyOperation::Read,
+            &data,
+            "row_read_denied",
+            policy_version,
+            operation_index,
+            preview,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -16444,6 +16934,374 @@ ORDER BY b.priority DESC, b.updated_at DESC
             operations: Vec::new(),
             actor_override: None,
         }
+    }
+
+    // ── explain_transaction_with_caller tests ───────────────────────────────
+
+    /// Build an `AccessControlPolicy` that allows a single named operation for
+    /// any caller (`where: {}` means unconditionally allow).
+    fn allow_operation_policy(op: &str) -> axon_schema::AccessControlPolicy {
+        serde_json::from_value(json!({
+            op: { "allow": [{ "name": "allow-all" }] }
+        }))
+        .unwrap()
+    }
+
+    /// Schema with a write-allow-all and read-deny-all policy (status != "open"
+    /// implies deny for reads) — used to produce a per-step denied outcome.
+    fn read_gated_schema(col: &CollectionId) -> CollectionSchema {
+        CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "status": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "read": {
+                        "allow": [{
+                            "name": "only-open",
+                            "where": { "field": "status", "eq": "open" }
+                        }]
+                    },
+                    "create": { "allow": [{ "name": "allow-all" }] },
+                    "update": { "allow": [{ "name": "allow-all" }] },
+                    "delete": { "allow": [{ "name": "allow-all" }] }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            queries: Default::default(),
+            lifecycles: Default::default(),
+        }
+    }
+
+    fn make_explain_request(
+        operation: &str,
+        collection: &str,
+        entity_id: &str,
+        data: Option<serde_json::Value>,
+    ) -> ExplainPolicyRequest {
+        ExplainPolicyRequest {
+            operation: operation.into(),
+            collection: Some(CollectionId::new(collection)),
+            entity_id: Some(EntityId::new(entity_id)),
+            expected_version: None,
+            data,
+            patch: None,
+            lifecycle_name: None,
+            target_state: None,
+            to_version: None,
+            operations: Vec::new(),
+            actor_override: None,
+        }
+    }
+
+    fn admin_caller() -> axon_core::auth::CallerIdentity {
+        axon_core::auth::CallerIdentity::new("admin", axon_core::auth::Role::Admin)
+    }
+
+    /// A two-step transaction (create → read) where the entity is present in the
+    /// shadow map after the create.  Both steps should be `allow` since status
+    /// is "open".
+    #[test]
+    fn explain_transaction_create_then_read_all_allowed() {
+        let mut h = handler();
+        let col = CollectionId::new("txi_items");
+        let schema = read_gated_schema(&col);
+        h.handle_put_schema(PutSchemaRequest {
+            schema,
+            actor: Some("setup".into()),
+            force: false,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+
+        let ops = vec![
+            make_explain_request(
+                "create",
+                "txi_items",
+                "i-1",
+                Some(json!({"status": "open"})),
+            ),
+            make_explain_request("read", "txi_items", "i-1", None),
+        ];
+        let resp = h
+            .explain_transaction_with_caller(ops, &admin_caller(), None)
+            .unwrap();
+
+        assert_eq!(resp.decision, "allow", "aggregate should be allow");
+        assert_eq!(resp.operations.len(), 2, "two child explanations expected");
+        assert_eq!(resp.operations[0].decision, "allow", "create step allowed");
+        assert_eq!(resp.operations[1].decision, "allow", "read step allowed via shadow");
+    }
+
+    /// Three-step transaction: create with status="open", update to keep
+    /// status="open", then read.  The entity is never written to storage so
+    /// all three steps must use the shadow map.  This proves that the shadow
+    /// state threads forward: the update step sees the created entity as
+    /// `current_data` (from the shadow), and the read step sees the updated
+    /// entity (also from the shadow).
+    ///
+    /// Additionally, the update step reads `current_data` with status="open",
+    /// passes the read-check, and writes status="open" so the post-update
+    /// shadow also has status="open" — the read step is therefore allowed.
+    #[test]
+    fn explain_transaction_create_update_read_threads_snapshot_forward() {
+        let mut h = handler();
+        let col = CollectionId::new("txi_tasks");
+        let schema = read_gated_schema(&col);
+        h.handle_put_schema(PutSchemaRequest {
+            schema,
+            actor: Some("setup".into()),
+            force: false,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+
+        // All three steps reference "t-1" which is never persisted to storage.
+        // Without forward threading the update and read steps would fail with
+        // NotFound.  With threading the shadow provides the entity state.
+        let ops = vec![
+            make_explain_request(
+                "create",
+                "txi_tasks",
+                "t-1",
+                Some(json!({"status": "open"})),
+            ),
+            make_explain_request(
+                "update",
+                "txi_tasks",
+                "t-1",
+                Some(json!({"status": "open"})),
+            ),
+            make_explain_request("read", "txi_tasks", "t-1", None),
+        ];
+        let resp = h
+            .explain_transaction_with_caller(ops, &admin_caller(), None)
+            .unwrap();
+
+        // If shadow threading works, all three steps resolve the entity from
+        // the shadow and the read policy (status=="open") is satisfied.
+        assert_eq!(resp.operations.len(), 3);
+        assert_eq!(resp.operations[0].decision, "allow", "create step allowed");
+        assert_eq!(
+            resp.operations[1].decision, "allow",
+            "update step reads current entity from shadow"
+        );
+        assert_eq!(
+            resp.operations[2].decision, "allow",
+            "read step resolves post-update state from shadow"
+        );
+        assert_eq!(resp.decision, "allow", "aggregate allow");
+    }
+
+    /// A transaction where step 1 creates an entity with status="closed" and
+    /// step 2 reads it.  Without forward threading step 2 would fail because
+    /// the entity is not in storage; with threading it uses the shadow.
+    /// The read should be denied because status != "open".
+    #[test]
+    fn explain_transaction_read_denied_when_shadow_has_closed_status() {
+        let mut h = handler();
+        let col = CollectionId::new("txi_docs");
+        let schema = read_gated_schema(&col);
+        h.handle_put_schema(PutSchemaRequest {
+            schema,
+            actor: Some("setup".into()),
+            force: false,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+
+        let ops = vec![
+            make_explain_request(
+                "create",
+                "txi_docs",
+                "d-1",
+                Some(json!({"status": "closed"})),
+            ),
+            make_explain_request("read", "txi_docs", "d-1", None),
+        ];
+        let resp = h
+            .explain_transaction_with_caller(ops, &admin_caller(), None)
+            .unwrap();
+
+        assert_eq!(resp.operations[0].decision, "allow", "create allowed");
+        assert_eq!(resp.operations[1].decision, "deny", "read denied: status closed");
+        // Aggregate rolls up to deny because at least one step is denied.
+        assert_eq!(resp.decision, "deny", "aggregate deny");
+        assert_eq!(resp.reason, "transaction_denied");
+    }
+
+    /// Three-step transaction: create → update to needs_approval → read.
+    /// The schema uses a `needs_approval` policy envelope for updates to
+    /// status="critical".  The aggregate outcome must be `needs_approval`.
+    #[test]
+    fn explain_transaction_aggregate_needs_approval_when_step_needs_approval() {
+        let mut h = handler();
+        let col = CollectionId::new("txi_critical");
+
+        let schema = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "status": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "create": { "allow": [{ "name": "allow-all" }] },
+                    "read":   { "allow": [{ "name": "allow-all" }] },
+                    "update": { "allow": [{ "name": "allow-all" }] },
+                    "envelopes": {
+                        "update": [{
+                            "name": "critical-gate",
+                            "decision": "needs_approval",
+                            "when": { "field": "status", "eq": "critical" }
+                        }]
+                    }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            queries: Default::default(),
+            lifecycles: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema,
+            actor: Some("setup".into()),
+            force: false,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+        // Pre-create the entity so the update step can find it in storage.
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("c-1"),
+            data: json!({"status": "normal"}),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+
+        let ops = vec![
+            make_explain_request("read", "txi_critical", "c-1", None),
+            ExplainPolicyRequest {
+                operation: "update".into(),
+                collection: Some(col.clone()),
+                entity_id: Some(EntityId::new("c-1")),
+                expected_version: None,
+                data: Some(json!({"status": "critical"})),
+                patch: None,
+                lifecycle_name: None,
+                target_state: None,
+                to_version: None,
+                operations: Vec::new(),
+                actor_override: None,
+            },
+            make_explain_request("read", "txi_critical", "c-1", None),
+        ];
+        let resp = h
+            .explain_transaction_with_caller(ops, &admin_caller(), None)
+            .unwrap();
+
+        assert_eq!(resp.operations[0].decision, "allow", "initial read allowed");
+        assert_eq!(
+            resp.operations[1].decision, "needs_approval",
+            "update to critical status requires approval"
+        );
+        assert_eq!(resp.operations[2].decision, "allow", "post-update read allowed");
+        assert_eq!(resp.decision, "needs_approval", "aggregate is needs_approval");
+    }
+
+    /// Delete step removes the entity from shadows so a subsequent read would
+    /// fall back to storage.  Without a persisted entity the read fails with
+    /// NotFound.  We confirm the delete step produces `allow` (no read-deny
+    /// policy on delete operations) and that the shadow entry is cleared.
+    #[test]
+    fn explain_transaction_delete_clears_shadow() {
+        let mut h = handler();
+        let col = CollectionId::new("txi_gone");
+        let schema = CollectionSchema {
+            collection: col.clone(),
+            description: None,
+            version: 1,
+            entity_schema: Some(json!({
+                "type": "object",
+                "properties": { "title": { "type": "string" } }
+            })),
+            link_types: Default::default(),
+            access_control: Some(
+                serde_json::from_value(json!({
+                    "create": { "allow": [{ "name": "allow-all" }] },
+                    "delete": { "allow": [{ "name": "allow-all" }] }
+                }))
+                .unwrap(),
+            ),
+            gates: Default::default(),
+            validation_rules: Default::default(),
+            indexes: Default::default(),
+            compound_indexes: Default::default(),
+            queries: Default::default(),
+            lifecycles: Default::default(),
+        };
+        h.handle_put_schema(PutSchemaRequest {
+            schema,
+            actor: Some("setup".into()),
+            force: false,
+            dry_run: false,
+            explain_inputs: Vec::new(),
+        })
+        .unwrap();
+        // Create the entity in storage so the delete step can find it.
+        h.create_entity(CreateEntityRequest {
+            collection: col.clone(),
+            id: EntityId::new("g-1"),
+            data: json!({"title": "to be deleted"}),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+
+        let ops = vec![
+            ExplainPolicyRequest {
+                operation: "delete".into(),
+                collection: Some(col.clone()),
+                entity_id: Some(EntityId::new("g-1")),
+                expected_version: None,
+                data: None,
+                patch: None,
+                lifecycle_name: None,
+                target_state: None,
+                to_version: None,
+                operations: Vec::new(),
+                actor_override: None,
+            },
+        ];
+        let resp = h
+            .explain_transaction_with_caller(ops, &admin_caller(), None)
+            .unwrap();
+
+        assert_eq!(resp.operations.len(), 1);
+        assert_eq!(resp.operations[0].decision, "allow", "delete step allowed");
+        assert_eq!(resp.decision, "allow", "aggregate allow");
     }
 
     /// Schema whose proposed read policy gates on `subject.tenant_role`. Used
