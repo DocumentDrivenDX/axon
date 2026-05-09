@@ -3,6 +3,7 @@ import {
 	SCN017_COLLECTIONS,
 	SCN017_ROLES,
 	SCN017_SUBJECTS,
+	activateProposedPolicy,
 	captureDataPlaneRequests,
 	expectGraphqlPrimaryDataPlane,
 	fetchPersistedAccessControl,
@@ -218,6 +219,84 @@ test.describe('Policy authoring', () => {
 		await expect(page.getByTestId('policy-transaction-operations')).toContainText('needs_approval');
 
 		expectGraphqlPrimaryDataPlane(requests, 'policy route should stay GraphQL-primary');
+	});
+
+	test('policy-version testid increments after policy activation', async ({ page, request }) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-version-update');
+		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.financeAgent);
+		await page.goto(policiesUrl);
+
+		await page.getByTestId('policy-collection-picker').selectOption(SCN017_COLLECTIONS.invoices);
+		await page.getByTestId('policy-subject-picker').selectOption(SCN017_SUBJECTS.contractor);
+		await page.getByTestId('policy-operation-picker').selectOption('read');
+		await page.getByTestId('policy-run-evaluator').click();
+
+		// Baseline: both indicators at v1.
+		await expect(page.getByTestId('policy-version')).toHaveText('v1');
+
+		// Activate a new policy version via API, then reload the page to pick up the new state.
+		await activateProposedPolicy(
+			request,
+			fixture.db,
+			SCN017_COLLECTIONS.invoices,
+			proposedPolicyDraftDenyHigh(),
+		);
+
+		await page.goto(policiesUrl);
+		await page.getByTestId('policy-collection-picker').selectOption(SCN017_COLLECTIONS.invoices);
+		await page.getByTestId('policy-subject-picker').selectOption(SCN017_SUBJECTS.contractor);
+		await page.getByTestId('policy-operation-picker').selectOption('read');
+		await page.getByTestId('policy-run-evaluator').click();
+
+		// policy-version must reflect the activated version (v2).
+		await expect(page.getByTestId('policy-version')).toHaveText('v2');
+	});
+
+	// AC2: policy-schema-version update after schema migration.
+	// activateProposedPolicy bumps schema.version by 1 (it writes schema.version + 1 in putSchema),
+	// which is also the field driving the policy-schema-version indicator.  The page reloads the
+	// collections list on navigation, so the indicator updates after the same activation + reload
+	// pattern used for policy-version above.
+	test('policy-schema-version testid increments after schema version bump via activation', async ({
+		page,
+		request,
+	}) => {
+		const fixture = await seedScn017PolicyUiFixture(
+			request,
+			'policy-schema-version-update',
+		);
+		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.financeAgent);
+		await page.goto(policiesUrl);
+
+		await page.getByTestId('policy-collection-picker').selectOption(SCN017_COLLECTIONS.invoices);
+		await page.getByTestId('policy-subject-picker').selectOption(SCN017_SUBJECTS.contractor);
+		await page.getByTestId('policy-operation-picker').selectOption('read');
+		await page.getByTestId('policy-run-evaluator').click();
+
+		// Baseline: schema version at v1.
+		await expect(page.getByTestId('policy-schema-version')).toHaveText('v1');
+
+		// activateProposedPolicy writes schema.version + 1, so the schema version increments.
+		await activateProposedPolicy(
+			request,
+			fixture.db,
+			SCN017_COLLECTIONS.invoices,
+			proposedPolicyDraftDenyHigh(),
+		);
+
+		// Reload the page — fetchCollections re-queries schemaVersion from the backend.
+		await page.goto(policiesUrl);
+		await page.getByTestId('policy-collection-picker').selectOption(SCN017_COLLECTIONS.invoices);
+		await page.getByTestId('policy-subject-picker').selectOption(SCN017_SUBJECTS.contractor);
+		await page.getByTestId('policy-operation-picker').selectOption('read');
+		await page.getByTestId('policy-run-evaluator').click();
+
+		// policy-schema-version must reflect the new schema version (v2).
+		await expect(page.getByTestId('policy-schema-version')).toHaveText('v2');
 	});
 
 	test('surfaces missing-index diagnostics for policy_filter_unindexed fixtures', async ({
