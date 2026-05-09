@@ -163,7 +163,12 @@ async function loadEntries() {
 	loading = true;
 	try {
 		if (filters.intentId && scope) {
-			// Use the REST intent-audit endpoint which returns full intent_lineage data.
+			// Use the REST intent-audit endpoint: the GraphQL auditLog query does not
+			// expose an intentId filter argument (intent_id is hardcoded to None in
+			// dynamic.rs), so REST remains the only way to filter by intent. The
+			// intentLineage fields (policyVersion, schemaVersion, etc.) are now also
+			// populated by the GraphQL path (axon-d73680e3), but until the GraphQL
+			// query gains an intentId argument this REST call is still required.
 			const response = await fetchIntentAudit(filters.intentId, scope);
 			entries = response.entries;
 		} else {
@@ -412,7 +417,7 @@ $effect(() => {
 							<span>Policy version</span>
 							<strong data-testid="audit-lineage-policy-version">{rl.policy_version}</strong>
 							<span>Schema version</span>
-							<strong>{rl.schema_version}</strong>
+							<strong data-testid="audit-lineage-schema-version">{rl.schema_version}</strong>
 							{#if rl.approver?.actor ?? rl.approver?.user_id}
 								<span>Approver</span>
 								<code data-testid="audit-lineage-approver">

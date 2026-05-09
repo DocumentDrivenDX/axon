@@ -210,6 +210,82 @@ test.describe('Intent audit deep link and lineage panel', () => {
 		await expect(intentLink).toContainText(intent.intentId);
 		const href = await intentLink.getAttribute('href');
 		expect(href).toContain(encodeURIComponent(intent.intentId));
+
+		// AC2: version indicators are visible in the lineage panel
+		await expect(page.getByTestId('audit-lineage-policy-version')).toBeVisible();
+		await expect(page.getByTestId('audit-lineage-schema-version')).toBeVisible();
+	});
+
+	// AC3: policy_version increments after activateProposedPolicy
+	test('audit lineage policy-version and schema-version increment after policy activation', async ({
+		page,
+		request,
+	}) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'audit-lineage-version-increment');
+
+		// Create a budget record and commit an intent at the baseline policy/schema version.
+		await createBudgetRecord(request, fixture.db, TASK_COLLECTION, 'task-ver-incr');
+		const intent = await previewBudgetIntent(request, fixture.db, 'task-ver-incr', 6_000, {
+			agentId: 'tool.version-incr-test',
+		});
+		await commitIntent(request, fixture.db, intent);
+
+		await routeGraphqlAs(page, 'finance-agent');
+		await page.goto(`${dbAuditUrl(fixture.db)}?intent=${encodeURIComponent(intent.intentId)}`);
+
+		const commitRow = page.locator('[data-testid="audit-entry-row"]', {
+			has: page.locator('td', { hasText: 'intent.commit' }),
+		});
+		await expect(commitRow).toBeVisible();
+		await commitRow.click();
+
+		await expect(page.getByTestId('audit-intent-lineage')).toBeVisible();
+
+		// Capture baseline versions; they should be numeric strings at v1.
+		const baselinePolicyVersion = await page
+			.getByTestId('audit-lineage-policy-version')
+			.textContent();
+		const baselineSchemaVersion = await page
+			.getByTestId('audit-lineage-schema-version')
+			.textContent();
+		expect(Number(baselinePolicyVersion)).toBeGreaterThanOrEqual(1);
+		expect(Number(baselineSchemaVersion)).toBeGreaterThanOrEqual(1);
+
+		// Activate a new policy (bumps both policy_version and schema_version).
+		const result = await activateProposedPolicy(
+			request,
+			fixture.db,
+			SCN017_COLLECTIONS.invoices,
+			proposedPolicyDraftDenyHigh(),
+		);
+		expect(result.schema.version).toBeGreaterThan(Number(baselineSchemaVersion));
+
+		// Commit a second intent under the new policy version so there is an audit
+		// entry that recorded the incremented versions.
+		const intent2 = await previewBudgetIntent(request, fixture.db, 'task-ver-incr', 7_000, {
+			agentId: 'tool.version-incr-test-2',
+		});
+		await commitIntent(request, fixture.db, intent2);
+
+		await page.goto(`${dbAuditUrl(fixture.db)}?intent=${encodeURIComponent(intent2.intentId)}`);
+
+		const commitRow2 = page.locator('[data-testid="audit-entry-row"]', {
+			has: page.locator('td', { hasText: 'intent.commit' }),
+		});
+		await expect(commitRow2).toBeVisible();
+		await commitRow2.click();
+
+		await expect(page.getByTestId('audit-intent-lineage')).toBeVisible();
+
+		// policy_version testid must reflect the activated (incremented) version.
+		const updatedPolicyVersion = await page
+			.getByTestId('audit-lineage-policy-version')
+			.textContent();
+		expect(Number(updatedPolicyVersion)).toBeGreaterThan(Number(baselinePolicyVersion));
+
+		// schema_version testid must also reflect the incremented version.
+		await expect(page.getByTestId('audit-lineage-schema-version')).toBeVisible();
+		// grant_version is not surfaced in this view — N/A for this test.
 	});
 
 	test('intent detail "open audit log" links to filtered audit view and back', async ({
@@ -233,12 +309,15 @@ test.describe('Intent audit deep link and lineage panel', () => {
 
 		// Click through; the audit page should show the filtered view
 		await auditLink.click();
-		await expect(page).toHaveURL(new RegExp('/audit'));
+		await expect(page).toHaveURL(/\/audit/);
 		await expect(page.getByTestId('audit-intent-filter')).toHaveValue(intent.intentId);
 		await expect(page.getByTestId('audit-intent-banner')).toBeVisible();
 
 		// Clearing the intent filter dismisses the banner
-		await page.getByTestId('audit-intent-banner').getByRole('button', { name: 'Clear filter' }).click();
+		await page
+			.getByTestId('audit-intent-banner')
+			.getByRole('button', { name: 'Clear filter' })
+			.click();
 		await expect(page.getByTestId('audit-intent-banner')).not.toBeVisible();
 	});
 
