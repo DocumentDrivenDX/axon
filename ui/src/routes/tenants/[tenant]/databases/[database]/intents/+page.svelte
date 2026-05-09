@@ -733,7 +733,11 @@ onMount(() => {
 							<span>Tool</span>
 							<code>{toolName(selectedIntent)}</code>
 							<span>Grant</span>
-							<code>{grantVersionFor(selectedIntent)}</code>
+							<code data-testid="approval-inbox-grant-version">{grantVersionFor(selectedIntent)}</code>
+							<span>Schema version</span>
+							<strong data-testid="approval-inbox-schema-version">{selectedIntent.schemaVersion}</strong>
+							<span>Policy version</span>
+							<strong data-testid="approval-inbox-policy-version">{selectedIntent.policyVersion}</strong>
 							<span>Risk</span>
 							<strong>{selectedIntent.reviewSummary.risk ?? '-'}</strong>
 						</div>
@@ -750,7 +754,7 @@ onMount(() => {
 									<span>Credential</span>
 									<code>{credentialFor(selectedIntent)}</code>
 									<span>Grant version</span>
-									<strong>{grantVersionFor(selectedIntent)}</strong>
+									<strong data-testid="approval-inbox-grant-version">{grantVersionFor(selectedIntent)}</strong>
 									<span>Tool name</span>
 									<code>{toolName(selectedIntent)}</code>
 								</div>
