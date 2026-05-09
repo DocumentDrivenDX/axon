@@ -105,6 +105,7 @@ const RENDERED_ENTITY_TYPE: &str = "RenderedEntity";
 const AUDIT_ENTRY_TYPE: &str = "AuditEntry";
 const AUDIT_EDGE_TYPE: &str = "AuditEdge";
 const AUDIT_CONNECTION_TYPE: &str = "AuditConnection";
+const INTENT_LINEAGE_TYPE: &str = "IntentLineage";
 const LINK_CANDIDATE_TYPE: &str = "LinkCandidate";
 const LINK_CANDIDATES_PAYLOAD_TYPE: &str = "LinkCandidatesPayload";
 const NEIGHBOR_EDGE_TYPE: &str = "NeighborEdge";
@@ -3093,6 +3094,18 @@ fn described_collection_json(
 }
 
 fn audit_entry_json(entry: &axon_audit::AuditEntry) -> Value {
+    let intent_lineage = entry.intent_lineage.as_deref().map(|lin| {
+        json!({
+            "intentId": lin.intent_id,
+            "decision": lin.decision.as_str(),
+            "policyVersion": lin.policy_version,
+            "schemaVersion": lin.schema_version,
+            "grantVersion": lin.subject_snapshot.grant_version,
+            "approver": lin.approver,
+            "reason": lin.reason,
+            "origin": lin.origin,
+        })
+    });
     json!({
         "id": entry.id.to_string(),
         "timestampNs": entry.timestamp_ns.to_string(),
@@ -3106,6 +3119,7 @@ fn audit_entry_json(entry: &axon_audit::AuditEntry) -> Value {
         "actor": entry.actor,
         "metadata": entry.metadata,
         "transactionId": entry.transaction_id,
+        "intentLineage": intent_lineage,
     })
 }
 
@@ -3719,6 +3733,42 @@ fn rendered_entity_object() -> Object {
         ))
 }
 
+fn intent_lineage_object() -> Object {
+    Object::new(INTENT_LINEAGE_TYPE)
+        .field(json_object_field(
+            "intentId",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "decision",
+            TypeRef::named_nn(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "policyVersion",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "schemaVersion",
+            TypeRef::named_nn(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "grantVersion",
+            TypeRef::named(TypeRef::INT),
+        ))
+        .field(json_object_field(
+            "approver",
+            TypeRef::named("JSON"),
+        ))
+        .field(json_object_field(
+            "reason",
+            TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "origin",
+            TypeRef::named("JSON"),
+        ))
+}
+
 fn audit_entry_object() -> Object {
     Object::new(AUDIT_ENTRY_TYPE)
         .field(json_object_field("id", TypeRef::named_nn(TypeRef::ID)))
@@ -3756,6 +3806,10 @@ fn audit_entry_object() -> Object {
         .field(json_object_field(
             "transactionId",
             TypeRef::named(TypeRef::STRING),
+        ))
+        .field(json_object_field(
+            "intentLineage",
+            TypeRef::named(INTENT_LINEAGE_TYPE),
         ))
 }
 
@@ -4452,6 +4506,7 @@ fn register_root_objects(mut schema_builder: SchemaBuilder) -> SchemaBuilder {
         .register(policy_approval_envelope_object())
         .register(policy_explanation_object())
         .register(rendered_entity_object())
+        .register(intent_lineage_object())
         .register(audit_entry_object())
         .register(audit_edge_object())
         .register(audit_connection_object())
@@ -10740,6 +10795,7 @@ fn is_reserved_graphql_type_name(name: &str) -> bool {
             | "AuditEntry"
             | "AuditEdge"
             | "AuditConnection"
+            | "IntentLineage"
             | "String"
             | "Int"
             | "Float"
