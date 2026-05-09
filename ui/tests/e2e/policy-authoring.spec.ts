@@ -144,7 +144,7 @@ async function routeGraphqlWithDraft(
 }
 
 test.describe('Policy authoring', () => {
-	test('runs read, patch, and transaction policy evaluations from the workspace', async ({
+	test('runs read, patch, and transaction policy evaluations from the workspace @US-113 @US-114', async ({
 		page,
 		request,
 	}) => {
@@ -612,7 +612,7 @@ test.describe('Policy authoring (transaction-row delta)', () => {
 });
 
 test.describe('Policy authoring (schemas tab)', () => {
-	test('compile + fixture dry-run + activate updates the persisted policy', async ({
+	test('compile + fixture dry-run + activate updates the persisted policy @US-114', async ({
 		page,
 		request,
 	}) => {

@@ -4,8 +4,10 @@ import {
 	TASK_COLLECTION,
 	type TestDatabase,
 	activateProposedPolicy,
+	captureDataPlaneRequests,
 	dbCollectionUrl,
 	dbIntentUrl,
+	expectGraphqlPrimaryDataPlane,
 	patchBudgetRecordAs,
 	proposedPolicyDraftDenyHigh,
 	routeGraphqlAs,
@@ -52,11 +54,12 @@ async function previewIntent(page: Page): Promise<PreviewPayload> {
 }
 
 test.describe('Mutation intents', () => {
-	test('renders and commits an allowed mutation intent without showing the token', async ({
+	test('renders and commits an allowed mutation intent without showing the token @US-116', async ({
 		page,
 		request,
 	}) => {
 		const db = await seedIntentCollection(request, 'intent-allow');
+		const requests = captureDataPlaneRequests(page, db);
 		await routeGraphqlAs(page, 'finance-agent');
 		await openEntityEditor(page, db);
 		await fillJsonField(page, 'budget_cents', '6000');
@@ -77,6 +80,8 @@ test.describe('Mutation intents', () => {
 		await page.getByTestId('intent-commit').click();
 		await expect(page.getByText('Saved v2.')).toBeVisible({ timeout: 10_000 });
 		await expect(modal).toContainText('committed');
+
+		expectGraphqlPrimaryDataPlane(requests, 'mutation intents route should stay GraphQL-primary');
 	});
 
 	test('renders a needs-approval preview with approval route details', async ({
@@ -119,7 +124,7 @@ test.describe('Mutation intents', () => {
 		await expect(page.getByTestId('intent-commit')).toBeDisabled();
 	});
 
-	test('renders stale pre-image conflict details after preview drift', async ({
+	test('renders stale pre-image conflict details after preview drift @US-118', async ({
 		page,
 		request,
 	}) => {
