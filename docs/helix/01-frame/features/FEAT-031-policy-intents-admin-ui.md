@@ -377,3 +377,32 @@ GraphQL and MCP contract tests to pass first.
 - **Depends On**: FEAT-011, FEAT-015, FEAT-016, FEAT-029, FEAT-030,
   ADR-006, ADR-012, ADR-013, ADR-019.
 - **Depended By**: Policy-intents UI implementation beads.
+
+## Recursive Transaction Explain (axon-f0d728cd)
+
+The policy impact matrix requires per-step explained outcomes for transaction
+fixtures, not just single-operation ones.  `crates/axon-api/src/handler.rs`
+now exposes two public functions — `explain_transaction_with_caller` and
+`explain_transaction_with_plan` — that accept a `Vec<ExplainPolicyRequest>`
+(one entry per transaction step) and return a `PolicyExplanationResponse` whose
+top-level `decision`/`reason` reflects the aggregate transaction outcome and
+whose `operations` list carries one per-step `PolicyExplanationResponse`.
+
+**Snapshot threading decision (hybrid):** The caller's subject snapshot (actor,
+bindings, attributes) is held constant across all steps — the same human or
+agent is executing the whole transaction.  Entity-data state evolves: after a
+`create` or `update` step, the resulting entity data is stored in an in-memory
+shadow map keyed by `(collection, entity_id)`, and subsequent `update`,
+`patch`, `delete`, and `read` steps on the same pair consult the shadow before
+falling back to storage.  A `delete` step removes the entity from the shadow.
+This gives the impact matrix a faithful picture of the full chain without
+requiring storage writes.
+
+The private `explain_transaction_policy` (called when
+`operation: "transaction"` reaches `explain_policy_inner`) is updated to
+delegate to the same threading core, so the existing `explainPolicy` GraphQL
+field and MCP handler automatically inherit forward threading.  The GraphQL
+`TransactionOperationInput` type gains a `readEntity` variant so reads can be
+included in fixture arrays.  Integration test
+`explain_policy_transaction_returns_per_step_outcomes_via_graphql` in
+`crates/axon-graphql/src/dynamic.rs` verifies the end-to-end wire shape.
