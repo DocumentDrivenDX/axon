@@ -2,12 +2,14 @@ import { type Page, expect, test } from '@playwright/test';
 import {
 	EXPENSE_COLLECTION,
 	TASK_COLLECTION,
+	activateProposedPolicy,
 	approveIntent,
 	createBudgetRecord,
 	dbIntentUrl,
 	dbIntentsUrl,
 	patchBudgetRecordAs,
 	previewBudgetIntent,
+	proposedPolicyDraftDenyHigh,
 	routeGraphqlAs,
 	seedApprovalCollections,
 	seedIntentStates,
@@ -229,6 +231,55 @@ test.describe('Approval inbox', () => {
 		);
 		await expect(page.getByTestId('intent-commit-token')).toBeDisabled();
 		await expect(page.getByTestId('intent-commit-action')).toBeDisabled();
+	});
+
+	test('shows schema_version, policy_version, and grant_version in inline detail panel', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedApprovalCollections(request, 'approval-versions');
+		const ids = await seedIntentStates(request, db);
+
+		await routeGraphqlAs(page, 'finance-approver');
+		await page.goto(dbIntentsUrl(db));
+
+		// Select a pending intent to open the inline detail panel.
+		await page.getByTestId(`intent-row-${ids.pending}`).click();
+
+		await expect(page.getByTestId('approval-inbox-schema-version').first()).toBeVisible();
+		await expect(page.getByTestId('approval-inbox-policy-version').first()).toBeVisible();
+		await expect(page.getByTestId('approval-inbox-grant-version').first()).toBeVisible();
+	});
+
+	test('policy_version updates in inline detail panel after policy activation', async ({
+		page,
+		request,
+	}) => {
+		const db = await seedApprovalCollections(request, 'approval-version-update');
+		await createBudgetRecord(request, db, TASK_COLLECTION, 'task-version-test');
+		const intent = await previewBudgetIntent(request, db, 'task-version-test', 20_000);
+
+		await routeGraphqlAs(page, 'finance-approver');
+		await page.goto(dbIntentsUrl(db));
+		await page.getByTestId(`intent-row-${intent.intentId}`).click();
+
+		// Capture baseline policy_version.
+		const baselineText = await page.getByTestId('approval-inbox-policy-version').first().textContent();
+		const baseline = Number(baselineText?.trim());
+
+		// Activate a new policy via API to bump policy_version.
+		await activateProposedPolicy(request, db, TASK_COLLECTION, proposedPolicyDraftDenyHigh());
+
+		// Reload to pick up the new intent state from the backend.
+		await page.goto(dbIntentsUrl(db));
+		await createBudgetRecord(request, db, TASK_COLLECTION, 'task-version-test-2');
+		const intent2 = await previewBudgetIntent(request, db, 'task-version-test-2', 20_000);
+		await page.goto(dbIntentsUrl(db));
+		await page.getByTestId(`intent-row-${intent2.intentId}`).click();
+
+		const updatedText = await page.getByTestId('approval-inbox-policy-version').first().textContent();
+		const updated = Number(updatedText?.trim());
+		expect(updated).toBeGreaterThan(baseline);
 	});
 
 	test('distinguishes loading, empty, and error states', async ({ page, request }) => {
