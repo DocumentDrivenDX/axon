@@ -190,29 +190,28 @@ test.describe('Policy authoring', () => {
 		await expect(page.getByTestId('policy-reason-code')).toHaveText('needs_approval');
 		await expect(page.getByTestId('policy-approval-role')).toHaveText(SCN017_ROLES.financeApprover);
 
-		const transactionFixture = [
-			{
-				updateEntity: {
-					collection: fixture.collections.invoices,
-					id: fixture.invoices.large.id,
-					expectedVersion: 1,
-					data: {
-						number: fixture.invoices.large.number,
-						vendor_id: fixture.invoices.large.vendorId,
-						requester_id: fixture.invoices.large.requesterId,
-						assigned_contractor_id: fixture.invoices.large.assignedContractorId,
-						status: 'submitted',
-						amount_cents: fixture.invoices.large.amountCents + 500_000,
-						currency: 'USD',
-						commercial_terms: 'net-15 expedited infrastructure terms',
-					},
-				},
-			},
-		];
+		const updateData = {
+			number: fixture.invoices.large.number,
+			vendor_id: fixture.invoices.large.vendorId,
+			requester_id: fixture.invoices.large.requesterId,
+			assigned_contractor_id: fixture.invoices.large.assignedContractorId,
+			status: 'submitted',
+			amount_cents: fixture.invoices.large.amountCents + 500_000,
+			currency: 'USD',
+			commercial_terms: 'net-15 expedited infrastructure terms',
+		};
 		await page.getByTestId('policy-operation-picker').selectOption('transaction');
-		await page
-			.getByTestId('policy-transaction-fixture')
-			.fill(JSON.stringify(transactionFixture, null, 2));
+		// The structured editor renders with one default op; configure it as updateEntity.
+		const op0 = page.getByTestId('transaction-fixture-op').nth(0);
+		await op0.getByTestId('transaction-fixture-op-kind').selectOption('updateEntity');
+		await op0
+			.getByTestId('transaction-fixture-op-collection')
+			.fill(fixture.collections.invoices);
+		await op0.getByTestId('transaction-fixture-op-id').fill(fixture.invoices.large.id);
+		await op0.getByTestId('transaction-fixture-op-expected-version').fill('1');
+		await op0
+			.getByTestId('transaction-fixture-op-data')
+			.fill(JSON.stringify(updateData, null, 2));
 		await page.getByTestId('policy-run-evaluator').click();
 
 		await expect(page.getByTestId('policy-transaction-operations')).toContainText('update');
@@ -398,14 +397,138 @@ test.describe('Policy authoring (impact matrix)', () => {
 			diagnosticCell.getByTestId('policy-impact-matrix-diagnostic-proposed'),
 		).toContainText('policy_filter_unindexed');
 
-		const transactionUnavailable = diagnosticMatrix
-			.getByTestId('policy-impact-matrix-cell-transaction-unavailable')
-			.first();
-		await expect(transactionUnavailable).toContainText('transaction delta unavailable');
-		await expect(transactionUnavailable.locator('a')).toHaveAttribute(
-			'href',
-			'/ui/beads/axon-84038791',
+		// The "transaction delta unavailable" affordance was removed in axon-5c6e4a79.
+		await expect(
+			diagnosticMatrix.getByTestId('policy-impact-matrix-cell-transaction-unavailable'),
+		).toHaveCount(0);
+	});
+});
+
+test.describe('Policy authoring (transaction fixture editor)', () => {
+	test('renders structured transaction fixture editor and updates the evaluator', async ({
+		page,
+		request,
+	}) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-txn-editor');
+		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
+
+		await routeGraphqlAs(page, SCN017_SUBJECTS.financeAgent);
+		await page.goto(policiesUrl);
+
+		await page.getByTestId('policy-collection-picker').selectOption(SCN017_COLLECTIONS.invoices);
+		await page.getByTestId('policy-operation-picker').selectOption('transaction');
+
+		// Structured editor should be visible instead of raw textarea.
+		const editor = page.getByTestId('transaction-fixture-editor');
+		await expect(editor).toBeVisible();
+
+		// Starts with one default operation seeded from the selected entity.
+		await expect(editor.getByTestId('transaction-fixture-op')).toHaveCount(1);
+
+		// Add a second operation.
+		await editor.getByTestId('transaction-fixture-add-op').click();
+		await expect(editor.getByTestId('transaction-fixture-op')).toHaveCount(2);
+
+		// Set the second op's kind to readEntity.
+		await editor
+			.getByTestId('transaction-fixture-op')
+			.nth(1)
+			.getByTestId('transaction-fixture-op-kind')
+			.selectOption('readEntity');
+
+		// Set collection on second op.
+		await editor
+			.getByTestId('transaction-fixture-op')
+			.nth(1)
+			.getByTestId('transaction-fixture-op-collection')
+			.fill(SCN017_COLLECTIONS.invoices);
+
+		// Set id on second op.
+		await editor
+			.getByTestId('transaction-fixture-op')
+			.nth(1)
+			.getByTestId('transaction-fixture-op-id')
+			.fill(fixture.invoices.small.id);
+
+		// Reorder: move second op up to first.
+		await editor
+			.getByTestId('transaction-fixture-op')
+			.nth(1)
+			.getByTestId('transaction-fixture-op-move-up')
+			.click();
+		await expect(
+			editor.getByTestId('transaction-fixture-op').nth(0),
+		).toHaveAttribute('data-op-kind', 'readEntity');
+
+		// Remove the first op (now readEntity).
+		await editor
+			.getByTestId('transaction-fixture-op')
+			.nth(0)
+			.getByTestId('transaction-fixture-op-remove')
+			.click();
+		await expect(editor.getByTestId('transaction-fixture-op')).toHaveCount(1);
+
+		// Run evaluator with the transaction fixture — should get a result.
+		await page.getByTestId('policy-run-evaluator').click();
+		await expect(page.getByTestId('policy-transaction-operations')).toBeVisible();
+	});
+});
+
+test.describe('Policy authoring (transaction-row delta)', () => {
+	test('impact matrix renders active-vs-proposed delta for transaction-row cells', async ({
+		page,
+		request,
+	}) => {
+		const fixture = await seedScn017PolicyUiFixture(request, 'policy-txn-delta');
+		const baseSchema = await fetchCollectionSchema(
+			request,
+			fixture.db,
+			SCN017_COLLECTIONS.invoices,
 		);
+		let activeDraft: Record<string, unknown> | null = null;
+		await routeGraphqlWithDraft(page, baseSchema, () => activeDraft);
+
+		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
+
+		// Load the page and set a proposed draft — now all cells (including any
+		// future transaction-collection entities) render delta UX without the
+		// blocking affordance.
+		activeDraft = matrixDeltaDraft();
+		await page.goto(policiesUrl);
+		await page.getByTestId('policy-collection-picker').selectOption(SCN017_COLLECTIONS.invoices);
+
+		const matrix = page.getByTestId('policy-impact-matrix');
+		await expect(matrix).toBeVisible();
+
+		// The "transaction delta unavailable" affordance must not appear anywhere.
+		await expect(
+			matrix.getByTestId('policy-impact-matrix-cell-transaction-unavailable'),
+		).toHaveCount(0);
+
+		// Wait for at least one cell to resolve.
+		await expect(matrix.getByTestId('policy-impact-matrix-cell').first()).toHaveAttribute(
+			'data-decision',
+			/(allowed|denied|needs_approval)/,
+		);
+
+		// Every entity×subject×operation cell must render a proposed-policy delta
+		// state (unchanged or changed) — same parity guarantee as entity rows.
+		for (const entityId of [fixture.invoices.small.id, fixture.invoices.large.id]) {
+			for (const operation of IMPACT_MATRIX_DELTA_OPERATIONS) {
+				for (const subjectId of IMPACT_MATRIX_VISIBLE_SUBJECTS) {
+					const cell = matrix.locator(
+						`[data-testid="policy-impact-matrix-cell"][data-entity-id="${entityId}"][data-subject-id="${subjectId}"][data-operation="${operation}"]`,
+					);
+					await expect(cell).toBeVisible();
+					await expect(
+						cell.locator(
+							'[data-testid="policy-impact-matrix-cell-delta"], [data-testid="policy-impact-matrix-cell-unchanged"]',
+						),
+						`${entityId} ${subjectId} ${operation} should render a proposed-policy delta state`,
+					).toHaveCount(1);
+				}
+			}
+		}
 	});
 });
 

@@ -13,6 +13,8 @@ import {
 	fetchEffectivePolicy,
 	fetchEntities,
 } from '$lib/api';
+// biome-ignore lint/correctness/noUnusedImports: TransactionFixtureEditor is used only in the template.
+import TransactionFixtureEditor from '$lib/components/TransactionFixtureEditor.svelte';
 import {
 	type EvaluationOperation,
 	IMPACT_MATRIX_ENTITY_LIMIT,
@@ -187,10 +189,6 @@ function hasCellDeltaChanged(delta: CellDelta): boolean {
 		delta.approvalRoleChanged ||
 		delta.diagnosticCodeChanged
 	);
-}
-
-function isTransactionCollection(collection: string): boolean {
-	return collection === 'transactions';
 }
 
 async function loadSubjectOptions(nextCollections: CollectionSummary[]): Promise<SubjectOption[]> {
@@ -833,16 +831,17 @@ onMount(() => {
 						<div class="fixture-header">
 							<div>
 								<h3>Transaction Fixture</h3>
-								<p class="muted">Provide the operations array exactly as the GraphQL evaluator expects it.</p>
+								<p class="muted">
+									Add, remove, and reorder operations. Each step is individually policy-evaluated.
+								</p>
 							</div>
 						</div>
-						<textarea
-							class="fixture-editor"
-							data-testid="policy-transaction-fixture"
-							rows="16"
-							spellcheck="false"
-							bind:value={transactionFixtureText}
-						></textarea>
+						<TransactionFixtureEditor
+							value={transactionFixtureText}
+							onchange={(json) => {
+								transactionFixtureText = json;
+							}}
+						/>
 					</section>
 				{/if}
 			</div>
@@ -1144,15 +1143,6 @@ onMount(() => {
 				Active-policy outcomes for the first {impactMatrixEntities.length} sample row(s) across
 				up to {impactMatrixSubjects.length} subjects and {IMPACT_MATRIX_OPERATIONS.length} operations.
 			</p>
-			{#if hasProposedPolicyDraft}
-				<p
-					class="muted impact-delta-unavailable"
-					data-testid="policy-impact-matrix-cell-transaction-unavailable"
-				>
-					transaction delta unavailable
-					<a href={`${base}/beads/axon-84038791`}>follow-up axon-84038791</a>
-				</p>
-			{/if}
 			{#if impactMatrixError}
 				<p class="message error" data-testid="policy-impact-matrix-error">{impactMatrixError}</p>
 			{/if}
@@ -1210,14 +1200,10 @@ onMount(() => {
 													c.operation === operation,
 											) ?? null}
 											{@const delta = computeCellDelta(cell ?? null, proposedCell)}
-											{@const transactionDeltaUnavailable = isTransactionCollection(
-												entity.collection,
-											)}
 											{@const renderDeltaSummary =
-												!transactionDeltaUnavailable && !delta.isUnchanged && hasCellDeltaChanged(delta)}
+												!delta.isUnchanged && hasCellDeltaChanged(delta)}
 											{@const renderProposedCell =
 												Boolean(proposedCell) &&
-												!transactionDeltaUnavailable &&
 												!delta.isUnchanged &&
 												!delta.onlyActive}
 											<td
@@ -1232,15 +1218,14 @@ onMount(() => {
 														class:impact-cell-columns={Boolean(
 															renderProposedCell ||
 																renderDeltaSummary ||
-																delta.isUnchanged ||
-																transactionDeltaUnavailable,
+																delta.isUnchanged,
 														)}
 													>
 														<div
 															class="impact-cell-section"
 															data-testid="policy-impact-matrix-cell-active"
 														>
-															{#if renderProposedCell || renderDeltaSummary || delta.isUnchanged || transactionDeltaUnavailable}
+															{#if renderProposedCell || renderDeltaSummary || delta.isUnchanged}
 																<div class="impact-cell-label">active</div>
 															{/if}
 															<div
@@ -1312,16 +1297,7 @@ onMount(() => {
 																</a>
 															{/if}
 														</div>
-														{#if transactionDeltaUnavailable}
-															<div
-																class="impact-delta-summary"
-																data-testid="policy-impact-matrix-cell-transaction-unavailable"
-															>
-																transaction delta unavailable<a href={`${base}/beads/axon-84038791`}>
-																	follow-up axon-84038791
-																</a>
-															</div>
-														{:else if delta.isUnchanged}
+														{#if delta.isUnchanged}
 															<span
 																class="impact-delta-summary"
 																data-testid="policy-impact-matrix-cell-unchanged"
@@ -1671,11 +1647,6 @@ onMount(() => {
 		font-size: 0.74rem;
 		font-weight: 700;
 		text-transform: uppercase;
-	}
-
-	.impact-delta-summary a {
-		margin-left: 0.45rem;
-		text-transform: none;
 	}
 
 	.impact-decision {
