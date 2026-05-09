@@ -3,6 +3,8 @@ import {
 	SCN017_COLLECTIONS,
 	SCN017_ROLES,
 	SCN017_SUBJECTS,
+	captureDataPlaneRequests,
+	expectGraphqlPrimaryDataPlane,
 	routeGraphqlAs,
 	seedScn017PolicyUiFixture,
 } from './helpers';
@@ -12,9 +14,10 @@ function escapeRegExp(value: string): string {
 }
 
 test.describe('GraphQL policy console', () => {
-	test('opens an effectivePolicy preset from the policy workspace', async ({ page, request }) => {
+	test('opens an effectivePolicy preset from the policy workspace @US-113', async ({ page, request }) => {
 		const fixture = await seedScn017PolicyUiFixture(request, 'graphql-policy-console-effective');
 		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
+		const requests = captureDataPlaneRequests(page, fixture.db);
 
 		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
 		await page.goto(policiesUrl);
@@ -46,6 +49,8 @@ test.describe('GraphQL policy console', () => {
 		await expect(page.getByTestId('graphql-response')).toContainText('"canRead": true');
 		await expect(page.getByTestId('graphql-response')).toContainText('amount_cents');
 		await expect(page.getByTestId('graphql-response')).toContainText('commercial_terms');
+
+		expectGraphqlPrimaryDataPlane(requests, 'graphql policy console route should stay GraphQL-primary');
 	});
 
 	test('opens an explainPolicy preset from the policy workspace', async ({ page, request }) => {

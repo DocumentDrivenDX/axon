@@ -6,11 +6,13 @@ import {
 	TASK_COLLECTION,
 	activateProposedPolicy,
 	approveIntent,
+	captureDataPlaneRequests,
 	commitIntent,
 	createBudgetRecord,
 	dbAuditUrl,
 	dbIntentUrl,
 	dbIntentsUrl,
+	expectGraphqlPrimaryDataPlane,
 	graphqlPath,
 	patchBudgetRecordAs,
 	previewBudgetIntent,
@@ -22,12 +24,13 @@ import {
 } from './helpers';
 
 test.describe('Intent audit lineage', () => {
-	test('shows delegated MCP intent metadata in the inbox and detail panels', async ({
+	test('shows delegated MCP intent metadata in the inbox and detail panels @US-119', async ({
 		page,
 		request,
 	}) => {
 		const db = await seedApprovalCollections(request, 'intent-audit-lineage');
 		const ids = await seedIntentStates(request, db);
+		const requests = captureDataPlaneRequests(page, db);
 
 		await routeGraphqlAs(page, 'finance-approver');
 		await page.goto(dbIntentsUrl(db));
@@ -68,9 +71,11 @@ test.describe('Intent audit lineage', () => {
 		await expect(page.getByTestId('intent-tool-arguments')).not.toContainText('23000');
 		await expect(page.getByTestId('intent-structured-outcome')).toContainText('needs_approval');
 		await expect(page.getByTestId('intent-structured-outcome')).toContainText('pending');
+
+		expectGraphqlPrimaryDataPlane(requests, 'intent audit lineage route should stay GraphQL-primary');
 	});
 
-	test('shows conflict outcomes for stale MCP-originated intent commits', async ({
+	test('shows conflict outcomes for stale MCP-originated intent commits @US-118', async ({
 		page,
 		request,
 	}) => {
@@ -148,7 +153,7 @@ test.describe('Intent audit lineage', () => {
 });
 
 test.describe('Intent audit deep link and lineage panel', () => {
-	test('deep link filters /audit by intent ID and pre-populates filter', async ({
+	test('deep link filters /audit by intent ID and pre-populates filter @US-116', async ({
 		page,
 		request,
 	}) => {

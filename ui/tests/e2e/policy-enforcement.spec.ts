@@ -4,11 +4,13 @@ import {
 	SCN017_COLLECTIONS,
 	SCN017_SUBJECTS,
 	activateProposedPolicy,
+	captureDataPlaneRequests,
 	createTestEntity,
 	createTestLink,
 	dbAuditUrl,
 	dbCollectionUrl,
 	dbCollectionsUrl,
+	expectGraphqlPrimaryDataPlane,
 	proposedPolicyDraftDenyHigh,
 	routeGraphqlAs,
 	seedScn017PolicyUiFixture,
@@ -57,7 +59,7 @@ function captureSubscribeFrame(page: Page): Promise<unknown> {
  */
 
 test.describe('Policy enforcement (UI redaction)', () => {
-	test('contractor sees redacted commercial_terms across list, detail, and audit views', async ({
+	test('contractor sees redacted commercial_terms across list, detail, and audit views @US-115', async ({
 		page,
 		request,
 	}) => {
@@ -65,6 +67,7 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		const sensitiveCommercialTerms = 'net-15 expedited infrastructure terms';
 		const collectionUrl = dbCollectionUrl(fixture.db, SCN017_COLLECTIONS.invoices);
 		const auditUrl = dbAuditUrl(fixture.db);
+		const requests = captureDataPlaneRequests(page, fixture.db);
 
 		await routeGraphqlAs(page, SCN017_SUBJECTS.contractor);
 		await page.goto(collectionUrl);
@@ -112,6 +115,8 @@ test.describe('Policy enforcement (UI redaction)', () => {
 			.click({ trial: false });
 		const auditHtml = await page.content();
 		expect(auditHtml).not.toContain(sensitiveCommercialTerms);
+
+		expectGraphqlPrimaryDataPlane(requests, 'policy enforcement route should stay GraphQL-primary');
 	});
 
 	test('denied delete surfaces stable code, reason, and policy explanation', async ({

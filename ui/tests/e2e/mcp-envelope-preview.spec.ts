@@ -17,7 +17,7 @@ function escapeRegExp(value: string): string {
 }
 
 test.describe('MCP envelope preview', () => {
-	test('mirrors explainPolicy outcomes for read, needs_approval, and denied flows', async ({
+	test('mirrors explainPolicy outcomes for read, needs_approval, and denied flows @US-119', async ({
 		page,
 		request,
 	}) => {

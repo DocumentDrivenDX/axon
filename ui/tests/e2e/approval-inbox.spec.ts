@@ -4,9 +4,11 @@ import {
 	TASK_COLLECTION,
 	activateProposedPolicy,
 	approveIntent,
+	captureDataPlaneRequests,
 	createBudgetRecord,
 	dbIntentUrl,
 	dbIntentsUrl,
+	expectGraphqlPrimaryDataPlane,
 	patchBudgetRecordAs,
 	previewBudgetIntent,
 	proposedPolicyDraftDenyHigh,
@@ -21,12 +23,13 @@ async function selectStatus(page: Page, status: string) {
 }
 
 test.describe('Approval inbox', () => {
-	test('lists scoped intents across review states and opens detail', async ({ page, request }) => {
+	test('lists scoped intents across review states and opens detail @US-117', async ({ page, request }) => {
 		const db = await seedApprovalCollections(request, 'approval-inbox');
 		const ids = await seedIntentStates(request, db);
 		const foreignDb = await seedApprovalCollections(request, 'approval-foreign');
 		await createBudgetRecord(request, foreignDb, TASK_COLLECTION, 'task-foreign');
 		const foreign = await previewBudgetIntent(request, foreignDb, 'task-foreign', 20_000);
+		const requests = captureDataPlaneRequests(page, db);
 
 		await routeGraphqlAs(page, 'finance-approver');
 		await page.goto(dbIntentsUrl(db));
@@ -64,6 +67,8 @@ test.describe('Approval inbox', () => {
 		await expect(page.getByTestId('intent-audit-trail')).toContainText('intent.approve');
 		await expect(page.getByTestId('intent-audit-trail')).toContainText('approved');
 		await expect(page.getByTestId('intent-deep-links')).toContainText('Open audit log');
+
+		expectGraphqlPrimaryDataPlane(requests, 'approval inbox route should stay GraphQL-primary');
 	});
 
 	test('supports dense filters, keyboard selection, and inline review without leaving inbox', async ({
@@ -182,7 +187,7 @@ test.describe('Approval inbox', () => {
 		await expect(page.getByTestId('intent-reason')).toHaveValue('lost role attempt');
 	});
 
-	test('shows disabled action states for rejected, expired, committed, and stale intents', async ({
+	test('shows disabled action states for rejected, expired, committed, and stale intents @US-118', async ({
 		page,
 		request,
 	}) => {
