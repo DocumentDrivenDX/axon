@@ -20,7 +20,7 @@ ddx:
 **Priority**: P0
 **Owner**: Core Team
 **Created**: 2026-04-19
-**Updated**: 2026-04-22
+**Updated**: 2026-06-06
 
 ## Overview
 
@@ -49,6 +49,11 @@ Policies are declared in or alongside the collection schema, not as ad-hoc Rust
 closures. They are introspectable, testable, audited on change, and enforced
 uniformly below GraphQL, MCP, SDK, and any compatibility routes. ADR-019 governs
 the authoring model and mutation-intent binding.
+
+Compiled policy output is also interface metadata. Axon generates the
+policy-envelope, redaction, approval, and denial information that GraphQL, MCP,
+SDK, CLI, and operator UI surfaces expose, while preserving the rule that
+metadata is advisory and enforcement always repeats below the surface.
 
 ## Problem Statement
 
@@ -425,6 +430,7 @@ Stable `reason` values:
 | `collection_read_denied` | Caller lacks read permission for the collection |
 | `row_write_denied` | Caller can address the entity but may not mutate that row |
 | `field_write_denied` | Caller may mutate the row but not the named field |
+| `approval_required` | Policy returned `needs_approval`; caller must use FEAT-030 intent flow |
 | `policy_filter_unindexed` | Required policy predicate cannot be executed within query limits |
 | `policy_expression_invalid` | Schema policy expression is invalid at schema write time |
 
@@ -463,6 +469,26 @@ the primary UI/SDK surface.
 
 Introspection is advisory. Enforcement always happens again in the mutation or
 query execution path.
+
+### Interface Metadata Contract
+
+Every generated surface must derive its access-control metadata from the same
+compiled policy plan:
+
+- GraphQL collection metadata and `effectivePolicy` expose policy version,
+  allowed operations, approval-routed operations, denied/redacted fields, and
+  explanation handles.
+- MCP tool descriptions expose the same envelopes and refresh when schema or
+  policy versions change.
+- SDK metadata and CLI JSON output preserve the same machine-readable fields as
+  GraphQL and MCP: `policy_version`, `decision`, `reason`, `policy`,
+  `field_path`, `redacted_fields`, `approval_route`, and `audit_ref` where
+  available.
+- Direct writes that receive `needs_approval` from policy return
+  `approval_required` and no data mutation; FEAT-030 owns the preview, intent,
+  approval, and commit path.
+- Fixture tests compare GraphQL, MCP, SDK, and CLI metadata for the same
+  subject, resource, operation, and policy version.
 
 ## Reference Nexiq Policy Set
 
@@ -645,6 +671,8 @@ security
 - [ ] GraphQL exposes effective collection policy metadata
 - [ ] GraphQL exposes dry-run policy explanation for a proposed operation
 - [ ] Explanations name the matching policy and denied field paths
+- [ ] Generated MCP, SDK, CLI, and operator metadata preserve the same policy
+  version, decision, reason, redacted fields, and approval route as GraphQL
 - [ ] Enforcement is repeated during the real operation
 
 ### Story US-109: Author And Test Policy Before Activation [FEAT-029]
@@ -663,6 +691,8 @@ agents touch live data
 - [ ] The compile report names GraphQL fields made nullable by redaction
 - [ ] Fixture tests can evaluate policy decisions for named subjects and sample
   mutations
+- [ ] Fixture tests compare GraphQL, MCP, SDK, and CLI policy metadata for the
+  same subject, resource, operation, and policy version
 - [ ] Policy changes are audited with old and new policy versions
 
 ## Edge Cases
@@ -715,6 +745,14 @@ agents touch live data
   report, effective-policy inspector, and dry-run evaluator.
 - Treating REST parity as a launch blocker for data policy.
 
+## Traceability
+
+- **Parent PRD Section**: P0 #4 reusable data-layer policy; P0 #7 safe,
+  discoverable interface parity; FR-10 through FR-14 and FR-28 through FR-29
+- **User Stories**: US-101, US-102, US-103, US-104, US-109
+- **Implementation**: policy compiler, shared handler authorization, GraphQL
+  metadata, MCP tool metadata, SDK metadata, CLI JSON output
+
 ## Verification
 
 Implementation beads must add tests for:
@@ -729,6 +767,8 @@ Implementation beads must add tests for:
   and transaction commit.
 - Stable GraphQL and MCP `forbidden` error detail, with REST compatibility
   matching when present.
+- GraphQL, MCP, SDK, and CLI policy metadata parity for policy envelopes,
+  redactions, approval routes, and denial reasons.
 - Idempotent replay of forbidden transaction responses.
 - Indexed policy plan generation and `policy_filter_unindexed` fallback.
 - The reference nexiq policy set above.

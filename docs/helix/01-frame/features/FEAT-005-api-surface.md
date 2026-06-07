@@ -13,7 +13,7 @@ ddx:
 **Priority**: P0
 **Owner**: Core Team
 **Created**: 2026-04-04
-**Updated**: 2026-04-22
+**Updated**: 2026-06-06
 
 ## Overview
 
@@ -27,6 +27,11 @@ FEAT-005 defines the internal and compatibility API foundation. FEAT-015
 defines GraphQL as the primary public application API. FEAT-016 defines MCP as
 the agent-native surface. REST/JSON and gRPC may remain useful compatibility,
 SDK, or operational surfaces, but they are not the product-defining interface.
+
+The shared API foundation must make Axon's governed path visible and easy:
+schema discovery, policy envelopes, redactions, preview/intent/commit,
+stale/conflict causes, audit references, and rollback dry-runs all flow through
+one handler contract instead of being rebuilt independently per surface.
 
 ## Problem Statement
 
@@ -51,6 +56,16 @@ SDKs, and CLI tools can share.
 - **Operations**: Full coverage of collection, entity, schema, and audit operations as defined in FEAT-001 through FEAT-004
 - **Self-describing**: GraphQL schema, MCP tool schemas, and any protobuf
   definitions are generated views of the same Axon operation and ESF metadata
+- **Governed write contract**: Approval-routed writes expose preview, intent,
+  approval, and commit semantics. Direct writes still route through shared
+  schema, policy, transaction, OCC, and audit checks and cannot bypass
+  approval-required policy envelopes
+- **Discoverability contract**: Public metadata exposes schema shape,
+  relationship shape, policy envelopes, redacted fields, approval requirements,
+  stale/conflict causes, policy/schema versions, and audit references
+- **SDK verbs**: First-party SDKs expose `previewMutation`, `commitIntent`,
+  `approveIntent`, `rejectIntent`, `explainPolicy`, `queryAudit`, and
+  `rollbackDryRun`
 - **Streaming**: Support server-streaming for change feeds (P1) and large query results
 - **Error model**: Structured errors with error code, message, field-level
   details, policy/intent detail where applicable, and suggested action.
@@ -63,7 +78,10 @@ SDKs, and CLI tools can share.
 - **Collection management**: `axon collection create|list|describe|drop`
 - **Entity operations**: `axon entity create|get|update|delete|list|query` (CLI subcommand is `entity` to match the data model; `doc` is not provided as an alias — see decision note below)
 - **Schema operations**: `axon schema show|validate`
-- **Audit operations**: `axon audit list|show|revert`
+- **Policy operations**: `axon policy explain|test`
+- **Mutation intent operations**: `axon mutation preview|commit|approve|reject`
+- **Audit operations**: `axon audit list|show|diff|blame`
+- **Recovery operations**: `axon rollback dry-run|commit`
 - **Output formats**: Human-readable table (default), JSON, YAML
 - **Configuration**: `axon config` for connection settings, defaults
 
@@ -94,7 +112,11 @@ SDKs, and CLI tools can share.
 **Acceptance Criteria:**
 - [ ] GraphQL-first client SDK available for TypeScript
 - [ ] Create, read, update, delete, query, preview, and approve entities via SDK
+- [ ] SDK exposes `previewMutation`, `commitIntent`, `approveIntent`,
+  `rejectIntent`, `explainPolicy`, `queryAudit`, and `rollbackDryRun`
 - [ ] Structured error types that agents can match on programmatically
+- [ ] Structured errors preserve policy, intent, conflict, stale-dimension, and
+  audit-reference fields from the shared handler contract
 - [ ] SDK works identically against embedded and server modes
 
 ### Story US-014: Use Axon from the Command Line [FEAT-005]
@@ -107,6 +129,10 @@ SDKs, and CLI tools can share.
 - [ ] `axon entity list <collection>` shows entities in a readable table
 - [ ] `axon entity query <collection> --filter "status=pending"` returns matching entities
 - [ ] `axon audit list --collection <name> --last 10` shows recent changes
+- [ ] `axon audit diff` and `axon audit blame` show changed fields, actor/tool
+  origin, policy decision, approval decision, transaction ID, and audit IDs
+- [ ] `axon rollback dry-run` shows the compensating operations and conflicts
+  without mutating state
 - [ ] `--output json` flag returns machine-parseable output
 - [ ] `axon` with no args shows help
 
@@ -139,6 +165,13 @@ SDKs, and CLI tools can share.
 - **FEAT-001** through **FEAT-004**: API exposes all their operations
 - **FEAT-015**: GraphQL is the primary public application surface
 - **FEAT-016**: MCP is the agent-native surface
+- **FEAT-021**: Change-feed cursor semantics inform streaming API behavior
+- **FEAT-023**: Rollback dry-run and commit flows are exposed through CLI and
+  SDK surfaces
+- **FEAT-029**: Policy metadata, redactions, and explanations are generated
+  from the compiled policy plan
+- **FEAT-030**: Mutation preview, approval, commit, and stale-intent behavior
+  define the governed write contract
 - Protobuf/gRPC and OpenAPI tooling only where compatibility surfaces are kept
 
 ## Out of Scope
@@ -151,8 +184,8 @@ SDKs, and CLI tools can share.
 ## Traceability
 
 ### Related Artifacts
-- **Parent PRD Section**: Requirements Overview > P0 #10 (GraphQL-first API
-  surface), P0 #11 (MCP surface), P0 #15 (CLI)
+- **Parent PRD Section**: P0 #7 safe, discoverable interface parity; FR-20,
+  FR-21, FR-28, and FR-29
 - **User Stories**: US-013, US-014
 - **Test Suites**: `tests/FEAT-005/`
 - **Implementation**: `src/api/`, `src/cli/`, `proto/` or equivalent

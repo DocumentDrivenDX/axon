@@ -17,7 +17,7 @@ ddx:
 **Priority**: P0
 **Owner**: Core Team
 **Created**: 2026-04-05
-**Updated**: 2026-04-22
+**Updated**: 2026-06-06
 
 ## Overview
 
@@ -30,6 +30,11 @@ WebSocket subscriptions provide real-time change feeds backed by the audit log.
 GraphQL is Axon's primary application API surface. MCP mirrors the same
 semantics for agents. REST/JSON endpoints remain compatibility and operational
 fallbacks for cases where GraphQL is genuinely intractable.
+
+GraphQL also carries the first-class discoverability contract for application
+developers: generated types and metadata expose schema shape, policy envelopes,
+redactions, approval requirements, stale/conflict causes, and audit references
+that MCP, SDK, CLI, and operator UI surfaces must preserve.
 
 See [ADR-012](../../02-design/adr/ADR-012-graphql-query-layer.md) for
 the full design.
@@ -62,6 +67,10 @@ traversal, and pagination is a V1 proof point.
   nested types, arrays→list types
 - **System fields**: Every entity type includes `id`, `version`,
   `createdAt`, `updatedAt`, `createdBy`, `updatedBy`
+- **Interface metadata**: Generated schema metadata includes policy version,
+  schema version, redactable fields, approval-routed operations, autonomous
+  write envelopes, and supported audit/change cursor fields for each
+  collection
 
 #### Relationship Fields
 
@@ -83,6 +92,7 @@ traversal, and pagination is a V1 proof point.
 - **Collection introspection**: `collections` and `collection(name)` for
   metadata, schema, indexes, lifecycles
 - **Audit log**: `auditLog(collection, entityId, actor, mutation, ...)`
+  returns audit references and supports cursor-based pagination/resume
 - **Relay pagination**: All list fields return Connection types with
   edges, pageInfo, and totalCount
 - **Policy-safe pagination**: Row policies are applied before edges,
@@ -116,6 +126,10 @@ traversal, and pagination is a V1 proof point.
   `JSON` scalars for cross-collection data
 - **Collection management**: `createCollection`, `dropCollection`,
   `putSchema` mutations for admin operations
+- **Safe write default**: Generated write documentation and SDK generation
+  prefer `previewMutation` plus `commitMutationIntent` for approval-routed
+  operations. A direct mutation that policy classifies as `needs_approval`
+  returns an approval-required result and does not commit
 
 #### Policy And Mutation Intents
 
@@ -128,6 +142,9 @@ traversal, and pagination is a V1 proof point.
   allowed or approval-routed
 - **Approval workflow**: `approveMutationIntent`, `rejectMutationIntent`, and
   `commitMutationIntent` expose FEAT-030 through GraphQL
+- **Policy envelope metadata**: GraphQL exposes enough metadata for SDKs and
+  UIs to distinguish autonomous, approval-routed, and denied operations before
+  attempting a commit
 - **Redaction-aware types**: Any field that can be redacted by FEAT-029 is
   nullable in the generated GraphQL type, even if it is required in ESF
 
@@ -148,10 +165,12 @@ traversal, and pagination is a V1 proof point.
 - **Generic subscription**: `entityChanged(collection, filter)` for any
   collection
 - **Event shape**: mutation type, entity data, previous version, actor,
-  timestamp
+  timestamp, audit cursor, and transaction ID
 - **WebSocket transport**: graphql-ws protocol on `/graphql/ws`
 - **Backed by audit log**: Subscription handler polls audit log (V1) or
   listens on broadcast channel (future optimization)
+- **Resume guidance**: Subscription events carry the audit cursor needed to
+  resume through `auditLog(after: ...)` after disconnect
 
 #### Lifecycle Fields
 
@@ -170,6 +189,9 @@ traversal, and pagination is a V1 proof point.
   field weights
 - **Policy correctness**: Policy filtering, redaction, relationship traversal,
   and pagination must be tested against realistic business schemas before V1
+- **Interface parity**: Generated GraphQL metadata must match MCP tool
+  metadata for policy envelopes, approval requirements, redactions,
+  stale/conflict fields, and audit references
 - **Subscription latency**: < 500ms from entity write to subscriber
   notification (polling interval)
 
@@ -199,6 +221,9 @@ traversal, and pagination is a V1 proof point.
 - [ ] GraphQL introspection returns types for all registered collections
 - [ ] Adding a new collection immediately makes its type available
 - [ ] Modifying a schema updates the GraphQL type definition
+- [ ] Introspection or collection metadata exposes policy envelopes,
+  redactable fields, approval-routed operations, schema/policy versions, and
+  audit cursor support
 - [ ] GraphQL Playground is available at `/graphql` in dev mode
 - [ ] GraphQL introspection query returns schema for all collections in < 100ms
 
@@ -214,6 +239,8 @@ traversal, and pagination is a V1 proof point.
 - [ ] Filter argument narrows which changes are pushed (e.g., only
   `status = "blocked"`)
 - [ ] Events include the mutation type, new entity data, and actor
+- [ ] Events include an audit cursor that can be used with `auditLog(after:)`
+  to resume after reconnect
 - [ ] Multiple concurrent subscriptions work independently
 - [ ] If a collection is dropped during an active subscription, the subscription closes with an error event
 
@@ -235,6 +262,8 @@ traversal, and pagination is a V1 proof point.
 - [ ] `commitTransaction` atomically commits multiple operations
 - [ ] `commitTransaction` with multiple operations either commits all or rolls back all; partial success is impossible
 - [ ] Version conflict error includes current entity state in GraphQL error extensions
+- [ ] A direct generated mutation that receives `needs_approval` from policy
+  returns an approval-required result and does not mutate entity/link state
 
 ### Story US-110: Enforce Policy Across GraphQL Traversal [FEAT-015]
 
@@ -265,6 +294,8 @@ relationships and pagination
 - [ ] `commitMutationIntent` rejects stale entity versions, stale policy
   versions, and operation hash mismatches
 - [ ] The committed mutation audit entry links to the approved intent
+- [ ] Preview, stale, conflict, approval-required, and committed responses
+  expose stable machine-readable fields that SDKs and MCP tools preserve
 
 ### Story US-051: Use GraphQL from the Admin UI [FEAT-015]
 
@@ -378,7 +409,8 @@ remains plain JSON; JSON-LD is available on request.
 ## Traceability
 
 ### Related Artifacts
-- **Parent PRD Section**: Requirements Overview > P1 #12 (GraphQL query layer)
+- **Parent PRD Section**: P0 #7 safe, discoverable interface parity; FR-20,
+  FR-28, FR-29, and FR-31
 - **User Stories**: US-048, US-049, US-050, US-051, US-057, US-110, US-111
 - **Architecture**: ADR-012 (GraphQL Query Layer)
 - **Implementation**: `crates/axon-graphql/`

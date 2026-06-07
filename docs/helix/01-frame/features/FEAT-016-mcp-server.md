@@ -17,7 +17,7 @@ ddx:
 **Priority**: P0
 **Owner**: Core Team
 **Created**: 2026-04-05
-**Updated**: 2026-04-22
+**Updated**: 2026-06-06
 
 ## Overview
 
@@ -34,6 +34,11 @@ MCP is not a separate policy surface. It mirrors the GraphQL semantics from
 FEAT-015, FEAT-029, and FEAT-030 so agents observe the same row filters, field
 redaction, policy explanations, mutation intents, and approval outcomes that
 human and UI clients see through GraphQL.
+
+MCP must make the safe path discoverable to agents. Tool metadata and tool
+results expose policy envelopes, approval requirements, stale/conflict causes,
+audit references, and preview/commit modes so a low-effort MCP client does not
+need custom Axon-specific guardrail code.
 
 See [ADR-013](../../02-design/adr/ADR-013-mcp-server.md) for the full
 design.
@@ -75,9 +80,15 @@ protocol.
 - **Policy envelopes**: Tool descriptions include the caller-visible policy
   envelopes generated from ADR-019, such as autonomous thresholds and approval
   requirements
+- **Safe write default**: Write tools expose preview/intent/commit semantics.
+  Approval-routed writes return `needs_approval` with intent metadata instead
+  of committing through a direct tool call
 - **Intent outcomes**: Write tools return structured `allowed`,
   `needs_approval`, `denied`, and `conflict` results; approval-routed writes
   use FEAT-030 mutation intents
+- **Result metadata**: Tool results preserve schema version, policy version,
+  stale dimension, current version, denied/redacted field paths, intent ID,
+  transaction ID, and audit references where applicable
 
 #### Resources (Read Operations)
 
@@ -87,7 +98,7 @@ protocol.
 - **Link resources**: `axon://{collection}/{id}/links` returns outbound
   links
 - **Audit resources**: `axon://{collection}/{id}/audit` returns audit
-  history
+  history with cursor pagination
 - **Schema resources**: `axon://_schemas/{collection}` returns ESF schema
 - **Resource templates**: Agents discover URI patterns via MCP resource
   template listing
@@ -100,6 +111,8 @@ protocol.
   and receives notifications on any mutation in the collection
 - **Backed by audit log**: Same polling mechanism as GraphQL
   subscriptions (ADR-012)
+- **Resume cursor**: Resource update notifications include the audit cursor
+  needed to resume through the audit resource after reconnect
 
 #### Prompts
 
@@ -130,6 +143,9 @@ protocol.
   notification
 - **Policy parity**: MCP tool behavior must match GraphQL policy decisions for
   the same subject, operation, and policy version
+- **Metadata parity**: MCP tool metadata must match GraphQL collection metadata
+  for schema shape, policy envelopes, redaction, approval requirements,
+  conflict/stale fields, and audit references
 
 ## User Stories
 
@@ -145,6 +161,8 @@ protocol.
 - [ ] Tool parameters include JSON Schema from the collection's ESF
 - [ ] Tool descriptions are detailed enough for the agent to use them
   without documentation
+- [ ] Tool metadata includes policy envelopes, redacted fields, approval
+  requirements, schema/policy versions, and expected audit references
 - [ ] Adding a new collection makes new tools available to connected
   agents
 - [ ] Each tool description includes parameter constraints and expected response shape
@@ -165,6 +183,8 @@ protocol.
 - [ ] Errors include structured information the agent can act on
 - [ ] Tool errors include structured `code` (e.g., `NOT_FOUND`, `CONFLICT`, `VALIDATION_ERROR`) and `detail` fields
 - [ ] Version conflict errors include the current entity state in the error response
+- [ ] Approval-routed writes return `needs_approval` with intent metadata and
+  do not mutate entity/link state through a direct tool call
 
 ### Story US-054: Agent Queries via GraphQL through MCP [FEAT-016]
 
@@ -190,6 +210,8 @@ protocol.
 - [ ] Agent subscribes to `axon://beads` resource
 - [ ] When a bead is created/updated/deleted, agent receives
   `resource_updated` notification
+- [ ] Notifications include an audit cursor that lets the agent resume through
+  the audit resource after reconnect
 - [ ] Agent re-reads the resource to get new state
 - [ ] Multiple subscriptions work independently
 - [ ] If a subscribed entity is deleted, agent receives a `resource_updated` notification
@@ -223,6 +245,8 @@ write envelopes
 - [ ] A write outside the autonomous envelope returns `needs_approval` with a
   mutation intent token
 - [ ] A denied write returns the same policy explanation as GraphQL
+- [ ] `needs_approval`, denied, stale, and conflict results preserve the same
+  machine-readable fields as GraphQL
 - [ ] Tool metadata refreshes after policy/schema changes
 
 ## Edge Cases
@@ -284,7 +308,8 @@ write envelopes
 ## Traceability
 
 ### Related Artifacts
-- **Parent PRD Section**: Requirements Overview > P1 #13 (MCP server)
+- **Parent PRD Section**: P0 #7 safe, discoverable interface parity; FR-21,
+  FR-28, FR-29, and FR-31
 - **User Stories**: US-052, US-053, US-054, US-055, US-056, US-112
 - **Architecture**: ADR-013 (MCP Server)
 - **Implementation**: `crates/axon-mcp/`

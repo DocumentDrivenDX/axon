@@ -4,7 +4,11 @@ ddx:
   depends_on:
     - helix.prd
     - FEAT-003
+    - FEAT-005
     - FEAT-008
+    - FEAT-015
+    - FEAT-029
+    - FEAT-030
 ---
 # Feature Specification: FEAT-023 - Rollback and Recovery
 
@@ -13,7 +17,7 @@ ddx:
 **Priority**: P1
 **Owner**: Core Team
 **Created**: 2026-04-06
-**Updated**: 2026-04-06
+**Updated**: 2026-06-06
 
 ## Overview
 
@@ -21,6 +25,10 @@ Structured rollback capabilities powered by the audit log. Supports
 point-in-time, entity-level, and transaction-level rollback with dry-run
 preview. Transforms the audit log from a read-only history into an
 actionable recovery mechanism.
+
+Rollback is also an operator interface: dry-runs must use diff/log/blame-style
+output so humans can understand what changed, who or what changed it, why it
+was allowed or denied, and what compensating write Axon would apply.
 
 ## Problem Statement
 
@@ -75,6 +83,26 @@ writes. This should be a first-class operation.
   committing them.
 - Includes conflict detection: identifies entities that have been
   modified since the rollback target, which would produce OCC conflicts.
+- Dry run returns repair-plan metadata: original audit IDs, original
+  transaction IDs, actor/delegated authority, tool/API origin, policy decision,
+  approval decision, before/after values subject to caller redaction, and the
+  compensating operations that would be submitted.
+
+#### Interface Surfaces
+
+- GraphQL exposes rollback dry-run and commit fields for entity,
+  transaction, and point-in-time recovery where FEAT-015 owns the transport
+  shape.
+- SDKs expose `rollbackDryRun` and a commit helper that submit the same
+  handler operations as GraphQL.
+- CLI exposes `axon rollback dry-run|commit` and audit-focused
+  `axon audit diff|blame` views for operator repair workflows.
+- MCP may expose read-only rollback dry-run tools for agent diagnosis, but
+  committing rollback remains subject to the same policy and approval rules as
+  any other write.
+- Rollback writes are ordinary governed mutations: FEAT-029 policy applies,
+  FEAT-030 preview/approval applies when policy returns `needs_approval`, and
+  the rollback mutation itself is audited.
 
 ### Non-Functional Requirements
 
@@ -90,6 +118,14 @@ writes. This should be a first-class operation.
   previous state.
 - FEAT-008 (ACID Transactions) — rollback operations are themselves
   atomic transactions.
+- FEAT-005 (API Surface) and FEAT-015 (GraphQL) — rollback dry-run and commit
+  are exposed through the same public interface contract as other governed
+  writes.
+- FEAT-029 (Data-Layer Access Control Policies) — rollback is authorized as an
+  ordinary write against current policy.
+- FEAT-030 (Mutation Intents and Approval) — approval-routed rollback commits
+  use the same preview, intent, approval, and stale-binding rules as other
+  risky mutations.
 
 ## User Stories
 
@@ -107,6 +143,9 @@ exist
   history. E2E: `ui/tests/e2e/wave2-rollback.spec.ts`
 - [ ] Dry-run API responses include conflict information when the current
   entity version has changed since the rollback target. Planned E2E:
+  `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] Dry-run API responses include original audit IDs, actor/tool origin,
+  policy decision, approval decision, and compensating operations. Planned E2E:
   `crates/axon-server/tests/rollback_recovery_test.rs`
 - [ ] Point-in-time dry-run lists every entity and link that would change
   without committing. Planned E2E:
@@ -129,6 +168,9 @@ exist
   old versions. E2E: `ui/tests/e2e/wave2-rollback.spec.ts`
 - [ ] Entity-level rollback audit entries use `operation: entity.revert`.
   Planned E2E: `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] Entity-level rollback can be inspected through diff/log/blame-style
+  audit views that show the reverted fields and source audit entry. Planned
+  E2E: `crates/axon-server/tests/rollback_recovery_test.rs`
 - [ ] OCC conflicts during entity rollback are reported clearly and leave
   current state unchanged. Planned E2E:
   `crates/axon-server/tests/rollback_recovery_test.rs`
@@ -157,3 +199,14 @@ exist
 - [ ] All rollback operations are themselves audited with references to
   the original audit ids they compensate. Planned E2E:
   `crates/axon-server/tests/rollback_recovery_test.rs`
+- [ ] Rollback dry-run and commit responses expose stable audit references for
+  SDK, CLI, GraphQL, and operator UI clients. Planned E2E:
+  `crates/axon-server/tests/rollback_recovery_test.rs`
+
+## Traceability
+
+- **Parent PRD Section**: P1 #4 rollback and recovery tooling; FR-30
+  diff/log/blame-style audit and repair views
+- **User Stories**: US-095, US-096, US-097
+- **Implementation**: rollback handlers in the server, GraphQL, CLI, SDK, and
+  audit modules

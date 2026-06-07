@@ -9,7 +9,7 @@ ddx:
 
 **Version**: 0.2.0
 **Date**: 2026-04-04
-**Revised**: 2026-04-22
+**Revised**: 2026-06-06
 **Status**: Draft
 
 ---
@@ -374,6 +374,9 @@ before activation:
 - Classify row-policy predicates as indexable or unindexed and fail unsafe
   unindexed policy plans unless bounded by configured limits.
 - Generate the policy explanation plan used by GraphQL and MCP.
+- Generate the interface metadata used by GraphQL, MCP, SDK, CLI, and operator
+  UI surfaces: policy envelopes, redacted fields, approval requirements,
+  policy version, and denial reasons.
 - Emit a dry-run compile report for operator review.
 
 ### Runtime Policy Requirements
@@ -388,6 +391,9 @@ before activation:
   would leak existence.
 - Redacted fields resolve to `null` in GraphQL and are omitted/redacted in MCP
   tool/resource payloads according to the same policy plan.
+- SDK, CLI, and operator UI affordance metadata is derived from the same
+  compiled policy plan as GraphQL and MCP. It is advisory only; enforcement
+  repeats in the handler path.
 - Policy changes are administrative schema changes and are audited.
 
 ### Mutation Intent Requirements
@@ -404,6 +410,13 @@ Mutation preview and approval are governed by
 - Commit revalidates all bound values. Any mismatch returns a stale or mismatch
   error and no partial data change.
 - Approval, rejection, expiration, and committed intent lineage are auditable.
+- Generated public write surfaces make the governed workflow the default for
+  approval-routed writes: preview, intent, approval, and commit. Direct writes
+  that would require approval return an approval-required result rather than
+  committing.
+- SDKs expose conventional methods for the governed workflow:
+  `previewMutation`, `commitIntent`, `approveIntent`, `rejectIntent`,
+  `explainPolicy`, `queryAudit`, and `rollbackDryRun`.
 
 ---
 
@@ -488,7 +501,7 @@ Quality metrics that can only improve:
   preview/approval, audit queries, and UI/SDK workflows.
 - **Agent-native API**: MCP. MCP tools/resources/prompts are generated from ESF
   and must mirror GraphQL semantics for policy, mutation intents, conflicts,
-  and audit.
+  redaction, approval requirements, and audit references.
 - **Internal/server API**: Native Rust traits and any gRPC/protobuf surface are
   implementation and SDK integration mechanisms, not the product-defining
   public application surface.
@@ -496,6 +509,29 @@ Quality metrics that can only improve:
   binary/streaming edges, and unusually awkward GraphQL cases may use REST/JSON,
   but REST parity is not a V1 policy or approval requirement.
 - **Embedded**: Native Rust trait (no serialization overhead)
+
+### Interface Contract
+
+All public product surfaces are views over the same handler semantics:
+
+- **Safe write default**: Generated GraphQL mutations, MCP tools, SDK methods,
+  CLI commands, and operator UI controls expose preview/intent/commit for
+  approval-routed writes. Any direct commit path still performs schema,
+  policy, OCC, transaction, and audit checks in the shared handler path.
+- **Discoverability**: Generated metadata exposes schema shape, relationship
+  shape, redacted fields, policy envelopes, approval requirements, stale or
+  conflict causes, policy/schema versions, and audit references.
+- **Same errors**: GraphQL error extensions, MCP tool errors, SDK exceptions or
+  result enums, CLI JSON output, and operator UI states preserve the same
+  machine-readable code, reason, policy, field path, current version, stale
+  dimension, and audit reference fields where applicable.
+- **Diff/log/blame ergonomics**: Mutation preview, audit inspection, and
+  rollback dry-run outputs name the changed fields, before/after values subject
+  to caller redaction, actor, delegated authority, tool/API origin, policy
+  decision, approval decision, transaction ID, and compensating repair plan.
+- **Cursor semantics**: Audit and change-feed readers use stable cursors that
+  support replay and resume scoped by database, collection, entity/link, and
+  transaction.
 
 ### Client SDKs
 
@@ -508,13 +544,19 @@ Quality metrics that can only improve:
 
 SDKs may use generated GraphQL operations, native bindings, or protobuf where
 appropriate, but public product documentation must lead with GraphQL and MCP
-for application and agent workflows.
+for application and agent workflows. First-party SDKs must expose the governed
+workflow with the method names in Section 5a so application code does not need
+custom wrapper conventions for safe writes, policy explanation, audit queries,
+or rollback dry-runs.
 
 ### CLI
 
 - `axon` binary wrapping GraphQL/MCP and native handler workflows, with
   compatibility clients where needed
 - Supports embedded mode (no server required) and remote mode
+- Provides policy explanation, mutation preview/commit, audit query,
+  diff/log/blame inspection, and rollback dry-run commands over the same
+  handler semantics as GraphQL and MCP
 - Output formats: human-readable table (default), JSON, YAML
 
 ---
@@ -547,29 +589,32 @@ The schema is the single source of truth for what data is valid. To eliminate th
 
 | Requirement Area | PRD Section | Feature Specs | ADRs |
 |-----------------|-------------|---------------|------|
-| Stateless servers | Section 6 (Cloud-native) | FEAT-005 (API Surface) | ADR-003 |
-| Multi-backend | Section 10 (Constraints) | FEAT-001 (Collections) | ADR-003 |
-| Data shape limits | Section 4 (Data Model) | FEAT-007 (Entity-Graph Model) | — |
-| Schema system (ESF) | Section 4, 8 | FEAT-002 (Schema Engine) | ADR-002, ADR-007, ADR-008 |
-| Correctness | Section 5 (Transactions) | FEAT-008 (ACID Transactions) | ADR-004 |
-| Performance targets | Section 6 (Success Metrics) | FEAT-004 (Entity Operations) | — |
-| Physical storage | Section 8 P1 #11 | FEAT-013 (Indexes) | ADR-010 |
-| Secondary indexes | Section 8 P1 #9 | FEAT-013 (Indexes) | ADR-010 |
-| Multi-tenancy / namespaces | Section 8 P1 #10, P2 #4 | FEAT-014 (Multi-Tenancy) | ADR-011 |
-| Authentication / authorization | Section 8 P1 #6 | FEAT-012 (Authorization) | ADR-005 |
-| Policy authoring / access control | Section 8 P0 #12, Section 5a | FEAT-029 (Access Control), FEAT-030 (Mutation Intents) | ADR-019 |
-| Admin web UI | Section 8 P1 #8 | FEAT-011 (Admin Web UI) | ADR-006 |
-| Schema evolution | Section 8 P1 #1 | FEAT-017 (Schema Evolution) | ADR-007 |
-| Change feeds | Section 8 P1 #2 | FEAT-015 (GraphQL subscriptions), FEAT-003 (Audit polling) | ADR-003, ADR-012 |
-| Aggregation queries | Section 8 P1 #3 | FEAT-018 (Aggregation) | — |
-| GraphQL API | Section 8 P0 #10, P1 #12 | FEAT-015 (GraphQL) | ADR-012 |
-| MCP server | Section 8 P0 #11, P1 #13 | FEAT-016 (MCP) | ADR-013 |
-| Agent guardrails | Section 8 P1 #16 | FEAT-022 (Agent Guardrails) | — |
-| Rollback and recovery | Section 8 P1 #17 | FEAT-023 (Rollback/Recovery) | — |
-| Application substrate | Section 8 P2 #8 | FEAT-024 (Application Substrate) | — |
-| Control plane | Section 8 P2 #9, Section 9 | FEAT-025 (Control Plane) | — |
-| EAV storage model | Section 2a | FEAT-013 (Indexes), ADR-010 | ADR-010 |
-| Client-side validation | Section 10 | FEAT-002 (Schema Engine) | ADR-002 |
+| Stateless servers | PRD Goal #5; Technical Context deployment modes | FEAT-005 (API Surface) | ADR-003 |
+| Multi-backend | PRD Goal #5; Technical Context storage | FEAT-001 (Collections) | ADR-003 |
+| Data shape limits | PRD P0 #1 entity/link/collection model | FEAT-007 (Entity-Graph Model) | — |
+| Schema system (ESF) | PRD P0 #1; P1 #1 schema evolution | FEAT-002 (Schema Engine) | ADR-002, ADR-007, ADR-008 |
+| Correctness | PRD P0 #3 transactional write safety | FEAT-008 (ACID Transactions) | ADR-004 |
+| Performance targets | PRD Success Metrics | FEAT-004 (Entity Operations) | — |
+| Physical storage | PRD Technical Context storage; P1 #2 indexes | FEAT-013 (Indexes) | ADR-010 |
+| Secondary indexes | PRD P1 #2 secondary indexes and query acceleration | FEAT-013 (Indexes) | ADR-010 |
+| Multi-tenancy / namespaces | PRD P1 #3 authentication, tenancy, and grants; P2 #3 BYOC control plane | FEAT-014 (Multi-Tenancy) | ADR-011 |
+| Authentication / authorization | PRD P0 #4 reusable data-layer policy; P1 #3 authentication, tenancy, and grants | FEAT-012 (Authorization) | ADR-005 |
+| Policy authoring / access control | PRD P0 #4 reusable data-layer policy; P0 #5 mutation preview and approval | FEAT-029 (Access Control), FEAT-030 (Mutation Intents) | ADR-019 |
+| Admin web UI | PRD P1 #6 operator UI and CLI | FEAT-011 (Admin UI) | ADR-006 |
+| Schema evolution | PRD P1 #1 schema evolution and migration | FEAT-017 (Schema Evolution) | ADR-007 |
+| Change feeds | PRD P1 #5 change feeds; FR-31 | FEAT-021 (Change Feeds), FEAT-015 (GraphQL subscriptions), FEAT-003 (Audit polling) | ADR-003, ADR-012, ADR-014 |
+| Aggregation queries | PRD P0 #2 structured graph/tabular query model | FEAT-018 (Aggregation) | — |
+| GraphQL API | PRD P0 #7 safe, discoverable interface parity; FR-20, FR-28, FR-29 | FEAT-015 (GraphQL) | ADR-012 |
+| MCP server | PRD P0 #7 safe, discoverable interface parity; FR-21, FR-28, FR-29 | FEAT-016 (MCP) | ADR-013 |
+| Agent guardrails | PRD P0 #3 transactional write safety; P0 #5 mutation preview and approval | FEAT-022 (Agent Guardrails) | — |
+| Rollback and recovery | PRD P1 #4 rollback and recovery tooling; FR-30 | FEAT-023 (Rollback/Recovery) | — |
+| Safe discoverable interface parity | PRD P0 #7; FR-20, FR-21, FR-28, FR-29 | FEAT-005 (API Surface), FEAT-015 (GraphQL), FEAT-016 (MCP), FEAT-029 (Access Control), FEAT-030 (Mutation Intents) | ADR-012, ADR-013, ADR-019 |
+| Diff/log/blame repair ergonomics | PRD P0 #6, P1 #4; FR-30 | FEAT-003 (Audit Log), FEAT-023 (Rollback/Recovery), FEAT-030 (Mutation Intents) | ADR-003, ADR-019 |
+| Stable audit and change cursors | PRD P1 #5; FR-31 | FEAT-021 (Change Feeds), FEAT-015 (GraphQL subscriptions), FEAT-003 (Audit polling) | ADR-003, ADR-014 |
+| Application substrate | PRD P2 #2 application substrate | FEAT-024 (Application Substrate) | — |
+| Control plane | PRD P2 #3 BYOC fleet control plane | FEAT-025 (Control Plane) | — |
+| EAV storage model | Technical Requirements Section 2a; PRD P1 #2 indexes | FEAT-013 (Indexes), ADR-010 | ADR-010 |
+| Client-side validation | PRD P0 #1 schema validation; P0 #7 discoverable interfaces | FEAT-002 (Schema Engine) | ADR-002 |
 
 ---
 

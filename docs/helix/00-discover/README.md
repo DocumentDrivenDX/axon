@@ -5,6 +5,7 @@ Discovery artifacts for Axon — a cloud-native, auditable, schema-first transac
 ## Artifacts
 
 - [Product Vision](product-vision.md) - Product vision and opportunity context
+- [Competitive Analysis](competitive-analysis.md) - Market comparison and differentiation strategy
 - [FoundationDB DST Research](foundationdb-dst-research.md) - Research on deterministic simulation testing, BUGGIFY, and Rust applicability
 - [Use Case Research](use-case-research.md) - Concrete domain applications (CRM, CDP, AP/AR, Time Tracking, ERP, Issue Tracking, Document Management, MDM, Workflow Automation, Agentic Applications) with entity schemas, link types, workflows, and scale characteristics
 - [Schema Format Research](schema-format-research.md) - Schema format landscape survey (JSON Schema, OWL/SHACL, Stardog, TerminusDB, Cayley) for ESF design

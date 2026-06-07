@@ -15,7 +15,7 @@ ddx:
 **Priority**: P1
 **Owner**: Core Team
 **Created**: 2026-04-05
-**Updated**: 2026-04-05
+**Updated**: 2026-06-06
 
 ## Overview
 
@@ -24,6 +24,11 @@ records to Kafka topics. A Confluent-compatible Schema Registry serves
 entity schemas to downstream consumers. The change feed is a projection
 of the audit log — the same data that powers GraphQL subscriptions,
 formatted for the Kafka/Debezium ecosystem.
+
+The change-feed contract also supplies Axon's stable replay/resume interface:
+every emitted event carries a durable audit cursor and enough scope metadata
+for consumers to resume or replay by database, collection, entity/link, or
+transaction.
 
 See [ADR-014](../../02-design/adr/ADR-014-change-feeds-debezium-cdc.md)
 for the full design.
@@ -103,6 +108,13 @@ that:
 - **Resume on restart**: Producer resumes from stored cursor, re-emitting
   any events after the cursor (at-least-once)
 - **Per-collection cursors**: Independent progress tracking per collection
+- **Stable cursor token**: External APIs expose an opaque cursor derived from
+  the audit sequence, sink, and scope. Cursor tokens remain valid across
+  producer restarts and schema changes
+- **Scoped replay**: Replay can be scoped by database, schema, collection,
+  entity/link ID, or transaction ID without changing event envelope semantics
+- **Audit parity**: GraphQL subscriptions, MCP resource notifications, SDK
+  change readers, and CDC sinks use the same audit cursor vocabulary
 
 ### Non-Functional Requirements
 
@@ -143,6 +155,9 @@ that:
 - [ ] Initial snapshot emits all existing entities as `op: "r"` events
 - [ ] After snapshot, live events begin from the snapshot boundary
 - [ ] Consumer can request replay by resetting its cursor to any `audit_id`
+- [ ] Consumer can resume from an opaque cursor returned by a prior event
+- [ ] Replay can be scoped to a database, collection, entity/link, or
+  transaction ID
 - [ ] Snapshot is resumable after crash (resumes from last emitted entity)
 - [ ] Re-emitted events (at-least-once) are deduplicated by consumers using `audit_id`
 
@@ -172,6 +187,7 @@ that:
 - [ ] File and SSE sinks work independently of Kafka (Kafka can be disabled)
 - [ ] All sinks emit the same Debezium envelope format
 - [ ] Cursor management works for all sink types
+- [ ] File and SSE sinks preserve the same cursor fields as Kafka events
 
 ### Story US-078: Link Events in CDC [FEAT-021]
 
@@ -236,7 +252,8 @@ that:
 ## Traceability
 
 ### Related Artifacts
-- **Parent PRD Section**: Requirements Overview > P1 #2 (Change feeds)
+- **Parent PRD Section**: P1 #5 change feeds; FR-31 stable audit and change
+  cursors
 - **User Stories**: US-074, US-075, US-076, US-077, US-078
 - **Architecture**: ADR-014 (Change Feeds — Debezium CDC)
 - **Implementation**: `crates/axon-cdc/`, `crates/axon-registry/`

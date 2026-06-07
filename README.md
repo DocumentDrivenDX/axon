@@ -25,7 +25,7 @@ Agents and humans share a trustworthy substrate for structured, interconnected s
 | [PRD](docs/helix/01-frame/prd.md) | Requirements, data model, transaction model, value propositions |
 | [Principles](docs/helix/01-frame/principles.md) | Design principles with testable criteria |
 | [Technical Requirements](docs/helix/01-frame/technical-requirements.md) | Stateless servers, multi-backend, data shape limits, correctness, ESF schema |
-| [Competitive Analysis](docs/helix/01-frame/competitive-analysis.md) | 18-system comparison across graph, relational, NoSQL, and hybrid databases |
+| [Competitive Analysis](docs/helix/00-discover/competitive-analysis.md) | Market comparison and differentiation strategy |
 | [Feature Specs](docs/helix/01-frame/features/) | FEAT-001 through FEAT-010 |
 | [Use Case Research](docs/helix/00-discover/use-case-research.md) | 10 domains: CRM, CDP, AP/AR, ERP, Issue Tracking, and more |
 | [Schema Format Research](docs/helix/00-discover/schema-format-research.md) | 19 schema formats evaluated (JSON Schema, OWL, SHACL, EdgeDB SDL, etc.) |

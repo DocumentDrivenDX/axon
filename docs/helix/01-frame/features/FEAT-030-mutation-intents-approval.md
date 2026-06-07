@@ -4,6 +4,7 @@ ddx:
   depends_on:
     - helix.prd
     - FEAT-003
+    - FEAT-005
     - FEAT-012
     - FEAT-015
     - FEAT-016
@@ -18,7 +19,7 @@ ddx:
 **Priority**: P0
 **Owner**: Core Team
 **Created**: 2026-04-22
-**Updated**: 2026-04-22
+**Updated**: 2026-06-06
 
 ## Overview
 
@@ -30,6 +31,11 @@ whether a human approval is required before commit.
 GraphQL is the primary client surface for mutation intents. MCP mirrors the
 same workflow for agents. REST is a fallback only for operational cases where
 GraphQL is intractable.
+
+The intent workflow is Axon's safe public write path. Generated GraphQL, MCP,
+SDK, CLI, and operator surfaces must make preview, intent, approval, and commit
+discoverable without requiring application developers to invent wrapper
+conventions.
 
 ## Problem Statement
 
@@ -56,7 +62,8 @@ and operation that was reviewed.
   operations.
 - Preview returns the canonical operation, computed diff, affected fields,
   affected entity/link IDs, pre-image versions, policy decision, rule
-  explanation, and approval route if required.
+  explanation, approval route if required, schema version, policy version, and
+  the audit references that will connect the eventual commit to this preview.
 - Preview never mutates entity or link state.
 
 #### Mutation Intent Token
@@ -111,6 +118,25 @@ not schedule retries, timers, notifications, or long-running steps.
 - If execution succeeds, the normal mutation audit entry includes the intent ID,
   policy decision trace, approval ID if present, and pre/post images with
   caller-appropriate redaction.
+- Generated direct write surfaces that receive `needs_approval` from policy
+  return `approval_required` and do not mutate entity/link state.
+
+#### Public Interface Contract
+
+- GraphQL is canonical for application clients: `previewMutation`,
+  `approveMutationIntent`, `rejectMutationIntent`, and
+  `commitMutationIntent`.
+- SDKs expose conventional wrappers: `previewMutation`, `commitIntent`,
+  `approveIntent`, `rejectIntent`, `explainPolicy`, `queryAudit`, and
+  `rollbackDryRun`.
+- MCP tools expose the same workflow through preview/commit modes or paired
+  preview and commit tools, preserving the same decision vocabulary as
+  GraphQL.
+- CLI and operator UI flows use the same handler operations as GraphQL and SDKs
+  and preserve the same JSON fields in machine-readable output.
+- All surfaces preserve `decision`, `reason`, `policy`, `approval_route`,
+  `intent_id`, `schema_version`, `policy_version`, `stale_dimension`,
+  `operation_hash`, `transaction_id`, and `audit_ref` where applicable.
 
 #### Audit And Observability
 
@@ -170,6 +196,8 @@ intent workflow across collections.
   commit.
 - [ ] Preview stores an intent record with schema version, policy version,
   operation hash, and pre-image versions when it returns an executable token.
+- [ ] Preview responses expose stable fields that SDKs, CLI, MCP, and operator
+  UI clients can preserve without parsing human text.
 
 ### Story US-106: Route Risky Writes For Approval [FEAT-030]
 
@@ -183,6 +211,8 @@ under human control
   approval above it.
 - [ ] A `needs_approval` result includes approval role, reason requirement, and
   intent ID.
+- [ ] A generated direct write that hits the approval envelope returns
+  `approval_required` and no entity/link mutation audit entry.
 - [ ] An approver can approve or reject through GraphQL.
 - [ ] Approval and rejection are audited with actor, reason, policy version,
   and intent ID.
@@ -201,6 +231,8 @@ under human control
 - [ ] Executing an intent with a different operation hash returns
   `intent_mismatch`.
 - [ ] A stale or mismatched intent cannot partially commit.
+- [ ] `commitIntent` SDK behavior matches GraphQL `commitMutationIntent` for
+  success, stale, mismatch, and authorization outcomes.
 
 ### Story US-108: Use Mutation Intents From MCP [FEAT-030]
 
@@ -214,6 +246,8 @@ under human control
   output with intent token and approval summary.
 - [ ] A denied tool call returns structured policy explanation.
 - [ ] `axon.query` follows the same GraphQL intent semantics.
+- [ ] MCP `needs_approval`, denied, stale, and conflict outputs preserve the
+  same machine-readable fields as GraphQL.
 
 ## Edge Cases
 
@@ -232,6 +266,8 @@ under human control
 
 - **FEAT-003**: Audit records approvals, rejections, and committed intent
   lineage.
+- **FEAT-005**: Shared API, CLI, and SDK surfaces expose the governed write
+  contract.
 - **FEAT-012 / ADR-018**: Identity, credentials, grants, and tenant/database
   scopes.
 - **FEAT-015**: GraphQL is the primary intent workflow surface.
@@ -256,6 +292,14 @@ baseline preview, approval, and stale-intent safety model.
   baseline Axon web UI intent inbox and intent detail flows.
 - Graph-wide arbitrary point-in-time rollback.
 
+## Traceability
+
+- **Parent PRD Section**: P0 #5 mutation preview and approval; P0 #7 safe,
+  discoverable interface parity; FR-7, FR-8, FR-28, and FR-29
+- **User Stories**: US-105, US-106, US-107, US-108
+- **Implementation**: mutation intent service, GraphQL resolvers, MCP handlers,
+  first-party SDKs, CLI intent commands, and audit linkage
+
 ## Verification
 
 Implementation beads must add tests for:
@@ -265,4 +309,6 @@ Implementation beads must add tests for:
 - Intent stale detection for entity version, policy version, and schema version.
 - Operation hash mismatch rejection.
 - MCP structured `needs_approval`, `denied`, and `conflict` outputs.
+- SDK `previewMutation`, `commitIntent`, `approveIntent`, and `rejectIntent`
+  parity with GraphQL.
 - Multi-entity transaction intent binding.
