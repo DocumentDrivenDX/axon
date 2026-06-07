@@ -20,3 +20,7 @@ website/public/
 website/.hugo_build.lock
 docs/demos/quickstart/recordings/
 collections
+
+# per-machine ddx bot state
+.ddx/logs/
+.ddx/tsnet/
