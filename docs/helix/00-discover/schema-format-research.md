@@ -11,6 +11,12 @@ ddx:
 **Status**: Draft
 **Author**: Erik LaBianca
 
+> **Dated research record (frozen).** Decisions extracted to:
+> [ADR-002 — Schema Format](../02-design/adr/ADR-002-schema-format.md)
+> (core format decision) and
+> [CONTRACT-010 — ESF Schema Format](../02-design/contracts/CONTRACT-010-esf-schema-format.md)
+> (normative ESF surface). This survey is not updated as ESF evolves.
+
 ---
 
 ## 1. Purpose
@@ -1441,10 +1447,10 @@ Every system that started with academic schema formats (OWL, RDF Schema) later a
 - [`rudof` (ShEx/SHACL Rust)](https://github.com/rudof-project/rudof)
 
 ### Axon Internal References
-- [Axon Technical Requirements -- ESF Section](../01-frame/technical-requirements.md#5-schema-system)
+- [Axon Technical Requirements](../01-frame/technical-requirements.md) (historical -- since deprecated; the normative ESF surface is [CONTRACT-010](../02-design/contracts/CONTRACT-010-esf-schema-format.md))
 - [FEAT-002 Schema Engine](../01-frame/features/FEAT-002-schema-engine.md)
 - [FEAT-007 Entity-Graph Model](../01-frame/features/FEAT-007-entity-graph-model.md)
 
 ---
 
-*This document is a living artifact. Updated as schema format decisions are made and ESF is designed.*
+*This document is a frozen research record. Schema format decisions live in [ADR-002 — Schema Format](../02-design/adr/ADR-002-schema-format.md).*

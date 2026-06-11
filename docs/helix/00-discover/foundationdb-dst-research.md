@@ -11,6 +11,11 @@ ddx:
 **Status**: Draft
 **Author**: Erik LaBianca
 
+> **Dated research record (frozen).** Decisions extracted to: none formally —
+> the §6 design guidance (runtime abstraction, simulation harness, BUGGIFY)
+> informally governs `crates/axon-sim`; backfilling a formal ADR is tracked in
+> [docs/helix/06-iterate/improvement-backlog.md](../06-iterate/improvement-backlog.md).
+
 ---
 
 ## 1. The Simulator-First Philosophy

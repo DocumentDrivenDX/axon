@@ -1,9 +1,20 @@
+---
+ddx:
+  id: helix.use-case-research
+  depends_on:
+    - helix.product-vision
+---
 # Use Case Research: Axon Domain Applications
 
 **Date**: 2026-04-04
 **Author**: Erik LaBianca
 **Status**: Draft
 **Purpose**: Drive feature specification and user story creation by grounding Axon's entity-graph-relational model in concrete domain use cases.
+
+> **Dated research record (frozen).** Decisions extracted to: none directly —
+> this survey informed the original feature framing but predates the
+> safety-guardrail vision pivot (see [Product Vision](product-vision.md));
+> per-domain fit of the guardrail/governance model has not been reassessed.
 
 ---
 

@@ -71,6 +71,7 @@ tool originated it, and what state would be needed to repair or roll it back.
 | Reusable access and visibility control | RBAC, ABAC, relationship-aware, field-level, and transition policies are declared once and enforced below GraphQL, MCP, CLI, SDK, and compatibility surfaces |
 | Audit, change capture, and repair history | Every mutation carries enough actor, tool, policy, approval, version, and before/after context to investigate failures and repair affected state |
 | Agent-native and app-friendly APIs | MCP gives agents a natural tool surface while GraphQL gives applications, operators, and SDKs the same semantics |
+| Governed local-first and embedded operation | Teams run Axon embedded in an app or offline on a device as a first-class deployment, keeping the same schema, policy, approval, and audit guarantees when state syncs back |
 
 ## Success Definition
 

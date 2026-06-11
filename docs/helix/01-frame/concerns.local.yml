@@ -1,0 +1,15 @@
+# Operator slot overrides for HELIX exclusive-slot resolution.
+#
+# Read during high-autonomy concern selection, before concerns.md exists.
+# Resolution order per needed exclusive slot (see
+# .ddx/plugins/helix/workflows/concerns/slots.yml):
+#   operator override (this file) -> shipped default -> recorded assumption.
+#
+# slots.yml does not prescribe a key structure for this file beyond its
+# location, so this uses a plain `slots: {<slot>: <filler>}` map.
+slots:
+  language-runtime: rust-cargo        # deviation from shipped default typescript-bun;
+                                      # typescript-bun stays active as a scoped
+                                      # secondary for area:ui only
+  frontend-framework: sveltekit       # ADR-006; deviation from shipped default react-nextjs
+  auth-provider: tailscale-localapi   # ADR-005; deviation from shipped default auth-local-sessions

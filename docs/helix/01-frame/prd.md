@@ -8,9 +8,9 @@ kind: product
 
 # Product Requirements Document: Axon
 
-**Version**: 0.3.0
+**Version**: 0.4.0
 **Date**: 2026-04-04
-**Revised**: 2026-06-06
+**Revised**: 2026-06-10
 **Status**: Draft
 **Author**: Erik LaBianca
 
@@ -235,18 +235,19 @@ feature specs without embedding implementation design.
 6. **Operator UI and CLI**: let humans inspect collections, policies, intents,
    approvals, diff/log/blame-style audit, and rollback dry-run workflows
    without custom app code.
+7. **Local-first sync**: embedded mode works offline, and a sync protocol
+   resolves concurrent edits deterministically while honoring policy and audit
+   invariants.
+8. **BYOC fleet control plane**: manage customer-hosted Axon deployments
+   without reading tenant data.
 
 ### Nice to Have (P2)
 
-1. **Local-first sync**: support offline-capable clients with deterministic
-   conflict handling.
-2. **Application substrate**: generate low-effort Axon-backed apps, SDKs, and
+1. **Application substrate**: generate low-effort Axon-backed apps, SDKs, and
    admin surfaces from schema.
-3. **BYOC fleet control plane**: manage customer-hosted Axon deployments
-   without reading tenant data.
-4. **Advanced indexes and search**: add vector, full-text, and specialized
+2. **Advanced indexes and search**: add vector, full-text, and specialized
    search once the governed core is proven.
-5. **Distributed placement and migration**: route databases across nodes and
+3. **Distributed placement and migration**: route databases across nodes and
    migrate placement after single-deployment semantics are stable.
 
 ## Functional Requirements
@@ -333,8 +334,10 @@ feature specs without embedding implementation design.
   approval, and commit semantics for approval-routed writes, and direct writes
   still pass the shared schema, policy, transaction, and audit handler path.
 - **FR-29 (P1)**: Axon SHOULD provide boring, typed SDK calls for the core
-  workflow, including `previewMutation`, `commitIntent`, `approveIntent`,
-  `rejectIntent`, `explainPolicy`, `queryAudit`, and `rollbackDryRun`.
+  governed workflow: previewing mutations, committing, approving, and rejecting
+  intents, explaining policy decisions, querying audit history, and dry-running
+  rollbacks. The normative SDK surface is defined in
+  `docs/helix/02-design/contracts/CONTRACT-009-sdk-surface.md`.
 - **FR-30 (P1)**: Axon SHOULD expose diff/log/blame-style audit and repair
   views across CLI, GraphQL, SDK, and operator UI surfaces, including what
   changed, who or what changed it, why it was allowed or denied, the reviewed
@@ -342,6 +345,10 @@ feature specs without embedding implementation design.
 - **FR-31 (P1)**: Axon SHOULD expose ordered audit and change streams with
   stable cursors, replay, and resume semantics scoped by database, collection,
   entity/link, and transaction.
+- **FR-32 (P1)**: Axon SHOULD support local-first operation: embedded mode
+  accepts reads and writes with no network connectivity, and a sync protocol
+  reconciles concurrent edits deterministically while preserving schema
+  validation, policy enforcement, and repair-grade audit lineage across sync.
 
 ### Subsystem: Identity, Tenancy, and Storage Portability
 
@@ -351,9 +358,10 @@ feature specs without embedding implementation design.
 - **FR-26 (P1)**: Axon SHOULD support SQLite/libSQL for embedded mode and
   PostgreSQL for server mode through a storage adapter that does not leak
   backend behavior into the API.
-- **FR-27 (P2)**: Axon MAY add BYOC fleet management, node placement, database
-  migration, and distributed routing after the single-deployment data-plane
-  contract is stable.
+- **FR-27 (P1)**: Axon SHOULD provide a BYOC fleet control plane that manages
+  customer-hosted Axon deployments without reading tenant data. Distributed
+  node placement, database migration, and routing remain deferred (see
+  `docs/helix/parking-lot.md`).
 
 ## Acceptance Test Sketches
 
@@ -381,8 +389,10 @@ feature specs without embedding implementation design.
   policy-validated through preview, intent, approval, and commit flows where
   risk requires them; read-side graph/tabular queries use the read-only query
   model governed by ADR-020 and ADR-021. SDK and operator surfaces expose
-  explicit `previewMutation`, `commitIntent`, `explainPolicy`, `queryAudit`,
-  and `rollbackDryRun` workflows.
+  governed-workflow operations for previewing mutations,
+  committing/approving/rejecting intents, explaining policy decisions, querying
+  audit, and dry-running rollbacks; the normative surface is
+  `docs/helix/02-design/contracts/CONTRACT-009-sdk-surface.md`.
 - **Security Model**: Tenant/database scoped identity, credential grants,
   RBAC/ABAC data policies, field redaction, denial explanations, and audit
   attribution. Current transport authentication is governed by ADR-005 and
@@ -437,16 +447,17 @@ feature specs without embedding implementation design.
 | Audit records are complete but too expensive | Medium | Medium | Benchmark audit overhead early, keep writes append-only, and design tiered retention/compaction separately from the V1 mutation contract |
 | Entity-graph-relational modeling feels unfamiliar | Medium | Medium | Center docs and examples on invoice/procurement and bead workflows; keep schema declaration, generated APIs, and query examples concrete |
 | Query and redaction behavior leaks hidden data through counts or traversal | Medium | High | Treat relationship traversal, pagination, aggregation, redaction, and count safety as P0 contract tests |
-| Scope creep from workflow engine, app substrate, sync, and BYOC needs | High | High | Keep those capabilities P1/P2 until the V1 governed-agent-write proof slice is green |
+| Scope creep from workflow engine, app substrate, sync, and BYOC needs | High | High | Sequence local-first sync and BYOC control-plane work (P1) and application substrate (P2) after the V1 governed-agent-write proof slice is green |
 | Backend abstraction leaks PostgreSQL-specific behavior | Medium | High | Run shared storage adapter conformance tests across SQLite/libSQL and PostgreSQL before claiming parity |
 
 ## Open Questions
 
-- [ ] Should local-first sync remain P2, or move into the first post-V1 roadmap?
-      This blocks sync-specific feature sequencing; ask the product owner.
-- [ ] Is the BYOC fleet control plane required for first external launch, or
-      only for commercialization after early adopters? This blocks control-plane
-      milestone planning; ask the product owner.
+- [x] **Resolved 2026-06-10 (product owner)**: Local-first sync is P1, not P2.
+      Axon provides first-class infrastructure for local-first apps: embedded
+      mode works offline and sync honors policy and audit invariants (FR-32).
+- [x] **Resolved 2026-06-10 (product owner)**: The BYOC fleet control plane is
+      committed product scope at P1 (FR-27): customer-hosted deployments must
+      be manageable without the control plane reading tenant data.
 - [ ] Which audit retention and erasure guarantees are required for the first
       regulated customer? This blocks compliance and storage-retention design;
       ask the first target customer and product owner.
