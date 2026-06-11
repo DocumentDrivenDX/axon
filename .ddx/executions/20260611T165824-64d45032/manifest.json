@@ -1,0 +1,44 @@
+{
+  "attempt_id": "20260611T165824-64d45032",
+  "bead_id": "axon-87fee98b",
+  "base_rev": "71a5cc5129fe8e191e3ec632356270a7c61ae4ab",
+  "created_at": "2026-06-11T16:58:27.299934371Z",
+  "requested": {
+    "harness": "claude",
+    "model": "sonnet",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-87fee98b",
+    "title": "Amend CONTRACT-008: authenticated-by-default service installs (FEAT-028 BIN-10)",
+    "description": "FEAT-028 BIN-10 (docs/helix/01-frame/features/FEAT-028-unified-binary.md) now requires service installs to be authenticated by default, but CONTRACT-008 (docs/helix/02-design/contracts/CONTRACT-008-cli-and-config.md) still records a no-auth default. Amend CONTRACT-008 to match BIN-10, then reconcile axon install / axon serve defaults (crates/axon-cli, crates/axon-server) with the amended contract.",
+    "acceptance": "CONTRACT-008 records authenticated-by-default for service installs and documents the explicit opt-out flag; grep of CONTRACT-008 finds no no-auth-default language; CLI/server default behavior matches the amended contract with a test asserting a fresh service install rejects unauthenticated requests.",
+    "labels": [
+      "area:docs",
+      "area:cli",
+      "contract-conformance"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"readiness route unavailable: lifecycle dispatch: project root mutation rejected for bead axon-87fee98b\",\"fingerprint\":\"2612e62a476d16c9fc9d6c11186adcc0e87b367ba96188809abc52b1cee978ed\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"2612e62a476d16c9fc9d6c11186adcc0e87b367ba96188809abc52b1cee978ed\"}",
+          "created_at": "2026-06-11T16:58:24.027702888Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        }
+      ]
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260611T165824-64d45032",
+    "prompt": ".ddx/executions/20260611T165824-64d45032/prompt.md",
+    "manifest": ".ddx/executions/20260611T165824-64d45032/manifest.json",
+    "result": ".ddx/executions/20260611T165824-64d45032/result.json",
+    "checks": ".ddx/executions/20260611T165824-64d45032/checks.json",
+    "usage": ".ddx/executions/20260611T165824-64d45032/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-87fee98b-20260611T165824-64d45032"
+  },
+  "prompt_sha": "5bc8eecd83eb25ecea4ff8124d5f9151010989d59788c2a4f1d15fe0c729a2a2"
+}
