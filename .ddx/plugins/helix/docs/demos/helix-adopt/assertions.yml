@@ -1,0 +1,17 @@
+slug: helix-adopt
+min_duration_s: 5
+min_assistant_chars: 80
+
+expect:
+  - kind: narration
+    contains: "no HELIX"
+  - kind: shell
+    contains: "ddx install helix"
+  - kind: prompt
+    contains_all:
+      - "/helix"
+      - "what do I have"
+  - kind: tool_call
+    name: Bash
+  - kind: assistant
+    contains: "nothing governed yet"

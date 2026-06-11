@@ -1,6 +1,6 @@
 ---
 name: ddx
-description: Operates the DDx toolkit for document-driven development. Covers beads (work items), the queue, executions, agents, harnesses, personas, reviews, spec-id. Use when the user says "do work", "drain the queue", "run the next bead", "execute a bead", "review this", "check against spec", "what's on the queue", "what's ready", "create a bead", "file this as work", "run an agent", "dispatch", "use a persona", "how am I doing", "ddx doctor", or mentions any ddx CLI command.
+description: Operates the DDx toolkit for document-driven development. Covers beads (work items), the queue, executions, agents, harnesses, personas, reviews, spec-id. Use when the user says "do work", "drain the queue", "run the next bead", "execute a bead", "review this", "review with fresh eyes", "fold in this guidance", "review again", "break this down into specs and beads", "make this testable", "check against spec", "what's on the queue", "what's ready", "what's blocking the queue", "create a bead", "file this as work", "run an agent", "dispatch", "use a persona", "how am I doing", "ddx doctor", or mentions any ddx CLI command.
 ---
 
 # DDx
@@ -8,12 +8,15 @@ description: Operates the DDx toolkit for document-driven development. Covers be
 DDx (Document-Driven Development eXperience) is a CLI platform for
 document-driven development. It ships a bead tracker (portable work
 items with acceptance criteria), a task-execution boundary (DDx
-orchestrates work while Fizeau routes providers/models, catalog lookups,
-and transcript rendering), a persona system (bindable AI
-personalities), a library registry (plugins with prompts, templates,
-personas), and git-aware synchronization. This skill makes any
-skills-compatible coding agent (Claude Code, OpenAI Codex, Gemini
-CLI, etc.) understand and operate the DDx surface correctly.
+forwards raw passthrough constraints for harness, provider, model,
+and profile while power travels as `MinPower`/`MaxPower` bounds;
+Fizeau owns concrete routing, provider/model discovery, aliases,
+fuzzy matching, catalog lookups, and transcript/session rendering), a
+persona system (bindable AI personalities), a library registry
+(plugins with prompts, templates, personas), and git-aware
+synchronization. This skill makes any skills-compatible coding agent
+(Claude Code, OpenAI Codex, Gemini CLI, etc.) understand and operate
+the DDx surface correctly.
 
 ## How this skill works
 
@@ -32,12 +35,20 @@ exact definitions.
 
 - **Bead** — a portable work item (task, bug, epic, chore) with
   metadata, dependencies, and acceptance criteria. `ddx bead create`.
-- **Queue** — the set of open beads. The *ready queue* is the subset
-  with all dependencies closed. `ddx bead ready`, `ddx bead blocked`.
+- **Queue** — the set of active beads. The *execution-ready queue* is
+  `status=open` work whose dependencies are closed and which is not parked by
+  cooldown, supersession, or execution-eligibility policy. `ddx bead ready`,
+  `ddx bead status`.
+- **Lifecycle status** — the persisted bead state: `proposed`, `open`,
+  `in_progress`, `blocked`, `closed`, or `cancelled`.
 - **Ready** — a bead whose dependencies are all closed and which is
   eligible to be picked up next. `ddx bead ready`.
-- **Blocked** — a bead with at least one unclosed dependency.
-  `ddx bead blocked`.
+- **Blocked** — `status=blocked` work paused by a hard external recheckable
+  blocker. Ordinary dependency waits are derived queue state, not blocked
+  status. `ddx bead blocked`.
+- **Proposed** — work awaiting operator decision before autonomous execution.
+  Proposed beads are not worker-eligible until accepted, rewritten, split,
+  blocked externally, cancelled, or otherwise resolved.
 - **Claim** — mark a bead as in-progress by an agent (concurrent-write
   protection). `ddx bead update <id> --claim`.
 - **Close** — mark a bead as done, with evidence (session, commit
@@ -45,7 +56,7 @@ exact definitions.
   `success` or `already_satisfied`.
 - **Run** — one task invocation atom. `ddx run` calls Fizeau `Execute`
   once with prompt/config, `MinPower`/`MaxPower` bounds, and optional
-  passthrough constraints.
+  raw passthrough constraints.
 - **Try** — one bead attempt in an isolated worktree. `ddx try <id>` wraps
   `ddx run` with bead prompt resolution, evidence capture, and merge/preserve
   finalization.
@@ -69,7 +80,7 @@ exact definitions.
   `.ddx/config.yaml` under `persona_bindings`.
 - **Power bounds** — `MinPower` and optional `MaxPower` integers passed to the
   upstream execution service. DDx may raise `MinPower` on eligible retries;
-  Fizeau owns the concrete harness/provider/model routing.
+  Fizeau owns concrete route selection within those bounds.
 - **Plugin** — a self-contained extension installed to
   `.ddx/plugins/<name>/`. The default `ddx` plugin (personas,
   prompts, patterns, templates) is auto-installed by `ddx init`.
@@ -101,8 +112,9 @@ Before responding, read the matching file.
 
 | User says / asks about | Read this file |
 |---|---|
+| "what should I work on next", "what's blocking the queue", "review with fresh eyes", "fold in this guidance", "review again", "break this down into specs and beads", "make this testable", broad queue orientation or planning | `reference/interactive.md` |
 | write/plan work, "create a bead", "file this as work", bead metadata, acceptance criteria, dependencies | `reference/beads.md` |
-| "do work", "drain the queue", "run the next bead", "execute a bead", "run work", verify-and-close | `reference/work.md` |
+| `ddx work`, `ddx try <id>`, "execute bead `<id>`", "drain the queue", "run the next bead", "start the worker", "start N workers and watch", "monitor the drain", verify-and-close | `reference/work.md` |
 | "review this", "check against spec", bead review, quorum review, code review, adversarial check | `reference/review.md` |
 | "assess bead readiness", "score a bead", "triage a failed attempt", "refine a bead", bead authoring lint | `bead-lifecycle/` |
 | "run an agent", "dispatch", harness/provider/model passthrough, power, effort, "use a persona", role bindings | `reference/agents.md` |
@@ -132,7 +144,7 @@ reference file; do not violate them.
   branches.
 - **Work in worktrees for parallel agents.** Use `wt switch -c
   <branch>` (worktrunk) or equivalent to give each concurrent agent
-  its own isolated checkout. Execute-bead does this automatically;
+  its own isolated checkout. `ddx try` does this automatically;
   manual parallel work should too.
 - **Power-first execution dispatch.** Default to `ddx run`/`ddx try`/`ddx work`
   with power bounds. `--harness`, `--provider`, and `--model` are passthrough

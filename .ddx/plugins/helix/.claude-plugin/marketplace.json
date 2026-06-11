@@ -1,0 +1,18 @@
+{
+  "name": "helix",
+  "description": "HELIX methodology marketplace",
+  "owner": {
+    "name": "DocumentDrivenDX",
+    "url": "https://github.com/DocumentDrivenDX"
+  },
+  "plugins": [
+    {
+      "name": "helix",
+      "description": "HELIX methodology, artifact catalog, and routing skill for AI-assisted development.",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/DocumentDrivenDX/helix.git"
+      }
+    }
+  ]
+}

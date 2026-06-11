@@ -4,7 +4,11 @@
 
 DDx invokes task execution through the upstream Fizeau service. DDx does not
 choose harnesses, providers, endpoints, or models on the normal work path. It
-describes the work, requests an abstract power level, and lets Fizeau route.
+describes the work, forwards raw passthrough constraints for harness,
+provider, model, and profile unchanged, requests an abstract power
+level, and lets Fizeau route. Fizeau owns concrete routing,
+provider/model discovery, alias resolution, fuzzy matching of raw model
+strings, transcript/session rendering, and all route-side errors.
 
 ## Power bounds
 
@@ -16,7 +20,9 @@ ddx run --min-power 10 --prompt task.md
 
 Power is an integer scale exposed by the Fizeau contract. DDx passes
 `MinPower` and optional `MaxPower` bounds and treats them as ordering
-constraints, not as model identities. Fizeau reports what it actually used:
+constraints, not as model identities. DDx does not query a model catalog,
+discover providers, or pin concrete routes on the normal work path. Fizeau
+reports what it actually used:
 
 ```text
 running with qwen 3.6-27b (power 10)
@@ -26,25 +32,24 @@ DDx owns bead retry policy. It decides whether an attempt succeeded using DDx
 evidence: commits, no-changes rationale, merge/preserve result, gates, review
 verdicts, and cooldowns. If a retry is allowed, DDx may raise `MinPower`.
 
-Fizeau owns route selection within those requested bounds. DDx may query the
-available model/power catalog to choose a `MinPower` threshold such as "top
-models only", but it must not pin a concrete model/provider on the normal work
-path.
+Fizeau owns route selection within those requested bounds. DDx may raise
+`MinPower` on retries, but it must not pin a concrete model/provider on the
+normal work path or infer route selection from a catalog.
 
 ## Passthrough constraints
 
-`--harness`, `--provider`, and `--model` are allowed only as passthrough
-constraints:
+`--harness`, `--provider`, `--model`, and `--profile` are
+allowed only as passthrough constraints:
 
 ```bash
-ddx run --min-power 10 --model qwen3.6-27b --prompt task.md
+ddx run --min-power 10 --model qwen36 --prompt task.md
 ```
 
 DDx sends these values to Fizeau unchanged. DDx does not validate them,
 score them, use them for queue policy, rewrite them on retry, or use them as a
-fallback mechanism. If the values conflict with requested power bounds or
-availability, Fizeau owns the typed error or actual route. DDx stops on
-hard-pin exhaustion; it does not remove pins, widen pins, call `ResolveRoute`,
+fallback mechanism. Fizeau owns any fuzzy matching, alias resolution, provider
+fallback, or typed error for those raw strings. DDx stops on hard-pin
+exhaustion; it does not remove pins, widen pins, call route-selection helpers,
 or retry in a loop.
 
 ## Execution layering
@@ -52,12 +57,12 @@ or retry in a loop.
 The intended command layering is:
 
 - `ddx run` — one Fizeau `Execute` call with requested `MinPower`/`MaxPower`.
-  No `ResolveRoute`.
+  No route-selection helper.
 - `ddx try <bead>` — one bead attempt layered over `run`.
 - `ddx work` — queue drain and retry policy layered over `try`.
 
-`ResolveRoute` is status/debug-only. Do not use it in `run`, `try`, or `work`,
-and never feed a `RouteDecision` back into `Execute`.
+Route diagnostics are status/debug-only. Do not use diagnostic route decisions
+in `run`, `try`, or `work`, and never feed one back into `Execute`.
 
 ## Personas
 
@@ -138,9 +143,9 @@ See the personas README for the authoring quality bar.
 
 ## Anti-patterns
 
-- **Stacking power bounds and `--model` / `--harness` casually**. Normal DDx
-  work should request `MinPower`. Use passthrough pins only for explicit
-  operator constraints; DDx must not interpret them.
+- **Stacking power bounds and passthrough pins casually**. Normal DDx work
+  should request `MinPower`. Use passthrough pins only for explicit operator
+  constraints; DDx must not interpret them.
 - **Hardcoding a harness name in a workflow**. Workflow should
   dispatch by power or role binding; letting each project route through its
   agent configuration is the point of DDx's agent boundary.
@@ -159,7 +164,7 @@ See the personas README for the authoring quality bar.
 ddx run --min-power 10 --prompt task.md
 ddx run --top-power --prompt task.md
 ddx run --min-power 10 --max-power 20 --prompt task.md
-ddx run --min-power 10 --provider openrouter --model qwen3.6-27b --prompt task.md
+ddx run --min-power 10 --provider openrouter --model qwen36 --profile default --prompt task.md
 ddx run --persona code-reviewer --prompt review.md
 
 # Introspection

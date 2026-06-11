@@ -1,0 +1,29 @@
+slug: helix-concerns
+min_duration_s: 6
+min_assistant_chars: 100
+
+expect:
+  - kind: shell
+    contains: "concerns.md"
+  - kind: output
+    contains: "typescript-bun"
+  - kind: prompt
+    contains: "scoped to the concerns artifact"
+  - kind: tool_call
+    name: Skill
+    args_contain:
+      skill: "helix"
+  - kind: tool_call
+    name: Read
+    args_contain:
+      file_path: "src/server.ts"
+  - kind: tool_call
+    name: Read
+    args_contain:
+      file_path: "tests/health.test.ts"
+  - kind: tool_call
+    name: Read
+    args_contain:
+      file_path: "package.json"
+  - kind: assistant
+    contains: "DIVERGENT"

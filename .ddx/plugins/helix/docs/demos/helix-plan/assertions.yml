@@ -1,0 +1,35 @@
+slug: helix-plan
+min_duration_s: 7
+min_assistant_chars: 1500
+
+expect:
+  - kind: narration
+    contains: "authority-ranked"
+  - kind: prompt
+    contains: "HELIX align"
+  - kind: tool_call
+    name: Skill
+    args_contain:
+      skill: "helix"
+  - kind: tool_call
+    name: Read
+    args_contain:
+      file_path: "docs/helix/01-frame/prd.md"
+  - kind: tool_call
+    name: Read
+    args_contain:
+      file_path: "FEAT-001"
+  # First assistant block: Authority Map + ALIGNED findings table.
+  - kind: assistant
+    contains: "Authority Map"
+  # Second block opens the gap list; four-field handoff present on every gap.
+  - kind: assistant
+    contains: "Non-aligned gaps"
+  # Third block continues the gap list; one of the four handoff labels must appear.
+  - kind: assistant
+    contains: "Destination:"
+  # Fourth block closes with G10 (implementation plan / beads, next mode = polish).
+  - kind: assistant
+    contains: "G10"
+  - kind: narration
+    contains: "destination, deliverable, next mode, and evidence"

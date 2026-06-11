@@ -1,0 +1,23 @@
+slug: helix-align
+min_duration_s: 8
+min_assistant_chars: 150
+
+expect:
+  - kind: narration
+    contains: "API-key only"
+  - kind: shell
+    contains: "tree docs/helix"
+  - kind: prompt
+    contains: "HELIX align"
+  - kind: tool_call
+    name: Read
+    args_contain:
+      file_path: "docs/helix/01-frame/prd.md"
+  - kind: tool_call
+    name: Read
+    args_contain:
+      file_path: "ADR-002-oauth-pivot.md"
+  - kind: assistant
+    contains: "DIVERGENT"
+  - kind: narration
+    contains: "authority"

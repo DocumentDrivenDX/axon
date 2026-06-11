@@ -72,7 +72,7 @@ Return JSON only:
 
 ```json
 {
-  "classification": "ready|needs_refine|needs_split|needs_human|system_unready",
+  "classification": "ready|needs_refine|needs_split|operator_required|system_unready",
   "tractability": "tractable|too_large|ambiguous|blocked|unknown",
   "score": 0,
   "rationale": "brief evidence-grounded explanation",
@@ -90,6 +90,11 @@ Return JSON only:
       "fix": "specific amendment, split, or operator action"
     }
   ],
+  "rewrite": {
+    "changed_fields": ["description", "acceptance"],
+    "description": "PROBLEM\n...\n\nROOT CAUSE\n...\n\nPROPOSED FIX\n...\n\nNON-SCOPE\n...",
+    "acceptance": "1. TestFoo verifies the rewritten acceptance.\n2. cd cli && go test ./internal/agent/... -run TestFoo -count=1\n3. lefthook run pre-commit"
+  },
   "suggested_child_beads": [
     {
       "title": "imperative child title",
@@ -120,13 +125,50 @@ Return JSON only:
 }
 ```
 
+Use the exact readiness classifications: `ready`, `needs_refine`,
+`needs_split`, `operator_required`, and `system_unready`.
+
+Legacy migration aliases only: older plans, beads, or session transcripts may
+mention `safely_refinable`, `rewritten`, or `needs_human`. Treat
+`safely_refinable` and `rewritten` as historical signals for `needs_refine`;
+treat `needs_human` as a historical signal for `operator_required`. Never emit
+those aliases in new readiness output.
+
+`suggested_fixes` are advisory diagnostics for the author or operator. They
+describe what should improve, but DDx must not treat them as a machine-applied
+tracker patch. `rewrite` is the machine-
+consumable replacement contract DDx may apply before claim when classification
+is `needs_refine`.
+`rewrite.changed_fields` is required whenever `rewrite` is present, and every
+field listed there must also be present in `rewrite`.
+`rewrite.description` / `rewrite.acceptance` must be strings, not arrays, so
+the hook can write them directly through supported bead update commands.
+
 Use `ready` only when the bead is tractable and the sufficient-prompt rubric
 passes after legitimate waivers. Use `needs_refine` when targeted metadata or
 AC edits can make the bead ready without changing intent. Use `needs_split`
-when child beads are required. Use `needs_human` when intent, scope, or
-external state cannot be safely inferred. Use `system_unready` only when the
-readiness assessment itself cannot run or the provided context proves an
-infrastructure blocker rather than a bead defect.
+when child beads are required. Use `operator_required` when intent, scope, or
+external state cannot be safely inferred and autonomous execution should pause
+for `status=proposed`. Use `system_unready` only when the readiness assessment
+itself cannot run or the provided context proves an infrastructure blocker
+rather than a bead defect.
+
+In `MODE: intake`, emit a `rewrite` object only when the bead is not executable
+as written but can be made executable by a narrow, semantics-preserving
+metadata/AC rewrite. If a bead is executable as written, classify it as `ready`
+even when the prose could be cleaner. Put non-blocking prompt quality
+improvements in `suggested_fixes` only. Use `operator_required` only for actual
+ambiguity, missing prerequisites, hidden external blockers, or unsafe scope
+choices that prevent an implementation attempt.
+
+`readiness_checks` MUST be a JSON array. It may be empty, and every entry MUST
+be an object with `reason`, `verdict`, `evidence`, and
+`checkable_before_attempt`. It must not be an object or string.
+
+Legacy migration input aliases only: older records or prompts may mention `needs_human`.
+Treat that as a one-way migration signal for
+`operator_required` / `status=proposed`; never emit it as a current lifecycle
+classification.
 
 ## LINT MODE
 
@@ -160,28 +202,27 @@ Return JSON only:
 ```json
 {
   "score": 0,
-  "rationale": [
-    {
-      "criterion": "a|b|c|d|e|f|g|h",
-      "verdict": "pass|fail|waived",
-      "reason": "brief evidence-grounded reason"
-    }
-  ],
+  "rationale": "brief evidence-grounded explanation",
   "suggested_fixes": [
     {
-      "criterion": "a|b|c|d|e|f|g|h",
+      "criterion": "title|description|acceptance|code_path_assertion|verification_gate|labels|parent_deps|sufficient_prompt",
       "fix": "specific amendment to make"
     }
   ],
   "waivers_applied": [
     {
       "criterion": "c|d|implementation",
-      "waiver": "doc-only|epic|deletion",
+      "waiver": "doc-only",
       "reason": "why this bead qualifies"
     }
   ]
 }
 ```
+
+`LintResult.rationale` is a single string summary. Put per-criterion details in
+`suggested_fixes` or `waivers_applied`; do not return an array for
+`rationale`. Valid waiver values include `"doc-only"`, `"epic"`, and
+`"deletion"`.
 
 `score` is the number of pass or waived criteria after legitimate waivers. Use
 integer scores from 0 through 8.
@@ -205,7 +246,6 @@ Valid classifications:
   failed or could not run.
 - `no_changes_unjustified` — no-change evidence lacks enough structured
   rationale to prove satisfaction or a durable blocker.
-- `needs_investigation` — evidence is ambiguous or asks for operator triage.
 - `decomposed` — parent/epic/container work was decomposed or should be made
   execution-ineligible for ordinary queue execution.
 - `blocked` — a hard external precondition prevents progress.
@@ -220,15 +260,31 @@ Valid classifications:
 - `recoverable` — transient infrastructure or time-based condition can plausibly
   succeed by retrying the same bead later.
 
+Lifecycle interpretation:
+
+- Operator-required outcomes are `status=proposed` in TD-031. Classify them
+  with the narrow evidence class above and state the proposed/operator-required
+  reason in `rationale`.
+- Autonomous smart-agent investigation remains `status=open` and should
+  continue through retry policy when the evidence suggests a stronger route can
+  make progress.
+- Hard external recheckable blockers are `status=blocked`; ordinary dependency
+  waits are derived queue state, not `status=blocked`.
+- Satisfied work is `status=closed`; intentionally not-doing work is
+  `status=cancelled`.
+
 Valid recommended actions:
 
 - `close_already_satisfied`
 - `release_claim_retry`
-- `release_claim_needs_investigation`
 - `release_claim_mark_blocked`
 - `release_claim_mark_superseded`
 - `release_claim_wait_retry`
 - `close_decomposed_or_mark_execution_ineligible`
+
+Legacy migration input aliases only: historical triage may contain `needs_investigation` or `release_claim_needs_investigation`. Treat them as
+one-way migration signals for proposed/operator-required review or autonomous
+smart retry, depending on the evidence. Never emit them in new output.
 
 Prefer the narrowest classification supported by the evidence. If the log shows
 both a vague bead and a tool timeout, classify the first event that explains why
@@ -243,7 +299,7 @@ attempt evidence should be classified as follows:
   contention are `recoverable` infrastructure failures unless the log proves a
   deterministic repository defect.
 - A pre-execute checkpoint or pre-commit failure before implementation starts
-  is `recoverable` or `needs_investigation` unless the failing test output
+  is `recoverable` or `no_changes_unjustified` unless the failing test output
   identifies a bead-owned code regression.
 - `no_changes` with passing verification is `already_satisfied`; `no_changes`
   without enough proof is `no_changes_unjustified`.
@@ -253,8 +309,8 @@ Return JSON only:
 
 ```json
 {
-  "classification": "already_satisfied|no_changes_unverified|no_changes_unjustified|needs_investigation|decomposed|blocked|superseded|routing|quota|transport|tests_red|merge_conflict|review_block|timeout|recoverable",
-  "recommended_action": "close_already_satisfied|release_claim_retry|release_claim_needs_investigation|release_claim_mark_blocked|release_claim_mark_superseded|release_claim_wait_retry|close_decomposed_or_mark_execution_ineligible",
+  "classification": "already_satisfied|no_changes_unverified|no_changes_unjustified|decomposed|blocked|superseded|routing|quota|transport|tests_red|merge_conflict|review_block|timeout|recoverable",
+  "recommended_action": "close_already_satisfied|release_claim_retry|release_claim_mark_blocked|release_claim_mark_superseded|release_claim_wait_retry|close_decomposed_or_mark_execution_ineligible",
   "rationale": "brief evidence-grounded explanation",
   "suggested_amendments": [
     {

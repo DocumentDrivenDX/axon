@@ -1,0 +1,35 @@
+slug: helix-evolve
+min_duration_s: 10
+min_assistant_chars: 200
+
+expect:
+  - kind: narration
+    contains: "OAuth"
+  - kind: prompt
+    contains_all:
+      - "helix-evolve"
+      - "depends_on"
+  - kind: tool_call
+    name: Skill
+    args_contain:
+      skill: "helix"
+  - kind: tool_call
+    name: Read
+    args_contain:
+      file_path: "docs/helix/01-frame/prd.md"
+  - kind: tool_call
+    name: Read
+    args_contain:
+      file_path: "security-architecture"
+  - kind: assistant
+    contains: "Dependency graph"
+  - kind: tool_call
+    name: Write
+    args_contain:
+      file_path: "FEAT-OAUTH"
+  - kind: assistant
+    contains_all:
+      - "depends_on"
+      - "authority"
+  - kind: narration
+    contains: "authority"
