@@ -209,10 +209,19 @@ enum ConfigCmd {
 #[derive(Subcommand)]
 enum ServerCmd {
     /// Install Axon as a user service (systemd on Linux, launchd on macOS).
+    ///
+    /// Service installs default to authenticated mode (CONTRACT-008 / FEAT-028 BIN-10).
+    /// Pass --no-auth to opt out; a prominent warning is printed naming the exposure.
     Install {
         /// Install as a system-wide service (requires root).
         #[arg(long)]
         global: bool,
+        /// Disable authentication in the installed service unit (explicit opt-out).
+        ///
+        /// All requests will succeed as admin without credentials. Only use this when
+        /// the server is protected by other means. A prominent warning is printed.
+        #[arg(long)]
+        no_auth: bool,
     },
     /// Remove the Axon service.
     Uninstall,
@@ -974,7 +983,10 @@ fn run_server_command(cli: Cli) -> Result<()> {
 
 fn run_service_command(cmd: &ServerCmd) -> Result<()> {
     let action = match cmd {
-        ServerCmd::Install { global } => service::ServiceAction::Install { global: *global },
+        ServerCmd::Install { global, no_auth } => service::ServiceAction::Install {
+            global: *global,
+            no_auth: *no_auth,
+        },
         ServerCmd::Uninstall => service::ServiceAction::Uninstall,
         ServerCmd::Start => service::ServiceAction::Start,
         ServerCmd::Stop => service::ServiceAction::Stop,

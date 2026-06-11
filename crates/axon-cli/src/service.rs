@@ -5,9 +5,20 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
+/// Prominent warning printed when `--no-auth` is used at install time.
+///
+/// Per FEAT-028 BIN-10: the warning must name the exposure so operators
+/// understand what they are opting into.
+const NO_AUTH_INSTALL_WARNING: &str = "\
+WARNING: Installing Axon service with authentication DISABLED (--no-auth).
+All requests will succeed as admin without any credential check.
+This is unsafe if the server is reachable over a network.
+Omit --no-auth to install with authentication enabled (the safe default).
+";
+
 /// Which service action to perform.
 pub enum ServiceAction {
-    Install { global: bool },
+    Install { global: bool, no_auth: bool },
     Uninstall,
     Start,
     Stop,
@@ -17,7 +28,7 @@ pub enum ServiceAction {
 
 pub fn run_service(action: ServiceAction) -> Result<()> {
     match action {
-        ServiceAction::Install { global } => install_service(global),
+        ServiceAction::Install { global, no_auth } => install_service(global, no_auth),
         ServiceAction::Uninstall => uninstall_service(),
         ServiceAction::Start => ctl("start"),
         ServiceAction::Stop => ctl("stop"),
@@ -32,13 +43,16 @@ fn binary_path() -> Result<PathBuf> {
     std::env::current_exe().context("could not determine path to axon binary")
 }
 
-fn install_service(global: bool) -> Result<()> {
+fn install_service(global: bool, no_auth: bool) -> Result<()> {
+    if no_auth {
+        eprintln!("{NO_AUTH_INSTALL_WARNING}");
+    }
     let bin = binary_path()?;
 
     if cfg!(target_os = "linux") {
-        install_systemd(&bin, global)
+        install_systemd(&bin, global, no_auth)
     } else if cfg!(target_os = "macos") {
-        install_launchd(&bin, global)
+        install_launchd(&bin, global, no_auth)
     } else {
         anyhow::bail!("service installation is not supported on this platform");
     }
@@ -58,6 +72,9 @@ fn uninstall_service() -> Result<()> {
 
 /// User service (~/.config/systemd/user/axon.service).
 /// Runs as the invoking user; `WantedBy=default.target` is correct here.
+///
+/// `@NO_AUTH_FLAG@` is replaced at install time: empty string for the secure
+/// default, or `"--no-auth "` when the operator explicitly opts out of auth.
 const SYSTEMD_USER_UNIT: &str = "\
 [Unit]
 Description=Axon Data Store
@@ -65,7 +82,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={binary_path} serve --no-auth --tls-self-signed --sqlite-path @SQLITE_PATH@ --control-plane-path @CONTROL_PLANE_PATH@
+ExecStart={binary_path} serve @NO_AUTH_FLAG@--tls-self-signed --sqlite-path @SQLITE_PATH@ --control-plane-path @CONTROL_PLANE_PATH@
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -79,6 +96,9 @@ WantedBy=default.target
 /// Runs as the `axon` system user; `WantedBy=multi-user.target` is standard for
 /// non-graphical daemons.  The user and data directory must be created separately
 /// (see `create_axon_system_user`).
+///
+/// `@NO_AUTH_FLAG@` is replaced at install time: empty string for the secure
+/// default, or `"--no-auth "` when the operator explicitly opts out of auth.
 const SYSTEMD_GLOBAL_UNIT: &str = "\
 [Unit]
 Description=Axon Data Store
@@ -88,7 +108,7 @@ After=network.target
 Type=simple
 User=axon
 Group=axon
-ExecStart={binary_path} serve --no-auth --tls-self-signed --sqlite-path @SQLITE_PATH@ --control-plane-path @CONTROL_PLANE_PATH@
+ExecStart={binary_path} serve @NO_AUTH_FLAG@--tls-self-signed --sqlite-path @SQLITE_PATH@ --control-plane-path @CONTROL_PLANE_PATH@
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal
@@ -157,7 +177,7 @@ fn service_data_paths(global: bool) -> (PathBuf, PathBuf) {
     )
 }
 
-fn install_systemd(bin: &std::path::Path, global: bool) -> Result<()> {
+fn install_systemd(bin: &std::path::Path, global: bool, no_auth: bool) -> Result<()> {
     let unit_path = systemd_unit_path(global)?;
     let template = if global {
         SYSTEMD_GLOBAL_UNIT
@@ -165,8 +185,10 @@ fn install_systemd(bin: &std::path::Path, global: bool) -> Result<()> {
         SYSTEMD_USER_UNIT
     };
     let (sqlite_path, control_plane_path) = service_data_paths(global);
+    let no_auth_flag = if no_auth { "--no-auth " } else { "" };
     let unit_content = template
         .replace("{binary_path}", &bin.display().to_string())
+        .replace("@NO_AUTH_FLAG@", no_auth_flag)
         .replace("@SQLITE_PATH@", &sqlite_path.display().to_string())
         .replace(
             "@CONTROL_PLANE_PATH@",
@@ -221,6 +243,9 @@ fn uninstall_systemd() -> Result<()> {
 
 // ── launchd (macOS) ──────────────────────────────────────────────────────────
 
+/// `@NO_AUTH_ARG@` is replaced at install time: empty string for the secure
+/// default, or `"        <string>--no-auth</string>\n"` when the operator
+/// explicitly opts out of auth (FEAT-028 BIN-10).
 const LAUNCHD_PLIST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -231,8 +256,7 @@ const LAUNCHD_PLIST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
     <array>
         <string>{binary_path}</string>
         <string>serve</string>
-        <string>--no-auth</string>
-        <string>--tls-self-signed</string>
+@NO_AUTH_ARG@        <string>--tls-self-signed</string>
         <string>--sqlite-path</string>
         <string>@SQLITE_PATH@</string>
         <string>--control-plane-path</string>
@@ -272,11 +296,17 @@ fn launchd_plist_path(global: bool) -> Result<PathBuf> {
     }
 }
 
-fn install_launchd(bin: &std::path::Path, global: bool) -> Result<()> {
+fn install_launchd(bin: &std::path::Path, global: bool, no_auth: bool) -> Result<()> {
     let plist_path = launchd_plist_path(global)?;
     let (sqlite_path, control_plane_path) = service_data_paths(global);
+    let no_auth_arg = if no_auth {
+        "        <string>--no-auth</string>\n"
+    } else {
+        ""
+    };
     let plist_content = LAUNCHD_PLIST_TEMPLATE
         .replace("{binary_path}", &bin.display().to_string())
+        .replace("@NO_AUTH_ARG@", no_auth_arg)
         .replace("@SQLITE_PATH@", &sqlite_path.display().to_string())
         .replace(
             "@CONTROL_PLANE_PATH@",
@@ -375,10 +405,40 @@ fn run_cmd(program: &str, args: &[&str]) -> Result<()> {
 mod tests {
     use super::*;
 
+    // ── Default (authenticated) install ─────────────────────────────────────────
+
+    #[test]
+    fn systemd_user_unit_default_is_authenticated() {
+        // The raw template must NOT contain --no-auth; auth is the default.
+        // Per CONTRACT-008 / FEAT-028 BIN-10: service installs are authenticated
+        // by default; --no-auth is an explicit opt-in only.
+        assert!(
+            !SYSTEMD_USER_UNIT.contains("--no-auth"),
+            "user systemd unit template must not contain --no-auth (authenticated by default)",
+        );
+    }
+
+    #[test]
+    fn systemd_global_unit_default_is_authenticated() {
+        assert!(
+            !SYSTEMD_GLOBAL_UNIT.contains("--no-auth"),
+            "global systemd unit template must not contain --no-auth (authenticated by default)",
+        );
+    }
+
+    #[test]
+    fn launchd_plist_default_is_authenticated() {
+        // The raw template must not include --no-auth as a <string> element.
+        assert!(
+            !LAUNCHD_PLIST_TEMPLATE.contains("<string>--no-auth</string>"),
+            "launchd plist template must not contain --no-auth (authenticated by default)",
+        );
+    }
+
     #[test]
     fn systemd_user_unit_enables_self_signed_tls() {
         assert!(
-            SYSTEMD_USER_UNIT.contains("serve --no-auth --tls-self-signed --sqlite-path"),
+            SYSTEMD_USER_UNIT.contains("--tls-self-signed"),
             "user systemd service must install with TLS enabled by default",
         );
     }
@@ -386,7 +446,7 @@ mod tests {
     #[test]
     fn systemd_global_unit_enables_self_signed_tls() {
         assert!(
-            SYSTEMD_GLOBAL_UNIT.contains("serve --no-auth --tls-self-signed --sqlite-path"),
+            SYSTEMD_GLOBAL_UNIT.contains("--tls-self-signed"),
             "global systemd service must install with TLS enabled by default",
         );
     }
@@ -396,6 +456,60 @@ mod tests {
         assert!(
             LAUNCHD_PLIST_TEMPLATE.contains("<string>--tls-self-signed</string>"),
             "launchd service must install with TLS enabled by default",
+        );
+    }
+
+    // ── Opt-in no-auth install ──────────────────────────────────────────────────
+
+    #[test]
+    fn systemd_user_unit_no_auth_opt_in_inserts_flag() {
+        let unit = SYSTEMD_USER_UNIT
+            .replace("{binary_path}", "/usr/bin/axon")
+            .replace("@NO_AUTH_FLAG@", "--no-auth ")
+            .replace("@SQLITE_PATH@", "/var/lib/axon/axon.db")
+            .replace("@CONTROL_PLANE_PATH@", "/var/lib/axon/axon-control-plane.db");
+        assert!(
+            unit.contains("serve --no-auth --tls-self-signed"),
+            "explicit --no-auth opt-in must appear in generated unit",
+        );
+    }
+
+    #[test]
+    fn systemd_user_unit_default_install_has_no_no_auth_flag() {
+        let unit = SYSTEMD_USER_UNIT
+            .replace("{binary_path}", "/usr/bin/axon")
+            .replace("@NO_AUTH_FLAG@", "")
+            .replace("@SQLITE_PATH@", "/var/lib/axon/axon.db")
+            .replace("@CONTROL_PLANE_PATH@", "/var/lib/axon/axon-control-plane.db");
+        assert!(
+            !unit.contains("--no-auth"),
+            "default install (no opt-in) must not contain --no-auth",
+        );
+    }
+
+    #[test]
+    fn launchd_plist_no_auth_opt_in_inserts_element() {
+        let plist = LAUNCHD_PLIST_TEMPLATE
+            .replace("{binary_path}", "/usr/local/bin/axon")
+            .replace("@NO_AUTH_ARG@", "        <string>--no-auth</string>\n")
+            .replace("@SQLITE_PATH@", "/var/lib/axon/axon.db")
+            .replace("@CONTROL_PLANE_PATH@", "/var/lib/axon/axon-control-plane.db");
+        assert!(
+            plist.contains("<string>--no-auth</string>"),
+            "explicit --no-auth opt-in must appear in generated plist",
+        );
+    }
+
+    #[test]
+    fn launchd_plist_default_install_has_no_no_auth_element() {
+        let plist = LAUNCHD_PLIST_TEMPLATE
+            .replace("{binary_path}", "/usr/local/bin/axon")
+            .replace("@NO_AUTH_ARG@", "")
+            .replace("@SQLITE_PATH@", "/var/lib/axon/axon.db")
+            .replace("@CONTROL_PLANE_PATH@", "/var/lib/axon/axon-control-plane.db");
+        assert!(
+            !plist.contains("--no-auth"),
+            "default install (no opt-in) must not contain --no-auth in plist",
         );
     }
 }

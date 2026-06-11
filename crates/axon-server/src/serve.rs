@@ -860,4 +860,26 @@ mod tests {
             "100.64.0.5".parse::<std::net::IpAddr>().unwrap()
         );
     }
+
+    /// A fresh service install (`axon server install` without --no-auth) uses
+    /// the default `ServeArgs`.  Verify those args produce a non-NoAuth auth
+    /// context so that unauthenticated HTTP requests are rejected.
+    ///
+    /// This is the server-side half of the FEAT-028 BIN-10 / CONTRACT-008
+    /// "authenticated-by-default service install" invariant. The CLI-side half
+    /// lives in `axon-cli/src/service.rs` (template tests).
+    #[test]
+    fn service_install_default_rejects_unauthenticated() {
+        let args = ServeArgs::parse_from(["axon-serve"]);
+        assert!(
+            !args.no_auth,
+            "default service install must not set no_auth=true"
+        );
+        let auth = auth_context_from_serve_args(&args);
+        assert_ne!(
+            auth.mode(),
+            &AuthMode::NoAuth,
+            "default service install must produce an auth-enforcing context, not NoAuth"
+        );
+    }
 }
