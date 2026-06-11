@@ -205,9 +205,106 @@ pub fn resource_infos(collections: &[String]) -> Vec<ResourceInfo> {
     resources
 }
 
+/// Concrete resources using the tenant-aware 4-level URI grammar (CONTRACT-003 normative).
+///
+/// `axon://{tenant}/{database}/{collection}` and meta-resources use the same prefix.
+pub fn resource_infos_with_tenant_database(
+    tenant: &str,
+    database: &str,
+    collections: &[String],
+) -> Vec<ResourceInfo> {
+    let prefix = format!("{tenant}/{database}");
+    let mut resources = vec![
+        ResourceInfo {
+            uri: format!("axon://{prefix}/_collections"),
+            name: "Collections".into(),
+            description: "List visible collection metadata".into(),
+            mime_type: JSON_MIME_TYPE.into(),
+        },
+        ResourceInfo {
+            uri: format!("axon://{prefix}/_schemas"),
+            name: "Schemas".into(),
+            description: "List visible collection schemas".into(),
+            mime_type: JSON_MIME_TYPE.into(),
+        },
+    ];
+
+    for collection in collections {
+        resources.push(ResourceInfo {
+            uri: format!("axon://{prefix}/{collection}"),
+            name: format!("{collection} collection"),
+            description: format!("List entities in the `{collection}` collection"),
+            mime_type: JSON_MIME_TYPE.into(),
+        });
+        resources.push(ResourceInfo {
+            uri: format!("axon://{prefix}/_schemas/{collection}"),
+            name: format!("{collection} schema"),
+            description: format!("Read the schema for the `{collection}` collection"),
+            mime_type: JSON_MIME_TYPE.into(),
+        });
+    }
+
+    resources
+}
+
 /// Resource templates supported by Axon's MCP server.
+///
+/// Includes both the normative tenant-aware 4-level forms (CONTRACT-003) and the
+/// legacy 2-level forms retained for backward compatibility.
 pub fn resource_template_infos() -> Vec<ResourceTemplateInfo> {
     vec![
+        // Normative tenant-aware forms (CONTRACT-003 / ADR-018)
+        ResourceTemplateInfo {
+            uri_template: "axon://{tenant}/{database}/{collection}".into(),
+            name: "Collection listing (tenant-aware)".into(),
+            description: "Read a paginated listing for a collection (tenant/database prefix)"
+                .into(),
+            mime_type: JSON_MIME_TYPE.into(),
+        },
+        ResourceTemplateInfo {
+            uri_template: "axon://{tenant}/{database}/{collection}/{id}".into(),
+            name: "Entity by ID (tenant-aware)".into(),
+            description: "Read a single entity by tenant, database, collection, and ID".into(),
+            mime_type: JSON_MIME_TYPE.into(),
+        },
+        ResourceTemplateInfo {
+            uri_template: "axon://{tenant}/{database}/{collection}/{id}/links".into(),
+            name: "Entity outbound links (tenant-aware)".into(),
+            description: "Read the outbound neighbors for an entity (tenant/database prefix)"
+                .into(),
+            mime_type: JSON_MIME_TYPE.into(),
+        },
+        ResourceTemplateInfo {
+            uri_template: "axon://{tenant}/{database}/{collection}/{id}/links/inbound".into(),
+            name: "Entity inbound links (tenant-aware)".into(),
+            description: "Read the inbound neighbors for an entity (tenant/database prefix)".into(),
+            mime_type: JSON_MIME_TYPE.into(),
+        },
+        ResourceTemplateInfo {
+            uri_template: "axon://{tenant}/{database}/{collection}/{id}/audit".into(),
+            name: "Entity audit history (tenant-aware)".into(),
+            description: "Read the audit history for an entity (tenant/database prefix)".into(),
+            mime_type: JSON_MIME_TYPE.into(),
+        },
+        ResourceTemplateInfo {
+            uri_template: "axon://{tenant}/{database}/_schemas".into(),
+            name: "All schemas (tenant-aware)".into(),
+            description: "Read all collection schemas for a tenant/database".into(),
+            mime_type: JSON_MIME_TYPE.into(),
+        },
+        ResourceTemplateInfo {
+            uri_template: "axon://{tenant}/{database}/_schemas/{collection}".into(),
+            name: "Collection schema (tenant-aware)".into(),
+            description: "Read the ESF schema for a collection (tenant/database prefix)".into(),
+            mime_type: JSON_MIME_TYPE.into(),
+        },
+        ResourceTemplateInfo {
+            uri_template: "axon://{tenant}/{database}/_collections".into(),
+            name: "Collection metadata list (tenant-aware)".into(),
+            description: "List collection metadata for a tenant/database".into(),
+            mime_type: JSON_MIME_TYPE.into(),
+        },
+        // Legacy 2-level forms (backward-compatible; superseded by 4-level forms above)
         ResourceTemplateInfo {
             uri_template: "axon://{collection}".into(),
             name: "Collection listing".into(),
@@ -288,6 +385,28 @@ fn parse_resource_uri(uri: &str) -> Result<ParsedResource, McpError> {
             1 => Ok(ParsedResource::Schemas),
             2 => Ok(ParsedResource::Schema {
                 collection: parts[1].to_string(),
+            }),
+            _ => Err(McpError::InvalidParams(format!(
+                "unsupported schema resource URI `{uri}`"
+            ))),
+        };
+    }
+
+    // Tenant-aware meta-resources: axon://{tenant}/{database}/_collections or _schemas
+    // The first two segments are tenant and database; the third is the meta-resource marker.
+    if parts.len() >= 3 && parts[2] == "_collections" {
+        return match parts.len() {
+            3 => Ok(ParsedResource::Collections),
+            _ => Err(McpError::InvalidParams(format!(
+                "unsupported collections resource URI `{uri}`"
+            ))),
+        };
+    }
+    if parts.len() >= 3 && parts[2] == "_schemas" {
+        return match parts.len() {
+            3 => Ok(ParsedResource::Schemas),
+            4 => Ok(ParsedResource::Schema {
+                collection: parts[3].to_string(),
             }),
             _ => Err(McpError::InvalidParams(format!(
                 "unsupported schema resource URI `{uri}`"

@@ -3696,6 +3696,7 @@ fn data_routes() -> Router {
         )
         .route("/graphql", get(graphql_handler).post(graphql_handler))
         .route("/graphql/ws", get(graphql_ws_handler))
+        .merge(crate::mcp_http::tenant_aware_routes())
 }
 
 /// Build the axum router for the HTTP gateway with request authentication.

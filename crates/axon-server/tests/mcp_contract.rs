@@ -2221,6 +2221,123 @@ async fn mcp_prompts_get_unknown_prompt_is_error() {
     assert_eq!(body["error"]["code"], -32602_i64);
 }
 
+// ── Tenant-aware endpoints (CONTRACT-003 / ADR-018) ──────────────────────────
+
+/// POST a JSON-RPC message to the tenant-aware MCP endpoint and return the parsed body.
+async fn mcp_via_tenant_path(
+    server: &axum_test::TestServer,
+    tenant: &str,
+    database: &str,
+    request: &Value,
+) -> Value {
+    server
+        .post(&format!(
+            "/tenants/{tenant}/databases/{database}/mcp"
+        ))
+        .json(request)
+        .await
+        .json::<Value>()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_tenant_aware_endpoint_is_reachable() {
+    let server = test_server();
+    let body = mcp_via_tenant_path(
+        &server,
+        "default",
+        "default",
+        &json!({"jsonrpc":"2.0","id":1,"method":"ping"}),
+    )
+    .await;
+
+    assert!(body["error"].is_null(), "unexpected error: {body}");
+    assert_eq!(body["result"], json!({}));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_tenant_aware_resources_list_returns_4_level_uris() {
+    let server = test_server();
+    seed_collection(&server, "item").await;
+
+    let body = mcp_via_tenant_path(
+        &server,
+        "default",
+        "default",
+        &json!({"jsonrpc":"2.0","id":1,"method":"resources/list"}),
+    )
+    .await;
+
+    assert!(body["error"].is_null(), "unexpected error: {body}");
+    let resources = body["result"]["resources"].as_array().unwrap();
+    let uris: Vec<&str> = resources.iter().filter_map(|r| r["uri"].as_str()).collect();
+
+    // 4-level normative form required by CONTRACT-003
+    assert!(
+        uris.contains(&"axon://default/default/item"),
+        "4-level collection URI missing: {uris:?}"
+    );
+    assert!(
+        uris.contains(&"axon://default/default/_collections"),
+        "4-level _collections URI missing: {uris:?}"
+    );
+    assert!(
+        uris.contains(&"axon://default/default/_schemas"),
+        "4-level _schemas URI missing: {uris:?}"
+    );
+    assert!(
+        uris.contains(&"axon://default/default/_schemas/item"),
+        "4-level per-collection schema URI missing: {uris:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_tenant_aware_resource_templates_include_normative_4_level_forms() {
+    let server = test_server();
+
+    let body = mcp_via_tenant_path(
+        &server,
+        "default",
+        "default",
+        &json!({"jsonrpc":"2.0","id":1,"method":"resources/templates/list"}),
+    )
+    .await;
+
+    assert!(body["error"].is_null(), "unexpected error: {body}");
+    let templates = body["result"]["resourceTemplates"].as_array().unwrap();
+    let template_uris: Vec<&str> = templates
+        .iter()
+        .filter_map(|t| t["uriTemplate"].as_str())
+        .collect();
+
+    // Normative 4-level templates required by CONTRACT-003
+    assert!(
+        template_uris.contains(&"axon://{tenant}/{database}/{collection}/{id}"),
+        "4-level entity template missing: {template_uris:?}"
+    );
+    assert!(
+        template_uris.contains(&"axon://{tenant}/{database}/{collection}"),
+        "4-level collection template missing: {template_uris:?}"
+    );
+    assert!(
+        template_uris.contains(&"axon://{tenant}/{database}/_collections"),
+        "4-level _collections template missing: {template_uris:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_tenant_aware_session_id_issued_on_first_request() {
+    let server = test_server();
+    let resp = server
+        .post("/tenants/default/databases/default/mcp")
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"ping"}))
+        .await;
+    let session = resp
+        .headers()
+        .get("x-axon-mcp-session")
+        .expect("tenant-aware MCP should issue a session id");
+    assert!(!session.is_empty());
+}
+
 // ── SSE endpoint ──────────────────────────────────────────────────────────────
 
 /// Verify the SSE endpoint is wired correctly by checking that a GET request

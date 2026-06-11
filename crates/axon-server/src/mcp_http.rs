@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
-use crate::gateway::CurrentDatabase;
+use crate::gateway::{CurrentDatabase, CurrentTenant};
+use crate::tenant_router::TenantHandler;
 use axon_api::handler::AxonHandler;
 use axon_core::auth::CallerIdentity as CoreCallerIdentity;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_SCHEMA};
@@ -20,8 +21,8 @@ use axon_mcp::map_axon_error;
 use axon_mcp::prompts::{get_prompt_from_handler, prompt_infos, PromptRegistry};
 use axon_mcp::protocol::{McpError, McpServer};
 use axon_mcp::resources::{
-    discover_collections, read_resource_from_handler, resource_infos, resource_template_infos,
-    ResourceRegistry,
+    discover_collections, read_resource_from_handler, resource_infos,
+    resource_infos_with_tenant_database, resource_template_infos, ResourceRegistry,
 };
 use axon_mcp::tools::{ToolError, ToolRegistry};
 use axon_storage::adapter::StorageAdapter;
@@ -64,6 +65,8 @@ struct ResolvedSession {
 struct McpHttpSession {
     server: StdMutex<McpServer>,
     listeners: StdMutex<SessionListeners>,
+    /// Tenant used when this session was created; drives 4-level vs 2-level resource URIs.
+    tenant: Option<String>,
 }
 
 #[derive(Default)]
@@ -87,11 +90,13 @@ impl McpHttpSessions {
         session_key: &SessionKey,
         handler: SharedHandler<S>,
         caller: &CoreCallerIdentity,
+        tenant: Option<String>,
     ) -> Result<Arc<McpHttpSession>, McpError> {
-        let server = build_mcp_server(handler, &session_key.database, caller)?;
+        let server = build_mcp_server(handler, &session_key.database, caller, tenant.as_deref())?;
         Ok(Arc::new(McpHttpSession {
             server: StdMutex::new(server),
             listeners: StdMutex::new(SessionListeners::default()),
+            tenant,
         }))
     }
 
@@ -100,6 +105,7 @@ impl McpHttpSessions {
         session_key: SessionKey,
         handler: SharedHandler<S>,
         caller: &CoreCallerIdentity,
+        tenant: Option<String>,
     ) -> Result<Arc<McpHttpSession>, McpError> {
         let mut sessions = self
             .sessions
@@ -113,7 +119,7 @@ impl McpHttpSessions {
             sessions.remove(&session_key);
         }
 
-        let session = Self::new_session(&session_key, handler, caller)?;
+        let session = Self::new_session(&session_key, handler, caller, tenant)?;
         sessions.insert(session_key, Arc::clone(&session));
         Ok(session)
     }
@@ -123,6 +129,7 @@ impl McpHttpSessions {
         session_key: SessionKey,
         handler: SharedHandler<S>,
         caller: &CoreCallerIdentity,
+        tenant: Option<String>,
     ) -> Result<Arc<McpHttpSession>, McpError> {
         let mut sessions = self
             .sessions
@@ -137,7 +144,7 @@ impl McpHttpSessions {
             }
         }
 
-        let session = Self::new_session(&session_key, handler, caller)?;
+        let session = Self::new_session(&session_key, handler, caller, tenant)?;
         sessions.insert(session_key, Arc::clone(&session));
         Ok(session)
     }
@@ -148,13 +155,21 @@ impl McpHttpSessions {
         handler: SharedHandler<S>,
         caller: CoreCallerIdentity,
         input: &str,
+        tenant: Option<String>,
     ) -> Result<Option<String>, McpError> {
-        let session = self.get_or_create(session_key.clone(), Arc::clone(&handler), &caller)?;
+        let session =
+            self.get_or_create(session_key.clone(), Arc::clone(&handler), &caller, tenant)?;
         let mut server = session
             .server
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        refresh_mcp_server(&mut server, handler, &session_key.database, &caller)?;
+        refresh_mcp_server(
+            &mut server,
+            handler,
+            &session_key.database,
+            &caller,
+            session.tenant.as_deref(),
+        )?;
         Ok(server.handle_message(input))
     }
 
@@ -163,8 +178,9 @@ impl McpHttpSessions {
         session_key: SessionKey,
         handler: SharedHandler<S>,
         caller: CoreCallerIdentity,
+        tenant: Option<String>,
     ) -> Result<mpsc::UnboundedReceiver<String>, McpError> {
-        let session = self.connect_session(session_key.clone(), handler, &caller)?;
+        let session = self.connect_session(session_key.clone(), handler, &caller, tenant)?;
         let (sender, receiver) = mpsc::unbounded_channel();
         let mut listeners = session
             .listeners
@@ -389,11 +405,16 @@ fn build_resource_registry<S: StorageAdapter + 'static>(
     handler: SharedHandler<S>,
     current_database: &str,
     collections: &[String],
+    tenant: Option<&str>,
 ) -> Result<ResourceRegistry, McpError> {
     let collection_names = collection_names_for_mcp(&handler, current_database, collections)?;
+    let infos = match tenant {
+        Some(t) => resource_infos_with_tenant_database(t, current_database, &collection_names),
+        None => resource_infos(&collection_names),
+    };
     let current_database = current_database.to_string();
     Ok(ResourceRegistry::new(
-        resource_infos(&collection_names),
+        infos,
         resource_template_infos(),
         Box::new(move |uri| {
             let guard = handler.blocking_lock();
@@ -420,9 +441,11 @@ fn build_mcp_server<S: StorageAdapter + 'static>(
     handler: SharedHandler<S>,
     current_database: &str,
     caller: &CoreCallerIdentity,
+    tenant: Option<&str>,
 ) -> Result<McpServer, McpError> {
     let tools = build_tool_registry(Arc::clone(&handler), current_database, &[], caller)?;
-    let resources = build_resource_registry(Arc::clone(&handler), current_database, &[])?;
+    let resources =
+        build_resource_registry(Arc::clone(&handler), current_database, &[], tenant)?;
     let prompts = build_prompt_registry(handler, current_database);
     Ok(McpServer::new(tools, resources, prompts))
 }
@@ -432,9 +455,11 @@ fn refresh_mcp_server<S: StorageAdapter + 'static>(
     handler: SharedHandler<S>,
     current_database: &str,
     caller: &CoreCallerIdentity,
+    tenant: Option<&str>,
 ) -> Result<(), McpError> {
     let tools = build_tool_registry(Arc::clone(&handler), current_database, &[], caller)?;
-    let resources = build_resource_registry(Arc::clone(&handler), current_database, &[])?;
+    let resources =
+        build_resource_registry(Arc::clone(&handler), current_database, &[], tenant)?;
     let prompts = build_prompt_registry(handler, current_database);
     server.refresh_registries(tools, resources, prompts);
     Ok(())
@@ -594,6 +619,119 @@ pub fn notify_tool_list_changed(sessions: &McpHttpSessions, current_database: &C
     sessions.publish_tool_list_changed(current_database);
 }
 
+/// Routes mounted under `/tenants/{tenant}/databases/{database}` that provide
+/// tenant-aware MCP endpoints as required by CONTRACT-003 / ADR-018.
+pub fn tenant_aware_routes() -> Router {
+    Router::new()
+        .route("/mcp", post(handle_mcp_tenant_aware))
+        .route("/mcp/sse", get(handle_mcp_sse_tenant_aware))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_mcp_tenant_aware(
+    Extension(handler): Extension<TenantHandler>,
+    Extension(sessions): Extension<McpHttpSessions>,
+    Extension(current_tenant): Extension<CurrentTenant>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Extension(caller): Extension<CoreCallerIdentity>,
+    Query(query): Query<McpSessionQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let input = match String::from_utf8(body.to_vec()) {
+        Ok(input) => input,
+        Err(error) => {
+            return json_rpc_error_response(McpError::Parse(serde_json::Error::io(
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()),
+            )));
+        }
+    };
+
+    let session = resolve_session_from_request(&current_database, &headers, &query);
+    let session_key = session.key.clone();
+    let tenant = Some(current_tenant.as_str().to_string());
+    let response = match tokio::task::spawn_blocking(move || {
+        sessions.handle_message::<Box<dyn StorageAdapter + Send + Sync>>(
+            session_key,
+            handler,
+            caller,
+            &input,
+            tenant,
+        )
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            return json_rpc_error_response(McpError::Internal(format!(
+                "failed to join MCP worker: {error}"
+            )));
+        }
+    };
+
+    let mut response = match response {
+        Ok(Some(payload)) => (
+            StatusCode::OK,
+            [(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            )],
+            payload,
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => json_rpc_error_response(error),
+    };
+    apply_session_metadata(&mut response, &session);
+    response
+}
+
+async fn handle_mcp_sse_tenant_aware(
+    Extension(handler): Extension<TenantHandler>,
+    Extension(sessions): Extension<McpHttpSessions>,
+    Extension(current_tenant): Extension<CurrentTenant>,
+    Extension(current_database): Extension<CurrentDatabase>,
+    Extension(caller): Extension<CoreCallerIdentity>,
+    Query(query): Query<McpSessionQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let session = resolve_session_from_request(&current_database, &headers, &query);
+    let session_key = session.key.clone();
+    let tenant = Some(current_tenant.as_str().to_string());
+    let receiver = match tokio::task::spawn_blocking(move || {
+        sessions.connect::<Box<dyn StorageAdapter + Send + Sync>>(
+            session_key,
+            handler,
+            caller,
+            tenant,
+        )
+    })
+    .await
+    {
+        Ok(Ok(receiver)) => receiver,
+        Ok(Err(error)) => return json_rpc_error_response(error),
+        Err(error) => {
+            return json_rpc_error_response(McpError::Internal(format!(
+                "failed to join MCP SSE worker: {error}"
+            )));
+        }
+    };
+
+    let ready = tokio_stream::once(Ok(Event::default().event("ready").data("{}")));
+    let updates = UnboundedReceiverStream::new(receiver)
+        .map(|payload| Ok::<Event, Infallible>(Event::default().event("message").data(payload)));
+
+    let mut response = Sse::new(ready.chain(updates))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keepalive"),
+        )
+        .into_response();
+    apply_session_metadata(&mut response, &session);
+    response
+}
+
 fn json_rpc_response(status: StatusCode, payload: serde_json::Value) -> Response {
     (
         status,
@@ -645,7 +783,7 @@ async fn handle_mcp<S: StorageAdapter + 'static>(
     let session = resolve_session_from_request(&current_database, &headers, &query);
     let session_key = session.key.clone();
     let response = match tokio::task::spawn_blocking(move || {
-        sessions.handle_message(session_key, handler, caller, &input)
+        sessions.handle_message(session_key, handler, caller, &input, None)
     })
     .await
     {
@@ -685,8 +823,10 @@ async fn handle_mcp_sse<S: StorageAdapter + 'static>(
     let session = resolve_session_from_request(&current_database, &headers, &query);
     let session_key = session.key.clone();
     let receiver =
-        match tokio::task::spawn_blocking(move || sessions.connect(session_key, handler, caller))
-            .await
+        match tokio::task::spawn_blocking(move || {
+            sessions.connect(session_key, handler, caller, None)
+        })
+        .await
         {
             Ok(Ok(receiver)) => receiver,
             Ok(Err(error)) => return json_rpc_error_response(error),
@@ -1214,7 +1354,7 @@ mod tests {
             McpHttpSessions::test_session_key(DEFAULT_DATABASE, &issued_session_id(&subscribe));
 
         let mut receiver = sessions
-            .connect(session_key, handler, CoreCallerIdentity::anonymous())
+            .connect(session_key, handler, CoreCallerIdentity::anonymous(), None)
             .expect("session should accept an SSE listener");
         notify_entity_change_by_parts(
             &sessions,
@@ -1258,7 +1398,7 @@ mod tests {
             let session_key = first_session.key.clone();
             move || {
                 sessions
-                    .connect(session_key, handler, CoreCallerIdentity::anonymous())
+                    .connect(session_key, handler, CoreCallerIdentity::anonymous(), None)
                     .expect("first session should accept an SSE listener")
             }
         })
@@ -1270,7 +1410,7 @@ mod tests {
             let session_key = second_session.key.clone();
             move || {
                 sessions
-                    .connect(session_key, handler, CoreCallerIdentity::anonymous())
+                    .connect(session_key, handler, CoreCallerIdentity::anonymous(), None)
                     .expect("second session should accept an SSE listener")
             }
         })

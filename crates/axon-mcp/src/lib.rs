@@ -37,7 +37,7 @@ pub use protocol::{
     McpTextContent,
 };
 pub use resources::{
-    discover_collections, read_resource_from_handler, resource_infos, resource_template_infos,
-    ResourceRegistry,
+    discover_collections, read_resource_from_handler, resource_infos,
+    resource_infos_with_tenant_database, resource_template_infos, ResourceRegistry,
 };
 pub use tools::ToolRegistry;

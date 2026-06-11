@@ -898,3 +898,56 @@ fn mcp_intent_authorization_denial_uses_graphql_stable_code() {
     assert_eq!(value["error_code"], "intent_authorization_failed");
     assert_eq!(value["intent_id"], "mint_authz");
 }
+
+/// CONTRACT-003: MCP collection-specific tools must work via the tenant-aware
+/// endpoint (`POST /tenants/{t}/databases/{d}/mcp`).
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_tenant_aware_endpoint_supports_intent_tool_calls() {
+    let server = test_server();
+    seed_intent_collection(&server).await;
+
+    let create_resp = server
+        .post("/tenants/default/databases/default/entities/intent_task/ta-tenant-1")
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({
+            "data": { "title": "tenant test", "amount_cents": 5000 },
+            "actor": "admin"
+        }))
+        .await;
+    create_resp.assert_status(StatusCode::CREATED);
+
+    // Call the intent_task.patch tool via the tenant-aware MCP endpoint in
+    // preview mode — amount_cents <= 10 000 so the outcome should be "allowed".
+    let preview = server
+        .post("/tenants/default/databases/default/mcp")
+        .add_header("x-axon-actor", "finance-agent")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": "intent_task.patch",
+                "arguments": {
+                    "intent_mode": "preview",
+                    "id": "ta-tenant-1",
+                    "data": { "title": "via tenant path" },
+                    "expected_version": 1,
+                    "expires_in_seconds": 60
+                }
+            }
+        }))
+        .await
+        .json::<Value>();
+
+    assert!(
+        preview["error"].is_null(),
+        "unexpected MCP protocol error on tenant path: {preview}"
+    );
+    let outcome = preview["result"]["structuredContent"]["outcome"]
+        .as_str()
+        .unwrap_or_default();
+    assert_eq!(
+        outcome, "allowed",
+        "preview via tenant path should return allowed: {preview}"
+    );
+}
