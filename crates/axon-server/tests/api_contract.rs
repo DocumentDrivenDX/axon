@@ -10,16 +10,16 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use axon_api::handler::AxonHandler;
 use axon_server::gateway::build_router;
 use axon_server::service::{AxonServiceImpl, AxonServiceServer};
 use axon_server::tenant_router::TenantRouter;
+use axon_storage::SqliteStorageAdapter;
 use axon_storage::adapter::StorageAdapter;
 use axon_storage::memory::MemoryStorageAdapter;
-use axon_storage::SqliteStorageAdapter;
 
 // Use the proto types from the server crate.
 use axon_server::service::proto;
@@ -1287,8 +1287,8 @@ fn lifecycle_schema_json(collection: &str) -> String {
 /// Provision the `tasks` collection (with the `status` lifecycle) and seed
 /// entity `t-001` in `status: "draft"` on a fresh gRPC server. Returns the
 /// connected client.
-async fn setup_lifecycle_client(
-) -> proto::axon_service_client::AxonServiceClient<tonic::transport::Channel> {
+async fn setup_lifecycle_client()
+-> proto::axon_service_client::AxonServiceClient<tonic::transport::Channel> {
     let (addr, _) = start_grpc_server().await;
     let mut client = grpc_client(addr).await;
 
@@ -2073,7 +2073,7 @@ async fn http_transactions_idempotent_different_databases_isolated() {
 #[tokio::test(flavor = "multi_thread")]
 async fn http_transactions_idempotent_expired_reexecutes() {
     use axon_core::clock::SystemClock;
-    use axon_server::gateway::{build_router_with_idempotency, CachedHttpResponse};
+    use axon_server::gateway::{CachedHttpResponse, build_router_with_idempotency};
     use axon_server::idempotency::IdempotencyStore;
     use std::time::Duration;
 
