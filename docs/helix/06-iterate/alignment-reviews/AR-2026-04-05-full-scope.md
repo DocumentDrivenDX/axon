@@ -34,8 +34,8 @@
 | Feature | FEAT-006 Bead Storage Adapter | `docs/helix/01-frame/features/FEAT-006-bead-storage-adapter.md` | Draft P1 |
 | Feature | FEAT-007 Entity-Graph Model | `docs/helix/01-frame/features/FEAT-007-entity-graph-model.md` | Draft P0 |
 | Feature | FEAT-008 ACID Transactions | `docs/helix/01-frame/features/FEAT-008-acid-transactions.md` | Draft P0 |
-| Feature | FEAT-009 Graph Traversal Queries | `docs/helix/01-frame/features/FEAT-009-graph-traversal-queries.md` | Draft P1 |
-| Feature | FEAT-010 Workflow State Machines | `docs/helix/01-frame/features/FEAT-010-workflow-state-machines.md` | Draft P2 (deferred) |
+| Feature | FEAT-009 Graph Traversal Queries | `docs/helix/01-frame/features/FEAT-009-unified-graph-query.md` (renamed from `FEAT-009-graph-traversal-queries.md`) | Draft P1 |
+| Feature | FEAT-010 Workflow State Machines | `docs/helix/01-frame/features/FEAT-010-entity-state-machines.md` | Draft P2 (deferred) |
 | Architecture | ADR-001 Implementation Language | `docs/helix/02-design/adr/ADR-001-implementation-language.md` | Accepted |
 | Architecture | ADR-002 Schema Format | `docs/helix/02-design/adr/ADR-002-schema-format.md` | Accepted |
 | Architecture | ADR-003 Backing Store Architecture | `docs/helix/02-design/adr/ADR-003-backing-store-architecture.md` | Accepted |

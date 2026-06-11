@@ -3,309 +3,171 @@ ddx:
   id: helix.implementation-plan
   depends_on:
     - helix.prd
-    - helix.test-plan
+    - TP-001
 ---
-# Implementation Plan: Axon
+# Build Plan: Axon
 
-**Version**: 0.2.0
+**Version**: 0.3.0
 **Date**: 2026-04-10
-**Revised**: 2026-04-22
+**Revised**: 2026-06-10
 **Status**: Living document
 
----
-
-## 1. Crate Responsibility Map
-
-| Crate | Purpose | Lines | Build Status |
-|-------|---------|------:|:------------:|
-| `axon-core` | Core types (Entity, Link, CollectionId, EntityId, Namespace), error hierarchy (`AxonError`), auth types (Identity, Role, Grants, JwtClaims), topology model | 3,544 | OK |
-| `axon-schema` | Schema definitions (ESF format), JSON Schema validation, schema evolution/diffing, validation rules (Layer 5 cross-field), gate evaluation | 3,594 | OK |
-| `axon-audit` | Immutable audit log (append-only), CDC envelope format (Debezium-compatible), replay/cursor pagination | 2,630 | OK |
-| `axon-storage` | `StorageAdapter` trait, in-memory backend, SQLite backend, PostgreSQL backend, conformance macro, EAV secondary indexes | 13,718 | OK |
-| `axon-api` | `AxonHandler` orchestrator: all entity/link/collection/schema/audit/rollback operations, transaction commit, bead adapter, proptest harness, audit attribution | 16,557 | OK |
-| `axon-render` | Mustache-based markdown template rendering, field reference extraction and validation against schemas | 890 | OK |
-| `axon-graphql` | Dynamic `async-graphql` schema from collections: queries, mutations, aggregations, graph traversal, subscriptions via change feed broker | 2,566 | OK |
-| `axon-mcp` | MCP JSON-RPC 2.0 server: typed CRUD tools auto-generated from schemas, resource discovery, prompt registry, query/aggregate/neighbor tools | 3,834 | OK |
-| `axon-server` | Axum HTTP gateway, Tailscale whois auth (Unix socket), JWT auth pipeline (9-step), RBAC enforcement, rate limiting, actor scope constraints, control plane routes (tenant/user/credential/database/member management), path-based routing (ADR-018), GraphQL + MCP endpoints, self-signed TLS bootstrap | 16,822 | OK |
-| `axon-sim` | FoundationDB-style DST framework: SimRng, Buggify fault injector, cycle test, concurrent writer, audit completeness/immutability, schema enforcement, transaction atomicity, link integrity workloads | 2,505 | OK |
-| `axon-cli` | CLI binary (`axon`): unified serve/mcp/doctor/install subcommands, embedded SQLite mode, client mode against running server, collection/entity/link/schema/audit/template/namespace/database commands | 3,854 | OK |
-| `axon-config` | XDG-compliant path resolution, TOML configuration loading (`AxonConfig`), platform-appropriate defaults | 510 | OK |
-| `axon-control-plane` | Standalone control plane crate: tenant data model, `ControlPlaneStore` trait, `ControlPlaneService` business logic, HTTP handlers. Data-sovereignty-aware (never reads customer entity data) | 1,591 | OK |
-
-**Total**: ~72,615 lines of Rust across 13 crates.
-
-Additional surfaces:
-- **Admin UI** (`ui/`): SvelteKit + Bun, 12 Svelte pages with tenant-scoped routing, Playwright E2E tests
-- **TypeScript SDK** (`sdk/typescript/`): GraphQL-first client target with
-  compatibility HTTP/gRPC clients still present during transition
-- **Website** (`website/`): Marketing/documentation site
+This is the build sequencing and execution-readiness artifact. It is the one
+artifact in the stack where implementation status belongs; feature-spec
+`status` fields describe spec lifecycle, not implementation state.
 
 ---
 
-## 2. Dependency Graph (Build Order)
+## Scope
+
+**Governing Artifacts**:
+- PRD v0.4.0 — `docs/helix/01-frame/prd.md`
+- Feature specifications FEAT-001..031 (all rewritten to helix 0.6.1 on
+  2026-06-10) — `docs/helix/01-frame/features/`
+- Interface contracts CONTRACT-001..010 —
+  `docs/helix/02-design/contracts/`
+- Architecture record: ADR-001..024 — `docs/helix/02-design/adr/`
+  (no monolithic architecture.md exists; the ADR corpus is the
+  architecture authority)
+- Test plan — `docs/helix/03-test/test-plan.md` and
+  `docs/helix/03-test/feature-story-e2e-traceability.md`
+
+**In scope**: the forward build slices in this plan (contract conformance,
+FEAT-021 Kafka transport, FEAT-022 remaining guardrails, serializable
+isolation, local-first sync design, BYOC remaining scope, test-coverage
+completion). **Out of scope**: reopening product or design decisions; live
+issue state (the tracker owns that).
+
+## Current Implementation Baseline (verified 2026-06-10)
+
+Corrects the 0.2.0 plan, which understated delivered work.
+
+**Workspace**: 15 crates (the 0.2.0 plan listed 13 and omitted `axon-cypher`
+and `axon-cypher-ast`):
 
 ```
-axon-core
-  +-- axon-schema          (depends on axon-core)
-  +-- axon-audit           (depends on axon-core)
-  +-- axon-storage         (depends on axon-core, axon-audit, axon-schema)
-  +-- axon-render          (depends on axon-core)
-  +-- axon-config          (standalone)
-  +-- axon-control-plane   (standalone)
-  +-- axon-api             (depends on axon-core, axon-schema, axon-audit, axon-storage, axon-render)
-  +-- axon-graphql         (depends on axon-core, axon-schema, axon-api, axon-storage)
-  +-- axon-mcp             (depends on axon-core, axon-schema, axon-api, axon-storage)
-  +-- axon-sim             (depends on axon-core, axon-schema, axon-audit, axon-api, axon-storage)
-  +-- axon-server          (depends on axon-core, axon-schema, axon-audit, axon-api, axon-storage, axon-graphql, axon-mcp)
-  +-- axon-cli             (depends on axon-core, axon-api, axon-audit, axon-server)
+axon-api  axon-audit  axon-cli  axon-config  axon-control-plane
+axon-core  axon-cypher  axon-cypher-ast  axon-graphql  axon-mcp
+axon-render  axon-schema  axon-server  axon-sim  axon-storage
 ```
 
-Build order (topological): `axon-core` -> `axon-schema`, `axon-audit`, `axon-render`, `axon-config`, `axon-control-plane` (parallel) -> `axon-storage` -> `axon-api` -> `axon-graphql`, `axon-mcp`, `axon-sim` (parallel) -> `axon-server` -> `axon-cli`.
+Plus three non-Rust surfaces: Admin UI (`ui/`, SvelteKit + Playwright e2e),
+TypeScript SDK (`sdk/typescript/`), website (`website/`).
+
+**Corrections to previously misreported status**:
+
+| Prior claim (plan 0.2.0) | Verified reality |
+|---|---|
+| SCN-001..010 "defined but not coded" | Implemented — `crates/axon-api/tests/business_scenarios.rs`; SCN-011 cross-tenant isolation in `crates/axon-server/tests/scn_011_cross_tenant_isolation_test.rs` |
+| BM-001..010 "no benchmark code exists" | Implemented — `crates/axon-api/benches/benchmarks.rs` covers BM-001 through BM-010 |
+| FEAT-010 entity state machines "Not started" | Build landed — `crates/axon-server/tests/lifecycle_test.rs` exercises lifecycle/transition behavior |
+| FEAT-029 access control "Not started" | Build landed — `crates/axon-api/src/policy.rs`, `crates/axon-server/tests/graphql_policy_contract.rs`, `feat_029_contract_parent.rs` |
+| FEAT-030 mutation intents "Not started" | Build landed — `crates/axon-api/src/intent.rs`, `crates/axon-server/tests/{graphql,mcp}_intents_contract.rs` |
+| FEAT-031 policy/intents admin UI "Not started" | Build landed — `ui/tests/e2e/` specs incl. `policy-enforcement`, `graphql-policy-console`, `intent-audit-lineage`, plus US-tagged coverage checks (commit `1bebf4e7`) |
+| "ACID transactions ... serializable isolation" | **Snapshot Isolation** is the V1 default (FEAT-008 TXN-05). Write-set OCC does not detect write skew; read-set tracking for Serializable is committed as **P1**. Read-committed is an opt-in |
+| FEAT-009 "graph traversal" | Spec renamed: `FEAT-009-unified-graph-query.md` (Cypher surface, CONTRACT-007); `axon-cypher`/`axon-cypher-ast` implement it with SQLite executor parity and ready/blocked benchmark gates (commit `2ea08772`) |
+| FEAT-010 filename | Renamed: `FEAT-010-entity-state-machines.md` |
+
+**Storage backends**: memory, SQLite, PostgreSQL all pass the
+`storage_conformance_tests!` macro suite. FoundationDB not started.
+
+**Known contract-vs-implementation gaps** (from CONTRACT-001..010 authoring,
+2026-06-10) are tracked in `docs/helix/06-iterate/improvement-backlog.md` and
+as tracker beads; they form Slice B-101 below.
+
+## Shared Constraints
+
+- **Isolation honesty**: V1 is Snapshot Isolation (FEAT-008 TXN-05). No
+  artifact, doc, or API description may claim serializable until B-104 lands.
+- **Authority order**: Vision > PRD > Technical Requirements > Features >
+  Tests > Code. Contract changes go through contract amendment, not code drift.
+- **Test-first**: failing tests exist before implementation; no `unwrap()` in
+  library code; `cargo clippy -- -D warnings` clean.
+- **ADR-018 wire protocol**: pure path-based, tenant-prefixed routing; no new
+  un-prefixed routes may be added while B-101 retires the legacy ones.
+- **GraphQL primary, MCP agent-native, REST fallback** (2026-04-22 product
+  decision): new surface work lands GraphQL/MCP first.
+- **Durable closure evidence**: build issues close only with a commit
+  reference, execution bundle, or explicit notes
+  (`docs/helix/06-iterate/review-malfunction-audit-2026-04-20.md`).
+
+## Implementation Slices
+
+Ordered by dependency: conformance debt first (it blocks contract-frozen
+surfaces), then transport/guardrail completion, then isolation upgrade, then
+the two design-first P1 expansions, then coverage closeout.
+
+| Slice | Story / Area | Governing Artifacts | Depends On | Validation Gate | Notes |
+|-------|--------------|---------------------|------------|-----------------|-------|
+| B-101 | Contract conformance: drop `dbName`/`dbPath` (GraphQL+SDK), retire un-prefixed legacy routes (`/auth/me`, `/databases/*`), SDK governed-workflow methods, tenant-aware MCP endpoints/URIs, Idempotency-Key header deprecation, CONTRACT-008 auth-default amendment | CONTRACT-001, -002, -003, -008, -009; ADR-018; FEAT-028 BIN-10 | None | `grep -r 'dbName\|dbPath' sdk/typescript/src crates/axon-server crates/axon-control-plane` returns nothing; `cargo test -p axon-server` contract tests pass; SDK tests pass | First: every later slice extends these surfaces; conformance debt compounds. Beads: axon-b8078b63, axon-b684338f, axon-784bc974, axon-95b137d0, axon-c62971d9, axon-87fee98b |
+| B-102 | FEAT-021 Kafka CDC transport (envelope + JSONL/in-memory sinks exist; Kafka producer, delivery semantics, config) | FEAT-021, CONTRACT-006, ADR-014 | B-101 (config surface frozen by CONTRACT-008 amendment) | Integration test publishes CDC envelopes to a Kafka testcontainer and replays them; `cargo test -p axon-audit` passes | Completes the last unimplemented FEAT-021 transport |
+| B-103 | FEAT-022 remaining guardrail scope (semantic validation hooks; rate limiting + actor scope already shipped) | FEAT-022, ADR-016, ADR-024 | B-101 | Guardrail hook tests in `crates/axon-server` exercise hook rejection paths; `cargo test -p axon-server` passes | Completes the P0 safety-guardrail vision scope |
+| B-104 | Serializable isolation (P1): read-set tracking to detect write skew; effective-isolation inspectability | FEAT-008 (TXN-05, Constraints), ADR-004 | B-101 | axon-sim `CycleWorkload` extended with a write-skew workload that fails under SI and passes under serializable; `cargo test -p axon-sim` | Upgrades the corrected SI baseline; do not relabel docs until this lands |
+| B-105 | Local-first sync (FR-32, newly promoted P1) — **design first**: ADR + solution design before any build issue | PRD v0.4.0 FR-32 | None for design; build blocked on accepted ADR | ADR merged in `docs/helix/02-design/adr/`; design review recorded | No build scope may be invented before the ADR exists |
+| B-106 | BYOC (FR-27 P1) remaining scope beyond shipped control plane (tenant/user/credential/database/member mgmt is live) | PRD FR-27, ADR-017, FEAT-025 | B-101 | Control-plane monitoring + remaining FEAT-025 acceptance criteria pass in `crates/axon-control-plane`/`axon-server` tests | Scope = FEAT-025 "monitoring not implemented" remainder plus BYOC packaging |
+| B-107 | Story-test-plan / coverage closeout: PROP-002..005 property tests, L6 contract-suite completion, story-test-plans for remaining non-guardrail features per test-plan §AC allocation | test-plan.md, feature-story-e2e-traceability.md, STP set | B-101..B-104 (tests target final surfaces) | `cargo test` workspace green; traceability doc shows no unallocated ACs | Last: validates the completed surfaces, not the interim ones |
+
+## Issue Decomposition
+
+Story-level work is tracked as beads in `.ddx/beads.jsonl` via `ddx bead`.
+
+**Per-issue requirements**:
+- Labels: `helix`, `activity:build`, plus area labels (`area:api`,
+  `area:sdk`, `area:mcp`, ...)
+- References: governing FEAT/CONTRACT/ADR paths in the description
+- Acceptance criteria naming observable repo states (grep/test commands)
+- Blockers as `--depends-on` links
+- Closure requires durable evidence (commit ref, execution bundle, or notes)
+
+| Story / Area | Goal | Dependencies |
+|--------------|------|--------------|
+| B-101 conformance (6 beads filed: axon-b8078b63, axon-b684338f, axon-784bc974, axon-95b137d0, axon-c62971d9, axon-87fee98b) | Code matches CONTRACT-001..010 as written | None |
+| B-102 Kafka transport | FEAT-021 complete | axon-87fee98b (config contract) |
+| B-103 guardrail hooks | FEAT-022 complete | None hard; sequence after B-101 |
+| B-104 serializable isolation | FEAT-008 P1 constraint discharged | None hard; sequence after B-101 |
+| B-105 local-first sync ADR | Accepted design for FR-32 | None (design work) |
+| B-106 BYOC remainder | FR-27 P1 scope complete | B-101 |
+| B-107 coverage closeout | No unallocated ACs; PROP-002..005 coded | B-101..B-104 |
+
+## Validation Plan
+
+- [ ] Failing tests exist before implementation starts (test-first)
+- [ ] Each slice's validation gate (table above) passes before its beads close
+- [ ] `cargo check && cargo test && cargo clippy -- -D warnings && cargo fmt --check` green at every slice exit
+- [ ] Behavior changes update canonical documents (contracts amended before code diverges)
+- [ ] Bead closures carry durable evidence per the review-malfunction audit rule
+- [ ] Code review complete before activity exit
+
+## Risks and Rollbacks
+
+| Risk | Impact | Response | Rollback |
+|------|--------|----------|----------|
+| Retiring legacy routes (`/auth/me`, `/databases/*`) breaks an unnoticed consumer | M | Land as 410 + deprecation header first, removal in a follow-up release | Re-register legacy handlers (single router commit revert) |
+| CONTRACT-008 auth-default flip locks operators out of fresh installs | H | Ship explicit opt-out flag and doctor diagnostic in the same change | Revert default in config layer; contract amendment is additive |
+| Kafka transport pulls heavyweight deps into axon-audit | M | Feature-gate behind a cargo feature; keep JSONL sink the default | Disable the cargo feature |
+| Read-set tracking for serializable regresses commit throughput | M | Benchmark gate: BM suite (`crates/axon-api/benches/benchmarks.rs`) must not regress >10%; serializable stays opt-in initially | Keep SI the default; serializable behind a transaction option |
+| Local-first sync scope balloons before design exists | M | B-105 is design-only; no build beads until the ADR is accepted | N/A (no code) |
+| SDK governed methods drift from server intents API | M | SDK tests run against the same contract fixtures as `graphql_intents_contract.rs` | Mark methods experimental in SDK semver |
+
+## Exit Criteria
+
+- [ ] Build issue set is defined with sequence and dependencies (B-101 beads filed; B-102+ beads created when their slice opens)
+- [ ] Shared constraints are documented
+- [ ] Verification expectations are explicit per slice
+- [ ] Runtime issues can be created from this plan without inventing scope
+
+## Review Checklist
+
+- [x] Governing artifacts are listed and exist on disk
+- [x] Shared constraints trace back to requirements, design, or architecture
+- [x] Build sequence has a justified ordering — conformance debt first, design-first items gated on ADRs
+- [x] Dependencies between build steps are explicit
+- [x] Each slice references its governing artifacts
+- [x] Issue decomposition follows tracker conventions (labels, refs, deps, closure evidence)
+- [x] Quality gates are specific and enforceable
+- [x] Risks have concrete responses and rollbacks
+- [x] Plan is consistent with the governing test plan and FEAT-008 isolation truth
 
 ---
 
-## 3. Feature Implementation Status
-
-### P0 (Must Have) Features
-
-| Feature | Description | Crate(s) | Status | Notes |
-|---------|------------|-----------|:------:|-------|
-| FEAT-001 | Collections | axon-core, axon-api, axon-storage | Done | Create, drop, list, describe. Qualified names with namespace support |
-| FEAT-002 | Schema engine | axon-schema, axon-api | Done | ESF format, JSON Schema validation, Layer 5 rules, gate evaluation, compilation |
-| FEAT-003 | Audit log | axon-audit, axon-api | Done | Append-only, query by entity/actor/operation/time, cursor pagination, replay |
-| FEAT-004 | Entity operations | axon-api, axon-storage | Done | Create, read, update (full replace), patch (RFC 7396 merge-patch), delete, list, query with filter/sort/pagination |
-| FEAT-005 | API surface | axon-server, axon-api | Done | HTTP gateway via Axum with pure path-based routing (ADR-018), transaction endpoint, audit endpoint |
-| FEAT-015 | GraphQL API | axon-graphql, axon-server | Done; policy hardening pending | Dynamic schema from collections, queries with filter/sort/pagination, mutations (CRUD + OCC), subscriptions via WebSocket. GraphQL is now the primary public application surface |
-| FEAT-016 | MCP server | axon-mcp, axon-server | Done; policy hardening pending | JSON-RPC 2.0 protocol, auto-generated CRUD tools, resources, prompts, query/aggregate/neighbor tools, stdio + HTTP transports. MCP mirrors GraphQL for agents |
-| FEAT-007 | Entity-graph model | axon-core, axon-api, axon-storage | Done | Typed directional links, link metadata, link-type constraints via schema |
-| FEAT-008 | ACID transactions | axon-api, axon-storage | Done | Multi-entity atomic commit, OCC via version-based compare-and-swap, serializable isolation |
-| FEAT-009 | Graph traversal | axon-api | Done | Traverse with depth limit, direction control, reachable check, neighbor listing, link candidate finder. HTTP contract test for `direction=reverse` complete |
-| FEAT-029 | Data-layer access control policies | axon-schema, axon-api, axon-graphql, axon-mcp | Not started | P0 product hardening. GraphQL/MCP row policies, field redaction, relationship traversal safety, policy authoring compiler. Execution parent: `axon-d556e197` |
-| FEAT-030 | Mutation intents and approval | axon-api, axon-graphql, axon-mcp, axon-audit | Not started | P0 product hardening. Preview, policy explanation, approval routing, TOCTOU-safe intent tokens. Execution parent: `axon-c7111156` |
-| FEAT-031 | Policy and intents admin UI | ui/ | Not started | P0 product hardening. Axon web UI coverage for policy explanation, dry-run, redaction, denied writes, mutation preview, approval inbox, stale-intent handling, MCP envelope visibility, and audit lineage. Execution parent: `axon-c5a64173` |
-| P0-10 | Embedded mode | axon-cli, axon-storage | Done | SQLite in-process via `axon-cli`, same AxonHandler as server mode |
-| P0-11 | CLI | axon-cli | Done | Collection mgmt, entity CRUD, link ops, schema ops, audit queries, template management, namespace/database commands |
-
-### P1 (Should Have) Features
-
-| Feature | Description | Crate(s) | Status | Notes |
-|---------|------------|-----------|:------:|-------|
-| FEAT-011 | Admin web UI | ui/ | Done | 12 SvelteKit pages: tenants, databases, collections, entities, schemas, audit, rollback, users, credentials, members, GraphQL playground. Tenant-scoped routing per ADR-018. 6 Playwright E2E specs |
-| FEAT-012 | Auth/authorization | axon-core, axon-server | Done (V1+V5) | Tailscale whois via Unix socket (ADR-005); 9-step JWT auth pipeline (ADR-018); RBAC role checks on all write paths; 42+ integration tests; M:N tenant membership; credential issue/revoke; `--no-auth` and `--guest-role` modes |
-| FEAT-013 | Secondary indexes | axon-storage, axon-schema | Done | EAV-pattern indexes (string, int, float, datetime, bool), compound indexes, unique indexes, background build |
-| FEAT-014 | Multi-tenancy | axon-core, axon-api, axon-server | Done | Four-level hierarchy (tenant → database → schema → collection) per ADR-018. Pure path-based routing. DatabaseRouter + DatabaseAdapterFactory. Per-tenant SQLite isolation. No legacy routes |
-| FEAT-017 | Schema evolution | axon-schema, axon-api | Done | Compatibility classification (compatible/breaking/metadata-only), field-level diff, revalidation, schema_version stamping on all entities, 409 on breaking changes without `force`, `axon schema revalidate` CLI. Migration declarations deferred |
-| FEAT-018 | Aggregation queries | axon-api | Done | COUNT, SUM, AVG, MIN, MAX with GROUP BY, exposed via handler, GraphQL, and MCP |
-| FEAT-019 | Validation rules | axon-schema | Done | Cross-field when/require rules (ESF Layer 5), severity levels, gate evaluation, advisory rules, structured error messages with fix suggestions |
-| FEAT-020 | Link discovery | axon-api | Done | find_link_candidates, list_neighbors, reachable check. Exposed via MCP tools |
-| FEAT-021 | Change feeds (CDC) | axon-audit | Partial | Debezium-compatible envelope format, JSONL file sink, in-memory sink. GraphQL subscriptions implemented. Kafka transport not implemented |
-| FEAT-022 | Agent guardrails | axon-server | Partial | Rate limiting (per-actor sliding window, 429 + Retry-After). Actor scope constraints. Semantic validation hooks not yet implemented |
-| FEAT-023 | Rollback/recovery | axon-api | Done | Entity-level rollback, collection-level rollback, transaction-level rollback, revert to audit entry. Dry-run supported. UI rollback pages |
-| FEAT-025 | Control plane | axon-server, axon-control-plane | Done | SQLite-backed tenant/user/credential/database/member management. 20+ HTTP routes. Retention policies. Data-sovereignty-aware. Monitoring not implemented |
-| FEAT-026 | Markdown templates | axon-render, axon-api | Done | Mustache rendering, field reference validation, LRU template cache, per-collection views |
-| FEAT-028 | Unified binary | axon-cli, axon-config, axon-server | Done | `axon serve/mcp/doctor/install` subcommands. XDG-compliant paths. TOML config. Client mode against running server. Install script. Self-signed TLS bootstrap. PostgreSQL per-tenant provisioning |
-| FEAT-010 | Entity state machines and transition guards | axon-schema, axon-api, axon-graphql, axon-mcp | Not started | P1. Guarded entity transitions only; durable workflow orchestration is explicitly out of scope |
-
-### P2 (Nice to Have) Features
-
-| Feature | Description | Status | Notes |
-|---------|------------|:------:|-------|
-| Local-first sync | CRDTs, offline clients | Not started | -- |
-| Schema registry | Shared schemas across instances | Not started | -- |
-| FEAT-024 | Application substrate | Deferred | graphql-codegen deemed sufficient for now |
-| FEAT-027 | Git mirror | Draft spec only | No implementation |
-| Niflheim bridge | CDC export to niflheim | Not started | CDC envelope format exists (FEAT-021) |
-| Tablespec/UMF integration | Import schemas from UMF | Not started | -- |
-| Plugin system | Custom validators/hooks | Not started | -- |
-
----
-
-## 3a. GraphQL-Primary Policy Workstream
-
-The 2026-04-22 product review reset the near-term execution order around the
-non-negotiable API target: GraphQL is primary, MCP is agent-native, and REST is
-fallback only.
-
-### P0 Proof Slice
-
-The next product proof must demonstrate a realistic invoice/procurement schema:
-
-1. ESF schema with invoices, vendors, users, link types, indexes, and entity
-   transition guards.
-2. Schema-adjacent `access_control` policy compiled under ADR-019.
-3. GraphQL query with relationship traversal, row filtering before pagination,
-   safe `totalCount`, and nullable redacted fields.
-4. MCP tool metadata exposing the same policy envelopes as GraphQL.
-5. GraphQL/MCP mutation preview that returns diff, policy decision, pre-image
-   versions, and intent token.
-6. Approval-routed mutation that fails if entity version, schema version,
-   policy version, grant version, or operation hash changes before commit.
-7. Audit trail linking agent identity, delegated authority, tool call,
-   policy decision, approval, and redacted pre/post images.
-
-### Priority Order
-
-1. FEAT-029 GraphQL/MCP policy compiler and enforcement.
-2. FEAT-030 mutation preview, approval, and intent execution.
-3. Agent identity/delegation audit completeness: `user_id`, `agent_id`,
-   `delegated_by`, credential ID, grant version, policy version.
-4. Developer policy test harness: fixture subjects, simulated agents, compile
-   reports, and optional historical audit dry-run.
-5. FEAT-031 Axon web UI policy and intent workflows: policy explain/dry-run,
-   policy-safe entity browsing, mutation preview, approval inbox, stale-intent
-   handling, MCP envelope visibility, and audit lineage.
-6. Operator controls beyond FEAT-031: break-glass audit, credential rotation,
-   cost/quota visibility.
-7. Minimal compliance/erasure story: redacted audit reads, tenant/field
-   encryption hooks, crypto-shred/tombstone semantics.
-
-### Explicit Cuts
-
-- Broad REST parity for policy, preview, and approval.
-- Durable long-running workflow orchestration.
-- Generated app substrate as a core product path.
-- Git mirror as primary adoption path.
-- Broad framework integrations before the GraphQL/MCP policy slice is proven.
-- Arbitrary graph-wide point-in-time rollback.
-
-## 4. Storage Backend Status
-
-| Backend | Trait impl | Conformance tests | CRUD | Transactions | Indexes | Schema persistence | Namespace catalog | Audit co-location |
-|---------|:----------:|:-----------------:|:----:|:------------:|:-------:|:-----------------:|:-----------------:|:-----------------:|
-| Memory | Done | Via macro | Done | Done | Done | Done | Done | N/A (in-memory audit) |
-| SQLite | Done | Via macro | Done | Done | Done | Done | Done | Done |
-| PostgreSQL | Done | Via macro | Done | Done | Done | Done | Done | Done |
-| FoundationDB | Not started | -- | -- | -- | -- | -- | -- | -- |
-
-The `storage_conformance_tests!` macro generates the identical test suite for each backend. Memory, SQLite, and PostgreSQL all pass. An open bead (`axon-6d816f52`) tracks migration to sqlx with async `Pool<DB>` to eliminate the `block_in_place` hack in the PostgreSQL adapter.
-
----
-
-## 5. Test Coverage Status
-
-### Test Counts
-
-**Total: 1,461 tests passing** (0 failures) across all crates and doc-tests.
-
-### Test Plan Layer Coverage
-
-| Layer | Description | Status | Notes |
-|-------|------------|:------:|-------|
-| L1: Correctness invariants | DST workloads via axon-sim | Implemented | INV-001 through INV-008 all have corresponding workloads |
-| L2: Business scenarios | End-to-end workflow tests | Not started | SCN-001 through SCN-010 defined in test plan but not coded |
-| L3: Property-based tests | Proptest for schemas, storage, API | Partial | PROP-001 (schema round-trip) and storage proptests exist. PROP-002 through PROP-005 not yet coded |
-| L4: Backend conformance | Parameterized tests via macro | Done | Memory, SQLite, and PostgreSQL all pass |
-| L5: Performance benchmarks | criterion benchmarks | Not started | BM-001 through BM-010 defined but no benchmark code exists |
-| L6: API contract tests | HTTP conformance | Partial | Direction=reverse contract test exists. Full suite not yet coded |
-
-### Simulation Framework (axon-sim) Invariant Coverage
-
-| Invariant | Workload | Status |
-|-----------|----------|:------:|
-| INV-001: No Lost Updates | `ConcurrentWriterWorkload` | Implemented, passing |
-| INV-002: Serializable Isolation | `CycleWorkload` | Implemented, passing |
-| INV-003: Audit Completeness | `AuditCompletenessWorkload` | Implemented, passing |
-| INV-004: Audit Immutability | `AuditImmutabilityWorkload` | Implemented, passing |
-| INV-005: Schema Enforcement | `SchemaEnforcementWorkload` | Implemented, passing |
-| INV-006: Link Integrity | `LinkIntegrityWorkload` | Implemented, passing |
-| INV-007: Version Monotonicity | Checked within other workloads | Implemented |
-| INV-008: Transaction Atomicity | `TransactionAtomicityWorkload` | Implemented, passing |
-
----
-
-## 6. Architecture Decisions Enacted
-
-| ADR | Decision | Implemented in |
-|-----|----------|----------------|
-| ADR-001 | Implementation language: Rust | All crates |
-| ADR-002 | Schema format: ESF (JSON Schema-based) | axon-schema |
-| ADR-003 | Backing store: SQLite default, PG opt-in | axon-storage |
-| ADR-004 | Transaction model: OCC with version-based CAS | axon-api, axon-storage |
-| ADR-005 | Auth: Tailscale whois via Unix socket | axon-server (auth.rs) |
-| ADR-006 | Admin UI: SvelteKit + Bun | ui/ (12 pages) |
-| ADR-007 | Schema versioning | axon-schema (evolution module) |
-| ADR-008 | Schema lifecycles | axon-schema (gates, rules) |
-| ADR-009 | Patch semantics + ID generation | axon-api (RFC 7396 merge-patch, UUIDv7) |
-| ADR-010 | Physical storage: numeric collection IDs, EAV indexes | axon-storage |
-| ADR-011 | Multi-tenancy namespace hierarchy | axon-core, axon-api, axon-storage |
-| ADR-012 | GraphQL query layer | axon-graphql |
-| ADR-013 | MCP server | axon-mcp |
-| ADR-014 | Change feeds: Debezium CDC | axon-audit (CDC module) |
-| ADR-015 | Rollback and recovery | axon-api (rollback module) |
-| ADR-016 | Agent guardrails | axon-server (rate_limit, actor_scope) |
-| ADR-017 | BYOC control plane | axon-server, axon-control-plane |
-| ADR-018 | Tenant as global account boundary, M:N users, JWT credentials, path-based wire protocol | axon-core, axon-server (auth_pipeline, path_router, control_plane_routes, gateway) |
-
----
-
-## 7. What Is Complete vs. What Remains
-
-### Complete (functional and tested)
-
-- Entity-graph-relational data model with typed links
-- Schema engine with JSON Schema validation, ESF Layer 5 rules, gates
-- Immutable audit log with full provenance chain and audit attribution
-- ACID transactions with OCC and serializable isolation
-- Entity CRUD (create, read, update, patch, delete) with query/filter/sort/pagination
-- Link CRUD, graph traversal, reachability, neighbor listing, link candidate discovery
-- Aggregation queries (COUNT, SUM, AVG, MIN, MAX, GROUP BY)
-- Multi-tenancy with four-level hierarchy (tenant → database → schema → collection)
-- Pure path-based wire protocol (ADR-018) — no legacy routes
-- Secondary indexes (EAV pattern, single/compound/unique)
-- GraphQL API (dynamic schema, queries, mutations, subscriptions)
-- MCP server (CRUD tools, resources, prompts, query/aggregate/neighbor tools)
-- Markdown template rendering with LRU cache
-- Rollback and recovery (entity, collection, transaction level) with dry-run
-- Schema evolution detection, diffing, schema_version stamping, revalidate CLI
-- CDC envelope format (Debezium-compatible)
-- Bead storage adapter (lifecycle states, dependency DAG, ready queue)
-- Unified CLI with serve/mcp/doctor/install subcommands and client mode
-- XDG-compliant configuration (axon-config)
-- HTTP gateway with path-based routing and self-signed TLS bootstrap
-- Authentication: Tailscale whois + JWT auth pipeline (9-step) + RBAC enforcement
-- Control plane: tenant/user/credential/database/member management (20+ routes)
-- Admin UI: 12 SvelteKit pages with tenant-scoped routing
-- TypeScript SDK: GraphQL-first client target with compatibility HTTP/gRPC
-  clients still present during transition
-- Rate limiting (per-actor sliding window) and actor scope constraints
-- DST framework with all 8 correctness invariant workloads
-- Storage conformance macro (memory, SQLite, PostgreSQL all passing)
-
-### Remaining Work
-
-| Item | Priority | Blocking? | Est. Effort |
-|------|:--------:|:---------:|:-----------:|
-| FEAT-029 GraphQL/MCP data-layer policy proof | P0 | Yes | Large |
-| FEAT-030 mutation intents and approval | P0 | Yes | Large |
-| Policy authoring compiler, fixture tests, and dry-run reports | P0 | Yes | Large |
-| Agent identity/delegation audit fields | P0 | Yes | Medium |
-| Minimal compliance/erasure story for immutable audit | P1 | No | Medium |
-| sqlx migration for storage adapters (`axon-6d816f52`) | P1 | No | Medium |
-| L2 business scenario tests (SCN-001 through SCN-010) | P1 | No | Large |
-| L5 performance benchmarks (criterion) | P1 | No | Medium |
-| L6 API contract test suite | P1 | No | Medium |
-| L3 property tests PROP-002 through PROP-005 | P1 | No | Medium |
-| Kafka CDC transport (FEAT-021) | P1 | No | Large |
-| Agent guardrails: semantic validation hooks (FEAT-022) | P1 | No | Medium |
-| Control plane monitoring (FEAT-025) | P1 | No | Medium |
-| Schema migration declarations (FEAT-017) | P1 | No | Medium |
-| Entity state machines and transition guards (FEAT-010) | P1 | No | Large |
-| FoundationDB backend | P2 | No | Large |
-| Local-first sync | P2 | No | Large |
-| Git mirror (FEAT-027) | P2 | No | Medium |
-
----
-
-## 8. Phase Alignment (PRD Timeline)
-
-| Phase | PRD Scope | Status |
-|-------|-----------|:------:|
-| Phase 1: Foundation (8 weeks) | Entity-graph model, CRUD, schema engine, audit log, ACID/OCC, embedded mode, CLI | Done |
-| Phase 2: API and Integration (6 weeks) | Server mode, query/filter/sort, graph traversal, bead adapter | Done |
-| Phase 3: Production Readiness (4 weeks) | Auth, change feeds, batch ops, schema evolution, benchmarks, docs | Substantially complete |
-
-The project has completed Phases 1–2 and is substantially through Phase 3. Auth (FEAT-012 V1+V5) is live with JWT credentials and RBAC enforcement. Schema evolution public surfaces are complete. Admin UI and TypeScript SDK are shipped. The ADR-018 migration (the largest architectural change since project inception) is fully enacted. Key Phase 3 gaps remaining: Kafka CDC, performance benchmarks, and L2 business scenario tests.
-
----
-
-*This document tracks implementation against the planning stack. Updated as features are completed or priorities change.*
+*This document tracks build sequencing against the planning stack. Updated as slices complete or priorities change.*

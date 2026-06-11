@@ -1,3 +1,9 @@
+---
+ddx:
+  id: review-malfunction-audit-2026-04-20
+kind: note
+---
+
 # Review-Malfunction Closure Audit - 2026-04-20
 
 ## Scope
