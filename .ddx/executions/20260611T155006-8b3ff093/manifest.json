@@ -1,0 +1,43 @@
+{
+  "attempt_id": "20260611T155006-8b3ff093",
+  "bead_id": "axon-784bc974",
+  "base_rev": "61f1d3196a3fc2cfa1d32fccf5d1d310b6f10e2a",
+  "created_at": "2026-06-11T15:50:09.183362193Z",
+  "requested": {
+    "harness": "claude",
+    "model": "sonnet",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-784bc974",
+    "title": "Add governed-workflow methods to TypeScript SDK per CONTRACT-009",
+    "description": "CONTRACT-009 (docs/helix/02-design/contracts/CONTRACT-009-sdk-surface.md) specifies governed-workflow methods that are absent from sdk/typescript: previewMutation, commitIntent, approveIntent, rejectIntent, explainPolicy, queryAudit, rollbackDryRun. The server-side capabilities exist (FEAT-029/FEAT-030 builds: crates/axon-api/src/{intent,policy}.rs and GraphQL intents contract tests). Implement these methods on the GraphQL-first client.",
+    "acceptance": "sdk/typescript/src exports previewMutation, commitIntent, approveIntent, rejectIntent, explainPolicy, queryAudit, and rollbackDryRun on the client; each has an SDK test exercising the corresponding GraphQL operation against the intents/policy contract fixtures; SDK build and tests pass.",
+    "labels": [
+      "area:sdk",
+      "contract-conformance"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"readiness route unavailable: lifecycle dispatch: project root mutation rejected for bead axon-784bc974\",\"fingerprint\":\"19a871f01c0185a43733b90831ec2e6ea3bb3f923c841cfd711881d8aea3cc89\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"19a871f01c0185a43733b90831ec2e6ea3bb3f923c841cfd711881d8aea3cc89\"}",
+          "created_at": "2026-06-11T15:50:04.772894167Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        }
+      ]
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260611T155006-8b3ff093",
+    "prompt": ".ddx/executions/20260611T155006-8b3ff093/prompt.md",
+    "manifest": ".ddx/executions/20260611T155006-8b3ff093/manifest.json",
+    "result": ".ddx/executions/20260611T155006-8b3ff093/result.json",
+    "checks": ".ddx/executions/20260611T155006-8b3ff093/checks.json",
+    "usage": ".ddx/executions/20260611T155006-8b3ff093/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-784bc974-20260611T155006-8b3ff093"
+  },
+  "prompt_sha": "edb31ba78cdaf6b865d40187170b41b4609d1dd223f997553ca72840889e4bcb"
+}

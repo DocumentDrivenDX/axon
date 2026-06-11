@@ -1,0 +1,55 @@
+{
+  "bead_id": "axon-784bc974",
+  "attempt_id": "20260611T155006-8b3ff093",
+  "base_rev": "61f1d3196a3fc2cfa1d32fccf5d1d310b6f10e2a",
+  "result_rev": "e2f559c0b837a740105312a23e1d210729f14b1b",
+  "implementation_rev": "e2f559c0b837a740105312a23e1d210729f14b1b",
+  "outcome": "task_succeeded",
+  "status": "success",
+  "detail": "success",
+  "candidate_ref": "refs/ddx/iterations/20260611T155006-8b3ff093/0",
+  "cycle_trace": [
+    {
+      "cycle_index": 0,
+      "attempt_id": "20260611T155006-8b3ff093",
+      "result_rev": "e2f559c0b837a740105312a23e1d210729f14b1b",
+      "implementer_route": {
+        "harness": "claude",
+        "model": "sonnet"
+      },
+      "requested_route": {
+        "harness": "claude",
+        "model": "sonnet"
+      },
+      "actual_route": {
+        "harness": "claude",
+        "model": "sonnet"
+      },
+      "review_result": {},
+      "final_decision": "success",
+      "failure_class": "none",
+      "retry_action": "close",
+      "escalation_count": 0,
+      "review_status": "skipped",
+      "review_skip_reason": "review_not_configured",
+      "review_classification": "review_skipped",
+      "land_status": "landed",
+      "reconcile_status": "not_applicable"
+    }
+  ],
+  "harness": "claude",
+  "model": "sonnet",
+  "session_id": "eb-66892030",
+  "duration_ms": 295176,
+  "cost_usd": 1.7352546999999996,
+  "exit_code": 0,
+  "project_root": "/home/erik/Projects/axon",
+  "execution_dir": ".ddx/executions/20260611T155006-8b3ff093",
+  "prompt_file": ".ddx/executions/20260611T155006-8b3ff093/prompt.md",
+  "manifest_file": ".ddx/executions/20260611T155006-8b3ff093/manifest.json",
+  "result_file": ".ddx/executions/20260611T155006-8b3ff093/result.json",
+  "usage_file": ".ddx/executions/20260611T155006-8b3ff093/usage.json",
+  "rate_limit_budget": 300000000000,
+  "started_at": "2026-06-11T15:50:09.210701318Z",
+  "finished_at": "2026-06-11T15:55:04.387129631Z"
+}
