@@ -38,9 +38,7 @@ struct MaybeResolvedIdentity(Option<ResolvedIdentity>);
 struct ControlTenant {
     id: String,
     name: String,
-    db_name: String,
     created_at: String,
-    db_path: Option<String>,
 }
 
 impl ControlTenant {
@@ -48,9 +46,7 @@ impl ControlTenant {
         Self {
             id: tenant.id,
             name: tenant.name,
-            db_name: tenant.db_name,
             created_at: tenant.created_at,
-            db_path: None,
         }
     }
 }
@@ -59,7 +55,6 @@ impl ControlTenant {
 struct DeleteTenantPayload {
     deleted: bool,
     tenant_id: String,
-    db_name: String,
 }
 
 #[derive(SimpleObject)]
@@ -363,9 +358,7 @@ impl ControlMutation {
                 Ok(ControlTenant {
                     id,
                     name,
-                    db_name,
                     created_at,
-                    db_path: Some(db_path.display().to_string()),
                 })
             }
             Err(err) => {
@@ -394,7 +387,6 @@ impl ControlMutation {
                 Ok(DeleteTenantPayload {
                     deleted: true,
                     tenant_id: id,
-                    db_name,
                 })
             }
             Err(err) => Err(axon_error_to_gql(err)),

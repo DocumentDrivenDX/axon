@@ -357,7 +357,7 @@ query AxonAuditLog($collection: String, $entityId: ID, $actor: String, $operatio
 
 const CONTROL_OVERVIEW_DOCUMENT = `
 query AxonControlOverview($tenantId: String!) {
-  tenants { id name dbName createdAt }
+  tenants { id name createdAt }
   users { id displayName email createdAtMs suspendedAtMs }
   tenantMembers(tenantId: $tenantId) { tenantId userId role }
   tenantDatabases(tenantId: $tenantId) { tenantId name createdAtMs }
@@ -491,12 +491,12 @@ export class ControlGraphQLClient {
   }
 
   tenants(): Promise<unknown> {
-    return this.graphql("query AxonTenants { tenants { id name dbName createdAt } }");
+    return this.graphql("query AxonTenants { tenants { id name createdAt } }");
   }
 
   tenant(id: string): Promise<unknown> {
     return this.graphql(
-      "query AxonTenant($id: String!) { tenant(id: $id) { id name dbName createdAt } }",
+      "query AxonTenant($id: String!) { tenant(id: $id) { id name createdAt } }",
       { id },
     );
   }
@@ -530,14 +530,14 @@ export class ControlGraphQLClient {
 
   createTenant(name: string): Promise<unknown> {
     return this.graphql(
-      "mutation AxonCreateTenant($name: String!) { createTenant(name: $name) { id name dbName dbPath createdAt } }",
+      "mutation AxonCreateTenant($name: String!) { createTenant(name: $name) { id name createdAt } }",
       { name },
     );
   }
 
   deleteTenant(id: string): Promise<unknown> {
     return this.graphql(
-      "mutation AxonDeleteTenant($id: String!) { deleteTenant(id: $id) { deleted tenantId dbName } }",
+      "mutation AxonDeleteTenant($id: String!) { deleteTenant(id: $id) { deleted tenantId } }",
       { id },
     );
   }

@@ -250,7 +250,7 @@ async fn control_graphql_admin_lifecycle_and_rest_parity() {
         &jwt,
         r#"
         mutation($name: String!) {
-          createTenant(name: $name) { id name dbName dbPath createdAt }
+          createTenant(name: $name) { id name createdAt }
         }
         "#,
         json!({ "name": "Acme GraphQL" }),
