@@ -1,0 +1,43 @@
+{
+  "attempt_id": "20260611T163737-c85fab9e",
+  "bead_id": "axon-c62971d9",
+  "base_rev": "40ba0fb01940af162d492ddd70d717df0965b499",
+  "created_at": "2026-06-11T16:37:39.666014914Z",
+  "requested": {
+    "harness": "claude",
+    "model": "sonnet",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-c62971d9",
+    "title": "Deprecate Idempotency-Key header in favor of canonical body field",
+    "description": "CONTRACT-001 (docs/helix/02-design/contracts/CONTRACT-001-http-api-surface.md) makes the request-body idempotency field canonical; the Idempotency-Key HTTP header is deprecated. The server still treats the header as a primary input. Accept the body field as canonical, emit a deprecation signal when only the header is supplied, and document the sunset.",
+    "acceptance": "Transaction/commit requests honor the body idempotency field; requests using only the Idempotency-Key header still succeed but receive a Deprecation/Warning response header; an HTTP contract test in crates/axon-server/tests/api_contract.rs covers both paths and passes.",
+    "labels": [
+      "area:api",
+      "contract-conformance"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"readiness route unavailable: lifecycle dispatch: project root mutation rejected for bead axon-c62971d9\",\"fingerprint\":\"963306602594e83313e4eab4de27f1175846a4fd01ca3afe0829aeacefcf45e2\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"963306602594e83313e4eab4de27f1175846a4fd01ca3afe0829aeacefcf45e2\"}",
+          "created_at": "2026-06-11T16:37:36.558844131Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        }
+      ]
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260611T163737-c85fab9e",
+    "prompt": ".ddx/executions/20260611T163737-c85fab9e/prompt.md",
+    "manifest": ".ddx/executions/20260611T163737-c85fab9e/manifest.json",
+    "result": ".ddx/executions/20260611T163737-c85fab9e/result.json",
+    "checks": ".ddx/executions/20260611T163737-c85fab9e/checks.json",
+    "usage": ".ddx/executions/20260611T163737-c85fab9e/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-c62971d9-20260611T163737-c85fab9e"
+  },
+  "prompt_sha": "a1c42fdc47618697a155fe3a8162481c90cb7889965bd435ebc7f7e0147eafc5"
+}
