@@ -24,3 +24,5 @@ collections
 # per-machine ddx bot state
 .ddx/logs/
 .ddx/tsnet/
+.ddx/attachments/
+.ddx/dirty-root-guard.json
