@@ -1,0 +1,46 @@
+{
+  "bead_id": "axon-b684338f",
+  "attempt_id": "20260611T133433-f340a01c",
+  "base_rev": "7f9f1a56612ba9bcce012c053019ca70c0e2a185",
+  "result_rev": "0d2784c8536822f86f22a39fedd46e2a80bc9f9f",
+  "implementation_rev": "8d409c0caddf866fbe24a10df331a1e598cdb8f2",
+  "landed_branch": "master",
+  "evidence_rev": "0d2784c8536822f86f22a39fedd46e2a80bc9f9f",
+  "outcome": "preserved",
+  "status": "land_conflict",
+  "detail": "large-deletion gate: crates/axon-server/src/gateway.rs deleted 348 lines (threshold 200) without intentional large deletion acknowledgement",
+  "orchestrator_status": "land_conflict",
+  "reason": "large-deletion gate: crates/axon-server/src/gateway.rs deleted 348 lines (threshold 200) without intentional large deletion acknowledgement",
+  "preserve_ref": "refs/ddx/iterations/axon-b684338f/20260611T133433-f340a01c-7f9f1a56612b",
+  "candidate_ref": "refs/ddx/iterations/20260611T133433-f340a01c/0",
+  "required_exec_summary": "skipped",
+  "cycle_trace": [
+    {
+      "cycle_index": 0,
+      "attempt_id": "20260611T133433-f340a01c",
+      "result_rev": "8d409c0caddf866fbe24a10df331a1e598cdb8f2",
+      "implementer_route": {
+        "harness": "claude",
+        "model": "sonnet"
+      },
+      "review_result": {},
+      "final_decision": "success"
+    }
+  ],
+  "harness": "claude",
+  "model": "sonnet",
+  "session_id": "eb-113bbd65",
+  "duration_ms": 1757627,
+  "tokens": 41657,
+  "cost_usd": 3.4947719499999983,
+  "exit_code": 0,
+  "project_root": "/home/erik/Projects/axon",
+  "execution_dir": ".ddx/executions/20260611T133433-f340a01c",
+  "prompt_file": ".ddx/executions/20260611T133433-f340a01c/prompt.md",
+  "manifest_file": ".ddx/executions/20260611T133433-f340a01c/manifest.json",
+  "result_file": ".ddx/executions/20260611T133433-f340a01c/result.json",
+  "usage_file": ".ddx/executions/20260611T133433-f340a01c/usage.json",
+  "rate_limit_budget": 300000000000,
+  "started_at": "2026-06-11T13:34:36.590676837Z",
+  "finished_at": "2026-06-11T14:03:54.218400933Z"
+}
