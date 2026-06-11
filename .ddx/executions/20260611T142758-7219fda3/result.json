@@ -1,0 +1,46 @@
+{
+  "bead_id": "axon-b684338f",
+  "attempt_id": "20260611T142758-7219fda3",
+  "base_rev": "aa6797a3296186ff001dd37fa354ca12c75c87cc",
+  "result_rev": "fc388f624e7a3443591825ae64ba04d1c46eb27c",
+  "implementation_rev": "fa3dfa91422a2ececde10d5d8fa0898a00b0a259",
+  "landed_branch": "master",
+  "evidence_rev": "fc388f624e7a3443591825ae64ba04d1c46eb27c",
+  "outcome": "preserved",
+  "status": "land_conflict",
+  "detail": "large-deletion gate: crates/axon-server/src/gateway.rs deleted 348 lines (threshold 200) without intentional large deletion acknowledgement",
+  "orchestrator_status": "land_conflict",
+  "reason": "large-deletion gate: crates/axon-server/src/gateway.rs deleted 348 lines (threshold 200) without intentional large deletion acknowledgement",
+  "preserve_ref": "refs/ddx/iterations/axon-b684338f/20260611T142758-7219fda3-aa6797a32961",
+  "candidate_ref": "refs/ddx/iterations/20260611T142758-7219fda3/0",
+  "required_exec_summary": "skipped",
+  "cycle_trace": [
+    {
+      "cycle_index": 0,
+      "attempt_id": "20260611T142758-7219fda3",
+      "result_rev": "fa3dfa91422a2ececde10d5d8fa0898a00b0a259",
+      "implementer_route": {
+        "harness": "claude",
+        "model": "sonnet"
+      },
+      "review_result": {},
+      "final_decision": "success"
+    }
+  ],
+  "harness": "claude",
+  "model": "sonnet",
+  "session_id": "eb-c0ccf4cd",
+  "duration_ms": 1348199,
+  "tokens": 30694,
+  "cost_usd": 2.7629644500000006,
+  "exit_code": 0,
+  "project_root": "/home/erik/Projects/axon",
+  "execution_dir": ".ddx/executions/20260611T142758-7219fda3",
+  "prompt_file": ".ddx/executions/20260611T142758-7219fda3/prompt.md",
+  "manifest_file": ".ddx/executions/20260611T142758-7219fda3/manifest.json",
+  "result_file": ".ddx/executions/20260611T142758-7219fda3/result.json",
+  "usage_file": ".ddx/executions/20260611T142758-7219fda3/usage.json",
+  "rate_limit_budget": 300000000000,
+  "started_at": "2026-06-11T14:28:00.971871059Z",
+  "finished_at": "2026-06-11T14:50:29.171218586Z"
+}
