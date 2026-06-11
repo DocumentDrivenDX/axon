@@ -1,12 +1,10 @@
-//! L6 route-contract guard: verifies that the legacy database-selection header
-//! is no longer referenced anywhere in the codebase (ADR-018, axon-130f129f).
+//! L6 route-contract guard: verifies that legacy un-prefixed routes are absent
+//! per ADR-018 (tenant-prefixed routing) and CONTRACT-001 (HTTP API surface).
 //!
-//! This is a single synchronous test that shells out to `git grep` from the
-//! workspace root.  If the grep finds any matches the test fails and prints
-//! the offending file paths so they can be cleaned up.
-//!
-//! The header name is built from fragments at runtime so this test file
-//! does not match itself when the grep walks it.
+//! Contains two guards:
+//! 1. Lexical: `git grep` confirms no legacy `x-axon-database` header references.
+//! 2. Behavioral: a live test server confirms the retired un-prefixed routes
+//!    (`/auth/me`, `/databases/*`) return 404.
 
 #[test]
 fn no_legacy_database_header_references() {
@@ -55,3 +53,51 @@ fn no_legacy_database_header_references() {
 // at runtime. A runtime integration test that hits `/graphql` (without the
 // tenant prefix) and asserts 404 is a better verification than a lexical
 // grep, and it lives in the graphql_mutations / graphql_contract test files.
+
+// ── Behavioral guard: retired routes must return 404 ─────────────────────────
+
+use std::sync::Arc;
+
+use axon_api::handler::AxonHandler;
+use axon_server::gateway::build_router;
+use axon_server::tenant_router::TenantRouter;
+use axon_storage::SqliteStorageAdapter;
+use axum_test::TestServer;
+use tokio::sync::Mutex;
+
+fn legacy_test_server() -> TestServer {
+    let storage: Box<dyn axon_storage::adapter::StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(handler));
+    let app = build_router(tenant_router, "memory", None);
+    TestServer::new(app)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_auth_me_returns_404() {
+    let server = legacy_test_server();
+    let resp = server.get("/auth/me").await;
+    resp.assert_status_not_found();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_databases_list_returns_404() {
+    let server = legacy_test_server();
+    let resp = server.get("/databases").await;
+    resp.assert_status_not_found();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_databases_create_returns_404() {
+    let server = legacy_test_server();
+    let resp = server.post("/databases/mydb").await;
+    resp.assert_status_not_found();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn legacy_databases_schemas_returns_404() {
+    let server = legacy_test_server();
+    let resp = server.get("/databases/mydb/schemas").await;
+    resp.assert_status_not_found();
+}

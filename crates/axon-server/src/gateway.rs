@@ -38,12 +38,12 @@ use crate::mcp_http::{
 use crate::rate_limit::{RateLimited, WriteRateLimiter};
 use axon_api::handler::AxonHandler;
 use axon_api::request::{
-    CreateCollectionRequest, CreateDatabaseRequest, CreateEntityRequest, CreateLinkRequest,
-    CreateNamespaceRequest, DeleteCollectionTemplateRequest, DeleteEntityRequest,
-    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, DropDatabaseRequest,
-    DropNamespaceRequest, FilterNode, GetCollectionTemplateRequest, GetEntityRequest,
+    CreateCollectionRequest, CreateEntityRequest, CreateLinkRequest,
+    DeleteCollectionTemplateRequest, DeleteEntityRequest,
+    DeleteLinkRequest, DescribeCollectionRequest, DropCollectionRequest, FilterNode,
+    GetCollectionTemplateRequest, GetEntityRequest,
     GetSchemaRequest, ListCollectionsRequest, ListDatabasesRequest,
-    ListNamespaceCollectionsRequest, ListNamespacesRequest, PutCollectionTemplateRequest,
+    ListNamespacesRequest, PutCollectionTemplateRequest,
     PutSchemaRequest, QueryAuditRequest, QueryEntitiesRequest, RevertEntityRequest,
     RollbackCollectionRequest, RollbackEntityRequest, RollbackEntityTarget,
     RollbackTransactionRequest, SnapshotRequest, TransitionLifecycleRequest, TraverseDirection,
@@ -703,23 +703,6 @@ async fn resolve_tenant_handler(
         )
             .into_response(),
     }
-}
-
-/// Returns the current authenticated identity as JSON.
-///
-/// This endpoint always succeeds for authenticated (or guest/anonymous) users.
-/// The UI calls this on load to determine who the current user is.
-async fn auth_me(
-    Extension(identity): Extension<Identity>,
-    jwt_identity: Option<Extension<ResolvedIdentity>>,
-) -> impl IntoResponse {
-    let resolved = jwt_identity.map(|Extension(id)| id);
-    Json(json!({
-        "actor": identity.actor,
-        "role": identity.role,
-        "user_id": resolved.as_ref().map(|id| id.user_id.to_string()),
-        "tenant_id": resolved.as_ref().map(|id| id.tenant_id.to_string()),
-    }))
 }
 
 fn entity_payload(entity: &Entity) -> Value {
@@ -2756,145 +2739,6 @@ async fn get_schema(
     }
 }
 
-async fn create_database(
-    Extension(handler): Extension<TenantHandler>,
-    Extension(identity): Extension<Identity>,
-    Path(name): Path<String>,
-) -> Response {
-    if let Err(e) = identity.require_admin() {
-        return auth_error_response(e);
-    }
-    match handler
-        .lock()
-        .await
-        .create_database(CreateDatabaseRequest { name })
-    {
-        Ok(resp) => (StatusCode::CREATED, Json(json!({ "name": resp.name }))).into_response(),
-        Err(err) => axon_error_response(err),
-    }
-}
-
-async fn list_databases(Extension(handler): Extension<TenantHandler>) -> Response {
-    match handler.lock().await.list_databases(ListDatabasesRequest {}) {
-        Ok(resp) => Json(json!({ "databases": resp.databases })).into_response(),
-        Err(err) => axon_error_response(err),
-    }
-}
-
-async fn drop_database(
-    Extension(handler): Extension<TenantHandler>,
-    Extension(identity): Extension<Identity>,
-    Path(name): Path<String>,
-    Query(force): Query<ForceQuery>,
-) -> Response {
-    if let Err(e) = identity.require_admin() {
-        return auth_error_response(e);
-    }
-    match handler.lock().await.drop_database(DropDatabaseRequest {
-        name,
-        force: force.force,
-    }) {
-        Ok(resp) => (
-            StatusCode::OK,
-            Json(json!({
-                "name": resp.name,
-                "collections_removed": resp.collections_removed,
-            })),
-        )
-            .into_response(),
-        Err(err) => axon_error_response(err),
-    }
-}
-
-async fn create_namespace(
-    Extension(handler): Extension<TenantHandler>,
-    Extension(identity): Extension<Identity>,
-    Path((database, schema)): Path<(String, String)>,
-) -> Response {
-    if let Err(e) = identity.require_admin() {
-        return auth_error_response(e);
-    }
-    match handler
-        .lock()
-        .await
-        .create_namespace(CreateNamespaceRequest { database, schema })
-    {
-        Ok(resp) => (
-            StatusCode::CREATED,
-            Json(json!({
-                "database": resp.database,
-                "schema": resp.schema,
-            })),
-        )
-            .into_response(),
-        Err(err) => axon_error_response(err),
-    }
-}
-
-async fn list_namespaces(
-    Extension(handler): Extension<TenantHandler>,
-    Path(database): Path<String>,
-) -> Response {
-    match handler
-        .lock()
-        .await
-        .list_namespaces(ListNamespacesRequest { database })
-    {
-        Ok(resp) => Json(json!({
-            "database": resp.database,
-            "schemas": resp.schemas,
-        }))
-        .into_response(),
-        Err(err) => axon_error_response(err),
-    }
-}
-
-async fn list_namespace_collections(
-    Extension(handler): Extension<TenantHandler>,
-    Path((database, schema)): Path<(String, String)>,
-) -> Response {
-    match handler
-        .lock()
-        .await
-        .list_namespace_collections(ListNamespaceCollectionsRequest { database, schema })
-    {
-        Ok(resp) => Json(json!({
-            "database": resp.database,
-            "schema": resp.schema,
-            "collections": resp.collections,
-        }))
-        .into_response(),
-        Err(err) => axon_error_response(err),
-    }
-}
-
-async fn drop_namespace(
-    Extension(handler): Extension<TenantHandler>,
-    Extension(identity): Extension<Identity>,
-    Path((database, schema)): Path<(String, String)>,
-    Query(force): Query<ForceQuery>,
-) -> Response {
-    if let Err(e) = identity.require_admin() {
-        return auth_error_response(e);
-    }
-    match handler.lock().await.drop_namespace(DropNamespaceRequest {
-        database,
-        schema,
-        force: force.force,
-    }) {
-        Ok(resp) => (
-            StatusCode::OK,
-            Json(json!({
-                "database": resp.database,
-                "schema": resp.schema,
-                "collections_removed": resp.collections_removed,
-            })),
-        )
-            .into_response(),
-        Err(err) => axon_error_response(err),
-    }
-}
-
 // ── Transaction endpoint ─────────────────────────────────────────────────────
 
 fn validate_idempotency_key(key: &str) -> Result<(), AxonError> {
@@ -4005,22 +3849,6 @@ fn build_router_full(
     let mut router = Router::new()
         .merge(mcp_routes)
         .nest("/tenants/{tenant}/databases/{database}", data_routes())
-        .route("/databases", get(list_databases))
-        .route("/databases/{name}", post(create_database))
-        .route("/databases/{name}", delete(drop_database))
-        .route("/databases/{database}/schemas", get(list_namespaces))
-        .route(
-            "/databases/{database}/schemas/{schema}",
-            post(create_namespace),
-        )
-        .route(
-            "/databases/{database}/schemas/{schema}",
-            delete(drop_namespace),
-        )
-        .route(
-            "/databases/{database}/schemas/{schema}/collections",
-            get(list_namespace_collections),
-        )
         .layer(Extension(rate_limiter))
         .layer(Extension(actor_scope))
         .layer(Extension(mcp_sessions))
@@ -4071,7 +3899,6 @@ fn build_router_full(
             "/",
             get(|| async { axum::response::Redirect::temporary("/ui") }),
         )
-        .route("/auth/me", get(auth_me))
         .route("/graphql/playground", get(graphql_playground_handler));
 
     // UI: disk directory overrides the embedded build (useful during development).
@@ -4822,17 +4649,20 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn http_query_audit_by_entity_scopes_to_requested_database() {
-        let server = test_server();
+        let (server, handler) = test_server_with_handler();
 
         server
             .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
-        server
-            .post("/databases/prod")
+        handler
+            .lock()
             .await
-            .assert_status(StatusCode::CREATED);
+            .create_database(axon_api::request::CreateDatabaseRequest {
+                name: "prod".into(),
+            })
+            .expect("create prod db");
         server
             .post("/tenants/default/databases/prod/collections/tasks")
             .json(&json!({"schema": {}}))
@@ -6187,17 +6017,20 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn http_path_current_database_routes_unqualified_collection_operations() {
-        let server = test_server();
+        let (server, handler) = test_server_with_handler();
 
         server
             .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
-        server
-            .post("/databases/prod")
+        handler
+            .lock()
             .await
-            .assert_status(StatusCode::CREATED);
+            .create_database(axon_api::request::CreateDatabaseRequest {
+                name: "prod".into(),
+            })
+            .expect("create prod db");
         server
             .post("/tenants/default/databases/prod/collections/tasks")
             .json(&json!({"schema": {}}))
@@ -6233,17 +6066,20 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn http_db_path_prefix_routes_unqualified_collection_operations() {
-        let server = test_server();
+        let (server, handler) = test_server_with_handler();
 
         server
             .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
-        server
-            .post("/databases/prod")
+        handler
+            .lock()
             .await
-            .assert_status(StatusCode::CREATED);
+            .create_database(axon_api::request::CreateDatabaseRequest {
+                name: "prod".into(),
+            })
+            .expect("create prod db");
         server
             .post("/tenants/default/databases/prod/collections/tasks")
             .json(&json!({"schema": {}}))
@@ -6279,17 +6115,20 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn http_collection_listings_scope_to_selected_database_only_when_requested() {
-        let server = test_server();
+        let (server, handler) = test_server_with_handler();
 
         server
             .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
-        server
-            .post("/databases/prod")
+        handler
+            .lock()
             .await
-            .assert_status(StatusCode::CREATED);
+            .create_database(axon_api::request::CreateDatabaseRequest {
+                name: "prod".into(),
+            })
+            .expect("create prod db");
         server
             .post("/tenants/default/databases/prod/collections/tasks")
             .json(&json!({"schema": {}}))
@@ -6323,17 +6162,20 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn http_audit_queries_scope_to_selected_database_only_when_requested() {
-        let server = test_server();
+        let (server, handler) = test_server_with_handler();
 
         server
             .post("/tenants/default/databases/default/collections/tasks")
             .json(&json!({"schema": {}}))
             .await
             .assert_status(StatusCode::CREATED);
-        server
-            .post("/databases/prod")
+        handler
+            .lock()
             .await
-            .assert_status(StatusCode::CREATED);
+            .create_database(axon_api::request::CreateDatabaseRequest {
+                name: "prod".into(),
+            })
+            .expect("create prod db");
         server
             .post("/tenants/default/databases/prod/collections/tasks")
             .json(&json!({"schema": {}}))
@@ -6422,48 +6264,6 @@ mod tests {
             .any(|database| database.as_str() == Some(DEFAULT_DATABASE)));
     }
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn http_rejects_dropping_default_database_and_preserves_zero_config_paths() {
-        let server = test_server();
-
-        let drop_resp = server.delete("/databases/default?force=true").await;
-        drop_resp.assert_status(StatusCode::BAD_REQUEST);
-        let drop_body: Value = drop_resp.json();
-        assert_eq!(drop_body["code"], "invalid_operation");
-        assert!(drop_body["detail"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("database 'default' is implicit and cannot be dropped"));
-
-        server
-            .post("/tenants/default/databases/default/collections/tasks")
-            .json(&json!({"schema": {}}))
-            .await
-            .assert_status(StatusCode::CREATED);
-
-        let health_resp = server.get("/health").await;
-        health_resp.assert_status_ok();
-        let health_body: Value = health_resp.json();
-        assert_eq!(health_body["default_namespace"], "default.default");
-        assert_eq!(health_body["default_namespace_status"], "ok");
-        assert!(health_body["databases"]
-            .as_array()
-            .expect("health databases should be an array")
-            .iter()
-            .any(|database| database.as_str() == Some(DEFAULT_DATABASE)));
-
-        let collections_resp = server
-            .get("/databases/default/schemas/default/collections")
-            .await;
-        collections_resp.assert_status_ok();
-        let collections_body: Value = collections_resp.json();
-        assert!(collections_body["collections"]
-            .as_array()
-            .expect("default namespace collection list should be an array")
-            .iter()
-            .any(|collection| collection == "tasks"));
-    }
-
     // ── Embedded UI tests ─────────────────────────────────────────────────────
     // These tests exercise the embedded-UI path (ui_dir = None), which is the
     // default when axon is run without --ui-dir.  They rely on the real
@@ -6540,43 +6340,6 @@ mod tests {
             resp.text().starts_with("<!DOCTYPE html"),
             "expected index.html fallback"
         );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn http_database_and_namespace_endpoints_round_trip() {
-        let server = test_server();
-
-        let resp = server.post("/databases/prod").await;
-        resp.assert_status(StatusCode::CREATED);
-        let body: Value = resp.json();
-        assert_eq!(body["name"], "prod");
-
-        let resp = server.get("/databases").await;
-        resp.assert_status_ok();
-        let body: Value = resp.json();
-        assert!(body["databases"]
-            .as_array()
-            .is_some_and(|databases| { databases.iter().any(|value| value == "prod") }));
-
-        let resp = server.post("/databases/prod/schemas/billing").await;
-        resp.assert_status(StatusCode::CREATED);
-        let body: Value = resp.json();
-        assert_eq!(body["database"], "prod");
-        assert_eq!(body["schema"], "billing");
-
-        let resp = server.get("/databases/prod/schemas").await;
-        resp.assert_status_ok();
-        let body: Value = resp.json();
-        assert!(body["schemas"]
-            .as_array()
-            .is_some_and(|schemas| schemas.iter().any(|value| value == "billing")));
-
-        let resp = server
-            .get("/databases/prod/schemas/billing/collections")
-            .await;
-        resp.assert_status_ok();
-        let body: Value = resp.json();
-        assert_eq!(body["collections"], json!([]));
     }
 
     // ── RBAC role boundary enforcement tests ──────────────────────────────────
@@ -7217,77 +6980,6 @@ mod tests {
             detail.contains("admin"),
             "forbidden detail should mention required role 'admin': {detail}"
         );
-    }
-
-    // ── /auth/me endpoint tests ────────────────────────────────────────
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn auth_me_returns_anonymous_admin_in_no_auth_mode() {
-        let server = test_server();
-        let resp = server.get("/auth/me").await;
-        resp.assert_status_ok();
-        let body: Value = resp.json();
-        assert_eq!(body["actor"], "anonymous");
-        assert_eq!(body["role"], "admin");
-        assert!(body["user_id"].is_null());
-        assert!(body["tenant_id"].is_null());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn auth_me_returns_guest_identity_in_guest_mode() {
-        let peer = SocketAddr::from(([127, 0, 0, 1], 3000));
-        let auth = AuthContext::guest(Role::Read);
-        let server = test_server_with_auth(peer, auth);
-        let resp = server.get("/auth/me").await;
-        resp.assert_status_ok();
-        let body: Value = resp.json();
-        assert_eq!(body["actor"], "guest");
-        assert_eq!(body["role"], "read");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn auth_me_returns_tailscale_identity() {
-        let peer = SocketAddr::from(([100, 101, 102, 103], 443));
-        let auth = AuthContext::with_provider(
-            AuthMode::Tailscale {
-                default_role: Role::Read,
-            },
-            Arc::new(FakeWhoisProvider::with_result(
-                peer,
-                Ok(TailscaleWhoisResponse {
-                    node_name: "erik-laptop".into(),
-                    user_login: "erik@example.com".into(),
-                    tags: vec!["tag:axon-admin".into()],
-                }),
-            )),
-            Duration::from_secs(60),
-        );
-        let server = test_server_with_auth(peer, auth);
-        let resp = server.get("/auth/me").await;
-        resp.assert_status_ok();
-        let body: Value = resp.json();
-        assert_eq!(body["actor"], "erik@example.com");
-        assert_eq!(body["role"], "admin");
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn auth_me_returns_401_for_unauthorized_peer() {
-        let peer = SocketAddr::from(([127, 0, 0, 1], 3000));
-        let auth = AuthContext::with_provider(
-            AuthMode::Tailscale {
-                default_role: Role::Read,
-            },
-            Arc::new(FakeWhoisProvider::with_result(
-                peer,
-                Err(AuthError::Unauthorized(
-                    "peer is not a recognized tailnet address".into(),
-                )),
-            )),
-            Duration::from_secs(60),
-        );
-        let server = test_server_with_auth(peer, auth);
-        let resp = server.get("/auth/me").await;
-        resp.assert_status(StatusCode::UNAUTHORIZED);
     }
 
     // ── CORS middleware tests ─────────────────────────────────────────────────
