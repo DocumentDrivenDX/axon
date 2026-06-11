@@ -1,0 +1,12 @@
+```json
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "summary": "Diff contains only execution manifest/result metadata (.ddx/executions/...). No implementation, tests, or UI/API changes are present in the changed-files set, so none of the acceptance criteria can be evaluated against this diff.",
+  "findings": [
+    { "severity": "block", "summary": "No implementation files changed — only execution manifest and result JSON are included. Cannot verify intent ID filtering, deep links, lineage grouping, or chronological ordering.", "location": ".ddx/executions/20260508T005623-b8afa4c4/manifest.json" },
+    { "severity": "block", "summary": "Acceptance criteria reference intent-audit-lineage.spec.ts, but no spec file is present in the diff.", "location": "intent-audit-lineage.spec.ts" },
+    { "severity": "info", "summary": "result.json reports outcome=task_succeeded with result_rev=80e1c3d, suggesting actual implementation was committed elsewhere; review needs the real diff (commit 80e1c3d) rather than execution evidence.", "location": ".ddx/executions/20260508T005623-b8afa4c4/result.json" }
+  ]
+}
+```

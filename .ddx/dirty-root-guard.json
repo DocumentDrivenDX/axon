@@ -1,0 +1,16 @@
+{
+  "fingerprint": "docs/helix/00-discover/product-vision.md\u0000docs/helix/01-frame/concerns.md\u0000docs/helix/01-frame/prd.md\u0000docs/helix/01-frame/principles.md\u0000docs/helix/01-frame/technical-requirements.md\u0000docs/helix/02-design/adr/ADR-012-graphql-query-layer.md\u0000docs/helix/02-design/api-contracts.md",
+  "dirty_paths": [
+    "docs/helix/00-discover/product-vision.md",
+    "docs/helix/01-frame/concerns.md",
+    "docs/helix/01-frame/prd.md",
+    "docs/helix/01-frame/principles.md",
+    "docs/helix/01-frame/technical-requirements.md",
+    "docs/helix/02-design/adr/ADR-012-graphql-query-layer.md",
+    "docs/helix/02-design/api-contracts.md"
+  ],
+  "count": 1,
+  "first_observed_at": "2026-06-11T02:35:03.995025103Z",
+  "last_observed_at": "2026-06-11T02:35:03.995025103Z",
+  "retry_after": "0001-01-01T00:00:00Z"
+}
