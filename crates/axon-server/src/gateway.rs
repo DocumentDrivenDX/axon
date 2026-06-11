@@ -82,6 +82,15 @@ const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 /// Response header emitted when returning a cached idempotent response.
 const IDEMPOTENCY_CACHE_HEADER: &str = "x-idempotent-cache";
 
+/// `Deprecation` response header (RFC 8594) emitted when the caller supplied
+/// the idempotency key via the `Idempotency-Key` HTTP header instead of the
+/// canonical `idempotency_key` body field (CONTRACT-001).
+const DEPRECATION_HEADER: &str = "deprecation";
+
+/// `Warning` text paired with the `Deprecation` header above.
+const IDEM_HEADER_DEPRECATION_WARNING: &str =
+    r#"299 - "Idempotency-Key header is deprecated; use the idempotency_key body field instead""#;
+
 /// Header a static browser bundle can send to assert the schema hash it was
 /// generated against during app-load compatibility checks.
 const SCHEMA_HASH_HEADER: &str = "x-axon-schema-hash";
@@ -2832,6 +2841,12 @@ async fn commit_transaction(
     //
     // Keys are scoped per database. The `current_database` extension
     // (populated from the URL path by the auth middleware) is authoritative.
+    //
+    // The body field is canonical (CONTRACT-001). If the caller supplied the
+    // key only via the legacy `Idempotency-Key` header we accept it but tag
+    // the response with deprecation signals.
+    let idem_key_from_header_only = body.idempotency_key.is_none()
+        && headers.contains_key(IDEMPOTENCY_KEY_HEADER);
     let idem_key = match body.idempotency_key.clone() {
         Some(key) => Some(key),
         None => headers
@@ -2854,6 +2869,16 @@ async fn commit_transaction(
                     IDEMPOTENCY_CACHE_HEADER,
                     axum::http::HeaderValue::from_static("hit"),
                 );
+                if idem_key_from_header_only {
+                    response.headers_mut().insert(
+                        DEPRECATION_HEADER,
+                        axum::http::HeaderValue::from_static("true"),
+                    );
+                    response.headers_mut().insert(
+                        header::WARNING,
+                        axum::http::HeaderValue::from_static(IDEM_HEADER_DEPRECATION_WARNING),
+                    );
+                }
                 return response;
             }
             ReservationResult::InFlight { retry_after_ms } => {
@@ -3101,7 +3126,18 @@ async fn commit_transaction(
                     },
                 );
             }
-            (StatusCode::OK, Json(body)).into_response()
+            let mut response = (StatusCode::OK, Json(body)).into_response();
+            if idem_key_from_header_only {
+                response.headers_mut().insert(
+                    DEPRECATION_HEADER,
+                    axum::http::HeaderValue::from_static("true"),
+                );
+                response.headers_mut().insert(
+                    header::WARNING,
+                    axum::http::HeaderValue::from_static(IDEM_HEADER_DEPRECATION_WARNING),
+                );
+            }
+            response
         }
         Err(e) => {
             // Policy-forbidden transactions are terminal for this payload and

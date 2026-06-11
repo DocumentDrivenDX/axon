@@ -2139,6 +2139,110 @@ async fn http_transactions_idempotent_expired_reexecutes() {
     );
 }
 
+/// CONTRACT-001: body `idempotency_key` is canonical — no deprecation headers
+/// emitted when the key is supplied in the request body.
+#[tokio::test(flavor = "multi_thread")]
+async fn http_transactions_body_idempotency_key_canonical() {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    let resp = http
+        .post("/tenants/default/databases/default/transactions")
+        .json(&json!({
+            "idempotency_key": "body-key-1",
+            "operations": [{
+                "op": "create",
+                "collection": "bodyidem",
+                "id": "e-1",
+                "data": {"v": 1}
+            }]
+        }))
+        .await;
+    resp.assert_status_ok();
+
+    assert!(
+        resp.headers().get("deprecation").is_none(),
+        "body-field path must not emit a Deprecation header"
+    );
+    assert!(
+        resp.headers().get("warning").is_none(),
+        "body-field path must not emit a Warning header"
+    );
+}
+
+/// CONTRACT-001: legacy `Idempotency-Key` header is accepted but deprecated —
+/// both a fresh execution and a cache-replay must carry `Deprecation: true`
+/// and a `Warning` header when the key was supplied only via the header.
+#[tokio::test(flavor = "multi_thread")]
+async fn http_transactions_header_idempotency_key_deprecated() {
+    let storage: Box<dyn StorageAdapter + Send + Sync> =
+        Box::new(SqliteStorageAdapter::open_in_memory().expect("in-memory SQLite"));
+    let http_handler = Arc::new(Mutex::new(AxonHandler::new(storage)));
+    let tenant_router = Arc::new(TenantRouter::single(http_handler));
+    let http_app = build_router(tenant_router, "memory", None);
+    let http = axum_test::TestServer::new(http_app);
+
+    // Seed entity so the update has a valid expected_version.
+    http.post("/tenants/default/databases/default/entities/depr/e-1")
+        .json(&json!({"data": {"v": 0}}))
+        .await
+        .assert_status(axum::http::StatusCode::CREATED);
+
+    let key = "header-depr-k-1";
+    let payload = json!({
+        "operations": [{
+            "op": "update",
+            "collection": "depr",
+            "id": "e-1",
+            "data": {"v": 1},
+            "expected_version": 1
+        }]
+    });
+
+    // First request: fresh execution via header-only key.
+    let resp1 = http
+        .post("/tenants/default/databases/default/transactions")
+        .add_header("idempotency-key", key)
+        .json(&payload)
+        .await;
+    resp1.assert_status_ok();
+    assert_eq!(
+        resp1.headers().get("deprecation").and_then(|v| v.to_str().ok()),
+        Some("true"),
+        "header-only path must emit Deprecation: true on fresh execution"
+    );
+    assert!(
+        resp1.headers().get("warning").is_some(),
+        "header-only path must emit a Warning header on fresh execution"
+    );
+
+    // Second request: cache-replay via header-only key.
+    let resp2 = http
+        .post("/tenants/default/databases/default/transactions")
+        .add_header("idempotency-key", key)
+        .json(&payload)
+        .await;
+    resp2.assert_status_ok();
+    assert_eq!(
+        resp2.headers().get("x-idempotent-cache").and_then(|v| v.to_str().ok()),
+        Some("hit"),
+        "replay must carry x-idempotent-cache: hit"
+    );
+    assert_eq!(
+        resp2.headers().get("deprecation").and_then(|v| v.to_str().ok()),
+        Some("true"),
+        "header-only path must emit Deprecation: true on cache-replay"
+    );
+    assert!(
+        resp2.headers().get("warning").is_some(),
+        "header-only path must emit a Warning header on cache-replay"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn grpc_transition_lifecycle_uses_metadata_actor() {
     let mut client = setup_lifecycle_client().await;
