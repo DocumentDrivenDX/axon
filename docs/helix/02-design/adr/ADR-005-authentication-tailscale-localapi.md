@@ -6,12 +6,11 @@ ddx:
     - ADR-001
     - FEAT-005
 ---
-# ADR-005: Authentication via Tailscale (tsnet / LocalAPI)
+# ADR-005: Authentication via Tailscale LocalAPI
 
 | Date | Status | Deciders | Related | Confidence |
 |------|--------|----------|---------|------------|
-| 2026-04-05 | Accepted | Erik LaBianca | FEAT-005, PRD §P1 Auth | High |
-| 2026-04-12 | *Implemented* | — | FEAT-012 V1 shipped | — |
+| 2026-04-05 | Accepted | Erik LaBianca | FEAT-005, FEAT-012, PRD §P1 Auth | High |
 
 ## Context
 
@@ -30,6 +29,7 @@ mechanism that:
 | Problem | Axon server endpoints are unauthenticated; need identity + authorization for production |
 | Current State | No auth middleware. Server binds to 0.0.0.0 on both ports |
 | Requirements | Identity on every request (who), per-collection authorization (what), both transports |
+| Decision Drivers | Avoid building/operating a custom credential system; reuse existing tailnet identity; must cover gRPC (HTTP/2), which rules out header-injecting proxies |
 
 ## Decision
 
@@ -68,7 +68,9 @@ access control.
 5. This identity is injected into the request context (axum extensions /
    tonic metadata) and available to all handlers.
 6. Authorization checks use ACL tags and/or email for per-collection
-   permissions.
+   permissions. Role mapping: `tag:axon-admin` → all operations,
+   `tag:axon-write` (alias `tag:axon-agent`) → create/update/delete,
+   `tag:axon-read` → read/query/traverse/audit. Highest-privilege tag wins.
 
 ### Network-Layer ACLs (Defense-in-Depth)
 
@@ -89,69 +91,15 @@ This means agents (tagged `axon-agent`) can reach both HTTP and gRPC, admins
 get full access, and regular tailnet members can only use HTTP. Connections
 from outside the tailnet never reach the server.
 
-### Implementation Plan
+### Client Implementation
 
-**Phase 1: Identity extraction (axum middleware + tonic interceptor)**
-
-```rust
-// Pseudocode — axum middleware
-async fn tailscale_auth(
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    mut req: Request,
-    next: Next,
-) -> Response {
-    let identity = tailscale_whois(addr).await;
-    match identity {
-        Ok(id) => {
-            req.extensions_mut().insert(id);
-            next.run(req).await
-        }
-        Err(_) => StatusCode::UNAUTHORIZED.into_response(),
-    }
-}
-```
-
-The same pattern works for tonic via a `tower::Layer` or `Interceptor` that
-reads peer address from connection info.
-
-**Phase 2: Per-collection authorization**
-
-A simple permission model based on Tailscale ACL tags.  Each of the primary
-tags has accepted aliases (short form and bare name):
-
-| Primary Tag | Aliases | Permissions |
-|-------------|---------|-------------|
-| `tag:axon-admin` | `tag:admin` | All operations on all collections |
-| `tag:axon-write` | `tag:write`, `tag:axon-agent` | Create, update, delete entities and links |
-| `tag:axon-read` | `tag:read` | Read entities, query, traverse, audit log |
-
-`tag:axon-agent` is the conventional tag for automated agent workloads that
-need read/write access.  When multiple role-granting tags are present, the
-highest-privilege role wins.
-
-Permissions are checked after identity extraction, before handler execution.
-
-**Phase 3: Per-collection ACLs (optional)**
-
-Fine-grained: "user X can write to collection `invoices` but only read
-`customers`". This would require an Axon-side permission table, not just
-Tailscale tags.
-
-### Rust Crate Options
-
-| Crate | Version | What it does | Verdict |
-|-------|---------|-------------|---------|
-| `tailscale-localapi` | 0.5.0 | Calls tailscaled LocalAPI (status, whois, cert) via Unix socket | Evaluated — not used (see below) |
-| `tsnet` | 0.1.0 | Embeds Tailscale dataplane via libtailscale (cgo) | Not ready — stale, requires Go toolchain |
-| `tailscale-client` | 0.1.5 | Tailscale control plane API (manage devices, keys) | Not relevant for request-time auth |
-
-**Implementation choice**: Direct HTTP/1.1 over the Tailscale Unix socket via
-`hyper` + `tokio::net::UnixStream`, with manual serde deserialization of the
-JSON response.  `tailscale-localapi` was evaluated but not adopted — the crate
-is small and under-maintained, and the whois API surface needed is only two
-endpoints (`/localapi/v0/status` for startup verification and
-`/localapi/v0/whois?addr=` for per-request identity).  Owning the HTTP
-client code keeps the dependency surface minimal and the behavior explicit.
+**Direct HTTP/1.1 over the tailscaled Unix socket** via `hyper` +
+`tokio::net::UnixStream`, with manual serde deserialization. The
+`tailscale-localapi` crate (0.5.0) was evaluated but not adopted — it is small
+and under-maintained, and only two endpoints are needed (`/localapi/v0/status`
+for startup verification, `/localapi/v0/whois?addr=` for per-request identity).
+Owning the client keeps the dependency surface minimal and the behavior
+explicit.
 
 ## Alternatives Considered
 
@@ -205,45 +153,51 @@ tailscaled is not co-located with the server. More complex to set up.
 - Requires tailscaled running on the server host
 - Not usable outside a tailnet (public API access requires a different auth
   layer — API keys or OAuth — as a future extension)
-- `tailscale-localapi` crate is small (10 stars) — may need to vendor or
-  contribute fixes
-- Adds ~1-2ms latency per request for the whois Unix socket call (mitigable
-  with a short TTL cache keyed by peer IP)
+- Adds ~1-2ms latency per request for the whois Unix socket call (mitigated
+  by a per-peer-IP TTL cache, default 60s)
 
-**Risks**:
-- Tailscale LocalAPI is not a documented stability guarantee — the whois
-  endpoint could change. Mitigation: pin tailscaled version in deployment.
-- If tailscaled is down, all requests fail auth. Mitigation: health check
-  includes tailscaled connectivity; consider a bypass flag for development.
+**Operational addendum** (implemented 2026-04-12 with FEAT-012 V1; condensed
+from the original implementation plan and operational notes):
+- Identity flows through both transports: axum middleware for HTTP, an
+  authorize hook for gRPC, both delegating to a shared `AuthContext`.
+- Startup verifies tailscaled connectivity and fails fast if unreachable.
+- Escape hatches for non-tailnet environments: `--no-auth` (development;
+  `actor="anonymous"`, role Admin) and `--guest-role <role>` (unauthenticated
+  access with a fixed role).
+- Audit actor names derive from the Tailscale node's computed name with
+  hostname/FQDN fallbacks.
+- Embedded mode (CLI in-process) has no network boundary and performs no auth.
 
-## Operational Notes
+## Risks
 
-- **Development mode**: `--no-auth` (or `AXON_NO_AUTH=1`) skips auth entirely.
-  All requests get `actor="anonymous"`, `role=Admin`.
-- **Guest mode**: `--guest-role <role>` (or `AXON_GUEST_ROLE=read`) allows
-  unauthenticated access with a fixed role. Useful when Tailscale is not
-  available but unrestricted open access is undesirable.
-- **Server startup**: `AuthContext::verify()` contacts the tailscaled socket
-  before accepting connections. If the socket is unreachable the server exits
-  with an error rather than starting in a broken state.
-- **Caching**: Whois results are cached per peer IP with a configurable TTL
-  (`--auth-cache-ttl-secs`, default 60 s). The cache is an in-memory
-  `HashMap<IpAddr, CachedIdentity>` behind a `RwLock`; reads are lock-free
-  on cache hit. Cache is never actively evicted — stale entries are ignored
-  on next access if their TTL has elapsed.
-- **Actor name**: `Identity.actor` is the Tailscale `ComputedName` field
-  (short node name), falling back to `Hostinfo.Hostname`, then the first
-  label of the FQDN. This is what appears in audit log entries.
-- **Embedded mode**: The CLI runs in-process; no network boundary, so no auth.
-- **Both transports**: HTTP uses axum middleware (`authenticate_http_request`);
-  gRPC uses `AxonServiceImpl::authorize` — both delegate to `AuthContext::resolve_peer`.
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Tailscale LocalAPI has no documented stability guarantee — whois endpoint could change | Low | High | Pin tailscaled version in deployment; only two endpoints consumed |
+| tailscaled outage fails auth for all requests | Medium | High | Health check includes tailscaled connectivity; guest mode provides a controlled degraded path |
+| Whois latency on every request | Medium | Low | Per-peer-IP cache with TTL reduces p99 auth overhead to <1ms after warmup |
 
 ## Validation
 
-- Auth middleware returns 401 for connections from outside the tailnet
-- Whois correctly maps peer IP to user identity
-- Audit log entries carry the Tailscale user login as actor
-- ACL tags correctly gate write vs read operations
-- `--no-auth` flag works for local development
-- Both HTTP and gRPC transports get identity injection
-- Whois cache reduces p99 auth overhead to <1ms after warmup
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| 401 returned for connections from outside the tailnet; whois maps peer IP to identity on both transports | Any unauthenticated request reaching a handler |
+| Audit entries carry the Tailscale user login as actor; ACL tags gate write vs read correctly | Any actor-attribution gap or privilege escalation |
+| Whois cache keeps p99 auth overhead <1ms after warmup | Auth overhead regression beyond 2ms |
+| LocalAPI whois remains compatible across tailscaled upgrades | A tailscaled release changes the whois surface — reconsider mTLS (Alternative D) or vendoring |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None (ADR-018 layers the tenant/user credential model on top of this identity mechanism; the Tailscale LocalAPI decision stands)
+
+## Concern Impact
+
+- **security-owasp**: This ADR is the authentication leg of the concern — identity fully delegated to Tailscale (no password storage); it also anchors the project overrides for TLS termination, CSP, CSRF, and CORS in `docs/helix/01-frame/concerns.md`.
+- **rust-cargo**: Adds `hyper` + Unix-socket client code rather than the unmaintained `tailscale-localapi`/`tsnet` crates — a deliberate dependency-surface choice.
+
+## References
+
+- [FEAT-012: Authorization](../../01-frame/features/FEAT-012-authorization.md)
+- [ADR-006: Admin UI](ADR-006-admin-ui-sveltekit-bun.md) — UI inherits this identity
+- [ADR-018: Tenant, User, and Credential Model](ADR-018-tenant-user-credential-model.md)
+- Tailscale LocalAPI whois: `/localapi/v0/whois` on the tailscaled Unix socket

@@ -24,8 +24,15 @@ optional client override.
 | Problem | No partial update; no server-generated IDs |
 | Current State | PUT replaces entire data; ID is required on create |
 | Requirements | Patch preserves unmentioned fields; IDs optionally auto-generated |
+| Decision Drivers | Agents should mutate one field without round-tripping whole entities; standard semantics (RFC 7396) over bespoke patch formats; time-ordered IDs improve scan locality |
 
 ## Decision
+
+> **Scope note**: This record bundles 2 related decisions made together;
+> future changes to any one of them require a superseding ADR for that part.
+>
+> - **Decision A**: Partial updates via JSON Merge Patch (RFC 7396) on a new `PATCH` operation
+> - **Decision B**: Server-generated UUIDv7 entity IDs when the caller omits the ID
 
 ### 1. JSON Merge Patch (RFC 7396)
 
@@ -191,6 +198,18 @@ Add `uuid` crate (v1.x) with `v7` feature to the workspace dependencies.
 UUIDv7 uses the system clock + random bits, producing monotonically
 increasing IDs within a single process.
 
+## Alternatives
+
+*Alternatives reconstructed retrospectively (2026-06-10) for record completeness.*
+
+| Option | Pros | Cons | Evaluation |
+|--------|------|------|------------|
+| JSON Patch (RFC 6902) | Distinguishes remove vs set-null; array element ops; test operations | Verbose operation lists; harder for agents to author; overkill for field-level updates | Rejected for V1: can be added later if RFC 7396's null limitation bites |
+| Protobuf-style field masks | Explicit about which fields change | Non-standard for JSON HTTP APIs; awkward for nested objects; second vocabulary to learn | Rejected: merge patch covers the need with a standard |
+| PUT-only (status quo, no partial update) | One update path, less API surface | Agents must fetch and resend whole entities; violates FEAT-004 US-012 | Rejected: requirement explicitly demands partial update |
+| Client-required IDs (status quo) / server UUIDv4 | UUIDv4 is ubiquitous; client IDs allow natural keys | Required client IDs add agent friction; UUIDv4 is random — poor range-scan locality and cursor pagination | Rejected: UUIDv7 keeps both options and adds time-ordering |
+| **Merge patch (RFC 7396) + optional server UUIDv7** | Standard semantics; minimal agent friction; time-ordered IDs; client IDs still allowed | Two update paths; null-vs-remove ambiguity | **Selected: standard, small, fits agent workloads** |
+
 ## Consequences
 
 **Positive**:
@@ -217,3 +236,36 @@ increasing IDs within a single process.
 - Existing callers that always supply IDs are unaffected
 - `UpdateEntityRequest` (PUT) is unchanged
 - New `PatchEntityRequest` is additive — no breaking changes
+
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| RFC 7396 null-vs-remove ambiguity surprises callers needing explicit nulls | Medium | Low | Documented limitation; JSON Patch (RFC 6902) can be added as a separate operation later |
+| Inline merge-patch implementation diverges from RFC 7396 | Low | Medium | RFC test vectors covered in unit tests; implementation is ~20 lines |
+| UUIDv7 monotonicity assumptions break across processes/clock skew | Low | Low | Ordering is a locality optimization, not a correctness guarantee — nothing depends on strict ordering |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| Patch preserves unmentioned fields; merged result always schema-validated; empty patch is a true no-op (no version bump, no audit entry) | Any field loss, validation bypass, or no-op that increments version |
+| Agents adopt PATCH for single-field updates (reduced full-entity round trips) | If PATCH usage stays near zero, revisit whether the second update path earns its API surface |
+| Server-generated IDs are valid, unique, time-ordered UUIDv7 | Repeated requests for explicit null semantics — trigger to add RFC 6902 |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None
+
+## Concern Impact
+
+- **rust-cargo**: Adds the `uuid` crate (v1.x, `v7` feature) to workspace dependencies; merge patch implemented inline with no new crate.
+- **security-owasp**: Merged result (not the raw patch) is validated against the schema, preserving input validation on the partial-update path; patches produce full before/after audit diffs.
+
+## References
+
+- [FEAT-004: Entity Operations](../../01-frame/features/FEAT-004-entity-operations.md) (US-012)
+- [ADR-004: Transaction Model](ADR-004-transaction-model.md) — OCC interaction
+- [ADR-008: Schema Lifecycles](ADR-008-schema-lifecycles.md) — lifecycle checks on patched fields
+- RFC 7396 (JSON Merge Patch); RFC 9562 (UUIDv7)

@@ -23,6 +23,7 @@ the target collection's existence or schema.
 | Problem | No schema history, no auto-versioning, no link type validation on save |
 | Current State | `put_schema` does INSERT OR REPLACE; version is whatever the caller says |
 | Requirements | Version history for debugging/auditing; validation that link targets exist |
+| Decision Drivers | Schema-as-data principle (audit/history applies to schemas too); caller-supplied versions invite regressions; broken link targets must fail at save time, not query time |
 
 ## Decision
 
@@ -107,6 +108,17 @@ when editing link types. This checkbox:
 This is purely a UI workflow — the schema model itself has no concept
 of bidirectionality.
 
+## Alternatives
+
+*Alternatives reconstructed retrospectively (2026-06-10) for record completeness.*
+
+| Option | Pros | Cons | Evaluation |
+|--------|------|------|------------|
+| Keep caller-supplied versions (status quo) | No storage change; caller controls semantics | No monotonicity guarantee; version confusion and silent regressions; no history | Rejected: defeats the purpose of versioning |
+| Single-row schema + history derived from audit log | No new table; audit already records schema writes | Historical reads require audit replay/reconstruction; couples schema reads to audit retention | Rejected: point-in-time schema reads must be a direct lookup |
+| Bidirectional link declarations in the schema | One declaration covers both directions | Two schemas silently coupled; ambiguous ownership of cardinality/metadata | Rejected: bidirectionality is a UI convenience, not a schema concept |
+| **Auto-incremented `schema_versions` table + save-time link validation** | Full history, system-assigned monotonic versions, broken targets caught at save | Unbounded (slow) table growth; three new trait methods; breaking `put_schema` return type | **Selected: history and integrity with minimal model complexity** |
+
 ## Consequences
 
 **Positive**:
@@ -122,3 +134,35 @@ of bidirectionality.
   all backends)
 - Breaking change: `put_schema` return type changes from `()` to `u32`
   (the assigned version number)
+
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| `schema_versions` growth becomes a problem for high-churn schemas | Low | Low | Schemas change rarely by nature; a retention/compaction policy can be added without changing the model |
+| Drop-collection blocking (pointed-to check) frustrates legitimate teardown | Medium | Low | Error message lists referencing schemas so the caller can remove link types first |
+| Backends diverge on the three new trait methods | Low | Medium | L4 backend conformance suite covers the new methods identically across backends |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| Every `put_schema` produces exactly `current_max + 1`; no version regressions in audit history | Any observed non-monotonic version |
+| Save-time rejection of link types targeting nonexistent collections, with clear errors | Any orphaned link-type declaration found in a stored schema |
+| Historical schema reads used in practice for debugging | If history goes unused after several quarters and growth matters, reconsider retention; if rollback is requested repeatedly, promote schema rollback from deferred to planned |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None (ADR-010 §4 carries this model into the physical storage schema with `collection_id` keys)
+
+## Concern Impact
+
+- **rust-cargo**: Adds three `StorageAdapter` trait methods that all backend adapters must implement.
+- **security-owasp**: Save-time validation of link targets and metadata schemas closes a schema-integrity gap; versioned history supports audit review of schema changes.
+
+## References
+
+- [ADR-002: Schema Format](ADR-002-schema-format.md)
+- [ADR-010: Physical Storage and Secondary Indexes](ADR-010-physical-storage-and-secondary-indexes.md) — physical materialization of `schema_versions`
+- [FEAT-002: Schema Engine](../../01-frame/features/FEAT-002-schema-engine.md)

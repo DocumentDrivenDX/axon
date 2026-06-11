@@ -4,6 +4,7 @@ ddx:
   depends_on:
     - ADR-003
     - ADR-010
+    - ADR-018
 ---
 # ADR-011: Multi-Tenancy, Namespace Hierarchy, and Node Topology
 
@@ -51,10 +52,23 @@ Production deployments need:
 | Problem | Flat namespace, no tenant isolation, no geographic placement model |
 | Current State | Single implicit database, collections identified by name only |
 | Requirements | Multi-tenant isolation, namespace hierarchy, geographic-aware node topology, location-independent data addressing |
+| Decision Drivers | Isolation boundaries must be modeled before data accumulates (retrofitting is expensive); data addressing must survive node moves; single-tenant deployments must see zero added friction |
 
 ## Decision
 
+> **Scope note**: This record bundles 5 related decisions made together;
+> future changes to any one of them require a superseding ADR for that part.
+>
+> - Four-level namespace hierarchy with database as the isolation unit (§1) — *tenant placement amended by ADR-018*
+> - Node topology: registry, placement, routing, and the database migration protocol (§2)
+> - Storage layer impact: hierarchy resolved at collection lookup, ADR-010 tables unchanged (§3)
+> - Multi-level access-control grant scoping (§4)
+> - API surface and single-tenant default behavior (§5–§6) — *wire format amended by ADR-018*
+
 ### 1. Namespace Hierarchy
+
+*(superseded by ADR-018 — see header notice: tenant is now a global account
+boundary above database; the database/schema/collection levels below stand)*
 
 Axon adopts a four-level namespace hierarchy:
 
@@ -320,6 +334,10 @@ all contained objects unless overridden by a narrower grant.
 
 ### 5. API Surface
 
+*(superseded by ADR-018 — see header notice: the wire format is now
+path-based `/tenants/{tenant}/databases/{database}/...`; the header and
+`/db/{name}/` forms below are removed)*
+
 #### Connection-Level Database
 
 Clients specify their target database at connection time:
@@ -375,6 +393,17 @@ For single-tenant deployments (the common case in V1):
 This means **zero configuration change for existing single-tenant
 deployments**. Multi-tenancy is opt-in.
 
+## Alternatives
+
+*Alternatives reconstructed retrospectively (2026-06-10) for record completeness.*
+
+| Option | Pros | Cons | Evaluation |
+|--------|------|------|------------|
+| Row-level security (tenant_id column + per-row policy) | One set of tables; native RLS on Postgres | Weakest isolation (one missed predicate leaks data); no per-tenant backup/migration unit; RLS has no SQLite/KV equivalent | Rejected: isolation must be structural, not predicate-based |
+| Deployment-per-tenant (separate Axon instance + store per tenant) | Strongest isolation; trivial mental model | Operational cost scales linearly with tenants; no shared infrastructure; cross-tenant ops (placement, migration) become fleet orchestration | Rejected: unworkable for many small tenants on shared infrastructure |
+| Flat namespace + naming convention (`tenant__collection`) | No model change | No enforced boundary; no grant scoping; renames and migration nightmares | Rejected: convention is not isolation |
+| **Database-as-isolation-unit with schema namespaces and a node placement layer** | Structural isolation; per-database backup/migration; grant scoping at four levels; location-independent addressing | Two new concepts in the API; name resolution on every request; placement machinery mostly dormant in V1 | **Selected: models isolation and placement from day one without per-tenant operational cost** |
+
 ## Consequences
 
 **Positive**:
@@ -407,11 +436,40 @@ deployments**. Multi-tenancy is opt-in.
 - Per-database Postgres schema isolation: deferred (use column-based
   isolation)
 
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Name-resolution lookup on every request adds latency | Medium | Low | Name-to-id caching in each adapter; resolution happens once per collection reference |
+| Dormant placement/routing machinery rots before multi-node is real | Medium | Medium | Data model only in V1 (single self-entry); proxy/redirect logic deliberately not built until needed |
+| Database migration protocol proves harder than designed (quiesce/verify window) | Medium | Medium | Deferred post-V1; modeled on proven CockroachDB/Vitess patterns; data path never changes, limiting blast radius |
+| Isolation bug leaks data across databases | Low | High | Structural isolation (separate collection_id spaces); cross-database queries are unsupported by design; covered by conformance tests |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| Existing single-tenant deployments run unchanged (implicit `default.default`) | Any breakage of unqualified collection names |
+| No cross-database data access possible through any API path | Any cross-database leak — immediate review |
+| Fully qualified name resolution adds negligible overhead after cache warmup | Resolution shows up in request latency profiles |
+| Placement model accommodates the first real multi-node deployment without schema changes | First multi-node deployment requiring placement-table redesign; or a legitimate cross-database query need emerges — revisit the isolation constraint |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None as a whole — **Amended by ADR-018 (tenancy leg)**: §1's tenant-equals-database claim and §5's header-based wire format are superseded by ADR-018; database-to-node mapping, migration protocol, schemas-within-database, and default behavior remain authoritative here
+
+## Concern Impact
+
+- **security-owasp**: Defines the isolation boundaries and four-level grant scoping that FEAT-012 authorization (deny-by-default RBAC) enforces.
+- **rust-cargo**: Adds databases/schemas/placement tables and name-resolution caching to `axon-storage` adapters; no new dependencies.
+
 ## References
 
 - [ADR-003: Backing Store Architecture](ADR-003-backing-store-architecture.md)
 - [ADR-010: Physical Storage and Secondary Indexes](ADR-010-physical-storage-and-secondary-indexes.md)
 - [FEAT-012: Authorization](../../01-frame/features/FEAT-012-authorization.md)
+- [ADR-018: Tenant, User, and Credential Model](ADR-018-tenant-user-credential-model.md) — amends §1 and §5
 - CockroachDB: Range placement and leaseholder migration
 - Vitess: Tablet migration and topology service
 - Snowflake: Account → Database → Schema hierarchy

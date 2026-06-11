@@ -24,6 +24,7 @@ while matching the workload characteristics of agentic applications.
 | Workload | Agentic applications — typically low contention, short-lived operations on bounded entity sets |
 | Requirements | Snapshot Isolation in V1 (Serializable is P1), deadlock-free, sub-20ms p99 for 2–5 entity transactions, embedded and server mode |
 | Prior context | ADR-003 selected SQLite + PostgreSQL with application-layer audit. The transaction model must work across both backends behind the StorageAdapter trait |
+| Decision Drivers | Must be uniform across memory/SQLite/PostgreSQL adapters; agentic workloads are low-contention and short-lived; deadlock-freedom valued over conflict prevention |
 
 ## Decision
 
@@ -220,6 +221,14 @@ and maps cleanly onto all three StorageAdapter backends.
 | Negative | Callers must implement retry logic on conflict. High-contention workloads (unlikely for agentic use cases) will retry frequently |
 | Neutral | Snapshot Isolation is the V1 default (write-set OCC prevents lost updates and dirty reads but not write skew); Serializable isolation requires read-set tracking and is P1 per FEAT-008 |
 
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Write skew violates application invariants before P1 serializable lands | Medium | Medium | Documented V1 gap; read-set tracking planned per FEAT-008; invariant-critical flows can serialize on a single guard entity |
+| High-contention hot entities degrade to spin-retry | Low | Medium | Conflict response includes current state for intelligent merge; agentic workloads are low-contention by design |
+| Crash between `commit_tx()` and audit flush leaves committed mutation unaudited | Low | High | INV-003 recovery invariant required for durable backends (same-transaction audit or intent log replay) |
+
 ## Implementation Notes
 
 - `Transaction` struct in `axon-api/src/transaction.rs` buffers `WriteOp` entries
@@ -239,6 +248,16 @@ and maps cleanly onto all three StorageAdapter backends.
 | No deadlocks observed in load tests | Deadlock report (should be impossible by construction) |
 | Transaction commit p99 < 20ms for 2–5 entity transactions (BM-005/BM-006) | Benchmark regression |
 | INV-003 (audit completeness) confirms all committed transactions have full audit trails | Any audit gap detected |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None
+
+## Concern Impact
+
+- **rust-cargo**: None beyond existing workspace structure — OCC is implemented in `axon-api` with no new dependencies.
+- **security-owasp**: Transaction IDs link every mutation to its audit entries, supporting audit-log integrity; post-commit audit guarantees no phantom audit records.
 
 ## References
 

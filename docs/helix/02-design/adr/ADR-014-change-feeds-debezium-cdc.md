@@ -7,6 +7,7 @@ ddx:
     - ADR-012
     - FEAT-003
     - FEAT-015
+    - FEAT-021
 ---
 # ADR-014: Change Feeds — Debezium-Compatible CDC with Kafka and Schema Registry
 
@@ -31,10 +32,15 @@ it to external consumers in a standard format over a durable transport.
 | Problem | No durable, replayable change feed for downstream consumers. GraphQL subscriptions are ephemeral (lost on disconnect). Audit log is queryable but not streamable |
 | Current State | Audit log stored in database. GraphQL subscriptions poll audit log. No external integration |
 | Requirements | Debezium-compatible CDC records on Kafka topics. Confluent-compatible schema registry. Multi-transport support (Kafka, HTTP SSE, file) |
+| Decision Drivers | Downstream consumers need durable, replayable feeds; audit log already holds all change data; ecosystem compatibility (Debezium/Kafka Connect) over a bespoke format |
 
 ## Decision
 
 ### 1. Debezium Envelope Format
+
+> Normative envelope surface is now owned by
+> [CONTRACT-006](../contracts/CONTRACT-006-cdc-envelope.md); this section is
+> the decision-time record.
 
 All change events use the Debezium envelope format — the de facto
 standard for CDC records. This gives Axon compatibility with the entire
@@ -127,6 +133,11 @@ This ensures all events for the same entity land on the same Kafka
 partition, preserving per-entity ordering.
 
 ### 2. Topic Naming
+
+> **Superseded (naming)**: the topic naming scheme below is superseded by the
+> tenant-aware naming scheme in
+> [CONTRACT-006](../contracts/CONTRACT-006-cdc-envelope.md) (post-ADR-018).
+> This section is the decision-time record.
 
 One Kafka topic per collection:
 
@@ -372,6 +383,17 @@ crates/
       mapping.rs        # Axon schema → registry schema translation
 ```
 
+## Alternatives
+
+*Alternatives reconstructed retrospectively (2026-06-10).*
+
+| Option | Pros | Cons | Evaluation |
+|--------|------|------|------------|
+| Custom Axon envelope format | Exactly fits Axon's audit model; no Debezium constraints | Every consumer writes bespoke decoding; no ecosystem tooling | Rejected: integration burden on every downstream system |
+| Vendor CDC (Debezium server / external connector against the backing store) | No producer code in Axon | Couples consumers to physical storage layout; bypasses Axon's audit semantics and tenancy | Rejected: audit log, not storage internals, is the source of truth |
+| GraphQL subscriptions only | Already exists (ADR-012) | Ephemeral, no replay, no durable transport | Rejected: does not meet durability/replay requirements |
+| **Debezium-compatible envelope on Kafka + Confluent-compatible registry** | Ecosystem-standard; replayable; registry is a facade over existing schemas | Kafka/librdkafka dependency; registry API surface to maintain | **Selected: standard format at low incremental cost over the audit log** |
+
 ## Consequences
 
 **Positive**:
@@ -407,6 +429,38 @@ crates/
   topic are informational. Full schema replication to downstream
   registries is deferred
 
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Kafka/librdkafka build and ops burden | M | M | Kafka sink optional; file/SSE sinks for light deployments |
+| Duplicate delivery breaks naive consumers | M | M | Document at-least-once contract; `audit_id` dedup key in envelope |
+| Registry facade drifts from Confluent API behavior | L | M | Contract tests against CONTRACT-006 and Confluent client smoke tests |
+| CDC producer lag under write bursts | M | L | Audit log buffers; backpressure pauses tailing, never blocks writes |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| Stock Debezium consumers decode Axon events without custom code | Any consumer requires Axon-specific decoding |
+| Replay from arbitrary `audit_id` reproduces consumer state | Cursor or snapshot resume failures observed |
+| Registry serves schemas to standard Confluent clients | Client incompatibility reports |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None (decision stands). Partial supersessions:
+  - The topic naming scheme (§2) is superseded by the tenant-aware naming
+    scheme in [CONTRACT-006](../contracts/CONTRACT-006-cdc-envelope.md)
+    (post-ADR-018).
+
+## Concern Impact
+
+- **Concern selection**: Selects ecosystem compatibility (Debezium/Confluent)
+  as the integration concern for change feeds; constrains future sinks to the
+  same envelope.
+- **Practice override**: None.
+
 ## References
 
 - [ADR-003: Backing Store Architecture](ADR-003-backing-store-architecture.md)
@@ -414,6 +468,8 @@ crates/
 - [ADR-012: GraphQL Query Layer](ADR-012-graphql-query-layer.md)
 - [FEAT-003: Audit Log](../../01-frame/features/FEAT-003-audit-log.md)
 - [FEAT-015: GraphQL Query Layer](../../01-frame/features/FEAT-015-graphql-query-layer.md)
+- [FEAT-021: Change Feeds (CDC)](../../01-frame/features/FEAT-021-change-feeds-cdc.md)
+- [CONTRACT-006: CDC Envelope](../contracts/CONTRACT-006-cdc-envelope.md)
 - [Debezium Connector Documentation](https://debezium.io/documentation/)
 - [Confluent Schema Registry API](https://docs.confluent.io/platform/current/schema-registry/develop/api.html)
 - [rdkafka crate](https://crates.io/crates/rdkafka)

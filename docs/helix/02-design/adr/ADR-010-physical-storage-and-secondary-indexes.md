@@ -27,6 +27,7 @@ range scans with application-layer filtering — there are no secondary indexes.
 | Problem | No enforced referential integrity for links, string PKs prevent collection renames, no secondary indexes for query acceleration, UUID IDs stored as text waste space and index locality |
 | Current State | Links stored as entities in pseudo-collections; all IDs are text; queries do full scans |
 | Requirements | Enforced link integrity, collection renames, typed secondary indexes (single, compound, unique), design portable across SQL and KV backends |
+| Decision Drivers | Query path must stay portable to KV backends (no backend-specific JSON operators); referential integrity for links is a correctness property; index locality and storage efficiency at scale |
 
 ## Design Principle
 
@@ -43,7 +44,25 @@ of the logical model. SQLite and KV backends implement the same logical
 model with their native primitives. The section "Backend Materializations"
 at the end describes how each backend maps the logical model.
 
+> **Surface ownership**: This ADR owns the **physical storage design** (tables,
+> keys, indexes, partitioning). The normative wire and schema surface — in
+> particular the ESF document format and the validation-rule grammar — lives in
+> the contracts, primarily
+> [CONTRACT-010: ESF Schema Format](../contracts/CONTRACT-010-esf-schema-format.md).
+> The DDL here is the physical design record, not a wire contract.
+
 ## Decision
+
+> **Scope note**: This record bundles 7 related decisions made together;
+> future changes to any one of them require a superseding ADR for that part.
+>
+> - Numeric surrogate collection IDs (§1)
+> - 16-byte UUID entity IDs with UUIDv5 fallback for string IDs (§2)
+> - Dedicated links table with enforced referential integrity (§3)
+> - Physical materialization of schema version history (§4, per ADR-007)
+> - EAV-pattern secondary indexes with declared types, compound sort-key encoding, and the index write/query/lifecycle protocol (§5–§8)
+> - Audit log physical layout (§9)
+> - Validation gate tables and PostgreSQL partitioning strategy (§11–§12)
 
 ### 1. Numeric Collection IDs
 
@@ -668,49 +687,13 @@ field_path, encoded_value), BTreeSet<entity_id>>`. This is primarily
 for test fidelity — ensuring the query planner and index write path are
 exercised in unit tests without requiring a database.
 
-## Consequences
-
-**Positive**:
-- Enforced referential integrity for links across all backends
-  (DB-enforced on SQL, application-enforced on KV)
-- Collection renames are O(1) — update one row / one key
-- UUID storage saves ~55% space per entity ID and improves comparison
-  speed
-- Secondary indexes enable sub-millisecond queries on declared fields
-  without backend-specific operators
-- Compound indexes support multi-field sorts and range scans
-- Unique indexes enforce business rules at the storage level
-- No dependency on GIN, JSONB operators, or any backend-specific query
-  features — design is portable from Postgres to FoundationDB
-- Binary sort key encoding is shared between SQL compound indexes and
-  KV key construction — one implementation, all backends
-- Index lifecycle (building → ready → dropping) prevents queries from
-  using incomplete indexes
-- Index rows cascade-delete with entities; link rows restrict-delete
-
-**Negative**:
-- Index maintenance adds write amplification — every entity write touches
-  N index tables (where N = number of declared indexes)
-- Binary sort key encoding must be implemented and tested carefully
-  (incorrect encoding = incorrect query results)
-- Background index builder adds operational complexity (worker lifecycle,
-  crash recovery, progress tracking)
-- UUID v5 fallback for non-UUID string IDs is a compatibility hack that
-  adds edge cases
-- All backends must implement the full index maintenance protocol,
-  increasing adapter complexity
-
-**Migration**:
-- Existing databases need a migration from text-PK schema to
-  integer-PK + UUID schema
-- Existing links in pseudo-collections must be migrated to the dedicated
-  links table
-- Existing entity data is unchanged
-
 ## 11. Validation Gate Tables
 
-See FEAT-019 for the full gate model. The gate tables extend the
-physical schema:
+See FEAT-019 for the full gate model. The **validation-rule grammar surface**
+(how rules and gates are expressed in ESF documents) is owned by
+[CONTRACT-010: ESF Schema Format](../contracts/CONTRACT-010-esf-schema-format.md);
+this section owns only the physical storage of gate definitions and
+materialized gate status. The gate tables extend the physical schema:
 
 **Gate definitions** — registered when a schema is saved:
 
@@ -860,6 +843,86 @@ Partitioning is recommended when:
 - Audit log exceeds 10M rows (retention via partition drop)
 - Any single collection exceeds 1M entities
 - Collection drop needs to be instant (not a long DELETE)
+
+## Alternatives
+
+*Alternatives reconstructed retrospectively (2026-06-10) for record completeness.*
+
+| Option | Pros | Cons | Evaluation |
+|--------|------|------|------------|
+| GIN index on JSONB `data` | Zero index declarations; Postgres-native; covers ad-hoc queries | Postgres-only — no SQLite or KV equivalent; query planner becomes backend-specific; no typed range/sort semantics; no unique constraints on fields | Rejected: breaks portability to FoundationDB/Fjall, the central design constraint |
+| Keep links as pseudo-collection entities (status quo) | No schema change; links reuse entity machinery | No referential integrity; reverse lookups need a manually maintained mirror collection; dangling links possible | Rejected: link integrity is a correctness property |
+| Text PKs and text entity IDs (status quo) | Human-readable rows; no UUID mapping layer | Collection renames cascade across every table; ~55% more storage per ID; worse index density and comparison speed | Rejected: rename support and index locality justify surrogate keys |
+| One physical table per collection (per-collection DDL) | Native columns per field; conventional SQL modeling | Schema changes require DDL migrations at runtime; impossible to map to a KV key-space generically | Rejected: dynamic schemas need a fixed physical model |
+| **EAV typed index tables + compound sort-key encoding** | Portable across SQL and KV; typed range/sort semantics; unique constraints; one encoding for SQL and KV keys | Write amplification per declared index; encoding must be exactly right | **Selected: the only option meeting the portability constraint with typed query acceleration** |
+
+## Consequences
+
+**Positive**:
+- Enforced referential integrity for links across all backends
+  (DB-enforced on SQL, application-enforced on KV)
+- Collection renames are O(1) — update one row / one key
+- UUID storage saves ~55% space per entity ID and improves comparison
+  speed
+- Secondary indexes enable sub-millisecond queries on declared fields
+  without backend-specific operators
+- Compound indexes support multi-field sorts and range scans
+- Unique indexes enforce business rules at the storage level
+- No dependency on GIN, JSONB operators, or any backend-specific query
+  features — design is portable from Postgres to FoundationDB
+- Binary sort key encoding is shared between SQL compound indexes and
+  KV key construction — one implementation, all backends
+- Index lifecycle (building → ready → dropping) prevents queries from
+  using incomplete indexes
+- Index rows cascade-delete with entities; link rows restrict-delete
+
+**Negative**:
+- Index maintenance adds write amplification — every entity write touches
+  N index tables (where N = number of declared indexes)
+- Binary sort key encoding must be implemented and tested carefully
+  (incorrect encoding = incorrect query results)
+- Background index builder adds operational complexity (worker lifecycle,
+  crash recovery, progress tracking)
+- UUID v5 fallback for non-UUID string IDs is a compatibility hack that
+  adds edge cases
+- All backends must implement the full index maintenance protocol,
+  increasing adapter complexity
+
+**Migration**:
+- Existing databases need a migration from text-PK schema to
+  integer-PK + UUID schema
+- Existing links in pseudo-collections must be migrated to the dedicated
+  links table
+- Existing entity data is unchanged
+
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Binary sort-key encoding bug yields silently wrong query results | Medium | High | Property tests comparing encoded-key ordering against decoded-value ordering for every type; one shared encoder for SQL and KV |
+| Write amplification from index maintenance degrades write latency | Medium | Medium | Indexes are opt-in per schema; delete-then-insert is batched in the entity write transaction; benchmarks gate regressions |
+| Background index builder crashes mid-build leaving a stuck `building` index | Medium | Medium | Index state machine is restartable; rebuild operation provides manual repair |
+| UUIDv5 fallback for non-UUID string IDs creates collision/round-trip edge cases | Low | Medium | Deterministic namespace hash; original ID preserved under `_original_id`; covered by adapter conformance tests |
+| Migration from text-PK schema corrupts existing deployments | Low | High | Migration tested on both backends against the L4 conformance suite before release |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| Indexed equality/range queries return in sub-millisecond without backend-specific operators | Any query path requiring a Postgres-only feature — portability constraint violated |
+| L4 conformance: identical index/link/rename behavior on memory, SQLite, PostgreSQL | Any backend divergence in index or referential-integrity behavior |
+| Entity delete blocked by existing links (RESTRICT) and index rows cleaned up (CASCADE) on all backends | Any dangling link or orphaned index row found |
+| Rules-based planner picks a usable index for the common query shapes | If common queries fall back to scans, reconsider cost-based planning; if a KV backend never lands, reconsider whether the GIN-on-JSONB rejection still pays its complexity cost |
+
+## Supersession
+
+- **Supersedes**: ADR-003 Data Layout section (the physical schema defined there)
+- **Superseded by**: None (ADR-011 layers database/schema namespacing above the `collection_id` key without changing these tables)
+
+## Concern Impact
+
+- **rust-cargo**: All adapters (memory, SQLite, PostgreSQL) must implement the index maintenance protocol and shared sort-key encoder — significant `axon-storage` surface growth.
+- **security-owasp**: Unique indexes enforce integrity constraints at the storage level; foreign keys prevent dangling links; all index access uses parameterized statements.
 
 ## Not In Scope
 

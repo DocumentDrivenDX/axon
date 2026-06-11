@@ -27,8 +27,20 @@ The control plane must operate without touching tenant data — all monitoring i
 | Problem | No centralized management for multi-instance deployments. Operators must manually track and monitor each Axon instance |
 | Current State | Each Axon instance runs independently. Multi-tenant deployments require manual orchestration |
 | Requirements | One PostgreSQL-backed control plane managing multiple tenant instances. BYOC deployments. Data sovereignty guarantee. |
+| Decision Drivers | BYOC commercial model requires customer-cloud deployment; data sovereignty is a sales-blocking guarantee; operators need one pane of glass without the CP becoming a data-path dependency |
 
 ## Decision
+
+**Scope note** — this ADR bundles several decisions made together (kept in one
+file; no split):
+- Out-of-band control-plane topology with metadata-only monitoring (§1, §7)
+- PostgreSQL as the CP backing store, separate from tenant stores (§2)
+- HMAC-signed tokens over mTLS for CP-to-instance auth (§3)
+- BYOC registration flow and token distribution (§4)
+- Health polling model and snapshot storage (§5)
+- Metadata-only tenant lifecycle management (§6)
+- Air-gapped local CP mode (§8)
+- CP API surface (§10)
 
 ### 1. Architecture Overview
 
@@ -74,6 +86,11 @@ The control plane must operate without touching tenant data — all monitoring i
 **Important**: This database is **completely separate** from any tenant's Axon backing store. No entity data ever touches the CP DB.
 
 #### Schema
+
+> **Superseded (tenant model)**: the tenant model below — one tenant per
+> managed instance, with `tenant_id` doubling as the instance identity — is
+> superseded by [ADR-018](ADR-018-tenant-user-credential-model.md)'s tenant,
+> user, and credential model. This schema is the decision-time record.
 
 ```sql
 -- Tenant registry (one row per managed tenant instance)
@@ -450,6 +467,12 @@ crates/
 
 ### 10. API Surface
 
+> **Superseded (route prefix)**: the `/cp/*` route prefix throughout this
+> section is superseded by [ADR-018](ADR-018-tenant-user-credential-model.md)'s
+> `/control/*` prefix. The normative control-plane endpoint surface is owned by
+> [CONTRACT-001](../contracts/CONTRACT-001-http-api-surface.md). This section
+> is the decision-time record.
+
 #### Tenant Management
 
 | Method | Path | Description |
@@ -495,7 +518,7 @@ crates/
 - Instance should validate CP's TLS certificate (chain of trust)
 - Internal deployments can use self-signed certificates with config option
 
-### 12. Consequences
+## Consequences
 
 **Positive**:
 - CP never touches tenant data — strong data sovereignty guarantee
@@ -511,14 +534,6 @@ crates/
 - Health polling adds network traffic (60 queries/tenant/minute)
 - CP must be deployed separately from tenant instances
 
-**Risks**:
-| Risk | Mitigation |
-|------|-----------|
-| CP becomes unavailable, cannot provision new tenants | Tenant instances continue serving data. CP is out-of-band. |
-| Instance secret compromised, CP impersonation | Secret rotation, token expiration, IP-based whitelisting |
-| CP DB compromised, tenant metadata exposed | Encryption at rest, network isolation, least-privilege DB roles |
-| Health poller overloaded, slow response | Horizontal scaling (multiple CP instances), circuit breakers |
-
 **V1 Scope**:
 - Single CP instance (no replication)
 - HTTP API only (no gRPC)
@@ -526,7 +541,16 @@ crates/
 - Health polling (no proactive alerts)
 - Local mode (no external dependencies)
 
-### 13. Validation
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| CP becomes unavailable, cannot provision new tenants | M | M | Tenant instances continue serving data; CP is out-of-band |
+| Instance secret compromised, CP impersonation | L | H | Secret rotation, token expiration, IP-based whitelisting |
+| CP DB compromised, tenant metadata exposed | L | H | Encryption at rest, network isolation, least-privilege DB roles |
+| Health poller overloaded, slow response | M | L | Horizontal scaling (multiple CP instances), circuit breakers |
+
+## Validation
 
 | Criterion | Test |
 |-----------|------|
@@ -538,10 +562,27 @@ crates/
 | CP-to-instance auth uses HMAC tokens | Test: malformed token rejected |
 | Dashboard query works | Health check endpoint returns latest per tenant |
 
-### 14. References
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: [ADR-018](ADR-018-tenant-user-credential-model.md) —
+  partial: the tenant model (§2 schema: one tenant per managed instance) and
+  the `/cp/*` route prefix (§3, §4, §10; now `/control/*`) are superseded by
+  ADR-018. The CP topology, PostgreSQL backing store, HMAC auth, health
+  monitoring, data sovereignty guarantee, and air-gap mode stand.
+
+## Concern Impact
+
+- **Concern selection**: Establishes the data-sovereignty concern as a hard
+  constraint — the control plane never reads or stores tenant entity data.
+- **Practice override**: None.
+
+## References
 
 - [ADR-003: Backing Store Architecture](ADR-003-backing-store-architecture.md)
 - [ADR-011: Multi-Tenancy and Namespace Hierarchy](ADR-011-multi-tenancy-and-namespace-hierarchy.md)
+- [ADR-018: Tenant, User, and Credential Model](ADR-018-tenant-user-credential-model.md)
+- [CONTRACT-001: HTTP API Surface](../contracts/CONTRACT-001-http-api-surface.md)
 - [FEAT-012: Authorization](../../01-frame/features/FEAT-012-authorization.md)
 - [FEAT-014: Multi-Tenancy](../../01-frame/features/FEAT-014-multi-tenancy.md)
 - [FEAT-025: Control Plane](../../01-frame/features/FEAT-025-control-plane.md)

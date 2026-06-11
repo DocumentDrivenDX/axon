@@ -39,6 +39,13 @@ The policy layer must solve harder problems than endpoint authorization:
 - Preview and approval must be transactionally bound to the eventual mutation.
 - Policy changes must be versioned, explainable, and auditable over time.
 
+| Aspect | Description |
+|--------|-------------|
+| Problem | No policy model that is authorable, agent-discoverable, enforceable at the data layer, and identical across GraphQL and MCP |
+| Current State | FEAT-012 grants give coarse per-database ops; no row/field/transition policy, no preview/approval binding |
+| Requirements | Closed, analyzable grammar; row/field/transition/envelope rules; mutation intents binding preview, approval, and execution |
+| Decision Drivers | Governed agent writes are the product wedge; GraphQL traversal must not leak hidden entities; time-of-check/time-of-use approval bugs must be impossible by construction |
+
 ## Decision
 
 ### 1. ESF Is The Policy Source Of Truth
@@ -53,6 +60,10 @@ Runtime requests evaluate against the schema/policy snapshot active when the
 request begins.
 
 ### 2. Policies Use A Closed Declarative Grammar
+
+> Normative policy grammar is now owned by
+> [CONTRACT-004](../contracts/CONTRACT-004-policy-grammar.md); this section is
+> the decision-time record.
 
 Policy authoring uses YAML or JSON in the same document family as ESF. The
 grammar is closed, typed, and analyzable. Axon does not accept arbitrary code,
@@ -277,6 +288,11 @@ Commit validation checks:
 
 ### 7. GraphQL Is The Primary Policy Surface
 
+> Normative GraphQL policy/intent field surface is now owned by
+> [CONTRACT-002](../contracts/CONTRACT-002-graphql-surface.md) and
+> [CONTRACT-004](../contracts/CONTRACT-004-policy-grammar.md); this section is
+> the decision-time record.
+
 GraphQL exposes policy and intent workflows as first-class fields and
 mutations:
 
@@ -330,6 +346,17 @@ keys. Erasure deletes or destroys the key material, preserves non-sensitive
 audit metadata, and records an erasure tombstone. Policy explanations must not
 reveal redacted values after erasure.
 
+## Alternatives
+
+*Alternatives reconstructed retrospectively (2026-06-10).*
+
+| Option | Pros | Cons | Evaluation |
+|--------|------|------|------------|
+| Cedar (AWS) | Proven policy language; formal analysis tooling | Foreign subject/resource model; no native row→GraphQL nullability or intent binding; external dependency in the hot path | Rejected: cannot drive GraphQL type-shape consequences or intent workflow |
+| OPA / Rego | Very expressive; large ecosystem | Turing-complete-ish; hard to statically analyze for index requirements; policy drift from ESF | Rejected: explainability and compile-time guarantees lost |
+| SQL row-level security (RLS) | Battle-tested enforcement in the store | PostgreSQL-only; invisible to GraphQL/MCP generation; no envelopes/intents; per-backend divergence | Rejected: policy must compile to all surfaces, not one backend |
+| **Closed declarative grammar in ESF `access_control`** | Typed, analyzable, versioned with schema; one source compiled to GraphQL, MCP, audit | Less expressive than general frameworks; new grammar to maintain | **Selected: testable, explainable, surface-portable by construction** |
+
 ## Consequences
 
 - Policy authoring is more constrained than general-purpose authorization
@@ -348,6 +375,48 @@ reveal redacted values after erasure.
 - A durable long-running workflow engine.
 - Broad REST parity for policy authoring, preview, or approval.
 - Global cross-tenant policy joins.
+
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Closed grammar proves too weak for real authorization needs | M | H | Grammar designed to evolve (attributes, target_policy); compile reports surface gaps early |
+| Row-policy filtering degrades GraphQL pagination performance | M | M | Indexability requirements emitted by the compiler; relationship-heavy schema validation before broad expansion |
+| Intent staleness checks too strict, causing approval churn | M | L | Stale-fail with re-preview is deliberate; monitor stale-rate |
+| Policy/GraphQL nullability changes break clients on policy edits | M | M | Schema versioning discipline; compile report names nullability changes |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| GraphQL traversal/pagination/counts leak no hidden entities under row policy | Any leak found in relationship-heavy schema tests |
+| Intent execution rejects on any hash/version/pre-image drift | Any TOCTOU bypass |
+| Identical decisions for the same operation across GraphQL and MCP | Contract-test divergence (CONTRACT-002 vs CONTRACT-003/004) |
+| Policy compile reports actionable for fixture-test loop | Authoring friction reports |
+
+## Supersession
+
+- **Supersedes**: None (layers on FEAT-012 grants; amended ADR-012 §4a and
+  ADR-013 core tools in place — see those ADRs' Amendment sub-headings)
+- **Superseded by**: None
+
+## Concern Impact
+
+- **Concern selection**: Establishes governed-writes as the core safety
+  concern: closed grammar, fixed evaluation order, intent-bound approval.
+  Constrains all write surfaces to one policy semantics.
+- **Practice override**: None.
+
+## References
+
+- [ADR-012: GraphQL Query Layer](ADR-012-graphql-query-layer.md)
+- [ADR-013: MCP Server](ADR-013-mcp-server.md)
+- [ADR-018: Tenant, User, and Credential Model](ADR-018-tenant-user-credential-model.md)
+- [CONTRACT-002: GraphQL Surface](../contracts/CONTRACT-002-graphql-surface.md)
+- [CONTRACT-004: Policy Grammar](../contracts/CONTRACT-004-policy-grammar.md)
+- [FEAT-012: Authorization](../../01-frame/features/FEAT-012-authorization.md)
+- [FEAT-029: Access Control (Policy)](../../01-frame/features/FEAT-029-access-control.md)
+- [FEAT-030: Mutation Intents and Approval](../../01-frame/features/FEAT-030-mutation-intents-approval.md)
 
 ## Follow-Up Work
 

@@ -39,6 +39,7 @@ constraints. This is the same information a GraphQL schema encodes.
 | Problem | No declarative query language; no way to fetch related entities in one request; no subscription protocol for change feeds |
 | Current State | Structured API with FilterNode/SortField. Single-collection queries only. No subscriptions |
 | Requirements | Declarative read queries with relationship traversal, field selection, filtering, pagination, and real-time subscriptions |
+| Decision Drivers | ESF already encodes the full data model; agents and the admin UI need a self-documenting, typed API; avoiding hand-maintained schema duplication; one approval/policy path across all surfaces |
 
 ## Decision
 
@@ -49,6 +50,20 @@ GraphQL is the primary application API surface for reads, writes, policy
 explanation, mutation preview/approval, and audit workflows. MCP mirrors these
 semantics for agents; REST/JSON is a fallback and operational compatibility
 surface.
+
+**Scope note** — this ADR bundles several decisions made together (kept in one
+file; no split):
+- Auto-generate the GraphQL schema from ESF at runtime (no hand-written SDL)
+- ESF → GraphQL type/filter/sort/connection mapping rules (§1)
+- Root query surface including generic `entity`/`entities` access (§2)
+- Audit-log-backed subscriptions over graphql-ws (§3)
+- Full auto-generated mutation surface including transactions (§4)
+- Resolver/DataLoader execution architecture and index integration (§5)
+- Server endpoint placement (§6) and `async-graphql` crate selection (§8)
+
+> Normative GraphQL surface is now owned by
+> [CONTRACT-002](../contracts/CONTRACT-002-graphql-surface.md); this section is
+> the decision-time record.
 
 ### 1. Schema Generation
 
@@ -378,6 +393,14 @@ type Mutation {
 ```
 
 ### 4a. Policy And Mutation Intent Fields
+
+#### Amendment (2026-04-22, with ADR-019)
+
+This section was added in place when ADR-019 introduced policy authoring and
+mutation intents; it extends the original 2026-04-05 decision rather than
+revising it. Normative field surface is now owned by
+[CONTRACT-002](../contracts/CONTRACT-002-graphql-surface.md) and
+[CONTRACT-004](../contracts/CONTRACT-004-policy-grammar.md).
 
 ADR-019, FEAT-029, and FEAT-030 add GraphQL policy and approval workflows:
 
@@ -764,6 +787,13 @@ indexed filters are just faster.
 
 ### 6. Server Integration
 
+> **Superseded (routing)**: the un-prefixed `/graphql` and `/graphql/ws`
+> endpoints below are superseded by ADR-018's tenant-prefixed routing
+> (`/t/{tenant}/d/{database}/...`). The normative endpoint surface is owned by
+> [CONTRACT-001](../contracts/CONTRACT-001-http-api-surface.md) and
+> [CONTRACT-002](../contracts/CONTRACT-002-graphql-surface.md); this section is
+> the decision-time record.
+
 The axon-server binary gains GraphQL endpoints:
 
 ```
@@ -915,6 +945,17 @@ mutation {
 }
 ```
 
+## Alternatives
+
+*Alternatives reconstructed retrospectively (2026-06-10).*
+
+| Option | Pros | Cons | Evaluation |
+|--------|------|------|------------|
+| Hand-written GraphQL schema | Full control over surface; conventional tooling | Duplicates ESF; drifts from live schemas; manual maintenance per collection | Rejected: defeats schema-first design |
+| Extend structured REST API only | No new dependency; already exists | No relationship traversal in one request; not self-documenting; no subscription protocol | Rejected: does not meet requirements |
+| gRPC-only typed API | Strong typing, streaming | Poor browser/agent ergonomics; codegen burden per client; no introspection-driven UI | Rejected: wrong fit for admin UI and agents |
+| **GraphQL auto-generated from ESF** | Zero-maintenance, self-documenting, traversal + subscriptions, reuses indexes | Dynamic generation complexity; depth-limit work; JSON scalars for patch/tx | **Selected: ESF already encodes everything GraphQL needs** |
+
 ## Consequences
 
 **Positive**:
@@ -940,7 +981,9 @@ mutation {
   can't use typed inputs)
 
 **Deferred**:
-- Cypher graph query language (not scheduled)
+- Cypher graph query language (not scheduled) — **superseded by
+  [ADR-021](ADR-021-graph-query-language.md)** (2026-05): Cypher was
+  subsequently scheduled and accepted as the graph query language
 - SQL DML for batch operations (not scheduled)
 - Vector similarity search (`nearest` filter) (not scheduled)
 - Full-text search (`match` filter) (not scheduled)
@@ -950,13 +993,53 @@ types in the GraphQL schema (e.g., `filter: { embedding: { near: {...} } }`)
 or as new query root fields. The GraphQL layer is extensible without
 breaking existing queries.
 
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Abusive deep/complex queries exhaust the server | M | H | Depth and complexity limits enforced at execution (CONTRACT-002) |
+| Schema regeneration races with in-flight requests | L | M | Atomic schema swap; requests bind to a schema snapshot |
+| `JSON` scalar inputs (patch, transactions) bypass type safety | M | M | Server-side ESF validation on every write |
+| Audit-log polling for subscriptions adds latency/load at scale | M | M | Planned in-process broadcast channel optimization |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| GraphQL covers all structured-API read/write operations without hand-written SDL | Any collection requires hand-authored schema patches |
+| Schema regeneration < 1ms for 20 collections | Regeneration latency becomes user-visible |
+| Subscription delivery works for admin UI and agents at V1 scale | Polling latency or load forces the broadcast-channel redesign |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None (decision stands). Partial supersessions:
+  - The "Cypher (not scheduled)" deferral is superseded by
+    [ADR-021](ADR-021-graph-query-language.md).
+  - The un-prefixed `/graphql` and `/graphql/ws` endpoints (§6) are superseded
+    by ADR-018's tenant-prefixed routing; see CONTRACT-001/CONTRACT-002.
+- **Amended**: §4a added 2026-04-22 with ADR-019 (policy and mutation intent
+  fields).
+
+## Concern Impact
+
+- **Concern selection**: Establishes GraphQL as the primary application API
+  surface concern; constrains all later surface decisions (MCP mirrors it,
+  REST is a compatibility fallback).
+- **Practice override**: None.
+
 ## References
 
 - [ADR-002: Schema Format](ADR-002-schema-format.md)
 - [ADR-010: Physical Storage and Secondary Indexes](ADR-010-physical-storage-and-secondary-indexes.md)
+- [ADR-018: Tenant, User, and Credential Model](ADR-018-tenant-user-credential-model.md)
+- [ADR-019: Policy Authoring and Intents](ADR-019-policy-authoring-and-intents.md)
+- [ADR-021: Graph Query Language](ADR-021-graph-query-language.md)
+- [CONTRACT-001: HTTP API Surface](../contracts/CONTRACT-001-http-api-surface.md)
+- [CONTRACT-002: GraphQL Surface](../contracts/CONTRACT-002-graphql-surface.md)
 - [FEAT-002: Schema Engine](../../01-frame/features/FEAT-002-schema-engine.md)
 - [FEAT-004: Entity Operations](../../01-frame/features/FEAT-004-entity-operations.md)
-- [FEAT-009: Graph Traversal Queries](../../01-frame/features/FEAT-009-graph-traversal-queries.md)
+- [FEAT-009: Unified Graph Query (Cypher)](../../01-frame/features/FEAT-009-unified-graph-query.md)
 - [FEAT-013: Secondary Indexes](../../01-frame/features/FEAT-013-secondary-indexes.md)
 - [async-graphql crate](https://crates.io/crates/async-graphql)
 - [Relay Cursor Connections Spec](https://relay.dev/graphql/connections.htm)

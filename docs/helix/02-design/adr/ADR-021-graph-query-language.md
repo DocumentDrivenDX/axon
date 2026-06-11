@@ -55,6 +55,13 @@ ADR-020 rejected RDF as Axon's primitive shape, which removes SPARQL from
 contention as a *primary* language. The remaining choice is between Cypher,
 GraphQL extensions, and a custom DSL.
 
+| Aspect | Description |
+|--------|-------------|
+| Problem | Five PRD query primitives exposed through fragmented surfaces; no single-round-trip predicate over link target state |
+| Current State | GraphQL connection filters, depth-bounded traversal (FEAT-009), link discovery (FEAT-020) — separate specs, one underlying planner |
+| Requirements | One read language, one planner, full ADR-019 policy enforcement, FEAT-013 index acceleration |
+| Decision Drivers | DDx ready-queue query (axon-05c1019d) inexpressible today; spec/test/policy surface multiplies per query primitive; LLMs generate Cypher reliably |
+
 ## Decision
 
 **Axon adopts a read-only subset of openCypher as the unified read-side query
@@ -84,6 +91,10 @@ write clauses (`CREATE`, `MERGE`, `SET`, `DELETE`, `REMOVE`) are not part
 of the V1 subset.
 
 ## Supported subset (V1)
+
+> Normative V1 grammar surface is now owned by
+> [CONTRACT-007](../contracts/CONTRACT-007-cypher-query-surface.md); this
+> section is the decision-time record.
 
 The V1 implementation supports the following openCypher constructs. Anything
 not listed is rejected at parse time.
@@ -378,6 +389,35 @@ Test surfaces:
 - **DDx benchmark** (closes axon-05c1019d) — ready/blocked queue at 1k
   and 10k beads with the latency targets in PRD §4 / FEAT-009.
 
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| openCypher / ISO GQL divergence forces subset adjustment | L | M | Track GQL ratification; subset is conservative |
+| `EXISTS` leaks hidden-entity existence under policy | L | H | Dedicated policy contract tests; highest-risk subsystem flagged |
+| Ad-hoc queries become a cost/abuse vector | M | M | Parse-time schema validation, cardinality budgets, depth caps, 30s timeout |
+| Interpreted executor too slow for deep traversals on Postgres | M | M | Apache AGE native path as additive future optimization |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| DDx ready/blocked queue answered in one round-trip within PRD §4 / FEAT-009 latency targets at 1k and 10k beads | Benchmark failure (axon-05c1019d) |
+| Policy contract suite passes for row policy, redaction, `EXISTS`, and policy-filtered counts | Any hidden-existence leak |
+| Unindexed plans rejected above threshold with actionable diagnostics | Operators report opaque `unsupported_query_plan` errors |
+
+## Supersession
+
+- **Supersedes**: The "Cypher (not scheduled)" deferral in
+  [ADR-012](ADR-012-graphql-query-layer.md) Consequences (Deferred list)
+- **Superseded by**: None
+
+## Concern Impact
+
+- **Concern selection**: Selects the read-query concern: one language, one
+  planner, one policy enforcement point. FEAT-009 absorbs FEAT-020.
+- **Practice override**: None.
+
 ## Open questions
 
 - **GQL convergence risk.** ISO 39075:2024 (GQL) is published; openCypher
@@ -398,6 +438,7 @@ Test surfaces:
 - Apache AGE (Cypher on Postgres): https://age.apache.org/
 - Memgraph (Cypher implementation): https://memgraph.com/
 - ISO/IEC 39075:2024 (GQL — published April 2024)
+- [CONTRACT-007: Cypher Query Surface](../contracts/CONTRACT-007-cypher-query-surface.md)
 - ADR-020: Data Model — Document-Shaped Entities, Not Native RDF
 - ADR-010: Physical Storage and Secondary Indexes
 - ADR-019: Policy Authoring and Mutation Intents

@@ -44,10 +44,18 @@ explicitly deferred by the FEAT-022 spec. This ADR does not design them.
 | Problem | No preventive controls to cap agent mutation rate or constrain entity scope |
 | Current State | Auth middleware (FEAT-012) provides RBAC but no per-agent rate or scope limits |
 | Requirements | Token-bucket rate limiter per actor; entity-filter scope constraint per credential; audit entries for all rejections |
+| Decision Drivers | Misbehaving agents can bulk-mutate before humans intervene; preventive controls must add <1ms overhead, sit between auth and storage, and stay transport-agnostic |
 
 ## Decision
 
 ### 1. Rate Limiting Strategy
+
+> **Superseded (algorithm)**: this token-bucket section is superseded by
+> [ADR-024](ADR-024-rate-limiting-semantics.md), which records the per-actor
+> sliding-window semantics actually implemented. The normative rate-limit
+> response envelope is owned by
+> [CONTRACT-001](../contracts/CONTRACT-001-http-api-surface.md). This section
+> is the decision-time record.
 
 **Token-bucket algorithm** per agent identity.
 
@@ -305,6 +313,17 @@ The guardrails implementation lives in `crates/axon-core/src/guardrails.rs`
 from the standard library, plus the existing `AxonError` and `CallerIdentity`
 types from `axon-core`.
 
+## Alternatives
+
+*Alternatives reconstructed retrospectively (2026-06-10).*
+
+| Option | Pros | Cons | Evaluation |
+|--------|------|------|------------|
+| No preventive controls (audit-only) | Zero overhead | Bad agents run unchecked until a human reads the audit log | Rejected: audit is reactive, FEAT-022 demands prevention |
+| External rate limiter (Redis / reverse proxy) | Cluster-wide limits | New dependency; per-actor semantics hard at the proxy; misses scope checks | Rejected: violates zero-dependency, transport-agnostic goals |
+| Sliding-window counters | Simple; exact per-window caps | Less natural burst expression (at decision time) | Rejected then — later adopted in implementation; see ADR-024 |
+| **In-process token bucket per actor** | Burst + sustained rate in one structure; <1ms; no dependencies | Per-instance only; state lost on restart | **Selected: simplest mechanism meeting FEAT-022 at V1 scale** |
+
 ## Consequences
 
 **Positive**:
@@ -347,10 +366,46 @@ types from `axon-core`.
   requirement; deferred to a follow-on bead after the per-second/per-minute
   limits are proven
 
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Multi-instance deployments exceed intended global rates | M | M | Per-instance limits documented; distributed limiting deferred |
+| Restart resets limiter state, allowing bursts | M | L | Acceptable for V1; noted operational behavior |
+| Field-equality scope filter too weak for real tenancy needs | M | M | Compound filters deferred; ADR-019 row policies cover richer cases |
+| Post-creation scope drift (filter field edited by another actor) | L | M | Documented limitation; row-policy enforcement covers reads |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| Guardrail checks add <1ms p99 to mutation latency | Benchmark regression |
+| Rejections produce `guardrail_rejection` audit entries with structured detail | Any silent rejection |
+| Rate/scope rejections map to 429 + Retry-After / scope errors per CONTRACT-001 | Contract-test divergence |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: [ADR-024](ADR-024-rate-limiting-semantics.md) — partial:
+  the token-bucket limiter algorithm (§1) is superseded by ADR-024's per-actor
+  sliding-window semantics. The normative rate-limit response envelope
+  (`retry_after_seconds`) is owned by
+  [CONTRACT-001](../contracts/CONTRACT-001-http-api-surface.md). Scope
+  constraints (§2), middleware position (§3), and rejection auditing (§4)
+  stand.
+
+## Concern Impact
+
+- **Concern selection**: Establishes the preventive-safety concern for agent
+  writes (rate + scope), layered after RBAC and before storage.
+- **Practice override**: None.
+
 ## References
 
 - [FEAT-022: Agent Guardrails](../../01-frame/features/FEAT-022-agent-guardrails.md)
 - [FEAT-012: Authorization](../../01-frame/features/FEAT-012-authorization.md)
 - [FEAT-003: Audit Log](../../01-frame/features/FEAT-003-audit-log.md)
-- [ADR-005: Authentication (Tailscale tsnet)](ADR-005-authentication-tailscale-tsnet.md)
+- [ADR-005: Authentication via Tailscale LocalAPI](ADR-005-authentication-tailscale-localapi.md)
+- [ADR-024: Rate Limiting Semantics](ADR-024-rate-limiting-semantics.md)
+- [CONTRACT-001: HTTP API Surface](../contracts/CONTRACT-001-http-api-surface.md)
 - [Token Bucket Algorithm](https://en.wikipedia.org/wiki/Token_bucket)

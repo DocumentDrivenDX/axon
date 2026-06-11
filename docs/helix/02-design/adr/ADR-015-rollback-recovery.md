@@ -39,7 +39,7 @@ without relitigating the core model for every rollback variant.
 | Problem | Define rollback semantics that preserve append-only audit, OCC invariants, and cross-entity atomicity |
 | Current State | Single-entity `EntityRevert` exists (US-008); no transaction-level or point-in-time rollback; no dry-run; no shared rollback grouping |
 | Requirements | FEAT-023 acceptance criteria: entity/transaction/point-in-time rollback, dry-run, conflict reporting, rollback-of-rollback |
-| Prior context | ADR-004 (OCC + version vectors), FEAT-003 (append-only audit log with full before/after), FEAT-008 (ACID transactions with shared `transaction_id`) |
+| Decision Drivers | ADR-004 (OCC + version vectors), FEAT-003 (append-only audit log with full before/after), and FEAT-008 (ACID transactions with shared `transaction_id`) are settled invariants — rollback semantics must preserve all three rather than carve exemptions |
 
 ## Decision
 
@@ -562,7 +562,7 @@ is a P1 follow-on.
   `rollback_source_transaction_id: Option<TransactionId>`.
 - New handler entry points in `axon-api/src/handler.rs`:
   `rollback_transaction(req: RollbackTransactionRequest) -> RollbackSummary`,
-  `rollback_point_in_time(req: PointInTimeRollbackRequest) -> RollbackSummary`,
+  `rollback_collection(req: RollbackCollectionRequest) -> RollbackSummary`,
   each with a sibling `..._dry_run` variant sharing the same planner.
 - Dry-run and commit share a `plan_rollback` function that returns a
   `RollbackPlan { writes, conflicts }`. Commit feeds `plan.writes` into
@@ -590,6 +590,15 @@ is a P1 follow-on.
   the planner stage — dry-run will surface this before commit is
   attempted.
 
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Large PIT rollbacks are expensive (one compensating write + audit entry per entity) | M | M | Cost scales with mutations reversed, not log size; chunking; dry-run sizing first |
+| Best-effort PIT rollback leaves partially-applied state | M | M | `partial_failures` reporting; idempotent retry; strict-mode follow-on |
+| Callers misuse `rollback_transaction` on create/delete transactions | M | L | Fail-fast `InvalidOperation` before any storage transaction opens |
+| Concurrent writers invalidate dry-run previews | M | L | Conflict list shared between dry-run and commit; caller retry loop |
+
 ## Validation
 
 | Success Metric | Review Trigger |
@@ -601,6 +610,23 @@ is a P1 follow-on.
 | Dry-run produces no audit entries and no storage writes under load | Any audit/storage write observed during dry-run |
 | Single-entity rollback p99 < 10ms (FEAT-023 NFR) | Benchmark regression |
 
+## Supersession
+
+- **Supersedes**: None (extends US-008 single-entity revert; `EntityRevert` is
+  preserved alongside the new `EntityRollback`)
+- **Superseded by**: None
+- **Amended**: §7 (Known Constraints: updates-only transaction rollback,
+  best-effort PIT rollback) was added in place during FEAT-023 delivery; the
+  `rollback_collection`/`RollbackCollectionRequest` names it introduced are the
+  canonical V1 names.
+
+## Concern Impact
+
+- **Concern selection**: Constrains the auditability concern — rollback is a
+  compensating write, never a history rewrite; append-only audit (INV-003) and
+  OCC (ADR-004) hold for recovery operations too.
+- **Practice override**: None.
+
 ## References
 
 - [FEAT-023: Rollback and Recovery](../../01-frame/features/FEAT-023-rollback-recovery.md)
@@ -608,6 +634,6 @@ is a P1 follow-on.
 - [FEAT-008: ACID Transactions](../../01-frame/features/FEAT-008-acid-transactions.md)
 - [ADR-004: Transaction Model — Optimistic Concurrency Control](./ADR-004-transaction-model.md)
 - [ADR-014: Change Feeds — Debezium CDC](./ADR-014-change-feeds-debezium-cdc.md)
-- [Audit log implementation](../../../crates/axon-audit/src/entry.rs)
-- [Transaction implementation](../../../crates/axon-api/src/transaction.rs)
-- [Existing single-entity revert](../../../crates/axon-api/src/handler.rs)
+- [Audit log implementation](../../../../crates/axon-audit/src/entry.rs)
+- [Transaction implementation](../../../../crates/axon-api/src/transaction.rs)
+- [Existing single-entity revert](../../../../crates/axon-api/src/handler.rs)

@@ -10,9 +10,9 @@ ddx:
 ---
 # SPIKE-001: Backing Store Evaluation
 
-**Version**: 0.1.0
-**Date**: 2026-04-04
-**Status**: Draft
+**Version**: 0.2.0
+**Date**: 2026-04-04 (closed 2026-06-10)
+**Status**: Completed (closed as overtaken by events — see Findings/Conclusions below)
 **Author**: Erik LaBianca
 **Time-box**: 2 weeks (implementation), 1 week (analysis and write-up)
 
@@ -632,6 +632,79 @@ The spike is complete when:
 
 ---
 
+## Findings (at closure, 2026-06-10)
+
+**FINDING 1**: ADR-003 (Backing Store Architecture) was accepted on the
+literature-analysis evidence in sections 3-5 of this spike, not on benchmark
+data.
+- **Evidence**: ADR-003 is Accepted and implemented (SQLite/libSQL embedded,
+  PostgreSQL server mode, storage abstraction trait in `axon-storage`); the
+  candidate analysis and comparison matrix above were its inputs.
+- **Implications**: the spike's analysis phase delivered its value; the
+  measurement phase did not run.
+
+**FINDING 2**: The benchmark framework (section 6, BM-01..BM-10; section 7
+decision matrix) was specified but never executed.
+- **Evidence**: the section 7 decision matrix remains unscored; no
+  `axon-spike-001` benchmark crate or results artifacts exist in the repo.
+- **Implications**: the V1 backend choices are validated by production
+  literature and subsequent implementation experience, not by the planned
+  measurements.
+
+### Measurements
+
+None taken — the benchmark suite was never run. The empty decision matrix in
+section 7 is retained above as the record of what would have been scored.
+
+## Analysis
+
+**Hypothesis**: PARTIALLY CONFIRMED
+**Rationale**: The literature analysis was sufficient to confirm
+SQLite/libSQL (embedded) and PostgreSQL (server) as V1 defaults — ADR-003
+accepted on that basis and implementation has not surfaced contradicting
+evidence. The FDB/Fjall portions of the hypothesis (structured-layer cost,
+LSM audit-log advantage) remain unmeasured.
+
+### Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| FDB/Fjall suitability remains unmeasured; a future scale ceiling forces a backend decision without data | L | M | Recorded as a candidate improvement-backlog item: execute a scoped BM-01/02/05/08 subset against FDB and Fjall if/when a V1 backend hits a performance ceiling |
+
+## Conclusions
+
+**Primary Conclusion**: Closed as overtaken. ADR-003 settled the backing
+store architecture on literature-analysis evidence; running the full
+benchmark suite now would not change an accepted, implemented decision.
+**Confidence**: Medium (analysis-grade, not measurement-grade)
+**Limitations**: No empirical latency/throughput data was gathered; FDB
+structured-layer cost and Fjall maturity were never measured; the section 9
+success criteria were not met as written.
+
+## Recommendations
+
+**RECOMMENDATION**: Keep ADR-003's choices (SQLite/libSQL embedded,
+PostgreSQL server mode) and do not reopen this spike.
+- **Rationale**: The accepted decision is implemented and bearing load; the
+  open uncertainty (FDB/Fjall measurement) is not blocking any current work.
+- **Next Steps**: Record the remaining open risk — empirical FDB/Fjall
+  evaluation (structured-layer cost, LSM audit-log throughput) — as a
+  candidate improvement-backlog item, to be picked up only if a production
+  deployment approaches the limits of the V1 backends.
+- **Concern Impact**: None — this closure ratifies the existing ADR-003
+  concern selection; no concern document change required.
+
+## Artifacts
+
+- Sections 2-5 above: candidate analysis and comparison matrix (the evidence
+  ADR-003 consumed).
+- Section 6: benchmark framework specification (never implemented; reusable
+  if the backlog item is picked up).
+- [ADR-003: Backing Store Architecture](../adr/ADR-003-backing-store-architecture.md)
+  — the accepted decision this spike informed.
+
+---
+
 ## References
 
 - [sqlx - Async Rust SQL toolkit](https://github.com/launchbadge/sqlx)
@@ -648,4 +721,4 @@ The spike is complete when:
 - [rust-rocksdb](https://github.com/zaidoon1/rust-rocksdb)
 - [fjall - Pure Rust LSM storage](https://github.com/fjall-rs/fjall)
 - [sled - Embedded database](https://github.com/spacejam/sled)
-- [Axon FoundationDB DST Research](../../../00-discover/foundationdb-dst-research.md)
+- [Axon FoundationDB DST Research](../../00-discover/foundationdb-dst-research.md)

@@ -39,6 +39,13 @@ This ADR records that decision and the reasoning behind it. It also captures
 which RDF concepts are worth adopting opportunistically without committing to
 the full model.
 
+| Aspect | Description |
+|--------|-------------|
+| Problem | Decide whether Axon's primitive data shape is RDF (triples) or document-and-link before selecting a graph query language |
+| Current State | Document-shaped entities with first-class links (ADR-002, ADR-010); FEAT-009 rewrite pending on this decision |
+| Requirements | Preserve first-class entities/links, mutation-intent version binding, closed-world validation, and OLTP performance targets |
+| Decision Drivers | Vision/persona alignment ("PUT JSON, GET JSON"); FEAT-030 needs atomic entity versions; SPARQL-vs-Cypher choice hinges on the underlying model |
+
 ## Three flavors
 
 "RDF-shaped" is not a single commitment. Three distinct flavors are worth
@@ -58,8 +65,8 @@ This ADR is primarily about flavor 1 — whether Axon's *primitive* shape is RDF
 **Axon is and remains document-shaped. Entities are first-class, deeply nested,
 schema-validated JSON-shaped objects. Links are first-class objects with
 metadata, audit, schema, and lifecycle. Cypher (read-only openCypher subset;
-selection recorded in ADR-021, forthcoming) is the unified read-side query
-language. Native RDF is rejected.**
+selection recorded in [ADR-021](ADR-021-graph-query-language.md), Accepted) is
+the unified read-side query language. Native RDF is rejected.**
 
 We adopt three RDF-adjacent concepts opportunistically (flavor 3):
 
@@ -237,14 +244,43 @@ under either model:
 | Negative | We do not get SPARQL, SHACL, OWL reasoning, or federation. Clients that already speak RDF need translation. The Helix artifact-graph use case (if it lands in Axon) will work but won't get the knowledge-graph-native treatment some might expect. |
 | Neutral | Storage layer unchanged (EAV indexes are EAV indexes). Path addressing unchanged. Multi-backend strategy unchanged. ADR-002's schema-format decision stands. |
 
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| A knowledge-graph use case (Helix artifact graph) later demands flavor 2 | M | M | IRI addressing + JSON-LD/PROV-O anchors keep flavor-2 adoption additive |
+| RDF-speaking integrators need translation layers | L | L | JSON-LD content negotiation; ESF → SHACL export deferred until a consumer asks |
+| PROV-O canonical-vs-additive choice breaks audit consumers if canonical | L | M | Decision deferred to the FEAT-003 amendment with consumer review |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| Mutation intents keep clean entity-version binding (FEAT-030) | Any need to synthesize triple-set versions |
+| Cypher (ADR-021) covers FEAT-009 traversal needs without SPARQL requests | An external integration explicitly requires SPARQL |
+| JSON-LD/PROV-O adoption stays additive and reversible | Either becomes load-bearing for core flows |
+
+## Supersession
+
+- **Supersedes**: None (confirms and extends ADR-002's schema-format decision
+  at the data-model level)
+- **Superseded by**: None
+
+## Concern Impact
+
+- **Concern selection**: Settles the data-model concern: document-shaped
+  entities with first-class links are the primitive; constrains query-language
+  (ADR-021) and serialization choices.
+- **Practice override**: None.
+
 ## Implementation impact
 
 This ADR primarily *constrains* and *unblocks* other work; it does not by
 itself produce code changes. Direct follow-ups:
 
-1. **ADR-021 (graph query language, forthcoming)** — will record the
-   openCypher subset selection. This ADR removes SPARQL from contention,
-   making Cypher the default.
+1. **[ADR-021](ADR-021-graph-query-language.md) (graph query language,
+   Accepted)** — records the openCypher subset selection. This ADR removed
+   SPARQL from contention, making Cypher the default.
 2. **FEAT-009 rewrite** — unified Cypher-based graph query feature. Absorbs
    FEAT-020.
 3. **FEAT-015 amendment** — JSON-LD content negotiation user story.

@@ -24,6 +24,7 @@ lightweight web application that calls the existing HTTP gateway API.
 | Problem | No visual interface for inspecting or managing Axon data |
 | Current State | CLI and API only; all inspection requires terminal commands |
 | Requirements | Browse collections, CRUD entities, view/edit schemas, browse audit log |
+| Decision Drivers | Must reuse the existing HTTP gateway (no new backend surface); fast iteration for a small internal tool; minimal bundle and toolchain footprint outside the Rust workspace |
 
 ## Decision
 
@@ -42,112 +43,29 @@ package manager and runtime, with **Vite** as the bundler.
 | API layer | fetch() to HTTP gateway | No gRPC from browser; reuse existing REST endpoints |
 | Deployment | adapter-static → static files served by axum | No server-side rendering needed; purely client-side SPA |
 
-### Directory Structure
+The UI lives in a standalone `ui/` directory (not a Cargo workspace member)
+and consumes only the existing HTTP gateway. **No new backend routes are
+required** — the normative HTTP endpoint surface is owned by
+[CONTRACT-001](../contracts/CONTRACT-001-http-api-surface.md), not this ADR.
 
-```
-ui/
-  package.json
-  bun.lock
-  vite.config.ts
-  svelte.config.js
-  tsconfig.json
-  src/
-    app.html
-    app.css                        # global styles (dark theme, typography)
-    routes/
-      +layout.svelte               # sidebar nav, health indicator
-      +page.svelte                 # collections list (home)
-      collections/
-        [name]/+page.svelte        # collection detail: entities table + schema tab
-      schemas/
-        +page.svelte               # schema list with version badges
-        [name]/+page.svelte        # schema editor (JSON textarea + save)
-      audit/
-        +page.svelte               # audit log table with filters
-    lib/
-      api.ts                       # typed fetch wrapper for HTTP gateway
-      types.ts                     # Entity, CollectionMetadata, CollectionSchema, AuditEntry
-```
-
-### Development Workflow
-
-```bash
-cd ui
-bun install                         # install dependencies (~1s)
-bun run dev                         # vite dev server on :5173
-                                    # proxies /api/* to localhost:3000
-
-# In another terminal:
-cargo run -p axon-server            # HTTP gateway on :3000, gRPC on :50051
-```
-
-Vite proxies API requests to the running axon-server. No CORS configuration
-needed in development.
-
-### Production Build
-
-```bash
-cd ui
-bun run build                       # outputs static files to ui/build/
-```
-
-### Serving Strategy
-
-**Phase 1 (current)**: axum serves the built static files from a configurable
-`--ui-dir` path. The axon-server binary and UI assets are deployed separately.
-
-```rust
-// In gateway.rs router construction:
-.nest_service("/ui", ServeDir::new(ui_dir))
-```
-
-**Phase 2 (follow-on)**: Embed built assets into the binary via
-`include_dir!` macro in `build.rs` for single-binary distribution.
-
-### API Integration
-
-The UI calls the same HTTP gateway endpoints that already exist:
-
-| UI Feature | HTTP Endpoint |
-|-----------|---------------|
-| List collections | `GET /collections` |
-| Create collection | `POST /collections/{name}` |
-| Describe collection | `GET /collections/{name}` |
-| Drop collection | `DELETE /collections/{name}` |
-| Query entities | `POST /collections/{name}/query` |
-| Get entity | `GET /entities/{collection}/{id}` |
-| Create entity | `POST /entities/{collection}/{id}` |
-| Delete entity | `DELETE /entities/{collection}/{id}` |
-| Get schema | `GET /collections/{name}/schema` |
-| Put schema | `PUT /collections/{name}/schema` |
-| Query audit | `GET /audit/query` |
-| Health check | `GET /health` |
-
-No new backend routes are required.
+**Serving**: Phase 1 — axum serves the built static files from a configurable
+`--ui-dir` path. Phase 2 (follow-on) — embed built assets into the binary for
+single-binary distribution.
 
 ### Authentication
 
-Per ADR-005, auth is deferred. The UI runs as admin with full access to all
-collections and operations. When Tailscale auth is implemented, the UI will
-inherit the same identity — the browser's Tailscale session provides the
-identity via the LocalAPI whois mechanism.
+The admin UI inherits Tailscale identity per ADR-005 — the browser's
+connection arrives over the tailnet, and the server resolves the user via
+the LocalAPI whois mechanism. The UI itself carries no credentials.
 
 ### Scope — V1
 
-**Included**:
-- Browse collections (list, describe, drop)
-- Create collections with schema
-- Browse entities (table view, detail view)
-- Create and delete entities
-- View and edit schemas (JSON editor)
-- Browse audit log with filtering
+**Included**: browse/create/drop collections, browse/create/delete entities,
+view/edit schemas (JSON editor), browse audit log with filtering.
 
-**Not included (follow-on)**:
-- Entity editing (update with OCC)
-- Graph/link visualization
-- Real-time updates (WebSocket/SSE)
-- Schema diff / migration preview
-- Bead lifecycle management UI
+**Not included (follow-on)**: entity editing with OCC, graph/link
+visualization, real-time updates, schema diff/migration preview, bead
+lifecycle management UI.
 
 ## Alternatives Considered
 
@@ -187,18 +105,44 @@ learning curve for UI work, poor developer experience for rapid iteration.
 - Fast iteration: Bun installs in ~1s, Vite HMR updates in <100ms
 - Tiny production bundles: Svelte compiles away the framework
 - Type-safe: TypeScript throughout, shared types with SDK
-- No new backend work: UI consumes existing HTTP API
+- No new backend work: UI consumes existing HTTP API (CONTRACT-001)
 - Clean separation: `ui/` directory is independently buildable
 
 **Negative**:
-- Adds Bun as a build dependency (not just Rust toolchain)
+- Adds Bun as a build dependency (not just Rust toolchain); CI needs
+  `bun install && bun run build` alongside `cargo build`
 - Two dev servers during development (Vite + axon-server)
 - SvelteKit is newer than React — smaller ecosystem for admin UI components
 - Static adapter means no SSR — initial load is blank until JS executes
 
-**Build integration notes**:
-- CI needs `bun install && bun run build` before or alongside `cargo build`
-- `.gitignore` should exclude `ui/node_modules/` and `ui/build/` (but not
-  `ui/.svelte-kit/` which is needed for type generation)
-- The `ui/` directory is not a Cargo workspace member — it's a separate
-  build artifact
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Svelte 5 / SvelteKit churn breaks the build | Medium | Low | UI is isolated in `ui/`; pinned lockfile (`bun.lock`); small app surface makes upgrades cheap |
+| Bun incompatibility with a needed package | Low | Low | Bun is npm-registry compatible; fallback to node for the build is possible without changing the framework choice |
+| UI drifts from the HTTP API | Medium | Medium | CONTRACT-001 owns the endpoint surface; typed `api.ts` wrapper centralizes all calls |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| `cd ui && bun run typecheck && bun run lint && bun test && bun run build` passes in CI | Persistent CI breakage attributable to the Bun/SvelteKit toolchain |
+| Admin tasks (browse, schema edit, audit review) doable without CLI | Users routinely fall back to the CLI for covered tasks |
+| Production bundle stays small (no framework runtime bloat) | Bundle growth that negates the Svelte selection rationale — re-evaluate stack |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None
+
+## Concern Impact
+
+- **typescript-bun (ui)**: This ADR is the source of the typescript-bun concern — it selects SvelteKit/TypeScript/Bun for `area:ui` and records the framework and serving-model overrides in `docs/helix/01-frame/concerns.md`.
+- **security-owasp**: UI carries no credentials (identity inherited per ADR-005); CORS scoping for a cross-origin admin UI is recorded as a project override.
+
+## References
+
+- [CONTRACT-001: HTTP API Surface](../contracts/CONTRACT-001-http-api-surface.md) — owns the endpoint surface the UI consumes
+- [ADR-005: Authentication via Tailscale LocalAPI](ADR-005-authentication-tailscale-localapi.md)
+- [FEAT-005: API Surface](../../01-frame/features/FEAT-005-api-surface.md)

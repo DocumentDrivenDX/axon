@@ -28,6 +28,7 @@ It belongs in the schema, not in application code.
 | Problem | Lifecycle transitions are hardcoded in Rust, not declared in schema |
 | Current State | `BeadStatus::valid_transitions()` returns allowed transitions per state |
 | Requirements | Any collection should be able to declare lifecycle state machines; enforcement should be automatic on update |
+| Decision Drivers | Schema is the single source of truth for collection rules; hardcoded transitions can't generalize beyond beads; lifecycle declarations must version and audit like the rest of the schema (ADR-007) |
 
 ## Decision
 
@@ -188,6 +189,17 @@ materialized gate tables.
 - **Lifecycle visualization**: The admin UI (FEAT-011) could render the
   state machine as a directed graph
 
+## Alternatives
+
+*Alternatives reconstructed retrospectively (2026-06-10) for record completeness.*
+
+| Option | Pros | Cons | Evaluation |
+|--------|------|------|------------|
+| Keep transitions hardcoded in Rust (status quo) | No schema change; compile-time checked | Only beads get lifecycles; business rules invisible to schema introspection; every new collection needs Rust changes | Rejected: schema must be the single source of truth |
+| JSON Schema `enum` only (states without transitions) | Zero new vocabulary | Validates membership, not transitions — any state can jump to any state | Rejected: doesn't express the actual constraint |
+| Per-collection plugin/callback hooks for transition logic | Maximum flexibility (arbitrary guards) | Arbitrary code in the write path; not declarative, not introspectable, not versionable | Rejected: guards belong to validation gates (FEAT-019), not code hooks |
+| **Lifecycle declarations as ESF Layer 3** | Declarative, versioned, introspectable; any collection can declare; generic engine enforcement | New `CollectionSchema` field (migration needed); read-before-write on update (already required for OCC) | **Selected: same kind of declaration as field types and link types** |
+
 ## Consequences
 
 **Positive**:
@@ -210,3 +222,36 @@ materialized gate tables.
 **Key principle**: The schema defines the rules. The engine enforces them.
 Application code should never hardcode business rules that belong in the
 schema.
+
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Existing serialized schemas break on the new `lifecycles` field | Medium | Medium | Serde default (empty map) on deserialize; migration recorded in tracker |
+| Lifecycle enforcement read-before-write hurts update latency | Low | Low | The read is already required for OCC version checks — no extra round trip |
+| Transition-graph validation rejects schemas users consider valid | Low | Low | Clear save-time errors listing the undefined state or enum mismatch |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| Bead lifecycle behavior identical after migration off `BeadStatus::valid_transitions()` | Any transition allowed/blocked differently than the hardcoded version |
+| Invalid transitions rejected with current state, attempted state, and valid targets | Agent retry loops caused by unclear transition errors |
+| At least one non-bead collection adopts lifecycles | If no collection beyond beads uses lifecycles long-term, revisit whether Layer 3 generality was warranted |
+
+## Supersession
+
+- **Supersedes**: None as a record — but it resolves the state-machine deferral noted in ADR-002's deferred-features table (annotated there), delivering lifecycles as ESF Layer 3 instead of a later FEAT-010 add-on
+- **Superseded by**: None
+
+## Concern Impact
+
+- **rust-cargo**: Shrinks the bead module (`BeadStatus` enum removed); adds `LifecycleDef` to `axon-schema` — no new dependencies.
+- **security-owasp**: Moves business-rule enforcement from application code into schema-validated declarations enforced uniformly on every write path.
+
+## References
+
+- [ADR-002: Schema Format](ADR-002-schema-format.md) — Layers 1–2 of ESF
+- [ADR-007: Schema Versioning](ADR-007-schema-versioning.md) — lifecycles version with the schema
+- [FEAT-019: Validation Rules](../../01-frame/features/FEAT-019-validation-rules.md) — transition guards via gates
+- [ADR-010 §11](ADR-010-physical-storage-and-secondary-indexes.md) — materialized gate tables

@@ -19,6 +19,7 @@ Axon is a transactional data store with ACID guarantees, deterministic simulatio
 | Problem | Choosing a language that supports correctness-first development, embeddability, and performance for a database engine |
 | Current State | Team has production Rust experience (niflheim) and Go experience (DDx) |
 | Requirements | Memory safety, no GC pauses, embeddable as library, async I/O, strong ecosystem for database internals |
+| Decision Drivers | Correctness-first product principle; dual embedded + server deployment modes; predictable tail latency without GC; existing team Rust experience (niflheim) |
 
 ## Decision
 
@@ -70,6 +71,16 @@ We will implement Axon in **Rust**.
 |----------------|----------------|
 | Build time < 2 min incremental | If builds consistently exceed this, investigate workspace structure |
 | No memory-safety CVEs | If a memory safety issue is found, review unsafe usage |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None
+
+## Concern Impact
+
+- **rust-cargo**: This ADR is the source of the rust-cargo concern — it selects Rust/Cargo as the toolchain governing all server/core work.
+- **security-owasp**: Compile-time memory safety eliminates the memory-corruption vulnerability classes the concern would otherwise track.
 
 ## References
 

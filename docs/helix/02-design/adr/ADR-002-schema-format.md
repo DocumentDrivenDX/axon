@@ -21,6 +21,7 @@ Axon needs a schema system that supports deeply nested entities (up to 8 levels)
 | Problem | No existing schema format natively supports entity-graph-relational models with typed links |
 | Current State | 19 schema formats evaluated. See [schema format research](../../00-discover/schema-format-research.md) |
 | Requirements | Entity nesting, typed links, Rust-native sub-ms validation, agent-parseable errors |
+| Decision Drivers | Write-time validation on the hot path; agents must read/write schemas without a custom language; relationships need first-class typing that no standard format provides |
 
 ## Decision
 
@@ -122,7 +123,7 @@ link_types:
 |---------|------|---------|
 | Validation rules with severity (error/warning/info) | When a use case needs cross-field validation that JSON Schema can't express | First real-world request |
 | Context-specific constraints (per-LOB nullability) | When multi-tenant or multi-context deployments need it | First multi-context deployment |
-| State machines | FEAT-010 (P2) | After core entity/link model is proven |
+| State machines | FEAT-010 (P2) *(superseded by ADR-008 — lifecycles delivered as ESF Layer 3)* | After core entity/link model is proven |
 | Schema evolution / breaking-change detection | P1 | After V1 schemas stabilize |
 | Expression language for guards/rules | When simple field predicates prove insufficient | Complexity pressure from real use cases |
 | Schema bridges (ESF → SQL DDL, Protobuf, TypeScript) | P2 | When client SDK generation is needed |
@@ -158,8 +159,18 @@ link_types:
 | Schema definition takes < 5 minutes | If developers find it burdensome |
 | No workaround requests in first 3 months | If developers need to bypass schema, V1 scope was too narrow |
 
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None (the deferred-features table's state-machine row was overtaken by ADR-008, which added lifecycles as ESF Layer 3; the core format decision stands)
+
+## Concern Impact
+
+- **rust-cargo**: Selects the `jsonschema`, `serde_yaml`, and `serde_json` crates as core workspace dependencies.
+- **security-owasp**: JSON Schema validation on entity write paths is a key practice of this concern; no expression evaluation in V1 means no injection surface.
+
 ## References
 
 - [Schema Format Research](../../00-discover/schema-format-research.md) — 19 formats evaluated
-- [Technical Requirements](../../01-frame/technical-requirements.md) — schema system section
+- [Technical Requirements](../../01-frame/technical-requirements.md) — schema system section (historical; since deprecated — the normative ESF surface is [CONTRACT-010](../contracts/CONTRACT-010-esf-schema-format.md))
 - JSON Schema Draft 2020-12: https://json-schema.org/draft/2020-12/json-schema-core

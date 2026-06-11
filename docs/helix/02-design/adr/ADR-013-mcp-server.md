@@ -37,6 +37,7 @@ autonomous, approval-routed, or denied by policy.
 | Problem | Agents need custom integration code to use Axon. No standard agent-to-data-store protocol |
 | Current State | GraphQL plus compatibility/internal APIs - developer-facing, not agent-native |
 | Requirements | MCP server that exposes Axon's full read/write surface to agents via the standard MCP primitives (tools, resources, prompts) |
+| Decision Drivers | Agent developers are the primary persona; MCP is the de-facto agent-tool standard; ESF auto-generation already proven by ADR-012; one handler/auth/audit path across all protocols |
 
 ## Decision
 
@@ -58,6 +59,16 @@ define a second authorization model.
 | **Prompts** | Pre-built query/action templates | Guided interactions for common workflows |
 
 ### 2. Tools
+
+> Normative tool surface is now owned by
+> [CONTRACT-003](../contracts/CONTRACT-003-mcp-surface.md); this section is the
+> decision-time record.
+
+#### Amendment (2026-04-22, with ADR-019)
+
+The `axon.mutation.preview` and `axon.mutation.commit_intent` tools below were
+added in place when ADR-019 introduced policy authoring and mutation intents;
+they extend the original 2026-04-05 decision rather than revising it.
 
 #### Core Tools (Always Present)
 
@@ -273,6 +284,12 @@ current state, then call a tool to modify it.
 
 #### Resource URI Scheme
 
+> **Superseded (URI grammar)**: the 2-level `axon://{collection}/{id}` scheme
+> and the `axon://{database}/{schema}/...` sketch below are superseded by the
+> tenant-aware resource URI grammar in
+> [CONTRACT-003](../contracts/CONTRACT-003-mcp-surface.md) (post-ADR-018).
+> This section is the decision-time record.
+
 ```
 axon://{collection}/{id}                — single entity
 axon://{collection}                     — collection listing (paginated)
@@ -390,6 +407,12 @@ The server speaks MCP over stdin/stdout. This is the standard MCP
 transport for local tools.
 
 #### HTTP+SSE (Remote Agents)
+
+> **Superseded (routing)**: the un-prefixed `/mcp` and `/mcp/sse` endpoints
+> below are superseded by ADR-018's tenant-prefixed routing; the normative
+> endpoint surface is owned by
+> [CONTRACT-003](../contracts/CONTRACT-003-mcp-surface.md). This section is the
+> decision-time record.
 
 For agents connecting over the network:
 
@@ -548,6 +571,17 @@ An agent connecting to Axon via MCP:
 The agent never reads Axon documentation. The MCP tool definitions
 *are* the documentation.
 
+## Alternatives
+
+*Alternatives reconstructed retrospectively (2026-06-10).*
+
+| Option | Pros | Cons | Evaluation |
+|--------|------|------|------------|
+| Per-framework SDK adapters (LangChain, etc.) | Idiomatic per framework | N adapters to maintain; no discovery; custom code per agent | Rejected: integration burden falls on every consumer |
+| Expose GraphQL only, no MCP | No new protocol | Agents must hand-write adapters; no native tool discovery | Rejected: not agent-native |
+| Static hand-written MCP tool set | Simple to implement | Drifts from ESF schemas; per-collection maintenance | Rejected: defeats schema-first auto-generation |
+| **MCP server auto-generated from ESF** | Zero-integration for any MCP agent; tools regenerate with schemas; same handler/auth/audit | New crate; evolving spec; large tool lists pressure context windows | **Selected: native protocol for the primary persona at zero per-collection cost** |
+
 ## Consequences
 
 **Positive**:
@@ -577,9 +611,44 @@ The agent never reads Axon documentation. The MCP tool definitions
 - Per-agent tool filtering (show agent X only the tools it has
   permission to use) — requires FEAT-012 integration
 
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| MCP spec churn breaks transports or primitives | M | M | Transport-agnostic core; track spec releases |
+| Tool-list size overwhelms agent context windows | M | M | Tool grouping/lazy loading; generic `axon.query` fallback |
+| Divergence between MCP and GraphQL semantics | L | H | MCP mirrors GraphQL policy/intent semantics by construction; contract tests on CONTRACT-003 |
+
+## Validation
+
+| Success Metric | Review Trigger |
+|----------------|----------------|
+| An MCP-capable agent performs CRUD, query, traverse, and transition with zero custom integration code | Any workflow requires a hand-written adapter |
+| Tool definitions regenerate on schema change with `tools/list_changed` | Agents observe stale tool lists |
+| Policy/intent behavior identical to GraphQL surface | Contract-test divergence between CONTRACT-002 and CONTRACT-003 |
+
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: None (decision stands). Partial supersessions:
+  - The 2-level resource URI scheme (§3) and un-prefixed `/mcp`, `/mcp/sse`
+    endpoints (§6) are superseded by the tenant-aware grammar in
+    [CONTRACT-003](../contracts/CONTRACT-003-mcp-surface.md) (post-ADR-018).
+- **Amended**: intent tools (`axon.mutation.preview`,
+  `axon.mutation.commit_intent`) added 2026-04-22 with ADR-019.
+
+## Concern Impact
+
+- **Concern selection**: Establishes MCP as the agent-native surface concern;
+  constrains it to mirror GraphQL semantics (no second authorization model).
+- **Practice override**: None.
+
 ## References
 
 - [ADR-012: GraphQL Query Layer](ADR-012-graphql-query-layer.md)
+- [ADR-018: Tenant, User, and Credential Model](ADR-018-tenant-user-credential-model.md)
+- [ADR-019: Policy Authoring and Intents](ADR-019-policy-authoring-and-intents.md)
+- [CONTRACT-003: MCP Surface](../contracts/CONTRACT-003-mcp-surface.md)
 - [FEAT-004: Entity Operations](../../01-frame/features/FEAT-004-entity-operations.md)
 - [FEAT-015: GraphQL Query Layer](../../01-frame/features/FEAT-015-graphql-query-layer.md)
 - [Model Context Protocol Specification](https://modelcontextprotocol.io)

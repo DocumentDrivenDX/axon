@@ -47,8 +47,26 @@ commits that change the routing.
 | Problem | Tenant/database confusion prevents multi-database-per-tenant, multi-tenant-per-user, and path-based resource identity |
 | Current State (origin/master) | `tenants` table has a `db_name` column (efe4aa1), grants are scoped per database, `X-Axon-Database` header routes by database, users are whatever Tailscale whois resolves to |
 | Requirements | Tenant as first-class global account boundary above database; users M:N with tenants; JWT credentials with grants; no headers on data-plane routes; every entity has a canonical URL |
+| Decision Drivers | Pre-release clean-break window (no production deployments); SaaS/team scenarios from ADR-011's own problem statement; blast-radius isolation for leaked credentials; edge routing and caching need path-identifiable resources |
 
 ## Decision
+
+**Scope note** — this ADR bundles several decisions made together (kept in one
+file; no split):
+- Tenant as the global account boundary in a four-level hierarchy (§1)
+- Pure path-based wire protocol, no routing headers (§2)
+- First-class global users with provider federation (§3)
+- Tenant-scoped JWT credentials carrying grants, with the per-route op table
+  and verification order (§4)
+- GraphQL-first interface policy with named REST exceptions (§5)
+- Default tenant bootstrap and `--no-auth` semantics (§6)
+- Explicit walk-back of commit `efe4aa1` and amendment of ADR-011 (§7)
+
+> Normative endpoint and credential surface is now owned by
+> [CONTRACT-001](../contracts/CONTRACT-001-http-api-surface.md) (with
+> [CONTRACT-002](../contracts/CONTRACT-002-graphql-surface.md) and
+> [CONTRACT-003](../contracts/CONTRACT-003-mcp-surface.md) for the GraphQL and
+> MCP legs); the sections below are the decision-time record.
 
 ### 1. Four-level conceptual hierarchy
 
@@ -430,9 +448,11 @@ op-to-method mapping above is for *data-plane* routes only.
    just being presented against the wrong tenant.
 6. Resolve `sub` against the `users` table. If suspended or deleted, 401.
 7. Walk `grants.databases[]` looking for an entry matching the URL's
-   `{database}` segment. If none, 403. If found, intersect `ops` with the
-   required op for the request method (`read` for GET, `write` for
-   POST/PUT/PATCH/DELETE). If empty intersection, 403.
+   `{database}` segment. If none, 403. If found, the required op is taken
+   from the route's op column in the normative op-to-route mapping table
+   above ("Op-to-HTTP-method mapping (v5)") — it is **not** derived from
+   the HTTP method. Intersect the grant's `ops` with that required op; if
+   the required op is absent, 403.
 8. Install `(user_id, tenant_id, grants)` into the request's axum extension
    so handlers can enforce finer invariants (e.g., "user must be admin in
    the tenant to create a new database").
@@ -502,6 +522,13 @@ issue a `read`-only credential; a `write` member cannot issue an `admin`
 credential.
 
 ### 5. GraphQL-first interface policy
+
+#### Amendment (2026-04-22)
+
+This section was rewritten in place (commits `3733b802`, `7c05b422`) to make
+GraphQL the primary interface; it amends the original 2026-04-14 ADR-018
+language that made single-entity CRUD, schema management, and the control
+plane REST-only. The content below is the amended, current text.
 
 Both surfaces nest under the same `/tenants/{t}/databases/{d}/` path prefix
 so they share the same routing, authentication, and `(user_id, tenant_id,
@@ -707,6 +734,15 @@ use case. See section 5.
 | **Negative** | Non-trivial implementation scope: SQL migration, auth middleware redesign, router restructure, UI two-level picker, SDK rewrite, test matrix rewrite; JWT introduces a new runtime dependency and a signing key management surface (see "Signing key rotation" below); per-tenant credentials mean users with access to N tenants carry N credentials in their config (but N is small for humans, and SDKs can manage the list) |
 | **Neutral** | The 4-level hierarchy is one level deeper than ADR-011 intended; users have to understand what a tenant is, but this concept is well-established in SaaS tooling and doesn't need invention; GraphQL mutation resolvers gain a new context extraction path (the `(user_id, tenant_id, grants)` extension) but the resolvers themselves are unchanged |
 
+## Risks
+
+| Risk | Prob | Impact | Mitigation |
+|------|------|--------|------------|
+| Signing key compromise before the rotation ADR lands | L | H | Tier-1 secret handling, vault/KMS only; rotation ADR is a v1.0 gate (see Implementation Notes) |
+| Credential grants diverge from a demoted user's current role within TTL | M | M | 24h default TTL; explicit `jti` revocation on role change |
+| Clean-break rewrite misses a caller (SDK, CLI, UI, tests) | M | M | Route-inventory contract test; `git grep X-Axon-Database` gate |
+| Per-route op table and middleware drift apart | L | H | Table is normative in CONTRACT-001; contract tests assert per-route required ops |
+
 ## Validation
 
 | Criterion | Test |
@@ -720,6 +756,27 @@ use case. See section 5.
 | Tailscale auto-provisioning creates exactly one `users` row and one `user_identities` row on first seen, no duplicates on second seen | Unit test on the auth middleware |
 | Default tenant bootstrap runs once on zero-tenant deployment; not re-run after first tenant exists | Integration test |
 | Grants ≤ role invariant is enforced at credential issuance | Unit test on `POST /control/tenants/{id}/credentials` |
+
+## Supersession
+
+- **Supersedes**: [ADR-017](ADR-017-control-plane.md) — partial: the tenant
+  model (one tenant per managed instance) and the `/cp/*` route prefix legs
+  (now `/control/*`). ADR-017's control-plane topology, PostgreSQL backing
+  store, HMAC instance auth, and data-sovereignty guarantee stand.
+- **Amends**: [ADR-011](ADR-011-multi-tenancy-and-namespace-hierarchy.md)
+  (tenancy) — tenant, not database, is the unit of tenant isolation; the
+  `X-Axon-Database` header and `/db/{name}/...` prefix are removed (see §7
+  for the full amended/standing breakdown). Also walks back commit `efe4aa1`.
+- **Superseded by**: None
+- **Amended**: §5 (GraphQL-first interface policy) rewritten in place
+  2026-04-22; see the Amendment sub-heading there.
+
+## Concern Impact
+
+- **Concern selection**: Redefines the tenancy concern (tenant as global
+  account boundary) and constrains every surface (HTTP, GraphQL, MCP, CDC) to
+  tenant-prefixed addressing.
+- **Practice override**: None.
 
 ## Implementation Notes
 
@@ -755,12 +812,15 @@ use case. See section 5.
 
 ## References
 
-- [ADR-005: Authentication via Tailscale tsnet](./ADR-005-authentication-tailscale-tsnet.md)
+- [ADR-005: Authentication via Tailscale LocalAPI](./ADR-005-authentication-tailscale-localapi.md)
 - [ADR-011: Multi-Tenancy, Namespace Hierarchy, and Node Topology](./ADR-011-multi-tenancy-and-namespace-hierarchy.md) (amended)
 - [ADR-012: GraphQL Query Layer](./ADR-012-graphql-query-layer.md) (clarified)
 - [ADR-017: Control Plane Topology and BYOC Deployment Model](./ADR-017-control-plane.md)
 - [FEAT-012: Authorization](../../01-frame/features/FEAT-012-authorization.md) (rewrite)
 - [FEAT-014: Multi-Tenancy and Namespace Hierarchy](../../01-frame/features/FEAT-014-multi-tenancy.md) (rewrite)
 - [FEAT-025: Control Plane](../../01-frame/features/FEAT-025-control-plane.md) (updated)
+- [CONTRACT-001: HTTP API Surface](../contracts/CONTRACT-001-http-api-surface.md)
+- [CONTRACT-002: GraphQL Surface](../contracts/CONTRACT-002-graphql-surface.md)
+- [CONTRACT-003: MCP Surface](../contracts/CONTRACT-003-mcp-surface.md)
 - Commit `efe4aa1` — "refactor(tenancy): simplify tenant model — one tenant, one database" (walked back by this ADR)
 - Industry prior art: GitHub REST+GraphQL split; Stripe API key scoping; AWS IAM access key model; Snowflake account → database hierarchy

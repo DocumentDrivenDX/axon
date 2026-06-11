@@ -25,6 +25,7 @@ The audit log and change data capture (CDC) are foundational to Axon — princip
 | Problem | Choose V1 backing stores and decide where audit/CDC lives in the architecture |
 | Current State | SPIKE-001 evaluated 7 candidates. 83 tests pass against memory + SQLite backends |
 | Requirements | Embedded mode (zero-config), server mode (multi-client), ACID transactions, audit on every mutation, CDC for downstream consumers |
+| Decision Drivers | P2 "audit is not optional" demands semantic (not physical) capture; embedded mode is P0; stateless servers delegate durability to the backing store |
 
 ## Decision
 
@@ -35,12 +36,15 @@ The audit log and change data capture (CDC) are foundational to Axon — princip
 | **SQLite** | Embedded | `rusqlite` v0.32 (bundled) | Development, testing, single-user, edge, CLI |
 | **PostgreSQL** | Server | `postgres` v0.19 (sync, with `with-serde_json-1`) | Production, multi-user, existing infrastructure |
 
-> **Implementation note (2026-04-05):** The original ADR specified `libsql` v0.9.x
-> and `sqlx` v0.8.x. During implementation, `rusqlite` v0.32 was chosen for SQLite
-> (bundled build, simpler API, no async overhead for embedded mode) and the synchronous
-> `postgres` v0.19 crate was chosen for PostgreSQL (simpler integration with the
-> synchronous `StorageAdapter` trait using `RefCell<Client>`). Both choices pass the
-> full L4 conformance suite and L2 backend parity tests.
+#### Amendment (2026-04-05): driver crate change
+
+The original ADR specified `libsql` v0.9.x and `sqlx` v0.8.x. During
+implementation, `rusqlite` v0.32 was chosen for SQLite (bundled build, simpler
+API, no async overhead for embedded mode) and the synchronous `postgres` v0.19
+crate was chosen for PostgreSQL (simpler integration with the synchronous
+`StorageAdapter` trait using `RefCell<Client>`). Both choices pass the full L4
+conformance suite and L2 backend parity tests. The backing-store decision
+itself (SQLite + PostgreSQL) is unchanged; only the driver crates moved.
 
 Both backends implement the same `StorageAdapter` trait. Both pass the identical test suite (L4 backend conformance).
 
@@ -177,6 +181,11 @@ Key design points:
 
 ### Data Layout
 
+> **Superseded by ADR-010.** The physical layout below was the V1 design and is
+> retained for history. ADR-010 (Physical Storage Schema and Secondary Indexes)
+> now governs the physical data layout (numeric collection IDs, UUID entity IDs,
+> dedicated links table, EAV secondary indexes).
+
 Both SQLite and PostgreSQL use the same logical schema:
 
 ```sql
@@ -263,7 +272,7 @@ For SQLite: `JSONB` becomes `TEXT` (JSON stored as text), `BIGSERIAL` becomes `I
 
 | Aspect | Assessment |
 |--------|------------|
-| Effort | Medium — SQLite adapter exists (needs tx methods). PostgreSQL adapter is new but `sqlx` makes it straightforward |
+| Effort | Medium — SQLite adapter exists (needs tx methods). PostgreSQL adapter is new but the synchronous `postgres` crate makes it straightforward |
 | Performance | SQLite: <5ms single-entity writes including audit. PostgreSQL: <10ms over network including audit. Both within targets |
 | Security | Audit log is append-only at the SQL level (no UPDATE/DELETE granted to the Axon connection role on Postgres) |
 
@@ -273,7 +282,7 @@ For SQLite: `JSONB` becomes `TEXT` (JSON stored as text), `BIGSERIAL` becomes `I
 |------|------|--------|------------|
 | Audit write fails silently, leaving gap | Low | Critical | Post-commit audit strategy: audit entries are flushed only after `commit_tx()` succeeds, so no audit entry is written for a rolled-back mutation. For durable backends, INV-003 (audit completeness) recovery invariant must be implemented (intent record or same-transaction audit). INV-003 runs in CI |
 | SQLite single-writer bottleneck in embedded mode | Medium | Low | Embedded mode is single-user by design. WAL mode enables concurrent reads |
-| PostgreSQL connection pool exhaustion under load | Medium | Medium | `sqlx` pool with configurable max connections. Health check endpoint monitors pool utilization |
+| PostgreSQL connection pool exhaustion under load | Medium | Medium | Connection pooling with configurable max connections (via `r2d2`/`deadpool-postgres` or equivalent for the `postgres` crate). Health check endpoint monitors pool utilization |
 | Backend behavior divergence | Medium | Medium | L4 backend conformance: identical parameterized test suite. Any divergence is a bug |
 
 ## Validation
@@ -284,10 +293,21 @@ For SQLite: `JSONB` becomes `TEXT` (JSON stored as text), `BIGSERIAL` becomes `I
 | L4 conformance: 100% tests pass on both SQLite and Postgres | Any backend-specific failure |
 | Write latency p99 within targets (SQLite <5ms, Postgres <10ms including audit) | If audit overhead exceeds 2ms |
 
+## Supersession
+
+- **Supersedes**: None
+- **Superseded by**: Data Layout section superseded by ADR-010 (physical storage schema and secondary indexes); the backing-store selection and application-layer audit decision remain authoritative
+- **Amendment (2026-04-05)**: driver crates changed from `libsql`/`sqlx` to `rusqlite`/`postgres` (see Amendment under V1 Backing Stores)
+
+## Concern Impact
+
+- **rust-cargo**: Selects `rusqlite` and `postgres` as workspace dependencies (amended from `libsql`/`sqlx`).
+- **security-owasp**: Application-layer audit with actor attribution underpins audit-log integrity; append-only SQL grants on the audit table are a concern practice.
+
 ## References
 
 - [SPIKE-001: Backing Store Evaluation](../spikes/SPIKE-001-backing-store-evaluation.md)
 - [FEAT-003: Audit Log](../../01-frame/features/FEAT-003-audit-log.md)
 - [FEAT-008: ACID Transactions](../../01-frame/features/FEAT-008-acid-transactions.md)
-- [Technical Requirements](../../01-frame/technical-requirements.md)
+- [Technical Requirements](../../01-frame/technical-requirements.md) (historical; since deprecated — requirements live in the PRD, feature specs, and contracts)
 - [FoundationDB DST Research](../../00-discover/foundationdb-dst-research.md)
