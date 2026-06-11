@@ -1,0 +1,79 @@
+---
+ddx:
+  id: STP-117
+---
+
+# Story Test Plan: STP-117-review-approve-and-reject-pending-intents
+
+## Story Reference
+
+**User Story**: [[US-117-review-approve-and-reject-pending-intents]] (FEAT-031, P0)
+**Technical Design**: [[TD-117-approval-inbox-ui]] — not yet authored; FEAT-031 spec + CONTRACT-002 currently serve as the design surface
+**Related Solution Design**: N/A
+**Project Test Plan**: [[test-plan]] §3 (browser workflows → L7 E2E)
+
+## Scope and Objective
+
+**Goal**: prove the approval inbox lists pending intents with full review context, supports role-gated approve/reject with reasons, records audit, and blocks self-approval under separation of duties.
+**Blocking Gate**: `bun run test:e2e` filtered to `approval-inbox.spec.ts`
+
+**In Scope**
+- Inbox listing/filtering, intent detail review, approve/reject flows, separation-of-duties UI behavior.
+
+**Out of Scope**
+- Stale/expired action gating ([[STP-118]]), backend approval semantics ([[STP-106]]).
+
+## Acceptance Criteria Test Mapping
+
+| AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
+|-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
+| US-117-AC1 | Inbox lists intents with status, requester, subject, collection, operation, reason, role, age, expiry, MCP origin | "lists scoped intents across review states and opens detail @US-117"; "supports dense filters, keyboard selection, and inline review without leaving inbox" | Inbox rows render the review metadata and filter correctly | missing — add `@covers US-117-AC1` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts` |
+| US-117-AC2 | Detail view shows canonical operation, diff, explanation, pre-images, version bindings, route, audit links | "shows schema_version, policy_version, and grant_version in inline detail panel"; detail assertions in the listing test | Detail panel renders bindings and review context | missing — add `@covers US-117-AC2` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts` |
+| US-117-AC3 | Approver with configured role approves with reason → approval audit entry, intent commit-eligible | "approves and rejects pending intents from the detail route"; audit lineage: "shows preview and approval events for approved intent in chronological order" | Approval transitions state and produces audit lineage | missing — add `@covers US-117-AC3` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts`, `ui/tests/e2e/intent-audit-lineage.spec.ts` |
+| US-117-AC4 | Rejection records actor, reason, policy version, intent ID; intent can never commit | "approves and rejects pending intents from the detail route"; "shows rejection event for rejected intent in chronological order"; backend: `rejected_intent_cannot_commit` | Rejection recorded and terminal | missing — add `@covers US-117-AC4` | UNCITED_COVERAGE | L7 E2E + L6 | `ui/tests/e2e/approval-inbox.spec.ts`, `crates/axon-server/tests/graphql_intents_contract.rs` |
+| US-117-AC5 | Separation of duties: requester cannot approve own intent; structured error surfaced | backend: `separation_of_duties_blocks_self_approval`; UI: "shows authorization failures without clearing the entered reason" | Self-approval blocked with structured error; UI preserves input | missing — add `@covers US-117-AC5` | UNCITED_COVERAGE | L6 + L7 E2E | `crates/axon-server/tests/graphql_intents_contract.rs`, `ui/tests/e2e/approval-inbox.spec.ts` |
+
+## Executable Proof
+
+### Primary Commands
+
+```bash
+cd ui && bun run test:e2e
+cargo test -p axon-server --test graphql_intents_contract
+```
+
+### Planned Test Files
+
+- Existing specs need a citation pass; verify the UI self-approval case specifically (AC5) renders the separation-of-duties error, not a generic failure.
+
+### Coverage Focus
+
+- P0: AC4 terminal rejection and AC5 separation of duties.
+
+## Data and Setup
+
+| Need | Required For | Source / Strategy |
+|------|--------------|-------------------|
+| Pending intents in multiple review states | AC1 | Seeded E2E intent fixtures |
+| Approver, non-approver, and requester identities | AC3–AC5 | Role fixtures via E2E helpers |
+
+## Edge Cases and Failure Modes
+
+- Loading/empty/error inbox states are distinguishable (asserted).
+- Reason field must be required where policy demands it; failure must not clear entered text (asserted).
+
+## Build Handoff
+
+**Implementation Order**
+1. Citation pass on AC1–AC5; confirm the AC5 UI leg targets self-approval specifically.
+
+**Constraints**
+- Approve/reject must round-trip through GraphQL — no UI-side state transitions.
+
+**Done When**
+- [ ] AC1–AC5 passing with citations across UI and backend legs
+
+## Review Checklist
+
+- [x] Stable AC IDs; asserted behaviors named; honest statuses
+- [x] Scope bounded; commands runnable

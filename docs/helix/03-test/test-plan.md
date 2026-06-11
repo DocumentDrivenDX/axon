@@ -1,6 +1,6 @@
 ---
 ddx:
-  id: helix.test-plan
+  id: TP-001
   depends_on:
     - helix.prd
     - helix.principles
@@ -8,9 +8,9 @@ ddx:
 ---
 # Axon Test Plan
 
-**Version**: 0.1.0
-**Date**: 2026-04-04
-**Status**: Draft
+**Version**: 0.3.0
+**Date**: 2026-06-10
+**Status**: Active
 
 ---
 
@@ -24,7 +24,11 @@ This test plan specifies **what must be true** about Axon. Each section defines 
 
 ---
 
-## 2. Test Architecture
+## 2. Testing Strategy and Test Architecture
+
+**Goals**: prove the PRD's correctness, policy-parity, approval-safety, and audit guarantees before/alongside implementation | **Quality gates**: §4 coverage requirements, §13 blocking gate
+**Out of Scope**: analytics workloads, durable workflow orchestration, multi-region placement (PRD non-goals)
+**Traceability Source**: PRD FR-1..FR-32 → FEAT specs → `docs/helix/01-frame/user-stories/US-*.md` (stable `US-<n>-AC<m>` IDs) → STPs (§3)
 
 ### Layers
 
@@ -35,7 +39,8 @@ This test plan specifies **what must be true** about Axon. Each section defines 
 | **L3: Property-based tests** | Generate random entities, links, schemas, transactions and verify invariants hold | `proptest` or `bolero` | CI: every commit (bounded iterations). Nightly: extended |
 | **L4: Backend conformance** | Verify every StorageAdapter implementation passes the identical test suite | Parameterized tests across SQLite, Postgres, FoundationDB | CI: SQLite. Pre-merge: all backends |
 | **L5: Performance benchmarks** | Verify latency and throughput targets from technical requirements | `criterion` benchmarks | Nightly. Ratcheted — can only improve |
-| **L6: API contract tests** | Verify gRPC and HTTP gateway conform to protobuf contract | Generated client tests | CI: every commit |
+| **L6: Surface contract + policy parity** | Verify GraphQL and MCP conform to CONTRACT-001..010 and that policy decisions are identical across every surface (PRD policy-parity metric). gRPC/protobuf and REST compatibility are demoted to compatibility checks inside this layer | Contract tests in `crates/axon-server/tests/` + shared policy-fixture suite | CI: every commit |
+| **L7: UI end-to-end** | Prove user-observable story arcs through the web UI | Playwright under `ui/tests/e2e/`, run via `scripts/test-ui-e2e-docker.sh` | CI: every commit (Docker-controlled browser) |
 
 ### Deterministic Simulation Framework (`axon-sim`)
 
@@ -62,7 +67,76 @@ Built on the FoundationDB model (see [research](../00-discover/foundationdb-dst-
 
 ---
 
-## 3. L1: Correctness Invariants
+## 3. Acceptance Criteria Layer Allocation
+
+User stories live as one-file-per-story artifacts under
+`docs/helix/01-frame/user-stories/US-*.md`. Every acceptance criterion carries a
+stable ID of the form `US-<n>-AC<m>` (see the registry at
+`docs/helix/01-frame/user-stories/README.md`). This section allocates criterion
+**classes** to test layers. The per-criterion AC↔test matrix is owned by the
+story test plans under `docs/helix/03-test/test-plans/STP-*.md` — this plan does
+not duplicate those rows.
+
+### AC-class → layer table
+
+| AC class (what the criterion asserts) | Example AC IDs | Primary layer | Why this layer |
+|---|---|---|---|
+| Pure validation / parsing / planning logic (schema compile diagnostics, query type-check errors, stable error codes) | `US-075-AC2`, `US-076-AC2` | Unit (crate `#[cfg(test)]`) | Deterministic input→output; no I/O needed |
+| Correctness invariants under concurrency or fault injection (atomic abort, stale-intent races, audit completeness) | `US-103-AC3`, `US-107-AC4` | L1 DST (`axon-sim`) + L2 scenario | Must hold under interleaving and BUGGIFY faults, not just on the happy path |
+| Generative / algebraic properties (round-trips, surface equivalence over generated inputs) | `US-104-AC3`, `US-076-AC3` | L3 property + L6 parity fixtures | The claim is universally quantified; example tests under-prove it |
+| Business workflow over a live embedded store (graph traversal, BOM, ready queue, merges) | `US-023-AC1`, `US-024-AC1`, `US-074-AC1` | L2 scenario (`crates/axon-api/tests/`, `crates/axon-cypher/tests/`) | User-meaningful outcome over real storage; backend-parameterized via L4 |
+| API-surface decision semantics (policy allow/deny/redaction envelopes, intent preview/approve/commit vocabulary, GraphQL connection shapes, MCP tool envelopes) | `US-101-AC1..4`, `US-105-AC1..6`, `US-108-AC1..5` | L6 contract (GraphQL/MCP) + shared policy-fixture suite | The contract — not the implementation — is the promise; parity across surfaces is a PRD success metric |
+| User-observable browser workflows ("…in the web UI") | `US-113-AC1..6` … `US-119-AC1..4` | L7 E2E (Playwright) | Only a browser run proves the rendered, no-DOM-leak outcome |
+| Latency / throughput criteria | `US-070-AC5`, `US-071-AC4`, `US-074-AC3/4` | L5 benchmarks (`criterion`, ratcheted) | Timing claims need controlled, ratcheted measurement, not assertions in functional tests |
+
+**Allocation rule**: every P0 acceptance criterion from an in-scope story maps to
+exactly one primary layer here and to concrete tests in its STP. No P0 criterion
+is left unallocated.
+
+### Citation rule (`@covers`)
+
+A criterion counts as **covered** only when a test (a) exercises the behavior,
+(b) passes, (c) asserts the criterion's observable outcome, **and** (d) cites the
+AC ID in the canonical, parseable syntax `@covers US-<n>-AC<m>` (in the test
+body, name, or doc comment; in Playwright, in the test title alongside the
+story-level `@US-NNN` tag). Classification vocabulary:
+
+| Status | Meaning | Fix |
+|---|---|---|
+| `UNCITED_COVERAGE` | A passing test exercises and asserts the criterion but does not cite the AC ID | Add the `@covers` citation — do **not** write a new test |
+| `ASSERTED_UNBACKED` | A test cites the AC ID but does not actually exercise/assert the criterion (or does not exist) | Fix or replace the test; the citation is never a substitute for exercise+pass+satisfy |
+| `UNTESTED` | No test exercises the criterion | Write the test named in the STP row. UNTESTED on a P0 criterion **blocks** the story unless a manual exception is recorded in the STP row's Notes |
+
+As of 2026-06-10 no `@covers` tags exist in `crates/` or `ui/` — all existing
+evidence in the STPs is at best `UNCITED_COVERAGE`. The first remediation pass
+is citation-only.
+
+### Story test plans
+
+Per-story STPs exist for the guardrail slice (FEAT-029, FEAT-030, FEAT-031,
+FEAT-009): `docs/helix/03-test/test-plans/STP-{023..025,046,047,070..077,101..109,113..119}-*.md`.
+Each STP owns its story's AC↔test matrix with honest per-AC statuses. STPs for
+the remaining features are deferred backlog.
+
+---
+
+## 4. Coverage Requirements
+
+Numeric targets. Values marked *(target)* are goals this plan commits to, not
+current measurements; the STPs hold the honest current state.
+
+| Metric | Target | Minimum | Enforcement |
+|--------|--------|---------|-------------|
+| P0 acceptance criteria of guardrail-slice stories covered by **citing** tests | 100% *(target; current citation rate is 0%)* | 100% before a story closes | `ui/`: `bun run check:story-coverage`; Rust: planned `@covers` scan in CI |
+| Line coverage on `axon-core` + `axon-api` | ≥90% *(target)* | 80% | CI ratchet file (can only increase) |
+| Workspace line coverage (L1–L4 tests) | ≥80% *(target)* | 70% | CI ratchet file |
+| Policy decision parity across GraphQL/MCP/handler/CLI/SDK | 100% identical decisions on the shared policy-fixture suite | 100% | L6 parity suite blocks merge (PRD success metric) |
+| Stale-intent rejection dimensions (pre-image, schema, policy, grant, operation hash) | 100% rejected | 100% | L6 intent contract tests (PRD approval-safety metric) |
+| P0 correctness invariants (INV-001..008, INV-017..022) | 100% passing across required backends | 100% | L1/L4 CI gate |
+
+---
+
+## 5. L1: Correctness Invariants
 
 These are the properties that must hold under all circumstances, including concurrent access and fault injection. Each invariant has a formal statement, a verification method, and a simulation workload.
 
@@ -225,7 +299,7 @@ both writes use the same backing store transaction.
 
 ---
 
-## 4. L2: Business Scenario Tests
+## 6. L2: Business Scenario Tests
 
 Real-world workflows from the use case research, encoded as deterministic integration tests. Each scenario tests a complete business process end-to-end against embedded Axon.
 
@@ -644,7 +718,7 @@ Representative rows:
 
 ---
 
-## 5. L3: Property-Based Tests
+## 7. L3: Property-Based Tests
 
 ### PROP-001: Schema Round-Trip
 
@@ -686,7 +760,7 @@ Representative rows:
 
 ---
 
-## 6. L4: Backend Conformance
+## 8. L4: Backend Conformance
 
 Every StorageAdapter implementation must pass the **identical** test suite. Tests are written against the trait, parameterized by backend.
 
@@ -704,7 +778,7 @@ If a backend cannot pass any invariant, it is not shipped.
 
 ---
 
-## 7. L5: Performance Benchmarks
+## 9. L5: Performance Benchmarks
 
 From technical requirements. All benchmarks use `criterion` and are ratcheted.
 
@@ -723,12 +797,50 @@ From technical requirements. All benchmarks use `criterion` and are ratcheted.
 
 ---
 
-## 8. L6: API Contract Tests
+## 10. L6: Surface Contract and Policy Parity Tests
 
-- gRPC service methods match protobuf definitions exactly
-- HTTP gateway produces identical results to gRPC for all operations
-- Error responses conform to structured error format (code, detail, field path)
-- Embedded API (Rust trait) produces identical results to network API
+Per the PRD, **GraphQL is the primary application surface and MCP is the
+primary agent surface** (FR-20, FR-22); gRPC/protobuf and REST routes are
+compatibility surfaces only. L6 is organized accordingly.
+
+### Primary: GraphQL and MCP contract suites
+
+- GraphQL schema generation, queries, mutations, subscriptions, error
+  extensions, and connection semantics conform to CONTRACT-002:
+  `crates/axon-server/tests/graphql_contract.rs`,
+  `graphql_mutations.rs`, `graphql_subscriptions.rs`,
+  `graphql_consumer_parity.rs`.
+- MCP tool listing, tool envelopes, and the `axon.query` bridge conform to
+  CONTRACT-003: `crates/axon-server/tests/mcp_contract.rs`.
+- Policy and intent decision semantics conform to CONTRACT-004:
+  `graphql_policy_contract.rs`, `graphql_intents_contract.rs`,
+  `mcp_intents_contract.rs`.
+
+### Primary: standing shared policy-fixture suite
+
+The PRD's policy-parity success metric ("100% identical allow, deny, redaction,
+and approval decisions across handler API, GraphQL, MCP, CLI, and SDK paths —
+shared policy fixture suite") is owned here. The reference fixture sets
+(procurement and nexiq) are seeded once and evaluated across surfaces;
+`crates/axon-server/tests/feat_029_contract_parent.rs`
+(`feat_029_contract_parent_keeps_reference_policy_contracts_in_sync`) and
+`mcp_contract.rs::graphql_mcp_policy_parity_matrix_matches_expected_decisions`
+assert decision-for-decision parity. Every new policy behavior must land as a
+shared fixture first, then per-surface assertions — never per-surface fixtures
+that can drift. Extending the matrix to CLI and SDK paths is part of the same
+suite, not a separate plan.
+
+- Error responses conform to the structured error format (code, detail, field
+  path) on every surface.
+- Embedded API (Rust trait) produces identical results to the network API.
+
+### Compatibility checks (demoted): gRPC/protobuf and REST routes
+
+- gRPC service methods match protobuf definitions; REST compatibility routes
+  return the same results as their GraphQL equivalents where both exist.
+  These are regression checks — new product behavior is **not** specified
+  against gRPC or REST first, and feature work is not blocked on extending
+  them beyond parity with the primary surfaces.
 
 ### L6 Path-Based Route Contract (ADR-018)
 
@@ -743,9 +855,9 @@ and asserts the following properties on every build:
 - [ ] The generated OpenAPI schema lists every `/tenants/{tenant}/databases/{database}/...` route and names `tenant` + `database` as required path parameters; the GraphQL SDL lists matching top-level types. The two surfaces are cross-checked by a golden test.
 - [ ] The grants rule table in ADR-018 §4 is enforced on every control-plane endpoint that issues credentials: the contract test submits deliberately-over-scoped issuance requests and asserts 403 `grants_exceed_role`.
 
-### L8 SDK and Golden Client Contract
+### SDK and Golden Client Contract
 
-Each supported SDK (Rust, TypeScript, Python when they land) has a matching L8 golden-client test that exercises the full `(tenant, database)` fluent API:
+Each supported SDK (Rust, TypeScript, Python when they land) has a matching golden-client test that exercises the full `(tenant, database)` fluent API:
 
 - [ ] A `.tenant(t).database(d).entity(c, id).get()` call against a live server resolves to the expected entity.
 - [ ] The SDK's error enum has a stable `error_code` discriminant that matches the ADR-018 failure mode table one-for-one — adding a code to the table without adding it to the SDK enum is a compile error via a shared codegen manifest.
@@ -753,11 +865,11 @@ Each supported SDK (Rust, TypeScript, Python when they land) has a matching L8 g
 
 ---
 
-## 9. Test Execution Schedule
+## 11. Test Execution Schedule
 
 | Trigger | Test Layers | Seed Count | Timeout |
 |---------|------------|-----------|---------|
-| Every commit (CI) | L1 (100 seeds), L2, L3 (1K iterations), L4 (SQLite + memory), L6 | 100 | 10 min |
+| Every commit (CI) | L1 (100 seeds), L2, L3 (1K iterations), L4 (SQLite + memory), L6, L7 | 100 | 10 min |
 | Pre-merge | L1 (1K seeds), L2, L3 (10K iterations), L4 (all backends), L5, L6 | 1,000 | 30 min |
 | Nightly | L1 (100K seeds), L2, L3 (100K iterations), L4 (all backends), L5 | 100,000 | 4 hours |
 | Weekly | L1 (1M seeds), L3 (1M iterations) | 1,000,000 | 24 hours |
@@ -770,7 +882,12 @@ Each supported SDK (Rust, TypeScript, Python when they land) has a matching L8 g
 
 ---
 
-## 10. Traceability
+## 12. Traceability
+
+Invariant/scenario→feature traceability is below. **Story-level AC↔test
+traceability is owned by the STPs** (`test-plans/STP-*.md`) keyed by
+`US-<n>-AC<m>`; the former `feature-story-e2e-traceability.md` review is
+superseded by §3 and the STP layer.
 
 | Invariant / Scenario | Feature | Principle | Use Case Domain |
 |----------------------|---------|-----------|-----------------|
@@ -810,4 +927,44 @@ Each supported SDK (Rust, TypeScript, Python when they land) has a matching L8 g
 
 ---
 
-*This test plan is the governing artifact. Implementation is complete when all invariants, scenarios, properties, and benchmarks pass across all backends.*
+## 13. Build Handoff
+
+**Commands** (all runnable from the repo root):
+
+```bash
+# Rust — full workspace
+cargo test                                   # all crates, all test layers wired into cargo
+cargo clippy -- -D warnings                  # lint gate (CI-enforced)
+cargo fmt --check                            # format gate
+
+# Rust — targeted
+cargo test -p axon-server                    # L6 contract + policy/intent suites
+cargo test -p axon-server --test graphql_policy_contract
+cargo test -p axon-server --test graphql_intents_contract
+cargo test -p axon-server --test mcp_intents_contract
+cargo test -p axon-server --test feat_029_contract_parent
+cargo test -p axon-api                       # L2 business scenarios + handler units
+cargo test -p axon-cypher                    # graph query L2 (memory + SQLite parity)
+
+# UI (from ui/; scripts per ui/package.json)
+bun test src/                                # unit tests ("test" script)
+bun run test:e2e                             # Playwright E2E via scripts/test-ui-e2e-docker.sh (postgres)
+bun run test:e2e:sqlite                      # Playwright E2E against sqlite storage
+bun run check:story-coverage                 # story-tag coverage scan
+```
+
+**Priority**: (1) add `@covers US-<n>-AC<m>` citations to the existing tests
+named in the guardrail-slice STPs (citation-only pass — converts
+`UNCITED_COVERAGE` to covered); (2) close `UNTESTED` P0 rows in
+STP-103/105/107/109 (transaction abort, deterministic preview, stale
+dimensions, audited activation); (3) close FEAT-009 `UNTESTED` rows; (4) stand
+up the `@covers` scan for Rust in CI.
+
+**Blocking Gate**: `cargo test` + `cargo clippy -- -D warnings` + `bun test
+src/` green on every commit; `bun run test:e2e` green for any change touching
+guardrail-slice surfaces; no P0 acceptance criterion of an in-progress story
+left `UNTESTED` without a recorded manual exception in its STP.
+
+---
+
+*This test plan is the governing artifact. Implementation is complete when all invariants, scenarios, properties, and benchmarks pass across all backends — and every in-scope acceptance criterion is proven by a citing test per §3.*
