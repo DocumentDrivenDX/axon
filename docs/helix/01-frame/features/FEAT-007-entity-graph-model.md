@@ -3,174 +3,145 @@ ddx:
   id: FEAT-007
   depends_on:
     - helix.prd
+    - FEAT-002
+    - FEAT-003
+    - CONTRACT-001
+    - CONTRACT-010
 ---
-# Feature Specification: FEAT-007 - Entity-Graph-Relational Data Model
+# Feature Specification: FEAT-007 — Entity-Graph Data Model
 
 **Feature ID**: FEAT-007
-**Status**: Draft
+**Status**: draft
 **Priority**: P0
 **Owner**: Core Team
-**Created**: 2026-04-04
-**Updated**: 2026-04-04
+**Covered PRD Subsystem(s)**: Entity-Graph Data Model
+**Covered PRD Requirements**: FR-2; FR-1 (entity model shape — the operation surface is owned by FEAT-004)
+**Cross-Subsystem Rationale**: None — single subsystem.
+**Requirement Prefix**: GRF
 
 ## Overview
 
-The entity-graph-relational data model is Axon's foundational abstraction. Entities are deeply nested, schema-validated structures representing real-world objects. Links are typed, directional relationships between entities. Together, entities and links form a graph that can be traversed, queried, and aggregated — while retaining the schema guarantees and audit trail of a structured database.
+The entity-graph data model is Axon's foundational abstraction. Entities are deeply nested, schema-validated structures representing real-world objects. Links are typed, directional, first-class relationships between entities, with their own metadata, versioning, and audit records. This feature implements PRD FR-2 (typed links as first-class objects) and defines the entity model shape behind FR-1.
 
 This model avoids the false choice between documents (rich but isolated), graphs (connected but schema-loose), and tables (structured but flat).
 
+**Boundary note**: this feature owns the *data model* — what entities and links are. All read paths over that model (traversal, neighbor discovery, filtering, sorting, aggregation, pattern matching) are owned by FEAT-009's unified graph query. Single-entity operations are owned by FEAT-004.
+
+## Ideal Future State
+
+A developer models business objects and relationships once — invoices, vendors, beads, approval chains — with deep nesting where the domain has depth and typed links where the domain has relationships. Both sides of the model carry schema guarantees and audit lineage, so the graph is trustworthy: a link cannot point at a record that never existed, link metadata conforms to its declared shape, and every relationship change is attributable.
+
 ## Problem Statement
 
-Agentic applications model the world as things and relationships: beads depend on other beads, customers author documents, accounts have ancestor relationships, invoices flow through approval chains. Current storage options force these natural structures into flat rows (relational), disconnected blobs (document stores), or schema-less property graphs (graph DBs). Each loses something important.
+- **Current situation**: Developers model entities as rows or documents and relationships as foreign keys, join tables, or ad-hoc reference fields.
+- **Pain points**: Flat schemas can't express deep nesting. Foreign keys can't express typed, directional relationships with metadata. Graph databases lack schema enforcement and audit lineage.
+- **Desired outcome**: A data model where entities have depth, links have types and metadata, and both are schema-validated, versioned, and audited.
 
-- Current situation: Developers model entities as rows or documents and relationships as foreign keys, join tables, or ad-hoc reference fields
-- Pain points: Flat schemas can't express deep nesting. Foreign keys can't express typed, directional relationships with metadata. Graph databases lack schema enforcement and SQL-like aggregation
-- Desired outcome: A data model where entities have depth, links have types, and both are schema-validated, audited, and queryable
+## Functional Areas
+
+| Area | User question or job | Feature responsibility |
+|------|----------------------|------------------------|
+| Entity model | "What shape can a record take?" | Nested structure, identity, versioning, schema binding |
+| Link model | "How do records relate?" | Typed, directional, metadata-bearing first-class links |
+| Link lifecycle | "Create and remove relationships safely" | Referentially-checked, schema-validated, audited link mutations |
 
 ## Requirements
 
-### Entity Model
+### Functional Requirements by Area
 
-- **Entity structure**: Entities are deeply nested JSON-like structures. An entity can contain objects, arrays, and primitive values at arbitrary depth
-- **Entity identity**: Every entity has a unique ID within its collection (UUIDv7 by default, or client-provided). IDs are immutable
-- **Entity versioning**: Every entity carries a monotonically increasing version number, incremented on each update
-- **System metadata**: `_id`, `_version`, `_created_at`, `_updated_at`, `_created_by`, `_updated_by` — always present, managed by Axon
-- **Schema binding**: Every entity belongs to a collection and is validated against that collection's schema on every write
-- **Recursive structures**: Entity schemas can define recursive types (e.g., a tree node containing child nodes of the same type). Low cardinality at each level is expected but not enforced
+#### Entity Model
 
-### Link Model
+- **GRF-01**. Entities must support deeply nested JSON-like structures: objects, arrays, and primitive values at arbitrary depth, with nested fields individually addressable.
+- **GRF-02**. Every entity must have an immutable identity unique within its collection and a monotonically increasing version. Identity, version, and the rest of the server-managed envelope are specified by FEAT-004 and [CONTRACT-001 §Entity system-metadata envelope](../../02-design/contracts/CONTRACT-001-http-api-surface.md); this feature does not redefine them.
+- **GRF-03**. Every entity must belong to a collection and validate against that collection's active schema on every write, including required fields inside nested objects.
+- **GRF-04**. Entity schemas must support recursive types (for example, a tree node containing child nodes of the same type).
 
-- **Link structure**: A link connects a source entity to a target entity with a typed relationship
-- **Link components**:
-  - `source`: Entity reference (collection + ID)
-  - `target`: Entity reference (collection + ID)
-  - `link_type`: Named relationship type (e.g., `depends-on`, `authored-by`, `is-ancestor-of`)
-  - `metadata`: Optional key-value properties on the link itself (e.g., `weight`, `confidence`, `since`)
-  - `_id`, `_version`, `_created_at`, `_created_by`: System metadata (links are versioned and audited)
-- **Directionality**: Links are directional (source -> target). Bidirectional relationships are modeled as two links or a single link queried in both directions
-- **Cross-collection links**: Links can connect entities in different collections (customer in `customers` -> document in `documents`)
-- **Link-type schema**: Link-types are declared in the database schema. Each link-type can have its own metadata schema (e.g., `depends-on` links require a `priority` field)
-- **Link uniqueness**: A given (source, target, link_type) triple is unique — you can't create two `depends-on` links between the same pair of entities. Different link-types between the same pair are allowed
+#### Link Model
 
-### Link Operations
+- **GRF-05**. A link must be a first-class record connecting a source entity reference to a target entity reference with a named link type, optional metadata properties, and its own system metadata, version, and audit records. The normative link record shape is defined in [CONTRACT-001 — HTTP API Surface](../../02-design/contracts/CONTRACT-001-http-api-surface.md) (link operations and envelope) and the link-type declaration grammar in [CONTRACT-010 — ESF Schema Format](../../02-design/contracts/CONTRACT-010-esf-schema-format.md) (`link_types`).
+- **GRF-06**. Links must be directional (source → target); bidirectional relationships are modeled as two links or queried in both directions by the read model.
+- **GRF-07**. Links must be able to connect entities in different collections.
+- **GRF-08**. Link types must be declared in the schema, with per-link-type target collection, cardinality, and metadata schema (per CONTRACT-010); link metadata must validate against that schema on write.
+- **GRF-09**. A given (source, target, link type) triple must be unique; creating a duplicate is rejected as a conflict. Different link types between the same pair are allowed.
 
-- **Create link**: Create a typed link between two existing entities. Both entities must exist. Link metadata is validated against link-type schema
-- **Delete link**: Remove a link. Audit record captures the deleted link
-- **Query links from entity**: "What entities does X link to via `depends-on`?" — forward traversal
-- **Query links to entity**: "What entities link to X via `authored-by`?" — reverse traversal
-- **Traverse with depth**: "Follow `depends-on` links from X up to depth 3" — multi-hop graph traversal
-- **Filter during traversal**: "Follow `depends-on` links from X where target.status = 'done'" — combine graph traversal with entity filters
+#### Link Lifecycle
 
-### Collection-Level Queries
+- **GRF-10**. Creating a link must verify that both source and target entities exist and that the link type is declared; failures identify the missing entity or undeclared type.
+- **GRF-11**. Deleting a link must produce an audit record capturing the deleted link.
+- **GRF-12**. Entity deletion must honor the dangling-link policy: deletion is rejected while inbound links exist, with an explicit force option that cascade-deletes the links (all audited).
 
-Entities within a collection support familiar query operations:
+### Non-Functional Requirements
 
-- **Filter**: Field-level predicates with standard operators (eq, ne, gt, lt, gte, lte, in, contains, exists)
-- **Sort**: Order by one or more fields
-- **Aggregate** (P1): COUNT, SUM, AVG, MIN, MAX, GROUP BY across entities
-- **Pagination**: Cursor-based for stable iteration
-
-These queries operate at **moderate scale** — designed for thousands to low millions of entities per collection, not warehouse-scale analytics.
+- **Performance**: Entity writes with 5+ levels of nesting validate and commit within the FEAT-004 p99 < 10 ms single-entity budget; link create/delete meets the same p99 < 10 ms budget.
+- **Scalability**: The model supports collections of thousands to low millions of entities and links per database; it is not designed for warehouse-scale analytics.
+- **Reliability**: Link referential checks and uniqueness are enforced atomically with the link write — no window in which a duplicate or dangling-at-create link is observable.
 
 ## User Stories
 
-### Story US-017: Model Entities with Nested Structure [FEAT-007]
+| ID | Title | Link |
+|----|-------|------|
+| US-017 | Model Entities with Nested Structure | [US-017](../user-stories/US-017-model-entities-with-nested-structure.md) |
+| US-018 | Create and Traverse Links | [US-018](../user-stories/US-018-create-and-traverse-links.md) |
+| US-019 | Query Across Entity-Link Graph | [US-019](../user-stories/US-019-query-across-entity-link-graph.md) |
 
-**As a** developer
-**I want** to store entities with deeply nested fields
-**So that** I can represent real-world objects without flattening them into rows
-
-**Acceptance Criteria:**
-- [ ] Entity with 5 levels of nesting is stored and retrieved correctly
-- [ ] Nested fields are individually queryable (e.g., `address.city = "Seattle"`)
-- [ ] Schema validates nested structure including required fields within nested objects
-- [ ] Recursive schema (tree node with children of same type) is supported
-- [ ] Required fields within nested objects are validated; missing required nested fields cause entity write to fail
-- [ ] Nested object fields are queryable by dot-path: `address.city = "Seattle"` returns matching entities
-
-### Story US-018: Create and Traverse Links [FEAT-007]
-
-**As an** agent managing a dependency graph
-**I want** to create typed links between entities and traverse them
-**So that** I can model and query relationships like "bead A depends on bead B"
-
-**Acceptance Criteria:**
-- [ ] `axon link create --from beads/bead-A --to beads/bead-B --type depends-on` creates a link
-- [ ] `axon link list --from beads/bead-A --type depends-on` lists all dependencies of bead-A
-- [ ] `axon link traverse --from beads/bead-A --type depends-on --depth 3` shows the transitive dependency tree
-- [ ] Link creation fails if source or target entity doesn't exist
-- [ ] Duplicate (source, target, type) triple is rejected with conflict error
-- [ ] Attempting to create a link with a non-existent target entity fails with a not-found error identifying the missing entity
-
-### Story US-019: Query Across Entity-Link Graph [FEAT-007]
-
-**As an** agent
-**I want** to combine entity filters with link traversal
-**So that** I can answer questions like "find all pending beads that depend on completed beads"
-
-**Acceptance Criteria:**
-- [ ] Query: "entities in `beads` where status = 'pending' AND linked-via `depends-on` to entities where status = 'done'"
-- [ ] Results include both the matching entities and the traversal path
-- [ ] 3-hop traversal over a 10K-entity collection completes in under 500ms p99
-- [ ] Traversal with no matching results returns an empty result set (not an error)
+US-018 and US-019 exercise this feature's link model through the read paths
+owned by FEAT-009; their traversal/query semantics are governed by FEAT-009
+and [CONTRACT-007 — Cypher Query Surface](../../02-design/contracts/CONTRACT-007-cypher-query-surface.md).
 
 ## Edge Cases and Error Handling
 
-- **Dangling links**: If a target entity is deleted, its inbound links become dangling. Options: (a) reject entity deletion if inbound links exist, (b) cascade-delete links, (c) allow dangling links with a `dangling` status. V1: reject deletion if inbound links exist; option to force-delete with link cascade
-- **Circular links**: `depends-on` from A->B and B->A is allowed at the link level (circularity detection is application-level, not enforced by Axon, except for specific link-types that opt into acyclicity)
-- **Cross-collection link integrity**: Link creation validates that both source and target entities exist at creation time. Subsequent deletion is handled by the dangling-link policy
-- **Link-type not declared**: Creating a link with an undeclared link-type fails with a validation error
-- **Deep traversal**: Traversals deeper than 10 hops emit a warning. Configurable max depth
+- **Dangling links**: Deleting an entity with inbound links is rejected; an explicit force option cascade-deletes the links, and every cascaded deletion is audited.
+- **Circular links**: `depends-on` from A→B and B→A is allowed at the link level; circularity detection is application-level, except for link types that opt into acyclicity in their declaration.
+- **Cross-collection link integrity**: Link creation validates that both source and target exist at creation time; later deletions are handled by the dangling-link policy.
+- **Link type not declared**: Creating a link with an undeclared link type fails with a validation error naming the type.
+- **Metadata schema violation**: Link metadata that does not validate against the link type's metadata schema is rejected with field-level errors.
 
 ## Success Metrics
 
-- Entity CRUD with nested structures performs within latency targets
-- Link creation/traversal performs within latency targets
-- The data model feels natural for bead dependency graphs, document authorship, and account hierarchies
+- Entity writes with deep nesting and link create/delete meet the p99 < 10 ms single-record latency budget.
+- Zero referential-integrity violations (dangling-at-create or duplicate-triple links) under concurrency contract tests.
+- The model expresses the reference domains — bead dependency graphs, document authorship, account hierarchies, invoice approval chains — without ad-hoc reference fields.
 
 ## Constraints and Assumptions
 
 ### Constraints
-- Entities are always schema-bound (no schemaless entities)
-- Links are directional; bidirectional requires explicit modeling
-- Graph traversal is not optimized for massive graphs in V1 (designed for thousands of nodes, not millions)
-- Aggregation queries (GROUP BY, SUM, etc.) are P1
+
+- Entities and links are always schema-bound; there are no schemaless records.
+- Links are directional; bidirectional relationships require explicit modeling.
+- The model targets operational graphs (thousands to low millions of records), not massive analytical graphs.
 
 ### Assumptions
-- Most entity graphs in agentic applications have < 100,000 nodes
-- Link traversals rarely exceed depth 5 in practice
-- The entity-graph model maps naturally to bead DAGs, org hierarchies, document relationships, and workflow chains
+
+- Most entity graphs in agentic applications have fewer than 100,000 nodes.
+- The entity-graph model maps naturally to bead DAGs, org hierarchies, document relationships, and workflow chains.
 
 ## Dependencies
 
-- **FEAT-002** (Schema Engine): Entity and link-type schemas
-- **FEAT-003** (Audit Log): Entity and link mutations are audited
+- **Other features**: FEAT-002 (Schema Engine — entity and link-type schema declarations), FEAT-003 (Audit Log — entity and link mutations audited), FEAT-004 (Entity Operations — operation surface and system-metadata envelope), FEAT-009 (Unified Graph Query — all read paths over this model).
+- **External services**: None. Normative surfaces: [CONTRACT-001 — HTTP API Surface](../../02-design/contracts/CONTRACT-001-http-api-surface.md) (link operations, envelope), [CONTRACT-010 — ESF Schema Format](../../02-design/contracts/CONTRACT-010-esf-schema-format.md) (`link_types` declaration grammar).
+- **PRD requirements**: FR-2 (P0); FR-1 model shape (P0).
 
 ## Out of Scope
 
-- Full graph query language (Cypher/Gremlin/SPARQL equivalent) — P2
-- Graph visualization — P2
-- Link inference / reasoning (OWL-style) — P2
-- Weighted shortest-path or other graph algorithms — P2
+- All traversal, neighbor, filter, sort, aggregation, and pattern-match read paths — owned by FEAT-009 (Unified Graph Query).
+- Single-entity CRUD semantics and the system-metadata envelope — owned by FEAT-004.
+- Graph visualization.
+- Link inference / reasoning (OWL-style).
+- Weighted shortest-path and other graph algorithms.
 
-## Prior Art
+## Review Checklist
 
-| System | Relevant Pattern | What Axon Takes | What Axon Does Differently |
-|--------|-----------------|-----------------|--------------------------|
-| **Neo4j** | Property graph with typed relationships | Typed, directional links with metadata | Schema-enforced entities and links; ACID transactions; audit trail |
-| **EdgeDB** | Object types with links (graph-relational) | Graph-relational hybrid model | Simpler schema language; audit-first; agent-native API |
-| **TypeDB** | Typed entities and relations with reasoning | Typed link model | No reasoning engine; simpler; focuses on transactional correctness |
-| **JSON-LD / RDF** | Typed links (predicates) between subjects and objects | Subject-predicate-object as conceptual model | Schema enforcement; ACID; no inference; practical API over academic standards |
-| **Postgres + ltree/recursive CTEs** | Hierarchical queries in relational DB | Hierarchical traversal patterns | First-class link model instead of encoding relationships in columns |
+Use this checklist when reviewing a feature specification:
 
-## Traceability
-
-### Related Artifacts
-- **Parent PRD Section**: Section 2 (Data Model), Requirements Overview > P0 #1-2 (Entity/Link Model)
-- **User Stories**: US-017, US-018, US-019
-- **Test Suites**: `tests/FEAT-007/`
-- **Implementation**: `src/model/` or equivalent
-
-### Feature Dependencies
-- **Depends On**: FEAT-002 (Schema Engine), FEAT-003 (Audit Log)
-- **Depended By**: FEAT-001 (Collections), FEAT-004 (Entity Operations), FEAT-006 (Bead Adapter)
+- [ ] Covered PRD Subsystem(s) and Requirements (`FR-n`) are listed; a feature spanning >1 subsystem carries an explicit cross-subsystem rationale (else split per the Decomposition test)
+- [ ] Functional areas (if any) are subordinate parts of this one capability, not separate capabilities
+- [ ] Overview connects this feature to a specific PRD requirement
+- [ ] Ideal future state describes the desired user-visible outcome, not only current problems
+- [ ] Every functional requirement is testable — you can write an assertion for it
+- [ ] Acceptance criteria are defined in the user stories that decompose this feature, not here (ADR-009)
+- [ ] Non-functional requirements have specific numeric targets
+- [ ] Edge cases cover realistic failure scenarios, not just happy paths
+- [ ] Success metrics are specific to this feature, not product-level metrics
+- [ ] Dependencies reference real artifact IDs
+- [ ] Out of scope excludes things someone might reasonably assume are in scope
+- [ ] No exact API/CLI/event/schema/config surface is defined inline; normative surface links to Contract artifacts

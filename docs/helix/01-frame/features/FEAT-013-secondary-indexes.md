@@ -8,213 +8,158 @@ ddx:
     - FEAT-004
     - ADR-010
 ---
-# Feature Specification: FEAT-013 - Secondary Indexes and Query Acceleration
+# Feature Specification: FEAT-013 — Secondary Indexes and Query Acceleration
 
 **Feature ID**: FEAT-013
-**Status**: Draft
+**Status**: draft
 **Priority**: P1
 **Owner**: Core Team
-**Created**: 2026-04-05
-**Updated**: 2026-04-05
+**Requirement Prefix**: IDX
+**Covered PRD Subsystem(s)**: Entity-Graph Data Model
+**Covered PRD Requirements**: FR-4
+**Cross-Subsystem Rationale**: None — single subsystem.
 
 ## Overview
 
-Secondary indexes accelerate entity queries by maintaining pre-computed
-lookup structures for declared fields. Without indexes, all queries perform
-full collection scans with application-layer filtering. With indexes,
-equality, range, and sort queries execute in sub-millisecond time against
-typed index tables.
+Secondary indexes accelerate entity queries by maintaining pre-computed lookup
+structures for declared fields, implementing PRD FR-4. Without indexes, all
+queries perform full collection scans with application-layer filtering. With
+indexes, equality, range, and sort queries execute in sub-millisecond time.
+Indexes are declared in the collection schema and maintained automatically on
+every entity write. The physical index design (table layout, compound sort-key
+encoding) is owned by ADR-010 (Physical Storage and Secondary Indexes).
 
-Indexes are declared in the Entity Schema Format (ESF Layer 4) and
-maintained automatically by the storage layer on every entity write.
-The design follows the Salesforce EAV (Entity-Attribute-Value) pattern:
-one table per value type, shared across all collections. Compound indexes
-use a binary-encoded sort key that is portable across SQL and KV backends.
+## Ideal Future State
 
-See [ADR-010](../../02-design/adr/ADR-010-physical-storage-and-secondary-indexes.md)
-for the full design.
+A developer declares which fields their queries filter and sort on, and those
+queries become fast — on every supported backend, with no backend-specific
+operators leaking into the API. Uniqueness constraints are enforced at the
+storage level. Adding an index to a live collection never blocks normal
+operations: the index builds in the background and the planner adopts it when
+ready. Developers never think about index internals; they think in terms of
+declared query patterns.
 
 ## Problem Statement
 
-Entity queries currently perform a full range scan of every entity in the
-collection, deserializing and filtering in application code. This is
-acceptable for small collections but degrades linearly with entity count.
-Collections with thousands of entities need sub-millisecond lookups on
-common filter fields (status, priority, owner, timestamps).
+- **Current situation**: Entity queries perform a full range scan of every entity in the collection, deserializing and filtering in application code.
+- **Pain points**: Acceptable for small collections but degrades linearly with entity count. Agents frequently query by status ("give me all pending beads") and sort by priority or creation time; these queries are O(n) in collection size. Collections with thousands of entities need sub-millisecond lookups on common filter fields.
+- **Desired outcome**: Declared single-field and compound indexes make common filters, sorts, and uniqueness checks fast and portable across backends.
 
-Agents frequently query by status ("give me all pending beads") and sort
-by priority or creation time. Without indexes, these queries are O(n) in
-collection size.
+## Functional Areas
+
+| Area | User question or job | Feature responsibility |
+|------|----------------------|------------------------|
+| Index declaration | "How do I say which fields are indexed?" | Schema-declared single-field, compound, and unique indexes (grammar owned by CONTRACT-010) |
+| Index maintenance | "Do indexes stay correct as data changes?" | Automatic maintenance on every write and delete; uniqueness enforcement |
+| Query acceleration | "Are my queries actually faster?" | Planner uses indexes for equality, range, sort, and prefix matching; safe fallback |
+| Index lifecycle | "Can I add or remove indexes on a live collection?" | Background build, ready/dropping states, rebuild |
 
 ## Requirements
 
-### Functional Requirements
+### Functional Requirements by Area
 
-#### Index Declarations (ESF Layer 4)
+#### Index Declaration
 
-- **Single-field indexes**: Declare a field path and value type for fast
-  equality and range lookups
-- **Compound indexes**: Declare an ordered list of field+type pairs for
-  multi-field queries and multi-field sorts
-- **Unique indexes**: Single-field or compound indexes that enforce
-  uniqueness — no two entities in the same collection may share the same
-  indexed value
-- **Index types**: `string`, `integer`, `float`, `datetime`, `boolean`
-- **Schema integration**: Indexes are declared in the collection schema
-  alongside entity schema (L1), link types (L2), and lifecycles (L3)
-- **Null handling**: Null or missing field values are not indexed.
-  Entities with null indexed fields are excluded from index lookups but
-  included in full scans
+- **IDX-01**: A schema must be able to declare a single-field index (field path plus value type) for fast equality and range lookups.
+- **IDX-02**: A schema must be able to declare a compound index — an ordered list of field+type pairs — for multi-field queries and multi-field sorts.
+- **IDX-03**: Single-field and compound indexes must support a uniqueness option: no two entities in the same collection may share the same indexed value.
+- **IDX-04**: Supported index value types are `string`, `integer`, `float`, `datetime`, and `boolean`.
+- **IDX-05**: Index declarations are part of the collection schema, alongside the entity schema, link types, and lifecycle declarations. The normative declaration grammar is owned by CONTRACT-010 (ESF schema format).
+- **IDX-06**: Null or missing field values are not indexed. Entities with null indexed fields are excluded from index lookups but included in full scans.
 
 #### Index Maintenance
 
-- **Automatic on write**: Every entity create, update, and patch
-  operation maintains all declared indexes for that entity
-- **Delete-then-insert pattern**: Old index entries are removed and new
-  entries are inserted on every write
-- **Cascade on entity delete**: When an entity is deleted, its index
-  entries are automatically removed
-- **Unique violation**: If a write would violate a unique index, the
-  operation fails with `AxonError::Conflict` identifying the conflicting
-  field and value
+- **IDX-07**: Every entity create, update, and patch must maintain all declared indexes for that entity, so that index entries always reflect the latest committed entity state.
+- **IDX-08**: When an entity is deleted, its index entries must be removed.
+- **IDX-09**: If a write would violate a unique index, the operation must fail with a conflict error identifying the conflicting field and value.
 
 #### Query Acceleration
 
-- **Equality queries**: `status = "pending"` uses the string index on
-  `status` to return matching entity IDs, then fetches entities by PK
-- **Range queries**: `priority > 3` uses the integer index on `priority`
-  with a range scan
-- **Sort optimization**: If the query's sort field matches an index, the
-  index scan produces pre-sorted results with no application-layer sort
-- **Compound prefix matching**: A compound index on `(status, priority)`
-  accelerates queries filtering on `status` alone (leftmost prefix match)
-- **Fallback**: Queries on non-indexed fields fall back to full scan with
-  application-layer filtering (current behavior)
+- **IDX-10**: Equality queries on an indexed field (e.g., `status = "pending"`) must use the index rather than a full scan.
+- **IDX-11**: Range queries on an indexed field (e.g., `priority > 3`) must use an index range scan.
+- **IDX-12**: When the query's sort field matches an index, the index scan order must satisfy the sort with no application-layer sort.
+- **IDX-13**: A compound index must accelerate queries filtering on a leftmost prefix of its fields (e.g., a `(status, priority)` index accelerates `status`-only filters).
+- **IDX-14**: Queries on non-indexed fields must fall back to a full scan with application-layer filtering, producing the same results as an indexed path would.
 
 #### Index Lifecycle
 
-- **Building state**: New indexes on existing collections start in
-  `building` state. A background worker populates the index by scanning
-  all existing entities. The query planner does not use `building` indexes
-- **Ready state**: Once the build scan completes, the index transitions
-  to `ready`. The query planner begins using it
-- **Dropping state**: When an index is removed from the schema, it
-  enters `dropping` state. A background worker removes index entries in
-  batches
-- **Rebuild**: An admin operation can trigger a full reindex — the index
-  returns to `building`, existing entries are truncated, and entities
-  are rescanned
+- **IDX-15**: A new index on an existing collection starts in a `building` state: a background process populates it from existing entities, and the query planner does not use it until built.
+- **IDX-16**: Once the build completes, the index transitions to `ready` and the query planner begins using it. Writes during the build also populate the new index.
+- **IDX-17**: When an index is removed from the schema, it enters a `dropping` state: queries stop using it immediately and its entries are cleaned up in the background.
+- **IDX-18**: An admin operation must be able to trigger a full rebuild: the index returns to `building`, existing entries are discarded, and entities are rescanned.
 
 ### Non-Functional Requirements
 
-- **Write amplification**: Each entity write touches N index tables where
-  N is the number of declared indexes. Acceptable for typical workloads
-  (1-5 indexes per collection)
-- **Query latency**: Indexed equality query on a 100K-entity collection
-  < 5ms p99
-- **Index build**: Background build should process at least 10K
-  entities/second
-- **Backend portability**: Index implementation must work identically on
-  PostgreSQL, SQLite, and KV stores. No backend-specific query operators
-  (no GIN, no JSONB containment)
+- **Write amplification**: Each entity write may touch one maintenance structure per declared index; typical workloads (1–5 indexes per collection) must stay within the entity-write latency targets.
+- **Query latency**: Indexed equality query on a 100K-entity collection < 5ms p99.
+- **Index build**: Background build processes at least 10K entities/second.
+- **Backend portability**: Index behavior must be identical on PostgreSQL, SQLite, and KV stores; no backend-specific query operators are exposed (see ADR-010 for the portable physical design).
 
 ## User Stories
 
-### Story US-031: Declare a Secondary Index [FEAT-013]
+| ID | Title | Link |
+|----|-------|------|
+| US-031 | Declare a Secondary Index | [US-031](../user-stories/US-031-declare-a-secondary-index.md) |
+| US-032 | Enforce Uniqueness via Index | [US-032](../user-stories/US-032-enforce-uniqueness-via-index.md) |
+| US-033 | Compound Index for Multi-Field Queries | [US-033](../user-stories/US-033-compound-index-for-multi-field-queries.md) |
+| US-034 | Background Index Build | [US-034](../user-stories/US-034-background-index-build.md) |
 
-**As a** developer defining a collection schema
-**I want** to declare which fields should be indexed
-**So that** queries on those fields are fast
+## Edge Cases and Error Handling
 
-**Acceptance Criteria:**
-- [ ] Adding `indexes: [{field: status, type: string}]` to the schema
-  creates an index on the `status` field
-- [ ] Queries filtering on `status` use the index instead of a full scan
-- [ ] Queries filtering on non-indexed fields still work (full scan)
-- [ ] Schema validation rejects invalid index declarations (unknown type,
-  missing field)
+- **Schema change removes an index**: Index enters `dropping` state; queries stop using it immediately. Background cleanup follows.
+- **Index type mismatch**: Entity has a string value for an integer-indexed field. The value is not indexed (skip, don't error). Query results for that entity come from the fallback scan path.
+- **Concurrent unique violation**: Two transactions insert entities with the same unique-indexed value. Exactly one succeeds; the other gets a conflict error.
+- **Empty collection**: Index on an empty collection is immediately `ready`.
+- **All entities have null for indexed field**: Index is empty but valid. Queries on that field return no results from the index, but a full scan would find entities (with null values matching `IS NULL` predicates if supported).
 
-### Story US-032: Enforce Uniqueness via Index [FEAT-013]
+## Success Metrics
 
-**As a** developer modeling entities with unique constraints
-**I want** to declare a unique index on a field
-**So that** the system prevents duplicate values
+- Indexed equality and range queries meet the < 5ms p99 NFR target on a 100K-entity collection, versus O(n) scan behavior without the index.
+- Index results and fallback-scan results are identical for the same query (zero correctness divergence across the two paths and across backends).
+- Adding an index to a live, busy collection causes no failed or blocked entity writes during the background build.
 
-**Acceptance Criteria:**
-- [ ] Adding `unique: true` to an index declaration enforces uniqueness
-- [ ] Creating two entities with the same indexed value in the same
-  collection fails with a conflict error
-- [ ] The error identifies the conflicting field and value
-- [ ] Unique constraint is enforced at the storage level, not just
-  application level
+## Constraints and Assumptions
 
-### Story US-033: Compound Index for Multi-Field Queries [FEAT-013]
+### Constraints
 
-**As a** developer querying entities by multiple fields
-**I want** a compound index that accelerates multi-field lookups
-**So that** queries like "status=pending AND priority>3" are fast
+- Index behavior must be portable: no GIN, JSONB containment, or other backend-specific operators in the public surface (FR-4).
+- Indexes are declarative schema artifacts; there is no imperative "create index" data path outside schema changes and the rebuild operation.
 
-**Acceptance Criteria:**
-- [ ] A compound index on `[status, priority]` accelerates queries on
-  both fields together
-- [ ] The compound index also accelerates queries on `status` alone
-  (prefix match)
-- [ ] Sort by the compound index's field order uses the index scan order
+### Assumptions
 
-### Story US-034: Background Index Build [FEAT-013]
-
-**As an** operator adding an index to an existing collection
-**I want** the index to build in the background
-**So that** existing entities are indexed without blocking normal operations
-
-**Acceptance Criteria:**
-- [ ] Adding a new index to a collection with entities starts a
-  background build
-- [ ] The index is not used for queries until the build completes
-- [ ] Entity writes during the build also populate the new index
-- [ ] The build completes and the index becomes available for queries
-
-## Edge Cases
-
-- **Schema change removes an index**: Index enters `dropping` state;
-  queries stop using it immediately. Background cleanup follows
-- **Index type mismatch**: Entity has a string value for an integer-indexed
-  field. The value is not indexed (skip, don't error). Query results for
-  that entity come from the fallback scan path
-- **Concurrent unique violation**: Two transactions insert entities with
-  the same unique-indexed value. Exactly one succeeds; the other gets
-  a conflict error
-- **Empty collection**: Index on an empty collection is immediately `ready`
-- **All entities have null for indexed field**: Index is empty but valid.
-  Queries on that field return no results from the index, but a full scan
-  would find entities (with null values matching `IS NULL` predicates if
-  supported)
+- Typical collections declare 1–5 indexes.
+- Rules-based index selection (no cost-based planner) is sufficient for V1 query shapes.
 
 ## Dependencies
 
-- **FEAT-001** (Collections): Indexes belong to collections
-- **FEAT-002** (Schema Engine): Index declarations are part of the schema
-- **FEAT-004** (Entity Operations): Index maintenance hooks into write path
-- **ADR-010**: Full design for EAV index tables, compound sort key encoding,
-  index lifecycle state machine
+- **Other features**: FEAT-001 (Collections — indexes belong to collections), FEAT-002 (Schema Engine — index declarations are part of the schema), FEAT-004 (Entity Operations — index maintenance hooks into the write path).
+- **External services**: None. Normative interface surface: CONTRACT-010 (index declaration grammar). Physical design: ADR-010 (Physical Storage and Secondary Indexes — EAV index tables, compound sort-key encoding, index lifecycle states).
+- **PRD requirements**: FR-4 (P1).
 
 ## Out of Scope
 
-- **Array field indexing**: One row per array element. Deferred
-- **Full-text search indexes**: tsvector/FTS5. Separate feature
-- **Cost-based query planning**: V1 uses simple rules-based index selection
-- **GIN / JSONB containment indexes**: Deliberately omitted for portability
-- **Expression indexes**: Indexes on computed values. Deferred
+- **Array field indexing**: one row per array element — deferred.
+- **Full-text search indexes**: separate feature (PRD P2 "Advanced indexes and search").
+- **Cost-based query planning**: V1 uses simple rules-based index selection.
+- **GIN / JSONB containment indexes**: deliberately omitted for portability.
+- **Expression indexes**: indexes on computed values — deferred.
 
-## Traceability
+## Review Checklist
 
-### Related Artifacts
-- **Parent PRD Section**: Requirements Overview > P1 #9 (Secondary indexes)
-- **User Stories**: US-031, US-032, US-033, US-034
-- **Architecture**: ADR-010 (Physical Storage and Secondary Indexes)
-- **Implementation**: `crates/axon-storage/` (index maintenance),
-  `crates/axon-api/` (query planner)
+Use this checklist when reviewing this feature specification:
 
-### Feature Dependencies
-- **Depends On**: FEAT-001, FEAT-002, FEAT-004
-- **Depended By**: FEAT-011 (Admin UI can display index status)
+- [ ] Covered PRD Subsystem(s) and Requirements (`FR-n`) are listed; a feature spanning >1 subsystem carries an explicit cross-subsystem rationale (else split per the Decomposition test)
+- [ ] Functional areas (if any) are subordinate parts of this one capability, not separate capabilities
+- [ ] Overview connects this feature to a specific PRD requirement
+- [ ] Ideal future state describes the desired user-visible outcome, not only current problems
+- [ ] Problem statement describes what exists now and what is broken — not just what is wanted
+- [ ] Every functional requirement is testable — you can write an assertion for it
+- [ ] Acceptance criteria are defined in the user stories that decompose this feature, not here (ADR-009)
+- [ ] Non-functional requirements have specific numeric targets
+- [ ] Edge cases cover realistic failure scenarios, not just happy paths
+- [ ] Success metrics are specific to this feature, not product-level metrics
+- [ ] Dependencies reference real artifact IDs
+- [ ] Out of scope excludes things someone might reasonably assume are in scope
+- [ ] No implementation details — WHAT not HOW
+- [ ] No exact API/CLI/event/schema/config/telemetry/adapter surface is defined inline; normative surface links to Contract artifacts
+- [ ] Feature is consistent with governing PRD requirements

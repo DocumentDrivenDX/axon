@@ -3,185 +3,148 @@ ddx:
   id: FEAT-003
   depends_on:
     - helix.prd
+    - CONTRACT-005
 ---
-# Feature Specification: FEAT-003 - Audit Log
+# Feature Specification: FEAT-003 — Audit Log
 
 **Feature ID**: FEAT-003
-**Status**: Draft
+**Status**: draft
 **Priority**: P0
 **Owner**: Core Team
-**Created**: 2026-04-04
-**Updated**: 2026-04-09
+**Covered PRD Subsystem(s)**: Audit, Change Capture, and Repair
+**Covered PRD Requirements**: FR-15, FR-16, FR-17
+**Cross-Subsystem Rationale**: None — single subsystem.
+**Requirement Prefix**: AUD
 
 ## Overview
 
-The audit log is Axon's immutable record of everything that happened. Every mutation — entity creates, updates, deletes, collection lifecycle events — produces an audit entry with actor, timestamp, operation type, and before/after state. The audit log is not a feature bolted onto Axon; it is the architecture. Writes go to the audit log first; the current state is a projection of the audit log.
+The audit log is Axon's immutable record of everything that happened. Every mutation — entity creates, updates, deletes, link lifecycle, collection lifecycle, schema and template changes — produces an audit entry with repair-grade provenance. This feature implements PRD FR-15 (immutable audit record per mutation), FR-16 (operator history queries), and FR-17 (causal-chain reconstruction and manual repair).
+
+## Ideal Future State
+
+An operator or developer can answer "what happened to this record, who or what did it, under what authority, and what did it look like before?" for any business record, at any time, with one query. Any single bad mutation can be reverted from its audit entry without manual data surgery, and the revert itself becomes part of the permanent history. Provenance-aware external systems can consume Axon lineage through a standard vocabulary without bespoke translation.
 
 ## Problem Statement
 
-When agents modify state, there is no trace of what happened, who/what did it, or why. Debugging agent behavior requires reconstructing state changes from scattered logs. Reverting a bad agent action means manual data surgery. Compliance requirements demand full audit trails that most ad-hoc storage solutions can't provide.
+- **Current situation**: Agent state changes in the DIY stack are fire-and-forget. History, when present, is scattered across application logs that cannot reconstruct actor authority, tool origin, or before/after state.
+- **Pain points**: Developers cannot debug agent behavior, cannot revert mistakes without manual data surgery, and cannot prove compliance. When preventive controls fail, the change history is too thin to repair damage.
+- **Desired outcome**: A complete, queryable, immutable record of every state change with full provenance, strong enough to power investigation, manual repair, and (in FEAT-023) automated rollback.
 
-- Current situation: Agent state changes are fire-and-forget. No history, no provenance
-- Pain points: Can't debug agent behavior, can't revert mistakes, can't prove compliance
-- Desired outcome: Complete, queryable, immutable record of every state change with full provenance
+## Functional Areas
+
+| Area | User question or job | Feature responsibility |
+|------|----------------------|------------------------|
+| Audit capture | "Is every change recorded, no matter the path?" | Produce one immutable entry per mutation through the shared handler path |
+| Audit query | "What happened to this entity / who did this / what changed last night?" | History queries by entity, collection, actor, operation, and time, plus a multi-collection ordered tail |
+| Entity revert | "Undo this one bad change" | Restore an entity to a recorded prior state, itself audited |
+| Provenance interchange | "Can my lineage tooling consume this?" | Additive PROV-O / JSON-LD serialization of the same entries |
 
 ## Requirements
 
-### Functional Requirements
+### Functional Requirements by Area
 
-- **Audit on every mutation**: Every create, update, and delete produces an audit entry. No bypass path exists
-- **Audit entry structure**: Each entry contains:
-  - `id`: Unique, monotonically increasing audit entry ID
-  - `timestamp`: Server-assigned UTC timestamp (nanosecond precision)
-  - `actor`: Who/what performed the operation (user ID, agent ID, API key ID, or "system")
-  - `operation`: Dot-namespaced mutation type. Core V1 operations include `entity.create`, `entity.update`, `entity.delete`, `entity.revert`, `link.create`, `link.delete`, `collection.create`, `collection.drop`, `schema.update`, `template.create`, `template.update`, and `template.delete`. `entity.revert` covers the entity-level rollback flow defined here and extended by FEAT-023. `link.create` and `link.delete` cover the audited link lifecycle defined by FEAT-007. Feature-specific operations may extend this taxonomy when defined by their owning feature spec; FEAT-026 uses the `template.*` operations for markdown template lifecycle provenance
-  - `collection`: Collection name
-  - `entity_id`: Entity ID (for entity operations)
-  - `before`: Full entity state before the operation (null for creates)
-  - `after`: Full entity state after the operation (null for deletes)
-  - `diff`: Structured diff of changed fields (for updates)
-  - `metadata`: Optional key-value metadata (e.g., reason, correlation ID, agent session)
-- **Immutability**: Audit entries cannot be modified or deleted through normal API operations. The audit log is append-only
-- **Query audit log**: Query audit entries by collection, entity ID, actor, operation type, time range. Support pagination
-- **Revert from audit**: Given an audit entry, restore an entity to its `before` state. The revert itself produces a new audit entry
-- **Audit log for collections**: Collection creation and drop events are also audited
+#### Audit Capture
+
+- **AUD-01**. Every mutation — entity, link, collection lifecycle, schema, and template — must produce exactly one immutable audit entry through the shared handler path. No public surface may bypass audit capture.
+- **AUD-02**. Each audit entry must record what happened (an operation drawn from the audit operation taxonomy), when (a server-assigned timestamp), who or what acted (actor and delegated authority), where (tenant, database, collection, entity/link identity), and the full before state, after state, and structured diff of the affected record. The normative field set and operation taxonomy are defined in [CONTRACT-005 — Audit Record](../../02-design/contracts/CONTRACT-005-audit-record.md).
+- **AUD-03**. The operation taxonomy must be extensible by owning feature specs (for example, lifecycle and template operations) without changing the audit entry shape; extensions are registered in CONTRACT-005.
+- **AUD-04**. Audit entries must be append-only: no public API operation may modify or delete an existing entry.
+- **AUD-05**. Audit entries within a database must be totally ordered by entry ID; entry IDs are unique and monotonically increasing. Cross-database ordering is not guaranteed.
+- **AUD-06**. Callers must be able to attach optional key-value audit metadata (reason, correlation ID, agent session) to any mutation. Metadata is stored with the entry and returned on query, and never affects the operation's outcome.
+- **AUD-07**. Collection creation and drop, and schema changes, must be audited like any other mutation.
+
+#### Audit Query
+
+- **AUD-08**. Operators must be able to query audit history filtered by collection, entity ID, actor, operation type, and time range, with cursor-based pagination. The filter and pagination surface is defined in CONTRACT-005 and [CONTRACT-001 — HTTP API Surface](../../02-design/contracts/CONTRACT-001-http-api-surface.md) (audit query and tail endpoints).
+- **AUD-09**. Operators must be able to follow an ordered audit tail spanning multiple collections in one stream, so cross-collection workflows can be observed without merging per-collection queries client-side.
+- **AUD-10**. Unsupported audit filters must be rejected with a structured error naming the supported filters (per CONTRACT-001).
+
+#### Entity Revert
+
+- **AUD-11**. Given an audit entry, the affected entity must be restorable to that entry's before state. The revert is an ordinary governed mutation: it is validated against the active schema and produces a new audit entry. The audit log never loses information.
+- **AUD-12**. When the restored state does not validate against the current schema, the revert must fail with a clear, structured error; an explicit force option may bypass schema validation with a warning.
+
+#### Provenance Interchange
+
+- **AUD-13**. Audit queries must offer an additive PROV-O / JSON-LD serialization of the same entries, selected by content negotiation or query parameter, with the native JSON shape unchanged. The serialization mapping, IRI rules, and negotiation surface are defined in CONTRACT-005 §PROV-O / JSON-LD serialization.
+- **AUD-14**. PROV-O output must round-trip: native audit JSON serialized to PROV-O and re-imported preserves all auditable facts.
 
 ### Non-Functional Requirements
 
-- **Performance**: Audit writes must not add more than 2ms to mutation latency. Append-only writes are inherently fast
-- **Storage**: Audit entries are stored durably. V1 stores in the same backend as entities. Tiered storage is P2
-- **Retention**: V1 retains all audit entries. Configurable retention policies are P2
-- **Ordering**: Audit entries within a database are totally ordered by ID. Cross-database ordering is not guaranteed
+- **Performance**: Audit capture must add no more than 2 ms to mutation latency; typical audit queries (single entity, recent time range) return in under 100 ms.
+- **Reliability**: Audit entries are written atomically with the mutation they record — a mutation without its audit entry (or vice versa) must be impossible.
+- **Storage**: Audit entries are stored durably in the same backend as the entities they audit; V1 retains all entries.
+- **Scalability**: Sustained write throughput at the PRD single-entity latency target must not be bottlenecked by audit capture.
 
 ## User Stories
 
-### Story US-007: Query the Audit Trail [FEAT-003]
+| ID | Title | Link |
+|----|-------|------|
+| US-007 | Query the Audit Trail | [US-007](../user-stories/US-007-query-the-audit-trail.md) |
+| US-008 | Revert an Entity to Previous State | [US-008](../user-stories/US-008-revert-an-entity-to-previous-state.md) |
+| US-009 | Attach Metadata to Mutations | [US-009](../user-stories/US-009-attach-metadata-to-mutations.md) |
+| US-079 | Multi-Collection Audit Tail | [US-079](../user-stories/US-079-multi-collection-audit-tail.md) |
+| US-120 | PROV-O Audit Shape | [US-120](../user-stories/US-120-prov-o-audit-shape.md) |
 
-**As a** developer debugging agent behavior
-**I want** to query the audit log for a specific entity or time range
-**So that** I can understand what happened and reconstruct the sequence of events
-
-**Acceptance Criteria:**
-- [ ] `axon audit list --collection <name> --entity <id>` shows all mutations for an entity in chronological order
-- [ ] `axon audit list --collection <name> --since <time> --until <time>` filters by time range
-- [ ] `axon audit list --actor <id>` filters by who/what made the change
-- [ ] Each entry shows operation, actor, timestamp, and diff
-- [ ] API returns paginated results with cursor-based pagination
-
-### Story US-008: Revert an Entity to Previous State [FEAT-003]
-
-**As a** developer who discovered an agent made a bad change
-**I want** to revert an entity to a previous state using the audit log
-**So that** I can undo agent mistakes without manual data editing
-
-**Acceptance Criteria:**
-- [ ] `axon audit revert <entry-id>` restores the entity to the `before` state of that audit entry
-- [ ] The revert itself produces a new audit entry (the audit log never loses information)
-- [ ] Revert validates the restored state against the current schema
-- [ ] If the schema has evolved since the audit entry, revert warns or fails with a clear message
-
-### Story US-009: Attach Metadata to Mutations [FEAT-003]
-
-**As an** agent performing operations
-**I want** to attach context (reason, session ID, correlation ID) to my writes
-**So that** the audit trail carries meaningful provenance beyond just "what changed"
-
-**Acceptance Criteria:**
-- [ ] API accepts optional `audit_metadata` on write operations
-- [ ] Metadata is stored with the audit entry and returned in queries
-- [ ] Metadata keys and values are strings (simple key-value)
-- [ ] Metadata does not affect the operation itself — it's purely informational
-
-### Story US-010: PROV-O Audit Shape [FEAT-003]
-
-**As an** integrator pulling audit data into a provenance-aware system
-**I want** Axon's audit entries to map to W3C PROV-O classes and predicates
-**So that** lineage is interchangeable across systems without bespoke translation
-
-**Background:** ADR-020 selected document-shaped storage with selective RDF
-concept adoption. PROV-O (https://www.w3.org/TR/prov-o/) is the standard
-provenance vocabulary. The mapping is:
-
-| Audit field | PROV-O class / predicate |
-|---|---|
-| operation (`entity.create`, etc.) | `prov:Activity` |
-| affected entity / link | `prov:Entity` (PROV-O sense, broader than Axon's "entity" — see naming-clash note below) |
-| actor (user, agent, system) | `prov:Agent` |
-| `before` state of the affected record | linked via `prov:used` |
-| `after` state of the affected record | linked via `prov:wasGeneratedBy` |
-| actor → operation association | `prov:wasAssociatedWith` |
-| operation → operation chain (transactions) | `prov:wasInformedBy` |
-| timestamp | `prov:startedAtTime` / `prov:endedAtTime` |
-
-**Acceptance Criteria:**
-- [ ] An audit query may request PROV-O serialization via content negotiation (`Accept: application/ld+json` with PROV-O `@context`) or a query parameter (`?format=prov`).
-- [ ] The native JSON audit shape continues to work unchanged (PROV-O is additive in V1).
-- [ ] PROV-O serialization uses canonical W3C IRIs (`http://www.w3.org/ns/prov#Activity`, etc.).
-- [ ] Subject IRIs in PROV-O output use Axon's canonical entity URLs (`/tenants/{t}/databases/{d}/collections/{c}/entities/{id}`) per ADR-020 §IRIs.
-- [ ] PROV-O output validates against the official PROV-O ontology.
-- [ ] Tests assert round-trip: native audit JSON → PROV-O → re-import preserves all auditable facts.
-
-**Naming-clash note:** PROV-O's `prov:Entity` class is broader than Axon's
-notion of an entity. PROV-O Entity = "any data item, real-world object, or
-abstract concept that an Activity acts on." Axon Entity = "a schema-bound,
-versioned, ID-bearing record in a collection." When discussing PROV-O
-serialization, prefer "PROV Entity" or `prov:Entity` to distinguish.
-Documentation aimed at end users should call out this distinction
-explicitly.
-
-**Open question (resolved by this story):** PROV-O ships in V1 as an
-**additive serialization** — the canonical wire shape stays the current
-JSON. A future amendment may promote PROV-O to canonical if integrations
-prove the additive serialization carries more information than is
-useful as a duplicate. Tracked but not committed.
+US-120 was renumbered from this spec's former US-010 (ID retained by FEAT-004
+"CRUD an Entity") per the user-story ID registry.
 
 ## Edge Cases and Error Handling
 
-- **Revert to incompatible schema**: Entity state from an old audit entry may not validate against the current schema. Revert fails with a clear error. Force-revert option bypasses schema validation (with warning)
-- **High-volume writes**: Under high write throughput, audit log must not become a bottleneck. Batch audit writes internally if needed
-- **Actor identification**: If no actor is provided (e.g., embedded mode with no auth), actor defaults to "anonymous" — but the entry is still created
-- **Large entities**: Before/after state for large entities may consume significant storage. V1 stores full state; compression and diff-only storage are P2 optimizations
-- **Clock skew**: In embedded mode, timestamps are local system time. Server mode uses server time. Cross-instance time ordering requires distributed timestamps (P2)
+- **Revert to incompatible schema**: Entity state from an old audit entry may not validate against the current schema. Revert fails with a clear structured error; an explicit force option bypasses schema validation with a warning.
+- **High-volume writes**: Under high write throughput, audit capture must not become a bottleneck; the 2 ms overhead budget holds at sustained load.
+- **Missing actor identity**: If no actor identity is available (for example, embedded mode with no auth), the entry is still created with the documented anonymous actor value (CONTRACT-005).
+- **Large entities**: Before/after state for large entities is stored in full in V1; the entry is never truncated silently.
+- **Clock skew**: Timestamps are assigned by the serving instance (local time in embedded mode, server time in server mode). Ordering guarantees come from entry IDs, not timestamps.
 
 ## Success Metrics
 
-- 100% of mutations have corresponding audit entries (zero gaps)
-- Audit queries return results in < 100ms for typical queries (single entity, recent time range)
-- Developers can trace any state change back to its cause within one CLI command
+- 100% of mutations have corresponding audit entries (zero gaps) under the audit-coverage contract test suite.
+- Typical audit queries (single entity, recent time range) return in under 100 ms.
+- A developer can trace any state change back to its cause with a single query or CLI invocation.
 
 ## Constraints and Assumptions
 
 ### Constraints
-- Audit log is append-only and immutable through normal operations
-- Audit entries are stored in the same database as the collections they audit
-- Full before/after state stored in V1 (diff-only storage is a P2 optimization)
+
+- The audit log is append-only and immutable through all public operations.
+- Audit entries are stored in the same database as the collections they audit.
+- Full before/after state is stored in V1; diff-only storage is a deferred optimization.
+- PROV-O is an additive serialization in V1; the native JSON shape remains canonical. A future amendment may promote PROV-O to canonical if integrations justify it.
 
 ### Assumptions
-- Most audit queries are for a specific entity or narrow time range
-- Audit log size will be manageable for V1 use cases (single-digit GB)
-- Developers value completeness over storage efficiency for audit trails
+
+- Most audit queries target a specific entity or a narrow time range.
+- Audit log size is manageable for V1 use cases (single-digit GB).
+- Developers value completeness over storage efficiency for audit trails.
 
 ## Dependencies
 
-- None (audit log is foundational, alongside schema engine)
+- **Other features**: None — the audit log is foundational. FEAT-023 (Rollback and Recovery) extends single-entry revert into transaction and point-in-time repair; FEAT-021 (Change Feeds) consumes audit entries for CDC.
+- **External services**: None. Normative surfaces: [CONTRACT-005 — Audit Record](../../02-design/contracts/CONTRACT-005-audit-record.md) (entry fields, operation taxonomy, PROV-O serialization), [CONTRACT-001 — HTTP API Surface](../../02-design/contracts/CONTRACT-001-http-api-surface.md) (audit query/tail endpoints), [CONTRACT-008 — CLI and Config](../../02-design/contracts/CONTRACT-008-cli-and-config.md) (audit CLI commands).
+- **PRD requirements**: FR-15, FR-16, FR-17 (P0).
 
 ## Out of Scope
 
-- Configurable retention policies (P2)
-- Tiered/compressed audit storage (P2)
-- Cross-database audit correlation (P2)
-- Audit log export (P2)
-- Audit tamper detection / cryptographic chaining (P2)
+- Configurable retention policies, tiered or compressed audit storage.
+- Cross-database audit correlation.
+- Bulk audit export pipelines (change feeds are FEAT-021).
+- Audit tamper detection / cryptographic chaining.
+- Transaction-level and point-in-time rollback workflows (FEAT-023; this feature provides the single-entry revert primitive).
 
-## Traceability
+## Review Checklist
 
-### Related Artifacts
-- **Parent PRD Section**: Requirements Overview > P0 #3 (Audit Log)
-- **User Stories**: US-007, US-008, US-009
-- **Prior Art**: niflheim WAL, event sourcing patterns, DoltDB commit log
-- **Test Suites**: `tests/FEAT-003/`
-- **Implementation**: `src/audit/` or equivalent
+Use this checklist when reviewing a feature specification:
 
-### Feature Dependencies
-- **Depends On**: None
-- **Depended By**: FEAT-001 (Collections — lifecycle audit), FEAT-004 (Entity Operations — mutation audit)
+- [ ] Covered PRD Subsystem(s) and Requirements (`FR-n`) are listed; a feature spanning >1 subsystem carries an explicit cross-subsystem rationale (else split per the Decomposition test)
+- [ ] Functional areas (if any) are subordinate parts of this one capability, not separate capabilities
+- [ ] Overview connects this feature to a specific PRD requirement
+- [ ] Ideal future state describes the desired user-visible outcome, not only current problems
+- [ ] Every functional requirement is testable — you can write an assertion for it
+- [ ] Acceptance criteria are defined in the user stories that decompose this feature, not here (ADR-009)
+- [ ] Non-functional requirements have specific numeric targets
+- [ ] Edge cases cover realistic failure scenarios, not just happy paths
+- [ ] Success metrics are specific to this feature, not product-level metrics
+- [ ] Dependencies reference real artifact IDs
+- [ ] Out of scope excludes things someone might reasonably assume are in scope
+- [ ] No exact API/CLI/event/schema/config surface is defined inline; normative surface links to Contract artifacts

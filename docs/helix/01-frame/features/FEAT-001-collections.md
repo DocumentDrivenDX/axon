@@ -3,132 +3,139 @@ ddx:
   id: FEAT-001
   depends_on:
     - helix.prd
+    - FEAT-002
+    - FEAT-003
+    - FEAT-014
+    - ADR-010
+    - ADR-011
 ---
-# Feature Specification: FEAT-001 - Collections
+# Feature Specification: FEAT-001 — Collections
 
 **Feature ID**: FEAT-001
-**Status**: Draft
+**Status**: draft
 **Priority**: P0
 **Owner**: Core Team
-**Created**: 2026-04-04
-**Updated**: 2026-04-04
+**Requirement Prefix**: COL
+**Covered PRD Subsystem(s)**: Entity-Graph Data Model
+**Covered PRD Requirements**: FR-1 (the collection container, lifecycle, and discovery aspects; entity CRUD itself is owned by FEAT-004)
+**Cross-Subsystem Rationale**: None — single subsystem.
 
 ## Overview
 
-Collections are the foundational data container in Axon. A collection is a named, schema-bound container of entities within a database. Collections provide the organizational unit for data, schema enforcement, access control, and audit boundaries.
+Collections are the foundational data container in Axon. A collection is a named, schema-bound container of entities within a schema namespace inside a database. This feature implements the container half of PRD FR-1: entities are stored, validated, governed, and audited within named collections, which provide the organizational unit for schema enforcement, policy scope, and audit boundaries.
+
+## Ideal Future State
+
+A developer or agent creates a named, schema-bound collection in a single command or API call, discovers existing collections and their structure programmatically, renames a collection without breaking references or history, and removes a collection knowing its audit trail survives. Nothing is stored "loose": every entity lives in a collection, and every collection carries a schema, a stable identity, and an audit boundary from the moment it exists.
 
 ## Problem Statement
 
-Agentic applications need a structured place to store groups of related entities with consistent schemas. Current approaches — raw database tables, JSON files, schemaless document stores — either lack structure enforcement or require too much boilerplate to set up correctly.
+- **Current situation**: Agents dump data into whatever storage is convenient — raw database tables, JSON files, schemaless document stores — with no consistency guarantees.
+- **Pain points**: No naming conventions, no schema binding, no lifecycle management, no discovery. Setting up structured storage correctly requires too much boilerplate.
+- **Desired outcome**: Named collections with schemas, discoverable via API, manageable via CLI, with audited lifecycle events.
 
-- Current situation: Agents dump data into whatever storage is convenient, with no consistency guarantees
-- Pain points: No naming conventions, no schema binding, no lifecycle management, no discovery
-- Desired outcome: Named collections with schemas, discoverable via API, manageable via CLI
+## Functional Areas
+
+| Area | User question or job | Feature responsibility |
+|------|----------------------|------------------------|
+| Naming and identity | How are collections addressed and kept unambiguous? | Unique naming within the schema namespace; stable identity independent of name |
+| Lifecycle | Create, rename, and remove containers safely | Schema-bound creation, rename without data rewrite, confirmed drop with audit retention |
+| Discovery | What collections exist and what do they hold? | List and describe with metadata via API and CLI |
 
 ## Requirements
 
-### Functional Requirements
+### Functional Requirements by Area
 
-- **Create collection**: Create a named collection bound to a schema. Collection names must be unique within a database
-- **Drop collection**: Remove a collection and all its entities (with confirmation). Audit records are retained
-- **List collections**: Enumerate all collections in a database with metadata (name, schema version, entity count, created/updated timestamps)
-- **Describe collection**: Return full collection metadata including schema, indexes, statistics
-- **Collection namespacing**: Collections exist within a database. Database provides the isolation boundary
-- **Collection metadata**: Each collection tracks creation time, schema version, entity count, last modified time
+#### Naming and Identity
+
+- **COL-01**. Collection names MUST be unique within their schema namespace. The fully qualified name of a collection is `database.schema.collection` (FEAT-014, ADR-011); the same collection name MAY exist in different schema namespaces or databases without conflict.
+- **COL-02**. Each collection MUST carry a stable identity independent of its name (ADR-010 stable numeric collection IDs), so that renaming a collection does not rewrite entity data, audit records, or references.
+- **COL-03**. Invalid collection names MUST be rejected with a structured error naming the violated rule. The normative naming grammar lives in CONTRACT-001/CONTRACT-008.
+
+#### Lifecycle
+
+- **COL-04**. Axon MUST create a named collection bound to a schema. The schema is validated (FEAT-002) before the collection is created, and creation is recorded in the audit log (FEAT-003).
+- **COL-05**. Axon MUST support renaming a collection without downtime and without rewriting entity data; existing audit records and references remain valid via the stable identity (COL-02, ADR-010). Renames are recorded in the audit log.
+- **COL-06**. Axon MUST drop a collection and its entities only with explicit confirmation. Audit records for the collection and its entities MUST be retained, and the drop event MUST be audited including the entity count at drop time.
+- **COL-07**. Schema binding is mandatory: a collection MUST NOT exist without a schema. Schemaless collections are not supported.
+
+#### Discovery
+
+- **COL-08**. Axon MUST enumerate all collections in scope with metadata: name, schema version, entity count, created/updated timestamps.
+- **COL-09**. Axon MUST describe a single collection with full metadata including its schema, declared indexes, and statistics.
+- **COL-10**. Collections MUST be manageable via the CLI and the HTTP API with equivalent behavior and information — surface per CONTRACT-008 and CONTRACT-001.
+- **COL-11**. Each collection MUST track creation time, schema version, entity count, and last modified time.
 
 ### Non-Functional Requirements
 
-- **Performance**: Collection creation/drop < 100ms. List/describe < 50ms
-- **Naming**: Collection names are lowercase alphanumeric with hyphens and underscores. 1-128 characters. Must start with a letter
-- **Limits**: No hard limit on collections per database in V1. Entity count per collection bounded only by storage
-- **Durability**: Collection metadata is durable — survives process restart in both embedded and server modes
+- **Performance**: Collection create/rename/drop < 100ms; list/describe < 50ms (95th percentile).
+- **Limits**: No hard limit on collections per database in V1. Entity count per collection bounded only by storage.
+- **Durability**: Collection metadata survives process restart in both embedded and server modes.
 
 ## User Stories
 
-### Story US-001: Create a Collection [FEAT-001]
-
-**As a** developer setting up an agentic application
-**I want** to create a named collection with a schema
-**So that** my agents have a structured place to store entities
-
-**Acceptance Criteria:**
-- [ ] `axon collection create <name> --schema <path>` creates a collection
-- [ ] Collection name uniqueness is enforced within a database
-- [ ] Invalid names are rejected with a clear error message
-- [ ] Collection creation is recorded in the audit log
-- [ ] Schema is validated before collection creation
-
-### Story US-002: List and Inspect Collections [FEAT-001]
-
-**As a** developer or agent
-**I want** to list all collections and inspect their metadata
-**So that** I can discover what data is available and its structure
-
-**Acceptance Criteria:**
-- [ ] `axon collection list` returns all collections with name, schema version, entity count
-- [ ] `axon collection describe <name>` returns full metadata including schema
-- [ ] API equivalents return the same information as CLI commands
-- [ ] Empty database returns empty list, not an error
-
-### Story US-003: Drop a Collection [FEAT-001]
-
-**As a** developer managing application lifecycle
-**I want** to remove a collection that is no longer needed
-**So that** I can clean up unused data structures
-
-**Acceptance Criteria:**
-- [ ] `axon collection drop <name>` removes the collection and its entities
-- [ ] CLI requires `--confirm` flag for destructive operation
-- [ ] API requires explicit confirmation parameter
-- [ ] Drop operation is recorded in the audit log (including entity count at time of drop)
-- [ ] Audit records for the dropped collection's entities are retained
+| ID | Title | Link |
+|----|-------|------|
+| US-001 | Create a Collection | [US-001](../user-stories/US-001-create-a-collection.md) |
+| US-002 | List and Inspect Collections | [US-002](../user-stories/US-002-list-and-inspect-collections.md) |
+| US-003 | Drop a Collection | [US-003](../user-stories/US-003-drop-a-collection.md) |
 
 ## Edge Cases and Error Handling
 
-- **Duplicate name**: Creating a collection with an existing name returns a clear conflict error
-- **Drop non-existent**: Dropping a collection that doesn't exist returns a not-found error (not a crash)
-- **Concurrent creation**: Two concurrent creates with the same name — exactly one succeeds, one gets conflict error
-- **Name validation**: Names with invalid characters get a specific validation error listing the rules
-- **Empty schema**: A collection must have a schema. Schemaless collections are not supported (this is a deliberate design choice)
+- **Duplicate name**: Creating a collection whose name already exists in the same schema namespace returns a structured conflict error.
+- **Drop non-existent**: Dropping a collection that does not exist returns a not-found error, not a crash.
+- **Concurrent creation**: Two concurrent creates with the same fully qualified name — exactly one succeeds; the other receives a conflict error.
+- **Rename collision**: Renaming a collection to a name already taken in the same schema namespace returns a conflict error and leaves both collections unchanged.
+- **Name validation**: Names with invalid characters receive a specific validation error citing the naming rules.
+- **Empty schema**: Creating a collection without a schema is rejected (COL-07 — a deliberate design choice).
 
 ## Success Metrics
 
-- Collection CRUD operations complete within latency targets
-- Zero data loss on collection drop (audit records preserved)
-- Agent frameworks can discover and use collections programmatically
+- Collection lifecycle and discovery operations complete within the NFR latency targets.
+- Zero audit data loss on collection drop or rename (audit records preserved and addressable).
+- Agent frameworks can discover and use collections programmatically without out-of-band knowledge.
 
 ## Constraints and Assumptions
 
 ### Constraints
-- Collection names can be renamed (ADR-010 numeric collection IDs make renames O(1))
-- Schema binding is required — no schemaless collections
-- Database-level isolation (collections in different databases are fully independent)
-- Collections exist within a schema namespace within a database (FEAT-014). Fully qualified name: `database.schema.collection`
+- Schema binding is required — no schemaless collections.
+- Database-level isolation: collections in different databases are fully independent.
+- Collections exist within a schema namespace within a database (FEAT-014, ADR-011).
 
 ### Assumptions
-- Most applications will have 5-50 collections
-- Collection metadata fits comfortably in memory for reasonable collection counts
+- Most applications will have 5-50 collections.
+- Collection metadata fits comfortably in memory for reasonable collection counts.
 
 ## Dependencies
 
-- **FEAT-002** (Schema Engine): Collections require a schema at creation time
-- **FEAT-003** (Audit Log): Collection lifecycle events must be audited
+- **Other features**: FEAT-002 (Schema Engine — collections require a validated schema at creation), FEAT-003 (Audit Log — lifecycle events must be audited), FEAT-014 (Multi-Tenancy — schema namespace and database hierarchy).
+- **External services**: None. Normative interface surface: CONTRACT-001 (HTTP API), CONTRACT-008 (CLI and config).
+- **PRD requirements**: FR-1 (P0).
 
 ## Out of Scope
 
-- Collection-level access control (deferred to auth feature)
-- Cross-collection transactions (deferred to P2)
-- Collection migration between databases
+- Collection-level access control and visibility policy (owned by the policy enforcement features, FEAT-012/FEAT-029).
+- Transactional semantics for multi-entity and cross-collection writes (owned by FEAT-008).
+- Entity CRUD and query behavior inside a collection (owned by FEAT-004).
+- Collection migration between databases.
 
-## Traceability
+## Review Checklist
 
-### Related Artifacts
-- **Parent PRD Section**: Requirements Overview > P0 #1 (Collections)
-- **User Stories**: US-001, US-002, US-003
-- **Design Artifacts**: [To be created]
-- **Test Suites**: `tests/FEAT-001/`
-- **Implementation**: `src/collections/` or equivalent
+Use this checklist when reviewing this feature specification:
 
-### Feature Dependencies
-- **Depends On**: FEAT-002 (Schema Engine)
-- **Depended By**: FEAT-004 (Entity Operations), FEAT-006 (Bead Storage Adapter)
+- [ ] Covered PRD Subsystem(s) and Requirements (`FR-n`) are listed; a feature spanning >1 subsystem carries an explicit cross-subsystem rationale (else split per the Decomposition test)
+- [ ] Functional areas (if any) are subordinate parts of this one capability, not separate capabilities
+- [ ] Overview connects this feature to a specific PRD requirement
+- [ ] Ideal future state describes the desired user-visible outcome, not only current problems
+- [ ] Problem statement describes what exists now and what is broken — not just what is wanted
+- [ ] Every functional requirement is testable — you can write an assertion for it
+- [ ] Acceptance criteria are defined in the user stories that decompose this feature, not here (ADR-009)
+- [ ] Non-functional requirements have specific numeric targets
+- [ ] Edge cases cover realistic failure scenarios, not just happy paths
+- [ ] Success metrics are specific to this feature, not product-level metrics
+- [ ] Dependencies reference real artifact IDs
+- [ ] Out of scope excludes things someone might reasonably assume are in scope
+- [ ] No implementation details — WHAT not HOW
+- [ ] No exact API/CLI/event/schema/config/telemetry/adapter surface is defined inline; normative surface links to Contract artifacts
+- [ ] Feature is consistent with governing PRD requirements
+- [ ] No `[NEEDS CLARIFICATION]` markers remain unresolved for P0 features

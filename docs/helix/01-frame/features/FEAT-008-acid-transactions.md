@@ -3,170 +3,146 @@ ddx:
   id: FEAT-008
   depends_on:
     - helix.prd
+    - FEAT-003
+    - FEAT-004
     - FEAT-007
+    - CONTRACT-001
 ---
-# Feature Specification: FEAT-008 - ACID Transactions
+# Feature Specification: FEAT-008 — ACID Transactions
 
 **Feature ID**: FEAT-008
-**Status**: Draft
+**Status**: draft
 **Priority**: P0
 **Owner**: Core Team
-**Created**: 2026-04-04
-**Updated**: 2026-04-04
+**Covered PRD Subsystem(s)**: Guardrailed Transactions and Mutation Intents
+**Covered PRD Requirements**: FR-5; FR-6 (multi-entity scope)
+**Cross-Subsystem Rationale**: None — single subsystem. Single-entity OCC (FR-6 single-entity scope) is owned by FEAT-004; this feature builds multi-entity semantics on it.
+**Requirement Prefix**: TXN
 
 ## Overview
 
-ACID transactions are Axon's correctness guarantee. When an agent debits account A and credits account B, both changes commit or neither does. When two agents concurrently update the same entity, exactly one succeeds and the other is informed of the conflict. Transactions span entities and links across collections within a single Axon instance, with snapshot isolation as the default in V1. Serializable isolation (preventing write skew) is P1.
+ACID transactions are Axon's multi-record correctness guarantee. When an agent debits account A and credits account B, both changes commit or neither does; when two concurrent transactions touch the same records, exactly one commits and the other is told why. This feature implements PRD FR-5 (atomic multi-entity/link commits) and the multi-entity scope of FR-6 (stale-write rejection with retry context).
+
+## Ideal Future State
+
+A developer expresses a multi-record business change — move an invoice to approved, update the vendor balance, create the ledger link — as one transaction and never reasons about partial failure. Concurrent agents work against shared state without locks, without lost updates, and with conflict responses rich enough to merge and retry programmatically. A lost network response is safe to retry: the same transaction is never applied twice.
 
 ## Problem Statement
 
-Agents operating concurrently on shared state produce corrupt or inconsistent data without transactional guarantees. A bead tracker that marks a bead "done" and updates a counter needs atomicity. A workflow that moves an invoice from "pending" to "approved" and creates an audit entry needs isolation. Current agent storage solutions either lack transactions entirely (Firebase, JSON files) or require developers to manually implement locking and rollback logic.
+- **Current situation**: Agent storage options either lack transactions entirely (object stores, JSON files, many BaaS products) or push locking and rollback logic onto application code.
+- **Pain points**: Concurrent agents corrupt shared state through partial writes and silent overwrites; retry-after-timeout produces duplicate writes; developers hand-build compensation logic that drifts.
+- **Desired outcome**: Atomic, isolated, audited multi-entity/link transactions with deterministic conflict behavior and safe retries.
+
+## Functional Areas
+
+| Area | User question or job | Feature responsibility |
+|------|----------------------|------------------------|
+| Atomic multi-record commit | "Apply these changes together or not at all" | All-or-nothing transactions over entities and links across collections |
+| Isolation and conflict resolution | "What do concurrent transactions see, and who wins?" | Snapshot isolation, first-writer-wins, structured conflict detail |
+| Idempotent submission | "Is it safe to retry after a lost response?" | At-most-once application of a retried transaction |
+| Audit integration | "Which changes happened together?" | Transaction identity threaded through atomic audit entries |
 
 ## Requirements
 
-### Isolation Levels
+### Functional Requirements by Area
 
-| Level | Guarantee | Anomalies Prevented | Axon Support |
-|-------|-----------|---------------------|-------------|
-| **Serializable** | Transactions execute as if in serial order | All: dirty reads, non-repeatable reads, phantom reads, write skew | **P1 — requires read-set tracking not yet implemented**. |
-| **Snapshot Isolation** | Transaction reads from a consistent point-in-time snapshot | Dirty reads, non-repeatable reads, phantoms. Vulnerable to write skew | **Default in V1 — write-set OCC provides snapshot isolation**. |
-| **Read Committed** | Each statement sees only committed data | Dirty reads | **Available** as opt-in for reporting |
-| **Read Uncommitted** | Not supported | — | **Never**. Axon does not expose uncommitted state |
+#### Atomic Multi-Record Commit
 
-> **V1 known gap: write skew is not prevented.** OCC with write-set conflict detection provides Snapshot Isolation, not Serializability. Write skew — two concurrent transactions each reading disjoint entities and writing to each other's read set — is not detected in V1. Read-set tracking is required for full serializability and is deferred to P1.
+- **TXN-01**. A transaction containing entity and link operations must either fully commit or apply none of its staged operations.
+- **TXN-02**. Transactions must span multiple collections within one database (for example, debit one account, credit another, and create a ledger link).
+- **TXN-03**. Each operation in a transaction must carry its own version expectation; any single version conflict, schema violation, or invalid operation aborts the entire transaction with the specific cause.
+- **TXN-04**. Transactions must be bounded: at most 100 operations per transaction, and open transactions are aborted after a configurable timeout (default 30 seconds).
 
-### Single-Entity Operations
+#### Isolation and Conflict Resolution
 
-- **Linearizable reads**: After a write is acknowledged, all subsequent reads from any client on the same instance return the updated value
-- **Read-your-writes**: Within a session/connection, a client always sees its own writes immediately
-- **Optimistic concurrency control**: Writes include expected `_version`. Conflict if version has changed since read
-- **Conflict response**: On version conflict, return HTTP 409 / gRPC ABORTED with the current entity state so the client can merge and retry
+- **TXN-05**. Transactions must read from a consistent snapshot: no dirty reads, non-repeatable reads, or phantoms within a transaction. Snapshot isolation is the V1 default; read-committed is available as an opt-in; the effective isolation level must be inspectable per transaction.
+- **TXN-06**. Conflict resolution must be first-writer-wins: the first transaction to commit wins, and later transactions whose write set overlaps are aborted with a conflict.
+- **TXN-07**. An abort response must identify which entity or link caused the conflict, include its current committed state, and indicate whether the failure is retryable (version conflicts are; schema violations are not). The wire semantics — HTTP/gRPC status mapping, error codes, conflict detail, and the retryable flag — are defined in [CONTRACT-001 — HTTP API Surface](../../02-design/contracts/CONTRACT-001-http-api-surface.md).
+- **TXN-08**. Single-entity reads and writes must behave per FEAT-004's optimistic-concurrency requirements (ENT-10..ENT-12); this feature must not introduce divergent single-entity semantics.
 
-### Multi-Entity Transactions
+#### Idempotent Submission
 
-- **Atomic commit**: A transaction updating entities A, B and creating link L either fully commits or fully rolls back
-- **Cross-collection**: Transactions can span multiple collections (debit `accounts/acct-A`, credit `accounts/acct-B`, create `ledger-entries/txn-123`)
-- **Version checks per entity**: Each entity mutation within a transaction carries its own version expectation. Any single version conflict aborts the entire transaction
-- **Transaction size limit**: V1 limits transactions to 100 operations (entities + links). Sufficient for all expected use cases; prevents runaway transactions
+- **TXN-09**. A transaction submitted with an idempotency key must be applied at most once: a retry within the key's lifetime returns the original response without re-execution, and concurrent duplicates are rejected as retryable. The full idempotency protocol (key format, scope, TTL, caching rules, in-flight behavior) is defined in CONTRACT-001 §Transaction and idempotency protocol.
 
-### Conflict Resolution
+#### Audit Integration
 
-- **First-writer-wins**: Under snapshot isolation with write-set OCC, the first transaction to commit wins. Subsequent transactions that touch the same entities are aborted with conflict
-- **Conflict detail**: The abort response includes which entity/link caused the conflict and its current state
-- **Retry guidance**: API response includes a `retryable: true` flag for version conflicts (vs. `retryable: false` for schema violations)
+- **TXN-10**. Every transaction must be assigned a unique transaction ID shared by all audit entries it produces, and those audit entries must be written atomically with the data changes.
+- **TXN-11**. Transaction boundaries must be visible in audit queries: an operator can see which mutations committed together.
 
-### Audit Integration
+### Non-Functional Requirements
 
-- **Transaction ID**: Each transaction is assigned a unique ID. All audit entries within the transaction share this ID
-- **Atomic audit**: The audit entries for all operations in a transaction are written atomically with the data changes
-- **Transaction boundaries visible in audit**: `axon audit list` shows which mutations were part of the same transaction
+- **Performance**: Transaction commit latency < 20 ms p99 for 2–5 operation transactions on reference hardware.
+- **Reliability**: Zero lost updates — no committed write is ever silently overwritten by a stale writer; verified by jepsen-style concurrency tests.
+- **Scalability**: Deadlock-free by construction — OCC holds no locks during transaction execution; throughput degrades gracefully under contention via aborts, not stalls.
 
 ## User Stories
 
-### Story US-020: Atomic Multi-Entity Update [FEAT-008]
-
-**As a** developer building a financial workflow
-**I want** to debit one account and credit another atomically
-**So that** money is never lost or duplicated due to partial failures
-
-**Acceptance Criteria:**
-- [ ] Transaction debiting account A and crediting account B either both succeed or both fail
-- [ ] If account A's version has changed (someone else updated it), the entire transaction aborts
-- [ ] Abort response identifies which entity caused the conflict and includes its current state
-- [ ] Audit log shows both updates under the same transaction ID
-
-### Story US-021: Concurrent Agent Safety [FEAT-008]
-
-**As an** agent operating on shared state
-**I want** to know if another agent modified the entity I'm about to update
-**So that** I never silently overwrite another agent's work
-
-**Acceptance Criteria:**
-- [ ] Agent A reads entity at version 5. Agent B updates entity to version 6. Agent A's update (expecting version 5) fails with conflict
-- [ ] Conflict response includes the current state (version 6) written by Agent B
-- [ ] Agent A can read the new state, merge, and retry with version 6
-- [ ] If no other agent has touched the entity, the update succeeds on the first try
-
-### Story US-022: Snapshot Isolation [FEAT-008]
-
-**As a** developer
-**I want** snapshot isolation for my transactions
-**So that** concurrent transactions do not see uncommitted or partially-applied state
-
-**Acceptance Criteria:**
-- [ ] Each transaction reads from a consistent snapshot; no dirty reads or non-repeatable reads within a transaction
-- [ ] Two concurrent transactions writing to the same entity: exactly one commits, the other receives a version conflict
-- [ ] Isolation level can be checked / set per transaction
-
-> **Note — write skew prevention is deferred to P1.** V1 OCC with write-set conflict detection does not prevent write skew. The criterion "if T1 reads A and writes B while T2 reads B and writes A, at most one commits" is NOT guaranteed in V1. Read-set tracking is required and will be addressed when Serializable isolation is implemented (P1).
-
-### Story US-081: Idempotent Transaction Submission [FEAT-008]
-
-**As a** client submitting a transaction over an unreliable network
-**I want** to safely retry a transaction if I don't receive a response
-**So that** a lost response does not cause duplicate writes or a confusing version conflict
-
-**Acceptance Criteria:**
-- [ ] `POST /transactions` with `Idempotency-Key: <uuid>` stores the response for 5 minutes
-- [ ] A retry with the same key within the TTL returns the original response without re-executing
-- [ ] A retry after TTL expiry re-executes the transaction (the key has no memory)
-- [ ] If the original transaction failed with a schema or conflict error, the failure is NOT cached — retry re-executes
-- [ ] A second concurrent request with the same in-flight key returns 409 with `retryable: true` and a `retry_after_ms` hint
-- [ ] Idempotency keys are scoped per database; same key in different databases are independent
-
-**Consumer context**: nexiq's sync flush can lose the response. Without idempotency keys, a retry either produces duplicate writes (if the server applied it) or fails with a confusing version conflict (against the client's own prior write, which has already been applied).
-
----
+| ID | Title | Link |
+|----|-------|------|
+| US-020 | Atomic Multi-Entity Update | [US-020](../user-stories/US-020-atomic-multi-entity-update.md) |
+| US-021 | Concurrent Agent Safety | [US-021](../user-stories/US-021-concurrent-agent-safety.md) |
+| US-022 | Snapshot Isolation | [US-022](../user-stories/US-022-snapshot-isolation.md) |
+| US-081 | Idempotent Transaction Submission | [US-081](../user-stories/US-081-idempotent-transaction-submission.md) |
 
 ## Edge Cases and Error Handling
 
-- **Transaction timeout**: Transactions that remain open for > 30 seconds (configurable) are automatically aborted. Prevents resource leaks from abandoned transactions
-- **Partial read in transaction**: Reading an entity that doesn't exist within a transaction returns 404 but does NOT abort the transaction (allows conditional logic)
-- **Empty transaction**: A transaction with no writes commits as a no-op (no audit entry)
-- **Schema violation within transaction**: If any operation violates schema, the entire transaction aborts with the specific validation error
-- **Transaction exceeds size limit**: Attempting to add the 101st operation returns an error; transaction must be committed or split
-- **Deadlock**: OCC is deadlock-free by design (no locks are held during transaction execution; conflicts are detected at commit)
+- **Transaction timeout**: A transaction open longer than the configured timeout (default 30 seconds) is automatically aborted, preventing resource leaks from abandoned transactions.
+- **Partial read in transaction**: Reading a non-existent entity within a transaction returns not-found but does not abort the transaction (allows conditional logic).
+- **Empty transaction**: A transaction with no operations commits as a no-op and produces no audit entry.
+- **Schema violation within transaction**: Any schema-invalid operation aborts the entire transaction with the specific validation error; no operations apply.
+- **Size limit exceeded**: A transaction with more than 100 operations is rejected; the caller must split it.
+- **Lost response then retry without idempotency key**: The retry is a new transaction and may legitimately conflict with the original; clients needing safe retry must use idempotency keys (TXN-09).
 
 ## Success Metrics
 
-- Zero lost updates: no write is silently overwritten by a stale client
-- Transaction commit latency < 20ms p99 for 2-5 entity transactions
-- Snapshot isolation verified by jepsen-style concurrency tests (write skew prevention deferred to P1 serializable work)
+- Zero lost updates under jepsen-style concurrency test suites.
+- Transaction commit latency < 20 ms p99 for 2–5 operation transactions.
+- Snapshot-isolation guarantees (no dirty/non-repeatable/phantom reads) hold under the concurrency suite; retried submissions with idempotency keys never double-apply.
 
 ## Constraints and Assumptions
 
 ### Constraints
-- Single-instance transactions only in V1 (no distributed transactions)
-- OCC-based: no pessimistic locks, no SELECT FOR UPDATE
-- Transaction size limit of 100 operations
-- 30-second transaction timeout (configurable)
+
+- **Isolation honesty — V1 is Snapshot Isolation, not Serializable.** Write-set OCC does not detect write skew: two concurrent transactions that each read disjoint records and write into each other's read set can both commit. Read-set tracking for Serializable isolation is committed as P1. Until then, workloads whose invariants span records that are read-but-not-written must enforce those invariants at the application level.
+- Single-instance transactions only in V1 (no distributed transactions).
+- OCC-based: no pessimistic locks, no SELECT FOR UPDATE.
+- Transaction size limit of 100 operations; configurable timeout, default 30 seconds.
+- Read-uncommitted is never offered; Axon does not expose uncommitted state.
 
 ### Assumptions
-- Agentic workloads have low contention (agents typically work on different entities)
-- Most transactions involve 1-5 entities
-- Version conflicts are rare but must be handled correctly when they occur
+
+- Agentic workloads have low contention (agents typically work on different records).
+- Most transactions involve 1–5 records.
+- Version conflicts are rare but must be handled correctly when they occur.
 
 ## Dependencies
 
-- **FEAT-007** (Entity-Graph Model): Transactions operate on entities and links
-- **FEAT-003** (Audit Log): Transactions produce atomic audit entries
+- **Other features**: FEAT-004 (Entity Operations — single-entity OCC semantics this feature extends), FEAT-007 (Entity-Graph Data Model — the records transactions operate on), FEAT-003 (Audit Log — atomic transaction-threaded audit entries).
+- **External services**: None. Normative surface: [CONTRACT-001 — HTTP API Surface](../../02-design/contracts/CONTRACT-001-http-api-surface.md) (transaction endpoint, idempotency protocol, status-code and conflict-detail semantics).
+- **PRD requirements**: FR-5 (P0); FR-6 multi-entity scope (P0).
 
 ## Out of Scope
 
-- Distributed / cross-instance transactions (P2)
-- Pessimistic locking / SELECT FOR UPDATE
-- Savepoints within transactions
-- Two-phase commit protocol
-- Saga / compensation patterns (application-level concern)
+- Serializable isolation / write-skew prevention (P1 — see Constraints).
+- Distributed / cross-instance transactions.
+- Pessimistic locking / SELECT FOR UPDATE.
+- Savepoints within transactions; two-phase commit.
+- Saga / compensation patterns (application-level concern).
+- Mutation preview, approval routing, and intent binding (FEAT-030).
 
-## Traceability
+## Review Checklist
 
-### Related Artifacts
-- **Parent PRD Section**: Section 3 (Transaction Model), Requirements Overview > P0 #8-9
-- **User Stories**: US-020, US-021, US-022
-- **Test Suites**: `tests/FEAT-008/`
-- **Implementation**: `src/transactions/` or equivalent
+Use this checklist when reviewing a feature specification:
 
-### Feature Dependencies
-- **Depends On**: FEAT-007 (Entity-Graph Model), FEAT-003 (Audit Log)
-- **Depended By**: FEAT-004 (Entity Operations — uses transaction layer), FEAT-006 (Bead Adapter — atomic bead state transitions)
+- [ ] Covered PRD Subsystem(s) and Requirements (`FR-n`) are listed; a feature spanning >1 subsystem carries an explicit cross-subsystem rationale (else split per the Decomposition test)
+- [ ] Functional areas (if any) are subordinate parts of this one capability, not separate capabilities
+- [ ] Overview connects this feature to a specific PRD requirement
+- [ ] Ideal future state describes the desired user-visible outcome, not only current problems
+- [ ] Every functional requirement is testable — you can write an assertion for it
+- [ ] Acceptance criteria are defined in the user stories that decompose this feature, not here (ADR-009)
+- [ ] Non-functional requirements have specific numeric targets
+- [ ] Edge cases cover realistic failure scenarios, not just happy paths
+- [ ] Success metrics are specific to this feature, not product-level metrics
+- [ ] Dependencies reference real artifact IDs
+- [ ] Out of scope excludes things someone might reasonably assume are in scope
+- [ ] No exact API/CLI/event/schema/config surface is defined inline; normative surface links to Contract artifacts

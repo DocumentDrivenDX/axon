@@ -6,307 +6,222 @@ ddx:
     - FEAT-005
     - FEAT-014
 ---
-# Feature Specification: FEAT-028 - Unified Binary & Service Management
+# Feature Specification: FEAT-028 — Unified Binary & Service Management
 
 **Feature ID**: FEAT-028
-**Status**: Draft
-**Priority**: P0
+**Status**: draft
+**Priority**: P1
 **Owner**: Core Team
-**Created**: 2026-04-11
-**Updated**: 2026-04-11
+**Covered PRD Subsystem(s)**: API and Deployment Surfaces
+**Covered PRD Requirements**: FR-23, FR-24
+**Cross-Subsystem Rationale**: None — single subsystem.
+**FR Prefix**: BIN
 
 ## Overview
 
-Merge the `axon` CLI and `axon-server` into a single `axon` binary that
-serves as both a CLI tool and a server. Add XDG-compliant default paths,
-a TOML config file, a `doctor` diagnostic command, an `install`
-service-management command (systemd/launchd), and a client mode where CLI
-commands talk to a running server over HTTP.
+One `axon` binary serves as both a CLI tool and a server: it runs the HTTP
+gateway, the MCP stdio server, diagnostics, and service management, and
+its CLI commands can operate against a running server or against embedded
+storage with identical behavior (PRD FR-23). Operators get standard config
+locations, a single config file, a diagnostic command, and one-command
+service installation (PRD FR-24).
 
-This is the critical path for adoption — other projects need to install
-Axon with a single command, start a server, and interact with it from
-another terminal.
+This is the critical adoption path: a developer installs Axon with a
+single command, starts a server, and interacts with it from another
+terminal. The normative command tree, flags, TOML configuration schema,
+environment-variable precedence, default ports and paths, service-unit
+locations, and client-mode connection rules are defined in
+[CONTRACT-008 — CLI and config](../../02-design/contracts/CONTRACT-008-cli-and-config.md).
+
+## Ideal Future State
+
+A developer runs one install command, then `axon serve`, and has a working
+server with sane default storage at standard paths and a commented config
+file they can grow into. From another terminal, the same binary's CLI
+commands transparently talk to the running server — or to embedded storage
+when no server is up — with identical output. `axon doctor` answers "what
+is my installation actually doing" in one screen. Installing Axon as a
+service is one command and is safe by default: a service-installed Axon
+requires authentication unless the operator explicitly and knowingly opts
+out.
 
 ## Problem Statement
 
-Axon currently ships as two separate binaries (`axon` for embedded CLI,
-`axon-server` for HTTP/gRPC) with no config file, no XDG-standard paths,
-no service management, and no way for the CLI to talk to a running
-server. This means:
+- **Current situation**: Axon's heritage is two separate binaries (CLI and
+  server) with no config file, no standard storage paths, no service
+  management, and no way for the CLI to talk to a running server.
+- **Pain points**: No `curl | sh` install path; the CLI cannot inspect or
+  manage a running server; databases land in the current directory;
+  users hand-write systemd/launchd units; settings are scattered across
+  flags and environment variables.
+- **Desired outcome**: Single binary, single config story, one-command
+  install and service setup, and CLI/server interaction out of the box.
 
-- No `curl | sh` install path — users must build from source or manage
-  two binaries
-- The CLI operates in embedded mode only — it cannot inspect or manage a
-  running server
-- No standard storage locations — databases are created in the current
-  directory
-- No service management — users must write their own systemd/launchd
-  units
-- No single source of configuration — settings are scattered across CLI
-  flags and environment variables
+## Functional Areas
+
+| Area | User question or job | Feature responsibility |
+|------|----------------------|------------------------|
+| Single binary and execution modes | "Run the server, the MCP server, or CLI commands from one tool" | One binary with `serve`, `mcp`, and CLI subcommands |
+| Configuration and diagnostics | "Where is my config, data, and what is Axon actually using?" | Layered config (file/env/flags), standard paths, `doctor` |
+| Service management | "Make Axon start at boot, safely" | User/system service install, lifecycle commands, secure defaults |
+| Client mode | "Use the CLI against my running server" | Auto-detection, explicit overrides, output parity |
+| Installation | "Get the binary onto my machine in one command" | Install script with OS/arch detection |
 
 ## Requirements
 
-### Functional Requirements
+### Functional Requirements by Area
 
-#### Single Binary
+#### Single Binary and Execution Modes
 
-- A single `axon` binary provides all functionality: CLI operations,
-  server, MCP stdio, diagnostics, and service management.
-- The `axon-server` crate becomes a library; its binary is removed.
-- Docker images use `CMD ["axon", "serve"]`.
+- **BIN-01**. A single `axon` binary MUST provide all functionality: CLI
+  operations, HTTP server, MCP stdio server, diagnostics, and service
+  management. The command tree is defined in CONTRACT-008. No separate
+  server binary ships.
+- **BIN-02**. `axon serve` MUST start the HTTP gateway in the foreground
+  on the default port, shut down gracefully on interrupt, and use embedded
+  SQLite storage at the standard data directory by default. Default ports,
+  storage flags, and paths are defined in CONTRACT-008.
+- **BIN-03**. The MCP stdio server MUST be a distinct subcommand
+  (`axon mcp`), not a flag on `serve` — it is a separate execution mode
+  (surface per CONTRACT-003/CONTRACT-008).
 
-#### `axon serve`
+#### Configuration and Diagnostics
 
-- Starts the HTTP gateway in the foreground on port **4170** by default.
-- gRPC is opt-in via `--grpc-port` (default 4171 when enabled).
-- Ctrl+C triggers graceful shutdown.
-- Default storage: SQLite at the XDG data directory.
-- On first run, auto-creates a default `config.toml` with comments at
-  the XDG config path if none exists.
-- Supports all current server flags: `--storage`, `--sqlite-path`,
-  `--postgres-dsn`, `--no-auth`, `--guest-role`, `--ui-dir`,
-  `--control-plane-path`.
+- **BIN-04**. Configuration MUST be layered with the precedence defined in
+  CONTRACT-008: compiled defaults, then config file, then environment
+  variables, then CLI flags. The TOML schema, env-var naming, and standard
+  (XDG-style) config/data paths for user and global installs are defined
+  in CONTRACT-008.
+- **BIN-05**. On first run, `axon serve` MUST auto-create a commented
+  default config file at the standard location if none exists, and MUST
+  never overwrite an existing config file.
+- **BIN-06**. `axon doctor` MUST print the resolved configuration (config
+  file path and existence, data directory and existence, storage backend,
+  ports, auth mode), report whether a server is reachable at the
+  configured URL, list databases when server or embedded storage is
+  accessible, and show the Axon version.
+- **BIN-07**. The CLI MUST provide commands to print the resolved
+  configuration and the config file location (per CONTRACT-008).
 
-#### `axon mcp`
+#### Service Management
 
-- Starts the MCP server over stdin/stdout (same as current
-  `--mcp-stdio` mode).
-- Separate subcommand, not a flag on `serve` — MCP is a distinct
-  execution mode.
-
-#### `axon doctor`
-
-- Prints resolved configuration: config file path (and whether it
-  exists), data directory path (and whether it exists), storage backend,
-  default ports.
-- Checks connectivity to the configured server URL — reports whether a
-  server is reachable.
-- Lists databases if server is reachable or embedded storage is
-  accessible.
-- Shows Axon version.
-
-#### `axon server install`
-
-- `axon server install` installs Axon as a user service:
-  - Linux: writes `~/.config/systemd/user/axon.service`, runs
-    `systemctl --user daemon-reload && enable axon`
-  - macOS: writes `~/Library/LaunchAgents/com.axon.server.plist`, runs
-    `launchctl load`
-- `axon server install --global` installs as a system service (requires root):
-  - Linux: creates `axon` system user, creates `/var/lib/axon/`, writes
-    `/etc/systemd/system/axon.service`
-  - macOS: creates `_axon` system user, writes
-    `/Library/LaunchDaemons/com.axon.server.plist`
-- Service units run `axon serve` using the installed binary, no-auth default,
-  and XDG/global data paths for SQLite and control-plane storage.
-- `axon server start|stop|restart|status` manage the installed service,
-  delegating to `systemctl` (Linux) or `launchctl` (macOS).
-- `axon server uninstall` removes the service unit and disables it.
+- **BIN-08**. `axon server install` MUST install Axon as a user service
+  (systemd user unit on Linux, LaunchAgent on macOS), and
+  `--global` MUST install a system service with a dedicated system user
+  and system data directory (requires root). Unit file locations, paths,
+  and generated unit contents are defined in CONTRACT-008.
+- **BIN-09**. `axon server start|stop|restart|status` MUST manage the
+  installed service by delegating to the platform service manager, and
+  `axon server uninstall` MUST disable and remove the unit.
+- **BIN-10**. **Secure-by-default service installs**: service
+  installations MUST default to an authenticated mode. Installing or
+  serving with authentication disabled (`no-auth`) MUST require an
+  explicit opt-in flag and MUST print a prominent warning naming the
+  exposure; the resolved auth mode is visible via `axon doctor` (BIN-06).
+  Flag names per CONTRACT-008.
 
 #### Client Mode
 
-- When a server is reachable at the configured URL
-  (`http://localhost:4170` by default), CLI commands send HTTP requests
-  to the server instead of opening SQLite directly.
-- `--embedded` forces embedded SQLite mode regardless of server
-  availability.
-- `--server <url>` forces client mode against a specific URL.
-- Default behavior: attempt HTTP connection to configured server URL
-  with 200ms timeout; if unreachable, fall back to embedded mode.
-- Output parity: JSON/table/YAML output formats work identically in
-  both modes.
+- **BIN-11**. When a server is reachable at the configured URL, CLI
+  commands MUST send requests to the server instead of opening embedded
+  storage directly; when no server is reachable within the detection
+  timeout, the CLI MUST fall back to embedded mode with a one-line notice.
+  Detection timeout, URL configuration, and the `--embedded` /
+  `--server <url>` overrides are defined in CONTRACT-008.
+- **BIN-12**. Entity CRUD, collection management, and audit queries MUST
+  work in both client and embedded modes with identical output across all
+  output formats (JSON/table/YAML).
 
-#### XDG-Compliant Default Paths
+#### Installation
 
-User install (Linux):
-- Config: `$XDG_CONFIG_HOME/axon/config.toml` (default
-  `~/.config/axon/config.toml`)
-- Data: `$XDG_DATA_HOME/axon/` (default `~/.local/share/axon/`)
-  - `axon.db` — master/control-plane database
-  - `tenants/` — per-tenant SQLite databases
-
-User install (macOS):
-- Config: `~/Library/Application Support/axon/config.toml`
-- Data: `~/Library/Application Support/axon/`
-
-Global install:
-- Config: `/etc/axon/config.toml`
-- Data: `/var/lib/axon/`
-
-#### TOML Config File
-
-```toml
-[server]
-http_port = 4170
-# grpc_port = 4171            # uncomment to enable gRPC listener
-
-[storage]
-backend = "sqlite"            # sqlite | postgres | memory
-data_dir = ""                 # empty = XDG default
-# postgres_host = "localhost"
-# postgres_port = 5432
-# postgres_superuser = ""
-# postgres_superpass = ""
-
-[auth]
-mode = "no-auth"              # no-auth | guest | tailscale
-guest_role = "admin"
-
-[client]
-server_url = "http://localhost:4170"
-connect_timeout_ms = 200
-```
-
-Configuration hierarchy: compiled defaults < config file < environment
-variables (`AXON_` prefix, e.g. `AXON_SERVER_HTTP_PORT`) < CLI flags.
-
-#### Install Script
-
-- A shell script downloadable via `curl -fsSL <url> | sh`.
-- Detects OS (Linux/macOS) and architecture (x86_64/aarch64).
-- Downloads the appropriate release binary from GitHub releases.
-- Installs to `~/.local/bin/axon`.
-- Creates default config and data directories.
-- Warns if `~/.local/bin` is not in `$PATH`.
-- macOS and Linux supported. Windows deferred.
+- **BIN-13**. A shell install script (`curl | sh`) MUST detect OS
+  (Linux/macOS) and architecture, download the matching release binary,
+  install it to the user-local bin directory, create default config and
+  data directories, and warn when the install directory is not on `PATH`.
 
 ### Non-Functional Requirements
 
-- Binary size: acceptable increase from linking server code into CLI.
-  Feature-gate `serve` capability behind a cargo feature (default on)
-  for embedded-only builds.
-- Config file auto-creation must not overwrite an existing config.
-- Service units must work on systemd 240+ (Ubuntu 18.04+) and
-  launchd (macOS 10.13+).
-- Client mode auto-detection must complete within 200ms to avoid
+- **Binary size**: server capability is feature-gated behind a cargo
+  feature (default on) so embedded-only builds remain possible.
+- **Safety**: config auto-creation never overwrites an existing file
+  (BIN-05).
+- **Compatibility**: service units work on systemd 240+ (Ubuntu 18.04+)
+  and launchd (macOS 10.13+).
+- **Responsiveness**: client-mode auto-detection completes within the
+  CONTRACT-008 detection timeout (200 ms) so CLI startup has no
   perceptible delay.
-
-### Dependencies
-
-- FEAT-005 (API Surface) — client mode uses the existing HTTP API.
-- FEAT-014 (Multi-Tenancy) — per-tenant database paths use the
-  namespace hierarchy.
 
 ## User Stories
 
-### Story US-070: Start Axon from a single binary [FEAT-028]
-
-**As a** developer adopting Axon
-**I want** to run `axon serve` to start a server
-**So that** I can begin using Axon without managing separate binaries
-
-**Acceptance Criteria:**
-- [ ] `axon serve` starts an HTTP gateway on port 4170
-- [ ] GET `/healthz` returns 200
-- [ ] Ctrl+C gracefully shuts down the server
-- [ ] Default storage is SQLite at XDG data directory
-- [ ] First run creates `config.toml` with defaults and comments
-
-### Story US-071: Diagnose Axon installation [FEAT-028]
-
-**As a** developer troubleshooting Axon
-**I want** to run `axon doctor` to see my configuration
-**So that** I can verify paths, connectivity, and storage
-
-**Acceptance Criteria:**
-- [ ] Shows config file path and whether it exists
-- [ ] Shows data directory and storage backend
-- [ ] Shows server connectivity status (reachable or not)
-- [ ] Shows Axon version
-
-### Story US-072: Install Axon as a system service [FEAT-028]
-
-**As a** developer running Axon persistently
-**I want** to run `axon server install` to set up a user service
-**So that** Axon starts automatically and survives reboots
-
-**Acceptance Criteria:**
-- [ ] `axon server install` creates and enables a user-level service
-- [ ] `axon server start` starts the service
-- [ ] `axon server status` reports whether the service is running
-- [ ] `axon server install --global` creates a system service with dedicated
-      user and `/var/lib/axon` storage
-- [ ] `axon server uninstall` removes the service
-
-### Story US-073: Use CLI against a running server [FEAT-028]
-
-**As a** developer with `axon serve` running in one terminal
-**I want** to run `axon entity list` in another terminal
-**So that** CLI commands go through the server instead of opening
-  SQLite directly
-
-**Acceptance Criteria:**
-- [ ] CLI auto-detects running server and uses HTTP client mode
-- [ ] `--embedded` forces direct SQLite access
-- [ ] `--server <url>` forces client mode against a specific URL
-- [ ] Entity CRUD, collection management, and audit queries work in
-      both modes with identical output
-
-### Story US-074: Install Axon with a single command [FEAT-028]
-
-**As a** developer on Linux or macOS
-**I want** to run `curl -fsSL <url> | sh` to install Axon
-**So that** I can start using it immediately without building from source
-
-**Acceptance Criteria:**
-- [ ] Install script detects OS and architecture
-- [ ] Binary is placed at `~/.local/bin/axon`
-- [ ] Script warns if `~/.local/bin` is not in PATH
-- [ ] `axon --version` works after installation
-
-### Story US-075: Configure Axon persistently [FEAT-028]
-
-**As a** developer customizing Axon
-**I want** a TOML config file at a standard location
-**So that** I don't have to pass flags every time
-
-**Acceptance Criteria:**
-- [ ] Config file is read from XDG config directory
-- [ ] Environment variables override config file values
-- [ ] CLI flags override environment variables
-- [ ] `axon config show` prints resolved configuration
-- [ ] `axon config path` prints the config file location
+- [US-126 — Start Axon from a single binary](../user-stories/US-126-start-axon-from-a-single-binary.md)
+- [US-127 — Diagnose Axon installation](../user-stories/US-127-diagnose-axon-installation.md)
+- [US-128 — Install Axon as a system service](../user-stories/US-128-install-axon-as-a-system-service.md)
+- [US-129 — Use CLI against a running server](../user-stories/US-129-use-cli-against-a-running-server.md)
+- [US-131 — Install Axon with a single command](../user-stories/US-131-install-axon-with-a-single-command.md)
+- [US-134 — Configure Axon persistently](../user-stories/US-134-configure-axon-persistently.md)
 
 ## Edge Cases and Error Handling
 
-- **Config file parse error**: `axon serve` prints a clear error message
-  with the line number and exits non-zero. Does not fall back to
-  defaults silently.
-- **Port already in use**: `axon serve` prints "port 4170 already in
-  use" and exits non-zero. `axon doctor` reports a running server if
-  the port responds.
-- **No write access to data dir**: `axon serve` prints the path and
-  permission error, suggests `mkdir -p` or `--global` install.
-- **Service already installed**: `axon server install` prints "service already
-  installed" and exits cleanly. Use `axon server uninstall` first to
-  reinstall.
-- **Client mode timeout**: 200ms connect timeout. If the server is
-  unreachable, CLI falls back to embedded mode with a one-line notice:
-  "server unreachable, using embedded mode".
-- **Mixed client/embedded state**: If the server and embedded mode have
-  different databases, client mode is authoritative (the server is the
-  source of truth when running).
+- **Config file parse error**: `axon serve` prints a clear error with the
+  line number and exits non-zero; it never silently falls back to
+  defaults.
+- **Port already in use**: `axon serve` reports the conflicting port and
+  exits non-zero; `axon doctor` reports a running server if the port
+  responds.
+- **No write access to the data directory**: `axon serve` prints the path
+  and permission error and suggests remediation (create the directory or
+  use a global install).
+- **Service already installed**: `axon server install` reports it and
+  exits cleanly; reinstalling requires `axon server uninstall` first.
+- **Client-mode timeout**: if the server is unreachable within the
+  detection timeout, the CLI falls back to embedded mode with a one-line
+  notice.
+- **Mixed client/embedded state**: if the server and embedded mode see
+  different databases, client mode is authoritative — the running server
+  is the source of truth.
+- **No-auth opt-in on a service install**: the warning is printed at
+  install time and the auth mode remains visible in `doctor` output; the
+  default path never produces an unauthenticated service (BIN-10).
+
+## Success Metrics
+
+- Install-to-first-successful-`axon serve` in under 5 minutes on a clean
+  Linux or macOS machine.
+- 100% of CLI data commands produce identical output in client and
+  embedded modes in the parity fixture suite.
+- Zero service installs end up unauthenticated without the explicit
+  opt-in flag (verified by install-path tests).
+- `axon doctor` diagnoses the four common misconfigurations (missing
+  config, unreachable server, wrong data dir, port conflict) without
+  reading source code or docs.
+
+## Constraints and Assumptions
+
+- The exact command tree, flag names, TOML keys, env-var names, ports,
+  paths, and service-unit contents are owned by CONTRACT-008; this spec
+  constrains behavior only.
+- Authenticated-by-default service installs assume an available local
+  authentication mode (per ADR-005/ADR-018 transport authentication);
+  developer-loop `axon serve` in the foreground retains its current
+  default for fast local iteration, with the same explicit-flag rule for
+  exposed deployments.
+- Linux and macOS are the supported platforms for V1.
+
+## Dependencies
+
+- **Other features**:
+  - FEAT-005 (API Surface) — client mode uses the existing HTTP API.
+  - FEAT-014 (Multi-Tenancy) — per-tenant database paths use the
+    namespace hierarchy.
+- **External services**: GitHub releases (install script download
+  source); systemd/launchd; exact surface in CONTRACT-008.
+- **PRD requirements**: FR-23 (P1), FR-24 (P1).
 
 ## Out of Scope
 
-- Windows support (deferred)
-- Automatic updates or self-update mechanism
-- GUI installer
-- Remote server management (managing Axon on a different machine)
-- Per-tenant gRPC routing (HTTP only in V1; gRPC uses default tenant)
-
-## Traceability
-
-### Related Artifacts
-- **Parent PRD Section**: Requirements Overview > P0 #12 (CLI),
-  P1 #5 (Server mode)
-- **User Stories**: US-070, US-071, US-072, US-073, US-074, US-075
-- **Architecture**: Plan file `ancient-popping-bunny.md`
-- **Implementation**: `crates/axon-config/`, `crates/axon-cli/`,
-  `crates/axon-server/` (library)
-
-### Feature Dependencies
-- **Depends On**: FEAT-005, FEAT-014
-- **Depended By**: FEAT-024 (Application Substrate — `axon init`
-  assumes `axon serve` exists)
+- **Windows support** (deferred).
+- **Automatic updates or self-update mechanism.**
+- **GUI installer.**
+- **Remote server management** (managing Axon on a different machine).
+- **Per-tenant gRPC routing** (HTTP only in V1; gRPC uses the default
+  tenant).

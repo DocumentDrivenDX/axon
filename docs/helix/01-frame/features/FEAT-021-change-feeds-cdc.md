@@ -5,259 +5,236 @@ ddx:
     - helix.prd
     - FEAT-003
     - FEAT-015
+    - FEAT-017
     - ADR-003
     - ADR-014
 ---
-# Feature Specification: FEAT-021 - Change Feeds (Debezium CDC)
+# Feature Specification: FEAT-021 — Change Feeds (CDC)
 
 **Feature ID**: FEAT-021
-**Status**: Draft
+**Status**: draft
 **Priority**: P1
 **Owner**: Core Team
-**Created**: 2026-04-05
-**Updated**: 2026-06-06
+**Covered PRD Subsystem(s)**: Audit, Change Capture, and Repair; API and Deployment Surfaces
+**Covered PRD Requirements**: FR-18, FR-31
+**Cross-Subsystem Rationale**: The cross-subsystem workflow is the feature:
+FR-18 (ordered change-feed records derived from audit) and FR-31 (ordered
+streams with stable cursors, replay, and resume exposed as a public surface)
+describe one capability — a durable, replayable projection of the audit log
+delivered to external consumers. Splitting the projection from its
+replay/resume surface would leave neither part shippable.
+**FR Prefix**: CDC
 
 ## Overview
 
-Durable, replayable change feeds that emit Debezium-compatible CDC
-records to Kafka topics. A Confluent-compatible Schema Registry serves
-entity schemas to downstream consumers. The change feed is a projection
-of the audit log — the same data that powers GraphQL subscriptions,
-formatted for the Kafka/Debezium ecosystem.
+Durable, replayable change feeds that emit Debezium-compatible CDC records
+for every committed entity and link mutation (PRD FR-18). A
+Confluent-compatible schema registry facade serves entity schemas to
+downstream consumers. The change feed is a projection of the audit log —
+the same data that powers GraphQL subscriptions, formatted for the
+Kafka/Debezium ecosystem — and supplies Axon's stable replay/resume
+interface (PRD FR-31): every emitted event carries a durable audit cursor
+and enough scope metadata for consumers to resume or replay by database,
+collection, entity/link, or transaction.
 
-The change-feed contract also supplies Axon's stable replay/resume interface:
-every emitted event carries a durable audit cursor and enough scope metadata
-for consumers to resume or replay by database, collection, entity/link, or
-transaction.
+The normative event envelope, tenant-aware topic naming and event keys,
+registry endpoints, cursor semantics, and `[cdc.*]` configuration keys are
+defined in
+[CONTRACT-006 — CDC envelope](../../02-design/contracts/CONTRACT-006-cdc-envelope.md).
+See [ADR-014](../../02-design/adr/ADR-014-change-feeds-debezium-cdc.md) for
+the design rationale.
 
-See [ADR-014](../../02-design/adr/ADR-014-change-feeds-debezium-cdc.md)
-for the full design.
+## Ideal Future State
+
+A data engineer points existing Debezium-aware tooling at Axon and consumes
+ordered, schema-described change events without writing custom integration
+code. New consumers bootstrap from a consistent snapshot, then follow live
+changes from the snapshot boundary. Any consumer can resume after a crash
+from its last cursor, or replay a scoped slice of history (one database,
+one collection, one entity, one transaction) at any time. Teams without
+Kafka get the same events through file or HTTP streaming sinks. The same
+cursor vocabulary works across CDC sinks, GraphQL subscriptions, MCP
+notifications, and SDK change readers, so a position obtained on one
+surface is meaningful on another.
 
 ## Problem Statement
 
-GraphQL subscriptions (FEAT-015) provide ephemeral, real-time push to
-connected clients. But data pipelines, analytics engines (DuckDB,
-niflheim), search indexes, and replication targets need a durable feed
-that:
+- **Current situation**: GraphQL subscriptions (FEAT-015) provide
+  ephemeral, real-time push to connected clients only; mutation history is
+  queryable solely through Axon's own APIs.
+- **Pain points**: Data pipelines, analytics engines (DuckDB, niflheim),
+  search indexes, and replication targets need a feed that survives client
+  disconnections, supports replay from a point in time, uses a standard
+  format existing tooling understands, and provides schema metadata for
+  consumer code generation. None of that exists, so every downstream
+  integration is bespoke.
+- **Desired outcome**: Every committed mutation is observable as an
+  ordered, at-least-once, replayable change event in a standard envelope,
+  with schema discovery, in environments with or without Kafka.
 
-- Survives client disconnections
-- Supports replay from any point in time
-- Uses a standard format that existing tooling understands
-- Provides schema metadata for consumer code generation
+## Functional Areas
+
+| Area | User question or job | Feature responsibility |
+|------|----------------------|------------------------|
+| Change event emission | "Tell me about every committed mutation, in order" | Emit one standard-envelope event per entity/link mutation with ordering and transaction correlation |
+| Snapshot and replay | "Bootstrap or rebuild my downstream view without gaps" | Consistent initial snapshots, a defined snapshot/live boundary, and scoped replay from any cursor |
+| Schema discovery | "Generate typed consumer code and validate messages" | Registry facade serving entity schemas with compatibility checking |
+| Sinks, cursors, and delivery | "Consume changes in my environment and resume after failure" | Kafka, file, and HTTP streaming sinks with persistent per-sink cursors and at-least-once delivery |
 
 ## Requirements
 
-### Functional Requirements
+### Functional Requirements by Area
 
-#### Debezium-Compatible Events
+#### Change Event Emission
 
-- **Envelope format**: Every mutation produces a Debezium envelope with
-  `before`, `after`, `source`, `op`, and `ts_ms` fields
-- **Operation types**: `c` (create), `u` (update/patch), `d` (delete),
-  `r` (snapshot read)
-- **Source metadata**: Axon version, instance name, database, schema,
-  collection, entity ID, audit log sequence number, transaction ID
-- **Tombstone on delete**: Delete events followed by a null-value
-  tombstone for Kafka log compaction
-- **Link events**: Link create/delete as Debezium events on a per-source-collection `.__links__` topic
+- **CDC-01**. Every committed entity mutation MUST produce exactly one
+  change event in the Debezium-compatible envelope defined in CONTRACT-006,
+  with operation, pre-image, post-image, source scope, and audit cursor
+  populated per that contract.
+- **CDC-02**. Link create and delete operations MUST be emitted as change
+  events carrying source/target collection, IDs, link type, and metadata,
+  on the per-source-collection link topic defined in CONTRACT-006.
+- **CDC-03**. Delete events MUST be followed by a null-value tombstone, per
+  CONTRACT-006, so log-compacted consumers converge.
+- **CDC-04**. Events for the same entity MUST be delivered in mutation
+  order; event keying that guarantees per-entity ordering is defined in
+  CONTRACT-006. Topic names and keys are tenant-aware per CONTRACT-006.
+- **CDC-05**. All events produced by one transaction MUST share the same
+  transaction identifier so consumers can correlate cross-collection
+  atomicity.
+- **CDC-06**. Collection lifecycle events (create, drop) MUST be emitted on
+  the system topic defined in CONTRACT-006.
 
-#### Kafka Integration
+#### Initial Snapshot and Replay
 
-- **One topic per collection**: `{instance}.{db}.{schema}.{collection}`
-- **System topic**: `{instance}.__system__` for collection lifecycle events
-- **Event key**: `{db, schema, collection, id}` — ensures per-entity
-  ordering within a partition
-- **Configurable**: Bootstrap servers, batch size, linger, acks, topic template
-- **Optional**: Kafka is not required — file and SSE sinks work without it
+- **CDC-07**. When CDC is enabled, or a new collection is created with CDC
+  active, all existing entities MUST be emitted as snapshot-read events in
+  entity-ID order.
+- **CDC-08**. A snapshot interrupted by a crash MUST resume from the last
+  emitted entity rather than restarting.
+- **CDC-09**. A snapshot MUST capture a consistent point: live events begin
+  from the snapshot boundary cursor, with no gap and no reordering across
+  the boundary.
+- **CDC-10**. Consumers MUST be able to replay from any audit cursor or
+  from an opaque cursor token returned by a prior event, scoped by
+  database, collection, entity/link, or transaction, without any change to
+  event envelope semantics. Cursor token format and validity rules are
+  defined in CONTRACT-006.
 
-#### Schema Registry
+#### Schema Discovery
 
-- **Confluent-compatible REST API**: ~15 endpoints for subject listing,
-  schema registration, version management, compatibility checking
-- **JSON Schema format**: Entity schemas served as JSON Schema (Axon's
-  native format)
-- **Facade over Axon schemas**: No separate schema store. The registry
-  reads from Axon's `schema_versions` table
-- **Compatibility modes**: BACKWARD, FORWARD, FULL, NONE — mapped to
-  Axon's schema evolution classification (FEAT-017)
-- **Standard port**: Configurable, default 8081 (Confluent convention)
+- **CDC-11**. Axon MUST serve entity schemas to consumers through the
+  Confluent-compatible registry endpoints defined in CONTRACT-006, in
+  Axon's native JSON Schema form.
+- **CDC-12**. The registry MUST be a facade over Axon's stored schema
+  versions — no separate schema store — and schema IDs MUST be stable
+  across restarts.
+- **CDC-13**. Registry compatibility checking MUST map to Axon's schema
+  evolution classification (FEAT-017): a change Axon classifies as breaking
+  fails the corresponding registry compatibility mode.
 
-#### Initial Snapshot
+#### Sinks, Cursors, and Delivery
 
-- **Bootstrap new consumers**: When CDC is enabled or a new collection
-  is created, emit all existing entities as `op: "r"` events
-- **Resumable**: Snapshot interrupted by crash resumes from last emitted
-  entity ID
-- **Ordered**: Entities emitted in ID order within the snapshot
-- **Boundary**: Snapshot captures a consistent point; live events begin
-  from the snapshot boundary `audit_id`
-
-#### Multi-Sink Support
-
-- **Kafka**: Primary production sink (rdkafka)
-- **HTTP SSE**: Shared implementation with GraphQL subscriptions
-- **File**: JSONL files with configurable rotation (debugging, replay,
-  air-gapped environments)
-- **Pluggable**: Sink trait enables future transports (NATS, Pulsar,
-  Redis Streams)
-
-#### Cursor Management
-
-- **Persistent cursor**: Last emitted `audit_id` per sink stored in
-  `_cdc_cursors` table
-- **Resume on restart**: Producer resumes from stored cursor, re-emitting
-  any events after the cursor (at-least-once)
-- **Per-collection cursors**: Independent progress tracking per collection
-- **Stable cursor token**: External APIs expose an opaque cursor derived from
-  the audit sequence, sink, and scope. Cursor tokens remain valid across
-  producer restarts and schema changes
-- **Scoped replay**: Replay can be scoped by database, schema, collection,
-  entity/link ID, or transaction ID without changing event envelope semantics
-- **Audit parity**: GraphQL subscriptions, MCP resource notifications, SDK
-  change readers, and CDC sinks use the same audit cursor vocabulary
+- **CDC-14**. Kafka MUST be supported as the primary production sink, but
+  MUST NOT be required: file and HTTP streaming (SSE) sinks deliver the
+  same feed without Kafka infrastructure.
+- **CDC-15**. All sinks MUST emit the same event envelope and the same
+  cursor fields; the HTTP streaming sink shares delivery semantics with
+  GraphQL subscriptions (FEAT-015).
+- **CDC-16**. Delivery MUST be at-least-once: each sink persists its last
+  emitted cursor per collection, resumes from it on restart, and may
+  re-emit events after the cursor. Consumers deduplicate using the audit
+  cursor field defined in CONTRACT-006.
+- **CDC-17**. GraphQL subscriptions, MCP resource notifications, SDK change
+  readers, and CDC sinks MUST use the same audit cursor vocabulary
+  (PRD FR-31 audit parity).
+- **CDC-18**. CDC and registry behavior MUST be configurable through the
+  `[cdc.*]` configuration keys defined in CONTRACT-006 (sink selection,
+  connection settings, batching, topic template, registry port).
+- **CDC-19**. When a sink cannot accept events (e.g., producer buffer
+  full), CDC MUST pause tailing for that sink and catch up later; entity
+  writes MUST never be blocked or failed by CDC backpressure.
 
 ### Non-Functional Requirements
 
-- **Latency**: < 1s from entity write to Kafka message availability
-  (p99, single-node)
-- **Throughput**: Sustain 10K events/second to Kafka with batching
-- **Durability**: No event loss if Axon and Kafka are both healthy.
-  Audit log is the buffer; CDC catches up after transient Kafka
-  unavailability
-- **Backpressure**: If Kafka producer buffer is full, CDC pauses tailing.
-  Entity writes are never blocked
-- **Schema Registry latency**: < 10ms for schema lookups (cached)
+- **Latency**: < 1 s from entity write to event availability on the sink
+  (p99, single node).
+- **Throughput**: sustain 10K events/second to Kafka with batching.
+- **Durability**: no event loss while Axon and the sink are both healthy;
+  the audit log is the buffer, and CDC catches up after transient sink
+  unavailability.
+- **Reliability**: entity write paths are never blocked by sink failures
+  or backpressure (CDC-19).
+- **Schema registry latency**: < 10 ms for cached schema lookups.
 
 ## User Stories
 
-### Story US-074: Emit CDC Events to Kafka [FEAT-021]
+- [US-130 — Emit CDC Events to Kafka](../user-stories/US-130-emit-cdc-events-to-kafka.md)
+- [US-132 — Replay Events from a Point in Time](../user-stories/US-132-replay-events-from-a-point-in-time.md)
+- [US-135 — Discover Entity Schemas via Registry](../user-stories/US-135-discover-entity-schemas-via-registry.md)
+- [US-137 — Stream Changes Without Kafka](../user-stories/US-137-stream-changes-without-kafka.md)
+- [US-139 — Link Events in CDC](../user-stories/US-139-link-events-in-cdc.md)
 
-**As a** data engineer building a pipeline
-**I want** Axon changes emitted as Debezium records on Kafka topics
-**So that** my existing Kafka consumers can process Axon data without custom integration
+## Edge Cases and Error Handling
 
-**Acceptance Criteria:**
-- [ ] Creating an entity produces a Debezium `op: "c"` event on the collection's topic
-- [ ] Updating an entity produces `op: "u"` with `before` (old state) and `after` (new state)
-- [ ] Deleting an entity produces `op: "d"` followed by a tombstone
-- [ ] Events for the same entity land on the same Kafka partition (key-based partitioning)
-- [ ] Events include `source.audit_id` for consumer cursor tracking
-- [ ] Events in a transaction share the same `source.transaction_id`
-- [ ] CDC is configurable via `[cdc.kafka]` in server config
+- **Sink unavailable (e.g., Kafka down)**: CDC pauses; the audit log
+  accumulates. When the sink recovers, CDC catches up from the stored
+  cursor. Entity writes are never blocked.
+- **Schema change during CDC**: new events use the new schema version; the
+  registry serves both old and new versions, so consumers pinned to the
+  old schema keep working for backward-compatible changes.
+- **Collection dropped**: final delete events for all entities, then a
+  collection-drop event on the system topic. Topics are not auto-deleted;
+  retention policy handles cleanup.
+- **Very large snapshot (1M+ entities)**: the snapshot batches and yields
+  between batches so live CDC for other collections is not starved;
+  progress is observable via metrics.
+- **Duplicate events**: at-least-once delivery means events may be
+  re-emitted after producer crash recovery; consumers deduplicate by audit
+  cursor.
+- **Transaction spanning multiple collections**: events land on different
+  topics but share the transaction identifier; consumers needing
+  transactional atomicity correlate by it.
 
-### Story US-075: Replay Events from a Point in Time [FEAT-021]
+## Success Metrics
 
-**As a** data engineer bootstrapping a new consumer
-**I want** to replay all events from a specific audit ID
-**So that** I can build a complete downstream view without missing data
+- A Debezium-aware consumer (e.g., a Kafka Connect sink) processes Axon
+  change events with zero custom envelope-translation code.
+- A new consumer bootstraps a complete downstream replica (snapshot + live
+  tail) with zero missed or out-of-order per-entity events.
+- Replay of a scoped slice (one collection, one transaction) produces
+  exactly the audit-recorded mutations for that scope.
+- End-to-end change latency meets the < 1 s p99 target under the 10K
+  events/second throughput load.
 
-**Acceptance Criteria:**
-- [ ] Initial snapshot emits all existing entities as `op: "r"` events
-- [ ] After snapshot, live events begin from the snapshot boundary
-- [ ] Consumer can request replay by resetting its cursor to any `audit_id`
-- [ ] Consumer can resume from an opaque cursor returned by a prior event
-- [ ] Replay can be scoped to a database, collection, entity/link, or
-  transaction ID
-- [ ] Snapshot is resumable after crash (resumes from last emitted entity)
-- [ ] Re-emitted events (at-least-once) are deduplicated by consumers using `audit_id`
+## Constraints and Assumptions
 
-### Story US-076: Discover Entity Schemas via Registry [FEAT-021]
-
-**As a** Kafka consumer developer
-**I want** a Confluent-compatible Schema Registry serving Axon entity schemas
-**So that** I can generate typed consumer code and validate message formats
-
-**Acceptance Criteria:**
-- [ ] `GET /subjects` returns all collection names as subjects
-- [ ] `GET /subjects/{subject}/versions/latest` returns the current entity schema as JSON Schema
-- [ ] Schema IDs are stable across registry restarts
-- [ ] Registering a schema via POST (from a Kafka Connect sink, for example) maps to `put_schema`
-- [ ] Compatibility check endpoint validates new schemas against existing versions
-- [ ] Registry runs on configurable port (default 8081)
-
-### Story US-077: Stream Changes Without Kafka [FEAT-021]
-
-**As a** developer in a non-Kafka environment
-**I want** CDC events written to files or streamed via HTTP
-**So that** I can consume Axon changes without Kafka infrastructure
-
-**Acceptance Criteria:**
-- [ ] File sink writes Debezium JSONL with configurable rotation
-- [ ] SSE sink streams events to HTTP clients (shared with GraphQL subscriptions)
-- [ ] File and SSE sinks work independently of Kafka (Kafka can be disabled)
-- [ ] All sinks emit the same Debezium envelope format
-- [ ] Cursor management works for all sink types
-- [ ] File and SSE sinks preserve the same cursor fields as Kafka events
-
-### Story US-078: Link Events in CDC [FEAT-021]
-
-**As a** data engineer tracking entity relationships
-**I want** link create/delete events in the change feed
-**So that** downstream systems can maintain a replica of the entity graph
-
-**Acceptance Criteria:**
-- [ ] Creating a link produces a Debezium `op: "c"` event on `{collection}.__links__` topic
-- [ ] Deleting a link produces `op: "d"` event
-- [ ] Link events include source/target collection, IDs, link type, and metadata
-- [ ] Link events are ordered per-source-entity (same partition key as entity events)
-
-## Edge Cases
-
-- **Kafka unavailable**: CDC pauses. Audit log accumulates. When Kafka
-  recovers, CDC catches up from cursor position. Entity writes are never
-  blocked
-- **Schema change during CDC**: New events use the new schema version.
-  The schema registry serves both old and new versions. Consumers using
-  the old schema continue working (backward compatibility)
-- **Collection dropped**: Final events for all entities (`op: "d"`),
-  then a collection-drop event on the system topic. Topic is not
-  auto-deleted (Kafka retention handles cleanup)
-- **Very large snapshot**: Collections with 1M+ entities. Snapshot
-  batches and yields between batches to avoid blocking live CDC.
-  Progress reported via metrics
-- **Duplicate events**: At-least-once delivery means events may be
-  duplicated on producer crash recovery. Events carry `audit_id` for
-  consumer-side dedup
-- **Transaction spanning multiple collections**: Events land on
-  different topics but share `transaction_id`. Consumers that need
-  transaction atomicity must correlate by `transaction_id`
+- The audit log (FEAT-003, ADR-003) is the single source of truth; CDC is
+  a projection and never invents events the audit log does not contain.
+- At-least-once delivery with consumer-side deduplication is acceptable
+  for V1; exactly-once is out of scope.
+- Consumers are assumed to tolerate envelope-compatible additive fields,
+  consistent with CONTRACT-006 compatibility rules.
 
 ## Dependencies
 
-- **FEAT-003** (Audit Log): CDC is a projection of the audit log
-- **FEAT-015** (GraphQL): Shares SSE infrastructure with subscriptions
-- **FEAT-017** (Schema Evolution): Registry compatibility maps to
-  Axon's breaking change detection
-- **ADR-003**: Audit log as the source of truth for all mutations
-- **ADR-014**: Full design for Debezium format, Kafka integration,
-  schema registry
-
-### Crate Dependencies
-
-- `rdkafka` v0.39+ — Kafka producer
-- `schema_registry_converter` — Registry client for Avro serialization
+- **Other features**:
+  - FEAT-003 (Audit Log) — CDC is a projection of the audit log.
+  - FEAT-015 (GraphQL) — shared streaming/SSE delivery semantics and
+    cursor parity with subscriptions.
+  - FEAT-017 (Schema Evolution) — registry compatibility maps to breaking
+    change classification.
+- **External services**: Kafka-compatible brokers (optional), Confluent
+  registry-compatible clients; exact surface in CONTRACT-006.
+- **PRD requirements**: FR-18 (P1), FR-31 (P1).
 
 ## Out of Scope
 
-- **Exactly-once delivery**: Kafka transactional producer. Deferred —
-  at-least-once with consumer dedup is sufficient for V1
-- **Per-field filtering**: Emit events only when specific fields change.
-  Deferred
-- **NATS / Pulsar / Redis Streams**: Additional transports beyond
-  Kafka + SSE + file. Deferred
-- **Downstream schema replication**: Pushing schemas to external
-  registries. Deferred
-- **CDC admin UI**: Managing CDC configuration via the web UI. Deferred
-
-## Traceability
-
-### Related Artifacts
-- **Parent PRD Section**: P1 #5 change feeds; FR-31 stable audit and change
-  cursors
-- **User Stories**: US-074, US-075, US-076, US-077, US-078
-- **Architecture**: ADR-014 (Change Feeds — Debezium CDC)
-- **Implementation**: `crates/axon-cdc/`, `crates/axon-registry/`
-
-### Feature Dependencies
-- **Depends On**: FEAT-003, FEAT-015, FEAT-017
-- **Depended By**: niflheim bridge (P2), external analytics consumers
+- **Exactly-once delivery** (Kafka transactional producer): at-least-once
+  with consumer dedup is sufficient for V1.
+- **Per-field filtering** (emit only when specific fields change).
+- **Additional transports** (NATS, Pulsar, Redis Streams) beyond
+  Kafka + SSE + file.
+- **Downstream schema replication**: pushing schemas into external
+  registries.
+- **CDC admin UI**: managing CDC configuration through the web UI.

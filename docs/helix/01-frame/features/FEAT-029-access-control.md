@@ -8,72 +8,81 @@ ddx:
     - FEAT-013
     - FEAT-014
     - FEAT-015
+    - FEAT-016
     - FEAT-019
+    - FEAT-030
     - ADR-012
+    - ADR-013
     - ADR-018
     - ADR-019
 ---
-# Feature Specification: FEAT-029 - Data-Layer Access Control Policies
+# Feature Specification: FEAT-029 — Data-Layer Access Control Policies
 
 **Feature ID**: FEAT-029
-**Status**: Specified
+**Status**: approved
 **Priority**: P0
 **Owner**: Core Team
-**Created**: 2026-04-19
-**Updated**: 2026-06-06
+**Covered PRD Subsystem(s)**: Reusable Policy Enforcement
+**Covered PRD Requirements**: FR-10, FR-11, FR-12, FR-13, FR-14
+**Cross-Subsystem Rationale**: None — single subsystem.
+**Requirement Prefix**: ACL
 
 ## Overview
 
-Axon enforces application access control at the data layer. A browser, agent,
-SDK, GraphQL client, or MCP tool that has network access to Axon must receive
-only the entities and fields its resolved identity is allowed to see, and must
-be able to mutate only the rows and fields its policies allow.
+Axon enforces application access control at the data layer, implementing PRD
+FR-10 through FR-14. A browser, agent, SDK, GraphQL client, or MCP tool that
+has network access to Axon receives only the entities and fields its resolved
+identity is allowed to see, and can mutate only the rows and fields its
+policies allow.
 
-GraphQL is the primary application API surface for policy-aware reads, writes,
-introspection, and approval workflows. MCP mirrors the same semantics for
-agents. REST/JSON routes may expose compatibility or operational behavior where
-GraphQL is intractable, but REST is not the baseline policy surface.
+GraphQL is the primary application API surface for policy-aware reads,
+writes, introspection, and approval workflows. MCP mirrors the same semantics
+for agents. REST/JSON routes may expose compatibility or operational behavior
+where GraphQL is intractable, but REST is not the baseline policy surface.
 
-FEAT-012 and ADR-018 establish identity, tenant membership, JWT credentials,
-and tenant/database grants. FEAT-029 layers schema-declared data policies on top
-of that foundation:
+FEAT-012 and ADR-018 establish identity, tenant membership, credentials, and
+tenant/database grants. FEAT-029 layers schema-declared data policies on top
+of that foundation: entity-level visibility, row-level filtering evaluated
+before pagination, and field-level redaction and write denial. Policies are
+declared in or alongside the collection schema, not as ad-hoc code. They are
+introspectable, testable, audited on change, and enforced uniformly below
+GraphQL, MCP, SDK, and any compatibility routes. ADR-019 governs the
+authoring model and mutation-intent binding; CONTRACT-004 is the normative
+policy grammar, evaluation-order, denial-envelope, and reason-code surface.
 
-1. **Entity-level visibility**: a caller cannot see an entity at all if no
-   policy grants visibility.
-2. **Row-level filtering**: list/query operations return only rows matching a
-   policy predicate, evaluated before pagination.
-3. **Field-level redaction and write denial**: on rows the caller may see,
-   specific fields can be returned as `null` and writes to denied fields fail.
+Compiled policy output is also interface metadata: Axon generates the
+policy-envelope, redaction, approval, and denial information that GraphQL,
+MCP, SDK, CLI, and operator UI surfaces expose, while preserving the rule
+that metadata is advisory and enforcement always repeats below the surface.
 
-Policies are declared in or alongside the collection schema, not as ad-hoc Rust
-closures. They are introspectable, testable, audited on change, and enforced
-uniformly below GraphQL, MCP, SDK, and any compatibility routes. ADR-019 governs
-the authoring model and mutation-intent binding.
+## Ideal Future State
 
-Compiled policy output is also interface metadata. Axon generates the
-policy-envelope, redaction, approval, and denial information that GraphQL, MCP,
-SDK, CLI, and operator UI surfaces expose, while preserving the rule that
-metadata is advisory and enforcement always repeats below the surface.
+An application developer declares who may see and change what — per
+collection, per row, per field, per relationship — once, next to the schema,
+in a closed declarative grammar. Every surface then behaves identically: a
+consultant's GraphQL query, an agent's MCP tool call, and a CLI read all
+return the same visible rows, the same redactions, and the same denial
+reasons. Policy mistakes are caught at compile time, explored through dry
+runs and fixtures, and explained on demand. Browser-side filtering becomes a
+UX affordance, never a security boundary.
 
 ## Problem Statement
 
-A static browser bundle can call Axon directly over Tailscale. Browser-side
-filtering is not a security boundary: any tailnet user can open dev tools or
-write a script that calls GraphQL or REST endpoints directly. Axon therefore
-must enforce application row, entity, and field policies before returning data.
+- **Current situation**: A static browser bundle can call Axon directly over
+  the network. Browser-side filtering is the only "control" an application
+  could otherwise apply.
+- **Pain points**: Any user can open dev tools or script direct GraphQL/REST
+  calls, bypassing UI filtering entirely. Downstream nexiq is the forcing
+  function: consultants must see only their own engagements, contractors must
+  lose budget/rate fields even on visible engagements, and operations
+  managers must read billing records without seeing contract rate cards.
+  Those guarantees cannot depend on UI code.
+- **Desired outcome**: Row, entity, and field policies are enforced before
+  data leaves Axon, identically on every surface, with stable machine-readable
+  denial semantics. Until this feature is enforced, any browser-side filtering
+  in downstream applications is an affordance only.
 
-Downstream nexiq is the forcing function. Nexiq needs consultants to see only
-their own engagements, contractors to lose budget/rate fields even on otherwise
-visible engagements, and operations managers to read billing records without
-seeing contract rate cards. Those guarantees cannot depend on UI code.
-
-This specification is the frame-level closure for `axon-c5cc071a`: it chooses a
-schema-declared policy model and pins the GraphQL/MCP-visible denial contract.
-Backend implementation remains separate work. Until that implementation ships,
-any browser-side filtering in downstream applications is an affordance only, not
-a security boundary.
-
-## Relationship To Existing Authorization
+## Relationship to Existing Authorization
 
 FEAT-029 refines access; it never grants access that FEAT-012/ADR-018 denied.
 Evaluation order is:
@@ -86,656 +95,283 @@ Evaluation order is:
 5. Validate entity schema, validation rules, lifecycle transitions, OCC, and
    transaction atomicity.
 
-If a collection has no `access_control` block, current FEAT-012 behavior
-applies. Once a collection declares `access_control`, policy evaluation is
-default-deny for operations covered by that block.
-
-## Policy Location
-
-Policies are schema-adjacent ESF metadata:
-
-```yaml
-collection: engagements
-entity_schema:
-  type: object
-  required: [name, status, members]
-  properties:
-    name: { type: string }
-    status: { type: string, enum: [draft, active, closed] }
-    budget_cents: { type: integer }
-    rate_card_id: { type: string }
-    members:
-      type: array
-      items:
-        type: object
-        required: [user_id, role]
-        properties:
-          user_id: { type: string }
-          role: { type: string }
-
-access_control:
-  identity:
-    user_id: subject.user_id
-    role: subject.attributes.user_role
-
-  read:
-    allow:
-      - name: firm-admins-see-all
-        when: { subject: role, in: [admin, partner] }
-      - name: assigned-consultants-see-own
-        when: { subject: role, in: [consultant, contractor] }
-        where:
-          field: members[].user_id
-          contains_subject: user_id
-
-  write:
-    allow:
-      - name: admins-write-all
-        when: { subject: role, eq: admin }
-      - name: partners-write-led-engagements
-        when: { subject: role, eq: partner }
-        where:
-          field: lead_partner_id
-          eq_subject: user_id
-
-  fields:
-    budget_cents:
-      read:
-        deny:
-          - name: contractors-do-not-see-budget
-            when: { subject: role, eq: contractor }
-            redact_as: null
-      write:
-        allow:
-          - name: admins-only-budget
-            when: { subject: role, eq: admin }
-
-    rate_card_id:
-      read:
-        deny:
-          - name: contractors-do-not-see-rate-card
-            when: { subject: role, eq: contractor }
-            redact_as: null
-```
-
-Policy documents are part of the schema version. Updating a policy is a schema
-change for audit and introspection purposes. Compatibility rules for policy
-changes follow FEAT-017: broadening read visibility is compatible; narrowing
-read visibility or write permissions is operationally safe but must be visible
-in schema diffs because clients may lose fields or operations.
-
-## Policy Authoring Model
-
-ADR-019 defines the governing authoring model:
-
-- ESF `access_control` metadata is the source of truth.
-- GraphQL SDL, MCP tool descriptions, SDK metadata, and REST compatibility
-  behavior are generated views of the same compiled policy plan.
-- The policy language is closed and declarative. Axon rejects arbitrary code,
-  SQL snippets, JavaScript, Rust hooks, and custom GraphQL resolvers as policy.
-- Policy compilation type-checks field paths, subject references,
-  relationship predicates, redaction nullability, and approval envelopes before
-  a schema version can become active.
-- Policy changes are schema changes. They are diffed, audited, and evaluated
-  against a fixed policy snapshot during each request.
-
-The authoring workflow is:
-
-1. Edit ESF and `access_control`.
-2. Run a dry-run schema/policy compile.
-3. Test fixture subjects, agents, and proposed mutations.
-4. Optionally replay historical audit entries to identify changed decisions.
-5. Apply the schema/policy version and atomically refresh GraphQL and MCP.
-
-### Policy Envelopes
-
-Application policies can return three decisions:
-
-| Decision | Meaning |
-|---|---|
-| `allow` | The operation can commit without human approval |
-| `needs_approval` | The operation is valid but must flow through FEAT-030 |
-| `deny` | The operation fails |
-
-`deny` overrides every other decision. `needs_approval` is not a soft allow:
-the write cannot commit directly. It must produce or consume a mutation intent
-bound to the pre-image versions, schema version, policy version, subject, grant
-version, and operation hash.
-
-Example envelope:
-
-```yaml
-access_control:
-  envelopes:
-    write:
-      - name: auto-small-invoice-adjustment
-        when:
-          all:
-            - { operation: update }
-            - { field: amount_cents, lte: 1000000 }
-            - { subject: role, in: [finance, admin] }
-        decision: allow
-      - name: approve-large-invoice-adjustment
-        when:
-          all:
-            - { operation: update }
-            - { field: amount_cents, gt: 1000000 }
-        decision: needs_approval
-        approval:
-          role: finance_approver
-          reason_required: true
-```
-
-## Policy Model
-
-### Subjects
-
-The policy engine evaluates against a resolved subject:
-
-| Subject Path | Description |
-|---|---|
-| `subject.user_id` | Stable Axon user ID from FEAT-012/ADR-018 |
-| `subject.tenant_id` | Tenant from the authenticated route context |
-| `subject.tenant_role` | Tenant membership role: `admin`, `write`, or `read` |
-| `subject.grants` | Effective database grants from the credential |
-| `subject.attributes.*` | Application attributes resolved from a configured source |
-
-Application attributes are schema-configured. For nexiq, `user_role` is loaded
-from the application `users` collection for the current `subject.user_id`.
-Implementations must cache resolved subject attributes for the request only; a
-policy decision cannot depend on stale cross-request identity state.
-
-### Operations
-
-Policies cover these operation classes:
-
-| Operation | Applies To |
-|---|---|
-| `read` | point reads, list/query, link traversal target materialization, GraphQL relationship resolution, audit `data_after` views |
-| `create` | entity creation and link creation |
-| `update` | full update, patch, lifecycle transition, rollback write |
-| `delete` | entity and link deletion |
-| `write` | shorthand covering `create`, `update`, and `delete` |
-| `admin` | collection/schema/policy administration |
-
-### Predicates
-
-Policy predicates use a declarative expression grammar derived from FEAT-019
-conditions and extended for subject references, arrays, and relationship-backed
-scope checks.
-
-Supported predicate forms:
-
-```yaml
-{ subject: role, eq: admin }
-{ subject: role, in: [admin, partner] }
-{ field: status, ne: closed }
-{ field: members[].user_id, contains_subject: user_id }
-{ field: lead_partner_id, eq_subject: user_id }
-{ all: [ { subject: role, eq: partner }, { field: archived_at, is_null: true } ] }
-{ any: [ { subject: role, eq: admin }, { subject: role, eq: ops_manager } ] }
-{ not: { subject: role, eq: contractor } }
-```
-
-Relationship predicates reference declared link types and must compile to the
-same link indexes used by graph traversal:
-
-```yaml
-where:
-  related:
-    link_type: belongs_to_engagement
-    direction: outgoing
-    target_collection: engagements
-    target_policy: read
-```
-
-`target_policy: read` means "this row is visible if the related target entity
-would be visible under its own read policy." This lets contracts, tasks, and
-other child collections reuse engagement membership rules without duplicating
-them.
-
-### Policy Combination
-
-Policy decisions are explicit:
-
-- A matching `deny` overrides any matching `allow`.
-- If an operation has an `allow` list, at least one allow rule must match.
-- If an operation has no `allow` list but has field-level rules, the collection
-  operation falls back to FEAT-012 grants and only the field rules apply.
-- Field-level rules are evaluated after row visibility.
-- Admin bypass is not implicit for application fields. If application admins
-  should see or write a field, the policy must say so. Deployment admins can
-  still perform break-glass recovery through documented admin surfaces.
-
-## Entity-Level Visibility
-
-Point reads first determine whether the entity exists, then whether it is
-visible to the caller. If the entity exists but is not visible, the read surface
-returns the same shape as a missing entity:
-
-- REST compatibility point read: `404` with `code: "not_found"`.
-- GraphQL point read: nullable entity field resolves to `null` with no policy
-  error.
-- GraphQL list/relationship field: the denied entity is omitted.
-
-This prevents callers from using read errors to infer hidden entity existence.
-
-## Row-Level Filtering
-
-List and query operations must apply row policies before cursor construction,
-`limit`, `offset`, `after`, or GraphQL connection pagination. A consultant's
-`LIMIT 100` over engagements therefore scans the consultant-visible row set,
-not the first 100 physical rows followed by client-side filtering.
-
-The query planner must push indexable policy predicates into the storage plan.
-Indexable policy terms include:
-
-- equality/range checks on declared FEAT-013 indexes;
-- array membership checks backed by an EAV index on the array path;
-- relationship checks backed by the links table forward/reverse indexes;
-- target-policy joins where the target policy itself compiles to an indexed
-  predicate.
-
-If a policy predicate is not indexable, Axon may execute it as an
-application-layer post-filter only when the query cost stays within configured
-limits. Otherwise it returns `policy_filter_unindexed` with details naming the
-policy and required index. This makes unsafe launch-scale behavior explicit.
-
-## Field-Level Redaction And Writes
-
-For visible rows, field policies decide whether each selected field may be read
-or written.
-
-Read denial:
-
-- GraphQL generated fields that can be redacted are nullable, even if JSON
-  Schema marks the field as required.
-- Redacted GraphQL fields resolve to `null`.
-- Generic JSON and REST compatibility responses return the field as `null` by
-  default.
-- Audit `data_before`, `data_after`, and diff payloads apply the same redaction
-  before returning to callers.
-
-Write denial:
-
-- Creates and updates that include a denied field fail.
-- Patches that set, replace, or delete a denied field fail.
-- Lifecycle transitions fail if they would mutate a denied lifecycle field.
-- Rollbacks fail if replaying the historical state would write denied fields.
-
-Field write failures use `code: "forbidden"` and include the denied field path.
-Axon does not silently preserve or drop denied write fields; callers need a
-clear error so SDKs and UIs can correct the request.
-
-## Mutations And Transactions
-
-Policy checks participate in the existing transaction engine:
-
-- Every operation is authorized before commit.
-- A single denied operation aborts the whole transaction.
-- The error identifies the operation index when the API surface supports it.
-- No audit mutation entry is written for a transaction that fails authorization.
-- A separate application audit-write feature may later record access-denied
-  events, but access policy denial itself must not create partial data changes.
-
-Idempotent transaction requests cache terminal `forbidden` responses for the
-idempotency TTL using the same tenant/database/key scope as successful commits.
-Replaying the same denied write must return the same forbidden response rather
-than succeeding because a later policy or data change made the operation
-allowable.
-
-## Denial Contract
-
-REST compatibility error shape:
-
-```json
-{
-  "code": "forbidden",
-  "detail": {
-    "reason": "field_write_denied",
-    "collection": "engagements",
-    "entity_id": "eng-1",
-    "field_path": "status",
-    "policy": "contractors-cannot-transition-engagements"
-  }
-}
-```
-
-GraphQL errors use the same code and detail under `extensions`:
-
-```json
-{
-  "errors": [
-    {
-      "message": "field write denied",
-      "path": ["updateEngagement"],
-      "extensions": {
-        "code": "forbidden",
-        "reason": "field_write_denied",
-        "collection": "engagements",
-        "entityId": "eng-1",
-        "fieldPath": "status",
-        "policy": "contractors-cannot-transition-engagements"
-      }
-    }
-  ],
-  "data": { "updateEngagement": null }
-}
-```
-
-Stable `reason` values:
-
-| Reason | Meaning |
-|---|---|
-| `collection_read_denied` | Caller lacks read permission for the collection |
-| `row_write_denied` | Caller can address the entity but may not mutate that row |
-| `field_write_denied` | Caller may mutate the row but not the named field |
-| `approval_required` | Policy returned `needs_approval`; caller must use FEAT-030 intent flow |
-| `policy_filter_unindexed` | Required policy predicate cannot be executed within query limits |
-| `policy_expression_invalid` | Schema policy expression is invalid at schema write time |
-
-Read denial for hidden rows intentionally uses `not_found` or omission, not
-`forbidden`, to avoid existence leaks.
-
-## Introspection And Dry Run
-
-Authenticated clients need policy metadata to hide unavailable UI affordances
-without treating browser checks as security.
-
-GraphQL exposes:
-
-```graphql
-type EffectiveCollectionPolicy {
-  collection: String!
-  canRead: Boolean!
-  canCreate: Boolean!
-  canUpdate: Boolean!
-  canDelete: Boolean!
-  redactedFields: [String!]!
-  deniedFields: [String!]!
-  policyVersion: Int!
-}
-```
-
-`effectivePolicy(collection, entityId)` reports the caller's effective
-capabilities for a collection or specific entity. `explainPolicy(input)` is a
-dry-run query that returns `allowed`, `needsApproval`, `reason`, `policy`, and
-field paths without executing a mutation. FEAT-030 defines `previewMutation`,
-which applies the same policy explanation to a concrete mutation and produces a
-bound intent token when the operation is allowed or approval-routed.
-
-REST may expose the same capability as a compatibility endpoint, but GraphQL is
-the primary UI/SDK surface.
-
-Introspection is advisory. Enforcement always happens again in the mutation or
-query execution path.
-
-### Interface Metadata Contract
-
-Every generated surface must derive its access-control metadata from the same
-compiled policy plan:
-
-- GraphQL collection metadata and `effectivePolicy` expose policy version,
-  allowed operations, approval-routed operations, denied/redacted fields, and
-  explanation handles.
-- MCP tool descriptions expose the same envelopes and refresh when schema or
-  policy versions change.
-- SDK metadata and CLI JSON output preserve the same machine-readable fields as
-  GraphQL and MCP: `policy_version`, `decision`, `reason`, `policy`,
-  `field_path`, `redacted_fields`, `approval_route`, and `audit_ref` where
-  available.
-- Direct writes that receive `needs_approval` from policy return
-  `approval_required` and no data mutation; FEAT-030 owns the preview, intent,
-  approval, and commit path.
-- Fixture tests compare GraphQL, MCP, SDK, and CLI metadata for the same
-  subject, resource, operation, and policy version.
-
-## Reference Nexiq Policy Set
-
-This reference policy demonstrates the expressiveness required by the first
-downstream consumer. It is not built into Axon.
-
-```yaml
-collections:
-  engagements:
-    read:
-      allow:
-        - when: { subject: role, in: [admin, partner] }
-        - when: { subject: role, in: [consultant, contractor] }
-          where: { field: members[].user_id, contains_subject: user_id }
-    fields:
-      budget_cents:
-        read:
-          deny:
-            - when: { subject: role, eq: contractor }
-              redact_as: null
-      rate_card_id:
-        read:
-          deny:
-            - when: { subject: role, eq: contractor }
-              redact_as: null
-
-  contracts:
-    read:
-      allow:
-        - when: { subject: role, in: [admin, partner, ops_manager] }
-        - where:
-            related:
-              link_type: belongs_to_engagement
-              target_collection: engagements
-              target_policy: read
-    fields:
-      rate_card_entries:
-        read:
-          deny:
-            - when: { subject: role, eq: ops_manager }
-              redact_as: null
-
-  tasks:
-    read:
-      allow:
-        - when: { subject: role, in: [admin, partner, ops_manager] }
-        - when: { subject: role, in: [consultant, contractor] }
-          where:
-            related:
-              link_type: belongs_to_engagement
-              target_collection: engagements
-              target_policy: read
-
-  invoices:
-    read:
-      allow:
-        - when: { subject: role, in: [admin, ops_manager] }
-        - when: { subject: role, eq: partner }
-          where: { field: lead_partner_id, eq_subject: user_id }
-
-  rate_card:
-    read:
-      allow:
-        - when: { subject: role, in: [admin, partner, ops_manager] }
-
-  time_entries:
-    read:
-      allow:
-        - when: { subject: role, eq: admin }
-        - when: { subject: role, in: [consultant, contractor] }
-          where: { field: user_id, eq_subject: user_id }
-        - when: { subject: role, eq: partner }
-          where:
-            related:
-              link_type: belongs_to_engagement
-              target_collection: engagements
-              target_policy: read
-        - when: { subject: role, eq: ops_manager }
-          where: { field: status, in: [submitted, approved, invoiced, paid] }
-    fields:
-      rate_cents:
-        read:
-          deny:
-            - when: { subject: role, in: [consultant, contractor] }
-              redact_as: null
-      cost_cents:
-        read:
-          deny:
-            - when: { subject: role, in: [consultant, contractor] }
-              redact_as: null
-
-  users:
-    read:
-      allow:
-        - when: { subject: role, in: [admin, partner, ops_manager] }
-        - when: { subject: role, in: [consultant, contractor] }
-          where:
-            shares_relation:
-              collection: engagements
-              field: members[].user_id
-              subject_field: user_id
-              target_field: id
-    fields:
-      email:
-        read:
-          deny:
-            - when: { subject: role, in: [consultant, contractor] }
-              redact_as: null
-      tailscale_login:
-        read:
-          deny:
-            - when: { subject: role, in: [consultant, contractor] }
-              redact_as: null
-```
-
-Required behaviors proven by this policy set:
-
-- Consultants see only engagements where `members[].user_id` contains the
-  current user ID.
-- Contractors see their own engagements but receive `budget_cents` and
-  `rate_card_id` as `null`.
-- Contracts and tasks reuse engagement visibility through `target_policy: read`
-  rather than duplicating membership rules.
-- Consultants and contractors cannot read invoices at all.
-- Operations managers read firm-wide invoices and billing entities but receive
-  contract rate-card fields as `null`.
-- Operations managers are not granted engagement assignment, time approval, or
-  engagement-status transition writes by this reference policy.
-- A consultant cannot update `engagements.status` on an engagement they cannot
-  read, and cannot write denied fields on one they can read.
+If a collection declares no access-control policy, FEAT-012 behavior applies
+unchanged. Once a collection declares one, policy evaluation is default-deny
+for the operations the policy covers. The normative evaluation-order text
+lives in CONTRACT-004.
+
+## Functional Areas
+
+| Area | User question or job | Feature responsibility |
+|------|----------------------|------------------------|
+| Policy authoring and compilation | How do I declare and safely activate access rules? | Schema-adjacent policy documents, closed grammar, compile-time validation, dry-run workflow |
+| Entity and row visibility | Which records can this caller see at all? | Entity-level visibility, row filtering before pagination, leak-free read semantics |
+| Field redaction and write control | Which fields can this caller read or change? | Field-level redaction on reads, field write denial with stable errors |
+| Approval-routed decisions | Which writes need a human in the loop? | Three-decision envelopes (`allow`/`needs_approval`/`deny`) feeding FEAT-030 |
+| Transactions and idempotency | What happens when one step is denied? | Whole-transaction abort, no partial writes, stable denied replays |
+| Introspection and interface metadata | How do clients learn their effective capabilities? | Effective-policy and explanation queries; identical metadata across GraphQL, MCP, SDK, CLI |
+
+## Requirements
+
+### Functional Requirements by Area
+
+#### Policy Authoring and Compilation
+
+- **ACL-01**. Schemas must be able to declare access-control policies as
+  schema-adjacent metadata covering collection operations, row predicates,
+  field rules, and approval envelopes. Policy documents are part of the
+  schema version: updating a policy is a schema change for audit, diff, and
+  introspection purposes. Compatibility classification follows FEAT-017
+  (broadening read visibility is compatible; narrowing visibility or write
+  permission must be visible in schema diffs). The policy document location,
+  block structure, rule grammar, predicate forms, and subject paths are
+  normatively defined in CONTRACT-004.
+- **ACL-02**. The policy language must be closed and declarative. Axon must
+  reject arbitrary code, SQL snippets, scripts, and custom resolvers as
+  policy.
+- **ACL-03**. Policy compilation must type-check field paths, subject
+  references, relationship predicates, redaction nullability, and approval
+  envelopes before a schema version can become active. Invalid policies fail
+  at schema write time with the stable invalid-expression reason code defined
+  in CONTRACT-004.
+- **ACL-04**. The authoring workflow must support: dry-run compile without
+  activation; fixture evaluation of subjects, agents, and proposed mutations;
+  optional replay of historical audit entries to identify changed decisions;
+  and atomic activation that refreshes the generated GraphQL and MCP views
+  together with the schema/policy version.
+
+#### Subjects and Operations
+
+- **ACL-05**. The policy engine must evaluate against a resolved subject that
+  exposes the caller's stable user ID, tenant, tenant role, effective
+  credential grants, and schema-configured application attributes (for
+  example, an application role loaded from an application collection for the
+  current user). Subject attributes must be resolved per request; a policy
+  decision must never depend on stale cross-request identity state. Subject
+  path names are defined in CONTRACT-004.
+- **ACL-06**. Policies must cover the operation classes defined in
+  CONTRACT-004 — read (point reads, list/query, link-traversal
+  materialization, relationship resolution, audit after-state views), create,
+  update (including patch, lifecycle transition, and rollback writes),
+  delete, the write shorthand, and admin.
+
+#### Decision Combination
+
+- **ACL-07**. Policy decisions must combine explicitly, per the normative
+  rules in CONTRACT-004: a matching deny overrides any matching allow; when
+  an operation declares an allow list, at least one allow rule must match;
+  when an operation has only field-level rules, the collection operation
+  falls back to FEAT-012 grants and only the field rules apply; field rules
+  evaluate after row visibility; and admin bypass is not implicit for
+  application fields — deployment admins retain only documented break-glass
+  recovery paths.
+
+#### Entity and Row Visibility
+
+- **ACL-08**. A caller must not be able to distinguish a hidden entity from a
+  missing one: point reads of hidden entities return the same observable
+  result as missing entities (not-found / null), and list, relationship, and
+  connection results omit hidden rows without a policy error. Read denial
+  must never use a forbidden-style response that leaks existence. Wire shapes
+  per CONTRACT-001, CONTRACT-002, and CONTRACT-004.
+- **ACL-09**. List and query operations must apply row policies before cursor
+  construction, limits, offsets, and pagination, so page windows and total
+  counts are computed over the caller-visible row set.
+- **ACL-10**. The query planner must push indexable policy predicates into
+  the storage plan (equality/range on declared FEAT-013 indexes, array
+  membership backed by an index on the array path, relationship checks backed
+  by link indexes, and target-policy joins whose target compiles to an
+  indexed predicate). A non-indexable predicate may run as a post-filter only
+  within configured query-cost limits; otherwise the operation fails with the
+  stable unindexed-policy reason code defined in CONTRACT-004, naming the
+  policy and required index, so unsafe launch-scale behavior is explicit.
+- **ACL-11**. Relationship predicates must reference declared link types and
+  compile to the same link indexes used by graph traversal. A policy must be
+  able to declare that a row is visible when a related target entity is
+  visible under the target's own read policy, so child collections reuse
+  parent visibility rules without duplication. Recursive target-policy
+  reference cycles are rejected at schema write time.
+
+#### Field Redaction and Write Denial
+
+- **ACL-12**. Field read denial must redact, not error: redacted fields
+  return null on every read surface; any generated GraphQL field that can be
+  redacted is nullable even when the JSON Schema marks it required; and audit
+  before/after/diff payloads apply the same redaction for the caller before
+  being returned.
+- **ACL-13**. Field write denial must fail loudly: creates, updates, and
+  patches that set, replace, or delete a denied field fail; lifecycle
+  transitions fail if they would mutate a denied field; rollbacks fail if
+  replaying history would write denied fields. Failures use the stable
+  forbidden code with the denied field path (envelope per CONTRACT-004). Axon
+  must never silently preserve or drop denied write fields.
+
+#### Approval-Routed Decisions
+
+- **ACL-14**. Write policies must support three decisions — allow,
+  needs-approval, and deny — where deny overrides everything and
+  needs-approval is not a soft allow: the write cannot commit directly and
+  must produce or consume a FEAT-030 mutation intent bound to the pre-image
+  versions, schema version, policy version, subject, grant version, and
+  operation hash. Direct writes receiving a needs-approval decision return
+  the approval-required reason code with no data mutation.
+
+#### Transactions and Idempotency
+
+- **ACL-15**. Policy checks must participate in the transaction engine: every
+  operation is authorized before commit; a single denied operation aborts the
+  whole transaction (identifying the operation index where the surface
+  supports it); no audit mutation entry is written for a transaction that
+  fails authorization; and idempotent replays of a denied transaction return
+  the same terminal forbidden response for the idempotency TTL, scoped like
+  successful commits — a later policy or data change must not make a replay
+  of the same request suddenly succeed.
+
+#### Introspection and Interface Metadata
+
+- **ACL-16**. Authenticated clients must be able to query their effective
+  policy for a collection or entity (allowed operations, redacted and denied
+  fields, policy version) and request a dry-run explanation of a proposed
+  operation (decision, reason, matching policy, field paths) without
+  executing it. The GraphQL fields are defined in CONTRACT-002; semantics in
+  CONTRACT-004. FEAT-030 defines mutation preview, which applies the same
+  explanation to a concrete mutation and produces a bound intent token.
+  Introspection is advisory: enforcement always repeats in the execution
+  path.
+- **ACL-17**. Every generated surface must derive its access-control metadata
+  from the same compiled policy plan: GraphQL collection metadata and
+  effective-policy fields, MCP tool descriptions (refreshing when schema or
+  policy versions change), and SDK/CLI machine-readable output must preserve
+  the same policy version, decision, reason, policy name, field paths,
+  redacted fields, approval route, and audit reference. Fixture tests must be
+  able to compare all surfaces for the same subject, resource, operation, and
+  policy version.
+
+### Non-Functional Requirements
+
+Numeric targets below are proposed engineering targets, recorded as
+assumptions to validate during implementation (see Constraints and
+Assumptions).
+
+- **Performance — per-operation overhead**: p95 policy-evaluation overhead at
+  most 1 ms per single-entity read or write operation relative to the same
+  operation on a collection without a policy document.
+- **Performance — filtered queries**: p95 added latency for row-filtered list
+  queries at most 10% over the unpoliced equivalent when all policy
+  predicates are index-assisted.
+- **Performance — compilation**: policy compile on schema save completes in
+  at most 500 ms p95 per collection, and at most 2 s p95 for recompiling a
+  full database schema set.
+- **Performance — introspection**: effective-policy and explanation queries
+  return in at most 50 ms p95.
+- **Scalability**: at least 100 policy rules per collection and 1,000 rules
+  per database evaluated within the targets above.
+- **Security (fail closed)**: any policy-evaluation error denies the
+  operation; hidden-row semantics never leak existence through errors,
+  counts, aggregates, nullability, or traversal.
+- **Reliability**: each request evaluates against one consistent
+  schema/policy snapshot; concurrent policy activation never affects
+  in-flight operations.
 
 ## User Stories
 
-### Story US-101: Hide Inaccessible Entities [FEAT-029]
+- [US-101 — Hide Inaccessible Entities](../user-stories/US-101-hide-inaccessible-entities.md)
+- [US-102 — Redact Sensitive Fields](../user-stories/US-102-redact-sensitive-fields.md)
+- [US-103 — Reject Denied Writes](../user-stories/US-103-reject-denied-writes.md)
+- [US-104 — Explain Effective Policy](../user-stories/US-104-explain-effective-policy.md)
+- [US-109 — Author And Test Policy Before Activation](../user-stories/US-109-author-and-test-policy-before-activation.md)
+- [US-046 — Field-Level Masking](../user-stories/US-046-field-level-masking.md) (moved from FEAT-012)
+- [US-047 — Attribute-Based Write Control](../user-stories/US-047-attribute-based-write-control.md) (moved from FEAT-012)
 
-**As a** consultant using a direct browser-to-Axon app
-**I want** Axon to omit engagements I am not assigned to
-**So that** bypassing the UI cannot reveal other client work
+## Reference Behavior: Nexiq Policy Set
 
-**Acceptance Criteria:**
-- [ ] Point reads for hidden entities return `not_found`/`null`, not
-  `forbidden`
-- [ ] List and GraphQL connection results omit hidden rows
-- [ ] Pagination and total counts are computed after policy filtering
-- [ ] Link traversal does not materialize hidden target entities
+The first downstream consumer (nexiq) defines the expressiveness bar. A
+reference policy set expressed in the CONTRACT-004 grammar (maintained with
+that contract's examples and fixtures) must be able to prove all of the
+following behaviors; none of them is built into Axon:
 
-### Story US-102: Redact Sensitive Fields [FEAT-029]
+- Consultants see only engagements whose member list contains the current
+  user.
+- Contractors see their own engagements but receive budget and rate-card
+  fields as null.
+- Contracts and tasks reuse engagement visibility through relationship
+  target-policy reuse rather than duplicating membership rules.
+- Consultants and contractors cannot read invoices at all.
+- Operations managers read firm-wide invoices and billing entities but
+  receive contract rate-card fields as null.
+- Operations managers gain no engagement-assignment, time-approval, or
+  engagement-status-transition writes from the read policies.
+- A consultant cannot update the status of an engagement they cannot read,
+  and cannot write denied fields on one they can read.
 
-**As a** contractor
-**I want** visible engagement rows to omit budget and rate-card data
-**So that** I can work with assignment context without seeing commercial terms
+## Edge Cases and Error Handling
 
-**Acceptance Criteria:**
-- [ ] GraphQL generated fields that may be redacted are nullable
-- [ ] Redacted fields return `null`
-- [ ] Generic JSON, REST compatibility, and audit read payloads apply the same redaction
-- [ ] Required JSON Schema fields can still be redacted on read
-
-### Story US-103: Reject Denied Writes [FEAT-029]
-
-**As an** application developer
-**I want** denied writes to fail with stable policy errors
-**So that** my SDK and UI can distinguish policy failures from validation and
-missing-record failures
-
-**Acceptance Criteria:**
-- [ ] Updating a row the caller cannot mutate returns `forbidden`
-- [ ] Writing a denied field returns `forbidden` with `field_path`
-- [ ] A denied operation inside a transaction aborts the entire transaction
-- [ ] Idempotent replays of denied writes return the same forbidden response
-
-### Story US-104: Explain Effective Policy [FEAT-029]
-
-**As a** browser client
-**I want** to query my effective collection/entity policy
-**So that** I can hide unavailable controls without trusting the browser for
-security
-
-**Acceptance Criteria:**
-- [ ] GraphQL exposes effective collection policy metadata
-- [ ] GraphQL exposes dry-run policy explanation for a proposed operation
-- [ ] Explanations name the matching policy and denied field paths
-- [ ] Generated MCP, SDK, CLI, and operator metadata preserve the same policy
-  version, decision, reason, redacted fields, and approval route as GraphQL
-- [ ] Enforcement is repeated during the real operation
-
-### Story US-109: Author And Test Policy Before Activation [FEAT-029]
-
-**As an** application developer
-**I want** schema policy changes to compile, explain, and run against fixtures
-before activation
-**So that** I can prove row, field, relationship, and approval behavior before
-agents touch live data
-
-**Acceptance Criteria:**
-- [ ] A dry-run schema update returns a policy compile report without changing
-  the active policy version
-- [ ] Invalid field paths, subject references, and relationship-policy cycles
-  are rejected at schema write time
-- [ ] The compile report names GraphQL fields made nullable by redaction
-- [ ] Fixture tests can evaluate policy decisions for named subjects and sample
-  mutations
-- [ ] Fixture tests compare GraphQL, MCP, SDK, and CLI policy metadata for the
-  same subject, resource, operation, and policy version
-- [ ] Policy changes are audited with old and new policy versions
-
-## Edge Cases
-
-- **Non-null GraphQL fields**: any field with a read policy is nullable in the
-  generated GraphQL type.
+- **Non-null GraphQL fields**: any field with a read policy is nullable in
+  the generated GraphQL type.
 - **Policy changes during query**: in-flight queries use the schema/policy
   snapshot active at query start.
-- **Relationship reuse loops**: recursive `target_policy` references are
-  rejected at schema write time with `policy_expression_invalid`.
+- **Relationship reuse loops**: recursive target-policy references are
+  rejected at schema write time with the invalid-expression reason code.
 - **Audit reads**: audit rows remain immutable in storage, but returned
-  `data_before`, `data_after`, and diffs are policy-filtered for the caller.
-- **Admin break-glass**: documented deployment-admin recovery paths may bypass
-  application policies, but normal GraphQL and MCP application calls do not.
-  REST compatibility routes follow the same rule when present.
-- **Approval-routed writes**: a `needs_approval` decision does not write data
-  until FEAT-030 executes an approved mutation intent.
-- **Create without existing row**: collection create policy decides whether the
-  create is allowed; row predicates can evaluate only fields present in the new
-  payload and subject context.
-- **Delete with hidden row**: if the entity exists but is hidden, delete returns
-  `forbidden` when the caller has write grants but fails row policy; if the
-  entity does not exist, it returns `not_found`.
+  before/after states and diffs are policy-filtered for the caller.
+- **Admin break-glass**: documented deployment-admin recovery paths may
+  bypass application policies; normal GraphQL and MCP application calls do
+  not, and REST compatibility routes follow the same rule when present.
+- **Approval-routed writes**: a needs-approval decision writes no data until
+  FEAT-030 executes an approved mutation intent.
+- **Create without existing row**: collection create policy decides whether
+  the create is allowed; row predicates can evaluate only fields present in
+  the new payload and the subject context.
+- **Delete with hidden row**: if the entity exists but is hidden, delete
+  returns forbidden when the caller has write grants but fails row policy; if
+  the entity does not exist, it returns not-found.
+
+## Success Metrics
+
+- The reference nexiq policy set is expressible and its required behaviors
+  hold on every surface — no downstream browser-side security filtering is
+  required to launch.
+- Surface-parity fixtures show identical decisions, redactions, reasons, and
+  approval routes across GraphQL, MCP, SDK, and CLI for the same subject,
+  resource, operation, and policy version.
+- 100% of invalid policy documents are rejected at schema write time, before
+  activation, with an actionable compile report.
+- Zero existence leaks of hidden rows through reads, counts, aggregates,
+  traversal, or error shapes in policy test suites.
+
+## Constraints and Assumptions
+
+- GraphQL is the primary policy-aware application surface; REST parity is a
+  compatibility concern, not a launch blocker.
+- All public surfaces route through the shared handler path (FR-22); policy
+  enforcement assumes that single chokepoint exists.
+- The numeric NFR targets are assumptions pending implementation
+  measurement; they bound design choices (e.g., compiled policy plans, index
+  pushdown) rather than recording measured behavior.
+- Application attributes used by policies are resolved from application
+  collections configured in the schema; their freshness is per-request.
+- This specification is the frame-level closure for the access-control
+  problem; ADR-019 governs the authoring model, CONTRACT-004 the grammar and
+  wire semantics.
 
 ## Dependencies
 
-- **FEAT-002**: Access policies live in schema-adjacent ESF metadata.
-- **FEAT-012 / ADR-018**: Identity, tenant membership, credentials, and grants.
-- **FEAT-013**: Row filters must be index-assisted where possible.
-- **FEAT-014**: Policies are scoped by tenant/database path.
-- **FEAT-015 / ADR-012**: GraphQL must expose filtered reads, redacted fields,
-  stable errors, and policy introspection.
-- **FEAT-016 / ADR-013**: MCP must expose the same effective policy and
-  approval-envelope semantics as GraphQL.
-- **FEAT-019**: Policy predicates reuse and extend validation-rule condition
-  grammar.
-- **FEAT-030 / ADR-019**: Approval-routed writes use mutation intents bound to
-  the reviewed pre-image and policy version.
-- **FEAT-031**: The admin web UI renders effective-policy inspection,
-  policy dry-run, redaction states, denied write explanations, and the
-  operator-facing policy surfaces required for each FEAT-029 user story.
+- **Other features**: FEAT-002 (policies live in schema-adjacent metadata);
+  FEAT-012 (identity, membership, grants — see Relationship section);
+  FEAT-013 (index-assisted row filters); FEAT-014 (tenant/database scoping);
+  FEAT-015 (policy-aware GraphQL reads, errors, introspection); FEAT-016
+  (MCP mirrors policy semantics); FEAT-019 (policy predicates extend
+  validation-rule condition grammar); FEAT-030 (approval-routed writes via
+  mutation intents); FEAT-031 (operator UI for inspection, dry-run, and
+  explanation).
+- **External services**: None. Normative surfaces: CONTRACT-004 (policy
+  grammar, evaluation order, denial envelopes, reason codes, introspection),
+  CONTRACT-002 (GraphQL policy fields), CONTRACT-001 (REST compatibility
+  shapes), CONTRACT-003 (MCP envelopes). Governing decisions: ADR-012,
+  ADR-013, ADR-018, ADR-019.
+- **PRD requirements**: FR-10, FR-11, FR-12, FR-13 (P0); FR-14 (P1).
 
-## Out Of Scope
+## Out of Scope
 
 - A general-purpose scripting language or arbitrary Rust policy hooks.
 - Browser-side enforcement as a security boundary.
@@ -744,33 +380,3 @@ agents touch live data
 - A visual policy-builder DSL beyond FEAT-031's raw policy editor, compile
   report, effective-policy inspector, and dry-run evaluator.
 - Treating REST parity as a launch blocker for data policy.
-
-## Traceability
-
-- **Parent PRD Section**: P0 #4 reusable data-layer policy; P0 #7 safe,
-  discoverable interface parity; FR-10 through FR-14 and FR-28 through FR-29
-- **User Stories**: US-101, US-102, US-103, US-104, US-109
-- **Implementation**: policy compiler, shared handler authorization, GraphQL
-  metadata, MCP tool metadata, SDK metadata, CLI JSON output
-
-## Verification
-
-Implementation beads must add tests for:
-
-- GraphQL and MCP read omission of hidden rows; REST compatibility routes match
-  when present.
-- Row filters applied before pagination.
-- GraphQL nullable generation for redactable fields.
-- Field redaction in entity reads, list reads, relationship reads, and audit
-  reads.
-- Denied field writes on create, update, patch, lifecycle transition, rollback,
-  and transaction commit.
-- Stable GraphQL and MCP `forbidden` error detail, with REST compatibility
-  matching when present.
-- GraphQL, MCP, SDK, and CLI policy metadata parity for policy envelopes,
-  redactions, approval routes, and denial reasons.
-- Idempotent replay of forbidden transaction responses.
-- Indexed policy plan generation and `policy_filter_unindexed` fallback.
-- The reference nexiq policy set above.
-- Policy compile reports for invalid paths, cyclic relationship policies,
-  missing indexes, GraphQL nullability changes, and approval envelopes.

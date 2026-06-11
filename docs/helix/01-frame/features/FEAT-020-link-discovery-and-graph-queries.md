@@ -7,17 +7,17 @@ ddx:
 # Feature Specification: FEAT-020 — Link Discovery and Graph Queries
 
 **Feature ID**: FEAT-020
-**Status**: Retired (Superseded by FEAT-009)
+**Status**: superseded
 **Priority**: —
 **Owner**: Core Team
-**Created**: 2026-04-05
-**Retired**: 2026-05-02
+**Superseded**: 2026-05-02 (by FEAT-009)
 
 ## Status
 
-This feature is **retired**. Its scope has been folded into FEAT-009
-(Unified Graph Query) as of 2026-05-02 per ADR-020 (data model decision)
-and ADR-021 (Cypher subset selection).
+This feature is **superseded**. Its scope has been folded into
+[FEAT-009 — Unified Graph Query](FEAT-009-unified-graph-query.md) as of
+2026-05-02 per ADR-020 (data model decision) and ADR-021 (Cypher subset
+selection).
 
 The reasoning: link discovery, neighbor queries, and graph exploration are
 not separate primitives from filter, sort, aggregate, and traversal. They
@@ -42,6 +42,6 @@ links-table indexes (ADR-010) the original FEAT-020 design called out.
 
 ## See
 
-- **FEAT-009** — Unified Graph Query (Cypher).
+- [FEAT-009 — Unified Graph Query (Cypher)](FEAT-009-unified-graph-query.md)
 - **ADR-020** — Data Model: Document-Shaped Entities, Not Native RDF.
 - **ADR-021** — Graph Query Language: openCypher Subset.

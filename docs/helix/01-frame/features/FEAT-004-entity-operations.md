@@ -6,149 +6,145 @@ ddx:
     - FEAT-001
     - FEAT-002
     - FEAT-003
+    - ADR-022
+    - CONTRACT-001
 ---
-# Feature Specification: FEAT-004 - Entity Operations
+# Feature Specification: FEAT-004 — Entity Operations
 
 **Feature ID**: FEAT-004
-**Status**: Draft
+**Status**: draft
 **Priority**: P0
 **Owner**: Core Team
-**Created**: 2026-04-04
-**Updated**: 2026-04-04
+**Covered PRD Subsystem(s)**: Entity-Graph Data Model; Guardrailed Transactions and Mutation Intents
+**Covered PRD Requirements**: FR-1; FR-6 (single-entity scope)
+**Cross-Subsystem Rationale**: Single-entity stale-write rejection (FR-6) is inseparable from the entity operation surface — every update and delete carries its version expectation. The multi-entity scope of FR-5/FR-6 remains in FEAT-008.
+**Requirement Prefix**: ENT
 
 ## Overview
 
-Entity operations are the core data manipulation interface of Axon. Entities are the units of data within collections. Every entity operation is schema-validated, version-tracked, and audited. The API is designed for programmatic consumption by agents — structured inputs, structured outputs, structured errors.
+Entity operations are the core data manipulation surface of Axon: create, read, update, patch, and delete schema-validated, version-tracked, audited entities within collections. This feature implements PRD FR-1 (entity CRUD with stable identity, version, metadata, and active schema validation) and the single-entity scope of FR-6 (stale-write rejection with enough current-state context to retry).
+
+## Ideal Future State
+
+An agent or application performs entity mutations with structured inputs, structured outputs, and structured errors, and can always self-correct: a validation failure names the failing fields, a version conflict returns the current committed state for merge-and-retry, and a missing entity is unambiguous. No write ever silently overwrites another writer's work, and every committed mutation is attributable through the system-metadata envelope and its audit entry.
 
 ## Problem Statement
 
-Agents need to create, read, update, delete, and query structured entities with transactional guarantees and clear error handling. Current options require either raw SQL (too low-level for agents), schemaless APIs (too permissive), or file I/O (no concurrency or query).
+- **Current situation**: Teams give agents raw SQL (too low-level and unsafe), schemaless document APIs (too permissive), or file I/O (no concurrency or query) to manage durable state.
+- **Pain points**: Malformed writes corrupt records, concurrent writers silently lose updates, and errors are unstructured strings agents cannot act on.
+- **Desired outcome**: A governed single-entity operation surface where every write is schema-validated, version-checked, audited, and every failure is programmatically recoverable.
+
+## Functional Areas
+
+| Area | User question or job | Feature responsibility |
+|------|----------------------|------------------------|
+| CRUD lifecycle | "Create, fetch, change, and remove one record" | Schema-validated create/read/replace/patch/delete with audit |
+| System-metadata envelope | "What identity, version, and attribution does this record carry?" | Server-managed metadata distinct from user data |
+| Optimistic concurrency | "Did someone change this since I read it?" | Version expectations, conflict responses with current state |
+| Listing and retrieval | "Iterate the records in a collection" | Point reads and stable cursor-paginated listing |
 
 ## Requirements
 
-### Functional Requirements
+### Functional Requirements by Area
 
-- **Create entity**: Insert a new entity into a collection. Entity is validated against schema. Returns the created entity with server-assigned metadata (id, version, created_at)
-- **Read entity**: Retrieve an entity by ID. Returns full entity with metadata
-- **Update entity**: Replace or patch an entity. Full entity replacement or partial field updates. Validated against schema. Version must match (optimistic concurrency)
-- **Delete entity**: Soft-delete or hard-delete an entity by ID. Audit record captures the deleted state
-- **List entities**: Return all entities in a collection with pagination (cursor-based)
-- **Query/filter**: Filter entities by field values with operators (eq, ne, gt, lt, gte, lte, in, contains). Combinable with AND/OR
-- **Sort**: Order results by one or more fields, ascending or descending
-- **Projection**: Return only specified fields (reduce payload for large entities)
-- **Pagination**: Cursor-based pagination for stable iteration over changing data. Limit/offset as convenience alias
+#### CRUD Lifecycle
 
-### Entity Model
+- **ENT-01**. Creating an entity must validate the body against the collection's active schema and return the created entity including its server-assigned system metadata. Create vs upsert semantics, including client-provided ID collision behavior, follow [ADR-022 — Create Semantics](../../02-design/adr/ADR-022-create-semantics.md).
+- **ENT-02**. Reading an entity by ID must return the full entity with system metadata, or a structured not-found error naming the requested ID.
+- **ENT-03**. Updating an entity must support full replacement and partial patch; in both modes the resulting entity must validate against the active schema, and a rejected update leaves the stored entity unchanged.
+- **ENT-04**. A partial patch must modify only the supplied fields and preserve all unmentioned fields.
+- **ENT-05**. Deleting an entity makes subsequent reads return not-found; the full pre-delete history, including the deleted state, remains queryable via the audit log (FEAT-003). There is no tombstone flag on the read path.
+- **ENT-06**. A patch that changes no fields must succeed as a no-op: the version is not incremented and no audit entry is produced.
 
-- **Entity ID**: Server-generated UUIDv7 by default, or client-provided string ID. Must be unique within collection
-- **Version**: Monotonically increasing integer per entity. Starts at 1. Incremented on every update
-- **System metadata**: `_id`, `_version`, `_created_at`, `_updated_at`, `_created_by`, `_updated_by` — always present, not part of user schema
-- **User data**: The entity body, validated against the collection schema
+#### System-Metadata Envelope
 
-### Optimistic Concurrency
+- **ENT-07**. Every entity must carry server-managed system metadata — identity, version, creation and update timestamps, and creating/updating actor attribution — always present on reads and never writable through entity payloads. The normative field set is defined in [CONTRACT-001 §Entity system-metadata envelope](../../02-design/contracts/CONTRACT-001-http-api-surface.md).
+- **ENT-08**. Entity identity must be server-generated by default or client-provided at create, immutable for the life of the entity, and unique within its collection.
+- **ENT-09**. The entity version must start at 1 and increase monotonically by exactly 1 on every committed mutation.
 
-- **Version check on update**: Update and delete operations accept an expected `_version`. If the current version doesn't match, the operation fails with a conflict error
-- **Conflict response**: Includes the current entity state so the caller can merge and retry
-- **Unconditional writes**: If no version is provided, the write succeeds unconditionally (useful for idempotent operations)
+#### Optimistic Concurrency (single-entity FR-6)
+
+- **ENT-10**. Update and delete operations must accept an expected version; when the stored version differs, the operation fails with a conflict error and no change is applied.
+- **ENT-11**. A version-conflict response must include the current committed entity state so the caller can merge and retry. The wire shape (status code, error code, conflict detail) is defined in CONTRACT-001.
+- **ENT-12**. When no expected version is supplied, the write succeeds unconditionally; this is an explicit caller choice, not the default behavior of generated clients.
+
+#### Listing and Retrieval
+
+- **ENT-13**. Listing the entities of a collection must support cursor-based pagination that iterates stably while the collection changes.
+- **ENT-14**. Predicate filtering, sorting, projection, aggregation, and traversal are owned by FEAT-009's unified read model (FR-3); this feature's listing surface must not grow query semantics of its own.
 
 ### Non-Functional Requirements
 
-- **Performance**: Single-entity read/write < 10ms p99. List/query scales linearly with result set size
-- **Consistency**: Within a single Axon instance, read-after-write consistency is guaranteed
-- **Concurrency**: Multiple concurrent readers. Writers are serialized per-entity via optimistic concurrency
+- **Performance**: Single-entity read and write complete in p99 < 10 ms with validation and audit enabled on reference hardware (PRD target); list latency scales linearly with page size.
+- **Consistency**: Read-after-write consistency within a single Axon instance.
+- **Concurrency**: Unlimited concurrent readers; concurrent writers to one entity are serialized by optimistic concurrency with zero lost updates.
+- **Payload limits**: Entities larger than 1 MB are rejected with a structured size-limit error.
 
 ## User Stories
 
-### Story US-010: CRUD an Entity [FEAT-004]
-
-**As an** agent
-**I want** to create, read, update, and delete entities in a collection
-**So that** I can store and manage structured state
-
-**Acceptance Criteria:**
-- [ ] Create returns the full entity with _id, _version, _created_at
-- [ ] Read by ID returns the entity or 404
-- [ ] Update with correct _version succeeds and increments version
-- [ ] Update with wrong _version fails with conflict error including current state
-- [ ] Delete removes the entity and creates an audit entry with the deleted state
-
-### Story US-011: Query Entities [FEAT-004]
-
-**As an** agent
-**I want** to find entities matching specific criteria
-**So that** I can locate relevant data without knowing entity IDs
-
-**Acceptance Criteria:**
-- [ ] Filter by field equality: `status = "pending"`
-- [ ] Filter with comparison operators: `priority > 3`
-- [ ] Combine filters with AND: `status = "pending" AND assignee = "agent-1"`
-- [ ] Sort results: `ORDER BY created_at DESC`
-- [ ] Paginate with cursor: returns next cursor for stable iteration
-- [ ] Return count of matching entities without fetching all of them
-
-### Story US-012: Partial Update [FEAT-004]
-
-**As an** agent
-**I want** to update specific fields without sending the entire entity
-**So that** I can make targeted changes efficiently
-
-**Acceptance Criteria:**
-- [ ] Patch operation accepts a subset of fields
-- [ ] Only specified fields are modified; unmentioned fields are preserved
-- [ ] Patch is validated against schema (the resulting entity must be valid)
-- [ ] Version conflict detection works the same as full replacement
+| ID | Title | Link |
+|----|-------|------|
+| US-010 | CRUD an Entity | [US-010](../user-stories/US-010-crud-an-entity.md) |
+| US-011 | Query Entities | [US-011](../user-stories/US-011-query-entities.md) |
+| US-012 | Partial Update | [US-012](../user-stories/US-012-partial-update.md) |
+| US-080 | Consistent Point-in-Time Snapshot | [US-080](../user-stories/US-080-consistent-point-in-time-snapshot.md) |
 
 ## Edge Cases and Error Handling
 
-- **Entity not found**: Read/update/delete on non-existent ID returns structured 404 with the ID that was requested
-- **Schema violation on update**: Update that would make the entity invalid is rejected. Current entity is unchanged
-- **Concurrent updates**: Two agents update the same entity. First succeeds, second gets version conflict with current state. No data loss
-- **Large entities**: Entities exceeding 1MB are rejected with a size limit error. Configurable per collection (P2)
-- **Empty update**: Patch with no changed fields succeeds as a no-op (version is NOT incremented, no audit entry)
-- **Delete then read**: Reading a deleted entity returns 404 (or the deleted state with a tombstone flag, TBD)
-- **ID collision**: Client-provided ID that already exists returns conflict error
+- **Entity not found**: Read/update/delete on a non-existent ID returns a structured not-found error naming the requested ID.
+- **Schema violation on update**: An update that would make the entity invalid is rejected with field-level errors; the stored entity is unchanged.
+- **Concurrent updates**: Two writers update the same entity; the first commits, the second receives a version conflict carrying the current state. No data loss.
+- **Delete then read**: Reading a deleted entity returns not-found. Decided: there is no tombstone flag on the read path; pre-delete state and history remain queryable via the audit log (see Constraints and Assumptions).
+- **ID collision**: A client-provided ID that already exists is rejected as a conflict (create) per ADR-022.
+- **Oversized entity**: An entity exceeding the 1 MB limit is rejected with a structured size-limit error.
 
 ## Success Metrics
 
-- All CRUD operations complete within latency targets
-- Zero data loss from concurrent operations (optimistic concurrency prevents silent overwrites)
-- Agents can self-correct from validation and conflict errors programmatically
+- 100% of single-entity operations meet the p99 < 10 ms latency target on reference hardware.
+- Zero lost updates under concurrent-writer contract tests (optimistic concurrency prevents silent overwrites).
+- Agents self-correct from validation and conflict errors programmatically — conflict responses carry enough state to merge and retry without a human.
 
 ## Constraints and Assumptions
 
 ### Constraints
-- Single-entity operations only in V1. Multi-entity transactions are P1 (batch operations)
-- Read-after-write consistency within a single instance
-- Entity size limit of 1MB by default
+
+- This feature covers single-entity operations; multi-entity atomicity belongs to FEAT-008.
+- Read-after-write consistency within a single instance.
+- Entity size limit of 1 MB by default.
 
 ### Assumptions
-- Most entities are 1-50KB
-- Most queries return < 1000 results
-- Agents will commonly use version-based concurrency (not unconditional writes)
+
+- **Delete semantics (decided)**: deletion is modeled as not-found on the read path with full history preserved in the audit log, on the assumption that consumers needing deleted-state visibility query audit history (FEAT-003) rather than a tombstone read. If a consumer emerges that requires tombstone reads, this becomes a spec amendment, not a silent behavior change.
+- Most entities are 1–50 KB.
+- Agents commonly use version-based concurrency; unconditional writes are the exception.
 
 ## Dependencies
 
-- **FEAT-001** (Collections): Entities live in collections
-- **FEAT-002** (Schema Engine): All writes are validated
-- **FEAT-003** (Audit Log): All mutations are audited
+- **Other features**: FEAT-001 (Collections — entities live in collections), FEAT-002 (Schema Engine — every write validated), FEAT-003 (Audit Log — every mutation audited), FEAT-008 (ACID Transactions — multi-entity semantics built on this feature's OCC), FEAT-009 (Unified Graph Query — owns all predicate query semantics).
+- **External services**: None. Normative surfaces: [CONTRACT-001 — HTTP API Surface](../../02-design/contracts/CONTRACT-001-http-api-surface.md) (entity routes, system-metadata envelope, error envelope, conflict detail), [ADR-022 — Create Semantics](../../02-design/adr/ADR-022-create-semantics.md) (create/upsert and ID-collision semantics).
+- **PRD requirements**: FR-1 (P0); FR-6 single-entity scope (P0).
 
 ## Out of Scope
 
-- Full-text search (P2)
-- Aggregation queries (P2)
-- Multi-entity transactions / batch operations (P1)
-- Geospatial queries
+- Predicate filtering, sorting, aggregation, projection, and graph traversal (FEAT-009 owns the unified read model).
+- Multi-entity transactions and batch operations (FEAT-008).
+- Secondary indexes (FEAT-013).
+- Full-text search, geospatial queries.
+- Tombstone reads of deleted entities (decided against; audit log is the history surface).
 
-Note: Secondary indexes are now covered by FEAT-013.
+## Review Checklist
 
-## Traceability
+Use this checklist when reviewing a feature specification:
 
-### Related Artifacts
-- **Parent PRD Section**: Requirements Overview > P0 #4 (Entity Operations), P0 #5 (Optimistic Concurrency)
-- **User Stories**: US-010, US-011, US-012
-- **Test Suites**: `tests/FEAT-004/`
-- **Implementation**: `src/entities/` or equivalent
-
-### Feature Dependencies
-- **Depends On**: FEAT-001, FEAT-002, FEAT-003
-- **Depended By**: FEAT-005 (API Surface), FEAT-006 (Bead Storage Adapter)
+- [ ] Covered PRD Subsystem(s) and Requirements (`FR-n`) are listed; a feature spanning >1 subsystem carries an explicit cross-subsystem rationale (else split per the Decomposition test)
+- [ ] Functional areas (if any) are subordinate parts of this one capability, not separate capabilities
+- [ ] Overview connects this feature to a specific PRD requirement
+- [ ] Ideal future state describes the desired user-visible outcome, not only current problems
+- [ ] Every functional requirement is testable — you can write an assertion for it
+- [ ] Acceptance criteria are defined in the user stories that decompose this feature, not here (ADR-009)
+- [ ] Non-functional requirements have specific numeric targets
+- [ ] Edge cases cover realistic failure scenarios, not just happy paths
+- [ ] Success metrics are specific to this feature, not product-level metrics
+- [ ] Dependencies reference real artifact IDs
+- [ ] Out of scope excludes things someone might reasonably assume are in scope
+- [ ] No exact API/CLI/event/schema/config surface is defined inline; normative surface links to Contract artifacts

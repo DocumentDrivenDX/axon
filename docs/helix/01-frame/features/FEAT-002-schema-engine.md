@@ -3,140 +3,140 @@ ddx:
   id: FEAT-002
   depends_on:
     - helix.prd
+    - ADR-007
 ---
-# Feature Specification: FEAT-002 - Schema Engine
+# Feature Specification: FEAT-002 — Schema Engine
 
 **Feature ID**: FEAT-002
-**Status**: Draft
+**Status**: draft
 **Priority**: P0
 **Owner**: Core Team
-**Created**: 2026-04-04
-**Updated**: 2026-04-04
+**Requirement Prefix**: SCH
+**Covered PRD Subsystem(s)**: Entity-Graph Data Model
+**Covered PRD Requirements**: FR-1 (the active-schema-validation aspect; entity CRUD itself is owned by FEAT-004)
+**Cross-Subsystem Rationale**: None — single subsystem.
 
 ## Overview
 
-The schema engine is Axon's type system. Every collection has a schema that defines the structure of its entities. The schema engine validates all writes, provides clear error messages on violations, and supports schema evolution over time. Schemas are defined in a portable format and provide enough value — validation, documentation, migration, query optimization — that defining them is obviously worthwhile.
+The schema engine is Axon's type system, implementing the "active schema validation" requirement of PRD FR-1. Every collection has a schema that defines the structure of its entities; the schema engine validates all writes and provides structured, actionable error messages on violations. Schemas are defined in a portable format and provide enough value — validation, documentation, query support — that defining them is obviously worthwhile.
+
+Schema evolution — breaking-change classification, migration, revalidation, and diff — is owned by FEAT-017; this feature provides the validation primitives FEAT-017 builds on.
+
+## Ideal Future State
+
+A developer defines a collection schema in minutes using a portable, familiar format, and from that moment every write is validated with no bypass path. When an agent submits malformed data, the rejection tells it exactly which field failed, what constraint was expected, and what value it sent — precise enough that the agent self-corrects without human intervention. External tools can consume the schema directly because it stays close to a published standard.
 
 ## Problem Statement
 
-Agents and applications write malformed data, schemas drift silently between environments, and downstream consumers break on unexpected shapes. Existing schemaless stores (Firebase, MongoDB) trade correctness for convenience; SQL databases provide schemas but require DDL expertise and offer poor error messages for programmatic consumers.
+- **Current situation**: Agent-written data has no structural guarantees; validation is ad-hoc or absent. Existing schemaless stores trade correctness for convenience; SQL databases provide schemas but require DDL expertise and offer poor error messages for programmatic consumers.
+- **Pain points**: Silent data corruption, schema drift between environments, poor error messages that block agent self-correction, downstream consumers breaking on unexpected shapes.
+- **Desired outcome**: Schemas that are easy to define, provide instant structured feedback on violations, and are portable to external tooling.
 
-- Current situation: Agent-written data has no structural guarantees. Validation is ad-hoc or absent
-- Pain points: Silent data corruption, schema drift, poor error messages, migration pain
-- Desired outcome: Schemas that are easy to define, provide instant feedback on violations, and evolve gracefully
+## Functional Areas
+
+| Area | User question or job | Feature responsibility |
+|------|----------------------|------------------------|
+| Schema definition | How do I declare the shape of my entities? | Portable definition format, type system, required/optional fields, nesting, flexible zones |
+| Write validation | Is this entity acceptable, and if not, why exactly? | Validate every write against the active schema; structured, complete, actionable errors |
+| Storage and inspection | What schema governs this collection right now? | Versioned schema storage; retrieval via API and CLI in a portable format |
 
 ## Requirements
 
-### Functional Requirements
+### Functional Requirements by Area
 
-- **Schema definition format**: Schemas are defined in a portable format (JSON Schema draft 2020-12 as the base, with Axon extensions). YAML and JSON input supported
-- **Type system**: Support for standard types — string, integer, float, boolean, datetime, array, object, enum, reference (foreign key to another collection)
-- **Validation on write**: Every create and update operation validates the entity against the collection's schema before persisting. Invalid entities are rejected with structured error responses
-- **Structured errors**: Validation errors include field path, expected type, actual value, and human-readable message. Agents can parse errors programmatically and self-correct
-- **Required/optional fields**: Fields can be marked required or optional with defaults
-- **Nested objects**: Schemas support nested object structures to arbitrary depth
-- **Flexible zones**: Schemas can designate specific fields as `additionalProperties: true` — typed at the top level, flexible within a subtree. This accommodates agent metadata without sacrificing top-level structure
-- **Schema storage**: Schemas are stored within Axon alongside collection metadata. Schema definitions are versioned
-- **Schema inspection**: API and CLI can retrieve the schema for any collection
+#### Schema Definition
 
-### Schema Evolution (P1)
+- **SCH-01**. Schemas MUST be defined in the portable Entity Schema Format (ESF) — JSON Schema draft 2020-12 as the base with Axon extensions. YAML and JSON input are accepted. The normative format is defined in CONTRACT-010.
+- **SCH-02**. The type system MUST support string, integer, float, boolean, datetime, array, object, enum, and reference (link to another collection) types.
+- **SCH-03**. Fields MUST be markable as required or optional, with declared defaults for optional fields.
+- **SCH-04**. Schemas MUST support nested object structures to arbitrary depth.
+- **SCH-05**. Schemas MUST support flexible zones: designated subtrees that accept undeclared properties while the top level remains typed, accommodating agent metadata without sacrificing structure. Declaration surface per CONTRACT-010.
+- **SCH-06**. A schema that fails to parse or contains internal contradictions MUST be rejected at submission time with specific errors.
 
-- **Additive changes**: Adding optional fields is always safe and automatic
-- **Breaking change detection**: Removing required fields, changing types, or narrowing constraints are flagged as breaking
-- **Migration support**: Breaking changes require explicit migration declarations
-- **Version tracking**: Each schema change increments a version. Entities carry the schema version they were validated against
+#### Write Validation
+
+- **SCH-07**. Every create and update operation MUST validate the entity against the collection's active schema before persisting. Invalid entities are rejected; there is no bypass path.
+- **SCH-08**. Every validation error MUST name the failing field path, the violated constraint with its expected value (type, enum members, bound, or pattern), the actual offending value, and a human-readable message. Where the constraint admits a suggestion (e.g. a near-miss enum value), the message includes it. The error envelope is machine-parseable per CONTRACT-010.
+- **SCH-09**. A single invalid write MUST report all violations in the entity, not only the first one encountered.
+- **SCH-10**. Axon MUST NOT silently coerce types (e.g. string "123" is not accepted for an integer field). Explicit types only.
+
+#### Storage and Inspection
+
+- **SCH-11**. Schemas MUST be stored within Axon alongside collection metadata, and schema definitions MUST be versioned: each accepted schema change increments the version (ADR-007).
+- **SCH-12**. The schema for any collection MUST be retrievable via the API and CLI in its portable format, including field descriptions when provided — surface per CONTRACT-001/CONTRACT-008.
 
 ### Non-Functional Requirements
 
-- **Performance**: Schema validation < 1ms for typical entities (< 100 fields). Must not be the bottleneck on writes
-- **Error clarity**: A developer or agent reading a validation error should understand what's wrong and how to fix it without reading the schema definition
-- **Portability**: Schema format is standard enough that external tools can consume it (JSON Schema compatibility)
+- **Performance**: Schema validation < 1ms for typical entities (< 100 fields); validation must not be the bottleneck on writes.
+- **Error clarity**: 100% of validation errors carry field path, violated constraint with expected value, and actual value (SCH-08); a developer or agent can correct the write without reading the schema definition.
+- **Portability**: Schema format remains consumable by standard JSON Schema tooling for the non-extended subset.
 
 ## User Stories
 
-### Story US-004: Define a Collection Schema [FEAT-002]
-
-**As a** developer
-**I want** to define a schema for my collection in YAML or JSON
-**So that** Axon enforces the structure of entities my agents write
-
-**Acceptance Criteria:**
-- [ ] Schema defined in YAML or JSON is accepted at collection creation time
-- [ ] Schema supports string, integer, float, boolean, datetime, array, object, enum types
-- [ ] Required and optional fields are supported with defaults for optional fields
-- [ ] Nested objects are supported
-- [ ] Schema is stored and retrievable via API and CLI
-
-### Story US-005: Get Clear Validation Errors [FEAT-002]
-
-**As an** agent writing data to a collection
-**I want** structured, actionable error messages when my writes are invalid
-**So that** I can self-correct without human intervention
-
-**Acceptance Criteria:**
-- [ ] Validation errors include: field path, expected type, actual value, human-readable message
-- [ ] Multiple violations in a single entity are all reported (not just the first one)
-- [ ] Error response is machine-parseable (structured JSON, not just a string)
-- [ ] Error messages suggest the correction (e.g., "field 'status' expected one of [pending, active, done], got 'pendng'")
-
-### Story US-006: Inspect a Schema [FEAT-002]
-
-**As a** developer or agent
-**I want** to retrieve the schema for a collection
-**So that** I know what fields and types are expected before writing
-
-**Acceptance Criteria:**
-- [ ] `axon schema show <collection>` displays the full schema
-- [ ] API endpoint returns schema in JSON Schema format
-- [ ] Schema includes field descriptions if provided in the definition
+| ID | Title | Link |
+|----|-------|------|
+| US-004 | Define a Collection Schema | [US-004](../user-stories/US-004-define-a-collection-schema.md) |
+| US-005 | Get Clear Validation Errors | [US-005](../user-stories/US-005-get-clear-validation-errors.md) |
+| US-006 | Inspect a Schema | [US-006](../user-stories/US-006-inspect-a-schema.md) |
 
 ## Edge Cases and Error Handling
 
-- **Invalid schema definition**: Schema that doesn't parse or has internal contradictions is rejected at collection creation with specific errors
-- **Empty entity**: Writing `{}` to a collection with required fields fails validation
-- **Extra fields**: By default, fields not in the schema are rejected. Flexible zones opt-in to extra fields
-- **Type coercion**: Axon does NOT silently coerce types (e.g., string "123" is not accepted for an integer field). Explicit types only
-- **Null handling**: Fields can be explicitly nullable via schema. Non-nullable fields reject null values
-- **Deep nesting**: Schemas with excessive nesting depth (>10 levels) emit a warning but are allowed
+- **Invalid schema definition**: A schema that doesn't parse or has internal contradictions is rejected at submission with specific errors (SCH-06).
+- **Empty entity**: Writing `{}` to a collection with required fields fails validation, reporting every missing required field.
+- **Extra fields**: By default, fields not in the schema are rejected. Flexible zones opt in to extra fields (SCH-05).
+- **Type coercion**: No silent coercion (SCH-10).
+- **Null handling**: Fields can be explicitly nullable via the schema; non-nullable fields reject null values.
+- **Deep nesting**: Schemas with excessive nesting depth (> 10 levels) emit a warning but are allowed.
 
 ## Success Metrics
 
-- 100% of writes are validated against schemas (no bypass path)
-- Validation errors are actionable — agents can parse and self-correct
-- Schema definition takes < 5 minutes for a typical collection
+- 100% of writes are validated against schemas (no bypass path).
+- Validation errors are actionable: an agent can parse the error and produce a corrected write without human intervention.
+- Schema definition takes < 5 minutes for a typical collection.
 
 ## Constraints and Assumptions
 
 ### Constraints
-- JSON Schema draft 2020-12 as the base format — don't invent a new schema language
-- No silent type coercion — strict typing
-- Schema is required for all collections — no schemaless mode
+- JSON Schema draft 2020-12 is the base format — do not invent a new schema language.
+- No silent type coercion — strict typing.
+- A schema is required for every collection — no schemaless mode.
 
 ### Assumptions
-- Most collection schemas have 10-50 fields
-- JSON Schema is familiar enough to developers that adoption friction is low
-- Agents benefit more from strict validation with good errors than from permissive schemas
+- Most collection schemas have 10-50 fields.
+- JSON Schema is familiar enough to developers that adoption friction is low.
+- Agents benefit more from strict validation with good errors than from permissive schemas.
 
 ## Dependencies
 
-- None (schema engine is foundational)
+- **Other features**: None — the schema engine is foundational. FEAT-001 (Collections) and FEAT-004 (Entity Operations) consume it; FEAT-017 (Schema Evolution) extends it.
+- **External services**: None. Normative interface surface: CONTRACT-010 (ESF schema format and validation error envelope), CONTRACT-001 (HTTP API), CONTRACT-008 (CLI and config).
+- **PRD requirements**: FR-1 (P0).
 
 ## Out of Scope
 
-- Schema generation from existing data (P2)
-- Cross-collection referential integrity enforcement (P2)
-- UMF/tablespec import (P2)
-- Schema diffing and visualization tools
+- Schema evolution, breaking-change classification, migration, entity revalidation, and schema diff (owned by FEAT-017).
+- Schema generation from existing data (P2).
+- Cross-collection referential integrity enforcement (P2).
+- UMF/tablespec import (P2).
+- Schema visualization tools.
 
-## Traceability
+## Review Checklist
 
-### Related Artifacts
-- **Parent PRD Section**: Requirements Overview > P0 #2 (Schema Engine)
-- **User Stories**: US-004, US-005, US-006
-- **Prior Art**: tablespec UMF format, JSON Schema ecosystem
-- **Test Suites**: `tests/FEAT-002/`
-- **Implementation**: `src/schema/` or equivalent
+Use this checklist when reviewing this feature specification:
 
-### Feature Dependencies
-- **Depends On**: None
-- **Depended By**: FEAT-001 (Collections), FEAT-004 (Entity Operations)
+- [ ] Covered PRD Subsystem(s) and Requirements (`FR-n`) are listed; a feature spanning >1 subsystem carries an explicit cross-subsystem rationale (else split per the Decomposition test)
+- [ ] Functional areas (if any) are subordinate parts of this one capability, not separate capabilities
+- [ ] Overview connects this feature to a specific PRD requirement
+- [ ] Ideal future state describes the desired user-visible outcome, not only current problems
+- [ ] Problem statement describes what exists now and what is broken — not just what is wanted
+- [ ] Every functional requirement is testable — you can write an assertion for it
+- [ ] Acceptance criteria are defined in the user stories that decompose this feature, not here (ADR-009)
+- [ ] Non-functional requirements have specific numeric targets
+- [ ] Edge cases cover realistic failure scenarios, not just happy paths
+- [ ] Success metrics are specific to this feature, not product-level metrics
+- [ ] Dependencies reference real artifact IDs
+- [ ] Out of scope excludes things someone might reasonably assume are in scope
+- [ ] No implementation details — WHAT not HOW
+- [ ] No exact API/CLI/event/schema/config/telemetry/adapter surface is defined inline; normative surface links to Contract artifacts
+- [ ] Feature is consistent with governing PRD requirements
+- [ ] No `[NEEDS CLARIFICATION]` markers remain unresolved for P0 features
