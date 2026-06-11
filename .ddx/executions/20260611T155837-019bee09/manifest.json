@@ -1,0 +1,43 @@
+{
+  "attempt_id": "20260611T155837-019bee09",
+  "bead_id": "axon-95b137d0",
+  "base_rev": "71798a21f0bbde7b7a71323ea218bc04d4b59683",
+  "created_at": "2026-06-11T15:58:39.553864407Z",
+  "requested": {
+    "harness": "claude",
+    "model": "sonnet",
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-95b137d0",
+    "title": "Tenant-aware MCP endpoints and resource URIs per CONTRACT-003",
+    "description": "CONTRACT-003 (docs/helix/02-design/contracts/CONTRACT-003-mcp-surface.md) requires tenant-aware forms for MCP HTTP endpoints and resource URIs, consistent with ADR-018 path-based routing. Current MCP surface (crates/axon-mcp, crates/axon-server/src/mcp_http.rs) does not expose the tenant-aware forms. Add them and align resource URI templates.",
+    "acceptance": "MCP HTTP endpoint is mounted under the tenant-prefixed path form named in CONTRACT-003; resource URIs returned by resources/list use the tenant-aware template; MCP contract tests (crates/axon-server/tests/mcp_contract.rs, mcp_intents_contract.rs) assert the tenant-aware forms and pass.",
+    "labels": [
+      "area:mcp",
+      "contract-conformance"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"readiness route unavailable: lifecycle dispatch: project root mutation rejected for bead axon-95b137d0\",\"fingerprint\":\"761a6bd7efebab29ed3435c65a23b718b60b96651574a1aeb518eee34cca7d4a\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"761a6bd7efebab29ed3435c65a23b718b60b96651574a1aeb518eee34cca7d4a\"}",
+          "created_at": "2026-06-11T15:58:36.509927596Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        }
+      ]
+    }
+  },
+  "paths": {
+    "dir": ".ddx/executions/20260611T155837-019bee09",
+    "prompt": ".ddx/executions/20260611T155837-019bee09/prompt.md",
+    "manifest": ".ddx/executions/20260611T155837-019bee09/manifest.json",
+    "result": ".ddx/executions/20260611T155837-019bee09/result.json",
+    "checks": ".ddx/executions/20260611T155837-019bee09/checks.json",
+    "usage": ".ddx/executions/20260611T155837-019bee09/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-95b137d0-20260611T155837-019bee09"
+  },
+  "prompt_sha": "84e7b8f7296f017897613a2d5159de80e07618cc2caaa16e7315c8d44607c727"
+}
