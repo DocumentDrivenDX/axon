@@ -56,6 +56,54 @@ export interface RollbackEntityOptions {
   dryRun?: boolean;
 }
 
+export interface PreviewMutationOperationInput {
+  operationKind: string;
+  operation: Record<string, unknown>;
+}
+
+export interface PreviewMutationSubjectInput {
+  userId?: string;
+  credentialId?: string;
+  grantVersion?: number;
+  tenantRole?: string;
+}
+
+export interface PreviewMutationInput {
+  operation: PreviewMutationOperationInput;
+  subject?: PreviewMutationSubjectInput;
+  expiresInSeconds?: number;
+}
+
+export interface CommitIntentInput {
+  intentToken: string;
+}
+
+export interface ApproveIntentInput {
+  intentId: string;
+  reason?: string;
+}
+
+export interface RejectIntentInput {
+  intentId: string;
+  reason?: string;
+}
+
+export interface ExplainPolicyInput {
+  operation: string;
+  collection: string;
+  entityId?: string;
+  data?: Record<string, unknown>;
+  operations?: Array<Record<string, unknown>>;
+}
+
+export interface RollbackDryRunInput {
+  collection: string;
+  id: string;
+  toVersion?: number;
+  toAuditId?: string;
+  expectedVersion?: number;
+}
+
 export type TransactionOperation =
   | { createEntity: { collection: string; id: string; data: Record<string, unknown> } }
   | {
@@ -355,6 +403,94 @@ query AxonAuditLog($collection: String, $entityId: ID, $actor: String, $operatio
 }
 `.trim();
 
+const PREVIEW_MUTATION_DOCUMENT = `
+mutation AxonPreviewMutation($input: PreviewMutationInput!) {
+  previewMutation(input: $input) {
+    decision
+    intentToken
+    canonicalOperation { operationKind operationHash }
+    diff
+    affectedFields
+    affectedRecords { kind collection id version }
+    approvalRoute { role reasonRequired deadlineSeconds separationOfDuties }
+    policyExplanation
+    intent {
+      id
+      tenantId
+      databaseId
+      decision
+      approvalState
+      subject
+      schemaVersion
+      policyVersion
+      operationHash
+      preImages { kind collection id version }
+    }
+  }
+}
+`.trim();
+
+const COMMIT_MUTATION_INTENT_DOCUMENT = `
+mutation AxonCommitMutationIntent($input: CommitMutationIntentInput!) {
+  commitMutationIntent(input: $input) {
+    committed
+    transactionId
+    errorCode
+    stale { dimension expected actual path }
+    intent { id approvalState decision }
+  }
+}
+`.trim();
+
+const APPROVE_MUTATION_INTENT_DOCUMENT = `
+mutation AxonApproveMutationIntent($input: ApproveMutationIntentInput!) {
+  approveMutationIntent(input: $input) {
+    id
+    approvalState
+    decision
+  }
+}
+`.trim();
+
+const REJECT_MUTATION_INTENT_DOCUMENT = `
+mutation AxonRejectMutationIntent($input: RejectMutationIntentInput!) {
+  rejectMutationIntent(input: $input) {
+    id
+    approvalState
+    decision
+  }
+}
+`.trim();
+
+const EXPLAIN_POLICY_DOCUMENT = `
+query AxonExplainPolicy($input: ExplainPolicyInput!) {
+  explainPolicy(input: $input) {
+    operation
+    collection
+    entityId
+    operationIndex
+    decision
+    reason
+    policyVersion
+    ruleIds
+    policyIds
+    fieldPaths
+    deniedFields
+    rules { ruleId name kind fieldPath }
+    approval { policyId name decision role reasonRequired deadlineSeconds separationOfDuties }
+    operations {
+      operation
+      operationIndex
+      decision
+      reason
+      policyVersion
+      deniedFields
+      approval { policyId name decision role reasonRequired deadlineSeconds separationOfDuties }
+    }
+  }
+}
+`.trim();
+
 const CONTROL_OVERVIEW_DOCUMENT = `
 query AxonControlOverview($tenantId: String!) {
   tenants { id name createdAt }
@@ -408,6 +544,11 @@ export const AxonGraphQLDocuments = {
   linkCandidates: LINK_CANDIDATES_DOCUMENT,
   neighbors: NEIGHBORS_DOCUMENT,
   auditLog: AUDIT_LOG_DOCUMENT,
+  previewMutation: PREVIEW_MUTATION_DOCUMENT,
+  commitMutationIntent: COMMIT_MUTATION_INTENT_DOCUMENT,
+  approveMutationIntent: APPROVE_MUTATION_INTENT_DOCUMENT,
+  rejectMutationIntent: REJECT_MUTATION_INTENT_DOCUMENT,
+  explainPolicy: EXPLAIN_POLICY_DOCUMENT,
   controlOverview: CONTROL_OVERVIEW_DOCUMENT,
   issueCredential: ISSUE_CREDENTIAL_DOCUMENT,
   revokeCredential: REVOKE_CREDENTIAL_DOCUMENT,
@@ -823,6 +964,39 @@ export class GraphQLDatabaseClient {
 
   auditLog(options: AuditLogOptions = {}): Promise<unknown> {
     return this.graphql(AUDIT_LOG_DOCUMENT, options as GraphQLVariables);
+  }
+
+  queryAudit(options: AuditLogOptions = {}): Promise<unknown> {
+    return this.auditLog(options);
+  }
+
+  previewMutation(input: PreviewMutationInput): Promise<unknown> {
+    return this.graphql(PREVIEW_MUTATION_DOCUMENT, { input });
+  }
+
+  commitIntent(input: CommitIntentInput): Promise<unknown> {
+    return this.graphql(COMMIT_MUTATION_INTENT_DOCUMENT, { input });
+  }
+
+  approveIntent(input: ApproveIntentInput): Promise<unknown> {
+    return this.graphql(APPROVE_MUTATION_INTENT_DOCUMENT, { input });
+  }
+
+  rejectIntent(input: RejectIntentInput): Promise<unknown> {
+    return this.graphql(REJECT_MUTATION_INTENT_DOCUMENT, { input });
+  }
+
+  explainPolicy(input: ExplainPolicyInput): Promise<unknown> {
+    return this.graphql(EXPLAIN_POLICY_DOCUMENT, { input });
+  }
+
+  rollbackDryRun(input: RollbackDryRunInput): Promise<unknown> {
+    return this.rollbackEntity(input.collection, input.id, {
+      toVersion: input.toVersion,
+      toAuditId: input.toAuditId,
+      expectedVersion: input.expectedVersion,
+      dryRun: true,
+    });
   }
 
   aggregate(collection: string, options: AggregateOptions): Promise<unknown> {

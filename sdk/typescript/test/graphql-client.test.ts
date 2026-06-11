@@ -9,6 +9,7 @@ import {
   pascalCase,
   type GraphQLFetchLike,
   type GraphQLFetchResponse,
+  type PreviewMutationInput,
 } from "../src/graphql-client.js";
 
 function mockFetch(
@@ -298,5 +299,172 @@ describe("relationship, aggregation, audit, lifecycle, and subscription helpers"
     );
     expect(buildEntityChangedSubscriptionDocument()).toContain("entityChanged");
     expect(db.entityChangedSubscription("time_entries")).toContain("timeEntriesChanged");
+  });
+});
+
+describe("governed-workflow methods (CONTRACT-009)", () => {
+  it("previewMutation sends the previewMutation mutation with input variable", async () => {
+    const { mock, calls } = mockFetch(
+      200,
+      '{"data":{"previewMutation":{"decision":"allow","intentToken":"tok-1","intent":{"id":"i-1","approvalState":"none","decision":"allow"}}}}',
+    );
+    const client = new AxonGraphQLClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+    const input: PreviewMutationInput = {
+      operation: {
+        operationKind: "patch_entity",
+        operation: {
+          collection: "tasks",
+          id: "task-1",
+          expected_version: 1,
+          patch: { status: "approved" },
+        },
+      },
+      expiresInSeconds: 600,
+    };
+
+    await client.tenant("acme").database("default").previewMutation(input);
+
+    const body = requestBody(calls[0]);
+    expect(body.query).toBe(AxonGraphQLDocuments.previewMutation);
+    expect(body.variables).toEqual({ input });
+  });
+
+  it("commitIntent sends commitMutationIntent mutation with intentToken", async () => {
+    const { mock, calls } = mockFetch(
+      200,
+      '{"data":{"commitMutationIntent":{"committed":true,"transactionId":"tx-1","intent":{"id":"i-1","approvalState":"committed","decision":"allow"}}}}',
+    );
+    const client = new AxonGraphQLClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+
+    await client.tenant("acme").database("default").commitIntent({ intentToken: "tok-1" });
+
+    const body = requestBody(calls[0]);
+    expect(body.query).toBe(AxonGraphQLDocuments.commitMutationIntent);
+    expect(body.variables).toEqual({ input: { intentToken: "tok-1" } });
+  });
+
+  it("approveIntent sends approveMutationIntent mutation with intentId and reason", async () => {
+    const { mock, calls } = mockFetch(
+      200,
+      '{"data":{"approveMutationIntent":{"id":"i-1","approvalState":"approved","decision":"needs_approval"}}}',
+    );
+    const client = new AxonGraphQLClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+
+    await client.tenant("acme").database("default").approveIntent({
+      intentId: "i-1",
+      reason: "approved for release",
+    });
+
+    const body = requestBody(calls[0]);
+    expect(body.query).toBe(AxonGraphQLDocuments.approveMutationIntent);
+    expect(body.variables).toEqual({ input: { intentId: "i-1", reason: "approved for release" } });
+  });
+
+  it("rejectIntent sends rejectMutationIntent mutation with intentId and reason", async () => {
+    const { mock, calls } = mockFetch(
+      200,
+      '{"data":{"rejectMutationIntent":{"id":"i-2","approvalState":"rejected","decision":"needs_approval"}}}',
+    );
+    const client = new AxonGraphQLClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+
+    await client.tenant("acme").database("default").rejectIntent({
+      intentId: "i-2",
+      reason: "insufficient justification",
+    });
+
+    const body = requestBody(calls[0]);
+    expect(body.query).toBe(AxonGraphQLDocuments.rejectMutationIntent);
+    expect(body.variables).toEqual({
+      input: { intentId: "i-2", reason: "insufficient justification" },
+    });
+  });
+
+  it("explainPolicy sends explainPolicy query with input variable", async () => {
+    const { mock, calls } = mockFetch(
+      200,
+      '{"data":{"explainPolicy":{"operation":"update","collection":"tasks","decision":"needs_approval","reason":"needs_approval","policyVersion":1}}}',
+    );
+    const client = new AxonGraphQLClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+
+    await client.tenant("acme").database("default").explainPolicy({
+      operation: "update",
+      collection: "tasks",
+      entityId: "task-1",
+      data: { budget_cents: 20000 },
+    });
+
+    const body = requestBody(calls[0]);
+    expect(body.query).toBe(AxonGraphQLDocuments.explainPolicy);
+    expect(body.variables).toEqual({
+      input: {
+        operation: "update",
+        collection: "tasks",
+        entityId: "task-1",
+        data: { budget_cents: 20000 },
+      },
+    });
+  });
+
+  it("queryAudit delegates to auditLog with the same document and variables", async () => {
+    const { mock, calls } = mockFetch(200, '{"data":{"auditLog":{"totalCount":0,"edges":[]}}}');
+    const client = new AxonGraphQLClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+
+    await client.tenant("acme").database("default").queryAudit({
+      collection: "tasks",
+      entityId: "task-1",
+    });
+
+    const body = requestBody(calls[0]);
+    expect(body.query).toBe(AxonGraphQLDocuments.auditLog);
+    expect(body.variables).toMatchObject({ collection: "tasks", entityId: "task-1" });
+  });
+
+  it("rollbackDryRun calls rollbackEntity with dryRun forced to true", async () => {
+    const { mock, calls } = mockFetch(
+      200,
+      '{"data":{"rollbackEntity":{"dryRun":true,"entity":{"id":"task-1","version":1}}}}',
+    );
+    const client = new AxonGraphQLClient({
+      baseUrl: "http://localhost:4170",
+      fetchImpl: mock,
+    });
+
+    await client.tenant("acme").database("default").rollbackDryRun({
+      collection: "tasks",
+      id: "task-1",
+      toVersion: 2,
+      expectedVersion: 5,
+    });
+
+    const body = requestBody(calls[0]);
+    expect(body.query).toBe(AxonGraphQLDocuments.rollbackEntity);
+    expect(body.variables).toEqual({
+      input: {
+        collection: "tasks",
+        id: "task-1",
+        toVersion: 2,
+        toAuditId: undefined,
+        expectedVersion: 5,
+        dryRun: true,
+      },
+    });
   });
 });
