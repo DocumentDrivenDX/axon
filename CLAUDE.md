@@ -6,24 +6,31 @@ Axon is a cloud-native, auditable, schema-first transactional data store for age
 
 - Product Vision: `docs/helix/00-discover/product-vision.md`
 - PRD: `docs/helix/01-frame/prd.md`
-- Technical Requirements: `docs/helix/01-frame/technical-requirements.md`
 - Features: `docs/helix/01-frame/features/`
+- Architecture: `docs/helix/02-design/architecture.md`
+- ADR index and contracts: `docs/helix/02-design/README.md`
 
 ## Workspace Layout
 
 ```
 crates/
-  axon-core/      # Core types, traits, error hierarchy
-  axon-schema/    # Schema definitions and validation
-  axon-audit/     # Immutable audit log
-  axon-storage/   # Storage adapter trait + in-memory impl
-  axon-api/       # Request/response types and handler
-  axon-server/    # HTTP/gRPC server (axum + tonic)
-  axon-graphql/   # GraphQL schema and resolvers
-  axon-mcp/       # MCP (Model Context Protocol) server
-  axon-render/    # Markdown template rendering and validation
-  axon-sim/       # Simulation / load testing harness
-  axon-cli/       # axon binary entry point
+  axon-core/           # Core types, traits, error hierarchy
+  axon-schema/         # Schema definitions, validation, and migration
+  axon-audit/          # Immutable audit log with provenance
+  axon-storage/        # Storage adapter trait + in-memory impl
+  axon-api/            # Request/response types and handler
+  axon-server/         # HTTP/gRPC server (axum + tonic)
+  axon-graphql/        # GraphQL schema auto-generated from collection schemas
+  axon-mcp/            # MCP (Model Context Protocol) server
+  axon-cypher-ast/     # openCypher subset AST, parser, validator
+  axon-cypher/         # openCypher subset planner and executor
+  axon-render/         # Markdown template rendering and validation
+  axon-control-plane/  # Multi-tenant control plane (FEAT-025)
+  axon-config/         # XDG path resolution and TOML config loading
+  axon-sim/            # Deterministic simulation testing (DST) framework
+  axon-cli/            # axon binary entry point
+sdk/typescript/        # TypeScript SDK (@axon/client)
+ui/                    # SvelteKit admin UI
 ```
 
 ## Development Commands
@@ -41,7 +48,7 @@ cargo fmt            # Format all code
 - **No unwrap() in library code**: use `?` and `AxonError`.
 - **Clippy clean**: CI enforces `-D warnings`.
 - **Workspace dependencies**: declare shared deps in the root `Cargo.toml` `[workspace.dependencies]` table.
-- **Authority order**: Vision > PRD > Technical Requirements > Features > Tests > Code.
+- **Authority order**: Vision > PRD > Features/Stories > Architecture/ADRs/Contracts > Tests > Code.
 
 ## Issue Tracker
 
