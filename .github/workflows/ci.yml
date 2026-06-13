@@ -104,6 +104,18 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - run: scripts/test-linux-installer-service.sh
 
+  sdk:
+    name: SDK (TypeScript)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: cd sdk/typescript && npm install
+      - run: cd sdk/typescript && npm test -- --run
+      - run: cd sdk/typescript && npm run lint
+
   ui:
     name: UI
     runs-on: ubuntu-latest
@@ -115,6 +127,7 @@ jobs:
       - run: cd ui && bun run lint
       - run: cd ui && bun test src/
       - run: cd ui && bun run build
+      - run: cd ui && bun run check:story-coverage
 
   e2e-postgres:
     name: E2E (PostgreSQL)
