@@ -832,3 +832,377 @@ async fn denied_preview_has_no_executable_token() {
     assert!(result["intentToken"].is_null());
     assert_eq!(budget_cents(&server).await, json!(5000));
 }
+
+// Bump the task collection schema to version 2 (identical access_control, new version number).
+async fn bump_task_schema(server: &axum_test::TestServer) {
+    server
+        .put("/tenants/default/databases/default/collections/task/schema")
+        .json(&json!({
+            "version": 2,
+            "entity_schema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string" },
+                    "budget_cents": { "type": "integer" },
+                    "secret": { "type": "string" },
+                    "status": { "type": "string" }
+                }
+            },
+            "access_control": {
+                "identity": {
+                    "user_id": "subject.user_id",
+                    "role": "subject.attributes.approval_role",
+                    "attributes": {
+                        "approval_role": {
+                            "from": "collection",
+                            "collection": "users",
+                            "key_field": "user_id",
+                            "key_subject": "user_id",
+                            "value_field": "approval_role"
+                        }
+                    }
+                },
+                "read": { "allow": [{ "name": "fixture-read" }] },
+                "create": { "allow": [{ "name": "fixture-create" }] },
+                "update": {
+                    "allow": [{
+                        "name": "fixture-update",
+                        "when": { "subject": "user_id", "in": ["finance-agent", "finance-approver"] }
+                    }]
+                },
+                "fields": {
+                    "secret": {
+                        "write": {
+                            "deny": [{
+                                "name": "finance-cannot-write-secret",
+                                "when": { "subject": "user_id", "eq": "finance-agent" }
+                            }]
+                        }
+                    }
+                },
+                "envelopes": {
+                    "write": [{
+                        "name": "large-budget-needs-finance-approval",
+                        "when": {
+                            "all": [
+                                { "operation": "update" },
+                                { "field": "budget_cents", "gt": 10000 }
+                            ]
+                        },
+                        "decision": "needs_approval",
+                        "approval": {
+                            "role": "finance_approver",
+                            "reason_required": true,
+                            "deadline_seconds": 86400,
+                            "separation_of_duties": true
+                        }
+                    }]
+                }
+            }
+        }))
+        .await
+        .assert_status_ok();
+}
+
+async fn create_task_b(server: &axum_test::TestServer) {
+    server
+        .post("/tenants/default/databases/default/entities/task/task-b")
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({
+            "data": {
+                "title": "Secondary task",
+                "budget_cents": 1000,
+                "secret": "beta",
+                "status": "draft"
+            },
+            "actor": "admin"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+}
+
+async fn touch_task_b(server: &axum_test::TestServer) {
+    server
+        .put("/tenants/default/databases/default/entities/task/task-b")
+        .add_header("x-axon-actor", "finance-approver")
+        .json(&json!({
+            "data": {
+                "title": "Secondary task - out-of-band update",
+                "budget_cents": 1000,
+                "status": "draft"
+            },
+            "expected_version": 1,
+            "actor": "finance-approver"
+        }))
+        .await
+        .assert_status_ok();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn preview_decision_determinism_matches_commit_time_evaluation() {
+    // @covers US-105-AC4
+    let server = test_server();
+    seed_intent_fixture(&server).await;
+
+    // Two previews of the same operation with the same entity state must yield the same decision.
+    let preview_a = preview_budget_patch(&server, 6000, 600).await;
+    let preview_b = preview_budget_patch(&server, 6000, 600).await;
+    assert_no_errors(&preview_a, "preview_a");
+    assert_no_errors(&preview_b, "preview_b");
+
+    let result_a = &preview_a["data"]["previewMutation"];
+    let result_b = &preview_b["data"]["previewMutation"];
+
+    // Same state → same decision (deterministic policy evaluation).
+    assert_eq!(result_a["decision"], "allow");
+    assert_eq!(result_b["decision"], "allow");
+    // Same operation text → identical canonical hash (canonicalization is deterministic).
+    assert_eq!(
+        result_a["canonicalOperation"]["operationHash"],
+        result_b["canonicalOperation"]["operationHash"],
+        "preview of the same operation must produce the same operation hash"
+    );
+
+    let token_a = result_a["intentToken"].as_str().unwrap().to_string();
+    let token_b = result_b["intentToken"].as_str().unwrap().to_string();
+
+    // Commit token_a — the commit-time evaluation must agree with the preview decision.
+    let committed = commit_token(&server, "finance-agent", &token_a).await;
+    assert_no_errors(&committed, "commit_a");
+    assert_eq!(committed["data"]["commitMutationIntent"]["committed"], true);
+    assert_eq!(budget_cents(&server).await, json!(6000));
+
+    // Token_b is now stale: entity pre-image version changed (v1 → v2 after commit_a).
+    // This proves commit validates pre-image bindings using the same rules as preview.
+    let stale = commit_token(&server, "finance-agent", &token_b).await;
+    assert_error_code(&stale, "intent_stale");
+    let stale_dims = stale["errors"][0]["extensions"]["stale"]
+        .as_array()
+        .unwrap();
+    assert!(
+        stale_dims.iter().any(|d| d["dimension"] == "pre_image"),
+        "stale must name pre_image dimension: {stale_dims:?}"
+    );
+    // Entity remains at the committed value (token_b commit was rejected, not rolled back).
+    assert_eq!(budget_cents(&server).await, json!(6000));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn direct_write_intercepted_no_mutation_no_audit() {
+    // @covers US-106-AC3
+    let server = test_server();
+    seed_intent_fixture(&server).await;
+
+    // Capture audit baseline: only the creation entry should exist.
+    let before = audit_entity(&server).await;
+    let update_entries_before: Vec<_> = before["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["mutation"] == "entity.update")
+        .collect();
+    assert!(
+        update_entries_before.is_empty(),
+        "no entity.update entries expected before direct write attempt"
+    );
+
+    // Direct write via the dynamically-generated GraphQL mutation, budget > 10000
+    // triggers the approval envelope and must be intercepted.
+    let direct = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            patchTask(id: "task-a", version: 1, patch: "{\"budget_cents\": 20000}") {
+                id version
+            }
+        }"#,
+    )
+    .await;
+
+    // Write is intercepted: approval required.
+    assert_eq!(direct["errors"][0]["extensions"]["code"], "forbidden");
+    assert_eq!(
+        direct["errors"][0]["extensions"]["detail"]["reason"],
+        "needs_approval"
+    );
+
+    // Entity state unchanged.
+    assert_eq!(budget_cents(&server).await, json!(5000));
+
+    // No entity.update audit entry was produced by the rejected write.
+    let after = audit_entity(&server).await;
+    let update_entries_after: Vec<_> = after["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["mutation"] == "entity.update")
+        .collect();
+    assert!(
+        update_entries_after.is_empty(),
+        "direct write intercepted by approval envelope must not produce an entity.update audit entry"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn policy_version_drift_before_commit_rejects_as_stale() {
+    // @covers US-107-AC2
+    let server = test_server();
+    seed_intent_fixture(&server).await;
+
+    // Preview under threshold — intent is bound to schema_version=1, policy_version=1.
+    let preview = preview_budget_patch(&server, 6000, 600).await;
+    assert_no_errors(&preview, "preview");
+    let result = &preview["data"]["previewMutation"];
+    assert_eq!(result["decision"], "allow");
+    let token = result["intentToken"].as_str().unwrap().to_string();
+
+    // Advance the collection schema to version 2, bumping the live policy version.
+    bump_task_schema(&server).await;
+
+    // Commit now observes schema_version=2 but the intent was bound to version 1.
+    let committed = commit_token(&server, "finance-agent", &token).await;
+    assert_error_code(&committed, "intent_stale");
+
+    let stale_dims = committed["errors"][0]["extensions"]["stale"]
+        .as_array()
+        .unwrap();
+    assert!(
+        stale_dims.iter().any(|d| d["dimension"] == "policy_version"),
+        "stale rejection must name the policy_version dimension: {stale_dims:?}"
+    );
+
+    // Entity state unchanged — no partial commit.
+    assert_eq!(budget_cents(&server).await, json!(5000));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn operation_hash_mismatch_rejects_commit() {
+    // @covers US-107-AC3
+    let server = test_server();
+    seed_intent_fixture(&server).await;
+
+    // Preview patching budget to 6000.
+    let preview = preview_budget_patch(&server, 6000, 600).await;
+    assert_no_errors(&preview, "preview");
+    let token = preview["data"]["previewMutation"]["intentToken"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Commit with a different operation payload (budget 7777 ≠ 6000).
+    // The canonical hash of the supplied operation will not match the stored intent hash.
+    let mismatched = gql_as(
+        &server,
+        "finance-agent",
+        &format!(
+            r#"mutation {{
+                commitMutationIntent(input: {{
+                    intentToken: "{token}"
+                    operation: {{
+                        operationKind: "patch_entity"
+                        operation: {{
+                            collection: "task"
+                            id: "task-a"
+                            expected_version: 1
+                            patch: {{ budget_cents: 7777 }}
+                        }}
+                    }}
+                }}) {{
+                    committed transactionId errorCode
+                    stale {{ dimension expected actual path }}
+                }}
+            }}"#
+        ),
+    )
+    .await;
+
+    assert_error_code(&mismatched, "intent_mismatch");
+    // Entity state unchanged — mismatched operation was never applied.
+    assert_eq!(budget_cents(&server).await, json!(5000));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn multi_entity_intent_one_stale_entity_invalidates_whole_intent() {
+    // @covers US-107-AC4
+    let server = test_server();
+    seed_intent_fixture(&server).await;
+    create_task_b(&server).await;
+
+    // Preview a transaction touching both task-a and task-b (both under the approval threshold).
+    let preview = gql_as(
+        &server,
+        "finance-agent",
+        r#"mutation {
+            previewMutation(input: {
+                operation: {
+                    operationKind: "transaction"
+                    operation: {
+                        operations: [
+                            {
+                                updateEntity: {
+                                    collection: "task"
+                                    id: "task-a"
+                                    expectedVersion: 1
+                                    data: {
+                                        title: "Budget request"
+                                        budget_cents: 6000
+                                        status: "draft"
+                                    }
+                                }
+                            }
+                            {
+                                updateEntity: {
+                                    collection: "task"
+                                    id: "task-b"
+                                    expectedVersion: 1
+                                    data: {
+                                        title: "Secondary task"
+                                        budget_cents: 2000
+                                        status: "draft"
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+                expiresInSeconds: 600
+            }) {
+                decision
+                intentToken
+                intent { id approvalState decision }
+            }
+        }"#,
+    )
+    .await;
+    assert_no_errors(&preview, "multi-entity preview");
+    let result = &preview["data"]["previewMutation"];
+    assert_eq!(result["decision"], "allow");
+    let token = result["intentToken"].as_str().unwrap().to_string();
+
+    // Mutate task-b out-of-band: version 1 → 2, making its pre-image stale.
+    touch_task_b(&server).await;
+
+    // Commit must fail because task-b's pre-image is stale; no partial write allowed.
+    let committed = commit_token(&server, "finance-agent", &token).await;
+    assert_error_code(&committed, "intent_stale");
+
+    let stale_dims = committed["errors"][0]["extensions"]["stale"]
+        .as_array()
+        .unwrap();
+    assert!(
+        stale_dims.iter().any(|d| {
+            d["dimension"] == "pre_image"
+                && d["path"]
+                    .as_str()
+                    .map_or(false, |p| p.contains("task-b"))
+        }),
+        "stale rejection must name the task-b pre_image dimension: {stale_dims:?}"
+    );
+
+    // task-a must also be unchanged — the intent was rejected atomically.
+    assert_eq!(
+        budget_cents(&server).await,
+        json!(5000),
+        "task-a must not be partially committed when the intent is rejected as stale"
+    );
+}

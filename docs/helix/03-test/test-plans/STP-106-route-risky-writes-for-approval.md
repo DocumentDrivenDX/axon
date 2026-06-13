@@ -29,7 +29,7 @@ ddx:
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
 | US-106-AC1 | Below threshold → `allow`; at/above → `needs_approval` | `under_threshold_allow_commit_and_replay_rejects`; `over_threshold_intent_can_be_approved_and_committed` | Both routing branches produce the expected decision | `@covers US-106-AC1` in test bodies | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
 | US-106-AC2 | `needs_approval` includes required approver role, reason requirement, intent ID | `over_threshold_intent_can_be_approved_and_committed`; `pending_intent_queries_return_pending_reviews` | Needs-approval payload carries route details | `@covers US-106-AC2` in test bodies | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
-| US-106-AC3 | Generated direct write hitting the envelope returns approval-required, mutates nothing, no mutation audit entry | none (existing cases route via explicit preview; direct-write interception case absent) | n/a | planned `@covers US-106-AC3` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_intents_contract.rs` |
+| US-106-AC3 | Generated direct write hitting the envelope returns approval-required, mutates nothing, no mutation audit entry | `direct_write_intercepted_no_mutation_no_audit` | `patchTask` with `budget_cents > 10000` returns `forbidden`/`needs_approval`; entity state unchanged; no `entity.update` audit entry produced | `@covers US-106-AC3` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
 | US-106-AC4 | Approver with required role approves/rejects via GraphQL; approval state changes | `over_threshold_intent_can_be_approved_and_committed`; `approval_requires_current_approver_role`; `rejected_intent_cannot_commit`; "approveIntent sends approveMutationIntent mutation with intentId and reason @covers US-106-AC4"; "rejectIntent sends rejectMutationIntent mutation with intentId and reason @covers US-106-AC4" | Role-gated approve/reject transitions intent state; SDK client sends correct mutations | `@covers US-106-AC4` in test bodies + SDK | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs`, `sdk/typescript/test/graphql-client.test.ts` |
 | US-106-AC5 | Approval/rejection audited with actor, reason, policy version, intent ID | lineage assertions in `graphql_intents_contract.rs` (approval entries carry `policy_version`, intent lineage) | Audit rows exist for approval/rejection with binding metadata | `@covers US-106-AC5` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
 
@@ -71,7 +71,7 @@ cargo test -p axon-server --test graphql_intents_contract
 - CONTRACT-002 approval surface; CONTRACT-005 audit record shape.
 
 **Done When**
-- [ ] AC1–AC5 passing with citations
+- [x] AC1–AC5 passing with citations
 
 ## Review Checklist
 

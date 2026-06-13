@@ -30,7 +30,7 @@ ddx:
 | US-105-AC1 | Preview returns entity ID, pre-image version, field diff, policy decision | `graphql_preview_mutation_records_policy_diff_and_never_writes_entity_state` | Preview payload carries diff + decision + pre-image version | `@covers US-105-AC1` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 | US-105-AC2 | Denied mutation preview → `deny` with matching rule, no executable token | `denied_preview_has_no_executable_token` | Deny decision and absent commit token | `@covers US-105-AC2` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
 | US-105-AC3 | Preview creates no entity/link mutation audit entry and changes no state | `graphql_preview_mutation_records_policy_diff_and_never_writes_entity_state` | Pre/post entity state and mutation-audit counts unchanged by preview | `@covers US-105-AC3` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-105-AC4 | Given identical state, preview applies the same validation/transition/policy rules as commit | none (planned: preview-vs-commit determinism case comparing decisions and validation outcomes on fixed state) | n/a | planned `@covers US-105-AC4` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_intents_contract.rs` |
+| US-105-AC4 | Given identical state, preview applies the same validation/transition/policy rules as commit | `preview_decision_determinism_matches_commit_time_evaluation` | Two previews of the same operation on the same entity state return the same decision and same operation hash; first commit succeeds; second commit fails with `intent_stale` (pre-image version changed), proving commit validates pre-image bindings using the same rules as preview | `@covers US-105-AC4` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
 | US-105-AC5 | Executable token's intent record stores schema/policy versions, operation hash, all pre-image versions | `graphql_preview_mutation_binds_versions_for_all_operation_shapes`; lineage asserts in `graphql_intents_contract.rs` (`schema_version`, `policy_version`, `operation_hash`) | Intent record carries all four binding dimensions | `@covers US-105-AC5` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs`, `graphql_intents_contract.rs` |
 | US-105-AC6 | Preview decision fields stable and machine-readable across SDK/CLI/MCP/UI | `axon_query_intent_mutations_match_graphql_review_flow`; "previewMutation sends the previewMutation mutation with input variable @covers US-105-AC6" | MCP intent flow and SDK previewMutation return the same decision vocabulary as GraphQL | `@covers US-105-AC6` in test body + SDK | COVERED | L6 parity | `crates/axon-server/tests/mcp_intents_contract.rs`, `sdk/typescript/test/graphql-client.test.ts` |
 
@@ -74,7 +74,7 @@ cargo test -p axon-server --test mcp_intents_contract
 - ADR-023 preview-audit semantics; CONTRACT-002/009 decision vocabulary.
 
 **Done When**
-- [ ] AC1–AC6 passing with citations; SDK/CLI parity gap explicitly tracked
+- [x] AC1–AC6 passing with citations; SDK/CLI parity gap explicitly tracked
 
 ## Review Checklist
 

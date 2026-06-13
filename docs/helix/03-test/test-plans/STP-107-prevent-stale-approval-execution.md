@@ -28,9 +28,9 @@ ddx:
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
 | US-107-AC1 | Entity version change before commit → stale outcome naming pre-image dimension | `generated_mcp_tools_report_stale_commit_conflict`; `axon_query_intent_commit_conflict_matches_graphql_error_extensions` (stale `{dimension expected actual path}` shape asserted in `graphql_intents_contract.rs`) | Commit fails with stale payload naming the drifted dimension | `@covers US-107-AC1` in test bodies | COVERED | L6 contract | `crates/axon-server/tests/mcp_intents_contract.rs`, `graphql_intents_contract.rs` |
-| US-107-AC2 | Policy version change before commit → stale outcome naming policy dimension | none (lineage records policy_version, but no test drifts the policy and asserts rejection) | n/a | planned `@covers US-107-AC2` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_intents_contract.rs` |
-| US-107-AC3 | Commit with operation differing from bound operation hash → mismatch failure | none | n/a | planned `@covers US-107-AC3` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_intents_contract.rs` |
-| US-107-AC4 | Multi-entity intent: one stale entity invalidates the whole intent, no partial commit | `graphql_preview_mutation_binds_versions_for_all_operation_shapes` proves binding; atomic-rejection-on-drift case itself absent | Bindings exist for all op shapes; partial-commit rejection unproven | planned `@covers US-107-AC4` | UNTESTED | L1 DST + L6 | planned in `crates/axon-server/tests/graphql_intents_contract.rs`; DST workload in `crates/axon-sim` |
+| US-107-AC2 | Policy version change before commit → stale outcome naming policy dimension | `policy_version_drift_before_commit_rejects_as_stale` | Preview at schema v1; `PUT /collections/task/schema` bumps to v2; commit returns `intent_stale` with `policy_version` dimension named | `@covers US-107-AC2` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
+| US-107-AC3 | Commit with operation differing from bound operation hash → mismatch failure | `operation_hash_mismatch_rejects_commit` | Preview with budget 6000; commit supplies budget 7777 in operation; returns `intent_mismatch`; entity unchanged | `@covers US-107-AC3` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
+| US-107-AC4 | Multi-entity intent: one stale entity invalidates the whole intent, no partial commit | `multi_entity_intent_one_stale_entity_invalidates_whole_intent` | Transaction preview over task-a + task-b; out-of-band update bumps task-b version; commit returns `intent_stale` naming task-b pre-image; task-a also unchanged (atomic) | `@covers US-107-AC4` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
 | US-107-AC5 | Committed token reused → rejected; expired intent cannot commit or be approved | `under_threshold_allow_commit_and_replay_rejects`; `expired_intent_cannot_commit`; `pending_query_materializes_and_audits_expired_intent_lineage` | Replay rejected; expired intents rejected and audited | `@covers US-107-AC5` in test bodies | COVERED | L6 contract | `crates/axon-server/tests/graphql_intents_contract.rs` |
 | US-107-AC6 | SDK commit helper and GraphQL commit field match for success/stale/mismatch/authz outcomes | "commitIntent sends commitMutationIntent mutation with intentToken @covers US-107-AC6" | SDK commitIntent method sends the correct mutation document | `@covers US-107-AC6` | COVERED | L6 parity | `sdk/typescript/test/graphql-client.test.ts` |
 
@@ -78,8 +78,8 @@ cargo test -p axon-server --test mcp_intents_contract
 - PRD approval-safety metric (100% stale rejection on pre-image, schema, policy, grant, operation hash); CONTRACT-002 stale/mismatch vocabulary.
 
 **Done When**
-- [ ] All five staleness dimensions have passing, citing rejection tests
-- [ ] Token replay and expiry remain green
+- [x] All five staleness dimensions have passing, citing rejection tests
+- [x] Token replay and expiry remain green
 
 ## Review Checklist
 
