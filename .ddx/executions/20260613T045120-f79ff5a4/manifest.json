@@ -1,0 +1,61 @@
+{
+  "attempt_id": "20260613T045120-f79ff5a4",
+  "bead_id": "axon-26b2fef5",
+  "base_rev": "ceee0d49937d9992e113d6d5f0011ccf13cd61f2",
+  "created_at": "2026-06-13T04:51:23.945304864Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-26b2fef5",
+    "title": "test: add executable @covers traceability scanner",
+    "description": "Context: TP-001 §3 and §13 require parseable executable citations in the form `@covers US-\u003cn\u003e-AC\u003cm\u003e`. Current executable Rust/UI/SDK tests contain zero canonical `@covers` tags while STPs list many planned citations. Add a scanner so autonomous runs can prove coverage traceability instead of relying on manual review.\n\nIn-scope files: a small script or test under the repo's existing tooling, `.github/workflows/ci.yml`, and docs only if a command is documented.\nOut-of-scope: adding the actual missing citations or new product behavior; those are separate beads.\nImplementation hint: scan `crates/`, `ui/`, and `sdk/typescript/` for canonical citations; parse `docs/helix/03-test/test-plans/STP-*.md`; fail on malformed tags and optionally report uncited planned AC IDs without requiring all planned IDs to be closed in this bead.",
+    "acceptance": "1. A repo command exists that scans executable tests for canonical `@covers US-\u003cn\u003e-AC\u003cm\u003e` citations and exits non-zero on malformed citation syntax.\n2. The scanner reports counts by AC ID and by subsystem.\n3. CI runs the scanner.\n4. `cargo test`, `cd ui \u0026\u0026 bun run check:story-coverage`, and `cd sdk/typescript \u0026\u0026 npm test -- --run` still pass.",
+    "labels": [
+      "helix",
+      "plan:spec-gap-2026-06-12",
+      "area:test",
+      "area:ci",
+      "kind:task",
+      "ac-quality:needs-refinement"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "",
+          "body": "[{\"ac\":1,\"text\":\"A repo command exists that scans executable tests for canonical `@covers US-\\u003cn\\u003e-AC\\u003cm\\u003e` citations and exits non-zero on malformed citation syntax.\",\"kind\":\"prose\",\"verifiable\":false},{\"ac\":2,\"text\":\"The scanner reports counts by AC ID and by subsystem.\",\"kind\":\"prose\",\"verifiable\":false},{\"ac\":3,\"text\":\"CI runs the scanner.\",\"kind\":\"prose\",\"verifiable\":false},{\"ac\":4,\"text\":\"`cargo test`, `cd ui \\u0026\\u0026 bun run check:story-coverage`, and `cd sdk/typescript \\u0026\\u0026 npm test -- --run` still pass.\",\"kind\":\"build-gate\",\"verifiable\":true}]",
+          "created_at": "2026-06-13T04:46:57.390899237Z",
+          "kind": "ac-quality-low",
+          "source": "preclaim-ac-quality",
+          "summary": "score=0.25 threshold=0.50 verifiable=1/4"
+        },
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"readiness route unavailable: lifecycle dispatch: project root mutation rejected for bead axon-26b2fef5\",\"fingerprint\":\"162dd1db7e09443bf8b1fd0fd42bb4e43faf5546680945f863cdee4c92c83d7a\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"162dd1db7e09443bf8b1fd0fd42bb4e43faf5546680945f863cdee4c92c83d7a\"}",
+          "created_at": "2026-06-13T04:49:17.411127777Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        }
+      ],
+      "spec-id": "TP-001"
+    }
+  },
+  "governing": [
+    {
+      "id": "TP-001",
+      "path": "docs/helix/03-test/test-plan.md",
+      "title": "Axon Test Plan"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260613T045120-f79ff5a4",
+    "prompt": ".ddx/executions/20260613T045120-f79ff5a4/prompt.md",
+    "manifest": ".ddx/executions/20260613T045120-f79ff5a4/manifest.json",
+    "result": ".ddx/executions/20260613T045120-f79ff5a4/result.json",
+    "checks": ".ddx/executions/20260613T045120-f79ff5a4/checks.json",
+    "usage": ".ddx/executions/20260613T045120-f79ff5a4/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-26b2fef5-20260613T045120-f79ff5a4"
+  },
+  "prompt_sha": "945bb707c88f192b9e05dc3f08fb3d150d8816aa3ba3efc18cc32022953a4db2"
+}
