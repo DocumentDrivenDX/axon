@@ -161,10 +161,11 @@ pub trait AuditLog: Send + Sync {
             ..AuditQuery::default()
         })?;
 
+        let ctx = crate::cdc::CdcContext::default();
         let envelopes: Vec<crate::cdc::CdcEnvelope> = page
             .entries
             .iter()
-            .filter_map(crate::cdc::CdcEnvelope::from_audit_entry)
+            .filter_map(|e| crate::cdc::CdcEnvelope::from_audit_entry(e, &ctx))
             .collect();
 
         Ok((envelopes, page.next_cursor))

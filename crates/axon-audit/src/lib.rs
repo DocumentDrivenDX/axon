@@ -11,7 +11,8 @@ pub mod log;
 pub mod prov;
 
 pub use cdc::{
-    CdcEnvelope, CdcOp, CdcSink, CdcSource, JsonlFileSink, KafkaCdcSink, KafkaConfig, MemoryCdcSink,
+    CdcContext, CdcEnvelope, CdcOp, CdcSink, CdcSource, JsonlFileSink, KafkaCdcSink, KafkaConfig,
+    MemoryCdcSink,
 };
 pub use entry::{
     compute_diff, AuditAttribution, AuditEntry, FieldDiff, MutationIntentApproverMetadata,
