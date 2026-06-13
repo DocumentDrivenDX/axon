@@ -206,7 +206,18 @@ impl CdcEnvelope {
 /// Trait for CDC event sinks.
 pub trait CdcSink: Send {
     /// Emit a CDC event.
+    ///
+    /// For delete events, Kafka sinks automatically follow with a tombstone
+    /// via [`CdcSink::emit_tombstone`] (CONTRACT-006 normative).
     fn emit(&mut self, envelope: &CdcEnvelope) -> Result<(), String>;
+
+    /// Emit a tombstone (same key, null value) for Kafka log compaction.
+    ///
+    /// CONTRACT-006 normative: every delete MUST be followed by a tombstone.
+    /// Non-Kafka sinks default to a no-op; [`KafkaCdcSink`] overrides this.
+    fn emit_tombstone(&mut self, _source: &CdcSource) -> Result<(), String> {
+        Ok(())
+    }
 
     /// Flush any buffered events.
     fn flush(&mut self) -> Result<(), String> {
@@ -452,6 +463,21 @@ impl CdcSink for KafkaCdcSink {
             .map_err(|e| format!("Kafka CDC serialization error: {e}"))?;
 
         self.sent.push((topic, key, json));
+
+        // CONTRACT-006: deletes MUST be followed by a tombstone for Kafka log compaction.
+        if envelope.op == CdcOp::Delete {
+            self.emit_tombstone(&envelope.source)?;
+        }
+        Ok(())
+    }
+
+    fn emit_tombstone(&mut self, source: &CdcSource) -> Result<(), String> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+        let topic = self.config.topic_for_source(source);
+        let key = KafkaConfig::event_key_string(source);
+        self.sent.push((topic, key, "null".to_string()));
         Ok(())
     }
 
@@ -546,6 +572,23 @@ impl CdcSink for KafkaCdcSink {
 
         self.producer
             .send(&topic, &key, &payload)
+            .map_err(|e| format!("CdcError::ProducerError: {e}"))?;
+
+        // CONTRACT-006: deletes MUST be followed by a tombstone for Kafka log compaction.
+        if envelope.op == CdcOp::Delete {
+            self.emit_tombstone(&envelope.source)?;
+        }
+        Ok(())
+    }
+
+    fn emit_tombstone(&mut self, source: &CdcSource) -> Result<(), String> {
+        if !self.config.enabled {
+            return Ok(());
+        }
+        let topic = self.config.topic_for_source(source);
+        let key = KafkaConfig::event_key_string(source);
+        self.producer
+            .send(&topic, &key, "null")
             .map_err(|e| format!("CdcError::ProducerError: {e}"))
     }
 
@@ -1170,6 +1213,56 @@ mod tests {
 
     #[cfg(not(feature = "kafka"))]
     #[test]
+    fn contract_006_delete_emits_tombstone_with_null_payload() {
+        let config = KafkaConfig {
+            enabled: true,
+            ..KafkaConfig::default()
+        };
+        let mut sink = KafkaCdcSink::new(config);
+        let ctx = tenant_ctx();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&sample_delete_entry(), &ctx),
+            "delete should produce a CDC envelope",
+        );
+        must_ok(sink.emit(&envelope), "emit should succeed for delete");
+
+        // CONTRACT-006: delete envelope + tombstone = 2 messages
+        assert_eq!(sink.sent.len(), 2, "delete must emit envelope then tombstone");
+
+        let (del_topic, del_key, del_payload) = &sink.sent[0];
+        let (tomb_topic, tomb_key, tomb_payload) = &sink.sent[1];
+
+        assert_eq!(del_topic, tomb_topic, "tombstone topic must match delete topic");
+        // Same key ensures log compaction removes the entity's history
+        assert_eq!(del_key, tomb_key, "tombstone key must match delete key (CONTRACT-006)");
+        assert_eq!(tomb_payload, "null", "tombstone payload must be null");
+
+        let parsed: CdcEnvelope = must_ok(
+            serde_json::from_str(del_payload),
+            "first message must be a valid delete envelope",
+        );
+        assert_eq!(parsed.op, CdcOp::Delete);
+    }
+
+    #[cfg(not(feature = "kafka"))]
+    #[test]
+    fn contract_006_create_does_not_emit_tombstone() {
+        let config = KafkaConfig {
+            enabled: true,
+            ..KafkaConfig::default()
+        };
+        let mut sink = KafkaCdcSink::new(config);
+        let ctx = default_ctx();
+        let envelope = must_some(
+            CdcEnvelope::from_audit_entry(&sample_create_entry(), &ctx),
+            "create should produce a CDC envelope",
+        );
+        must_ok(sink.emit(&envelope), "emit should succeed for create");
+        assert_eq!(sink.sent.len(), 1, "create must emit exactly one message (no tombstone)");
+    }
+
+    #[cfg(not(feature = "kafka"))]
+    #[test]
     fn kafka_sink_audit_id_cursor() {
         let config = KafkaConfig {
             enabled: true,
@@ -1337,6 +1430,36 @@ mod tests {
             let k2: Value = serde_json::from_str(&msgs[1].1).unwrap();
             assert_eq!(k1["id"], "t-001", "key 'id' should be entity_id for first event");
             assert_eq!(k2["id"], "t-002", "key 'id' should be entity_id for second event");
+        }
+
+        #[test]
+        fn contract_006_delete_emits_tombstone_after_delete_envelope() {
+            let (mut sink, sent) = make_enabled_sink();
+            let ctx = tenant_ctx();
+            let envelope = CdcEnvelope::from_audit_entry(&sample_delete_entry(), &ctx).unwrap();
+            sink.emit(&envelope).unwrap();
+
+            let msgs = sent.lock().unwrap();
+            assert_eq!(msgs.len(), 2, "delete must emit envelope + tombstone");
+
+            let (del_topic, del_key, del_payload) = &msgs[0];
+            let (tomb_topic, tomb_key, tomb_payload) = &msgs[1];
+
+            assert_eq!(del_topic, tomb_topic, "tombstone topic must match delete topic");
+            assert_eq!(del_key, tomb_key, "tombstone key must match delete key (CONTRACT-006)");
+            assert_eq!(tomb_payload, "null", "tombstone payload must be null");
+
+            let parsed: CdcEnvelope = serde_json::from_str(del_payload).unwrap();
+            assert_eq!(parsed.op, CdcOp::Delete, "first message must be the delete envelope");
+        }
+
+        #[test]
+        fn contract_006_create_does_not_emit_tombstone() {
+            let (mut sink, sent) = make_enabled_sink();
+            let ctx = default_ctx();
+            let envelope = CdcEnvelope::from_audit_entry(&sample_create_entry(), &ctx).unwrap();
+            sink.emit(&envelope).unwrap();
+            assert_eq!(sent.lock().unwrap().len(), 1, "create must not emit tombstone");
         }
 
         #[test]
