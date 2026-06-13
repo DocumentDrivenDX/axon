@@ -1,0 +1,52 @@
+{
+  "attempt_id": "20260613T201858-36d3f406",
+  "bead_id": "axon-a602f905",
+  "base_rev": "6e79f8818f1cd0b9d8e9ce45e7a6ee36207c7a1f",
+  "created_at": "2026-06-13T20:19:01.532544548Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-a602f905",
+    "title": "test: harden BYOC control-plane safety proof",
+    "description": "Context: FEAT-025/PRD P1 BYOC requires a control plane that provisions and observes deployments without becoming a data-plane bypass. Gap assessment found only partial evidence for tenant isolation, short-lived observation credentials, no entity access through the control plane, and audited administrative actions.\n\nIn-scope files: `crates/axon-control-plane/` models/service/http tests and direct implementation required by those tests.\nOut-of-scope: real cloud provider provisioning, UI, and data-plane entity APIs.\nImplementation hint: add contract tests for tenant-scoped listings, rejection of entity/data-plane operations, credential TTL/expiry shape, and audit events for deployment lifecycle actions.",
+    "acceptance": "1. `cargo test -p axon-control-plane` passes.\n2. Tests prove control-plane APIs cannot read or mutate tenant entity data.\n3. Tests prove tenant-scoped visibility and short-lived observation credential behavior or document an explicit follow-up if credential issuance is not implemented.\n4. Administrative lifecycle actions produce auditable evidence or a precise implementation bead is filed.",
+    "labels": [
+      "helix",
+      "plan:spec-gap-2026-06-12",
+      "area:control-plane",
+      "area:security",
+      "kind:task"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"readiness route unavailable: lifecycle dispatch: project root mutation rejected for bead axon-a602f905\",\"fingerprint\":\"4ce6a5f665c186ac1632b37e8198f2eb899f0edef5132992c0aadd18a8da6f6a\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"4ce6a5f665c186ac1632b37e8198f2eb899f0edef5132992c0aadd18a8da6f6a\"}",
+          "created_at": "2026-06-13T20:17:58.675354485Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        }
+      ],
+      "spec-id": "TP-001"
+    }
+  },
+  "governing": [
+    {
+      "id": "TP-001",
+      "path": "docs/helix/03-test/test-plan.md",
+      "title": "Axon Test Plan"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260613T201858-36d3f406",
+    "prompt": ".ddx/executions/20260613T201858-36d3f406/prompt.md",
+    "manifest": ".ddx/executions/20260613T201858-36d3f406/manifest.json",
+    "result": ".ddx/executions/20260613T201858-36d3f406/result.json",
+    "checks": ".ddx/executions/20260613T201858-36d3f406/checks.json",
+    "usage": ".ddx/executions/20260613T201858-36d3f406/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-a602f905-20260613T201858-36d3f406"
+  },
+  "prompt_sha": "6144bd6292f14f3179dafd4c51f3269e74ca1ee11c10d5c5bd151ccd63800e8b"
+}

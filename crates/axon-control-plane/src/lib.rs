@@ -30,8 +30,8 @@ pub mod store;
 
 pub use error::ControlPlaneError;
 pub use model::{
-    BackingStore, DataRetentionPolicy, DeploymentMode, HealthReport, HealthStatus, Tenant,
-    TenantId, TenantSpec, TenantStatus,
+    AuditEvent, BackingStore, DataRetentionPolicy, DeploymentMode, HealthReport, HealthStatus,
+    ObservationCredential, ObservationScope, Tenant, TenantId, TenantSpec, TenantStatus,
 };
 pub use service::ControlPlaneService;
 pub use store::{ControlPlaneStore, InMemoryControlPlaneStore};

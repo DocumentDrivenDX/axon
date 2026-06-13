@@ -265,6 +265,81 @@ impl HealthReport {
     }
 }
 
+/// An event recorded whenever an administrative lifecycle operation is
+/// performed on a tenant.
+///
+/// Events are append-only and never mutated after creation, providing an
+/// auditable trail of all control-plane actions. The `actor` field is a
+/// placeholder until the control-plane authentication layer is implemented.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AuditEvent {
+    /// Unique event identifier (UUIDv7).
+    pub id: String,
+    /// The tenant this event concerns.
+    pub tenant_id: TenantId,
+    /// Operation name (e.g. `"provision"`, `"mark_active"`, `"deprovision"`).
+    pub operation: String,
+    /// Actor that triggered the operation. Placeholder `"operator"` until
+    /// control-plane authentication lands.
+    pub actor: String,
+    /// Control-plane clock timestamp when the event was recorded.
+    pub occurred_at_ms: u64,
+    /// Tenant lifecycle state before the operation (`None` for provisioning).
+    pub previous_status: Option<TenantStatus>,
+    /// Tenant lifecycle state after the operation.
+    pub new_status: Option<TenantStatus>,
+}
+
+/// Scope of an [`ObservationCredential`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationScope {
+    /// Bearer may read health status and aggregate counts only.
+    HealthOnly,
+    /// Bearer may read all exported metric series.
+    MetricsRead,
+}
+
+/// Shape of a short-lived credential for observing a tenant instance.
+///
+/// The control plane may issue these to operators or monitoring systems to
+/// observe a specific tenant instance (e.g. scrape its metrics endpoint)
+/// without granting full administrative access. Credentials expire after
+/// `expires_at_ms` — any caller must reject them after that point.
+///
+/// # Implementation status
+///
+/// Credential issuance (`POST /tenants/{id}/observation-credentials`) is not
+/// yet implemented. This type documents the intended contract so that shape
+/// tests can run now and be wired to a real implementation in the follow-up
+/// bead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObservationCredential {
+    /// Unique credential identifier.
+    pub id: String,
+    /// Tenant whose instance this credential may observe.
+    pub tenant_id: TenantId,
+    /// Control-plane clock timestamp when the credential was issued.
+    pub issued_at_ms: u64,
+    /// Epoch ms after which this credential must be rejected as expired.
+    pub expires_at_ms: u64,
+    /// What the credential holder is permitted to observe.
+    pub scope: ObservationScope,
+}
+
+impl ObservationCredential {
+    /// Returns `true` if `now_ms` is at or past the credential's expiry.
+    pub fn is_expired(&self, now_ms: u64) -> bool {
+        now_ms >= self.expires_at_ms
+    }
+
+    /// Returns the total lifetime of the credential in milliseconds
+    /// (`expires_at_ms - issued_at_ms`, saturating at zero).
+    pub fn ttl_ms(&self) -> u64 {
+        self.expires_at_ms.saturating_sub(self.issued_at_ms)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +438,60 @@ mod tests {
             DataRetentionPolicy::default(),
             DataRetentionPolicy::RetainForDays(30)
         );
+    }
+
+    #[test]
+    fn observation_credential_is_expired_at_boundary() {
+        let cred = ObservationCredential {
+            id: "cred-1".to_string(),
+            tenant_id: TenantId::new("t-1"),
+            issued_at_ms: 1_000,
+            expires_at_ms: 4_600_000, // 1h TTL
+            scope: ObservationScope::HealthOnly,
+        };
+        assert!(!cred.is_expired(4_599_999), "must be valid 1ms before expiry");
+        assert!(cred.is_expired(4_600_000), "must be expired at exact expiry");
+        assert!(cred.is_expired(4_600_001), "must be expired after expiry");
+    }
+
+    #[test]
+    fn observation_credential_ttl_ms_matches_window() {
+        let cred = ObservationCredential {
+            id: "cred-2".to_string(),
+            tenant_id: TenantId::new("t-1"),
+            issued_at_ms: 1_000_000,
+            expires_at_ms: 1_000_000 + 3_600_000,
+            scope: ObservationScope::MetricsRead,
+        };
+        assert_eq!(cred.ttl_ms(), 3_600_000);
+    }
+
+    #[test]
+    fn observation_credential_ttl_saturates_at_zero() {
+        let cred = ObservationCredential {
+            id: "cred-3".to_string(),
+            tenant_id: TenantId::new("t-1"),
+            issued_at_ms: 5_000,
+            expires_at_ms: 1_000, // expires_at before issued_at (degenerate)
+            scope: ObservationScope::HealthOnly,
+        };
+        assert_eq!(cred.ttl_ms(), 0, "saturating_sub must not wrap");
+        assert!(cred.is_expired(5_000));
+    }
+
+    #[test]
+    fn audit_event_fields_are_accessible() {
+        let ev = AuditEvent {
+            id: "ev-1".to_string(),
+            tenant_id: TenantId::new("t-99"),
+            operation: "provision".to_string(),
+            actor: "operator".to_string(),
+            occurred_at_ms: 42_000,
+            previous_status: None,
+            new_status: Some(TenantStatus::Provisioning),
+        };
+        assert_eq!(ev.operation, "provision");
+        assert_eq!(ev.new_status, Some(TenantStatus::Provisioning));
+        assert!(ev.previous_status.is_none());
     }
 }

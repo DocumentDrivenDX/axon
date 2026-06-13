@@ -3,11 +3,15 @@
 //! Enforces tenant lifecycle transitions, BYOC registration rules, and the
 //! data-sovereignty boundary (never reads entity data from a tenant).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use uuid::Uuid;
+
 use crate::error::ControlPlaneError;
-use crate::model::{DeploymentMode, HealthReport, Tenant, TenantId, TenantSpec, TenantStatus};
+use crate::model::{
+    AuditEvent, DeploymentMode, HealthReport, Tenant, TenantId, TenantSpec, TenantStatus,
+};
 use crate::store::ControlPlaneStore;
 
 /// Clock abstraction so tests can inject deterministic timestamps.
@@ -30,11 +34,13 @@ impl Clock for SystemClock {
 
 /// Control plane service — the layer the HTTP API calls into.
 ///
-/// Holds a store and a clock. Cheap to clone.
+/// Holds a store, a clock, and an in-memory audit log. Cheap to clone —
+/// all three fields are `Arc`-wrapped so clones share the same state.
 #[derive(Clone)]
 pub struct ControlPlaneService {
     store: Arc<dyn ControlPlaneStore>,
     clock: Arc<dyn Clock>,
+    audit_log: Arc<Mutex<Vec<AuditEvent>>>,
 }
 
 impl std::fmt::Debug for ControlPlaneService {
@@ -49,12 +55,31 @@ impl ControlPlaneService {
         Self {
             store,
             clock: Arc::new(SystemClock),
+            audit_log: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     /// Construct a service with a custom clock (used by tests).
     pub fn with_clock(store: Arc<dyn ControlPlaneStore>, clock: Arc<dyn Clock>) -> Self {
-        Self { store, clock }
+        Self {
+            store,
+            clock,
+            audit_log: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// Return a snapshot of all audit events recorded so far, in insertion order.
+    pub fn audit_events(&self) -> Vec<AuditEvent> {
+        match self.audit_log.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn emit_audit(&self, event: AuditEvent) {
+        if let Ok(mut log) = self.audit_log.lock() {
+            log.push(event);
+        }
     }
 
     /// Provision a new tenant.
@@ -77,6 +102,15 @@ impl ControlPlaneService {
             last_health: None,
         };
         self.store.insert(tenant.clone())?;
+        self.emit_audit(AuditEvent {
+            id: Uuid::now_v7().to_string(),
+            tenant_id: tenant.id.clone(),
+            operation: "provision".to_string(),
+            actor: "operator".to_string(),
+            occurred_at_ms: now,
+            previous_status: None,
+            new_status: Some(TenantStatus::Provisioning),
+        });
         tracing::info!(tenant_id = %tenant.id, "tenant provisioning started");
         Ok(tenant)
     }
@@ -243,7 +277,8 @@ impl ControlPlaneService {
     ///
     /// Reads the tenant, runs a caller-supplied mutator, and writes the
     /// result back. The mutator is responsible for validating that the
-    /// transition is legal from the current state.
+    /// transition is legal from the current state. Emits an audit event
+    /// recording the before/after lifecycle state.
     fn transition<F>(
         &self,
         id: &TenantId,
@@ -254,9 +289,19 @@ impl ControlPlaneService {
         F: FnOnce(&mut Tenant) -> Result<(), ControlPlaneError>,
     {
         let mut tenant = self.store.get(id)?;
+        let before_status = tenant.status;
         mutate(&mut tenant)?;
         tenant.updated_at_ms = self.clock.now_ms();
         self.store.update(tenant.clone())?;
+        self.emit_audit(AuditEvent {
+            id: Uuid::now_v7().to_string(),
+            tenant_id: tenant.id.clone(),
+            operation: op.to_string(),
+            actor: "operator".to_string(),
+            occurred_at_ms: tenant.updated_at_ms,
+            previous_status: Some(before_status),
+            new_status: Some(tenant.status),
+        });
         tracing::info!(tenant_id = %tenant.id, status = ?tenant.status, op, "tenant transition");
         Ok(tenant)
     }
