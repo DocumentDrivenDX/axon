@@ -1,0 +1,33 @@
+{
+  "ran": true,
+  "changed_docs": [
+    "docs/helix/03-test/test-plans/STP-105-preview-a-graphql-mutation.md",
+    "docs/helix/03-test/test-plans/STP-106-route-risky-writes-for-approval.md",
+    "docs/helix/03-test/test-plans/STP-107-prevent-stale-approval-execution.md",
+    "docs/helix/03-test/test-plans/STP-113-inspect-effective-policy-in-the-web-ui.md",
+    "docs/helix/03-test/test-plans/STP-114-author-and-dry-run-policies-before-activation.md",
+    "docs/helix/03-test/test-plans/STP-115-browse-entities-with-policy-safe-ui-semantics.md",
+    "docs/helix/03-test/test-plans/STP-116-preview-and-commit-mutation-intents-from-the-web-ui.md",
+    "docs/helix/03-test/test-plans/STP-117-review-approve-and-reject-pending-intents.md",
+    "docs/helix/03-test/test-plans/STP-118-handle-stale-and-mismatched-intents-safely.md",
+    "docs/helix/03-test/test-plans/STP-119-inspect-mcp-originated-policy-and-intent-outcomes.md"
+  ],
+  "findings": [
+    {
+      "file": "docs/helix/03-test/test-plans/STP-114-author-and-dry-run-policies-before-activation.md",
+      "line": 17,
+      "rule_id": "prose.specificity.actor_action",
+      "severity": "advisory",
+      "rationale": "The sentence says something enables or supports work without naming the actor, action, artifact, or boundary.",
+      "suggested_edit": "Name the actor, action, artifact, or boundary that makes the statement concrete."
+    },
+    {
+      "file": "docs/helix/03-test/test-plans/STP-117-review-approve-and-reject-pending-intents.md",
+      "line": 17,
+      "rule_id": "prose.specificity.actor_action",
+      "severity": "advisory",
+      "rationale": "The sentence says something enables or supports work without naming the actor, action, artifact, or boundary.",
+      "suggested_edit": "Name the actor, action, artifact, or boundary that makes the statement concrete."
+    }
+  ]
+}
