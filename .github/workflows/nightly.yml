@@ -1,0 +1,42 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # 02:00 UTC every night
+  workflow_dispatch:
+    inputs:
+      sim_seeds:
+        description: 'Number of simulation seeds (default 1000)'
+        required: false
+        default: '1000'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  sim-extended:
+    name: Extended sim seed sweep (L1)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Run extended seed sweep
+        env:
+          AXON_SIM_SEEDS: ${{ github.event.inputs.sim_seeds || '1000' }}
+        run: scripts/run-sim-seeds.sh
+
+  benchmarks:
+    name: L5 Criterion benchmarks (BM-001..BM-010)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Run benchmarks
+        run: scripts/run-benchmarks.sh
