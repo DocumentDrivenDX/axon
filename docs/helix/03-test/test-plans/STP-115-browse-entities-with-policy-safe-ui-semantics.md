@@ -27,10 +27,10 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-115-AC1 | Lists, traversal, cursors, totals match policy-filtered GraphQL | "contractor list surfaces policy-filtered totalCount and policy version"; "contractor links tab surfaces backend-filtered totalCount and group totals"; "point-read of hidden entity renders not-found without existence leakage" | Rendered counts/rows equal backend-filtered results; hidden rows absent | missing — add `@covers US-115-AC1` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/policy-enforcement.spec.ts` |
-| US-115-AC2 | Redaction shown as explicit state; original value absent from DOM | "contractor sees redacted commercial_terms across list, detail, and audit views @US-115"; "contractor links tab inline preview redacts target invoice fields" | Redacted state rendered; value not in DOM | missing — add `@covers US-115-AC2` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/policy-enforcement.spec.ts` |
-| US-115-AC3 | Denied write shows error code, field path, policy explanation; no optimistic update | "denied delete surfaces stable code, reason, and policy explanation"; "real backend denies contractor delete with stable code, reason, and policy" | Denial rendered with stable code/reason; state unchanged | missing — add `@covers US-115-AC3` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/policy-enforcement.spec.ts` |
-| US-115-AC4 | Audit views apply the same redaction rules as entity reads | "contractor sees redacted commercial_terms across list, detail, and audit views @US-115" (audit leg) | Audit view redacts the same fields | missing — add `@covers US-115-AC4` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/policy-enforcement.spec.ts` |
+| US-115-AC1 | Lists, traversal, cursors, totals match policy-filtered GraphQL | "contractor list surfaces policy-filtered totalCount and policy version @covers US-115-AC1"; "contractor links tab surfaces backend-filtered totalCount and group totals @covers US-115-AC1"; "point-read of hidden entity renders not-found without existence leakage @covers US-115-AC1"; "no-visible-rows empty state shows policy version with no hidden counts @covers US-115-AC1" | Rendered counts/rows equal backend-filtered results; hidden rows absent | `@covers US-115-AC1` | COVERED | L7 E2E | `ui/tests/e2e/policy-enforcement.spec.ts` |
+| US-115-AC2 | Redaction shown as explicit state; original value absent from DOM | "contractor sees redacted commercial_terms across list, detail, and audit views @US-115 @covers US-115-AC2 @covers US-115-AC4"; "contractor links tab inline preview redacts target invoice fields @covers US-115-AC2" | Redacted state rendered; value not in DOM | `@covers US-115-AC2` | COVERED | L7 E2E | `ui/tests/e2e/policy-enforcement.spec.ts` |
+| US-115-AC3 | Denied write shows error code, field path, policy explanation; no optimistic update | "denied delete surfaces stable code, reason, and policy explanation @covers US-115-AC3"; "real backend denies contractor delete with stable code, reason, and policy @covers US-115-AC3" | Denial rendered with stable code/reason; state unchanged | `@covers US-115-AC3` | COVERED | L7 E2E | `ui/tests/e2e/policy-enforcement.spec.ts` |
+| US-115-AC4 | Audit views apply the same redaction rules as entity reads | "contractor sees redacted commercial_terms across list, detail, and audit views @US-115 @covers US-115-AC2 @covers US-115-AC4" (audit leg) | Audit view redacts the same fields | `@covers US-115-AC4` | COVERED | L7 E2E | `ui/tests/e2e/policy-enforcement.spec.ts` |
 
 ## Executable Proof
 
@@ -69,7 +69,7 @@ cd ui && bun run test:e2e
 - UI renders backend decisions; any client-side filtering is a defect, not coverage.
 
 **Done When**
-- [ ] AC1–AC4 passing with citations
+- [x] AC1–AC4 passing with citations
 
 ## Review Checklist
 

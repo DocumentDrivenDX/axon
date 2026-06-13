@@ -59,7 +59,7 @@ function captureSubscribeFrame(page: Page): Promise<unknown> {
  */
 
 test.describe('Policy enforcement (UI redaction)', () => {
-	test('contractor sees redacted commercial_terms across list, detail, and audit views @US-115', async ({
+	test('contractor sees redacted commercial_terms across list, detail, and audit views @US-115 @covers US-115-AC2 @covers US-115-AC4', async ({
 		page,
 		request,
 	}) => {
@@ -119,7 +119,7 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		expectGraphqlPrimaryDataPlane(requests, 'policy enforcement route should stay GraphQL-primary');
 	});
 
-	test('denied delete surfaces stable code, reason, and policy explanation', async ({
+	test('denied delete surfaces stable code, reason, and policy explanation @covers US-115-AC3', async ({
 		page,
 		request,
 	}) => {
@@ -185,7 +185,7 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		).toBeVisible();
 	});
 
-	test('real backend denies contractor delete with stable code, reason, and policy', async ({
+	test('real backend denies contractor delete with stable code, reason, and policy @covers US-115-AC3', async ({
 		page,
 		request,
 	}) => {
@@ -225,7 +225,7 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		).toBeVisible();
 	});
 
-	test('contractor list surfaces policy-filtered totalCount and policy version', async ({
+	test('contractor list surfaces policy-filtered totalCount and policy version @covers US-115-AC1', async ({
 		page,
 		request,
 	}) => {
@@ -272,7 +272,7 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		expect(policyVersion).toBeGreaterThanOrEqual(0);
 	});
 
-	test('contractor links tab surfaces backend-filtered totalCount and group totals', async ({
+	test('contractor links tab surfaces backend-filtered totalCount and group totals @covers US-115-AC1', async ({
 		page,
 		request,
 	}) => {
@@ -338,7 +338,7 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		await expect(relatedInvoicePill).toContainText('1');
 	});
 
-	test('contractor links tab inline preview redacts target invoice fields', async ({
+	test('contractor links tab inline preview redacts target invoice fields @covers US-115-AC2', async ({
 		page,
 		request,
 	}) => {
@@ -440,7 +440,7 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		await expect(previewRow).toBeHidden();
 	});
 
-	test('no-visible-rows empty state shows policy version with no hidden counts', async ({
+	test('no-visible-rows empty state shows policy version with no hidden counts @covers US-115-AC1', async ({
 		page,
 		request,
 	}) => {
@@ -478,7 +478,7 @@ test.describe('Policy enforcement (UI redaction)', () => {
 		expect(html).not.toContain('policy-shadow');
 	});
 
-	test('point-read of hidden entity renders not-found without existence leakage', async ({
+	test('point-read of hidden entity renders not-found without existence leakage @covers US-115-AC1', async ({
 		page,
 		request,
 	}) => {

@@ -27,10 +27,10 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-118-AC1 | Entity version change after preview → detail shows stale, disables commit, offers re-preview | "renders stale pre-image conflict details after preview drift @US-118"; "editing a previewed field invalidates the preview and disables commit until re-preview" | Stale state rendered, commit disabled, re-preview offered | missing — add `@covers US-118-AC1` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
-| US-118-AC2 | Policy/schema/grant/op-hash change → specific stale/mismatch code shown, no partial commit | "renders mismatch GraphQL error payloads returned during commit"; "intent detail page shows schema-version, policy-version, and grant-version indicators"; "intent detail policy-version increments after policy activation" | Mismatch codes rendered per dimension indicator | missing — add `@covers US-118-AC2` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
-| US-118-AC3 | Expired intent visible in history but not approvable/committable | "shows disabled action states for rejected, expired, committed, and stale intents @US-118" | Expired intents render with disabled actions | missing — add `@covers US-118-AC3` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts` |
-| US-118-AC4 | Re-preview creates new intent ID and preserves lineage to the prior stale intent | "re-previews after a stale commit, creates a new intent ID, and preserves the lineage link" | New intent ID + lineage link asserted | missing — add `@covers US-118-AC4` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
+| US-118-AC1 | Entity version change after preview → detail shows stale, disables commit, offers re-preview | "renders stale pre-image conflict details after preview drift @US-118 @covers US-118-AC1"; "editing a previewed field invalidates the preview and disables commit until re-preview @covers US-118-AC1" | Stale state rendered, commit disabled, re-preview offered | `@covers US-118-AC1` | COVERED | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
+| US-118-AC2 | Policy/schema/grant/op-hash change → specific stale/mismatch code shown, no partial commit | "renders mismatch GraphQL error payloads returned during commit @covers US-118-AC2"; "intent detail page shows schema-version, policy-version, and grant-version indicators @covers US-116-AC1 @covers US-118-AC2"; "intent detail policy-version increments after policy activation @covers US-118-AC2" | Mismatch codes rendered per dimension indicator | `@covers US-118-AC2` | COVERED | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
+| US-118-AC3 | Expired intent visible in history but not approvable/committable | "shows disabled action states for rejected, expired, committed, and stale intents @US-118 @covers US-118-AC3" | Expired intents render with disabled actions | `@covers US-118-AC3` | COVERED | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts` |
+| US-118-AC4 | Re-preview creates new intent ID and preserves lineage to the prior stale intent | "re-previews after a stale commit, creates a new intent ID, and preserves the lineage link @covers US-118-AC4" | New intent ID + lineage link asserted | `@covers US-118-AC4` | COVERED | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
 
 ## Executable Proof
 
@@ -71,7 +71,7 @@ cd ui && bun run test:e2e
 - UI must render the backend's stale dimension verbatim; no client-side staleness inference.
 
 **Done When**
-- [ ] AC1–AC4 passing with citations
+- [x] AC1–AC4 passing with citations
 
 ## Review Checklist
 

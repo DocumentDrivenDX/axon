@@ -27,10 +27,10 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-119-AC1 | Workspace shows MCP tool envelope for selected subject/collection/operation | "mirrors explainPolicy outcomes for read, needs_approval, and denied flows @US-119" | Envelope preview matches explainPolicy outcomes | missing — add `@covers US-119-AC1` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/mcp-envelope-preview.spec.ts` |
-| US-119-AC2 | MCP intent detail shows agent identity, delegated authority, credential/grant version, tool name, args summary, outcome | "shows delegated MCP intent metadata in the inbox and detail panels @US-119"; "shows stdio command/config status and redacted env for an MCP-originated intent" | Delegated metadata and tool provenance rendered (env redacted) | missing — add `@covers US-119-AC2` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/intent-audit-lineage.spec.ts`, `ui/tests/e2e/mcp-envelope-preview.spec.ts` |
-| US-119-AC3 | Denied MCP tool result and UI policy explanation use the same stable reason code | "mirrors explainPolicy outcomes for read, needs_approval, and denied flows @US-119"; "opens an axon.query bridge in the GraphQL console matching the envelope outcome" | Reason codes match between MCP result and UI explanation | missing — add `@covers US-119-AC3` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/mcp-envelope-preview.spec.ts` |
-| US-119-AC4 | needs-approval/denied/conflict MCP outcomes visible in inbox and audit lineage | "shows conflict outcomes for stale MCP-originated intent commits @US-118" (lineage); inbox MCP-origin rendering in the @US-119 detail case | Each MCP outcome class surfaces in inbox/lineage views | missing — add `@covers US-119-AC4` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/intent-audit-lineage.spec.ts` |
+| US-119-AC1 | Workspace shows MCP tool envelope for selected subject/collection/operation | "mirrors explainPolicy outcomes for read, needs_approval, and denied flows @US-119 @covers US-119-AC1 @covers US-119-AC3" | Envelope preview matches explainPolicy outcomes | `@covers US-119-AC1` | COVERED | L7 E2E | `ui/tests/e2e/mcp-envelope-preview.spec.ts` |
+| US-119-AC2 | MCP intent detail shows agent identity, delegated authority, credential/grant version, tool name, args summary, outcome | "shows delegated MCP intent metadata in the inbox and detail panels @US-119 @covers US-119-AC2"; "shows stdio command/config status and redacted env for an MCP-originated intent @covers US-119-AC2" | Delegated metadata and tool provenance rendered (env redacted) | `@covers US-119-AC2` | COVERED | L7 E2E | `ui/tests/e2e/intent-audit-lineage.spec.ts`, `ui/tests/e2e/mcp-envelope-preview.spec.ts` |
+| US-119-AC3 | Denied MCP tool result and UI policy explanation use the same stable reason code | "mirrors explainPolicy outcomes for read, needs_approval, and denied flows @US-119 @covers US-119-AC1 @covers US-119-AC3"; "opens an axon.query bridge in the GraphQL console matching the envelope outcome @covers US-119-AC3" | Reason codes match between MCP result and UI explanation | `@covers US-119-AC3` | COVERED | L7 E2E | `ui/tests/e2e/mcp-envelope-preview.spec.ts` |
+| US-119-AC4 | needs-approval/denied/conflict MCP outcomes visible in inbox and audit lineage | "shows conflict outcomes for stale MCP-originated intent commits @US-118 @covers US-119-AC4" | Each MCP outcome class surfaces in inbox/lineage views | `@covers US-119-AC4` | COVERED | L7 E2E | `ui/tests/e2e/intent-audit-lineage.spec.ts` |
 
 ## Executable Proof
 
@@ -69,7 +69,7 @@ cd ui && bun run test:e2e
 - Envelope semantics per CONTRACT-003; UI mirrors MCP outcomes, never re-derives them.
 
 **Done When**
-- [ ] AC1–AC4 passing with citations
+- [x] AC1–AC4 passing with citations
 
 ## Review Checklist
 

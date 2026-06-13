@@ -8,6 +8,11 @@
 		"skipLibCheck": true,
 		"strict": true,
 		"types": ["bun", "node"],
-		"verbatimModuleSyntax": true
+		"verbatimModuleSyntax": true,
+		"baseUrl": ".",
+		"paths": {
+			"$lib": ["./src/lib"],
+			"$lib/*": ["./src/lib/*"]
+		}
 	}
 }

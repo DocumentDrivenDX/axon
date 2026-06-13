@@ -27,10 +27,10 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-116-AC1 | Submit shows preview: entities, diff, pre-image versions, decision, explanation, expiry, intent ID | "renders and commits an allowed mutation intent without showing the token @US-116"; "renders a needs-approval preview with approval route details"; "intent detail page shows schema-version, policy-version, and grant-version indicators" | Preview modal renders diff + bindings + decision before commit | missing — add `@covers US-116-AC1` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
-| US-116-AC2 | Under-threshold allowed change commits via GraphQL without approval | "renders and commits an allowed mutation intent without showing the token @US-116" | Allowed commit completes from preview | missing — add `@covers US-116-AC2` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
-| US-116-AC3 | Denied preview shows reason; exposes no executable intent token | "renders a denied preview without an executable intent token"; "denied previews preserve the user draft input across modal close" | Denial reason rendered, token absent | missing — add `@covers US-116-AC3` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
-| US-116-AC4 | Successful commit links to resulting audit entry and updated entity | "deep link filters /audit by intent ID and pre-populates filter @US-116" | Commit confirmation links into audit by intent ID | missing — add `@covers US-116-AC4` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/intent-audit-lineage.spec.ts` |
+| US-116-AC1 | Submit shows preview: entities, diff, pre-image versions, decision, explanation, expiry, intent ID | "renders and commits an allowed mutation intent without showing the token @US-116 @covers US-116-AC1 @covers US-116-AC2"; "renders a needs-approval preview with approval route details @covers US-116-AC1"; "intent detail page shows schema-version, policy-version, and grant-version indicators @covers US-116-AC1 @covers US-118-AC2" | Preview modal renders diff + bindings + decision before commit | `@covers US-116-AC1` | COVERED | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
+| US-116-AC2 | Under-threshold allowed change commits via GraphQL without approval | "renders and commits an allowed mutation intent without showing the token @US-116 @covers US-116-AC1 @covers US-116-AC2" | Allowed commit completes from preview | `@covers US-116-AC2` | COVERED | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
+| US-116-AC3 | Denied preview shows reason; exposes no executable intent token | "renders a denied preview without an executable intent token @covers US-116-AC3"; "denied previews preserve the user draft input across modal close @covers US-116-AC3" | Denial reason rendered, token absent | `@covers US-116-AC3` | COVERED | L7 E2E | `ui/tests/e2e/mutation-intents.spec.ts` |
+| US-116-AC4 | Successful commit links to resulting audit entry and updated entity | "deep link filters /audit by intent ID and pre-populates filter @US-116 @covers US-116-AC4" | Commit confirmation links into audit by intent ID | `@covers US-116-AC4` | COVERED | L7 E2E | `ui/tests/e2e/intent-audit-lineage.spec.ts` |
 
 ## Executable Proof
 
@@ -69,7 +69,7 @@ cd ui && bun run test:e2e
 - The intent token must never render in the DOM (asserted in the allowed-commit test).
 
 **Done When**
-- [ ] AC1–AC4 passing with citations
+- [x] AC1–AC4 passing with citations
 
 ## Review Checklist
 

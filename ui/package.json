@@ -14,7 +14,8 @@
 		"test:e2e:real": "cd .. && scripts/test-ui-e2e-docker.sh",
 		"test:e2e:postgres": "cd .. && AXON_E2E_STORAGE=postgres scripts/test-ui-e2e-docker.sh",
 		"test:e2e:sqlite": "cd .. && AXON_E2E_STORAGE=sqlite scripts/test-ui-e2e-docker.sh",
-		"check:story-coverage": "bun scripts/check-story-coverage.ts"
+		"check:story-coverage": "bun scripts/check-story-coverage.ts",
+		"check:covers": "bun scripts/check-covers.ts"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^1.9.4",

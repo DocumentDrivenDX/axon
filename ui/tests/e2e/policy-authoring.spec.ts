@@ -144,7 +144,7 @@ async function routeGraphqlWithDraft(
 }
 
 test.describe('Policy authoring', () => {
-	test('runs read, patch, and transaction policy evaluations from the workspace @US-113 @US-114', async ({
+	test('runs read, patch, and transaction policy evaluations from the workspace @US-113 @US-114 @covers US-113-AC3', async ({
 		page,
 		request,
 	}) => {
@@ -221,7 +221,7 @@ test.describe('Policy authoring', () => {
 		expectGraphqlPrimaryDataPlane(requests, 'policy route should stay GraphQL-primary');
 	});
 
-	test('policy-version testid increments after policy activation', async ({ page, request }) => {
+	test('policy-version testid increments after policy activation @covers US-113-AC4', async ({ page, request }) => {
 		const fixture = await seedScn017PolicyUiFixture(request, 'policy-version-update');
 		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
 
@@ -299,7 +299,7 @@ test.describe('Policy authoring', () => {
 		await expect(page.getByTestId('policy-schema-version')).toHaveText('v2');
 	});
 
-	test('surfaces missing-index diagnostics for policy_filter_unindexed fixtures', async ({
+	test('surfaces missing-index diagnostics for policy_filter_unindexed fixtures @covers US-114-AC2', async ({
 		page,
 		request,
 	}) => {
@@ -322,7 +322,7 @@ test.describe('Policy authoring', () => {
 });
 
 test.describe('Policy authoring (impact matrix)', () => {
-	test('renders subject × operation × fixture-row outcomes for the active policy', async ({
+	test('renders subject × operation × fixture-row outcomes for the active policy @covers US-113-AC1', async ({
 		page,
 		request,
 	}) => {
@@ -378,7 +378,7 @@ test.describe('Policy authoring (impact matrix)', () => {
 		await expect(diagnostic).toContainText('reviewer_email');
 	});
 
-	test('surfaces active-vs-proposed deltas across read|create|update|patch|delete fixture rows', async ({
+	test('surfaces active-vs-proposed deltas across read|create|update|patch|delete fixture rows @covers US-113-AC2', async ({
 		page,
 		request,
 	}) => {
@@ -484,7 +484,7 @@ test.describe('Policy authoring (impact matrix)', () => {
 });
 
 test.describe('Policy authoring (transaction fixture editor)', () => {
-	test('renders structured transaction fixture editor and updates the evaluator', async ({
+	test('renders structured transaction fixture editor and updates the evaluator @covers US-113-AC5', async ({
 		page,
 		request,
 	}) => {
@@ -554,7 +554,7 @@ test.describe('Policy authoring (transaction fixture editor)', () => {
 });
 
 test.describe('Policy authoring (transaction-row delta)', () => {
-	test('impact matrix renders active-vs-proposed delta for transaction-row cells', async ({
+	test('impact matrix renders active-vs-proposed delta for transaction-row cells @covers US-113-AC2', async ({
 		page,
 		request,
 	}) => {
@@ -612,7 +612,7 @@ test.describe('Policy authoring (transaction-row delta)', () => {
 });
 
 test.describe('Policy authoring (schemas tab)', () => {
-	test('compile + fixture dry-run + activate updates the persisted policy @US-114', async ({
+	test('compile + fixture dry-run + activate updates the persisted policy @US-114 @covers US-114-AC1', async ({
 		page,
 		request,
 	}) => {
@@ -680,7 +680,7 @@ test.describe('Policy authoring (schemas tab)', () => {
 		expect(persisted?.fields?.amount_cents?.read?.deny?.length ?? 0).toBeGreaterThanOrEqual(2);
 	});
 
-	test('matrix dry-run gate: activation blocked until fixture dry-run recorded; editing policy invalidates gate', async ({
+	test('matrix dry-run gate: activation blocked until fixture dry-run recorded; editing policy invalidates gate @covers US-114-AC4', async ({
 		page,
 		request,
 	}) => {
@@ -729,7 +729,7 @@ test.describe('Policy authoring (schemas tab)', () => {
 		await expect(page.getByTestId('schema-policy-activate')).toBeDisabled();
 	});
 
-	test('failed compile blocks activation and leaves the persisted policy unchanged', async ({
+	test('failed compile blocks activation and leaves the persisted policy unchanged @covers US-114-AC3', async ({
 		page,
 		request,
 	}) => {

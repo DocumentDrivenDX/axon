@@ -303,7 +303,7 @@ describe("relationship, aggregation, audit, lifecycle, and subscription helpers"
 });
 
 describe("governed-workflow methods (CONTRACT-009)", () => {
-  it("previewMutation sends the previewMutation mutation with input variable", async () => {
+  it("previewMutation sends the previewMutation mutation with input variable @covers US-105-AC6", async () => {
     const { mock, calls } = mockFetch(
       200,
       '{"data":{"previewMutation":{"decision":"allow","intentToken":"tok-1","intent":{"id":"i-1","approvalState":"none","decision":"allow"}}}}',
@@ -332,7 +332,7 @@ describe("governed-workflow methods (CONTRACT-009)", () => {
     expect(body.variables).toEqual({ input });
   });
 
-  it("commitIntent sends commitMutationIntent mutation with intentToken", async () => {
+  it("commitIntent sends commitMutationIntent mutation with intentToken @covers US-107-AC6", async () => {
     const { mock, calls } = mockFetch(
       200,
       '{"data":{"commitMutationIntent":{"committed":true,"transactionId":"tx-1","intent":{"id":"i-1","approvalState":"committed","decision":"allow"}}}}',
@@ -349,7 +349,7 @@ describe("governed-workflow methods (CONTRACT-009)", () => {
     expect(body.variables).toEqual({ input: { intentToken: "tok-1" } });
   });
 
-  it("approveIntent sends approveMutationIntent mutation with intentId and reason", async () => {
+  it("approveIntent sends approveMutationIntent mutation with intentId and reason @covers US-106-AC4", async () => {
     const { mock, calls } = mockFetch(
       200,
       '{"data":{"approveMutationIntent":{"id":"i-1","approvalState":"approved","decision":"needs_approval"}}}',
@@ -369,7 +369,7 @@ describe("governed-workflow methods (CONTRACT-009)", () => {
     expect(body.variables).toEqual({ input: { intentId: "i-1", reason: "approved for release" } });
   });
 
-  it("rejectIntent sends rejectMutationIntent mutation with intentId and reason", async () => {
+  it("rejectIntent sends rejectMutationIntent mutation with intentId and reason @covers US-106-AC4", async () => {
     const { mock, calls } = mockFetch(
       200,
       '{"data":{"rejectMutationIntent":{"id":"i-2","approvalState":"rejected","decision":"needs_approval"}}}',

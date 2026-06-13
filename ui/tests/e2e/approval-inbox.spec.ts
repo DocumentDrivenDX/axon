@@ -23,7 +23,7 @@ async function selectStatus(page: Page, status: string) {
 }
 
 test.describe('Approval inbox', () => {
-	test('lists scoped intents across review states and opens detail @US-117', async ({ page, request }) => {
+	test('lists scoped intents across review states and opens detail @US-117 @covers US-117-AC1', async ({ page, request }) => {
 		const db = await seedApprovalCollections(request, 'approval-inbox');
 		const ids = await seedIntentStates(request, db);
 		const foreignDb = await seedApprovalCollections(request, 'approval-foreign');
@@ -71,7 +71,7 @@ test.describe('Approval inbox', () => {
 		expectGraphqlPrimaryDataPlane(requests, 'approval inbox route should stay GraphQL-primary');
 	});
 
-	test('supports dense filters, keyboard selection, and inline review without leaving inbox', async ({
+	test('supports dense filters, keyboard selection, and inline review without leaving inbox @covers US-117-AC1', async ({
 		page,
 		request,
 	}) => {
@@ -127,7 +127,7 @@ test.describe('Approval inbox', () => {
 		await expect(page.getByTestId(`intent-row-${ids.rejectTarget}`)).toHaveCount(0);
 	});
 
-	test('approves and rejects pending intents from the detail route', async ({ page, request }) => {
+	test('approves and rejects pending intents from the detail route @covers US-117-AC3 @covers US-117-AC4', async ({ page, request }) => {
 		const db = await seedApprovalCollections(request, 'approval-actions');
 		const ids = await seedIntentStates(request, db);
 
@@ -145,7 +145,7 @@ test.describe('Approval inbox', () => {
 		await expect(page.getByTestId('intent-detail')).toContainText('rejected');
 	});
 
-	test('shows authorization failures without clearing the entered reason', async ({
+	test('shows authorization failures without clearing the entered reason @covers US-117-AC5', async ({
 		page,
 		request,
 	}) => {
@@ -187,7 +187,7 @@ test.describe('Approval inbox', () => {
 		await expect(page.getByTestId('intent-reason')).toHaveValue('lost role attempt');
 	});
 
-	test('shows disabled action states for rejected, expired, committed, and stale intents @US-118', async ({
+	test('shows disabled action states for rejected, expired, committed, and stale intents @US-118 @covers US-118-AC3', async ({
 		page,
 		request,
 	}) => {
@@ -238,7 +238,7 @@ test.describe('Approval inbox', () => {
 		await expect(page.getByTestId('intent-commit-action')).toBeDisabled();
 	});
 
-	test('shows schema_version, policy_version, and grant_version in inline detail panel', async ({
+	test('shows schema_version, policy_version, and grant_version in inline detail panel @covers US-117-AC2', async ({
 		page,
 		request,
 	}) => {

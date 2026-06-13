@@ -14,7 +14,7 @@ function escapeRegExp(value: string): string {
 }
 
 test.describe('GraphQL policy console', () => {
-	test('opens an effectivePolicy preset from the policy workspace @US-113', async ({ page, request }) => {
+	test('opens an effectivePolicy preset from the policy workspace @US-113 @covers US-113-AC6', async ({ page, request }) => {
 		const fixture = await seedScn017PolicyUiFixture(request, 'graphql-policy-console-effective');
 		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
 		const requests = captureDataPlaneRequests(page, fixture.db);
@@ -53,7 +53,7 @@ test.describe('GraphQL policy console', () => {
 		expectGraphqlPrimaryDataPlane(requests, 'graphql policy console route should stay GraphQL-primary');
 	});
 
-	test('opens an explainPolicy preset from the policy workspace', async ({ page, request }) => {
+	test('opens an explainPolicy preset from the policy workspace @covers US-113-AC6', async ({ page, request }) => {
 		const fixture = await seedScn017PolicyUiFixture(request, 'graphql-policy-console-explain');
 		const policiesUrl = `/ui/tenants/${encodeURIComponent(fixture.tenant.db_name)}/databases/${encodeURIComponent(fixture.db.name)}/policies`;
 
@@ -97,7 +97,7 @@ test.describe('GraphQL policy console', () => {
 		);
 	});
 
-	test('opens an explainPolicy preset from an impact-matrix row', async ({ page, request }) => {
+	test('opens an explainPolicy preset from an impact-matrix row @covers US-113-AC6', async ({ page, request }) => {
 		const fixture = await seedScn017PolicyUiFixture(
 			request,
 			'graphql-policy-console-impact-matrix',

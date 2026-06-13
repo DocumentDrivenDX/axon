@@ -54,7 +54,7 @@ async function previewIntent(page: Page): Promise<PreviewPayload> {
 }
 
 test.describe('Mutation intents', () => {
-	test('renders and commits an allowed mutation intent without showing the token @US-116', async ({
+	test('renders and commits an allowed mutation intent without showing the token @US-116 @covers US-116-AC1 @covers US-116-AC2', async ({
 		page,
 		request,
 	}) => {
@@ -84,7 +84,7 @@ test.describe('Mutation intents', () => {
 		expectGraphqlPrimaryDataPlane(requests, 'mutation intents route should stay GraphQL-primary');
 	});
 
-	test('renders a needs-approval preview with approval route details', async ({
+	test('renders a needs-approval preview with approval route details @covers US-116-AC1', async ({
 		page,
 		request,
 	}) => {
@@ -106,7 +106,7 @@ test.describe('Mutation intents', () => {
 		await expect(page.getByTestId('intent-commit')).toBeDisabled();
 	});
 
-	test('renders a denied preview without an executable intent token', async ({ page, request }) => {
+	test('renders a denied preview without an executable intent token @covers US-116-AC3', async ({ page, request }) => {
 		const db = await seedIntentCollection(request, 'intent-deny', true);
 		await routeGraphqlAs(page, 'finance-agent');
 		await openEntityEditor(page, db);
@@ -124,7 +124,7 @@ test.describe('Mutation intents', () => {
 		await expect(page.getByTestId('intent-commit')).toBeDisabled();
 	});
 
-	test('renders stale pre-image conflict details after preview drift @US-118', async ({
+	test('renders stale pre-image conflict details after preview drift @US-118 @covers US-118-AC1', async ({
 		page,
 		request,
 	}) => {
@@ -146,7 +146,7 @@ test.describe('Mutation intents', () => {
 		await expect(error).toContainText('2');
 	});
 
-	test('renders mismatch GraphQL error payloads returned during commit', async ({
+	test('renders mismatch GraphQL error payloads returned during commit @covers US-118-AC2', async ({
 		page,
 		request,
 	}) => {
@@ -188,7 +188,7 @@ test.describe('Mutation intents', () => {
 		await expect(error).toContainText('sha256:commit');
 	});
 
-	test('editing a previewed field invalidates the preview and disables commit until re-preview', async ({
+	test('editing a previewed field invalidates the preview and disables commit until re-preview @covers US-118-AC1', async ({
 		page,
 		request,
 	}) => {
@@ -251,7 +251,7 @@ test.describe('Mutation intents', () => {
 		await expect(page.getByText(/Saved v\d+\./)).toBeVisible({ timeout: 10_000 });
 	});
 
-	test('denied previews preserve the user draft input across modal close', async ({
+	test('denied previews preserve the user draft input across modal close @covers US-116-AC3', async ({
 		page,
 		request,
 	}) => {
@@ -317,7 +317,7 @@ test.describe('Mutation intents', () => {
 		expect(commitCalls).toBe(1);
 	});
 
-	test('re-previews after a stale commit, creates a new intent ID, and preserves the lineage link', async ({
+	test('re-previews after a stale commit, creates a new intent ID, and preserves the lineage link @covers US-118-AC4', async ({
 		page,
 		request,
 	}) => {
@@ -375,7 +375,7 @@ test.describe('Mutation intents', () => {
 		await expect(page.getByText(/Saved v\d+\./)).toBeVisible({ timeout: 10_000 });
 	});
 
-	test('intent detail page shows schema-version, policy-version, and grant-version indicators', async ({
+	test('intent detail page shows schema-version, policy-version, and grant-version indicators @covers US-116-AC1 @covers US-118-AC2', async ({
 		page,
 		request,
 	}) => {
@@ -414,7 +414,7 @@ test.describe('Mutation intents', () => {
 		await expect(page.getByTestId('intent-detail-grant-version')).toBeVisible();
 	});
 
-	test('intent detail policy-version increments after policy activation', async ({
+	test('intent detail policy-version increments after policy activation @covers US-118-AC2', async ({
 		page,
 		request,
 	}) => {

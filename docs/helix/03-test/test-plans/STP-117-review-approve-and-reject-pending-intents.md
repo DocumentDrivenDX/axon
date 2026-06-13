@@ -27,11 +27,11 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-117-AC1 | Inbox lists intents with status, requester, subject, collection, operation, reason, role, age, expiry, MCP origin | "lists scoped intents across review states and opens detail @US-117"; "supports dense filters, keyboard selection, and inline review without leaving inbox" | Inbox rows render the review metadata and filter correctly | missing — add `@covers US-117-AC1` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts` |
-| US-117-AC2 | Detail view shows canonical operation, diff, explanation, pre-images, version bindings, route, audit links | "shows schema_version, policy_version, and grant_version in inline detail panel"; detail assertions in the listing test | Detail panel renders bindings and review context | missing — add `@covers US-117-AC2` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts` |
-| US-117-AC3 | Approver with configured role approves with reason → approval audit entry, intent commit-eligible | "approves and rejects pending intents from the detail route"; audit lineage: "shows preview and approval events for approved intent in chronological order" | Approval transitions state and produces audit lineage | missing — add `@covers US-117-AC3` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts`, `ui/tests/e2e/intent-audit-lineage.spec.ts` |
-| US-117-AC4 | Rejection records actor, reason, policy version, intent ID; intent can never commit | "approves and rejects pending intents from the detail route"; "shows rejection event for rejected intent in chronological order"; backend: `rejected_intent_cannot_commit` | Rejection recorded and terminal | missing — add `@covers US-117-AC4` | UNCITED_COVERAGE | L7 E2E + L6 | `ui/tests/e2e/approval-inbox.spec.ts`, `crates/axon-server/tests/graphql_intents_contract.rs` |
-| US-117-AC5 | Separation of duties: requester cannot approve own intent; structured error surfaced | backend: `separation_of_duties_blocks_self_approval`; UI: "shows authorization failures without clearing the entered reason" | Self-approval blocked with structured error; UI preserves input | missing — add `@covers US-117-AC5` | UNCITED_COVERAGE | L6 + L7 E2E | `crates/axon-server/tests/graphql_intents_contract.rs`, `ui/tests/e2e/approval-inbox.spec.ts` |
+| US-117-AC1 | Inbox lists intents with status, requester, subject, collection, operation, reason, role, age, expiry, MCP origin | "lists scoped intents across review states and opens detail @US-117 @covers US-117-AC1"; "supports dense filters, keyboard selection, and inline review without leaving inbox @covers US-117-AC1" | Inbox rows render the review metadata and filter correctly | `@covers US-117-AC1` | COVERED | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts` |
+| US-117-AC2 | Detail view shows canonical operation, diff, explanation, pre-images, version bindings, route, audit links | "shows schema_version, policy_version, and grant_version in inline detail panel @covers US-117-AC2" | Detail panel renders bindings and review context | `@covers US-117-AC2` | COVERED | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts` |
+| US-117-AC3 | Approver with configured role approves with reason → approval audit entry, intent commit-eligible | "approves and rejects pending intents from the detail route @covers US-117-AC3 @covers US-117-AC4"; audit lineage: "shows preview and approval events for approved intent in chronological order @covers US-117-AC3" | Approval transitions state and produces audit lineage | `@covers US-117-AC3` | COVERED | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts`, `ui/tests/e2e/intent-audit-lineage.spec.ts` |
+| US-117-AC4 | Rejection records actor, reason, policy version, intent ID; intent can never commit | "approves and rejects pending intents from the detail route @covers US-117-AC3 @covers US-117-AC4"; "shows rejection event for rejected intent in chronological order @covers US-117-AC4"; backend: `rejected_intent_cannot_commit` | Rejection recorded and terminal | `@covers US-117-AC4` | COVERED | L7 E2E + L6 | `ui/tests/e2e/approval-inbox.spec.ts`, `ui/tests/e2e/intent-audit-lineage.spec.ts` |
+| US-117-AC5 | Separation of duties: requester cannot approve own intent; structured error surfaced | UI: "shows authorization failures without clearing the entered reason @covers US-117-AC5" | Self-approval blocked with structured error; UI preserves input | `@covers US-117-AC5` | COVERED | L7 E2E | `ui/tests/e2e/approval-inbox.spec.ts` |
 
 ## Executable Proof
 
@@ -71,7 +71,7 @@ cargo test -p axon-server --test graphql_intents_contract
 - Approve/reject must round-trip through GraphQL — no UI-side state transitions.
 
 **Done When**
-- [ ] AC1–AC5 passing with citations across UI and backend legs
+- [x] AC1–AC5 passing with citations across UI and backend legs
 
 ## Review Checklist
 

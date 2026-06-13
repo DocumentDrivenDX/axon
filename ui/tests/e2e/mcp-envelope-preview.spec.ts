@@ -17,7 +17,7 @@ function escapeRegExp(value: string): string {
 }
 
 test.describe('MCP envelope preview', () => {
-	test('mirrors explainPolicy outcomes for read, needs_approval, and denied flows @US-119', async ({
+	test('mirrors explainPolicy outcomes for read, needs_approval, and denied flows @US-119 @covers US-119-AC1 @covers US-119-AC3', async ({
 		page,
 		request,
 	}) => {
@@ -123,7 +123,7 @@ test.describe('MCP envelope preview', () => {
 		expectGraphqlPrimaryDataPlane(requests, 'mcp envelope preview should stay GraphQL-primary');
 	});
 
-	test('opens an axon.query bridge in the GraphQL console matching the envelope outcome', async ({
+	test('opens an axon.query bridge in the GraphQL console matching the envelope outcome @covers US-119-AC3', async ({
 		page,
 		request,
 	}) => {
@@ -187,7 +187,7 @@ test.describe('MCP envelope preview', () => {
 });
 
 test.describe('MCP stdio provenance', () => {
-	test('shows stdio command/config status and redacted env for an MCP-originated intent', async ({
+	test('shows stdio command/config status and redacted env for an MCP-originated intent @covers US-119-AC2', async ({
 		page,
 		request,
 	}) => {

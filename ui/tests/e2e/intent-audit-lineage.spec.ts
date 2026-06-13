@@ -24,7 +24,7 @@ import {
 } from './helpers';
 
 test.describe('Intent audit lineage', () => {
-	test('shows delegated MCP intent metadata in the inbox and detail panels @US-119', async ({
+	test('shows delegated MCP intent metadata in the inbox and detail panels @US-119 @covers US-119-AC2', async ({
 		page,
 		request,
 	}) => {
@@ -75,7 +75,7 @@ test.describe('Intent audit lineage', () => {
 		expectGraphqlPrimaryDataPlane(requests, 'intent audit lineage route should stay GraphQL-primary');
 	});
 
-	test('shows conflict outcomes for stale MCP-originated intent commits @US-118', async ({
+	test('shows conflict outcomes for stale MCP-originated intent commits @US-118 @covers US-119-AC4', async ({
 		page,
 		request,
 	}) => {
@@ -153,7 +153,7 @@ test.describe('Intent audit lineage', () => {
 });
 
 test.describe('Intent audit deep link and lineage panel', () => {
-	test('deep link filters /audit by intent ID and pre-populates filter @US-116', async ({
+	test('deep link filters /audit by intent ID and pre-populates filter @US-116 @covers US-116-AC4', async ({
 		page,
 		request,
 	}) => {
@@ -326,7 +326,7 @@ test.describe('Intent audit deep link and lineage panel', () => {
 		await expect(page.getByTestId('audit-intent-banner')).not.toBeVisible();
 	});
 
-	test('shows preview and approval events for approved intent in chronological order', async ({
+	test('shows preview and approval events for approved intent in chronological order @covers US-117-AC3', async ({
 		page,
 		request,
 	}) => {
@@ -350,7 +350,7 @@ test.describe('Intent audit deep link and lineage panel', () => {
 		expect(approveIdx).toBeGreaterThan(previewIdx);
 	});
 
-	test('shows rejection event for rejected intent in chronological order', async ({
+	test('shows rejection event for rejected intent in chronological order @covers US-117-AC4', async ({
 		page,
 		request,
 	}) => {

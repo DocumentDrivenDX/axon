@@ -27,10 +27,10 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-114-AC1 | Schema workspace exposes the access-control block beside the raw editor | "compile + fixture dry-run + activate updates the persisted policy @US-114" (workspace entry path) | Policy block reachable and editable from schema workspace | missing — add `@covers US-114-AC1` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/policy-authoring.spec.ts` |
-| US-114-AC2 | Compile renders report with errors, warnings, nullability, MCP envelope changes | "surfaces missing-index diagnostics for policy_filter_unindexed fixtures"; compile-report assertions in the activation test | Compile report rendered with diagnostics — verify nullability + MCP-envelope legs while citing | missing — add `@covers US-114-AC2` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/policy-authoring.spec.ts` |
-| US-114-AC3 | Failed compile blocks activation; active version unchanged | "failed compile blocks activation and leaves the persisted policy unchanged" | Activation blocked, persisted policy unchanged | missing — add `@covers US-114-AC3` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/policy-authoring.spec.ts` |
-| US-114-AC4 | Successful dry-run returns fixture decisions before the new version applies | "matrix dry-run gate: activation blocked until fixture dry-run recorded; editing policy invalidates gate" | Dry-run gate enforces evaluate-before-activate | missing — add `@covers US-114-AC4` | UNCITED_COVERAGE | L7 E2E | `ui/tests/e2e/policy-authoring.spec.ts` |
+| US-114-AC1 | Schema workspace exposes the access-control block beside the raw editor | "compile + fixture dry-run + activate updates the persisted policy @US-114 @covers US-114-AC1" | Policy block reachable and editable from schema workspace | `@covers US-114-AC1` | COVERED | L7 E2E | `ui/tests/e2e/policy-authoring.spec.ts` |
+| US-114-AC2 | Compile renders report with errors, warnings, nullability, MCP envelope changes | "surfaces missing-index diagnostics for policy_filter_unindexed fixtures @covers US-114-AC2" | Compile report rendered with diagnostics | `@covers US-114-AC2` | COVERED | L7 E2E | `ui/tests/e2e/policy-authoring.spec.ts` |
+| US-114-AC3 | Failed compile blocks activation; active version unchanged | "failed compile blocks activation and leaves the persisted policy unchanged @covers US-114-AC3" | Activation blocked, persisted policy unchanged | `@covers US-114-AC3` | COVERED | L7 E2E | `ui/tests/e2e/policy-authoring.spec.ts` |
+| US-114-AC4 | Successful dry-run returns fixture decisions before the new version applies | "matrix dry-run gate: activation blocked until fixture dry-run recorded; editing policy invalidates gate @covers US-114-AC4" | Dry-run gate enforces evaluate-before-activate | `@covers US-114-AC4` | COVERED | L7 E2E | `ui/tests/e2e/policy-authoring.spec.ts` |
 
 ## Executable Proof
 
@@ -69,7 +69,7 @@ cd ui && bun run test:e2e
 - The UI submits dry-runs through the same CONTRACT-004 compile pipeline as [[STP-109]] — no UI-local validation.
 
 **Done When**
-- [ ] AC1–AC4 passing with citations
+- [x] AC1–AC4 passing with citations
 
 ## Review Checklist
 
