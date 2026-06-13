@@ -248,6 +248,7 @@ fn decision_from_mcp(response: &Value) -> &'static str {
     }
 }
 
+// @covers US-047-AC1
 async fn run_procurement_graphql_suite(
     server: &axum_test::TestServer,
     fixture: &ProcurementFixture,
@@ -992,6 +993,7 @@ async fn run_nexiq_mcp_suite(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn feat_029_contract_parent_keeps_reference_policy_contracts_in_sync() {
+    // @covers US-102-AC3
     let (procurement_server, procurement_handler) = test_server_with_handler();
     let procurement_fixture = seed_procurement(&procurement_handler).await;
 

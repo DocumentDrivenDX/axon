@@ -27,10 +27,10 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-047-AC1 | Subject with write on collection A updates entity in A → success | `run_procurement_graphql_suite` (via `feat_029_contract_parent_keeps_reference_policy_contracts_in_sync`) | Allowed write commits for the granted subject/collection | missing — add `@covers US-047-AC1`; verify the suite asserts the success leg explicitly | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/feat_029_contract_parent.rs` |
-| US-047-AC2 | Same subject updates in read-only collection B → stable forbidden envelope | `graphql_nexiq_reference_policy_set_returns_stable_write_denials` | `forbidden` envelope; stored entity unchanged (`status` stays `active`) | missing — add `@covers US-047-AC2` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-047-AC3 | Complementary policy for second subject applies symmetrically (write B / denied A) | none (fixtures are single-direction; mirror-subject case absent) | n/a | planned `@covers US-047-AC3` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-047-AC4 | Write including a write-deny protected field fails naming the field path (never silently dropped) | `graphql_nexiq_reference_policy_set_returns_stable_write_denials` | `field_write_denied` with `field_path` naming the protected field | missing — add `@covers US-047-AC4` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-047-AC1 | Subject with write on collection A updates entity in A → success | `run_procurement_graphql_suite` (via `feat_029_contract_parent_keeps_reference_policy_contracts_in_sync`) | Allowed write commits for the granted subject/collection | `@covers US-047-AC1` on `run_procurement_graphql_suite` | COVERED | L6 contract | `crates/axon-server/tests/feat_029_contract_parent.rs` |
+| US-047-AC2 | Same subject updates in read-only collection B → stable forbidden envelope | `graphql_nexiq_reference_policy_set_returns_stable_write_denials` | `forbidden` envelope; stored entity unchanged (`status` stays `active`) | `@covers US-047-AC2` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-047-AC3 | Complementary policy for second subject applies symmetrically (write B / denied A) | `graphql_abac_mirror_subject_symmetry_applies_write_grants_symmetrically` | writer-alpha allowed in mirror_a/denied in mirror_b; writer-beta allowed in mirror_b/denied in mirror_a | `@covers US-047-AC3` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-047-AC4 | Write including a write-deny protected field fails naming the field path (never silently dropped) | `graphql_nexiq_reference_policy_set_returns_stable_write_denials` | `field_write_denied` with `field_path` naming the protected field | `@covers US-047-AC4` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 
 ## Executable Proof
 
@@ -71,7 +71,7 @@ cargo test -p axon-server --test feat_029_contract_parent
 - CONTRACT-004 forbidden envelope; symmetric evaluation must come from the same policy engine path on all surfaces.
 
 **Done When**
-- [ ] AC1–AC4 passing with citations
+- [x] AC1–AC4 passing with citations
 
 ## Review Checklist
 

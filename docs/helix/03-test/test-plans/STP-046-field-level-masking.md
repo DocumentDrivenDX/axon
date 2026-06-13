@@ -27,10 +27,10 @@ ddx:
 
 | AC ID | Criterion (condensed) | Test(s) | Asserted Behavior | Citation | Status | Level | File or Command |
 |-------|----------------------|---------|-------------------|----------|--------|-------|-----------------|
-| US-046-AC1 | Low-privilege subject reads entity → sensitive field redacted | `graphql_nexiq_reference_policy_set_applies_visibility_and_redaction` | Contractor-class subject receives null for masked field | missing — add `@covers US-046-AC1` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-046-AC2 | Allowed subject reads same entity → full entity returned | `graphql_nexiq_reference_policy_set_applies_visibility_and_redaction` | Authorized subject sees the sensitive field value | missing — add `@covers US-046-AC2` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-046-AC3 | Redaction shape follows CONTRACT-004 (null, nullable field), never original value | `graphql_nexiq_reference_policy_set_applies_visibility_and_redaction` | Redacted field is explicit null, not omitted/masked-string | missing — add `@covers US-046-AC3` | UNCITED_COVERAGE | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
-| US-046-AC4 | Query results, entity detail, and audit after-state all apply the same redaction | none at API level for the audit-read leg (UI evidence exists for list/detail/audit in `ui/tests/e2e/policy-enforcement.spec.ts`, see [[STP-115]]) | n/a | planned `@covers US-046-AC4` | UNTESTED | L6 contract | planned in `crates/axon-server/tests/graphql_policy_contract.rs` (audit after-state redaction) |
+| US-046-AC1 | Low-privilege subject reads entity → sensitive field redacted | `graphql_nexiq_reference_policy_set_applies_visibility_and_redaction` | Contractor-class subject receives null for masked field | `@covers US-046-AC1` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-046-AC2 | Allowed subject reads same entity → full entity returned | `graphql_nexiq_reference_policy_set_applies_visibility_and_redaction` | Authorized subject sees the sensitive field value | `@covers US-046-AC2` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-046-AC3 | Redaction shape follows CONTRACT-004 (null, nullable field), never original value | `graphql_nexiq_reference_policy_set_applies_visibility_and_redaction` | Redacted field is explicit null, not omitted/masked-string | `@covers US-046-AC3` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
+| US-046-AC4 | Query results, entity detail, and audit after-state all apply the same redaction | `graphql_audit_after_state_applies_same_field_redaction_as_entity_reads` | `dataBefore.secret` and `dataAfter.secret` are null for masked subject; admin sees actual values | `@covers US-046-AC4` in test body | COVERED | L6 contract | `crates/axon-server/tests/graphql_policy_contract.rs` |
 
 ## Executable Proof
 
@@ -70,7 +70,7 @@ cargo test -p axon-server --test graphql_policy_contract
 - CONTRACT-004 null-redaction; CONTRACT-005 audit payload shape.
 
 **Done When**
-- [ ] AC1–AC4 passing with citations, including the audit leg
+- [x] AC1–AC4 passing with citations, including the audit leg
 
 ## Review Checklist
 

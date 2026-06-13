@@ -593,6 +593,9 @@ async fn graphql_policy_read_semantics_are_safe() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_nexiq_reference_policy_set_applies_visibility_and_redaction() {
+    // @covers US-046-AC1
+    // @covers US-046-AC2
+    // @covers US-046-AC3
     // @covers US-102-AC2
     let (server, handler) = test_server_with_handler();
     let fixture = seed_nexiq_fixture(&handler).await;
@@ -769,6 +772,8 @@ async fn graphql_nexiq_reference_policy_set_applies_visibility_and_redaction() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn graphql_nexiq_reference_policy_set_returns_stable_write_denials() {
+    // @covers US-047-AC2
+    // @covers US-047-AC4
     // @covers US-103-AC1
     // @covers US-103-AC2
     let (server, handler) = test_server_with_handler();
@@ -2335,5 +2340,350 @@ async fn graphql_put_schema_blocks_activation_on_policy_compile_errors() {
     assert_eq!(
         audit["data"]["auditLog"]["totalCount"], 0,
         "activation refusal must not append an audit entry: {audit}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_audit_after_state_applies_same_field_redaction_as_entity_reads() {
+    // @covers US-046-AC4
+    let server = test_server();
+    seed_policy_fixture(&server).await;
+
+    // Update task-contractor as admin to produce an entity.update audit entry.
+    server
+        .put("/tenants/default/databases/default/entities/task/task-contractor")
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({
+            "data": {
+                "title": "Contractor visible updated",
+                "requester_id": "other-requester",
+                "assigned_contractor_id": "contractor",
+                "budget_cents": 2600,
+                "secret": "classified-v2",
+                "status": "draft"
+            },
+            "expected_version": 1,
+            "actor": "admin"
+        }))
+        .await
+        .assert_status_ok();
+
+    // Contractor (masked subject) reads audit — dataAfter must redact `secret`.
+    let contractor_audit = gql_as(
+        &server,
+        "contractor",
+        r#"{
+            auditLog(collection: "task", entityId: "task-contractor", operation: "entity.update") {
+                totalCount
+                edges { node { dataBefore dataAfter } }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        contractor_audit["errors"].is_null(),
+        "unexpected contractor audit errors: {contractor_audit}"
+    );
+    assert_eq!(contractor_audit["data"]["auditLog"]["totalCount"], 1);
+    let entry = &contractor_audit["data"]["auditLog"]["edges"][0]["node"];
+    assert_eq!(
+        entry["dataBefore"]["secret"],
+        Value::Null,
+        "dataBefore.secret must be redacted for masked subject: {entry}"
+    );
+    assert_eq!(
+        entry["dataAfter"]["secret"],
+        Value::Null,
+        "dataAfter.secret must be redacted for masked subject: {entry}"
+    );
+    let contractor_audit_text = contractor_audit.to_string();
+    assert!(
+        !contractor_audit_text.contains("classified"),
+        "redacted value must not appear in audit payload for masked subject: {contractor_audit_text}"
+    );
+
+    // Admin (allowed subject) reads audit — dataAfter must expose `secret`.
+    let admin_audit = gql_as(
+        &server,
+        "admin",
+        r#"{
+            auditLog(collection: "task", entityId: "task-contractor", operation: "entity.update") {
+                totalCount
+                edges { node { dataBefore dataAfter } }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        admin_audit["errors"].is_null(),
+        "unexpected admin audit errors: {admin_audit}"
+    );
+    let admin_entry = &admin_audit["data"]["auditLog"]["edges"][0]["node"];
+    assert_eq!(admin_entry["dataBefore"]["secret"], "classified");
+    assert_eq!(admin_entry["dataAfter"]["secret"], "classified-v2");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_abac_mirror_subject_symmetry_applies_write_grants_symmetrically() {
+    // @covers US-047-AC3
+    let server = test_server();
+
+    // Create two collections with complementary write grants.
+    // writer-alpha can write in mirror_a, denied in mirror_b.
+    // writer-beta can write in mirror_b, denied in mirror_a.
+    for (collection, writer) in [("mirror_a", "writer-alpha"), ("mirror_b", "writer-beta")] {
+        server
+            .post(&format!(
+                "/tenants/default/databases/default/collections/{collection}"
+            ))
+            .json(&json!({
+                "schema": {
+                    "version": 1,
+                    "entity_schema": {
+                        "type": "object",
+                        "properties": {
+                            "label": { "type": "string" }
+                        }
+                    },
+                    "access_control": {
+                        "read": {
+                            "allow": [{ "name": "all-read" }]
+                        },
+                        "create": {
+                            "allow": [{
+                                "name": "setup-only",
+                                "when": { "subject": "user_id", "eq": "setup" }
+                            }]
+                        },
+                        "update": {
+                            "allow": [{
+                                "name": "writer-only",
+                                "when": { "subject": "user_id", "eq": writer }
+                            }]
+                        }
+                    }
+                },
+                "actor": "setup"
+            }))
+            .await
+            .assert_status(StatusCode::CREATED);
+
+        // Seed one entity in each collection.
+        server
+            .post(&format!(
+                "/tenants/default/databases/default/entities/{collection}/e1"
+            ))
+            .add_header("x-axon-actor", "setup")
+            .json(&json!({ "data": { "label": "original" }, "actor": "setup" }))
+            .await
+            .assert_status(StatusCode::CREATED);
+    }
+
+    // writer-alpha can update in mirror_a (allowed).
+    let alpha_allow = gql_as(
+        &server,
+        "writer-alpha",
+        r#"mutation { updateMirrorA(id: "e1", version: 1, input: { label: "alpha-v2" }) { id version } }"#,
+    )
+    .await;
+    assert!(
+        alpha_allow["errors"].is_null(),
+        "writer-alpha should be allowed to update mirror_a: {alpha_allow}"
+    );
+    assert_eq!(alpha_allow["data"]["updateMirrorA"]["version"], 2);
+
+    // writer-alpha is denied in mirror_b (symmetric: complementary grants apply to B).
+    let alpha_deny = gql_as(
+        &server,
+        "writer-alpha",
+        r#"mutation { updateMirrorB(id: "e1", version: 1, input: { label: "alpha-leaked" }) { id } }"#,
+    )
+    .await;
+    assert_eq!(
+        alpha_deny["errors"][0]["extensions"]["code"],
+        "forbidden",
+        "writer-alpha should be denied in mirror_b: {alpha_deny}"
+    );
+
+    // writer-beta can update in mirror_b (allowed for beta).
+    let beta_allow = gql_as(
+        &server,
+        "writer-beta",
+        r#"mutation { updateMirrorB(id: "e1", version: 1, input: { label: "beta-v2" }) { id version } }"#,
+    )
+    .await;
+    assert!(
+        beta_allow["errors"].is_null(),
+        "writer-beta should be allowed to update mirror_b: {beta_allow}"
+    );
+    assert_eq!(beta_allow["data"]["updateMirrorB"]["version"], 2);
+
+    // writer-beta is denied in mirror_a (symmetric: complementary grants apply to A).
+    let beta_deny = gql_as(
+        &server,
+        "writer-beta",
+        r#"mutation { updateMirrorA(id: "e1", version: 2, input: { label: "beta-leaked" }) { id } }"#,
+    )
+    .await;
+    assert_eq!(
+        beta_deny["errors"][0]["extensions"]["code"],
+        "forbidden",
+        "writer-beta should be denied in mirror_a: {beta_deny}"
+    );
+
+    // Stored state: mirror_a has alpha's label, mirror_b has beta's label.
+    let state = gql_as(
+        &server,
+        "setup",
+        r#"{
+            a: entity(collection: "mirror_a", id: "e1") { data }
+            b: entity(collection: "mirror_b", id: "e1") { data }
+        }"#,
+    )
+    .await;
+    assert_eq!(state["data"]["a"]["data"]["label"], "alpha-v2");
+    assert_eq!(state["data"]["b"]["data"]["label"], "beta-v2");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn graphql_required_field_with_read_deny_is_nullable_in_introspection_and_redacted_at_runtime(
+) {
+    // @covers US-102-AC1
+    // @covers US-102-AC4
+    let server = test_server();
+
+    // Create a collection where `secret_code` is JSON-Schema-required AND has a
+    // read-deny rule for `restricted` subjects. The generated GraphQL type must
+    // expose `secret_code` as nullable (CONTRACT-004), and reads by `restricted`
+    // must return null even though the schema marks the field required.
+    server
+        .post("/tenants/default/databases/default/collections/req_masked")
+        .json(&json!({
+            "schema": {
+                "version": 1,
+                "entity_schema": {
+                    "type": "object",
+                    "required": ["title", "secret_code"],
+                    "properties": {
+                        "title": { "type": "string" },
+                        "secret_code": { "type": "string" }
+                    }
+                },
+                "access_control": {
+                    "read": {
+                        "allow": [{ "name": "all-read" }]
+                    },
+                    "fields": {
+                        "secret_code": {
+                            "read": {
+                                "deny": [{
+                                    "name": "restricted-cannot-read-secret-code",
+                                    "when": { "subject": "user_id", "eq": "restricted" },
+                                    "redact_as": null
+                                }]
+                            }
+                        }
+                    }
+                }
+            },
+            "actor": "setup"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    // AC1: introspection must show secret_code as nullable despite required in JSON Schema.
+    // The generated type for collection "req_masked" is "ReqMasked".
+    let introspection = gql_as(
+        &server,
+        "admin",
+        r#"{
+            __type(name: "ReqMasked") {
+                fields {
+                    name
+                    type { kind name ofType { kind name } }
+                }
+            }
+        }"#,
+    )
+    .await;
+    assert!(
+        introspection["errors"].is_null(),
+        "unexpected introspection errors: {introspection}"
+    );
+    let type_fields = introspection["data"]["__type"]["fields"]
+        .as_array()
+        .expect("ReqMasked type must have fields");
+    let secret_field = type_fields
+        .iter()
+        .find(|f| f["name"] == "secret_code")
+        .expect("secret_code field must appear in introspection");
+    assert_eq!(
+        secret_field["type"]["kind"], "SCALAR",
+        "secret_code must be nullable (SCALAR kind, not NON_NULL) in generated type: {introspection}"
+    );
+    assert_eq!(secret_field["type"]["name"], "String");
+    assert!(
+        secret_field["type"]["ofType"].is_null(),
+        "nullable field must not be wrapped in NON_NULL: {introspection}"
+    );
+    // `title` is also required but has no read-deny, so it should remain non-null.
+    let title_field = type_fields
+        .iter()
+        .find(|f| f["name"] == "title")
+        .expect("title field must appear in introspection");
+    assert_eq!(
+        title_field["type"]["kind"], "NON_NULL",
+        "title has no read-deny rule and stays NON_NULL: {introspection}"
+    );
+
+    // Seed an entity with both required fields present.
+    server
+        .post("/tenants/default/databases/default/entities/req_masked/rm1")
+        .add_header("x-axon-actor", "admin")
+        .json(&json!({
+            "data": { "title": "Test item", "secret_code": "XYZZY" },
+            "actor": "admin"
+        }))
+        .await
+        .assert_status(StatusCode::CREATED);
+
+    // AC4: read-deny on a required field still applies at runtime — restricted gets null.
+    let restricted_read = gql_as(
+        &server,
+        "restricted",
+        r#"{ entity(collection: "req_masked", id: "rm1") { id data } }"#,
+    )
+    .await;
+    assert!(
+        restricted_read["errors"].is_null(),
+        "unexpected restricted read errors: {restricted_read}"
+    );
+    assert_eq!(restricted_read["data"]["entity"]["id"], "rm1");
+    assert_eq!(
+        restricted_read["data"]["entity"]["data"]["secret_code"],
+        Value::Null,
+        "required field with read-deny must be null for masked subject: {restricted_read}"
+    );
+    assert_eq!(
+        restricted_read["data"]["entity"]["data"]["title"],
+        "Test item",
+        "non-denied required field must be visible: {restricted_read}"
+    );
+
+    // Allowed subject (admin) gets the actual value.
+    let admin_read = gql_as(
+        &server,
+        "admin",
+        r#"{ entity(collection: "req_masked", id: "rm1") { id data } }"#,
+    )
+    .await;
+    assert!(
+        admin_read["errors"].is_null(),
+        "unexpected admin read errors: {admin_read}"
+    );
+    assert_eq!(
+        admin_read["data"]["entity"]["data"]["secret_code"],
+        "XYZZY",
+        "allowed subject must see the full value of a required-but-redactable field: {admin_read}"
     );
 }
