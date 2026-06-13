@@ -1,0 +1,41 @@
+{
+  "attempt_id": "20260613T211208-434848e9",
+  "bead_id": "axon-db6bf984",
+  "worktree": "/home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-db6bf984-20260613T211208-434848e9",
+  "trigger": "context canceled",
+  "started_at": "2026-06-13T21:31:23.496996989Z",
+  "finished_at": "2026-06-13T21:31:24.374714592Z",
+  "scanned": 578,
+  "candidates": [
+    {
+      "pid": 3600288,
+      "ppid": 3600242,
+      "pgid": 3600242,
+      "cwd": "/home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-db6bf984-20260613T211208-434848e9",
+      "command": "ddx bead close axon-db6bf984"
+    },
+    {
+      "pid": 3600242,
+      "ppid": 1,
+      "pgid": 3600242,
+      "cwd": "/home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-db6bf984-20260613T211208-434848e9",
+      "command": "/usr/bin/zsh -c -l setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2\u003e/dev/null || true \u0026\u0026 eval 'ddx bead close axon-db6bf984 2\u003e\u00261' \u003c /dev/null \u0026\u0026 pwd -P \u003e| /home/erik/.cache/fleet-tmp/claude-ed50-cwd"
+    }
+  ],
+  "killed": [
+    {
+      "pid": 3600288,
+      "ppid": 3600242,
+      "pgid": 3600242,
+      "cwd": "/home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-db6bf984-20260613T211208-434848e9",
+      "command": "ddx bead close axon-db6bf984"
+    },
+    {
+      "pid": 3600242,
+      "ppid": 1,
+      "pgid": 3600242,
+      "cwd": "/home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-db6bf984-20260613T211208-434848e9",
+      "command": "/usr/bin/zsh -c -l setopt NO_EXTENDED_GLOB NO_BARE_GLOB_QUAL 2\u003e/dev/null || true \u0026\u0026 eval 'ddx bead close axon-db6bf984 2\u003e\u00261' \u003c /dev/null \u0026\u0026 pwd -P \u003e| /home/erik/.cache/fleet-tmp/claude-ed50-cwd"
+    }
+  ]
+}
