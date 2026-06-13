@@ -360,3 +360,246 @@ fn order_by_priority_desc_returns_open_beads_in_descending_order() {
         "open beads should be ordered priority 5→1"
     );
 }
+
+// ── Helpers for schema/store variants ───────────────────────────────────────
+
+/// Execute a Cypher query with an explicit schema and store.
+fn run_on(
+    cypher: &str,
+    schema: &SchemaSnapshot,
+    store: &MemoryQueryStore,
+) -> Vec<BTreeMap<String, Value>> {
+    let query = parse(cypher).expect("query should parse");
+    validate(&query, schema).expect("query should validate");
+    let execution_plan = plan(&query, schema).expect("query should plan");
+    execute(&execution_plan, store)
+        .collect::<Result<Vec<_>, _>>()
+        .expect("query should execute")
+}
+
+/// A small schema with `DdxBead` label reused for cycle fixtures.
+fn cycle_schema() -> SchemaSnapshot {
+    ddx_schema()
+}
+
+/// Three-node cyclic store: cycle-a → cycle-b → cycle-c → cycle-a.
+fn cycle_store() -> MemoryQueryStore {
+    let mut store = MemoryQueryStore::new();
+    for id in ["cycle-a", "cycle-b", "cycle-c"] {
+        let mut props = BTreeMap::new();
+        props.insert("id".to_string(), json!(id));
+        props.insert("status".to_string(), json!("open"));
+        props.insert("priority".to_string(), json!(1_i64));
+        store.insert_entity(QueryEntity::new(id, ["DdxBead"], props));
+    }
+    store.insert_link(QueryLink::new("cycle-a", "DEPENDS_ON", "cycle-b", BTreeMap::new()));
+    store.insert_link(QueryLink::new("cycle-b", "DEPENDS_ON", "cycle-c", BTreeMap::new()));
+    store.insert_link(QueryLink::new("cycle-c", "DEPENDS_ON", "cycle-a", BTreeMap::new()));
+    store
+}
+
+/// Schema with two relationship types for alternating-link-type tests.
+fn two_link_schema() -> SchemaSnapshot {
+    let props = BTreeMap::from([
+        ("id".to_string(), PropertyKind::String),
+        ("status".to_string(), PropertyKind::String),
+    ]);
+    let label = LabelDef {
+        collection_name: "nodes".to_string(),
+        estimated_count: 20,
+        properties: props,
+        indexed_properties: vec![IndexedProperty {
+            property: "id".to_string(),
+            kind: PropertyKind::String,
+            unique: true,
+            estimated_equality_rows: 1,
+            estimated_range_rows: 20,
+        }],
+    };
+    SchemaSnapshot {
+        labels: BTreeMap::from([("Node".to_string(), label)]),
+        relationships: BTreeMap::from([
+            (
+                "CONNECTS".to_string(),
+                RelationshipDef {
+                    source_labels: vec!["Node".to_string()],
+                    target_labels: vec!["Node".to_string()],
+                },
+            ),
+            (
+                "LINKS".to_string(),
+                RelationshipDef {
+                    source_labels: vec!["Node".to_string()],
+                    target_labels: vec!["Node".to_string()],
+                },
+            ),
+        ]),
+        planner_config: PlannerConfig::default(),
+        queries: BTreeMap::new(),
+    }
+}
+
+/// Graph: node-a -[CONNECTS]-> node-b -[LINKS]-> node-c
+/// Path alternates between two different relationship types.
+fn two_link_store() -> MemoryQueryStore {
+    let mut store = MemoryQueryStore::new();
+    for id in ["node-a", "node-b", "node-c"] {
+        let mut props = BTreeMap::new();
+        props.insert("id".to_string(), json!(id));
+        store.insert_entity(QueryEntity::new(id, ["Node"], props));
+    }
+    store.insert_link(QueryLink::new("node-a", "CONNECTS", "node-b", BTreeMap::new()));
+    store.insert_link(QueryLink::new("node-b", "LINKS", "node-c", BTreeMap::new()));
+    store
+}
+
+// ── US-023-AC2: path projection ──────────────────────────────────────────────
+
+#[test]
+fn path_projection_each_row_carries_root_and_dep_bindings() {
+    // @covers US-023-AC2
+    // Each row from a variable-length MATCH includes both the root anchor (b)
+    // and the discovered endpoint (d), providing root→dependency path context.
+    let rows = run(r"
+        MATCH (b:DdxBead {id: 'bead-02'})-[:DEPENDS_ON*1..2]->(d:DdxBead)
+        RETURN b.id AS root, d.id AS dep
+        ORDER BY d.id ASC
+    ");
+    assert!(
+        !rows.is_empty(),
+        "variable-length match must return at least one row"
+    );
+    for row in &rows {
+        assert_eq!(
+            row["root"],
+            json!("bead-02"),
+            "root binding must be pinned to bead-02 in every projected row"
+        );
+    }
+    let deps: Vec<&str> = rows
+        .iter()
+        .map(|r| r["dep"].as_str().expect("dep should be a string"))
+        .collect();
+    // Depth-1 direct deps of bead-02: bead-07, bead-08, bead-09.
+    assert!(
+        deps.contains(&"bead-08"),
+        "direct dep bead-08 must appear alongside its root"
+    );
+    // Depth-2 transitive dep via bead-08 → bead-06.
+    assert!(
+        deps.contains(&"bead-06"),
+        "transitive dep bead-06 must appear alongside its root"
+    );
+}
+
+// ── US-023-AC3: cycle termination ────────────────────────────────────────────
+
+#[test]
+fn cycle_traversal_terminates_and_returns_correct_nodes() {
+    // @covers US-023-AC3
+    // A variable-length path over a 3-node cycle (cycle-a → cycle-b → cycle-c
+    // → cycle-a) must terminate safely within the depth cap and return the
+    // full cycle-reachable set when DISTINCT collapses duplicates.
+    let schema = cycle_schema();
+    let store = cycle_store();
+    let rows = run_on(
+        r"MATCH (n:DdxBead {id: 'cycle-a'})-[:DEPENDS_ON*1..5]->(x:DdxBead)
+          RETURN DISTINCT x.id AS id
+          ORDER BY x.id ASC",
+        &schema,
+        &store,
+    );
+    // All three nodes are reachable through the cycle within 5 hops:
+    //   depth 1: cycle-b  (cycle-a → cycle-b)
+    //   depth 2: cycle-c  (→ cycle-b → cycle-c)
+    //   depth 3: cycle-a  (→ cycle-c → cycle-a)
+    //   deeper: cycle-b, cycle-c again (deduplicated by DISTINCT)
+    let ids: Vec<&str> = rows
+        .iter()
+        .map(|r| r["id"].as_str().expect("id should be a string"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["cycle-a", "cycle-b", "cycle-c"],
+        "DISTINCT must collapse cycle duplicates to the three unique nodes"
+    );
+}
+
+#[test]
+fn self_loop_terminates_with_depth_cap() {
+    // @covers US-023-AC3
+    // A self-referencing link (minimal cycle) must terminate at the depth cap
+    // and return the self-node exactly once after DISTINCT deduplication.
+    let schema = ddx_schema();
+    let mut store = MemoryQueryStore::new();
+    let mut props = BTreeMap::new();
+    props.insert("id".to_string(), json!("self-node"));
+    props.insert("status".to_string(), json!("open"));
+    props.insert("priority".to_string(), json!(1_i64));
+    store.insert_entity(QueryEntity::new("self-node", ["DdxBead"], props));
+    store.insert_link(QueryLink::new(
+        "self-node",
+        "DEPENDS_ON",
+        "self-node",
+        BTreeMap::new(),
+    ));
+    let rows = run_on(
+        r"MATCH (n:DdxBead {id: 'self-node'})-[:DEPENDS_ON*1..3]->(x:DdxBead)
+          RETURN DISTINCT x.id AS id",
+        &schema,
+        &store,
+    );
+    assert_eq!(rows.len(), 1, "self-loop must return exactly one DISTINCT node");
+    assert_eq!(rows[0]["id"], json!("self-node"));
+}
+
+// ── US-025-AC3: alternating link types ───────────────────────────────────────
+
+#[test]
+fn alternating_link_types_both_satisfy_variable_length_pattern() {
+    // @covers US-025-AC3
+    // A path that alternates between two link types (CONNECTS then LINKS)
+    // is found when the pattern accepts either type via the `|` alternation.
+    // Graph: node-a -[CONNECTS]-> node-b -[LINKS]-> node-c
+    let schema = two_link_schema();
+    let store = two_link_store();
+    let rows = run_on(
+        r"MATCH (a:Node {id: 'node-a'})-[:CONNECTS|LINKS*1..2]->(x:Node)
+          RETURN DISTINCT x.id AS id
+          ORDER BY x.id ASC",
+        &schema,
+        &store,
+    );
+    let ids: Vec<&str> = rows
+        .iter()
+        .map(|r| r["id"].as_str().expect("id should be a string"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["node-b", "node-c"],
+        "both CONNECTS and LINKS must be traversable via the | alternation"
+    );
+}
+
+#[test]
+fn type_specific_traversal_does_not_cross_link_type_boundary() {
+    // Complementary guard: filtering to only CONNECTS stops at node-b
+    // and does not reach node-c (which is connected via LINKS only).
+    let schema = two_link_schema();
+    let store = two_link_store();
+    let rows = run_on(
+        r"MATCH (a:Node {id: 'node-a'})-[:CONNECTS*1..2]->(x:Node)
+          RETURN DISTINCT x.id AS id",
+        &schema,
+        &store,
+    );
+    let ids: Vec<&str> = rows
+        .iter()
+        .map(|r| r["id"].as_str().expect("id should be a string"))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["node-b"],
+        "type-filtered traversal must not cross to the second link type"
+    );
+}

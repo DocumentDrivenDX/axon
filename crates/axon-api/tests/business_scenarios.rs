@@ -1151,6 +1151,185 @@ fn scn_009_document_version_chain() {
     );
 }
 
+// ── US-024-AC4: BOM dangling-link resilience ────────────────────────────────
+
+#[test]
+fn scn_024_ac4_dangling_link_targets_skipped_without_error() {
+    // @covers US-024-AC4
+    // After force-deleting a component that is the target of a `contains` link,
+    // BOM traversal must skip the dangling link silently and return without error.
+    let mut h = handler();
+
+    // SETUP: same BOM tree as SCN-004.
+    for (id, name, t) in [
+        ("widget-a", "Widget A", "assembly"),
+        ("sub-assy-b", "Sub-Assembly B", "sub-assembly"),
+        ("comp-c", "Component C", "component"),
+        ("comp-d", "Component D", "component"),
+    ] {
+        h.create_entity(CreateEntityRequest {
+            collection: col("products"),
+            id: eid(id),
+            data: json!({"name": name, "type": t}),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+    }
+    link(
+        &mut h,
+        "products",
+        "widget-a",
+        "products",
+        "sub-assy-b",
+        "contains",
+        json!({"quantity": 2}),
+    );
+    link(
+        &mut h,
+        "products",
+        "widget-a",
+        "products",
+        "comp-c",
+        "contains",
+        json!({"quantity": 4}),
+    );
+    link(
+        &mut h,
+        "products",
+        "sub-assy-b",
+        "products",
+        "comp-c",
+        "contains",
+        json!({"quantity": 1}),
+    );
+    link(
+        &mut h,
+        "products",
+        "sub-assy-b",
+        "products",
+        "comp-d",
+        "contains",
+        json!({"quantity": 3}),
+    );
+
+    // EXECUTION: force-delete comp-d, leaving the sub-assy-b→comp-d link dangling.
+    h.delete_entity(DeleteEntityRequest {
+        collection: col("products"),
+        id: eid("comp-d"),
+        force: true,
+        actor: None,
+        audit_metadata: None,
+        attribution: None,
+    })
+    .unwrap();
+
+    // CHECK: traversal must succeed without error and skip the dangling link.
+    let bom = traverse(&h, "products", "widget-a", Some("contains"), Some(3));
+    let bom_ids: Vec<&str> = bom.iter().map(|e| e.id.as_str()).collect();
+    assert!(
+        !bom_ids.contains(&"comp-d"),
+        "deleted comp-d must not appear in traversal results"
+    );
+    assert!(
+        bom_ids.contains(&"sub-assy-b"),
+        "sub-assy-b must still be reachable"
+    );
+    assert!(
+        bom_ids.contains(&"comp-c"),
+        "comp-c must still be reachable via two paths"
+    );
+    // Three entities remain reachable: sub-assy-b, comp-c (direct), comp-c (via sub-assy-b).
+    // The traverse() API deduplicates via visited set, so comp-c appears once.
+    assert_eq!(
+        bom_ids.len(),
+        2,
+        "only sub-assy-b and comp-c should be reachable after comp-d is deleted"
+    );
+}
+
+// ── US-025-AC2: reachability short-circuit ───────────────────────────────────
+
+#[test]
+fn us_025_ac2_reachable_short_circuits_on_first_path_found() {
+    // @covers US-025-AC2
+    // When multiple paths lead to the same target, reachable() returns true
+    // as soon as the first path is found without materializing all paths.
+    // Diamond graph: source → path-a → target  and  source → path-b → target.
+    let mut h = handler();
+
+    for id in ["source", "path-a", "path-b", "target"] {
+        h.create_entity(CreateEntityRequest {
+            collection: col("nodes"),
+            id: eid(id),
+            data: json!({"name": id}),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+    }
+    // Two independent paths to target.
+    link(&mut h, "nodes", "source", "nodes", "path-a", "edge", json!(null));
+    link(&mut h, "nodes", "source", "nodes", "path-b", "edge", json!(null));
+    link(&mut h, "nodes", "path-a", "nodes", "target", "edge", json!(null));
+    link(&mut h, "nodes", "path-b", "nodes", "target", "edge", json!(null));
+
+    let result = h
+        .reachable(ReachableRequest {
+            source_collection: col("nodes"),
+            source_id: eid("source"),
+            target_collection: col("nodes"),
+            target_id: eid("target"),
+            link_type: Some("edge".into()),
+            max_depth: Some(3),
+            direction: Default::default(),
+        })
+        .unwrap();
+
+    assert!(result.reachable, "target must be reachable from source");
+    assert_eq!(
+        result.depth,
+        Some(2),
+        "shortest path is 2 hops (source → path-a → target or source → path-b → target)"
+    );
+}
+
+#[test]
+fn us_025_ac2_reachable_returns_false_when_unreachable() {
+    // Complementary negative case: unreachable target returns false.
+    let mut h = handler();
+    for id in ["a", "b", "c"] {
+        h.create_entity(CreateEntityRequest {
+            collection: col("nodes"),
+            id: eid(id),
+            data: json!({"name": id}),
+            actor: None,
+            audit_metadata: None,
+            attribution: None,
+        })
+        .unwrap();
+    }
+    link(&mut h, "nodes", "a", "nodes", "b", "edge", json!(null));
+    // c is disconnected from a and b.
+
+    let result = h
+        .reachable(ReachableRequest {
+            source_collection: col("nodes"),
+            source_id: eid("a"),
+            target_collection: col("nodes"),
+            target_id: eid("c"),
+            link_type: Some("edge".into()),
+            max_depth: Some(5),
+            direction: Default::default(),
+        })
+        .unwrap();
+
+    assert!(!result.reachable, "c must not be reachable from a");
+    assert_eq!(result.depth, None, "depth should be None when unreachable");
+}
+
 // ── SCN-010: Time Tracking — Approval and Billing ───────────────────────────
 
 #[test]

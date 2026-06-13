@@ -30,7 +30,7 @@ ddx:
 | US-024-AC1 | Bounded traversal returns full BOM tree with relationship metadata per hop | `scn_004_bom_explosion_recursive_traversal` | Widget-A explosion returns Sub-Assembly-B, Component-C, Component-D with per-hop metadata | missing — add `@covers US-024-AC1` | UNCITED_COVERAGE | L2 scenario | `crates/axon-api/tests/business_scenarios.rs` |
 | US-024-AC2 | Relationship properties (`quantity`) accessible in result rows | `scn_004_bom_explosion_recursive_traversal` | Total Component-C = 4 direct + 2×1 via B = 6 | missing — add `@covers US-024-AC2` | UNCITED_COVERAGE | L2 scenario | `crates/axon-api/tests/business_scenarios.rs` |
 | US-024-AC3 | Diamond-shared component appears once with all paths recoverable | `scn_004_bom_explosion_recursive_traversal` | Component-C reached via both direct and via-B paths | missing — add `@covers US-024-AC3`; verify the once-with-paths projection is asserted, not just both-path reachability | UNCITED_COVERAGE | L2 scenario | `crates/axon-api/tests/business_scenarios.rs` |
-| US-024-AC4 | Dangling link targets skipped without error | none | n/a | planned `@covers US-024-AC4` | UNTESTED | L2 scenario | planned in `crates/axon-api/tests/business_scenarios.rs` (delete a component, re-run explosion) |
+| US-024-AC4 | Dangling link targets skipped without error | `scn_024_ac4_dangling_link_targets_skipped_without_error` | Force-delete a component; traverse from root succeeds without error; deleted entity absent, remaining entities present | `@covers US-024-AC4` | COVERED | L2 scenario | `crates/axon-api/tests/business_scenarios.rs` |
 
 ## Executable Proof
 
