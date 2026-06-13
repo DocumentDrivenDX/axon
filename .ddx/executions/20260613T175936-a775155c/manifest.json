@@ -1,0 +1,93 @@
+{
+  "attempt_id": "20260613T175936-a775155c",
+  "bead_id": "axon-a7d8876f",
+  "base_rev": "9525519ccad9a83487612ac118915e3c6d41b062",
+  "created_at": "2026-06-13T17:59:39.356976985Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-a7d8876f",
+    "title": "feat: add CLI governed workflow parity commands",
+    "description": "Context: CONTRACT-008 defines CLI surfaces for `axon policy explain|test`, `axon mutation preview|commit|approve|reject`, `axon audit diff|blame`, and `axon rollback dry-run`. Gap assessment found the CLI behind this contract, especially in client mode. Low-effort apps and operators need these governed paths rather than direct unsafe writes.\n\nIn-scope files: `crates/axon-cli/src/` command definitions/service calls, focused CLI tests, and contract docs only if implementation discovers a necessary clarification.\nOut-of-scope: UI repair views, CDC, and changing GraphQL/MCP semantics.\nImplementation hint: route commands through existing governed handler/client APIs; where backend fields are absent, return stable documented errors rather than bypassing policy/audit.",
+    "acceptance": "1. `cargo test -p axon-cli` passes.\n2. CLI tests cover at least one policy explain/test command and one mutation preview/commit path.\n3. CLI tests cover rollback dry-run or document a precise backend blocker in the bead notes without marking CONTRACT-008 complete.\n4. `cargo clippy -p axon-cli -- -D warnings` passes.",
+    "labels": [
+      "helix",
+      "plan:spec-gap-2026-06-12",
+      "area:cli",
+      "area:policy",
+      "area:intents",
+      "kind:implementation"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"readiness route unavailable: lifecycle dispatch: project root mutation rejected for bead axon-a7d8876f\",\"fingerprint\":\"946726e4718dcb366f2c329e29f0589a7e95b106eb21258887681a7603a463a3\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"946726e4718dcb366f2c329e29f0589a7e95b106eb21258887681a7603a463a3\"}",
+          "created_at": "2026-06-13T16:33:07.391976981Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"resolved_provider\":\"codex\",\"resolved_model\":\"gpt-5.4-mini\",\"route_reason\":\"explicit_pin_discovery_unavailable\",\"fallback_chain\":[]}",
+          "created_at": "2026-06-13T17:51:44.012055892Z",
+          "kind": "routing",
+          "source": "legacy agent execute-bead",
+          "summary": "provider=codex model=gpt-5.4-mini reason=explicit_pin_discovery_unavailable"
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"attempt_id\":\"20260613T163510-34cab2f5\",\"harness\":\"codex\",\"model\":\"gpt-5.4-mini\",\"route_reason\":\"explicit_pin_discovery_unavailable\",\"input_tokens\":48661000,\"output_tokens\":265892,\"total_tokens\":48926892,\"cost_usd\":0,\"duration_ms\":4589476,\"exit_code\":0}",
+          "created_at": "2026-06-13T17:51:44.739341549Z",
+          "kind": "cost",
+          "source": "legacy agent execute-bead",
+          "summary": "tokens=48926892 model=gpt-5.4-mini"
+        },
+        {
+          "actor": "",
+          "body": "{\"candidate_ref\":\"refs/ddx/iterations/20260613T163510-34cab2f5/0\",\"cycle_index\":0,\"attempt_id\":\"20260613T163510-34cab2f5\",\"base_rev\":\"5183ba350a20d4580bfc78d54876f568323dcaaf\",\"result_rev\":\"283e15266cd6446f35359967688547bb80f65ddf\"}",
+          "created_at": "2026-06-13T17:51:45.498748406Z",
+          "kind": "candidate_cycle_pinned",
+          "source": "",
+          "summary": ""
+        },
+        {
+          "actor": "ddx",
+          "body": "{\"actual_harness\":\"codex\",\"actual_model\":\"gpt-5.4-mini\",\"actual_power\":0,\"actual_provider\":\"\",\"attempt_id\":\"20260613T163510-34cab2f5\",\"bead_id\":\"axon-a7d8876f\",\"estimated_difficulty\":\"\",\"rejected_route_pins\":null,\"requested_power_class\":\"standard\",\"requested_profile\":\"default\",\"routing_intent_degraded\":false,\"routing_intent_note\":\"\",\"routing_intent_source\":\"default\"}",
+          "created_at": "2026-06-13T17:52:03.388664938Z",
+          "kind": "execution-routing-intent",
+          "source": "ddx work",
+          "summary": "source=default powerClass=standard model=gpt-5.4-mini harness=codex"
+        },
+        {
+          "actor": "erik",
+          "body": "preserved-needs-review\ngate_summary=large-deletion gate: crates/axon-cli/src/main.rs deleted 1201 lines (threshold 200) without intentional large deletion acknowledgement\npreserve_ref=refs/ddx/iterations/axon-a7d8876f/20260613T163510-34cab2f5-5183ba350a20\nresult_rev=95d3bc7cd56501ba7db9b602a236de1661dd5a29\nlarge-deletion gate: crates/axon-cli/src/main.rs deleted 1201 lines (threshold 200) without intentional large deletion acknowledgement\npowerClass=standard\ncycle_trace=[{\"cycle_index\":0,\"attempt_id\":\"20260613T163510-34cab2f5\",\"result_rev\":\"283e15266cd6446f35359967688547bb80f65ddf\",\"implementer_route\":{\"harness\":\"codex\",\"model\":\"gpt-5.4-mini\"},\"requested_route\":{\"harness\":\"codex\",\"model\":\"gpt-5.4-mini\"},\"actual_route\":{\"harness\":\"codex\",\"model\":\"gpt-5.4-mini\"},\"review_result\":{},\"final_decision\":\"success\",\"failure_class\":\"none\",\"retry_action\":\"close\",\"escalation_count\":0,\"review_status\":\"skipped\",\"review_skip_reason\":\"review_not_configured\",\"review_classification\":\"review_skipped\",\"land_status\":\"landed\",\"reconcile_status\":\"not_applicable\"}]\ndecision_audit={\"failure_class\":\"preserved_needs_review\",\"retry_action\":\"operator_attention\",\"escalation_count\":0,\"requested_route\":{\"harness\":\"codex\",\"model\":\"gpt-5.4-mini\",\"profile\":\"default\",\"routing_intent_source\":\"default\",\"inferred_power_class\":\"standard\",\"requested_power_class\":\"standard\"},\"actual_route\":{\"harness\":\"codex\",\"model\":\"gpt-5.4-mini\",\"route_reason\":\"default\"},\"review_status\":\"skipped\",\"review_skip_reason\":\"review_not_configured\",\"review_classification\":\"review_skipped\",\"land_status\":\"not_landed\",\"reconcile_status\":\"not_applicable\",\"execution_decision\":\"proposed\"}\npreserve_ref=refs/ddx/iterations/axon-a7d8876f/20260613T163510-34cab2f5-5183ba350a20\nresult_rev=95d3bc7cd56501ba7db9b602a236de1661dd5a29\nbase_rev=5183ba350a20d4580bfc78d54876f568323dcaaf",
+          "created_at": "2026-06-13T17:52:04.489347571Z",
+          "kind": "execute-bead",
+          "source": "ddx work",
+          "summary": "preserved_needs_review"
+        }
+      ],
+      "spec-id": "CONTRACT-008"
+    }
+  },
+  "governing": [
+    {
+      "id": "CONTRACT-008",
+      "path": "docs/helix/02-design/contracts/CONTRACT-008-cli-and-config.md",
+      "title": "Contract"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260613T175936-a775155c",
+    "prompt": ".ddx/executions/20260613T175936-a775155c/prompt.md",
+    "manifest": ".ddx/executions/20260613T175936-a775155c/manifest.json",
+    "result": ".ddx/executions/20260613T175936-a775155c/result.json",
+    "checks": ".ddx/executions/20260613T175936-a775155c/checks.json",
+    "usage": ".ddx/executions/20260613T175936-a775155c/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-a7d8876f-20260613T175936-a775155c"
+  },
+  "prompt_sha": "6796a8549c9e8f7e6357a3887ba7bb705676e88dbbb13d76c356e03decbd2f48"
+}
