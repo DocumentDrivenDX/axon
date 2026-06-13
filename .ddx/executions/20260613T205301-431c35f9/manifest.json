@@ -1,0 +1,61 @@
+{
+  "attempt_id": "20260613T205301-431c35f9",
+  "bead_id": "axon-3165f176",
+  "base_rev": "59f64c78040ffb0279a1bf27216c2bcbff52d637",
+  "created_at": "2026-06-13T20:53:04.626982525Z",
+  "requested": {
+    "prompt": "synthesized"
+  },
+  "bead": {
+    "id": "axon-3165f176",
+    "title": "ci: add autonomous coverage, simulation, and benchmark ratchets",
+    "description": "Context: TP-001 defines ratchets for line coverage, correctness seeds, invariant count, simulation hours, and performance p99. Current CI does not enforce coverage thresholds or benchmark ratchets, and long-running proof is not separated from per-commit proof.\n\nIn-scope files: CI workflow, existing test/benchmark scripts, and lightweight ratchet metadata files if the repo already has a pattern for them.\nOut-of-scope: writing all missing product tests or inventing a large new benchmarking framework.\nImplementation hint: add the smallest maintainable gate: per-commit scanner/coverage smoke where feasible, plus a documented nightly/manual command for criterion and extended `axon-sim` seeds if full enforcement would be too costly for PR CI.",
+    "acceptance": "1. CI or a documented workflow runs the executable @covers scanner.\n2. A reproducible command exists for bounded `axon-sim` seed execution and passes locally.\n3. A reproducible command exists for benchmark/criterion execution or a precise blocker is recorded.\n4. `cargo test -p axon-sim` passes.\n5. The change documents which ratchets are enforced per commit versus nightly/manual.",
+    "labels": [
+      "helix",
+      "plan:spec-gap-2026-06-12",
+      "area:ci",
+      "area:test",
+      "kind:task",
+      "ac-quality:needs-refinement"
+    ],
+    "metadata": {
+      "events": [
+        {
+          "actor": "",
+          "body": "[{\"ac\":1,\"text\":\"CI or a documented workflow runs the executable @covers scanner.\",\"kind\":\"prose\",\"verifiable\":false},{\"ac\":2,\"text\":\"A reproducible command exists for bounded `axon-sim` seed execution and passes locally.\",\"kind\":\"prose\",\"verifiable\":false},{\"ac\":3,\"text\":\"A reproducible command exists for benchmark/criterion execution or a precise blocker is recorded.\",\"kind\":\"prose\",\"verifiable\":false},{\"ac\":4,\"text\":\"`cargo test -p axon-sim` passes.\",\"kind\":\"command\",\"verifiable\":true},{\"ac\":5,\"text\":\"The change documents which ratchets are enforced per commit versus nightly/manual.\",\"kind\":\"prose\",\"verifiable\":false}]",
+          "created_at": "2026-06-13T20:47:31.711062545Z",
+          "kind": "ac-quality-low",
+          "source": "preclaim-ac-quality",
+          "summary": "score=0.20 threshold=0.50 verifiable=1/5"
+        },
+        {
+          "actor": "erik",
+          "body": "{\"decision\":\"warn\",\"decision_source\":\"pre_claim_intake\",\"detail\":\"readiness route unavailable: lifecycle dispatch: project root mutation rejected for bead axon-3165f176\",\"fingerprint\":\"7cdfa8783a238824ba7abefe41697673e15820cdb1736d55e29547192e6c8008\",\"policy_mode\":\"warn-only\",\"reason\":\"system_unready\",\"rule_id\":\"pre_claim_intake.system_unready\",\"suggested_action\":\"revise the rewrite so it preserves every explicit commitment\",\"warning_fingerprint\":\"7cdfa8783a238824ba7abefe41697673e15820cdb1736d55e29547192e6c8008\"}",
+          "created_at": "2026-06-13T20:51:45.621326889Z",
+          "kind": "intake.warn",
+          "source": "ddx work",
+          "summary": "system_unready"
+        }
+      ],
+      "spec-id": "TP-001"
+    }
+  },
+  "governing": [
+    {
+      "id": "TP-001",
+      "path": "docs/helix/03-test/test-plan.md",
+      "title": "Axon Test Plan"
+    }
+  ],
+  "paths": {
+    "dir": ".ddx/executions/20260613T205301-431c35f9",
+    "prompt": ".ddx/executions/20260613T205301-431c35f9/prompt.md",
+    "manifest": ".ddx/executions/20260613T205301-431c35f9/manifest.json",
+    "result": ".ddx/executions/20260613T205301-431c35f9/result.json",
+    "checks": ".ddx/executions/20260613T205301-431c35f9/checks.json",
+    "usage": ".ddx/executions/20260613T205301-431c35f9/usage.json",
+    "worktree": "home/erik/.cache/ddx/exec-wt/.execute-bead-wt-axon-3165f176-20260613T205301-431c35f9"
+  },
+  "prompt_sha": "6a835d934a1378c4823e66725947899ac9f39cae73fa7747efeec20d1a3aa825"
+}
