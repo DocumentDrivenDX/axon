@@ -3,6 +3,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axon_core::error::AxonError;
 use axon_core::id::{CollectionId, EntityId, Namespace, DEFAULT_DATABASE};
 
+use crate::cursor::CdcCursorStore;
+
 use crate::entry::{AuditEntry, MutationType};
 
 // ── Query types ──────────────────────────────────────────────────────────────
@@ -169,6 +171,29 @@ pub trait AuditLog: Send + Sync {
             .collect();
 
         Ok((envelopes, page.next_cursor))
+    }
+
+    /// Replay from the cursor stored in `cursor_store` for `(sink_name, collection)`.
+    ///
+    /// Looks up the last emitted `audit_id` from the store and uses it as the
+    /// `after_id` for [`Self::replay`]. When the store holds no cursor the replay
+    /// starts from the beginning (initial snapshot). The caller is responsible for
+    /// advancing the cursor in the store after successful emission.
+    ///
+    /// The collection key passed to the store is `collection.as_str()` when a
+    /// collection filter is given, or `""` for an unfiltered (global) replay.
+    ///
+    /// CONTRACT-006 §Cursor semantics — resume on restart.
+    fn replay_from_cursor(
+        &self,
+        cursor_store: &dyn CdcCursorStore,
+        sink_name: &str,
+        collection: Option<&CollectionId>,
+        limit: usize,
+    ) -> Result<(Vec<crate::cdc::CdcEnvelope>, Option<u64>), AxonError> {
+        let collection_key = collection.map(|c| c.as_str()).unwrap_or("");
+        let after_id = cursor_store.get(sink_name, collection_key);
+        self.replay(after_id, collection, limit)
     }
 }
 
@@ -1159,6 +1184,131 @@ mod tests {
         let ids: Vec<u64> = envelopes.iter().map(|e| e.source.audit_id).collect();
         let unique: std::collections::HashSet<u64> = ids.iter().copied().collect();
         assert_eq!(ids.len(), unique.len());
+    }
+
+    // ── replay_from_cursor tests (CONTRACT-006 §Cursor semantics) ───────
+
+    #[test]
+    fn replay_from_cursor_no_cursor_starts_from_beginning() {
+        use crate::cursor::MemoryCursorStore;
+
+        let mut log = MemoryAuditLog::default();
+        for i in 1..=3 {
+            must_ok(
+                log.append(AuditEntry::new(
+                    CollectionId::new("tasks"),
+                    EntityId::new(format!("t-{i:03}")),
+                    1,
+                    MutationType::EntityCreate,
+                    None,
+                    Some(serde_json::json!({"n": i})),
+                    Some("agent".into()),
+                )),
+                "append should succeed",
+            );
+        }
+
+        let store = MemoryCursorStore::default();
+        let (envelopes, _) = must_ok(
+            log.replay_from_cursor(&store, "kafka", None, 100),
+            "replay_from_cursor with no cursor should succeed",
+        );
+        assert_eq!(envelopes.len(), 3, "no cursor → start from beginning");
+    }
+
+    #[test]
+    fn replay_from_cursor_resumes_from_stored_cursor() {
+        use crate::cursor::{CdcCursorStore as _, MemoryCursorStore};
+
+        let mut log = MemoryAuditLog::default();
+        let mut appended = Vec::new();
+        for i in 1..=6 {
+            let e = must_ok(
+                log.append(AuditEntry::new(
+                    CollectionId::new("tasks"),
+                    EntityId::new(format!("t-{i:03}")),
+                    1,
+                    MutationType::EntityCreate,
+                    None,
+                    Some(serde_json::json!({"n": i})),
+                    Some("agent".into()),
+                )),
+                "append should succeed",
+            );
+            appended.push(e);
+        }
+
+        // Simulate: first 3 events were emitted; cursor stored at audit_id of entry[2].
+        let cursor_at = appended[2].id;
+        let mut store = MemoryCursorStore::default();
+        store.set("kafka", "", cursor_at);
+
+        let (envelopes, _) = must_ok(
+            log.replay_from_cursor(&store, "kafka", None, 100),
+            "replay from stored cursor should succeed",
+        );
+        assert_eq!(envelopes.len(), 3, "only 3 events after cursor position");
+        for env in &envelopes {
+            assert!(
+                env.source.audit_id > cursor_at,
+                "replayed audit_ids must be > stored cursor"
+            );
+        }
+    }
+
+    #[test]
+    fn replay_from_cursor_collection_key_is_independent() {
+        use crate::cursor::MemoryCursorStore;
+
+        let mut log = MemoryAuditLog::default();
+        let t1 = must_ok(
+            log.append(AuditEntry::new(
+                CollectionId::new("tasks"),
+                EntityId::new("t-001"),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({})),
+                Some("a".into()),
+            )),
+            "tasks append should succeed",
+        );
+        must_ok(
+            log.append(AuditEntry::new(
+                CollectionId::new("users"),
+                EntityId::new("u-001"),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({})),
+                Some("a".into()),
+            )),
+            "users append should succeed",
+        );
+        must_ok(
+            log.append(AuditEntry::new(
+                CollectionId::new("tasks"),
+                EntityId::new("t-002"),
+                1,
+                MutationType::EntityCreate,
+                None,
+                Some(serde_json::json!({})),
+                Some("a".into()),
+            )),
+            "tasks second append should succeed",
+        );
+
+        // Cursor for "tasks" at t1.id — only the second tasks entry should replay.
+        let mut store = MemoryCursorStore::default();
+        store.set("sse", "tasks", t1.id);
+
+        let col = CollectionId::new("tasks");
+        let (envelopes, _) = must_ok(
+            log.replay_from_cursor(&store, "sse", Some(&col), 100),
+            "collection-filtered cursor replay should succeed",
+        );
+        assert_eq!(envelopes.len(), 1, "only the second tasks event should replay");
+        assert_eq!(envelopes[0].source.collection, "tasks");
     }
 
     // ── Ordering Invariant Tests ─────────────────────────────────────────

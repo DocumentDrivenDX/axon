@@ -6,6 +6,7 @@
 //! the change, when it occurred, and what changed.
 
 pub mod cdc;
+pub mod cursor;
 pub mod entry;
 pub mod log;
 pub mod prov;
@@ -14,6 +15,7 @@ pub use cdc::{
     CdcContext, CdcEnvelope, CdcOp, CdcSink, CdcSource, JsonlFileSink, KafkaCdcSink, KafkaConfig,
     MemoryCdcSink,
 };
+pub use cursor::{CdcCursorStore, MemoryCursorStore};
 pub use entry::{
     compute_diff, AuditAttribution, AuditEntry, FieldDiff, MutationIntentApproverMetadata,
     MutationIntentAuditMetadata, MutationIntentAuditOrigin, MutationIntentAuditOriginSurface,
