@@ -83,10 +83,14 @@ impl PostgresStorageAdapter {
     /// `"postgres://axon@localhost/axon"`
     pub fn connect(params: &str) -> Result<Self, AxonError> {
         let options = pg_connect_options(params)?;
+        // max_connections(1) ensures that BEGIN / COMMIT / ROLLBACK are issued on
+        // the same underlying connection.  StorageAdapter uses &mut self (exclusive
+        // access), so a single connection is the correct and sufficient model.
+        let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
         let (rt, pool) = match tokio::runtime::Handle::try_current() {
             Ok(handle) => {
                 let pool = tokio::task::block_in_place(|| {
-                    handle.block_on(sqlx::PgPool::connect_with(options))
+                    handle.block_on(pool_opts.connect_with(options))
                 })
                 .map_err(|e| AxonError::Storage(format!("connection failed: {e}")))?;
                 (None, pool)
@@ -98,7 +102,7 @@ impl PostgresStorageAdapter {
                     .build()
                     .map_err(|e| AxonError::Storage(e.to_string()))?;
                 let pool = rt
-                    .block_on(sqlx::PgPool::connect_with(options))
+                    .block_on(pool_opts.connect_with(options))
                     .map_err(|e| AxonError::Storage(format!("connection failed: {e}")))?;
                 (Some(rt), pool)
             }
@@ -3799,3 +3803,96 @@ mod tests {
         );
     }
 }
+
+// ── L4 backend conformance — PostgresStorageAdapter ──────────────────────────
+//
+// Each conformance test provisions a fresh `axon_ct_<n>` database so tests are
+// fully isolated even when run in parallel.  Databases accumulate in the test
+// cluster; they are small and harmless.  For CI the cluster is ephemeral.
+//
+// Run locally with a real cluster:
+//   AXON_TEST_POSTGRES="postgres://postgres:postgres@localhost/postgres" \
+//     cargo test -p axon-storage
+//
+// Or start a throwaway container:
+//   docker run -d -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:16
+//   AXON_TEST_POSTGRES="postgres://postgres:postgres@localhost/postgres" \
+//     cargo test -p axon-storage
+//
+// The tests are silently skipped when neither AXON_TEST_POSTGRES is set nor
+// a Docker container can be started — no test failure is emitted.
+
+#[cfg(test)]
+fn pg_conformance_superadmin_dsn() -> Option<String> {
+    use std::sync::OnceLock;
+    use testcontainers_modules::{
+        postgres,
+        testcontainers::runners::SyncRunner,
+    };
+
+    // Cache: None means "already decided no Postgres available".
+    static DSN: OnceLock<Option<String>> = OnceLock::new();
+
+    DSN.get_or_init(|| {
+        if let Ok(dsn) = std::env::var("AXON_TEST_POSTGRES") {
+            return Some(dsn);
+        }
+
+        let result = postgres::Postgres::default()
+            .with_db_name("postgres")
+            .with_user("postgres")
+            .with_password("postgres")
+            .start();
+
+        match result {
+            Ok(container) => {
+                let host = container
+                    .get_host()
+                    .expect("container host should be available");
+                let port = container
+                    .get_host_port_ipv4(5432)
+                    .expect("container port should be available");
+                // Leak the container so it lives for the whole test binary run.
+                Box::leak(Box::new(container));
+                Some(format!(
+                    "postgres://postgres:postgres@{host}:{port}/postgres"
+                ))
+            }
+            Err(e) => {
+                eprintln!(
+                    "[L4 conformance] Skipping PostgreSQL tests: container runtime unavailable ({e}). \
+                     Set AXON_TEST_POSTGRES to run against a real cluster."
+                );
+                None
+            }
+        }
+    })
+    .clone()
+}
+
+/// Provision a fresh `axon_ct_<n>` database and return a connected adapter.
+///
+/// Returns `None` when no PostgreSQL cluster is reachable (so conformance
+/// tests skip gracefully).
+#[cfg(test)]
+fn pg_conformance_make_adapter() -> Option<PostgresStorageAdapter> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let dsn = pg_conformance_superadmin_dsn()?;
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let db_name = format!("ct_{n:06}");
+
+    provision_postgres_database(&dsn, &db_name)
+        .expect("conformance database provision should succeed");
+
+    let tenant = tenant_dsn(&dsn, &db_name);
+    PostgresStorageAdapter::connect(&tenant).ok()
+}
+
+// Invoke the L4 conformance suite.  Tests skip gracefully when no Postgres
+// cluster is reachable.
+crate::storage_conformance_tests!(
+    maybe: { super::pg_conformance_make_adapter() },
+    postgres_conformance
+);

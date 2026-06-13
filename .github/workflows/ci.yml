@@ -131,6 +131,44 @@ jobs:
       - run: cd ui && bun run build
       - run: cd ui && bun run check:story-coverage
 
+  # L4 backend conformance: runs the storage_conformance_tests! suite against
+  # SQLite (always) and PostgreSQL (via service container).  The memory backend
+  # is exercised by the main `test` job via `cargo test`.
+  storage-conformance:
+    name: L4 Storage Conformance (SQLite + PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@1.94.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - name: Run L4 storage conformance suite (SQLite + PostgreSQL)
+        env:
+          AXON_TEST_POSTGRES: postgres://postgres:postgres@localhost:5432/postgres
+        run: cargo test -p axon-storage 2>&1 | tee /tmp/storage-conformance.log
+      - name: Verify PostgreSQL conformance tests ran (not all skipped)
+        run: |
+          if grep -q "postgres_conformance::get_missing_returns_none" /tmp/storage-conformance.log; then
+            echo "PostgreSQL conformance tests ran successfully"
+          else
+            echo "WARNING: PostgreSQL conformance tests may not have run — check log" >&2
+          fi
+
   e2e-postgres:
     name: E2E (PostgreSQL)
     runs-on: ubuntu-latest

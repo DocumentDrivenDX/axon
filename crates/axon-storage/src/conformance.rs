@@ -3,18 +3,57 @@
 //! Every StorageAdapter implementation must pass the identical test suite.
 //! Tests are written against the trait, parameterized by backend.
 //!
-//! Usage:
+//! Two invocation forms:
+//!
 //! ```ignore
+//! // Always-available backend (memory, SQLite in-memory):
 //! storage_conformance_tests!(memory_backend, || MemoryStorageAdapter::default());
+//!
+//! // Optional backend (PostgreSQL, FoundationDB) — tests skip when None:
+//! storage_conformance_tests!(maybe: { make_pg_adapter() }, postgres_backend);
 //! ```
+//!
+//! In the `maybe:` form, each test function returns early (effectively skipping)
+//! when the expression evaluates to `None`.  This lets the CI gate run SQLite
+//! conformance on every commit while PostgreSQL conformance runs conditionally
+//! when a cluster is reachable.
 
 /// Generates the full StorageAdapter conformance test suite for a given backend.
 ///
-/// `$mod_name` becomes the test module name, and `$make_adapter` is an
-/// expression that produces a fresh `impl StorageAdapter` instance.
+/// **Standard form** — adapter always available (memory, SQLite in-memory):
+/// ```ignore
+/// storage_conformance_tests!(module_name, make_adapter_expr);
+/// ```
+///
+/// **Optional form** — adapter may be unavailable; tests skip gracefully:
+/// ```ignore
+/// storage_conformance_tests!(maybe: { opt_adapter_expr }, module_name);
+/// ```
+/// where `opt_adapter_expr` evaluates to `Option<impl StorageAdapter>`.
 #[macro_export]
 macro_rules! storage_conformance_tests {
+    // ── Standard variant: adapter always available ───────────────────────────
     ($mod_name:ident, $make_adapter:expr) => {
+        $crate::storage_conformance_tests!(
+            @impl $mod_name,
+            fn maybe_store() -> ::core::option::Option<impl $crate::adapter::StorageAdapter> {
+                ::core::option::Option::Some($make_adapter)
+            }
+        );
+    };
+
+    // ── Optional variant: tests skip when adapter is unavailable ─────────────
+    (maybe: { $make_adapter_opt:expr }, $mod_name:ident) => {
+        $crate::storage_conformance_tests!(
+            @impl $mod_name,
+            fn maybe_store() -> ::core::option::Option<impl $crate::adapter::StorageAdapter> {
+                $make_adapter_opt
+            }
+        );
+    };
+
+    // ── Internal implementation rule ─────────────────────────────────────────
+    (@impl $mod_name:ident, $($store_fn:tt)*) => {
         #[cfg(test)]
         mod $mod_name {
             use super::*;
@@ -32,16 +71,15 @@ macro_rules! storage_conformance_tests {
             use axon_schema::schema::{CollectionSchema, CollectionView};
             use serde_json::json;
 
+            // Expanded `maybe_store` definition — provided by the calling variant.
+            $($store_fn)*
+
             fn tasks() -> CollectionId {
                 CollectionId::new("tasks")
             }
 
             fn entity(id: &str, title: &str) -> Entity {
                 Entity::new(tasks(), EntityId::new(id), json!({"title": title}))
-            }
-
-            fn store() -> impl StorageAdapter {
-                $make_adapter
             }
 
             fn intent(
@@ -111,14 +149,14 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn get_missing_returns_none() {
-                let s = store();
+                let Some(s) = maybe_store() else { return; };
                 let result = s.get(&tasks(), &EntityId::new("ghost")).expect("test operation should succeed");
                 assert!(result.is_none());
             }
 
             #[test]
             fn put_then_get_roundtrip() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let e = entity("t-001", "hello");
                 s.put(e.clone()).expect("test operation should succeed");
                 let got = s.get(&tasks(), &EntityId::new("t-001")).expect("test operation should succeed").expect("test operation should succeed");
@@ -128,7 +166,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn put_overwrites_existing_entity_with_same_id() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 s.put(entity("t-001", "first")).expect("test operation should succeed");
                 s.put(entity("t-001", "second")).expect("test operation should succeed");
 
@@ -139,7 +177,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn count_reflects_puts_and_deletes() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 assert_eq!(s.count(&tasks()).expect("test operation should succeed"), 0);
                 s.put(entity("a", "a")).expect("test operation should succeed");
                 s.put(entity("b", "b")).expect("test operation should succeed");
@@ -150,13 +188,13 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn delete_missing_is_ok() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 s.delete(&tasks(), &EntityId::new("ghost")).expect("test operation should succeed");
             }
 
             #[test]
             fn range_scan_returns_sorted_entities() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 s.put(entity("c", "c")).expect("test operation should succeed");
                 s.put(entity("a", "a")).expect("test operation should succeed");
                 s.put(entity("b", "b")).expect("test operation should succeed");
@@ -167,7 +205,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn range_scan_respects_start_end_and_limit() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 for id in ["a", "b", "c", "d", "e"] {
                     s.put(entity(id, id)).expect("test operation should succeed");
                 }
@@ -187,7 +225,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn compare_and_swap_increments_version() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 s.put(entity("t-001", "v1")).expect("test operation should succeed");
                 let updated = s
                     .compare_and_swap(entity("t-001", "v2"), 1)
@@ -198,7 +236,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn compare_and_swap_rejects_wrong_version() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 s.put(entity("t-001", "v1")).expect("test operation should succeed");
                 let err = s.compare_and_swap(entity("t-001", "v2"), 99).expect_err("test operation should fail");
                 assert!(
@@ -212,7 +250,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn compare_and_swap_rejects_missing_entity() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let err = s.compare_and_swap(entity("ghost", "v1"), 1).expect_err("test operation should fail");
                 assert!(
                     matches!(err, AxonError::ConflictingVersion { .. }),
@@ -222,7 +260,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn create_if_absent_inserts_missing_entity() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let recreated = Entity {
                     collection: tasks(),
                     id: EntityId::new("t-001"),
@@ -252,7 +290,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn create_if_absent_rejects_existing_entity() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 s.put(entity("t-001", "current"))
                     .expect("test operation should succeed");
 
@@ -291,7 +329,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn begin_commit_tx_persists_writes() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 s.begin_tx().expect("test operation should succeed");
                 s.put(entity("t-001", "hello")).expect("test operation should succeed");
                 s.commit_tx().expect("test operation should succeed");
@@ -301,7 +339,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn abort_tx_rolls_back_writes() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 s.put(entity("t-001", "original")).expect("test operation should succeed");
                 s.begin_tx().expect("test operation should succeed");
                 s.put(Entity::new(tasks(), EntityId::new("t-001"), json!({"title": "modified"}))).expect("test operation should succeed");
@@ -314,7 +352,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn begin_tx_rejects_nested_begin() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 s.begin_tx().expect("test operation should succeed");
                 let err = s.begin_tx().expect_err("test operation should fail");
                 assert!(
@@ -326,7 +364,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn commit_tx_requires_active_transaction() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let err = s.commit_tx().expect_err("test operation should fail");
                 assert!(
                     matches!(err, AxonError::Storage(_) | AxonError::InvalidOperation(_)),
@@ -336,7 +374,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn abort_tx_without_active_tx_is_noop() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 // Should not error.
                 s.abort_tx().expect("test operation should succeed");
             }
@@ -345,7 +383,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn create_get_mutation_intent_roundtrip() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let expected = intent(
                     "tenant-a",
                     "finance",
@@ -373,8 +411,8 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn pending_mutation_intents_are_scoped_and_ordered() {
-                let mut s = store();
-                for intent in [
+                let Some(mut s) = maybe_store() else { return; };
+                for i in [
                     intent("tenant-a", "finance", "mint-late", ApprovalState::Pending, 3_000),
                     intent("tenant-a", "finance", "mint-early", ApprovalState::Pending, 2_000),
                     intent("tenant-a", "ops", "mint-other-db", ApprovalState::Pending, 1_500),
@@ -382,14 +420,14 @@ macro_rules! storage_conformance_tests {
                     intent("tenant-a", "finance", "mint-approved", ApprovalState::Approved, 1_500),
                     intent("tenant-a", "finance", "mint-expired", ApprovalState::Pending, 900),
                 ] {
-                    s.create_mutation_intent(&intent)
+                    s.create_mutation_intent(&i)
                         .expect("intent create should succeed");
                 }
 
                 let pending = s
                     .list_pending_mutation_intents("tenant-a", "finance", 1_000, None)
                     .expect("pending list should succeed");
-                let ids: Vec<_> = pending.iter().map(|intent| intent.intent_id.as_str()).collect();
+                let ids: Vec<_> = pending.iter().map(|i| i.intent_id.as_str()).collect();
                 assert_eq!(ids, vec!["mint-early", "mint-late"]);
 
                 let limited = s
@@ -401,7 +439,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn update_mutation_intent_state_is_conditional() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let initial = intent(
                     "tenant-a",
                     "finance",
@@ -446,8 +484,8 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn expired_mutation_intent_scan_returns_non_terminal_states_only() {
-                let mut s = store();
-                for intent in [
+                let Some(mut s) = maybe_store() else { return; };
+                for i in [
                     intent("tenant-a", "finance", "mint-none", ApprovalState::None, 900),
                     intent("tenant-a", "finance", "mint-pending", ApprovalState::Pending, 800),
                     intent("tenant-a", "finance", "mint-approved", ApprovalState::Approved, 700),
@@ -457,35 +495,35 @@ macro_rules! storage_conformance_tests {
                     intent("tenant-a", "finance", "mint-live", ApprovalState::Pending, 2_000),
                     intent("tenant-b", "finance", "mint-other-tenant", ApprovalState::Pending, 300),
                 ] {
-                    s.create_mutation_intent(&intent)
+                    s.create_mutation_intent(&i)
                         .expect("intent create should succeed");
                 }
 
                 let expired = s
                     .list_expired_mutation_intents("tenant-a", "finance", 1_000, None)
                     .expect("expired scan should succeed");
-                let ids: Vec<_> = expired.iter().map(|intent| intent.intent_id.as_str()).collect();
+                let ids: Vec<_> = expired.iter().map(|i| i.intent_id.as_str()).collect();
                 assert_eq!(ids, vec!["mint-approved", "mint-pending", "mint-none"]);
 
                 let limited = s
                     .list_expired_mutation_intents("tenant-a", "finance", 1_000, Some(2))
                     .expect("limited expired scan should succeed");
                 let limited_ids: Vec<_> =
-                    limited.iter().map(|intent| intent.intent_id.as_str()).collect();
+                    limited.iter().map(|i| i.intent_id.as_str()).collect();
                 assert_eq!(limited_ids, vec!["mint-approved", "mint-pending"]);
             }
 
             #[test]
             fn mutation_intent_state_history_lists_explicit_states_without_ttl_filtering() {
-                let mut s = store();
-                for intent in [
+                let Some(mut s) = maybe_store() else { return; };
+                for i in [
                     intent("tenant-a", "finance", "mint-pending-expired-by-time", ApprovalState::Pending, 500),
                     intent("tenant-a", "finance", "mint-pending-live", ApprovalState::Pending, 2_000),
                     intent("tenant-a", "finance", "mint-expired", ApprovalState::Expired, 400),
                     intent("tenant-a", "finance", "mint-rejected", ApprovalState::Rejected, 300),
                     intent("tenant-b", "finance", "mint-other-tenant", ApprovalState::Expired, 100),
                 ] {
-                    s.create_mutation_intent(&intent)
+                    s.create_mutation_intent(&i)
                         .expect("intent create should succeed");
                 }
 
@@ -493,14 +531,14 @@ macro_rules! storage_conformance_tests {
                     .list_mutation_intents_by_state("tenant-a", "finance", ApprovalState::Pending, None)
                     .expect("pending history list should succeed");
                 let pending_ids: Vec<_> =
-                    pending.iter().map(|intent| intent.intent_id.as_str()).collect();
+                    pending.iter().map(|i| i.intent_id.as_str()).collect();
                 assert_eq!(pending_ids, vec!["mint-pending-expired-by-time", "mint-pending-live"]);
 
                 let expired = s
                     .list_mutation_intents_by_state("tenant-a", "finance", ApprovalState::Expired, None)
                     .expect("expired history list should succeed");
                 let expired_ids: Vec<_> =
-                    expired.iter().map(|intent| intent.intent_id.as_str()).collect();
+                    expired.iter().map(|i| i.intent_id.as_str()).collect();
                 assert_eq!(expired_ids, vec!["mint-expired"]);
 
                 let limited = s
@@ -514,7 +552,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn put_get_schema_roundtrip() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("widgets");
                 let schema = CollectionSchema {
                     collection: col.clone(),
@@ -522,13 +560,13 @@ macro_rules! storage_conformance_tests {
                     version: 99, // ignored — auto-increment assigns v1
                     entity_schema: Some(json!({"type": "object"})),
                     link_types: Default::default(),
-            access_control: None,
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-                queries: Default::default(),
-                lifecycles: Default::default(),
+                    access_control: None,
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    queries: Default::default(),
+                    lifecycles: Default::default(),
                 };
                 s.put_schema(&schema).expect("test operation should succeed");
                 let got = s.get_schema(&col).expect("test operation should succeed").expect("test operation should succeed");
@@ -539,13 +577,13 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn get_schema_missing_returns_none() {
-                let s = store();
+                let Some(s) = maybe_store() else { return; };
                 assert!(s.get_schema(&CollectionId::new("ghost")).expect("test operation should succeed").is_none());
             }
 
             #[test]
             fn put_schema_overwrites_previous() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("items");
                 let v1 = CollectionSchema {
                     collection: col.clone(),
@@ -553,13 +591,13 @@ macro_rules! storage_conformance_tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
-            access_control: None,
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-                queries: Default::default(),
-                lifecycles: Default::default(),
+                    access_control: None,
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    queries: Default::default(),
+                    lifecycles: Default::default(),
                 };
                 let v2 = CollectionSchema {
                     collection: col.clone(),
@@ -567,13 +605,13 @@ macro_rules! storage_conformance_tests {
                     version: 2,
                     entity_schema: None,
                     link_types: Default::default(),
-            access_control: None,
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-                queries: Default::default(),
-                lifecycles: Default::default(),
+                    access_control: None,
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    queries: Default::default(),
+                    lifecycles: Default::default(),
                 };
                 s.put_schema(&v1).expect("test operation should succeed");
                 s.put_schema(&v2).expect("test operation should succeed");
@@ -584,7 +622,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn delete_schema_removes_it() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("tmp");
                 let schema = CollectionSchema {
                     collection: col.clone(),
@@ -592,13 +630,13 @@ macro_rules! storage_conformance_tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
-            access_control: None,
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-                queries: Default::default(),
-                lifecycles: Default::default(),
+                    access_control: None,
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    queries: Default::default(),
+                    lifecycles: Default::default(),
                 };
                 s.put_schema(&schema).expect("test operation should succeed");
                 assert!(s.get_schema(&col).expect("test operation should succeed").is_some());
@@ -608,7 +646,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn abort_tx_rolls_back_schema_changes() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("items");
                 let original = CollectionSchema {
                     collection: col.clone(),
@@ -616,13 +654,13 @@ macro_rules! storage_conformance_tests {
                     version: 1,
                     entity_schema: None,
                     link_types: Default::default(),
-            access_control: None,
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-                queries: Default::default(),
-                lifecycles: Default::default(),
+                    access_control: None,
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    queries: Default::default(),
+                    lifecycles: Default::default(),
                 };
                 s.put_schema(&original).expect("test operation should succeed");
 
@@ -633,13 +671,13 @@ macro_rules! storage_conformance_tests {
                     version: 2,
                     entity_schema: None,
                     link_types: Default::default(),
-            access_control: None,
-            gates: Default::default(),
-            validation_rules: Default::default(),
-            indexes: Default::default(),
-            compound_indexes: Default::default(),
-                queries: Default::default(),
-                lifecycles: Default::default(),
+                    access_control: None,
+                    gates: Default::default(),
+                    validation_rules: Default::default(),
+                    indexes: Default::default(),
+                    compound_indexes: Default::default(),
+                    queries: Default::default(),
+                    lifecycles: Default::default(),
                 })
                 .expect("test operation should succeed");
                 s.abort_tx().expect("test operation should succeed");
@@ -652,7 +690,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn put_get_collection_view_roundtrip() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("widgets");
                 s.register_collection(&col).expect("test operation should succeed");
                 let view = CollectionView {
@@ -677,7 +715,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn updating_collection_view_does_not_bump_schema_version() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("items");
                 s.register_collection(&col).expect("test operation should succeed");
                 let schema = CollectionSchema {
@@ -726,7 +764,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn delete_collection_view_removes_it() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("tmp");
                 s.register_collection(&col).expect("test operation should succeed");
                 s.put_collection_view(&CollectionView::new(col.clone(), "# {{title}}"))
@@ -738,7 +776,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn abort_tx_rolls_back_collection_view_changes() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("notes");
                 s.register_collection(&col).expect("test operation should succeed");
                 s.put_collection_view(&CollectionView::new(col.clone(), "# v1"))
@@ -756,7 +794,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn put_collection_view_requires_registered_collection() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("orphaned");
                 let err = s
                     .put_collection_view(&CollectionView::new(col.clone(), "# {{title}}"))
@@ -775,7 +813,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn unregister_collection_removes_collection_view() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("ephemeral");
                 s.register_collection(&col).expect("test operation should succeed");
                 s.put_collection_view(&CollectionView::new(col.clone(), "# {{title}}"))
@@ -790,7 +828,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn register_and_list_collections() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 s.register_collection(&CollectionId::new("alpha")).expect("test operation should succeed");
                 s.register_collection(&CollectionId::new("beta")).expect("test operation should succeed");
                 let list = s.list_collections().expect("test operation should succeed");
@@ -801,7 +839,7 @@ macro_rules! storage_conformance_tests {
 
             #[test]
             fn unregister_collection_removes_it() {
-                let mut s = store();
+                let Some(mut s) = maybe_store() else { return; };
                 let col = CollectionId::new("temp");
                 s.register_collection(&col).expect("test operation should succeed");
                 assert!(s.list_collections().expect("test operation should succeed").contains(&col));
