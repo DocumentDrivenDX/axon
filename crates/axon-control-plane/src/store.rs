@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use crate::error::ControlPlaneError;
-use crate::model::{HealthReport, Tenant, TenantId};
+use crate::model::{HealthReport, ObservationCredential, Tenant, TenantId};
 
 /// Storage backend for the control plane.
 ///
@@ -45,6 +45,17 @@ pub trait ControlPlaneStore: Send + Sync {
         tenant.last_health = Some(report);
         self.update(tenant)
     }
+
+    /// Persist a new observation credential.
+    fn insert_credential(&self, cred: ObservationCredential) -> Result<(), ControlPlaneError>;
+
+    /// Fetch a credential by its id. Returns
+    /// [`ControlPlaneError::CredentialNotFound`] when the id is unknown.
+    fn get_credential(&self, cred_id: &str) -> Result<ObservationCredential, ControlPlaneError>;
+
+    /// Delete a credential by its id. Returns
+    /// [`ControlPlaneError::CredentialNotFound`] when the id is unknown.
+    fn delete_credential(&self, cred_id: &str) -> Result<(), ControlPlaneError>;
 }
 
 /// In-memory control plane store.
@@ -54,6 +65,7 @@ pub trait ControlPlaneStore: Send + Sync {
 #[derive(Debug, Default)]
 pub struct InMemoryControlPlaneStore {
     tenants: Mutex<HashMap<TenantId, Tenant>>,
+    credentials: Mutex<HashMap<String, ObservationCredential>>,
 }
 
 impl InMemoryControlPlaneStore {
@@ -112,6 +124,37 @@ impl ControlPlaneStore for InMemoryControlPlaneStore {
                 .then_with(|| a.id.cmp(&b.id))
         });
         Ok(out)
+    }
+
+    fn insert_credential(&self, cred: ObservationCredential) -> Result<(), ControlPlaneError> {
+        let mut guard = self
+            .credentials
+            .lock()
+            .map_err(|e| ControlPlaneError::Store(format!("mutex poisoned: {e}")))?;
+        guard.insert(cred.id.clone(), cred);
+        Ok(())
+    }
+
+    fn get_credential(&self, cred_id: &str) -> Result<ObservationCredential, ControlPlaneError> {
+        let guard = self
+            .credentials
+            .lock()
+            .map_err(|e| ControlPlaneError::Store(format!("mutex poisoned: {e}")))?;
+        guard
+            .get(cred_id)
+            .cloned()
+            .ok_or_else(|| ControlPlaneError::CredentialNotFound(cred_id.to_string()))
+    }
+
+    fn delete_credential(&self, cred_id: &str) -> Result<(), ControlPlaneError> {
+        let mut guard = self
+            .credentials
+            .lock()
+            .map_err(|e| ControlPlaneError::Store(format!("mutex poisoned: {e}")))?;
+        if guard.remove(cred_id).is_none() {
+            return Err(ControlPlaneError::CredentialNotFound(cred_id.to_string()));
+        }
+        Ok(())
     }
 }
 

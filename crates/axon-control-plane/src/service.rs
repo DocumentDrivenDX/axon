@@ -10,7 +10,8 @@ use uuid::Uuid;
 
 use crate::error::ControlPlaneError;
 use crate::model::{
-    AuditEvent, DeploymentMode, HealthReport, Tenant, TenantId, TenantSpec, TenantStatus,
+    AuditEvent, DeploymentMode, HealthReport, ObservationCredential, ObservationScope, Tenant,
+    TenantId, TenantSpec, TenantStatus,
 };
 use crate::store::ControlPlaneStore;
 
@@ -273,6 +274,88 @@ impl ControlPlaneService {
         Ok(tenant)
     }
 
+    /// Issue a short-lived observation credential for the given tenant.
+    ///
+    /// `ttl_ms` must be ≤ 24 hours (86_400_000 ms). Returns
+    /// [`ControlPlaneError::InvalidArgument`] if the TTL is too large.
+    pub fn issue_observation_credential(
+        &self,
+        tenant_id: &TenantId,
+        scope: ObservationScope,
+        ttl_ms: u64,
+    ) -> Result<ObservationCredential, ControlPlaneError> {
+        const MAX_TTL_MS: u64 = 24 * 3_600_000;
+        if ttl_ms > MAX_TTL_MS {
+            return Err(ControlPlaneError::InvalidArgument(format!(
+                "ttl_ms {ttl_ms} exceeds the maximum of {MAX_TTL_MS}ms (24h)"
+            )));
+        }
+        // Ensure tenant exists — propagates TenantNotFound if not.
+        self.store.get(tenant_id)?;
+        let now = self.clock.now_ms();
+        let cred = ObservationCredential {
+            id: Uuid::now_v7().to_string(),
+            tenant_id: tenant_id.clone(),
+            issued_at_ms: now,
+            expires_at_ms: now.saturating_add(ttl_ms),
+            scope,
+        };
+        self.store.insert_credential(cred.clone())?;
+        tracing::info!(
+            tenant_id = %tenant_id,
+            cred_id = %cred.id,
+            ttl_ms,
+            "observation credential issued"
+        );
+        Ok(cred)
+    }
+
+    /// Retrieve a credential and verify it has not expired.
+    ///
+    /// Returns [`ControlPlaneError::CredentialNotFound`] when the credential
+    /// does not exist or belongs to a different tenant.
+    /// Returns [`ControlPlaneError::CredentialExpired`] when `now_ms` is at or
+    /// past `expires_at_ms`.
+    pub fn get_observation_credential(
+        &self,
+        tenant_id: &TenantId,
+        cred_id: &str,
+    ) -> Result<ObservationCredential, ControlPlaneError> {
+        let cred = self
+            .store
+            .get_credential(cred_id)
+            .map_err(|_| ControlPlaneError::CredentialNotFound(cred_id.to_string()))?;
+        if cred.tenant_id != *tenant_id {
+            return Err(ControlPlaneError::CredentialNotFound(cred_id.to_string()));
+        }
+        let now = self.clock.now_ms();
+        if cred.is_expired(now) {
+            return Err(ControlPlaneError::CredentialExpired(cred_id.to_string()));
+        }
+        Ok(cred)
+    }
+
+    /// Revoke an observation credential, removing it from the store.
+    ///
+    /// Returns [`ControlPlaneError::CredentialNotFound`] when the credential
+    /// does not exist or belongs to a different tenant.
+    pub fn revoke_observation_credential(
+        &self,
+        tenant_id: &TenantId,
+        cred_id: &str,
+    ) -> Result<(), ControlPlaneError> {
+        let cred = self
+            .store
+            .get_credential(cred_id)
+            .map_err(|_| ControlPlaneError::CredentialNotFound(cred_id.to_string()))?;
+        if cred.tenant_id != *tenant_id {
+            return Err(ControlPlaneError::CredentialNotFound(cred_id.to_string()));
+        }
+        self.store.delete_credential(cred_id)?;
+        tracing::info!(tenant_id = %tenant_id, cred_id, "observation credential revoked");
+        Ok(())
+    }
+
     /// Shared transition helper.
     ///
     /// Reads the tenant, runs a caller-supplied mutator, and writes the
@@ -508,6 +591,121 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, ControlPlaneError::InvalidState { .. }));
+    }
+
+    #[test]
+    fn issue_credential_ttl_within_24h() {
+        let svc = service();
+        let t = svc.provision_tenant(hosted_spec("t")).unwrap();
+        let cred = svc
+            .issue_observation_credential(
+                &t.id,
+                crate::model::ObservationScope::HealthOnly,
+                3_600_000,
+            )
+            .unwrap();
+        assert_eq!(cred.tenant_id, t.id);
+        assert!(cred.ttl_ms() <= 24 * 3_600_000);
+        assert_eq!(cred.ttl_ms(), 3_600_000);
+    }
+
+    #[test]
+    fn issue_credential_rejects_ttl_exceeding_24h() {
+        let svc = service();
+        let t = svc.provision_tenant(hosted_spec("t")).unwrap();
+        let too_long = 24 * 3_600_000 + 1;
+        let err = svc
+            .issue_observation_credential(
+                &t.id,
+                crate::model::ObservationScope::HealthOnly,
+                too_long,
+            )
+            .unwrap_err();
+        assert!(matches!(err, ControlPlaneError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn issue_credential_against_unknown_tenant_returns_not_found() {
+        let svc = service();
+        let err = svc
+            .issue_observation_credential(
+                &TenantId::new("does-not-exist"),
+                crate::model::ObservationScope::HealthOnly,
+                3_600_000,
+            )
+            .unwrap_err();
+        assert!(matches!(err, ControlPlaneError::TenantNotFound(_)));
+    }
+
+    #[test]
+    fn get_credential_expired_returns_credential_expired() {
+        // Issue at t=0 with ttl=1ms, verify at t=2 → expired.
+        let store: Arc<dyn ControlPlaneStore> = Arc::new(InMemoryControlPlaneStore::new());
+
+        #[derive(Debug)]
+        struct FixedClock(u64);
+        impl Clock for FixedClock {
+            fn now_ms(&self) -> u64 {
+                self.0
+            }
+        }
+
+        let svc_past = ControlPlaneService::with_clock(
+            Arc::clone(&store),
+            Arc::new(FixedClock(0)),
+        );
+        let svc_present = ControlPlaneService::with_clock(
+            Arc::clone(&store),
+            Arc::new(FixedClock(2)),
+        );
+
+        let t = svc_past.provision_tenant(hosted_spec("t")).unwrap();
+        let cred = svc_past
+            .issue_observation_credential(
+                &t.id,
+                crate::model::ObservationScope::HealthOnly,
+                1,
+            )
+            .unwrap();
+        assert_eq!(cred.expires_at_ms, 1);
+
+        let err = svc_present
+            .get_observation_credential(&t.id, &cred.id)
+            .unwrap_err();
+        assert!(
+            matches!(err, ControlPlaneError::CredentialExpired(_)),
+            "expected CredentialExpired, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn revoke_credential_removes_it_from_store() {
+        let svc = service();
+        let t = svc.provision_tenant(hosted_spec("t")).unwrap();
+        let cred = svc
+            .issue_observation_credential(
+                &t.id,
+                crate::model::ObservationScope::MetricsRead,
+                3_600_000,
+            )
+            .unwrap();
+
+        svc.revoke_observation_credential(&t.id, &cred.id).unwrap();
+
+        let err = svc
+            .get_observation_credential(&t.id, &cred.id)
+            .unwrap_err();
+        assert!(matches!(err, ControlPlaneError::CredentialNotFound(_)));
+    }
+
+    #[test]
+    fn revoke_unknown_credential_returns_not_found() {
+        let svc = service();
+        let t = svc.provision_tenant(hosted_spec("t")).unwrap();
+        let err = svc
+            .revoke_observation_credential(&t.id, "no-such-cred")
+            .unwrap_err();
+        assert!(matches!(err, ControlPlaneError::CredentialNotFound(_)));
     }
 
     #[test]

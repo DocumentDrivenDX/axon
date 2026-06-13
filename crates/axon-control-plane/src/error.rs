@@ -33,4 +33,13 @@ pub enum ControlPlaneError {
     /// adapter). The in-memory store never returns this variant.
     #[error("control plane store error: {0}")]
     Store(String),
+
+    /// Referenced observation credential does not exist or does not belong to
+    /// the specified tenant.
+    #[error("credential not found: {0}")]
+    CredentialNotFound(String),
+
+    /// Observation credential has passed its `expires_at_ms` timestamp.
+    #[error("credential expired: {0}")]
+    CredentialExpired(String),
 }
